@@ -18,7 +18,7 @@ Everything runs locally via **Ollama** — no cloud API keys needed.
   make chat / make ingest  (host Python app)
         │  OpenAI API
         ▼
-   LiteLLM proxy ───► Ollama (llama3.2:1b + nomic-embed-text)
+   LiteLLM proxy ───► Ollama (qwen2.5:3b + nomic-embed-text)
         │  logs
         ▼
      Langfuse ◄──── app traces (callback handler)
@@ -110,5 +110,5 @@ Then open **http://localhost:3000** to see the traces.
 - **`make ingest` fails to embed** → run `make up` and `make pull-models` first.
 - **No traces in Langfuse** → make sure you put the keys in `.env` and ran
   `docker compose up -d litellm` afterwards; also restart `make chat`.
-- **Model too slow** → `llama3.2:1b` is intentionally tiny; swap for a bigger
+- **Model too slow** → `qwen2.5:3b` is small; swap for a bigger
   model in `litellm-config.yaml` if you have the RAM.

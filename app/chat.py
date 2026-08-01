@@ -37,6 +37,7 @@ def run_turn(graph, text: str, thread_id: str) -> None:
     config = {
         "configurable": {"thread_id": thread_id},
         "callbacks": _callbacks(thread_id),
+        "recursion_limit": 12,  # safety net so a weak model can't loop forever
     }
     printed = ""
     for state in graph.stream(

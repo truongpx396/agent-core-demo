@@ -8,7 +8,7 @@ up:  ## Start all services (ollama, litellm, qdrant, langfuse, postgres)
 	docker compose up -d
 
 pull-models:  ## Download the Ollama chat + embedding models
-	docker compose exec ollama ollama pull llama3.2:1b
+	docker compose exec ollama ollama pull qwen2.5:3b
 	docker compose exec ollama ollama pull nomic-embed-text
 
 ingest:  ## Embed sample docs and upsert them into Qdrant

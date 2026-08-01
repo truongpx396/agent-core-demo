@@ -3,15 +3,17 @@
 # fallbacks, and shipping every call to Langfuse from the proxy itself.
 
 model_list:
-  # Primary chat model (alias "chat" -> Ollama llama3.2:1b)
+  # Primary chat model. NOTE: use the `ollama_chat/` provider (not `ollama/`) —
+  # it hits Ollama's /api/chat endpoint with *native* tool calling. The plain
+  # `ollama/` provider fakes tools via prompt injection and loops on tool use.
   - model_name: chat
     litellm_params:
-      model: ollama/llama3.2:1b
+      model: ollama_chat/qwen2.5:3b
       api_base: http://ollama:11434
   # A second chat entry used purely as a fallback target for "chat".
   - model_name: chat-backup
     litellm_params:
-      model: ollama/llama3.2:1b
+      model: ollama_chat/qwen2.5:3b
       api_base: http://ollama:11434
   # Embedding model (alias "embed" -> Ollama nomic-embed-text)
   - model_name: embed
@@ -20,6 +22,7 @@ model_list:
       api_base: http://ollama:11434
 
 litellm_settings:
+  drop_params: true                    # silently drop params Ollama doesn't support (e.g. encoding_format)
   num_retries: 2                       # retry transient failures
   request_timeout: 600
   # If "chat" fails, transparently retry on "chat-backup".

@@ -30,15 +30,19 @@ def upsert(points: list[PointStruct]) -> None:
 
 
 def search(vector: list[float], topic: str | None = None, k: int = 3):
-    """Vector search, optionally filtered to a single payload `topic`."""
+    """Vector search, optionally filtered to a single payload `topic`.
+
+    Returns a list of scored points (each has a `.payload`).
+    """
     query_filter = None
     if topic:
         query_filter = Filter(
             must=[FieldCondition(key="topic", match=MatchValue(value=topic))]
         )
-    return get_client().search(
+    response = get_client().query_points(
         collection_name=COLLECTION,
-        query_vector=vector,
+        query=vector,
         query_filter=query_filter,
         limit=k,
     )
+    return response.points
