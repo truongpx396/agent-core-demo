@@ -9,6 +9,7 @@ features of four popular AI-infra tools in one place:
 | **LiteLLM**   | An OpenAI-compatible **proxy** routing chat + embeddings to Ollama, with **retries**, **fallbacks**, and **Langfuse logging at the proxy** |
 | **Qdrant**    | Collection creation, **batch upsert with payloads**, vector search, and **metadata filtering** |
 | **Langfuse**  | `@observe` tracing, the LangGraph **callback handler**, nested spans, and **session grouping** by `thread_id` |
+| **FastAPI + Pydantic** | An HTTP `/chat` API over the same agent, with typed request/response models and auto-generated OpenAPI docs |
 
 Everything runs locally via **Ollama** — no cloud API keys needed.
 
@@ -69,10 +70,33 @@ Try these in the chat:
 
 Then open **http://localhost:3000** to see the traces.
 
+## HTTP API (FastAPI + Pydantic)
+
+Besides the CLI, the same agent is exposed as an HTTP service:
+
+```bash
+make serve          # starts uvicorn on http://localhost:8000
+```
+
+- Interactive docs (Swagger UI): **http://localhost:8000/docs**
+- `GET /health` → `{"status":"ok"}`
+- `POST /chat` with a Pydantic-validated body:
+
+```bash
+curl -s -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"what is 21 * 2?","thread_id":"demo"}'
+# -> {"thread_id":"demo","answer":"The result of 21 * 2 is 42."}
+```
+
+Reuse the same `thread_id` across calls to keep conversation **memory**; each
+call is also traced in Langfuse under that id as the session.
+
 ## Ports
 
 | Service      | URL                     |
 |--------------|-------------------------|
+| FastAPI      | http://localhost:8000   |
 | LiteLLM      | http://localhost:4000   |
 | Qdrant       | http://localhost:6333   |
 | Langfuse UI  | http://localhost:3000   |
@@ -86,6 +110,7 @@ Then open **http://localhost:3000** to see the traces.
 | `make pull-models`| Download Ollama chat + embedding models |
 | `make ingest`     | Embed sample docs → Qdrant |
 | `make chat`       | Start the agent CLI |
+| `make serve`      | Start the FastAPI service (http://localhost:8000/docs) |
 | `make logs`       | Tail service logs |
 | `make down`       | Stop services (keep data) |
 | `make clean`      | Stop services and delete volumes |
@@ -96,14 +121,17 @@ Then open **http://localhost:3000** to see the traces.
 |------|----------------|
 | `docker-compose.yml`   | All 5 services |
 | `litellm-config.yaml`  | Model routing, retries, fallbacks, Langfuse callback |
-| `app/config.py`        | Env-driven settings |
+| `app/config.py`        | Typed settings (Pydantic `BaseSettings`) |
 | `app/sample_docs.py`   | Sample knowledge base |
 | `app/embeddings.py`    | Embedding client (via LiteLLM) |
 | `app/qdrant_store.py`  | Qdrant collection / upsert / filtered search |
 | `app/ingest.py`        | Embed + load docs |
 | `app/tools.py`         | `search_docs` + `calculator` tools |
 | `app/graph.py`         | LangGraph agent (state, edges, memory) |
+| `app/agent.py`         | Shared runtime (used by both CLI and API) |
 | `app/chat.py`          | Streaming CLI + Langfuse tracing |
+| `app/schemas.py`       | Pydantic request/response models |
+| `app/api.py`           | FastAPI service (`/health`, `/chat`) |
 
 ## Troubleshooting
 

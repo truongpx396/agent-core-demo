@@ -1,4 +1,4 @@
-.PHONY: help up pull-models ingest chat logs down clean
+.PHONY: help up pull-models ingest chat serve logs down clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -16,6 +16,9 @@ ingest:  ## Embed sample docs and upsert them into Qdrant
 
 chat:  ## Start the interactive LangGraph agent CLI
 	python -m app.chat
+
+serve:  ## Start the FastAPI service (http://localhost:8000/docs)
+	uvicorn app.api:app --host 0.0.0.0 --port 8000 --reload
 
 logs:  ## Tail logs from all services
 	docker compose logs -f
