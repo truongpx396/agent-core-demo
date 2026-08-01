@@ -1,0 +1,9 @@
+# Pinned to the langchain 0.3 generation: Langfuse 2.x's LangChain callback
+# handler imports `langchain.callbacks`, which was removed in langchain 1.x.
+langgraph>=0.2.20,<0.3
+langchain>=0.3,<0.4
+langchain-core>=0.3,<0.4
+langchain-openai>=0.2,<0.4
+qdrant-client>=1.11.0
+langfuse>=2.50.0,<3.0.0
+python-dotenv>=1.0.0
