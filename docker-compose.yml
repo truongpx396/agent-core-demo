@@ -26,9 +26,14 @@ services:
       LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      # Admin UI: needs a DATABASE_URL to store users/keys and a master key.
+      DATABASE_URL: postgresql://langfuse:langfuse@postgres:5432/litellm
+      LITELLM_MASTER_KEY: sk-anything       # same as master_key in litellm-config.yaml
+      UI_USERNAME: admin
+      UI_PASSWORD: admin123
     depends_on:
-      ollama:
-        condition: service_started
+      postgres:
+        condition: service_healthy
 
   # --- Vector database ---
   qdrant:
@@ -38,7 +43,7 @@ services:
     volumes:
       - qdrant:/qdrant/storage
 
-  # --- Langfuse tracing UI + its Postgres ---
+  # --- Langfuse tracing UI + its Postgres (also used by LiteLLM) ---
   postgres:
     image: postgres:16
     environment:
@@ -47,6 +52,7 @@ services:
       POSTGRES_DB: langfuse
     volumes:
       - postgres:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro   # creates litellm db on first start
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U langfuse"]
       interval: 10s
