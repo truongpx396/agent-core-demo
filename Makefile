@@ -1,4 +1,4 @@
-.PHONY: help up pull-models ingest chat serve logs down clean
+.PHONY: help up pull-models ingest chat chat-stream serve logs down clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -14,8 +14,11 @@ pull-models:  ## Download the Ollama chat + embedding models
 ingest:  ## Embed sample docs and upsert them into Qdrant
 	python -m app.ingest
 
-chat:  ## Start the interactive LangGraph agent CLI
+chat:  ## Start the interactive LangGraph agent CLI (dev streaming)
 	python -m app.chat
+
+chat-stream:  ## Start the production streaming CLI (astream_events v2, shows tool calls)
+	python -m app.chat --stream
 
 serve:  ## Start the FastAPI service (http://localhost:8000/docs)
 	uvicorn app.api:app --host 0.0.0.0 --port 8000 --reload

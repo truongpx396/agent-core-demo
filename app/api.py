@@ -1,17 +1,21 @@
 """FastAPI service exposing the LangGraph agent over HTTP.
 
 Endpoints:
-- GET  /health -> liveness check
-- POST /chat   -> run one agent turn (Pydantic-validated request/response)
+- GET  /health       -> liveness check
+- POST /chat         -> non-streaming, returns full answer (Pydantic in/out)
+- POST /chat/stream  -> production SSE streaming via astream_events v2
 
 Reuses the exact same agent runtime as the CLI, so conversation memory
 (keyed by thread_id) and Langfuse tracing work identically here.
 
 Run with: `make serve`  (then open http://localhost:8000/docs)
 """
-from fastapi import FastAPI
+import json
 
-from app.agent import answer
+from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
+
+from app.agent import answer, astream_events_turn
 from app.schemas import ChatRequest, ChatResponse, HealthResponse
 
 app = FastAPI(title="Core AI Stack Demo", version="1.0.0")
@@ -26,3 +30,30 @@ def health() -> HealthResponse:
 def chat(req: ChatRequest) -> ChatResponse:
     text = answer(req.message, req.thread_id)
     return ChatResponse(thread_id=req.thread_id, answer=text)
+
+
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest) -> StreamingResponse:
+    """Production SSE endpoint — streams typed events as they happen.
+
+    Each line is a standard Server-Sent Event:
+      data: {"type": "token",      "content": "Hello"}
+      data: {"type": "tool_start", "tool": "search_docs", "args": {...}}
+      data: {"type": "tool_end",   "tool": "search_docs"}
+      data: {"type": "done"}
+
+    The client can consume this with EventSource or any SSE library.
+    Reuse `thread_id` across calls to keep conversation memory.
+    """
+    async def generate():
+        async for event in astream_events_turn(req.message, req.thread_id):
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # disable nginx buffering if behind a proxy
+        },
+    )
