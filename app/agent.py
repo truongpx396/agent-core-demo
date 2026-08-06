@@ -8,6 +8,7 @@ tracing behave identically no matter which front-end is used.
 Production streaming is also provided via `astream_events_turn` — see below.
 """
 import json
+from contextlib import asynccontextmanager
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langfuse.decorators import langfuse_context, observe
@@ -113,16 +114,45 @@ async def astream_events_turn(text: str, thread_id: str):
       {"type": "done"}
       {"type": "error",      "content": "<message>"}
 
-    Consume this in FastAPI with StreamingResponse (SSE) or in the CLI with
-    asyncio.run() to get token-level latency + tool visibility simultaneously.
+    Langfuse tracing: because @observe cannot wrap async generators, we open
+    a trace manually and pass it to the LangChain CallbackHandler so every
+    nested LLM call and tool call is attached to the same trace in Langfuse.
     """
     graph = get_graph()
     _ensure_seeded(graph, thread_id)
 
+    # --- Langfuse: open a trace manually (works with async generators) ---
+    trace = None
+    callbacks = []
+    if CallbackHandler is not None:
+        try:
+            from langfuse import Langfuse
+            lf = Langfuse()
+            trace = lf.trace(
+                name="chat-turn-stream",
+                session_id=thread_id,
+                input=text,
+            )
+            # Attach a callback handler scoped to this trace so all nested
+            # LLM calls and tool calls appear as children in Langfuse.
+            callbacks = [CallbackHandler(
+                trace_id=trace.id,
+                session_id=thread_id,
+            )]
+        except Exception:  # noqa: BLE001 - Langfuse optional
+            pass
+
+    cfg = {
+        "configurable": {"thread_id": thread_id},
+        "callbacks": callbacks,
+        "recursion_limit": 12,
+    }
+
+    final_answer = []
     try:
         async for event in graph.astream_events(
             {"messages": [HumanMessage(content=text)]},
-            config=_config(thread_id),
+            config=cfg,
             version="v2",
         ):
             kind = event["event"]
@@ -132,12 +162,12 @@ async def astream_events_turn(text: str, thread_id: str):
                 chunk = event["data"]["chunk"]
                 content = chunk.content
                 if isinstance(content, list):
-                    # Extract text parts from list-format content
                     content = "".join(
                         p.get("text", "") if isinstance(p, dict) else str(p)
                         for p in content
                     )
                 if content:
+                    final_answer.append(content)
                     yield {"type": "token", "content": content}
 
             elif kind == "on_tool_start":
@@ -151,6 +181,145 @@ async def astream_events_turn(text: str, thread_id: str):
                 yield {"type": "tool_end", "tool": event["name"]}
 
     except Exception as exc:  # noqa: BLE001
+        if trace:
+            trace.update(output=f"error: {exc}", level="ERROR")
         yield {"type": "error", "content": str(exc)}
+    else:
+        if trace:
+            trace.update(output="".join(final_answer))
+    finally:
+        # Flush so the trace is sent even if the caller exits immediately.
+        if trace:
+            try:
+                from langfuse import Langfuse
+                Langfuse().flush()
+            except Exception:  # noqa: BLE001
+                pass
+
+    yield {"type": "done"}
+
+
+# ---------------------------------------------------------------------------
+# Alternative: Langfuse via @asynccontextmanager
+# ---------------------------------------------------------------------------
+# Key difference from astream_events_turn (manual trace):
+#   - Langfuse resource lifecycle (open → flush) is expressed as an
+#     `async with` block via `@asynccontextmanager`, keeping acquisition and
+#     cleanup co-located in one place.
+#   - Reusable: `_langfuse_trace()` can be composed with other async context
+#     managers (e.g. httpx sessions, DB transactions) at the call site.
+#   - Easier to test: swap in a no-op context manager in unit tests without
+#     touching the streaming logic.
+#
+# Both versions yield the same event dict shapes — they are interchangeable
+# from the caller's perspective (FastAPI /chat/stream, CLI, tests).
+
+
+@asynccontextmanager
+async def _langfuse_trace(name: str, session_id: str, input_text: str):
+    """Async context manager that opens a Langfuse trace and flushes on exit.
+
+    Yields (trace_object | None, callbacks_list) to the caller.
+    On exit — whether by normal return or exception — flushes the Langfuse
+    queue so traces aren't lost when the process returns quickly (e.g. tests,
+    one-shot CLI invocations).
+
+    Usage::
+        async with _langfuse_trace("my-trace", thread_id, text) as (trace, cbs):
+            cfg = {"callbacks": cbs, ...}
+            # ... do work ...
+            if trace:
+                trace.update(output="final answer")
+    """
+    trace = None
+    callbacks: list = []
+    if CallbackHandler is not None:
+        try:
+            from langfuse import Langfuse
+            lf = Langfuse()
+            trace = lf.trace(name=name, session_id=session_id, input=input_text)
+            callbacks = [CallbackHandler(trace_id=trace.id, session_id=session_id)]
+        except Exception:  # noqa: BLE001 — Langfuse optional
+            pass
+    try:
+        yield trace, callbacks
+    finally:
+        if trace:
+            try:
+                from langfuse import Langfuse
+                Langfuse().flush()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+async def astream_events_turn_ctx(text: str, thread_id: str):
+    """Production async generator — Langfuse tracing via context-manager.
+
+    Uses `_langfuse_trace` (an `@asynccontextmanager`) so trace open/flush
+    lifecycle is scoped to the `async with` block.  Compare with the sibling
+    `astream_events_turn` which manages the trace object manually.
+
+    Yields the same event shapes as `astream_events_turn`:
+      {"type": "token",      "content": "<text chunk>"}
+      {"type": "tool_start", "tool": "<name>", "args": {…}}
+      {"type": "tool_end",   "tool": "<name>"}
+      {"type": "done"}
+      {"type": "error",      "content": "<message>"}
+    """
+    graph = get_graph()
+    _ensure_seeded(graph, thread_id)
+
+    final_answer: list[str] = []
+
+    # `async with` opens the Langfuse trace and hands us the callbacks list.
+    # On exit (normal or exception) the context manager flushes automatically.
+    async with _langfuse_trace("chat-turn-stream-ctx", thread_id, text) as (
+        trace,
+        callbacks,
+    ):
+        cfg = {
+            "configurable": {"thread_id": thread_id},
+            "callbacks": callbacks,
+            "recursion_limit": 12,
+        }
+
+        try:
+            async for event in graph.astream_events(
+                {"messages": [HumanMessage(content=text)]},
+                config=cfg,
+                version="v2",
+            ):
+                kind = event["event"]
+
+                if kind == "on_chat_model_stream":
+                    chunk = event["data"]["chunk"]
+                    content = chunk.content
+                    if isinstance(content, list):
+                        content = "".join(
+                            p.get("text", "") if isinstance(p, dict) else str(p)
+                            for p in content
+                        )
+                    if content:
+                        final_answer.append(content)
+                        yield {"type": "token", "content": content}
+
+                elif kind == "on_tool_start":
+                    yield {
+                        "type": "tool_start",
+                        "tool": event["name"],
+                        "args": event["data"].get("input", {}),
+                    }
+
+                elif kind == "on_tool_end":
+                    yield {"type": "tool_end", "tool": event["name"]}
+
+        except Exception as exc:  # noqa: BLE001
+            if trace:
+                trace.update(output=f"error: {exc}", level="ERROR")
+            yield {"type": "error", "content": str(exc)}
+            return  # exit before the else-branch and done event
+
+        if trace:
+            trace.update(output="".join(final_answer))
 
     yield {"type": "done"}
