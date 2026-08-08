@@ -34,6 +34,22 @@ This enhanced graph shows **realistic patterns** you'll use in production LangGr
 - **Why**: Safety net shared by both the tool loop and the output-retry loop — an agent can get stuck either way.
 - **Real-world**: Most production agents limit to 5-15 iterations; if not done by then, something's wrong.
 
+### 7. **Error Recovery (`ToolNode(TOOLS, handle_tool_errors=_friendly_tool_error)`)**
+- **Pattern**: A tool exception becomes a `ToolMessage` the agent sees on its next turn, not an unhandled exception that kills the run.
+- **Why**: `search_docs` calls out to Qdrant; `calculator` parses arbitrary expressions. Either can throw. `handle_tool_errors` (a `ToolNode` constructor arg) accepts a callable — ours (`_friendly_tool_error`) turns the exception into a short string, so the agent can apologize, fall back to general knowledge, or try a different tool instead of the whole graph crashing.
+- **Real-world**: Any tool hitting a network service, a flaky API, or unpredictable user-controlled input.
+
+### 8. **Human-in-the-Loop (`human_approval` + `route_after_approval`, gated by `require_approval`)**
+- **Pattern**: Pause the graph before running tool calls and wait for an external decision, using LangGraph's `interrupt()`.
+- **Why**: `interrupt()` suspends execution inside `human_approval` and persists state via the checkpointer; a caller resumes with `graph.invoke(Command(resume=True_or_False), config)`, at which point `interrupt()` returns that value and the node continues. It's gated behind a `require_approval` state flag that defaults to `False`, so `app/chat.py` and `app/api.py` are completely unaffected — tool calls still run immediately for them. **See `app/hitl_demo.py` for a runnable, self-contained example** that opts a thread into approval and drives the pause/resume loop.
+- **Gotcha this demonstrates**: if approval is rejected, you can't just skip straight to `agent` — every pending `tool_call` needs a matching `ToolMessage` response or the next LLM call fails (OpenAI's API requires it). `human_approval` synthesizes a rejection `ToolMessage` per pending call before routing back to `agent`.
+- **Real-world**: Approval gates before sending an email, executing a database write, spending money, or any other side-effecting tool call.
+
+### 9. **Parallel Tool Execution (built into `ToolNode`, no extra code)**
+- **Pattern**: When one LLM turn requests multiple tool calls (e.g. "search the docs AND compute 12*7"), `ToolNode` already runs them concurrently — there's no separate "parallel" node to add.
+- **Why worth knowing**: it's easy to assume you need custom fan-out/fan-in wiring for this; you don't, for the common case of "multiple tool calls in one AI turn." (LangGraph's `Send` API exists for the different case of fanning a single node out over a dynamic list of *graph* branches, which this example doesn't need.)
+- **Real-world**: Any query that naturally needs two independent lookups — the model just needs to be capable of emitting multiple `tool_calls` in one message, which most modern tool-calling models do by default.
+
 ## Graph Flow
 
 ```
@@ -50,8 +66,14 @@ route_after_validation?  ← Decide: is the last HumanMessage non-empty?
        ↓
       agent  ← Think: call LLM with context injected as SystemMessage
        ↓
-      should_continue?  ← Decide: tools? done? max iterations?
-       ├─→ tools  ← Execute tool calls
+      should_continue?  ← Decide: tools? approval needed? done? max iterations?
+       ├─→ human_approval  (only if require_approval=True on input state)
+       │    ↓
+       │   route_after_approval?  ← interrupt() paused here for a decision
+       │    ├─→ tools     (approved)
+       │    └─→ agent     (rejected — with synthesized ToolMessage rejections)
+       │
+       ├─→ tools  ← Execute tool calls (concurrently, if there are several)
        │    ↓
        │    agent  ← Loop back to think again
        │
@@ -69,12 +91,13 @@ route_after_validation?  ← Decide: is the last HumanMessage non-empty?
 
 | Aspect | Basic | Enhanced |
 |--------|-------|----------|
-| **State** | Just messages | Messages + context + iterations |
-| **Nodes** | agent + tools | 7 nodes: validate_input, reject_input, retrieve_context, agent, tools, check_output, retry_output |
-| **Flow** | LLM ↔ tools loop | Multi-stage pipeline with two real conditional gates |
+| **State** | Just messages | Messages + context + iterations + require_approval + approved |
+| **Nodes** | agent + tools | 9 nodes: validate_input, reject_input, retrieve_context, agent, tools, human_approval, check_output, retry_output |
+| **Flow** | LLM ↔ tools loop | Multi-stage pipeline with three real conditional gates |
 | **Context** | LLM decides what to search | Pre-fetched, and actually injected into the LLM call |
-| **Safety** | No loop limit | MAX_ITERATIONS guards both the tool loop and the retry loop |
+| **Safety** | No loop limit | MAX_ITERATIONS guards the tool loop and the retry loop; failing tools return an error message instead of crashing |
 | **Output** | Whatever LLM says | Validated, with an actual retry path back to `agent` |
+| **Tool calls** | Run immediately, one at a time in practice | Run immediately (parallel if the LLM asks for several) *or* pause for human approval, opt-in per call |
 
 ## When to Use Each Pattern
 
@@ -83,14 +106,16 @@ route_after_validation?  ← Decide: is the last HumanMessage non-empty?
 - **State tracking**: When you need loop control, retries, or multi-step logic.
 - **Output gating**: When answer quality matters (not all use-cases need it).
 - **Conditional routing**: When different queries need different paths (most real agents).
+- **Error recovery**: Any tool that can fail — network calls, parsing, third-party APIs. Cheap to add via `handle_tool_errors`, so default to having it.
+- **Human-in-the-loop**: Side-effecting or costly actions (sending, spending, deleting) — not needed for read-only tools like `search_docs`/`calculator`, which is why it's opt-in here rather than always-on.
+- **Parallel tool execution**: Automatic — nothing to opt into, just don't assume you need to build it yourself.
 
 ## Extending Further
 
 In production, you might still add:
-- **Error handling node**: Catch and recover from tool failures gracefully (e.g. if `search_docs` throws or Qdrant is unreachable).
-- **Human-in-the-loop node**: Pause and ask for approval before acting (LangGraph's `interrupt`).
 - **Fallback node**: If primary path fails, try alternative.
 - **Logging/monitoring node**: Track metrics, costs, latency.
 - **Caching node**: Skip redundant searches for repeated queries.
+- **A real HTTP resume flow**: `app/hitl_demo.py` resumes interrupts from a terminal `input()`. Doing this over `app/api.py` instead would mean returning the interrupt payload as an HTTP response and adding a second endpoint (e.g. `POST /chat/resume`) that accepts the decision and calls `Command(resume=...)` — not implemented here to keep the API surface small.
 
 The key insight: **LangGraph lets you make every step of the pipeline explicit and controllable.** That's what separates it from "just LLM + tools."

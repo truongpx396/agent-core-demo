@@ -9,6 +9,12 @@ Shows real-world scenarios beyond basic "LLM + tools" loop:
 - Loop control: max iterations to prevent infinite loops.
 - Output quality gate: a conditional node that can send the answer back to
   the agent for a retry, not a pass-through that always ends.
+- Error recovery: tool exceptions become a message the agent can react to,
+  instead of crashing the whole run.
+- Human-in-the-loop: an opt-in `interrupt()` gate before tool execution
+  (see app/hitl_demo.py for a runnable end-to-end example).
+- Parallel tool execution: ToolNode already runs every tool call from one
+  LLM turn concurrently — no extra code needed (see comment at its node).
 """
 from typing import Annotated, Literal, TypedDict
 
@@ -17,12 +23,14 @@ from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
     SystemMessage,
+    ToolMessage,
 )
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.types import interrupt
 
 from app.config import CHAT_MODEL, OPENAI_API_BASE, OPENAI_API_KEY
 from app.tools import TOOLS, search_docs
@@ -44,10 +52,18 @@ class State(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     context: str  # Enriched context from search (set by retrieve_context).
     iterations: int  # Track how many agent loops we've done.
+    require_approval: bool  # Opt-in: gate tool calls behind human_approval.
+    approved: bool  # Set by human_approval; read by route_after_approval.
 
 
 def _last_human_message(messages: list[BaseMessage]) -> HumanMessage | None:
     return next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
+
+
+def _friendly_tool_error(error: Exception) -> str:
+    """Turned into a ToolMessage by ToolNode's handle_tool_errors instead of
+    propagating and killing the run — the agent sees this on its next turn."""
+    return f"Tool failed ({type(error).__name__}: {error}). Try a different approach."
 
 
 def _make_llm():
@@ -114,12 +130,56 @@ def build_graph():
         return {"messages": [response], "iterations": state.get("iterations", 0) + 1}
 
     # --- Edge fn: after agent, route to tools / output check / abort ---
-    def should_continue(state: State) -> Literal["tools", "check_output", "__end__"]:
-        """Did the LLM call a tool, give a final answer, or hit the loop cap?"""
+    def should_continue(
+        state: State,
+    ) -> Literal["tools", "human_approval", "check_output", "__end__"]:
+        """Did the LLM call a tool, give a final answer, or hit the loop cap?
+
+        When `require_approval` is set on the input state, tool calls are
+        routed through `human_approval` first instead of running directly.
+        It's opt-in (default False) so the existing CLI/API behavior is
+        unchanged unless a caller asks for it — see app/hitl_demo.py.
+        """
         if state.get("iterations", 0) >= MAX_ITERATIONS:
             return "__end__"
         result = tools_condition(state)
-        return result if result == "tools" else "check_output"
+        if result != "tools":
+            return "check_output"
+        return "human_approval" if state.get("require_approval") else "tools"
+
+    # --- Node: human-in-the-loop approval gate (opt-in) ---
+    def human_approval(state: State) -> dict:
+        """Pause the graph and ask a human to approve pending tool calls.
+
+        `interrupt()` suspends execution here (LangGraph persists state via
+        the checkpointer); the caller resumes with
+        `graph.invoke(Command(resume=True_or_False), config)`, at which
+        point `interrupt()` returns that value and this node continues.
+        """
+        last_ai = state["messages"][-1]
+        tool_calls = last_ai.tool_calls or []
+        approved = interrupt(
+            {
+                "action": "approve_tool_calls",
+                "tool_calls": [
+                    {"name": tc["name"], "args": tc["args"]} for tc in tool_calls
+                ],
+            }
+        )
+        if approved:
+            return {"approved": True}
+        # Rejected: every pending tool_call needs a matching ToolMessage or
+        # the next LLM call fails validation (OpenAI requires each tool_call
+        # to get a tool-role response). Synthesize one instead of routing to
+        # "tools" so the agent sees *why* nothing ran and can respond.
+        rejections = [
+            ToolMessage(content="Rejected by human reviewer.", tool_call_id=tc["id"])
+            for tc in tool_calls
+        ]
+        return {"messages": rejections, "approved": False}
+
+    def route_after_approval(state: State) -> Literal["tools", "agent"]:
+        return "tools" if state.get("approved") else "agent"
 
     # --- Node: check output (pass-through; the decision lives below) ---
     def check_output(state: State) -> dict:
@@ -151,7 +211,18 @@ def build_graph():
     builder.add_node("reject_input", reject_input)
     builder.add_node("retrieve_context", retrieve_context)
     builder.add_node("agent", agent)
-    builder.add_node("tools", ToolNode(TOOLS))
+    # Error recovery: a failing tool (e.g. Qdrant unreachable) doesn't crash
+    # the run — handle_tool_errors turns the exception into a ToolMessage so
+    # the agent node sees it on the next turn and can react (apologize, fall
+    # back to general knowledge, etc.) instead of the graph blowing up.
+    #
+    # Parallel tool execution: if the LLM returns multiple tool_calls in one
+    # AIMessage (e.g. "search docs AND compute 12*7"), ToolNode already runs
+    # them concurrently — that's built in, no extra graph wiring required.
+    builder.add_node(
+        "tools", ToolNode(TOOLS, handle_tool_errors=_friendly_tool_error)
+    )
+    builder.add_node("human_approval", human_approval)
     builder.add_node("check_output", check_output)
     builder.add_node("retry_output", retry_output)
 
@@ -161,6 +232,7 @@ def build_graph():
 
     builder.add_edge("retrieve_context", "agent")
     builder.add_conditional_edges("agent", should_continue)
+    builder.add_conditional_edges("human_approval", route_after_approval)
     builder.add_edge("tools", "agent")
 
     builder.add_conditional_edges("check_output", route_after_check)
