@@ -11,3 +11,6 @@ pydantic>=2.5,<3
 pydantic-settings>=2.0,<3
 fastapi>=0.110,<1
 uvicorn>=0.29,<1
+
+# Dev/test — graph unit + integration tests (fake LLM, no live services)
+pytest>=8.0,<9

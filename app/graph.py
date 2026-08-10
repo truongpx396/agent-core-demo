@@ -15,6 +15,12 @@ Shows real-world scenarios beyond basic "LLM + tools" loop:
   (see app/hitl_demo.py for a runnable end-to-end example).
 - Parallel tool execution: ToolNode already runs every tool call from one
   LLM turn concurrently — no extra code needed (see comment at its node).
+
+Nodes and routing functions live at module level (not nested inside
+build_graph) specifically so they can be unit-tested directly — imported
+and called with a hand-built `state` dict — without compiling a graph or
+touching a real LLM. See tests/ for the corresponding test-per-layer
+suite (routing functions, nodes, agent node, full graph scenarios).
 """
 from typing import Annotated, Literal, TypedDict
 
@@ -75,44 +81,54 @@ def _make_llm():
     ).bind_tools(TOOLS)
 
 
-def build_graph():
-    llm = _make_llm()
+# --- Node: validate input (pass-through; the decision lives in the
+# conditional edge below, so this graph can actually terminate early
+# instead of always falling through to retrieve_context/agent). ---
+def validate_input(state: State) -> dict:
+    return {}
 
-    # --- Node: validate input (pass-through; the decision lives in the
-    # conditional edge below, so this graph can actually terminate early
-    # instead of always falling through to retrieve_context/agent). ---
-    def validate_input(state: State) -> dict:
-        return {}
 
-    def route_after_validation(
-        state: State,
-    ) -> Literal["retrieve_context", "reject_input"]:
-        last_human = _last_human_message(state["messages"])
-        if last_human is None or not last_human.content.strip():
-            return "reject_input"
-        return "retrieve_context"
+def route_after_validation(
+    state: State,
+) -> Literal["retrieve_context", "reject_input"]:
+    last_human = _last_human_message(state["messages"])
+    if last_human is None or not last_human.content.strip():
+        return "reject_input"
+    return "retrieve_context"
 
-    def reject_input(state: State) -> dict:
-        # AIMessage, not HumanMessage: the *system* is producing this text,
-        # not the user.
-        return {
-            "messages": [
-                AIMessage(content="I didn't receive a question — please try again.")
-            ]
-        }
 
-    # --- Node: enrich context (multi-step pattern) ---
-    def retrieve_context(state: State) -> dict:
-        """Fetch relevant docs *before* the agent reasons.
+def reject_input(state: State) -> dict:
+    # AIMessage, not HumanMessage: the *system* is producing this text,
+    # not the user.
+    return {
+        "messages": [
+            AIMessage(content="I didn't receive a question — please try again.")
+        ]
+    }
 
-        In production, you might fetch from a database, call an API, etc.
-        """
-        last_human = _last_human_message(state["messages"])
-        if last_human is None:
-            return {"context": ""}
-        return {"context": search_docs(last_human.content)}
 
-    # --- Node: agent ---
+# --- Node: enrich context (multi-step pattern) ---
+def retrieve_context(state: State) -> dict:
+    """Fetch relevant docs *before* the agent reasons.
+
+    In production, you might fetch from a database, call an API, etc.
+    """
+    last_human = _last_human_message(state["messages"])
+    if last_human is None:
+        return {"context": ""}
+    return {"context": search_docs(last_human.content)}
+
+
+# --- Node: agent ---
+def make_agent_node(llm):
+    """Factory, not a plain function, because `agent` needs an LLM client.
+
+    Tests build it with a fake (e.g. GenericFakeChatModel) via
+    `make_agent_node(fake_llm)(state)` — see tests/test_agent_node.py — so the
+    node's message-assembly logic (context injection, iteration bump) is
+    covered without a network call to a real model.
+    """
+
     def agent(state: State) -> dict:
         """Call the LLM, injecting retrieved context as an extra SystemMessage.
 
@@ -129,82 +145,102 @@ def build_graph():
         response = llm.invoke(messages)
         return {"messages": [response], "iterations": state.get("iterations", 0) + 1}
 
-    # --- Edge fn: after agent, route to tools / output check / abort ---
-    def should_continue(
-        state: State,
-    ) -> Literal["tools", "human_approval", "check_output", "__end__"]:
-        """Did the LLM call a tool, give a final answer, or hit the loop cap?
+    return agent
 
-        When `require_approval` is set on the input state, tool calls are
-        routed through `human_approval` first instead of running directly.
-        It's opt-in (default False) so the existing CLI/API behavior is
-        unchanged unless a caller asks for it — see app/hitl_demo.py.
-        """
-        if state.get("iterations", 0) >= MAX_ITERATIONS:
-            return "__end__"
-        result = tools_condition(state)
-        if result != "tools":
-            return "check_output"
-        return "human_approval" if state.get("require_approval") else "tools"
 
-    # --- Node: human-in-the-loop approval gate (opt-in) ---
-    def human_approval(state: State) -> dict:
-        """Pause the graph and ask a human to approve pending tool calls.
+# --- Edge fn: after agent, route to tools / output check / abort ---
+def should_continue(
+    state: State,
+) -> Literal["tools", "human_approval", "check_output", "__end__"]:
+    """Did the LLM call a tool, give a final answer, or hit the loop cap?
 
-        `interrupt()` suspends execution here (LangGraph persists state via
-        the checkpointer); the caller resumes with
-        `graph.invoke(Command(resume=True_or_False), config)`, at which
-        point `interrupt()` returns that value and this node continues.
-        """
-        last_ai = state["messages"][-1]
-        tool_calls = last_ai.tool_calls or []
-        approved = interrupt(
-            {
-                "action": "approve_tool_calls",
-                "tool_calls": [
-                    {"name": tc["name"], "args": tc["args"]} for tc in tool_calls
-                ],
-            }
-        )
-        if approved:
-            return {"approved": True}
-        # Rejected: every pending tool_call needs a matching ToolMessage or
-        # the next LLM call fails validation (OpenAI requires each tool_call
-        # to get a tool-role response). Synthesize one instead of routing to
-        # "tools" so the agent sees *why* nothing ran and can respond.
-        rejections = [
-            ToolMessage(content="Rejected by human reviewer.", tool_call_id=tc["id"])
-            for tc in tool_calls
-        ]
-        return {"messages": rejections, "approved": False}
-
-    def route_after_approval(state: State) -> Literal["tools", "agent"]:
-        return "tools" if state.get("approved") else "agent"
-
-    # --- Node: check output (pass-through; the decision lives below) ---
-    def check_output(state: State) -> dict:
-        return {}
-
-    def route_after_check(state: State) -> Literal["retry_output", "__end__"]:
-        last = state["messages"][-1]
-        content = getattr(last, "content", "") or ""
-        if isinstance(content, str) and len(content) < MIN_ANSWER_LENGTH:
-            return "retry_output"
+    When `require_approval` is set on the input state, tool calls are
+    routed through `human_approval` first instead of running directly.
+    It's opt-in (default False) so the existing CLI/API behavior is
+    unchanged unless a caller asks for it — see app/hitl_demo.py.
+    """
+    if state.get("iterations", 0) >= MAX_ITERATIONS:
         return "__end__"
+    result = tools_condition(state)
+    if result != "tools":
+        return "check_output"
+    return "human_approval" if state.get("require_approval") else "tools"
 
-    def retry_output(state: State) -> dict:
-        """Send the agent back with corrective feedback instead of just
-        looping on the exact same messages. MAX_ITERATIONS in should_continue
-        still bounds the total number of retries."""
-        return {
-            "messages": [
-                HumanMessage(
-                    content="That answer was too short — please give a fuller answer."
-                )
-            ]
+
+# --- Node: human-in-the-loop approval gate (opt-in) ---
+def human_approval(state: State) -> dict:
+    """Pause the graph and ask a human to approve pending tool calls.
+
+    `interrupt()` suspends execution here (LangGraph persists state via
+    the checkpointer); the caller resumes with
+    `graph.invoke(Command(resume=True_or_False), config)`, at which
+    point `interrupt()` returns that value and this node continues.
+    """
+    last_ai = state["messages"][-1]
+    tool_calls = last_ai.tool_calls or []
+    approved = interrupt(
+        {
+            "action": "approve_tool_calls",
+            "tool_calls": [
+                {"name": tc["name"], "args": tc["args"]} for tc in tool_calls
+            ],
         }
+    )
+    if approved:
+        return {"approved": True}
+    # Rejected: every pending tool_call needs a matching ToolMessage or
+    # the next LLM call fails validation (OpenAI requires each tool_call
+    # to get a tool-role response). Synthesize one instead of routing to
+    # "tools" so the agent sees *why* nothing ran and can respond.
+    rejections = [
+        ToolMessage(content="Rejected by human reviewer.", tool_call_id=tc["id"])
+        for tc in tool_calls
+    ]
+    return {"messages": rejections, "approved": False}
 
-    # --- Build the graph ---
+
+def route_after_approval(state: State) -> Literal["tools", "agent"]:
+    return "tools" if state.get("approved") else "agent"
+
+
+# --- Node: check output (pass-through; the decision lives below) ---
+def check_output(state: State) -> dict:
+    return {}
+
+
+def route_after_check(state: State) -> Literal["retry_output", "__end__"]:
+    last = state["messages"][-1]
+    content = getattr(last, "content", "") or ""
+    if isinstance(content, str) and len(content) < MIN_ANSWER_LENGTH:
+        return "retry_output"
+    return "__end__"
+
+
+def retry_output(state: State) -> dict:
+    """Send the agent back with corrective feedback instead of just
+    looping on the exact same messages. MAX_ITERATIONS in should_continue
+    still bounds the total number of retries."""
+    return {
+        "messages": [
+            HumanMessage(
+                content="That answer was too short — please give a fuller answer."
+            )
+        ]
+    }
+
+
+# --- Build the graph ---
+def build_graph(llm=None):
+    """Compile the graph.
+
+    `llm` defaults to the real ChatOpenAI client (`_make_llm()`), but tests
+    pass a fake chat model here to run full graph scenarios — reject path,
+    tool loop, HITL approve/reject, iteration cap, retry — without hitting
+    a live model. See tests/test_graph_integration.py.
+    """
+    llm = llm or _make_llm()
+    agent = make_agent_node(llm)
+
     builder = StateGraph(State)
 
     builder.add_node("validate_input", validate_input)

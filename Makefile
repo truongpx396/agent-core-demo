@@ -1,4 +1,4 @@
-.PHONY: help up pull-models ingest chat chat-stream serve logs down clean
+.PHONY: help up pull-models ingest chat chat-stream serve test logs down clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -22,6 +22,9 @@ chat-stream:  ## Start the production streaming CLI (astream_events v2, shows to
 
 serve:  ## Start the FastAPI service (http://localhost:8000/docs)
 	uvicorn app.api:app --host 0.0.0.0 --port 8000 --reload
+
+test:  ## Run the graph test suite (no live services needed — fake LLM, no Qdrant)
+	pytest -q
 
 logs:  ## Tail logs from all services
 	docker compose logs -f
