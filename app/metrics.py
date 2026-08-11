@@ -12,7 +12,8 @@ Two ways these get incremented:
     `config["callbacks"]` in app/agent.py the same way the Langfuse handler
     is — so it observes every tool run without any instrumentation inside
     app/graph.py's node functions.
-  - Everything else (retries, HITL decisions, budget trips, request
+  - Everything else (retries, HITL decisions, budget trips, context-
+    retrieval degradations, history compaction, request
     outcome/latency/iterations/tokens): incremented directly at the point
     the event happens, in app/graph.py's nodes and app/agent.py's turn
     boundary. These can happen more than once per turn (e.g. two HITL
@@ -76,6 +77,16 @@ agent_tool_budget_exceeded_total = Counter(
 agent_token_budget_exceeded_total = Counter(
     "agent_token_budget_exceeded_total",
     "Turns cut short by MAX_TOKENS_PER_TURN",
+)
+
+agent_context_retrieval_degraded_total = Counter(
+    "agent_context_retrieval_degraded_total",
+    "retrieve_context calls that failed and degraded to no pre-fetched context",
+)
+
+agent_history_compacted_total = Counter(
+    "agent_history_compacted_total",
+    "Turns where conversation history was trimmed to MAX_HISTORY_TURNS",
 )
 
 

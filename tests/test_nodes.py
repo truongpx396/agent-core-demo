@@ -5,7 +5,7 @@ is the only node that needs one.
 """
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from app import graph
+from app import graph, metrics
 
 
 def test_reject_input_returns_ai_message_not_human():
@@ -40,6 +40,25 @@ def test_retrieve_context_no_human_message_skips_search(monkeypatch):
 
     result = graph.retrieve_context({"messages": [AIMessage(content="hi")]})
     assert result == {"context": ""}
+
+
+def test_retrieve_context_degrades_to_empty_when_search_docs_raises(monkeypatch):
+    """Reliability policy: retrieve_context is enrichment, not the agent's
+    only path to this data (the LLM can still call search_docs as a tool),
+    so a Qdrant/embedding outage must degrade to no pre-fetched context
+    instead of crashing the whole turn — see its docstring in app/graph.py."""
+
+    def failing_search_docs(query):
+        raise RuntimeError("Qdrant unreachable")
+
+    monkeypatch.setattr(graph, "search_docs", failing_search_docs)
+    before = metrics.agent_context_retrieval_degraded_total._value.get()
+
+    state = {"messages": [HumanMessage(content="what is a checkpointer?")]}
+    result = graph.retrieve_context(state)
+
+    assert result == {"context": ""}
+    assert metrics.agent_context_retrieval_degraded_total._value.get() == before + 1
 
 
 def test_check_output_is_a_passthrough():

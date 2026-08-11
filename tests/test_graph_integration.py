@@ -16,7 +16,14 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from app.graph import MAX_ITERATIONS, MAX_TOKENS_PER_TURN, MAX_TOOL_CALLS_PER_TURN, build_graph
+from app import graph
+from app.graph import (
+    AGENT_RETRY_POLICY,
+    MAX_ITERATIONS,
+    MAX_TOKENS_PER_TURN,
+    MAX_TOOL_CALLS_PER_TURN,
+    build_graph,
+)
 
 
 def _config():
@@ -210,6 +217,54 @@ class TestToolCallBudgetPath:
             config=_config(),
         )
         assert "equals 2" in result["messages"][-1].content
+
+
+class TestReliabilityPolicy:
+    def test_agent_node_has_the_retry_policy_wired(self):
+        """Structural check that AGENT_RETRY_POLICY is actually attached to
+        the `agent` node in the compiled graph, not just defined and
+        unused — a real retry-triggering test would need to sleep through
+        RetryPolicy's backoff, which isn't worth the flakiness/runtime for
+        what's otherwise a one-line wiring fact."""
+        g = build_graph(llm=_fake_llm(AIMessage(content="anything")))
+        assert g.nodes["agent"].retry_policy == AGENT_RETRY_POLICY
+
+    def test_retrieve_context_and_deterministic_nodes_have_no_retry_policy(self):
+        """`retrieve_context` degrades internally instead (see its
+        docstring); everything else is a pure function of state where a
+        retry would just repeat the same bug — see GRAPH_PATTERNS.md
+        pattern 7."""
+        g = build_graph(llm=_fake_llm(AIMessage(content="anything")))
+        for name in ("retrieve_context", "check_output", "too_many_tool_calls"):
+            assert g.nodes[name].retry_policy is None
+
+
+class TestContextRetrievalDegradation:
+    def test_search_docs_outage_degrades_instead_of_crashing_the_turn(
+        self, monkeypatch
+    ):
+        """retrieve_context's search_docs call must never take the whole
+        turn down with it — see its reliability-policy docstring in
+        app/graph.py. The agent still answers, just without pre-fetched
+        context (and could still retry search_docs itself as a tool)."""
+
+        def failing_search_docs(query):
+            raise RuntimeError("Qdrant unreachable")
+
+        monkeypatch.setattr(graph, "search_docs", failing_search_docs)
+
+        llm = _fake_llm(
+            AIMessage(content="A general-knowledge answer, no context needed.")
+        )
+        g = build_graph(llm=llm)
+        result = g.invoke(
+            {"messages": [HumanMessage(content="what is a checkpointer?")]},
+            config=_config(),
+        )
+        assert (
+            result["messages"][-1].content
+            == "A general-knowledge answer, no context needed."
+        )
 
 
 class TestTokenBudgetPath:

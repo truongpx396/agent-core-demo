@@ -75,6 +75,26 @@ class TestNodeLevelMetrics:
         too_many_tool_calls({"messages": [ai]})
         assert _count(metrics.agent_tool_budget_exceeded_total) == before + 1
 
+    def test_retrieve_context_failure_increments_degraded_counter(self, monkeypatch):
+        def failing_search_docs(query):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(graph, "search_docs", failing_search_docs)
+        before = _count(metrics.agent_context_retrieval_degraded_total)
+        graph.retrieve_context({"messages": [HumanMessage(content="hi")]})
+        assert _count(metrics.agent_context_retrieval_degraded_total) == before + 1
+
+    def test_history_trim_increments_compacted_counter(self):
+        from app.graph import MAX_HISTORY_TURNS
+
+        messages = [
+            HumanMessage(content=f"q{i}", id=f"h{i}")
+            for i in range(MAX_HISTORY_TURNS + 1)
+        ]
+        before = _count(metrics.agent_history_compacted_total)
+        graph.validate_input({"messages": messages})
+        assert _count(metrics.agent_history_compacted_total) == before + 1
+
 
 class TestToolCallbackMetrics:
     """MetricsCallbackHandler.on_tool_start / on_tool_error fire from
