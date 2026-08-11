@@ -40,6 +40,7 @@ from langgraph.types import interrupt
 
 from app.config import CHAT_MODEL, OPENAI_API_BASE, OPENAI_API_KEY
 from app.tools import TOOLS, search_docs
+from app import metrics
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant. Use the search_docs tool to answer questions "
@@ -48,8 +49,10 @@ SYSTEM_PROMPT = (
     "Be concise and direct."
 )
 
-MAX_ITERATIONS = 10
+MAX_ITERATIONS = 10  # safety budget: LLM loop iterations, per turn (see validate_input's reset)
 MIN_ANSWER_LENGTH = 10
+MAX_TOOL_CALLS_PER_TURN = 5  # safety budget: simultaneous tool calls from one LLM turn
+MAX_TOKENS_PER_TURN = 8000  # safety budget: cumulative token usage, per turn (0 if the model/proxy doesn't report usage_metadata — fails open, not closed)
 
 
 class State(TypedDict):
@@ -57,7 +60,8 @@ class State(TypedDict):
 
     messages: Annotated[list[BaseMessage], add_messages]
     context: str  # Enriched context from search (set by retrieve_context).
-    iterations: int  # Track how many agent loops we've done.
+    iterations: int  # Track how many agent loops we've done *this turn*.
+    total_tokens: int  # Cumulative token usage *this turn* (see agent()).
     require_approval: bool  # Opt-in: gate tool calls behind human_approval.
     approved: bool  # Set by human_approval; read by route_after_approval.
 
@@ -81,11 +85,18 @@ def _make_llm():
     ).bind_tools(TOOLS)
 
 
-# --- Node: validate input (pass-through; the decision lives in the
-# conditional edge below, so this graph can actually terminate early
-# instead of always falling through to retrieve_context/agent). ---
+# --- Node: validate input. Also resets the per-turn safety budgets
+# (iterations, total_tokens): validate_input is the fixed entry point for
+# every graph.invoke() call (START -> validate_input, always), but is
+# *not* re-run when resuming a paused HITL turn via Command(resume=...) —
+# that resumes inside human_approval directly. So this runs exactly once
+# per conversation turn, which is what "per turn" budgets need: without
+# this reset, `iterations`/`total_tokens` persist in the checkpointed
+# state and keep climbing turn over turn, so MAX_ITERATIONS would
+# eventually end the graph on a random future turn regardless of how much
+# work that turn actually did.
 def validate_input(state: State) -> dict:
-    return {}
+    return {"iterations": 0, "total_tokens": 0}
 
 
 def route_after_validation(
@@ -143,16 +154,43 @@ def make_agent_node(llm):
             messages.append(SystemMessage(content=f"Relevant documents:\n{context}"))
 
         response = llm.invoke(messages)
-        return {"messages": [response], "iterations": state.get("iterations", 0) + 1}
+
+        # Token budget bookkeeping: usage_metadata is populated when the
+        # underlying model/proxy reports it (not guaranteed — e.g. depends
+        # on Ollama/LiteLLM passing usage through). Missing usage just
+        # means the token budget never trips, not an error.
+        usage = getattr(response, "usage_metadata", None) or {}
+        total_tokens = state.get("total_tokens", 0) + usage.get("total_tokens", 0)
+
+        return {
+            "messages": [response],
+            "iterations": state.get("iterations", 0) + 1,
+            "total_tokens": total_tokens,
+        }
 
     return agent
+
+
+def _reject_tool_calls(tool_calls: list, reason: str) -> list[ToolMessage]:
+    """Every pending tool_call needs a matching ToolMessage, or the next LLM
+    call fails OpenAI's tool-response validation — shared by
+    human_approval's rejection path and too_many_tool_calls below, which
+    both need to abort a batch of tool calls without running them."""
+    return [ToolMessage(content=reason, tool_call_id=tc["id"]) for tc in tool_calls]
 
 
 # --- Edge fn: after agent, route to tools / output check / abort ---
 def should_continue(
     state: State,
-) -> Literal["tools", "human_approval", "check_output", "__end__"]:
-    """Did the LLM call a tool, give a final answer, or hit the loop cap?
+) -> Literal[
+    "tools", "human_approval", "too_many_tool_calls", "check_output", "__end__"
+]:
+    """Did the LLM call a tool, give a final answer, or hit a safety budget?
+
+    Checked in order: the iteration cap and token cap are turn-wide safety
+    nets (checked first, regardless of what the LLM just said); then
+    whether this is a tool call at all; then whether it's *too many* tool
+    calls at once; then whether it needs human approval before running.
 
     When `require_approval` is set on the input state, tool calls are
     routed through `human_approval` first instead of running directly.
@@ -161,10 +199,31 @@ def should_continue(
     """
     if state.get("iterations", 0) >= MAX_ITERATIONS:
         return "__end__"
+    if state.get("total_tokens", 0) >= MAX_TOKENS_PER_TURN:
+        metrics.agent_token_budget_exceeded_total.inc()
+        return "__end__"
     result = tools_condition(state)
     if result != "tools":
         return "check_output"
+    tool_calls = state["messages"][-1].tool_calls or []
+    if len(tool_calls) > MAX_TOOL_CALLS_PER_TURN:
+        return "too_many_tool_calls"
     return "human_approval" if state.get("require_approval") else "tools"
+
+
+# --- Node: safety budget — abort a turn where the LLM asked for more tool
+# calls at once than MAX_TOOL_CALLS_PER_TURN allows (e.g. a confused model
+# fanning out into dozens of searches), instead of running all of them. ---
+def too_many_tool_calls(state: State) -> dict:
+    last_ai = state["messages"][-1]
+    tool_calls = last_ai.tool_calls or []
+    metrics.agent_tool_budget_exceeded_total.inc()
+    rejections = _reject_tool_calls(
+        tool_calls,
+        f"Too many tool calls requested at once (limit: {MAX_TOOL_CALLS_PER_TURN}). "
+        "Please make fewer, more targeted tool calls.",
+    )
+    return {"messages": rejections}
 
 
 # --- Node: human-in-the-loop approval gate (opt-in) ---
@@ -187,15 +246,10 @@ def human_approval(state: State) -> dict:
         }
     )
     if approved:
+        metrics.agent_human_approval_total.labels(decision="approved").inc()
         return {"approved": True}
-    # Rejected: every pending tool_call needs a matching ToolMessage or
-    # the next LLM call fails validation (OpenAI requires each tool_call
-    # to get a tool-role response). Synthesize one instead of routing to
-    # "tools" so the agent sees *why* nothing ran and can respond.
-    rejections = [
-        ToolMessage(content="Rejected by human reviewer.", tool_call_id=tc["id"])
-        for tc in tool_calls
-    ]
+    metrics.agent_human_approval_total.labels(decision="rejected").inc()
+    rejections = _reject_tool_calls(tool_calls, "Rejected by human reviewer.")
     return {"messages": rejections, "approved": False}
 
 
@@ -220,6 +274,7 @@ def retry_output(state: State) -> dict:
     """Send the agent back with corrective feedback instead of just
     looping on the exact same messages. MAX_ITERATIONS in should_continue
     still bounds the total number of retries."""
+    metrics.agent_retry_total.inc()
     return {
         "messages": [
             HumanMessage(
@@ -259,6 +314,10 @@ def build_graph(llm=None):
         "tools", ToolNode(TOOLS, handle_tool_errors=_friendly_tool_error)
     )
     builder.add_node("human_approval", human_approval)
+    # Safety budget node: rejects an over-large batch of tool calls the
+    # same way human_approval rejects a disapproved one, then loops back
+    # to agent — see MAX_TOOL_CALLS_PER_TURN in should_continue.
+    builder.add_node("too_many_tool_calls", too_many_tool_calls)
     builder.add_node("check_output", check_output)
     builder.add_node("retry_output", retry_output)
 
@@ -270,6 +329,7 @@ def build_graph(llm=None):
     builder.add_conditional_edges("agent", should_continue)
     builder.add_conditional_edges("human_approval", route_after_approval)
     builder.add_edge("tools", "agent")
+    builder.add_edge("too_many_tool_calls", "agent")
 
     builder.add_conditional_edges("check_output", route_after_check)
     builder.add_edge("retry_output", "agent")

@@ -50,12 +50,37 @@ This enhanced graph shows **realistic patterns** you'll use in production LangGr
 - **Why worth knowing**: it's easy to assume you need custom fan-out/fan-in wiring for this; you don't, for the common case of "multiple tool calls in one AI turn." (LangGraph's `Send` API exists for the different case of fanning a single node out over a dynamic list of *graph* branches, which this example doesn't need.)
 - **Real-world**: Any query that naturally needs two independent lookups — the model just needs to be capable of emitting multiple `tool_calls` in one message, which most modern tool-calling models do by default.
 
+### 10. **Multi-Layer Safety Budgets**
+- **Pattern**: `MAX_ITERATIONS` alone isn't a safety net, it's one layer of one. A production agent needs several independent budgets, each catching a failure mode the others can't:
+
+  | Layer | Where | Catches |
+  |-------|-------|---------|
+  | `MAX_ITERATIONS` (agent loop cap) | `should_continue` | Model stuck calling tools forever |
+  | `MAX_TOOL_CALLS_PER_TURN` | `should_continue` → `too_many_tool_calls` | One turn fanning out into dozens of tool calls at once |
+  | `MAX_TOKENS_PER_TURN` | `should_continue`, tracked in `agent()` via `response.usage_metadata` | A single turn burning an unbounded amount of (real) money, even with few iterations |
+  | `TOOL_TIMEOUT_SECONDS` (`app/tools.py`) | Wraps each tool call in a worker-thread `.result(timeout=...)` | A hung Qdrant/embedding call, or a pathological input like `2**99999999999` |
+  | `REQUEST_TIMEOUT_SECONDS` (`app/agent.py`) | Wraps the whole turn (thread-pool for the sync path, `asyncio.wait_for` per event for the streaming paths) | The whole conversation turn — several slow-but-not-hung steps adding up — taking too long end to end |
+  | `recursion_limit=12` (`app/agent.py::_config`) | LangGraph's own graph-step cap | A routing bug causing a node cycle the other budgets don't bound |
+
+- **Why layered, not just one**: each budget bounds a different thing (loop count, fan-out width, spend, one call's latency, the whole turn's latency, graph structure). A single `MAX_ITERATIONS` check doesn't stop a model from requesting 40 tool calls in one turn, or a Qdrant call from hanging for 5 minutes on iteration 1.
+- **Gotcha this fixed**: `iterations` (and now `total_tokens`) are per-turn budgets, but the checkpointer persists `State` across every `graph.invoke()` on a thread. Without an explicit reset, they silently accumulate across the *entire conversation* — a thread would eventually hit `MAX_ITERATIONS` on some unrelated future turn regardless of that turn's actual work. `validate_input` (the fixed entry node for every turn, but *not* re-run when resuming a paused HITL turn) resets both to `0` — see its docstring.
+- **Tool-call budget mechanics**: rejecting an over-large batch reuses the exact `ToolMessage`-per-pending-call pattern `human_approval` already needed (factored into `_reject_tool_calls`), then loops back to `agent` so the model can retry with fewer calls — same shape as a rejected HITL approval.
+- **Real-world**: Any agent given a spend-sensitive model, tools that call external services, or exposure to adversarial/confused inputs — i.e. basically any agent that isn't a personal toy.
+
+### 11. **Custom Metrics (`app/metrics.py`, `GET /metrics`)**
+- **Pattern**: Prometheus counters/histograms recording what's happening across turns, exposed for scraping — not a replacement for Langfuse's per-call tracing (which answers "what happened in *this* run"), but the aggregate view Langfuse doesn't give you ("how often does this happen, across everyone").
+- **Two wiring mechanisms, chosen per metric**:
+  - **`MetricsCallbackHandler`** (`config["callbacks"]`, same slot Langfuse's handler already uses): tool-call counts and tool-error counts. Fires from generic LangChain callback hooks (`on_tool_start`/`on_tool_error`), so zero instrumentation inside `app/graph.py`'s node functions.
+  - **Direct `.inc()` calls** inside `retry_output`, `human_approval`, and `too_many_tool_calls`: these can fire more than once per turn (e.g. two HITL round-trips in one conversation turn) or need to record a *decision* (approved vs. rejected), which a generic callback can't reliably distinguish without fragile run-id/node-name correlation — see `app/metrics.py`'s module docstring for why.
+- **Why this doesn't fight the test suite**: incrementing a global `Counter` is a one-line side effect, not a new function argument — existing node-level unit tests still assert on return values exactly as before (see `tests/test_metrics.py` for the tests that *do* assert on the counters, using before/after deltas since these are global, process-wide counters).
+- **Real-world**: Wire the Prometheus endpoint into whatever's already scraping your other services; the rates/percentiles (retry rate, tool-error rate, p95 latency) are PromQL queries over these raw counters, not stored directly.
+
 ## Graph Flow
 
 ```
 START
   ↓
-validate_input
+validate_input  ← also resets iterations/total_tokens to 0 for this turn
   ↓
 route_after_validation?  ← Decide: is the last HumanMessage non-empty?
   ├─→ reject_input  ← AIMessage explaining the problem
@@ -66,7 +91,11 @@ route_after_validation?  ← Decide: is the last HumanMessage non-empty?
        ↓
       agent  ← Think: call LLM with context injected as SystemMessage
        ↓
-      should_continue?  ← Decide: tools? approval needed? done? max iterations?
+      should_continue?  ← Decide: tools? too many at once? approval needed? done? over budget?
+       ├─→ too_many_tool_calls  (> MAX_TOOL_CALLS_PER_TURN at once)
+       │    ↓
+       │    agent  ← Loop back with synthesized ToolMessage rejections
+       │
        ├─→ human_approval  (only if require_approval=True on input state)
        │    ↓
        │   route_after_approval?  ← interrupt() paused here for a decision
@@ -91,13 +120,15 @@ route_after_validation?  ← Decide: is the last HumanMessage non-empty?
 
 | Aspect | Basic | Enhanced |
 |--------|-------|----------|
-| **State** | Just messages | Messages + context + iterations + require_approval + approved |
-| **Nodes** | agent + tools | 9 nodes: validate_input, reject_input, retrieve_context, agent, tools, human_approval, check_output, retry_output |
-| **Flow** | LLM ↔ tools loop | Multi-stage pipeline with three real conditional gates |
+| **State** | Just messages | Messages + context + iterations + total_tokens + require_approval + approved |
+| **Nodes** | agent + tools | 10 nodes: validate_input, reject_input, retrieve_context, agent, tools, human_approval, too_many_tool_calls, check_output, retry_output |
+| **Flow** | LLM ↔ tools loop | Multi-stage pipeline with four real conditional gates |
 | **Context** | LLM decides what to search | Pre-fetched, and actually injected into the LLM call |
-| **Safety** | No loop limit | MAX_ITERATIONS guards the tool loop and the retry loop; failing tools return an error message instead of crashing |
+| **Safety** | No loop limit | Six independent budgets (see pattern 10): iteration cap, tool-call-per-turn cap, token-per-turn cap, tool timeout, request timeout, graph recursion limit — plus failing tools return an error message instead of crashing |
 | **Output** | Whatever LLM says | Validated, with an actual retry path back to `agent` |
-| **Tool calls** | Run immediately, one at a time in practice | Run immediately (parallel if the LLM asks for several) *or* pause for human approval, opt-in per call |
+| **Tool calls** | Run immediately, one at a time in practice | Run immediately (parallel if the LLM asks for several) *or* pause for human approval, opt-in per call — capped per turn either way |
+| **Observability** | None | Langfuse tracing (per-call) + Prometheus metrics at `GET /metrics` (aggregate) |
+| **Regression detection** | None | `tests/` (fake-LLM, routing/logic) + `app/eval.py` golden dataset (real model, behavior) |
 
 ## When to Use Each Pattern
 
@@ -109,13 +140,17 @@ route_after_validation?  ← Decide: is the last HumanMessage non-empty?
 - **Error recovery**: Any tool that can fail — network calls, parsing, third-party APIs. Cheap to add via `handle_tool_errors`, so default to having it.
 - **Human-in-the-loop**: Side-effecting or costly actions (sending, spending, deleting) — not needed for read-only tools like `search_docs`/`calculator`, which is why it's opt-in here rather than always-on.
 - **Parallel tool execution**: Automatic — nothing to opt into, just don't assume you need to build it yourself.
+- **Multi-layer safety budgets**: Any agent talking to a real (costly, sometimes-slow) model or tools reachable over a network — which is nearly all of them. Tune the constants (`MAX_TOOL_CALLS_PER_TURN`, `MAX_TOKENS_PER_TURN`, `TOOL_TIMEOUT_SECONDS`, `REQUEST_TIMEOUT_SECONDS`) to the model/traffic; the *pattern* (several independent, narrowly-scoped budgets rather than one big one) is what matters.
+- **Custom metrics**: As soon as this agent has more than one user — a single Langfuse trace tells you about one run; metrics tell you whether last week's prompt change moved the retry rate.
+- **Golden-dataset evaluation**: As soon as you're tempted to change the system prompt, swap models, or touch retrieval "just to see" — `app/eval.py` turns that from a vibe check into a before/after comparison.
 
 ## Extending Further
 
 In production, you might still add:
 - **Fallback node**: If primary path fails, try alternative.
-- **Logging/monitoring node**: Track metrics, costs, latency.
 - **Caching node**: Skip redundant searches for repeated queries.
 - **A real HTTP resume flow**: `app/hitl_demo.py` resumes interrupts from a terminal `input()`. Doing this over `app/api.py` instead would mean returning the interrupt payload as an HTTP response and adding a second endpoint (e.g. `POST /chat/resume`) that accepts the decision and calls `Command(resume=...)` — not implemented here to keep the API surface small.
+- **A real per-model cost budget**: `MAX_TOKENS_PER_TURN` bounds token *count*; turning that into a dollar budget needs a price-per-model lookup table, which is easy to get subtly wrong (pricing changes, per-provider differences) and was left out here as YAGNI for a local demo.
+- **Grafana dashboards / alerting on the `/metrics` endpoint**: this repo exposes the metrics; wiring up a scrape config, dashboards, and alert rules is the natural next step once there's a real Prometheus instance to point at it.
 
 The key insight: **LangGraph lets you make every step of the pipeline explicit and controllable.** That's what separates it from "just LLM + tools."

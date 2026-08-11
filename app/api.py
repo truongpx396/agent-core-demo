@@ -12,8 +12,9 @@ Run with: `make serve`  (then open http://localhost:8000/docs)
 """
 import json
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.responses import StreamingResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.agent import answer, astream_events_turn
 from app.schemas import ChatRequest, ChatResponse, HealthResponse
@@ -24,6 +25,12 @@ app = FastAPI(title="Core AI Stack Demo", version="1.0.0")
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse()
+
+
+@app.get("/metrics")
+def metrics_endpoint() -> Response:
+    """Prometheus scrape target — see app/metrics.py for what's recorded."""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/chat", response_model=ChatResponse)

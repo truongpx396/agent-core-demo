@@ -7,12 +7,17 @@ tracing behave identically no matter which front-end is used.
 
 Production streaming is also provided via `astream_events_turn` — see below.
 """
+import asyncio
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import asynccontextmanager
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langfuse.decorators import langfuse_context, observe
 
+from app import metrics
 from app.graph import SYSTEM_PROMPT, build_graph
 
 try:
@@ -22,6 +27,52 @@ except Exception:  # noqa: BLE001 - Langfuse optional if keys unset
 
 _graph = None
 _seeded: set[str] = set()
+
+# Safety budget: bound total wall-clock time per turn, beneath which
+# MAX_ITERATIONS (LLM loop cap) and recursion_limit (graph step cap, in
+# _config() below) already apply. This is the outermost layer — a turn
+# stuck inside a single slow LLM/tool call never reaches those.
+REQUEST_TIMEOUT_SECONDS = 60
+# Soft-timeout executor for the sync `answer()` path (used by POST /chat):
+# Python can't forcibly kill a running thread, so this bounds how long the
+# *caller* waits, not how long graph.invoke() keeps running in the
+# background after that.
+_REQUEST_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="request-timeout")
+
+
+def _record_turn_metrics(elapsed: float, outcome: str, state: dict | None = None) -> None:
+    metrics.agent_requests_total.labels(outcome=outcome).inc()
+    metrics.agent_latency_seconds.observe(elapsed)
+    if state is not None:
+        metrics.agent_iterations.observe(state.get("iterations", 0))
+        total_tokens = state.get("total_tokens", 0)
+        if total_tokens:
+            metrics.agent_tokens_total.inc(total_tokens)
+
+
+def _turn_outcome(state: dict) -> str:
+    # validate_input resets iterations to 0 every turn; it only stays 0 if
+    # the turn never reached `agent` at all, i.e. the reject_input path.
+    return "rejected" if state.get("iterations", 0) == 0 else "success"
+
+
+async def _iterate_with_timeout(aiter, timeout_seconds: float):
+    """Wrap an async iterator so the whole run aborts if total wall-clock
+    time exceeds `timeout_seconds` — enforces REQUEST_TIMEOUT_SECONDS for
+    the astream_events paths. Raises TimeoutError on the next pending
+    event; callers already have a generic `except Exception` around this
+    loop (for Langfuse error-marking), so no separate handling is needed.
+    """
+    aiter = aiter.__aiter__()
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"Request exceeded {timeout_seconds}s timeout")
+        try:
+            yield await asyncio.wait_for(aiter.__anext__(), timeout=remaining)
+        except StopAsyncIteration:
+            return
 
 
 def get_graph():
@@ -33,12 +84,13 @@ def get_graph():
 
 
 def _callbacks(session_id: str):
-    if CallbackHandler is None:
-        return []
-    try:
-        return [CallbackHandler(session_id=session_id)]
-    except Exception:  # noqa: BLE001
-        return []
+    callbacks = [metrics.MetricsCallbackHandler()]
+    if CallbackHandler is not None:
+        try:
+            callbacks.append(CallbackHandler(session_id=session_id))
+        except Exception:  # noqa: BLE001
+            pass
+    return callbacks
 
 
 def _ensure_seeded(graph, thread_id: str) -> None:
@@ -66,17 +118,30 @@ def stream_turn(text: str, thread_id: str):
     langfuse_context.update_current_trace(session_id=thread_id)
     graph = get_graph()
     _ensure_seeded(graph, thread_id)
+    start = time.monotonic()
+    deadline = start + REQUEST_TIMEOUT_SECONDS
     printed = ""
+    final_state: dict = {}
     for state in graph.stream(
         {"messages": [HumanMessage(content=text)]},
         config=_config(thread_id),
         stream_mode="values",
     ):
+        final_state = state
+        if time.monotonic() > deadline:
+            # Soft timeout: checked between graph steps, not preemptive —
+            # a single slow step can still finish before this is reached.
+            yield "\n[stopped: request exceeded timeout]"
+            _record_turn_metrics(time.monotonic() - start, "timeout", final_state)
+            return
         msg = state["messages"][-1]
         if msg.type == "ai" and isinstance(msg.content, str) and msg.content:
             delta = msg.content[len(printed):]
             printed = msg.content
             yield delta
+    _record_turn_metrics(
+        time.monotonic() - start, _turn_outcome(final_state), final_state
+    )
 
 
 @observe(name="chat-turn")
@@ -85,10 +150,23 @@ def answer(text: str, thread_id: str) -> str:
     langfuse_context.update_current_trace(session_id=thread_id)
     graph = get_graph()
     _ensure_seeded(graph, thread_id)
-    result = graph.invoke(
+
+    start = time.monotonic()
+    future = _REQUEST_EXECUTOR.submit(
+        graph.invoke,
         {"messages": [HumanMessage(content=text)]},
         config=_config(thread_id),
     )
+    try:
+        result = future.result(timeout=REQUEST_TIMEOUT_SECONDS)
+    except FuturesTimeoutError:
+        _record_turn_metrics(time.monotonic() - start, "timeout")
+        return "Sorry, that took too long to answer — please try again."
+    except Exception:
+        _record_turn_metrics(time.monotonic() - start, "error")
+        raise
+
+    _record_turn_metrics(time.monotonic() - start, _turn_outcome(result), result)
     return result["messages"][-1].content
 
 
@@ -123,7 +201,7 @@ async def astream_events_turn(text: str, thread_id: str):
 
     # --- Langfuse: open a trace manually (works with async generators) ---
     trace = None
-    callbacks = []
+    callbacks = [metrics.MetricsCallbackHandler()]
     if CallbackHandler is not None:
         try:
             from langfuse import Langfuse
@@ -135,10 +213,10 @@ async def astream_events_turn(text: str, thread_id: str):
             )
             # Attach a callback handler scoped to this trace so all nested
             # LLM calls and tool calls appear as children in Langfuse.
-            callbacks = [CallbackHandler(
+            callbacks.append(CallbackHandler(
                 trace_id=trace.id,
                 session_id=thread_id,
-            )]
+            ))
         except Exception:  # noqa: BLE001 - Langfuse optional
             pass
 
@@ -148,12 +226,16 @@ async def astream_events_turn(text: str, thread_id: str):
         "recursion_limit": 12,
     }
 
+    start = time.monotonic()
     final_answer = []
     try:
-        async for event in graph.astream_events(
-            {"messages": [HumanMessage(content=text)]},
-            config=cfg,
-            version="v2",
+        async for event in _iterate_with_timeout(
+            graph.astream_events(
+                {"messages": [HumanMessage(content=text)]},
+                config=cfg,
+                version="v2",
+            ),
+            REQUEST_TIMEOUT_SECONDS,
         ):
             kind = event["event"]
 
@@ -183,10 +265,16 @@ async def astream_events_turn(text: str, thread_id: str):
     except Exception as exc:  # noqa: BLE001
         if trace:
             trace.update(output=f"error: {exc}", level="ERROR")
+        outcome = "timeout" if isinstance(exc, TimeoutError) else "error"
+        _record_turn_metrics(time.monotonic() - start, outcome)
         yield {"type": "error", "content": str(exc)}
     else:
         if trace:
             trace.update(output="".join(final_answer))
+        final_state = graph.get_state(cfg).values
+        _record_turn_metrics(
+            time.monotonic() - start, _turn_outcome(final_state), final_state
+        )
     finally:
         # Flush so the trace is sent even if the caller exits immediately.
         if trace:
@@ -232,13 +320,13 @@ async def _langfuse_trace(name: str, session_id: str, input_text: str):
                 trace.update(output="final answer")
     """
     trace = None
-    callbacks: list = []
+    callbacks: list = [metrics.MetricsCallbackHandler()]
     if CallbackHandler is not None:
         try:
             from langfuse import Langfuse
             lf = Langfuse()
             trace = lf.trace(name=name, session_id=session_id, input=input_text)
-            callbacks = [CallbackHandler(trace_id=trace.id, session_id=session_id)]
+            callbacks.append(CallbackHandler(trace_id=trace.id, session_id=session_id))
         except Exception:  # noqa: BLE001 — Langfuse optional
             pass
     try:
@@ -283,11 +371,15 @@ async def astream_events_turn_ctx(text: str, thread_id: str):
             "recursion_limit": 12,
         }
 
+        start = time.monotonic()
         try:
-            async for event in graph.astream_events(
-                {"messages": [HumanMessage(content=text)]},
-                config=cfg,
-                version="v2",
+            async for event in _iterate_with_timeout(
+                graph.astream_events(
+                    {"messages": [HumanMessage(content=text)]},
+                    config=cfg,
+                    version="v2",
+                ),
+                REQUEST_TIMEOUT_SECONDS,
             ):
                 kind = event["event"]
 
@@ -316,10 +408,16 @@ async def astream_events_turn_ctx(text: str, thread_id: str):
         except Exception as exc:  # noqa: BLE001
             if trace:
                 trace.update(output=f"error: {exc}", level="ERROR")
+            outcome = "timeout" if isinstance(exc, TimeoutError) else "error"
+            _record_turn_metrics(time.monotonic() - start, outcome)
             yield {"type": "error", "content": str(exc)}
             return  # exit before the else-branch and done event
 
         if trace:
             trace.update(output="".join(final_answer))
+        final_state = graph.get_state(cfg).values
+        _record_turn_metrics(
+            time.monotonic() - start, _turn_outcome(final_state), final_state
+        )
 
     yield {"type": "done"}

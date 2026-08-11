@@ -11,6 +11,8 @@ features of four popular AI-infra tools in one place:
 | **Langfuse**  | `@observe` tracing, the LangGraph **callback handler**, nested spans, and **session grouping** by `thread_id` |
 | **FastAPI + Pydantic** | An HTTP `/chat` API over the same agent, with typed request/response models and auto-generated OpenAPI docs |
 
+Also included: **multi-layer safety budgets** (iteration/tool-call/token/tool-timeout/request-timeout caps), **Prometheus metrics** at `GET /metrics`, a **pytest suite** that runs the graph against a fake LLM (no live services needed), and a **golden-dataset evaluation harness** (`app/eval.py`) that runs against the real model to catch behavior regressions. See [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md) for the full writeup of every pattern in `app/graph.py`.
+
 Everything runs locally via **Ollama** — no cloud API keys needed.
 
 ## Architecture
@@ -92,6 +94,9 @@ curl -s -X POST http://localhost:8000/chat \
 Reuse the same `thread_id` across calls to keep conversation **memory**; each
 call is also traced in Langfuse under that id as the session.
 
+- `GET /metrics` → Prometheus text format (tool calls, retries, HITL decisions,
+  request latency/outcome — see `app/metrics.py`)
+
 ## Ports
 
 | Service      | URL                     |
@@ -111,6 +116,8 @@ call is also traced in Langfuse under that id as the session.
 | `make ingest`     | Embed sample docs → Qdrant |
 | `make chat`       | Start the agent CLI |
 | `make serve`      | Start the FastAPI service (http://localhost:8000/docs) |
+| `make test`       | Run the pytest suite (fake LLM, no live services needed) |
+| `make eval`       | Run the golden-dataset evaluation against the real stack |
 | `make logs`       | Tail service logs |
 | `make down`       | Stop services (keep data) |
 | `make clean`      | Stop services and delete volumes |
@@ -126,12 +133,15 @@ call is also traced in Langfuse under that id as the session.
 | `app/embeddings.py`    | Embedding client (via LiteLLM) |
 | `app/qdrant_store.py`  | Qdrant collection / upsert / filtered search |
 | `app/ingest.py`        | Embed + load docs |
-| `app/tools.py`         | `search_docs` + `calculator` tools |
-| `app/graph.py`         | LangGraph agent (state, edges, memory) |
-| `app/agent.py`         | Shared runtime (used by both CLI and API) |
+| `app/tools.py`         | `search_docs` + `calculator` tools (each wrapped with a timeout budget) |
+| `app/graph.py`         | LangGraph agent (state, edges, memory, safety budgets) |
+| `app/agent.py`         | Shared runtime (used by both CLI and API); request-level timeout + metrics recording |
+| `app/metrics.py`       | Prometheus counters/histograms + the tool-call callback handler |
+| `app/eval.py`          | Golden-dataset evaluation harness (`make eval`) |
 | `app/chat.py`          | Streaming CLI + Langfuse tracing |
 | `app/schemas.py`       | Pydantic request/response models |
-| `app/api.py`           | FastAPI service (`/health`, `/chat`) |
+| `app/api.py`           | FastAPI service (`/health`, `/chat`, `/chat/stream`, `/metrics`) |
+| `tests/`               | pytest suite — routing/node/graph tests against a fake LLM (`make test`) |
 
 ## Troubleshooting
 

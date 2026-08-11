@@ -1,4 +1,4 @@
-.PHONY: help up pull-models ingest chat chat-stream serve test logs down clean
+.PHONY: help up pull-models ingest chat chat-stream serve test eval logs down clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -25,6 +25,9 @@ serve:  ## Start the FastAPI service (http://localhost:8000/docs)
 
 test:  ## Run the graph test suite (no live services needed — fake LLM, no Qdrant)
 	pytest -q
+
+eval:  ## Run the golden-dataset evaluation against the real stack (needs `make up` + `make ingest`)
+	python -m app.eval
 
 logs:  ## Tail logs from all services
 	docker compose logs -f

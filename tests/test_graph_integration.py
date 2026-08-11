@@ -9,13 +9,14 @@ stub) also stays hermetic.
 
 Scenarios mirror the graph's documented flow in GRAPH_PATTERNS.md.
 """
+import time
 import uuid
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from app.graph import MAX_ITERATIONS, build_graph
+from app.graph import MAX_ITERATIONS, MAX_TOKENS_PER_TURN, MAX_TOOL_CALLS_PER_TURN, build_graph
 
 
 def _config():
@@ -162,3 +163,73 @@ class TestToolErrorRecovery:
         assert (
             result["messages"][-1].content == "I couldn't compute that, sorry about it."
         )
+
+    def test_slow_tool_call_times_out_and_recovers(self, monkeypatch):
+        """app.tools.TOOL_TIMEOUT_SECONDS bounds how long a single tool call
+        can block the graph — a hung call should surface as a friendly
+        ToolMessage via handle_tool_errors, same as any other tool error,
+        not hang the run."""
+        from app import tools as tools_module
+
+        monkeypatch.setattr(tools_module, "TOOL_TIMEOUT_SECONDS", 0.05)
+
+        def slow_calculator_impl(expression):
+            time.sleep(0.5)
+            return "too slow"
+
+        monkeypatch.setattr(tools_module, "_calculator_impl", slow_calculator_impl)
+
+        llm = _fake_llm(
+            _tool_call_message("calculator", {"expression": "1+1"}),
+            AIMessage(content="Sorry, that calculation timed out."),
+        )
+        g = build_graph(llm=llm)
+        result = g.invoke(
+            {"messages": [HumanMessage(content="what is 1+1?")]}, config=_config()
+        )
+        assert result["messages"][-1].content == "Sorry, that calculation timed out."
+
+
+class TestToolCallBudgetPath:
+    def test_too_many_tool_calls_are_rejected_then_agent_retries_with_fewer(self):
+        too_many = AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "calculator", "args": {"expression": "1+1"}, "id": f"c{i}"}
+                for i in range(MAX_TOOL_CALLS_PER_TURN + 3)
+            ],
+        )
+        llm = _fake_llm(
+            too_many,
+            _tool_call_message("calculator", {"expression": "1+1"}),
+            AIMessage(content="1 plus 1 equals 2, a proper final answer."),
+        )
+        g = build_graph(llm=llm)
+        result = g.invoke(
+            {"messages": [HumanMessage(content="add a bunch of stuff")]},
+            config=_config(),
+        )
+        assert "equals 2" in result["messages"][-1].content
+
+
+class TestTokenBudgetPath:
+    def test_token_budget_ends_the_turn_without_running_the_pending_tool_call(self):
+        big_usage_msg = AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "calculator", "args": {"expression": "1+1"}, "id": "c1"}
+            ],
+            usage_metadata={
+                "input_tokens": MAX_TOKENS_PER_TURN,
+                "output_tokens": 0,
+                "total_tokens": MAX_TOKENS_PER_TURN,
+            },
+        )
+        llm = _fake_llm(big_usage_msg)
+        g = build_graph(llm=llm)
+        result = g.invoke(
+            {"messages": [HumanMessage(content="do something expensive")]},
+            config=_config(),
+        )
+        assert result["total_tokens"] >= MAX_TOKENS_PER_TURN
+        assert result["iterations"] == 1  # ended after one agent call, tool never ran

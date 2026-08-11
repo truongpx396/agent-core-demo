@@ -14,3 +14,6 @@ uvicorn>=0.29,<1
 
 # Dev/test — graph unit + integration tests (fake LLM, no live services)
 pytest>=8.0,<9
+
+# Observability — Prometheus metrics exposed at GET /metrics (see app/metrics.py)
+prometheus-client>=0.20,<1
