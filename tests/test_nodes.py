@@ -16,33 +16,33 @@ def test_reject_input_returns_ai_message_not_human():
     assert "question" in msg.content.lower()
 
 
-def test_retrieve_context_calls_search_docs_with_last_human_message(monkeypatch):
+def test_retrieve_context_calls_search_docs_with_last_human_message():
     captured = {}
 
     def fake_search_docs(query):
         captured["query"] = query
         return "doc 1\ndoc 2"
 
-    monkeypatch.setattr(graph, "search_docs", fake_search_docs)
+    retrieve_context = graph.make_retrieve_context_node(fake_search_docs)
 
     state = {"messages": [HumanMessage(content="what is a checkpointer?")]}
-    result = graph.retrieve_context(state)
+    result = retrieve_context(state)
 
     assert captured["query"] == "what is a checkpointer?"
     assert result == {"context": "doc 1\ndoc 2"}
 
 
-def test_retrieve_context_no_human_message_skips_search(monkeypatch):
+def test_retrieve_context_no_human_message_skips_search():
     def fail_search_docs(query):
         raise AssertionError("search_docs should not be called")
 
-    monkeypatch.setattr(graph, "search_docs", fail_search_docs)
+    retrieve_context = graph.make_retrieve_context_node(fail_search_docs)
 
-    result = graph.retrieve_context({"messages": [AIMessage(content="hi")]})
+    result = retrieve_context({"messages": [AIMessage(content="hi")]})
     assert result == {"context": ""}
 
 
-def test_retrieve_context_degrades_to_empty_when_search_docs_raises(monkeypatch):
+def test_retrieve_context_degrades_to_empty_when_search_docs_raises():
     """Reliability policy: retrieve_context is enrichment, not the agent's
     only path to this data (the LLM can still call search_docs as a tool),
     so a Qdrant/embedding outage must degrade to no pre-fetched context
@@ -51,11 +51,11 @@ def test_retrieve_context_degrades_to_empty_when_search_docs_raises(monkeypatch)
     def failing_search_docs(query):
         raise RuntimeError("Qdrant unreachable")
 
-    monkeypatch.setattr(graph, "search_docs", failing_search_docs)
+    retrieve_context = graph.make_retrieve_context_node(failing_search_docs)
     before = metrics.agent_context_retrieval_degraded_total._value.get()
 
     state = {"messages": [HumanMessage(content="what is a checkpointer?")]}
-    result = graph.retrieve_context(state)
+    result = retrieve_context(state)
 
     assert result == {"context": ""}
     assert metrics.agent_context_retrieval_degraded_total._value.get() == before + 1

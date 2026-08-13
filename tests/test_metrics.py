@@ -16,7 +16,13 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app import graph, metrics
-from app.graph import build_graph, human_approval, retry_output, too_many_tool_calls
+from app.graph import (
+    GraphDeps,
+    build_graph,
+    human_approval,
+    retry_output,
+    too_many_tool_calls,
+)
 
 
 def _count(counter, **labels):
@@ -75,13 +81,13 @@ class TestNodeLevelMetrics:
         too_many_tool_calls({"messages": [ai]})
         assert _count(metrics.agent_tool_budget_exceeded_total) == before + 1
 
-    def test_retrieve_context_failure_increments_degraded_counter(self, monkeypatch):
+    def test_retrieve_context_failure_increments_degraded_counter(self):
         def failing_search_docs(query):
             raise RuntimeError("boom")
 
-        monkeypatch.setattr(graph, "search_docs", failing_search_docs)
+        retrieve_context = graph.make_retrieve_context_node(failing_search_docs)
         before = _count(metrics.agent_context_retrieval_degraded_total)
-        graph.retrieve_context({"messages": [HumanMessage(content="hi")]})
+        retrieve_context({"messages": [HumanMessage(content="hi")]})
         assert _count(metrics.agent_context_retrieval_degraded_total) == before + 1
 
     def test_history_trim_increments_compacted_counter(self):
@@ -111,7 +117,7 @@ class TestToolCallbackMetrics:
                 ]
             )
         )
-        g = build_graph(llm=llm)
+        g = build_graph(GraphDeps(llm=llm))
         g.invoke(
             {"messages": [HumanMessage(content="what is 2+2?")]}, config=_config()
         )
@@ -128,7 +134,7 @@ class TestToolCallbackMetrics:
                 ]
             )
         )
-        g = build_graph(llm=llm)
+        g = build_graph(GraphDeps(llm=llm))
         g.invoke(
             {"messages": [HumanMessage(content="what is nothing?")]}, config=_config()
         )

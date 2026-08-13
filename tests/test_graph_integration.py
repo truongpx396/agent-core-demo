@@ -1,11 +1,12 @@
 """Full-graph integration tests: each test drives build_graph() end-to-end
 with a fake chat model standing in for the real ChatOpenAI client, so these
 run with no live services — no LiteLLM, no Ollama, no Qdrant.
-`retrieve_context`'s search_docs call is stubbed by the autouse
-`mock_search_docs` fixture in conftest.py; tool-call scenarios below use
-`calculator` (pure Python, no network) rather than `search_docs` so the
-*actual* tool-execution step (inside ToolNode, which isn't touched by that
-stub) also stays hermetic.
+`retrieve_context`'s search_docs call defaults to the autouse
+`mock_search_docs` fixture in conftest.py (which patches
+`graph._default_search`); tool-call scenarios below use `calculator` (pure
+Python, no network) rather than `search_docs` so the *actual*
+tool-execution step (inside ToolNode, which isn't touched by that stub)
+also stays hermetic.
 
 Scenarios mirror the graph's documented flow in GRAPH_PATTERNS.md.
 """
@@ -16,12 +17,12 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from app import graph
 from app.graph import (
     AGENT_RETRY_POLICY,
     MAX_ITERATIONS,
     MAX_TOKENS_PER_TURN,
     MAX_TOOL_CALLS_PER_TURN,
+    GraphDeps,
     build_graph,
 )
 
@@ -43,7 +44,7 @@ def _tool_call_message(name, args, call_id="call_1"):
 class TestRejectPath:
     def test_empty_input_never_reaches_llm(self):
         llm = _fake_llm()  # would raise StopIteration if invoked
-        g = build_graph(llm=llm)
+        g = build_graph(GraphDeps(llm=llm))
         result = g.invoke({"messages": [HumanMessage(content="")]}, config=_config())
         assert "try again" in result["messages"][-1].content.lower()
 
@@ -51,7 +52,7 @@ class TestRejectPath:
 class TestDirectAnswerPath:
     def test_final_answer_ends_without_tool_call(self):
         llm = _fake_llm(AIMessage(content="This is a sufficiently long final answer."))
-        g = build_graph(llm=llm)
+        g = build_graph(GraphDeps(llm=llm))
         result = g.invoke(
             {"messages": [HumanMessage(content="what is a checkpointer?")]},
             config=_config(),
@@ -69,7 +70,7 @@ class TestToolCallPath:
             _tool_call_message("calculator", {"expression": "12*7"}),
             AIMessage(content="12 times 7 is 84."),
         )
-        g = build_graph(llm=llm)
+        g = build_graph(GraphDeps(llm=llm))
         result = g.invoke(
             {"messages": [HumanMessage(content="what is 12*7?")]}, config=_config()
         )
@@ -83,7 +84,7 @@ class TestHumanApprovalPath:
             _tool_call_message("calculator", {"expression": "2+2"}),
             AIMessage(content="2 plus 2 equals 4."),
         )
-        g = build_graph(llm=llm)
+        g = build_graph(GraphDeps(llm=llm))
         config = _config()
         g.invoke(
             {
@@ -103,7 +104,7 @@ class TestHumanApprovalPath:
             _tool_call_message("calculator", {"expression": "2+2"}),
             AIMessage(content="Okay, I will not run that calculation."),
         )
-        g = build_graph(llm=llm)
+        g = build_graph(GraphDeps(llm=llm))
         config = _config()
         g.invoke(
             {
@@ -129,7 +130,7 @@ class TestIterationCap:
             for i in range(MAX_ITERATIONS + 5)
         ]
         llm = _fake_llm(*responses)
-        g = build_graph(llm=llm)
+        g = build_graph(GraphDeps(llm=llm))
         result = g.invoke(
             {"messages": [HumanMessage(content="loop forever")]}, config=_config()
         )
@@ -142,7 +143,7 @@ class TestOutputRetryPath:
             AIMessage(content="Yes."),
             AIMessage(content="A properly detailed final answer this time."),
         )
-        g = build_graph(llm=llm)
+        g = build_graph(GraphDeps(llm=llm))
         result = g.invoke(
             {"messages": [HumanMessage(content="is that right?")]}, config=_config()
         )
@@ -163,7 +164,7 @@ class TestToolErrorRecovery:
             _tool_call_message("calculator", {"expression": ""}),
             AIMessage(content="I couldn't compute that, sorry about it."),
         )
-        g = build_graph(llm=llm)
+        g = build_graph(GraphDeps(llm=llm))
         result = g.invoke(
             {"messages": [HumanMessage(content="what is nothing?")]}, config=_config()
         )
@@ -190,7 +191,7 @@ class TestToolErrorRecovery:
             _tool_call_message("calculator", {"expression": "1+1"}),
             AIMessage(content="Sorry, that calculation timed out."),
         )
-        g = build_graph(llm=llm)
+        g = build_graph(GraphDeps(llm=llm))
         result = g.invoke(
             {"messages": [HumanMessage(content="what is 1+1?")]}, config=_config()
         )
@@ -211,7 +212,7 @@ class TestToolCallBudgetPath:
             _tool_call_message("calculator", {"expression": "1+1"}),
             AIMessage(content="1 plus 1 equals 2, a proper final answer."),
         )
-        g = build_graph(llm=llm)
+        g = build_graph(GraphDeps(llm=llm))
         result = g.invoke(
             {"messages": [HumanMessage(content="add a bunch of stuff")]},
             config=_config(),
@@ -226,7 +227,7 @@ class TestReliabilityPolicy:
         unused — a real retry-triggering test would need to sleep through
         RetryPolicy's backoff, which isn't worth the flakiness/runtime for
         what's otherwise a one-line wiring fact."""
-        g = build_graph(llm=_fake_llm(AIMessage(content="anything")))
+        g = build_graph(GraphDeps(llm=_fake_llm(AIMessage(content="anything"))))
         assert g.nodes["agent"].retry_policy == AGENT_RETRY_POLICY
 
     def test_retrieve_context_and_deterministic_nodes_have_no_retry_policy(self):
@@ -234,15 +235,13 @@ class TestReliabilityPolicy:
         docstring); everything else is a pure function of state where a
         retry would just repeat the same bug — see GRAPH_PATTERNS.md
         pattern 7."""
-        g = build_graph(llm=_fake_llm(AIMessage(content="anything")))
+        g = build_graph(GraphDeps(llm=_fake_llm(AIMessage(content="anything"))))
         for name in ("retrieve_context", "check_output", "too_many_tool_calls"):
             assert g.nodes[name].retry_policy is None
 
 
 class TestContextRetrievalDegradation:
-    def test_search_docs_outage_degrades_instead_of_crashing_the_turn(
-        self, monkeypatch
-    ):
+    def test_search_docs_outage_degrades_instead_of_crashing_the_turn(self):
         """retrieve_context's search_docs call must never take the whole
         turn down with it — see its reliability-policy docstring in
         app/graph.py. The agent still answers, just without pre-fetched
@@ -251,12 +250,10 @@ class TestContextRetrievalDegradation:
         def failing_search_docs(query):
             raise RuntimeError("Qdrant unreachable")
 
-        monkeypatch.setattr(graph, "search_docs", failing_search_docs)
-
         llm = _fake_llm(
             AIMessage(content="A general-knowledge answer, no context needed.")
         )
-        g = build_graph(llm=llm)
+        g = build_graph(GraphDeps(llm=llm, search_docs=failing_search_docs))
         result = g.invoke(
             {"messages": [HumanMessage(content="what is a checkpointer?")]},
             config=_config(),
@@ -281,7 +278,7 @@ class TestTokenBudgetPath:
             },
         )
         llm = _fake_llm(big_usage_msg)
-        g = build_graph(llm=llm)
+        g = build_graph(GraphDeps(llm=llm))
         result = g.invoke(
             {"messages": [HumanMessage(content="do something expensive")]},
             config=_config(),

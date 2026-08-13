@@ -34,12 +34,19 @@ build_graph) specifically so they can be unit-tested directly — imported
 and called with a hand-built `state` dict — without compiling a graph or
 touching a real LLM. See tests/ for the corresponding test-per-layer
 suite (routing functions, nodes, agent node, full graph scenarios).
+
+Two nodes are the exception: `agent` and `retrieve_context` need an
+injected client (an LLM, a search function), so they're built by a
+factory (make_agent_node, make_retrieve_context_node) instead of being
+plain module-level functions — see GraphDeps and build_graph, and each
+factory's own docstring for why.
 """
 import functools
 import logging
 import time
 import uuid
-from typing import Annotated, Literal, TypedDict
+from dataclasses import dataclass
+from typing import Annotated, Any, Callable, Literal, TypedDict
 
 from langchain_core.messages import (
     AIMessage,
@@ -261,32 +268,52 @@ def reject_input(state: State) -> dict:
     }
 
 
+def _default_search(query: str) -> str:
+    """Adapts the real `search_docs` StructuredTool's `.invoke()` to the
+    plain `Callable[[str], str]` shape `make_retrieve_context_node` expects
+    — isolates the `.invoke()` call (see its BaseTool.__call__ deprecation)
+    to one place instead of spreading it into the injection mechanism
+    itself, so a fake passed to the factory is just a plain function, no
+    `.invoke` attribute required."""
+    return search_docs.invoke(query)
+
+
 # --- Node: enrich context (multi-step pattern) ---
-def retrieve_context(state: State) -> dict:
-    """Fetch relevant docs *before* the agent reasons.
-
-    In production, you might fetch from a database, call an API, etc.
-
-    Reliability policy: degrade, never fail the run. This is enrichment,
-    not the agent's only path to the same data — the LLM can still call the
-    search_docs *tool* directly and get ToolNode's handle_tool_errors
-    recovery (see the "tools" node in build_graph). A Qdrant/embedding blip
-    here should cost the agent a slightly worse first guess, not the whole
-    turn — contrast with `agent`, where a failed LLM call has nothing to
-    fall back to and gets a retry policy instead (AGENT_RETRY_POLICY).
+def make_retrieve_context_node(search: Callable[[str], str] = _default_search):
+    """Factory, not a plain function, because retrieve_context needs a
+    search client — same rationale as make_agent_node for `agent`. Tests
+    inject a fake via `make_retrieve_context_node(fake)(state)` instead of
+    monkeypatching a module global (see tests/test_nodes.py).
     """
-    last_human = _last_human_message(state["messages"])
-    if last_human is None:
-        return {"context": ""}
-    try:
-        return {"context": search_docs(last_human.content)}
-    except Exception as exc:  # noqa: BLE001 - degrade, never crash the turn
-        logger.warning(
-            "context retrieval failed; continuing without pre-fetched context",
-            extra={"node": "retrieve_context", "error_class": type(exc).__name__},
-        )
-        metrics.agent_context_retrieval_degraded_total.inc()
-        return {"context": ""}
+
+    def retrieve_context(state: State) -> dict:
+        """Fetch relevant docs *before* the agent reasons.
+
+        In production, you might fetch from a database, call an API, etc.
+
+        Reliability policy: degrade, never fail the run. This is enrichment,
+        not the agent's only path to the same data — the LLM can still call
+        the search_docs *tool* directly and get ToolNode's handle_tool_errors
+        recovery (see the "tools" node in build_graph). A Qdrant/embedding
+        blip here should cost the agent a slightly worse first guess, not
+        the whole turn — contrast with `agent`, where a failed LLM call has
+        nothing to fall back to and gets a retry policy instead
+        (AGENT_RETRY_POLICY).
+        """
+        last_human = _last_human_message(state["messages"])
+        if last_human is None:
+            return {"context": ""}
+        try:
+            return {"context": search(last_human.content)}
+        except Exception as exc:  # noqa: BLE001 - degrade, never crash the turn
+            logger.warning(
+                "context retrieval failed; continuing without pre-fetched context",
+                extra={"node": "retrieve_context", "error_class": type(exc).__name__},
+            )
+            metrics.agent_context_retrieval_degraded_total.inc()
+            return {"context": ""}
+
+    return retrieve_context
 
 
 # --- Node: agent ---
@@ -452,25 +479,43 @@ def retry_output(state: State) -> dict:
     }
 
 
+@dataclass
+class GraphDeps:
+    """Bundle of the graph's swappable external clients, built once at the
+    composition root (build_graph) and threaded into the node factories
+    that need them — see make_agent_node, make_retrieve_context_node.
+    Unset fields fall back to the real clients inside build_graph(); tests
+    set individual fields to inject fakes instead of monkeypatching module
+    globals (see tests/test_agent_node.py, tests/test_nodes.py).
+    """
+
+    llm: Any = None
+    search_docs: Callable[[str], str] | None = None
+
+
 # --- Build the graph ---
-def build_graph(llm=None):
+def build_graph(deps: GraphDeps | None = None):
     """Compile the graph.
 
-    `llm` defaults to the real ChatOpenAI client (`_make_llm()`), but tests
-    pass a fake chat model here to run full graph scenarios — reject path,
-    tool loop, HITL approve/reject, iteration cap, retry — without hitting
-    a live model. See tests/test_graph_integration.py.
+    `deps` bundles the graph's swappable external clients (LLM, search) —
+    see GraphDeps; unset fields default to the real clients. Tests pass a
+    GraphDeps with fakes to run full graph scenarios — reject path, tool
+    loop, HITL approve/reject, iteration cap, retry — without hitting a
+    live model or Qdrant. See tests/test_graph_integration.py.
     """
-    llm = llm or _make_llm()
-    agent = make_agent_node(llm)
+    deps = deps or GraphDeps()
+    agent = make_agent_node(deps.llm or _make_llm())
+    retrieve_context = make_retrieve_context_node(deps.search_docs or _default_search)
 
     builder = StateGraph(State)
 
     # Every node below is wrapped in _instrumented(name) at registration
     # time, not by editing the node functions themselves — see its
     # docstring and GRAPH_PATTERNS.md pattern 14. The plain module-level
-    # functions (e.g. `graph.retrieve_context`) stay undecorated, which is
-    # what keeps them directly callable from tests exactly as before.
+    # functions (e.g. `graph.reject_input`) stay undecorated, which is what
+    # keeps them directly callable from tests exactly as before; `agent`
+    # and `retrieve_context` are the two exceptions built above via a
+    # factory, since they need an injected client.
     builder.add_node("validate_input", _instrumented("validate_input")(validate_input))
     builder.add_node("reject_input", _instrumented("reject_input")(reject_input))
     builder.add_node(

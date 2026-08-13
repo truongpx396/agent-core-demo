@@ -231,7 +231,7 @@ async def astream_events_turn(text: str, thread_id: str):
     try:
         async for event in _iterate_with_timeout(
             graph.astream_events(
-                {"messages": [HumanMessage(content=text)]},
+                {"messages": [HumanMessage(content=text)], "require_approval": True},
                 config=cfg,
                 version="v2",
             ),
