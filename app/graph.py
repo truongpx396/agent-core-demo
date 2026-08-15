@@ -220,6 +220,13 @@ def _make_llm():
         base_url=OPENAI_API_BASE,
         api_key=OPENAI_API_KEY,
         temperature=0,
+        # astream_events (app/agent.py's astream_events_turn) forces this
+        # model through its streaming code path even though agent() calls
+        # .invoke() — OpenAI-compatible streaming only includes token usage
+        # in the final chunk when explicitly requested, so without this,
+        # response.usage_metadata is silently None under --stream mode:
+        # MAX_TOKENS_PER_TURN never trips, and Langfuse shows 0 tokens.
+        stream_usage=True,
     ).bind_tools(TOOLS)
 
 

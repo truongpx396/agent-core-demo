@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langfuse.decorators import langfuse_context, observe
+from langgraph.types import Command
 
 from app import metrics
 from app.graph import SYSTEM_PROMPT, build_graph
@@ -182,59 +183,51 @@ def answer(text: str, thread_id: str) -> str:
 # can forward them verbatim and the CLI can render them without knowing
 # which LangGraph version generated them.
 
-async def astream_events_turn(text: str, thread_id: str):
-    """Production async generator — yields typed event dicts.
+def _open_trace(name: str, session_id: str, input_text: str):
+    """Best-effort: open a Langfuse trace and a CallbackHandler scoped to it.
 
-    Event shapes (all JSON-serialisable):
-      {"type": "token",      "content": "<text chunk>"}
-      {"type": "tool_start", "tool": "<name>", "args": {…}}
-      {"type": "tool_end",   "tool": "<name>"}
-      {"type": "done"}
-      {"type": "error",      "content": "<message>"}
-
-    Langfuse tracing: because @observe cannot wrap async generators, we open
-    a trace manually and pass it to the LangChain CallbackHandler so every
-    nested LLM call and tool call is attached to the same trace in Langfuse.
+    Returns (trace_or_None, callbacks_list). Never raises — Langfuse is
+    optional (see the CallbackHandler import at the top of this module).
+    Shared by astream_events_turn and astream_events_resume so both open
+    traces the same way (each gets its OWN trace rather than reusing one
+    across a pause — see astream_events_resume's docstring for why).
     """
-    graph = get_graph()
-    _ensure_seeded(graph, thread_id)
-
-    # --- Langfuse: open a trace manually (works with async generators) ---
-    trace = None
     callbacks = [metrics.MetricsCallbackHandler()]
+    trace = None
     if CallbackHandler is not None:
         try:
             from langfuse import Langfuse
             lf = Langfuse()
-            trace = lf.trace(
-                name="chat-turn-stream",
-                session_id=thread_id,
-                input=text,
+            trace = lf.trace(name=name, session_id=session_id, input=input_text)
+            # stateful_client (not trace_id) is CallbackHandler's actual
+            # parameter for this in langfuse==2.60.10 — passing trace_id
+            # raises TypeError, which used to be silently swallowed here,
+            # leaving every graph node span unreported.
+            callbacks.append(
+                CallbackHandler(stateful_client=trace, session_id=session_id)
             )
-            # Attach a callback handler scoped to this trace so all nested
-            # LLM calls and tool calls appear as children in Langfuse.
-            callbacks.append(CallbackHandler(
-                trace_id=trace.id,
-                session_id=thread_id,
-            ))
         except Exception:  # noqa: BLE001 - Langfuse optional
             pass
+    return trace, callbacks
 
-    cfg = {
-        "configurable": {"thread_id": thread_id},
-        "callbacks": callbacks,
-        "recursion_limit": 12,
-    }
 
+async def _run_graph_stream(graph, graph_input, cfg, trace):
+    """Shared core of astream_events_turn/astream_events_resume: drive one
+    graph.astream_events() call, translate events to the app's typed event
+    shapes, and yield exactly one terminal event:
+      {"type": "approval_required", "tool_calls": [{"name":..., "args":...}]}
+        — the run paused at human_approval's interrupt() (see graph.py);
+          call astream_events_resume(thread_id, approved) to continue.
+      {"type": "done"}     — the turn actually finished.
+      {"type": "error", "content": "<message>"} — it raised.
+    Handles Langfuse trace update/flush and turn metrics identically for
+    both entry points.
+    """
     start = time.monotonic()
     final_answer = []
     try:
         async for event in _iterate_with_timeout(
-            graph.astream_events(
-                {"messages": [HumanMessage(content=text)], "require_approval": True},
-                config=cfg,
-                version="v2",
-            ),
+            graph.astream_events(graph_input, config=cfg, version="v2"),
             REQUEST_TIMEOUT_SECONDS,
         ):
             kind = event["event"]
@@ -267,16 +260,34 @@ async def astream_events_turn(text: str, thread_id: str):
             trace.update(output=f"error: {exc}", level="ERROR")
         outcome = "timeout" if isinstance(exc, TimeoutError) else "error"
         _record_turn_metrics(time.monotonic() - start, outcome)
-        yield {"type": "error", "content": str(exc)}
+        terminal_event = {"type": "error", "content": str(exc)}
     else:
-        if trace:
-            trace.update(output="".join(final_answer))
-        final_state = graph.get_state(cfg).values
-        _record_turn_metrics(
-            time.monotonic() - start, _turn_outcome(final_state), final_state
-        )
+        # astream_events() simply stops yielding once the run pauses at an
+        # interrupt() — there's no exception and no distinct "paused" event,
+        # so the only reliable way to tell "paused" from "finished" is to
+        # check get_state().next afterwards, same as app/hitl_demo.py's
+        # sync loop.
+        state = graph.get_state(cfg)
+        if state.next:
+            pending = state.tasks[0].interrupts[0].value
+            if trace:
+                trace.update(
+                    output="".join(final_answer) + " [paused: awaiting approval]"
+                )
+            terminal_event = {
+                "type": "approval_required",
+                "tool_calls": pending["tool_calls"],
+            }
+        else:
+            if trace:
+                trace.update(output="".join(final_answer))
+            _record_turn_metrics(
+                time.monotonic() - start, _turn_outcome(state.values), state.values
+            )
+            terminal_event = {"type": "done"}
     finally:
-        # Flush so the trace is sent even if the caller exits immediately.
+        # Flush so the trace is sent even if the caller exits immediately —
+        # runs for all three terminal outcomes above (error, paused, done).
         if trace:
             try:
                 from langfuse import Langfuse
@@ -284,7 +295,60 @@ async def astream_events_turn(text: str, thread_id: str):
             except Exception:  # noqa: BLE001
                 pass
 
-    yield {"type": "done"}
+    yield terminal_event
+
+
+async def astream_events_turn(text: str, thread_id: str, require_approval: bool = False):
+    """Production async generator — yields typed event dicts (see
+    _run_graph_stream for the full shape list, including
+    "approval_required").
+
+    `require_approval` mirrors graph.py's opt-in HITL gate (see
+    should_continue): when True, a tool call pauses the run instead of
+    executing immediately, and the caller must resume via
+    astream_events_resume(thread_id, approved) to continue — the streaming
+    counterpart to app/hitl_demo.py's blocking Command(resume=...) loop.
+    Default False keeps existing callers (app/api.py) unchanged.
+    """
+    graph = get_graph()
+    _ensure_seeded(graph, thread_id)
+    trace, callbacks = _open_trace("chat-turn-stream", thread_id, text)
+    cfg = {
+        "configurable": {"thread_id": thread_id},
+        "callbacks": callbacks,
+        "recursion_limit": 12,
+    }
+    graph_input = {
+        "messages": [HumanMessage(content=text)],
+        "require_approval": require_approval,
+    }
+    async for event in _run_graph_stream(graph, graph_input, cfg, trace):
+        yield event
+
+
+async def astream_events_resume(thread_id: str, approved: bool):
+    """Resume a turn paused by astream_events_turn(require_approval=True) —
+    the streaming counterpart to app/hitl_demo.py's
+    `graph.invoke(Command(resume=approved), config)`. `thread_id` must
+    match the paused turn.
+
+    Opens its own Langfuse trace rather than extending the original one: a
+    human's approval can take arbitrarily long (minutes, hours), so this is
+    modeled as a separate trace correlated by session_id, not one span kept
+    open across the wait — same reasoning as stream_turn's two-trace HITL
+    behavior.
+    """
+    graph = get_graph()
+    trace, callbacks = _open_trace(
+        "chat-turn-stream-resume", thread_id, f"resume(approved={approved})"
+    )
+    cfg = {
+        "configurable": {"thread_id": thread_id},
+        "callbacks": callbacks,
+        "recursion_limit": 12,
+    }
+    async for event in _run_graph_stream(graph, Command(resume=approved), cfg, trace):
+        yield event
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +390,11 @@ async def _langfuse_trace(name: str, session_id: str, input_text: str):
             from langfuse import Langfuse
             lf = Langfuse()
             trace = lf.trace(name=name, session_id=session_id, input=input_text)
-            callbacks.append(CallbackHandler(trace_id=trace.id, session_id=session_id))
+            # stateful_client, not trace_id — see the matching note in
+            # astream_events_turn.
+            callbacks.append(
+                CallbackHandler(stateful_client=trace, session_id=session_id)
+            )
         except Exception:  # noqa: BLE001 — Langfuse optional
             pass
     try:
