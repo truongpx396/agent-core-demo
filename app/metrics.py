@@ -89,6 +89,27 @@ agent_history_compacted_total = Counter(
     "Turns where conversation history was trimmed to MAX_HISTORY_TURNS",
 )
 
+agent_capability_gate_total = Counter(
+    "agent_capability_gate_total",
+    "Tool-call batches routed to human_approval because a tool's declared "
+    "capability required it (mandatory), independent of require_approval (opt-in)",
+    ["capability"],
+)  # capability: mutating | outward
+
+agent_checkpoint_issue_total = Counter(
+    "agent_checkpoint_issue_total",
+    "Resume attempts refused by resumability_error before Command(resume=...)",
+    ["reason"],
+)  # reason: checkpoint_lost | checkpoint_incompatible
+
+agent_unattended_pause_total = Counter(
+    "agent_unattended_pause_total",
+    "Turns auto-declined by answer()/stream_turn() after pausing at a "
+    "mandatory capability gate — these entry points are single-shot/one-way "
+    "and have no way to solicit a real human decision (unlike "
+    "astream_events_turn's approval_required/astream_events_resume flow)",
+)
+
 
 class MetricsCallbackHandler(BaseCallbackHandler):
     """Records tool-call and tool-error counts. Pass an instance in

@@ -6,9 +6,53 @@ Langfuse callbacks, and the two entry points `stream_turn` (CLI, streaming) and
 tracing behave identically no matter which front-end is used.
 
 Production streaming is also provided via `astream_events_turn` — see below.
+
+## Durable checkpointing (init_graph_sync / init_graph_async)
+
+The graph is built with an `AsyncSqliteSaver` (survives a process restart),
+not `build_graph()`'s bare-call default `MemorySaver` (gone the moment the
+process exits) — a paused human_approval gate is only a meaningful safety
+control if the pause actually survives a redeploy while someone reviews it.
+
+Why two init functions instead of one: `AsyncSqliteSaver`'s async
+lock/state is bound to whichever asyncio event loop it was created on.
+Its SYNC methods (used by `graph.invoke`/`graph.stream`, i.e.
+answer()/stream_turn()) work correctly when called from any *other*
+thread than that loop — that's the documented, supported cross-thread
+path. Its ASYNC methods (used by `graph.ainvoke`/`graph.astream_events`,
+i.e. astream_events_turn/_resume) do NOT: calling them from a different
+loop than the one they were created on raises "bound to a different event
+loop" (asyncio locks are loop-bound, verified empirically before writing
+this). So which loop the checkpointer is opened on matters:
+
+- `init_graph_async()` — for a process with an asyncio loop it keeps
+  alive for its whole lifetime (FastAPI's lifespan, running on uvicorn's
+  loop; the CLI's `--stream` mode, running inside `asyncio.run()`). Opens
+  the checkpointer directly on the CALLING (current) loop. Async graph
+  calls then run natively on the same loop the checkpointer is bound to;
+  sync calls (e.g. FastAPI's `/chat` running a plain `def` in its own
+  threadpool) still work via the cross-thread path since that's a
+  different thread than the loop's.
+- `init_graph_sync()` — for a process with NO event loop of its own (the
+  CLI's plain, non-`--stream` mode, and app/hitl_demo.py). Spins up one
+  small background thread hosting a persistent event loop purely to give
+  the checkpointer somewhere to live; sync graph calls reach it from any
+  other thread exactly as above. This process path never calls the async
+  graph methods, so the background loop only ever needs to service
+  sync-dispatched calls — the constraint above never bites.
+
+`get_graph()` falls back to `init_graph_sync()` if nothing has initialized
+the singleton yet, so it stays a safe drop-in for any purely-sync caller.
+An async entry point (astream_events_turn/_resume) MUST have had
+`init_graph_async()` awaited first by its own process's startup path (see
+app/api.py's lifespan, app/chat.py's async_main) — calling it after a sync
+path already initialized the singleton would try to reuse a
+background-thread-bound checkpointer from a different loop and hit the
+same "bound to a different event loop" failure this design exists to avoid.
 """
 import asyncio
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -16,10 +60,12 @@ from contextlib import asynccontextmanager
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langfuse.decorators import langfuse_context, observe
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
 from app import metrics
-from app.graph import SYSTEM_PROMPT, build_graph
+from app.config import CHECKPOINT_DB_PATH
+from app.graph import SYSTEM_PROMPT, build_graph, resumability_error
 
 try:
     from langfuse.callback import CallbackHandler
@@ -27,6 +73,10 @@ except Exception:  # noqa: BLE001 - Langfuse optional if keys unset
     CallbackHandler = None
 
 _graph = None
+_checkpointer_cm = None  # keeps AsyncSqliteSaver's context manager alive —
+# from_conn_string is an @asynccontextmanager; letting the returned object
+# get garbage-collected closes the connection out from under the saver
+# (verified empirically: the very next call fails "no active connection").
 _seeded: set[str] = set()
 
 # Safety budget: bound total wall-clock time per turn, beneath which
@@ -76,11 +126,80 @@ async def _iterate_with_timeout(aiter, timeout_seconds: float):
             return
 
 
-def get_graph():
-    """Compile the LangGraph agent once and reuse it (shares MemorySaver)."""
+async def _open_checkpointer():
+    """Open the AsyncSqliteSaver on whichever loop calls this — see this
+    module's docstring for why the calling loop matters. Returns the saver;
+    stashes the context manager in the module global so it isn't
+    garbage-collected out from under the connection."""
+    global _checkpointer_cm
+    cm = AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB_PATH)
+    saver = await cm.__aenter__()
+    await saver.setup()
+    _checkpointer_cm = cm
+    return saver
+
+
+async def init_graph_async():
+    """Initialize (or reuse) the shared graph for a process with its own
+    persistent event loop (FastAPI's lifespan; the CLI's --stream mode) —
+    see this module's docstring. Returns the graph. A no-op if the
+    singleton already exists — both astream_events_turn/_resume call this
+    directly (not get_graph()) precisely so the checkpointer ends up bound
+    to whichever loop is *actually* driving them, self-healing even if a
+    process's startup path forgot to prime it via lifespan; when startup
+    DID prime it already, this is just a cheap existence check."""
     global _graph
     if _graph is None:
-        _graph = build_graph()
+        saver = await _open_checkpointer()
+        _graph = build_graph(checkpointer=saver)
+    return _graph
+
+
+def init_graph_sync() -> None:
+    """Initialize the shared graph for a process with no event loop of its
+    own (the CLI's plain mode; app/hitl_demo.py) — see this module's
+    docstring. Starts one small daemon thread hosting a persistent loop
+    purely so AsyncSqliteSaver has somewhere to live; that thread is never
+    explicitly stopped (a daemon thread dies with the process, and SQLite's
+    own journal makes an abrupt kill safe — same as a real deployment being
+    SIGKILLed)."""
+    global _graph
+    if _graph is not None:
+        return
+
+    ready = threading.Event()
+    holder: dict = {}
+
+    def _run_loop():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            holder["saver"] = loop.run_until_complete(_open_checkpointer())
+        except Exception as exc:  # noqa: BLE001 - surfaced to the waiting caller below
+            holder["error"] = exc
+            ready.set()
+            return  # nothing will ever use this loop — don't run it forever
+        ready.set()
+        loop.run_forever()
+
+    threading.Thread(
+        target=_run_loop, daemon=True, name="checkpointer-loop"
+    ).start()
+    if not ready.wait(timeout=10):
+        raise TimeoutError("Timed out starting the checkpointer's background loop")
+    if "error" in holder:
+        raise holder["error"]
+
+    _graph = build_graph(checkpointer=holder["saver"])
+
+
+def get_graph():
+    """Return the shared graph, initializing it via init_graph_sync() if no
+    entry point has primed it yet — a safe drop-in for any purely-sync
+    caller. An async entry point must call `await init_graph_async()`
+    itself first (see this module's docstring for why the order matters)."""
+    if _graph is None:
+        init_graph_sync()
     return _graph
 
 
@@ -113,6 +232,17 @@ def _config(thread_id: str) -> dict:
     }
 
 
+def _delta_for(state: dict, printed: str) -> str | None:
+    """The new suffix of the latest AI message's content since `printed`,
+    or None if this state snapshot has nothing new to show (a tool_call
+    step, a non-AI message, etc.) — shared by stream_turn's initial pass
+    and its auto-decline resume pass below."""
+    msg = state["messages"][-1]
+    if msg.type == "ai" and isinstance(msg.content, str) and msg.content:
+        return msg.content[len(printed):]
+    return None
+
+
 @observe(name="chat-turn-stream")
 def stream_turn(text: str, thread_id: str):
     """Yield the assistant's answer incrementally (used by the CLI)."""
@@ -123,10 +253,10 @@ def stream_turn(text: str, thread_id: str):
     deadline = start + REQUEST_TIMEOUT_SECONDS
     printed = ""
     final_state: dict = {}
+    cfg = _config(thread_id)
+
     for state in graph.stream(
-        {"messages": [HumanMessage(content=text)]},
-        config=_config(thread_id),
-        stream_mode="values",
+        {"messages": [HumanMessage(content=text)]}, config=cfg, stream_mode="values"
     ):
         final_state = state
         if time.monotonic() > deadline:
@@ -135,14 +265,58 @@ def stream_turn(text: str, thread_id: str):
             yield "\n[stopped: request exceeded timeout]"
             _record_turn_metrics(time.monotonic() - start, "timeout", final_state)
             return
-        msg = state["messages"][-1]
-        if msg.type == "ai" and isinstance(msg.content, str) and msg.content:
-            delta = msg.content[len(printed):]
-            printed = msg.content
+        delta = _delta_for(state, printed)
+        if delta:
+            printed += delta
             yield delta
+
+    if graph.get_state(cfg).next:
+        # Paused at human_approval's mandatory capability gate (see
+        # graph.py's should_continue) — this plain CLI mode is one-way
+        # streaming with no approve/reject prompt, unlike `make
+        # chat-stream`'s astream_events_turn/astream_events_resume round
+        # trip. Auto-decline: never silently run an unreviewed
+        # mutating/outward tool call, and never leave the thread paused
+        # forever with nobody able to resume it.
+        metrics.agent_unattended_pause_total.inc()
+        error = resumability_error(graph, cfg)
+        if error:  # never resume blindly — see resumability_error's docstring
+            yield f"\n[{error}]"
+            _record_turn_metrics(time.monotonic() - start, "error", final_state)
+            return
+        for state in graph.stream(
+            Command(resume=False), config=cfg, stream_mode="values"
+        ):
+            final_state = state
+            if time.monotonic() > deadline:
+                yield "\n[stopped: request exceeded timeout]"
+                _record_turn_metrics(time.monotonic() - start, "timeout", final_state)
+                return
+            delta = _delta_for(state, printed)
+            if delta:
+                printed += delta
+                yield delta
+
     _record_turn_metrics(
         time.monotonic() - start, _turn_outcome(final_state), final_state
     )
+
+
+def _invoke_with_timeout(graph, graph_input, cfg: dict, start: float):
+    """graph.invoke() in the executor, bounded by REQUEST_TIMEOUT_SECONDS,
+    with the friendly-timeout / error-metric handling answer() needs at
+    every invoke call site — the original turn AND the auto-decline resume
+    below both need it. Returns None on timeout (a real result is always a
+    truthy dict); re-raises other exceptions after recording them."""
+    future = _REQUEST_EXECUTOR.submit(graph.invoke, graph_input, config=cfg)
+    try:
+        return future.result(timeout=REQUEST_TIMEOUT_SECONDS)
+    except FuturesTimeoutError:
+        _record_turn_metrics(time.monotonic() - start, "timeout")
+        return None
+    except Exception:
+        _record_turn_metrics(time.monotonic() - start, "error")
+        raise
 
 
 @observe(name="chat-turn")
@@ -151,21 +325,28 @@ def answer(text: str, thread_id: str) -> str:
     langfuse_context.update_current_trace(session_id=thread_id)
     graph = get_graph()
     _ensure_seeded(graph, thread_id)
-
+    cfg = _config(thread_id)
     start = time.monotonic()
-    future = _REQUEST_EXECUTOR.submit(
-        graph.invoke,
-        {"messages": [HumanMessage(content=text)]},
-        config=_config(thread_id),
+
+    result = _invoke_with_timeout(
+        graph, {"messages": [HumanMessage(content=text)]}, cfg, start
     )
-    try:
-        result = future.result(timeout=REQUEST_TIMEOUT_SECONDS)
-    except FuturesTimeoutError:
-        _record_turn_metrics(time.monotonic() - start, "timeout")
+    if result is None:
         return "Sorry, that took too long to answer — please try again."
-    except Exception:
-        _record_turn_metrics(time.monotonic() - start, "error")
-        raise
+
+    if graph.get_state(cfg).next:
+        # See stream_turn's matching comment: POST /chat is single-shot
+        # with no way to solicit a real approval decision, so auto-decline
+        # rather than leave the run paused forever or silently run the
+        # tool call.
+        metrics.agent_unattended_pause_total.inc()
+        error = resumability_error(graph, cfg)
+        if error:  # never resume blindly — see resumability_error's docstring
+            _record_turn_metrics(time.monotonic() - start, "error")
+            return f"Sorry, I couldn't complete that — {error}"
+        result = _invoke_with_timeout(graph, Command(resume=False), cfg, start)
+        if result is None:
+            return "Sorry, that took too long to answer — please try again."
 
     _record_turn_metrics(time.monotonic() - start, _turn_outcome(result), result)
     return result["messages"][-1].content
@@ -310,7 +491,7 @@ async def astream_events_turn(text: str, thread_id: str, require_approval: bool 
     counterpart to app/hitl_demo.py's blocking Command(resume=...) loop.
     Default False keeps existing callers (app/api.py) unchanged.
     """
-    graph = get_graph()
+    graph = await init_graph_async()
     _ensure_seeded(graph, thread_id)
     trace, callbacks = _open_trace("chat-turn-stream", thread_id, text)
     cfg = {
@@ -336,9 +517,18 @@ async def astream_events_resume(thread_id: str, approved: bool):
     human's approval can take arbitrarily long (minutes, hours), so this is
     modeled as a separate trace correlated by session_id, not one span kept
     open across the wait — same reasoning as stream_turn's two-trace HITL
-    behavior.
+    behavior. That same "arbitrarily long" wait is exactly why
+    resumability_error is checked here: a human might approve hours (or a
+    redeploy) after the pause, so this is the one entry point most likely
+    to actually hit a stale or incompatible checkpoint in practice.
     """
-    graph = get_graph()
+    graph = await init_graph_async()
+    error = resumability_error(graph, {"configurable": {"thread_id": thread_id}})
+    if error:
+        yield {"type": "error", "content": error}
+        yield {"type": "done"}
+        return
+
     trace, callbacks = _open_trace(
         "chat-turn-stream-resume", thread_id, f"resume(approved={approved})"
     )
@@ -422,7 +612,7 @@ async def astream_events_turn_ctx(text: str, thread_id: str):
       {"type": "done"}
       {"type": "error",      "content": "<message>"}
     """
-    graph = get_graph()
+    graph = await init_graph_async()
     _ensure_seeded(graph, thread_id)
 
     final_answer: list[str] = []

@@ -20,7 +20,12 @@ import uuid
 
 from langfuse.decorators import langfuse_context
 
-from app.agent import astream_events_resume, astream_events_turn, stream_turn
+from app.agent import (
+    astream_events_resume,
+    astream_events_turn,
+    init_graph_async,
+    stream_turn,
+)
 
 
 def main() -> None:
@@ -117,6 +122,11 @@ async def async_main(hitl: bool = False) -> None:
     driven through the streaming event protocol instead of a blocking
     graph.invoke() call.
     """
+    # Opens the durable checkpointer on THIS asyncio.run() loop, before any
+    # graph call — astream_events_turn/_resume need the checkpointer bound
+    # to the same loop that's driving them (see app/agent.py's module
+    # docstring). A no-op if something already initialized the singleton.
+    await init_graph_async()
     thread_id = str(uuid.uuid4())
     mode = " with HITL tool approval" if hitl else ""
     print(f"Production streaming agent ready{mode} (astream_events v2). Type 'exit' to quit.\n")

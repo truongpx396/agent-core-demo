@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
 
+    # Durable checkpointer (app/agent.py) — survives a process restart,
+    # unlike the in-memory MemorySaver build_graph() defaults to for tests.
+    # A bare relative filename by design: no parent directory to create,
+    # no docker-compose service required (see GRAPH_PATTERNS.md's durable
+    # checkpointer note for why this isn't Postgres, which the stack
+    # already runs for LiteLLM but which would make the test suite depend
+    # on `make up` being up).
+    checkpoint_db_path: str = "checkpoints.sqlite3"
+
 
 settings = Settings()
 
@@ -43,3 +52,4 @@ COLLECTION = settings.collection
 LANGFUSE_HOST = settings.langfuse_host
 LANGFUSE_PUBLIC_KEY = settings.langfuse_public_key
 LANGFUSE_SECRET_KEY = settings.langfuse_secret_key
+CHECKPOINT_DB_PATH = settings.checkpoint_db_path

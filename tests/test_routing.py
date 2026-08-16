@@ -8,11 +8,20 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from app.graph import (
     MAX_ITERATIONS,
+    _mandatory_gate_reason,
+    _tool_capability,
     route_after_approval,
     route_after_check,
     route_after_validation,
     should_continue,
 )
+
+
+def _tool_call(name, call_id="1"):
+    return AIMessage(
+        content="",
+        tool_calls=[{"name": name, "args": {}, "id": call_id}],
+    )
 
 
 class TestRouteAfterValidation:
@@ -94,6 +103,83 @@ class TestShouldContinue:
     def test_missing_iterations_defaults_to_zero(self):
         state = {"messages": [AIMessage(content="The answer is 42.")]}
         assert should_continue(state) == "check_output"
+
+
+class TestToolCapability:
+    def test_known_read_only_tools(self):
+        assert _tool_capability("search_docs") == "read_only"
+        assert _tool_capability("calculator") == "read_only"
+
+    def test_known_mutating_tool(self):
+        assert _tool_capability("add_note") == "mutating"
+
+    def test_unknown_tool_defaults_to_outward(self):
+        """Fail closed: a tool added to TOOLS without a TOOL_CAPABILITIES
+        entry must be gated, not silently trusted."""
+        assert _tool_capability("some_new_tool_nobody_registered") == "outward"
+
+
+class TestMandatoryGateReason:
+    def test_all_read_only_is_none(self):
+        calls = [{"name": "search_docs"}, {"name": "calculator"}]
+        assert _mandatory_gate_reason(calls) is None
+
+    def test_one_mutating_call_is_mutating(self):
+        calls = [{"name": "search_docs"}, {"name": "add_note"}]
+        assert _mandatory_gate_reason(calls) == "mutating"
+
+    def test_undeclared_tool_outranks_mutating(self):
+        calls = [{"name": "add_note"}, {"name": "totally_unknown"}]
+        assert _mandatory_gate_reason(calls) == "outward"
+
+
+class TestShouldContinueMandatoryGate:
+    """A mutating/outward tool call must route to human_approval even when
+    require_approval is False (the default) — mandatory, not opt-in. See
+    app/tools.py::TOOL_CAPABILITIES and should_continue's docstring."""
+
+    def test_mutating_tool_gates_even_without_require_approval(self):
+        state = {
+            "iterations": 1,
+            "require_approval": False,
+            "messages": [_tool_call("add_note")],
+        }
+        assert should_continue(state) == "human_approval"
+
+    def test_undeclared_tool_gates_even_without_require_approval(self):
+        state = {
+            "iterations": 1,
+            "require_approval": False,
+            "messages": [_tool_call("some_new_tool_nobody_registered")],
+        }
+        assert should_continue(state) == "human_approval"
+
+    def test_read_only_tool_still_runs_directly_without_require_approval(self):
+        """Regression guard: the mandatory gate must not become an
+        accidental gate-everything — read-only tools keep the pre-existing
+        opt-in-only behavior."""
+        state = {
+            "iterations": 1,
+            "require_approval": False,
+            "messages": [_tool_call("calculator")],
+        }
+        assert should_continue(state) == "tools"
+
+    def test_mixed_batch_with_one_mutating_call_gates_the_whole_batch(self):
+        state = {
+            "iterations": 1,
+            "require_approval": False,
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "calculator", "args": {}, "id": "1"},
+                        {"name": "add_note", "args": {}, "id": "2"},
+                    ],
+                )
+            ],
+        }
+        assert should_continue(state) == "human_approval"
 
 
 class TestRouteAfterApproval:

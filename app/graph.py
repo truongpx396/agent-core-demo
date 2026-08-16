@@ -43,6 +43,8 @@ factory's own docstring for why.
 """
 import functools
 import logging
+import os
+import subprocess
 import time
 import uuid
 from dataclasses import dataclass
@@ -65,7 +67,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.types import RetryPolicy, interrupt
 
 from app.config import CHAT_MODEL, OPENAI_API_BASE, OPENAI_API_KEY
-from app.tools import TOOLS, search_docs
+from app.tools import TOOL_CAPABILITIES, TOOLS, search_docs
 from app import metrics
 
 logger = logging.getLogger(__name__)
@@ -94,6 +96,40 @@ MAX_HISTORY_TURNS = 8  # safety budget: bound the only unbounded input in State 
 # bug as a flaky call — see GRAPH_PATTERNS.md pattern 7.
 AGENT_RETRY_POLICY = RetryPolicy(max_attempts=3)
 
+# Bumped only on a genuinely incompatible State/topology change — a renamed
+# or removed State key, or a removed/reordered node a *paused* thread might
+# resume into. An ordinary change (a new node appended after suggest, a
+# prompt/timeout tweak) leaves this unchanged — the way to declare "this
+# change is backward-compatible" is to leave the number alone *deliberately*
+# in the same PR, never to relax the comparison in resumability_error.
+# Meaningful only with a durable checkpointer (app/agent.py's
+# AsyncSqliteSaver wiring) — MemorySaver never survives a restart, so there
+# is never a stale checkpoint to compare against.
+STATE_SCHEMA_VERSION = 1
+
+
+def _graph_version() -> str:
+    """Identifies the build that wrote a checkpoint, for resumability_error's
+    cross-restart check. `GRAPH_VERSION` (env var) is what a real deployment
+    sets at build/deploy time; the git SHA is a dev-time convenience
+    fallback; "unknown" if neither is available. Never raises — this is
+    metadata, not a safety budget, so it fails open the same way
+    MAX_TOKENS_PER_TURN's usage_metadata lookup does."""
+    version = os.environ.get("GRAPH_VERSION")
+    if version:
+        return version
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=True,
+        )
+        return result.stdout.strip() or "unknown"
+    except Exception:  # noqa: BLE001 - best-effort dev convenience only
+        return "unknown"
+
 
 class State(TypedDict):
     """Richer state: track messages, context, and flow control."""
@@ -107,6 +143,8 @@ class State(TypedDict):
     run_id: str  # Per-turn correlation id for node lifecycle logs (see
     # validate_input, _instrumented) — regenerated every turn, same reset
     # point as iterations/total_tokens.
+    graph_version: str  # Build that wrote this checkpoint — see _graph_version.
+    state_schema_version: int  # See STATE_SCHEMA_VERSION / resumability_error.
 
 
 def _last_human_message(messages: list[BaseMessage]) -> HumanMessage | None:
@@ -248,12 +286,64 @@ def validate_input(state: State) -> dict:
         "iterations": 0,
         "total_tokens": 0,
         "run_id": uuid.uuid4().hex[:8],
+        "graph_version": _graph_version(),
+        "state_schema_version": STATE_SCHEMA_VERSION,
     }
     trimmed = _trim_history(state["messages"])
     if trimmed:
         updates["messages"] = trimmed
         metrics.agent_history_compacted_total.inc()
     return updates
+
+
+def resumability_error(graph, config: dict) -> str | None:
+    """Check before every Command(resume=...) call — never resume blindly.
+    Returns None if resuming is safe, otherwise a human-readable reason
+    (and increments agent_checkpoint_issue_total, so this is visible in
+    metrics rather than only to whichever caller happened to check).
+
+    Two distinct failures, matching the two intel-agent names this mirrors
+    (see the "Durable checkpointer" note in GRAPH_PATTERNS.md):
+
+    - **checkpoint_lost** — no paused run exists for this thread
+      (`state.next` is empty). This app has no separate durable-pointer /
+      ephemeral-store split to name a *different* kind of loss — the
+      checkpointer file itself is the durable store — so this is the
+      practical equivalent: the thread id is wrong, the run already
+      completed or errored past the pause, or (in a real deployment) the
+      checkpoint file was deleted or corrupted. Calling
+      `Command(resume=...)` against a thread with nothing pending is
+      exactly the mistake this exists to catch before it happens.
+    - **checkpoint_incompatible** — the checkpoint was written by a build
+      whose `state_schema_version` differs from this build's
+      `STATE_SCHEMA_VERSION`. A renamed State key, a removed node, or a
+      reordered edge the paused thread might resume into can each fail
+      *silently* and look like a clean run otherwise — resuming into a
+      possibly different topology is refused instead. A differing
+      `graph_version` (build SHA) ALONE is not an error: ordinary deploys
+      change the SHA constantly without touching `STATE_SCHEMA_VERSION`,
+      and treating that as fatal would make every deploy a resume-killer —
+      see STATE_SCHEMA_VERSION's docstring for the bump discipline that
+      keeps this distinction meaningful.
+    """
+    state = graph.get_state(config)
+    if not state.next:
+        metrics.agent_checkpoint_issue_total.labels(reason="checkpoint_lost").inc()
+        return (
+            "checkpoint_lost: no paused run found for this thread — it may "
+            "have completed, never existed, or its checkpoint was lost."
+        )
+    paused_schema = state.values.get("state_schema_version")
+    if paused_schema != STATE_SCHEMA_VERSION:
+        metrics.agent_checkpoint_issue_total.labels(
+            reason="checkpoint_incompatible"
+        ).inc()
+        return (
+            f"checkpoint_incompatible: paused under state_schema_version "
+            f"{paused_schema!r}, this build is {STATE_SCHEMA_VERSION!r} — "
+            "refusing to resume into a possibly different topology."
+        )
+    return None
 
 
 def route_after_validation(
@@ -381,6 +471,27 @@ def _reject_tool_calls(tool_calls: list, reason: str) -> list[ToolMessage]:
     return [ToolMessage(content=reason, tool_call_id=tc["id"]) for tc in tool_calls]
 
 
+def _tool_capability(name: str) -> str:
+    """A tool absent from TOOL_CAPABILITIES (app/tools.py) defaults to
+    "outward" — fail closed, so a new tool added to TOOLS without a
+    capability entry is gated rather than silently trusted. This is the one
+    place that default is applied; everywhere else just reads the mapping."""
+    return TOOL_CAPABILITIES.get(name, "outward")
+
+
+def _mandatory_gate_reason(tool_calls: list) -> str | None:
+    """None if every call in this batch is read_only; otherwise the more
+    severe capability present ("outward" — including any undeclared tool —
+    over "mutating"), used only to label the metric in should_continue.
+    Gating itself doesn't care which one — either forces human_approval."""
+    capabilities = {_tool_capability(tc["name"]) for tc in tool_calls}
+    if "outward" in capabilities:
+        return "outward"
+    if "mutating" in capabilities:
+        return "mutating"
+    return None
+
+
 # --- Edge fn: after agent, route to tools / output check / abort ---
 def should_continue(
     state: State,
@@ -394,10 +505,22 @@ def should_continue(
     whether this is a tool call at all; then whether it's *too many* tool
     calls at once; then whether it needs human approval before running.
 
-    When `require_approval` is set on the input state, tool calls are
-    routed through `human_approval` first instead of running directly.
-    It's opt-in (default False) so the existing CLI/API behavior is
-    unchanged unless a caller asks for it — see app/hitl_demo.py.
+    Two independent reasons route to `human_approval`, and only one of them
+    is optional:
+    - `require_approval` on the input state — opt-in (default False), so
+      the existing CLI/API behavior is unchanged unless a caller asks for
+      it. See app/hitl_demo.py.
+    - Any pending tool_call whose declared capability
+      (app/tools.py::TOOL_CAPABILITIES) isn't "read_only" — mandatory,
+      never skippable via `require_approval=False`. A retrieval-augmented
+      agent already carries untrusted content on essentially every turn
+      (GRAPH_PATTERNS.md pattern 12); once that's true, letting a mutating
+      or outward-reaching tool run unsupervised too is exactly the "two of
+      three legs" exposure this app has no reason to gamble on (see
+      app/tools.py::TOOL_CAPABILITIES for the full reasoning). An
+      *undeclared* tool is treated the same as "outward," so forgetting to
+      register a new tool's capability fails toward extra caution, not past
+      it.
     """
     if state.get("iterations", 0) >= MAX_ITERATIONS:
         return "__end__"
@@ -410,7 +533,12 @@ def should_continue(
     tool_calls = state["messages"][-1].tool_calls or []
     if len(tool_calls) > MAX_TOOL_CALLS_PER_TURN:
         return "too_many_tool_calls"
-    return "human_approval" if state.get("require_approval") else "tools"
+    mandatory_reason = _mandatory_gate_reason(tool_calls)
+    if mandatory_reason:
+        metrics.agent_capability_gate_total.labels(capability=mandatory_reason).inc()
+    if state.get("require_approval") or mandatory_reason:
+        return "human_approval"
+    return "tools"
 
 
 # --- Node: safety budget — abort a turn where the LLM asked for more tool
@@ -501,7 +629,7 @@ class GraphDeps:
 
 
 # --- Build the graph ---
-def build_graph(deps: GraphDeps | None = None):
+def build_graph(deps: GraphDeps | None = None, checkpointer=None):
     """Compile the graph.
 
     `deps` bundles the graph's swappable external clients (LLM, search) —
@@ -509,6 +637,14 @@ def build_graph(deps: GraphDeps | None = None):
     GraphDeps with fakes to run full graph scenarios — reject path, tool
     loop, HITL approve/reject, iteration cap, retry — without hitting a
     live model or Qdrant. See tests/test_graph_integration.py.
+
+    `checkpointer` defaults to an in-memory MemorySaver — fine for tests
+    (nothing needs to survive this process) but never for a real HITL
+    pause: a mandatory or opt-in human_approval gate parks the run
+    indefinitely, and MemorySaver's "durability" ends the moment the
+    process restarts. app/agent.py's get_graph() passes a durable
+    AsyncSqliteSaver instead for the CLI/API singleton — see its module
+    docstring for why that's not just `checkpointer=SqliteSaver(...)` here.
     """
     deps = deps or GraphDeps()
     agent = make_agent_node(deps.llm or _make_llm())
@@ -572,4 +708,4 @@ def build_graph(deps: GraphDeps | None = None):
     builder.add_conditional_edges("check_output", route_after_check)
     builder.add_edge("retry_output", "agent")
 
-    return builder.compile(checkpointer=MemorySaver())
+    return builder.compile(checkpointer=checkpointer or MemorySaver())

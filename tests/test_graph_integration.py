@@ -220,6 +220,67 @@ class TestToolCallBudgetPath:
         assert "equals 2" in result["messages"][-1].content
 
 
+class TestMandatoryCapabilityGate:
+    """A mutating tool call must pause at human_approval even when the
+    caller never set require_approval=True — see should_continue's
+    docstring and app/tools.py::TOOL_CAPABILITIES. Contrast with
+    TestHumanApprovalPath above, which exercises the pre-existing *opt-in*
+    gate via a read_only tool."""
+
+    def test_add_note_pauses_without_require_approval_then_resumes_on_approve(
+        self, monkeypatch
+    ):
+        # Approving lets ToolNode actually execute add_note — stub its I/O
+        # (embedding + Qdrant upsert) the same way test_tools.py does, so
+        # this stays a hermetic graph test rather than needing live
+        # services just because the *approved* path runs a real tool.
+        from app import qdrant_store, tools
+
+        monkeypatch.setattr(tools, "embed_text", lambda text: [0.0])
+        monkeypatch.setattr(qdrant_store, "upsert", lambda points: None)
+
+        llm = _fake_llm(
+            _tool_call_message(
+                "add_note",
+                {"title": "Refunds", "content": "30 days.", "topic": "company"},
+            ),
+            AIMessage(content="I've added a note about the refund policy."),
+        )
+        g = build_graph(GraphDeps(llm=llm))
+        config = _config()
+
+        g.invoke(
+            {"messages": [HumanMessage(content="remember our refund policy")]},
+            config=config,
+        )
+        state = g.get_state(config)
+        assert state.next, "a mutating tool call must pause even without require_approval"
+
+        result = g.invoke(Command(resume=True), config=config)
+        assert (
+            result["messages"][-1].content
+            == "I've added a note about the refund policy."
+        )
+
+    def test_add_note_rejected_returns_to_agent_without_running(self):
+        llm = _fake_llm(
+            _tool_call_message(
+                "add_note",
+                {"title": "Refunds", "content": "30 days.", "topic": "company"},
+            ),
+            AIMessage(content="Okay, I won't save that."),
+        )
+        g = build_graph(GraphDeps(llm=llm))
+        config = _config()
+
+        g.invoke(
+            {"messages": [HumanMessage(content="remember our refund policy")]},
+            config=config,
+        )
+        result = g.invoke(Command(resume=False), config=config)
+        assert result["messages"][-1].content == "Okay, I won't save that."
+
+
 class TestReliabilityPolicy:
     def test_agent_node_has_the_retry_policy_wired(self):
         """Structural check that AGENT_RETRY_POLICY is actually attached to

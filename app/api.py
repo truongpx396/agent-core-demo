@@ -11,15 +11,31 @@ Reuses the exact same agent runtime as the CLI, so conversation memory
 Run with: `make serve`  (then open http://localhost:8000/docs)
 """
 import json
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response
 from fastapi.responses import StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-from app.agent import answer, astream_events_turn
+from app.agent import answer, astream_events_turn, init_graph_async
 from app.schemas import ChatRequest, ChatResponse, HealthResponse
 
-app = FastAPI(title="Core AI Stack Demo", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Opens the durable checkpointer on uvicorn's own event loop, once, at
+    # startup — not lazily on first request. This matters beyond warming
+    # the connection: /chat (a plain `def`, so FastAPI runs it in its own
+    # threadpool — a different thread than uvicorn's loop) and /chat/stream
+    # (`async def`, runs directly on uvicorn's loop) must share ONE
+    # checkpointer bound to THIS loop, or the async path hits "bound to a
+    # different event loop" — see app/agent.py's module docstring for the
+    # full reasoning (verified empirically before writing that doc).
+    await init_graph_async()
+    yield
+
+
+app = FastAPI(title="Core AI Stack Demo", version="1.0.0", lifespan=lifespan)
 
 
 @app.get("/health", response_model=HealthResponse)

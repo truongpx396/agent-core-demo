@@ -5,6 +5,22 @@ langchain>=0.3,<0.4
 langchain-core>=0.3,<0.4
 langchain-openai>=0.2,<0.4
 qdrant-client>=1.11.0
+
+# Durable checkpointer (app/agent.py's init_graph_sync/init_graph_async) —
+# survives a process restart, unlike build_graph()'s bare-call default
+# MemorySaver. <3 pins to the 2.x generation matching our langgraph-checkpoint
+# 2.x; the 3.x line requires langgraph-checkpoint>=4, which the pinned
+# langgraph 0.2.x here hasn't been verified against.
+langgraph-checkpoint-sqlite<3
+# Pinned below its own latest: langgraph-checkpoint-sqlite==2.0.11's
+# AsyncSqliteSaver.setup() calls aiosqlite.Connection.is_alive() — a
+# threading.Thread method aiosqlite dropped when Connection stopped
+# subclassing Thread in later releases (0.22+). Without this pin, pip
+# resolves the newest aiosqlite and every checkpointer call raises
+# `AttributeError: 'Connection' object has no attribute 'is_alive'`
+# (reproduced and fixed while wiring this up — see
+# tests/test_durable_checkpoint.py, which would have caught it).
+aiosqlite<0.22
 langfuse>=2.50.0,<3.0.0
 python-dotenv>=1.0.0
 pydantic>=2.5,<3

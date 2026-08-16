@@ -5,7 +5,7 @@ features of four popular AI-infra tools in one place:
 
 | Tool          | What this demo shows |
 |---------------|----------------------|
-| **LangGraph** | Typed state, nodes, conditional edges, a tool-calling **agent loop**, `MemorySaver` **memory**, and **streaming** |
+| **LangGraph** | Typed state, nodes, conditional edges, a tool-calling **agent loop**, a **durable checkpointer** (`AsyncSqliteSaver`; `MemorySaver` for tests) giving both **memory** and a human-approval pause that survives a restart, and **streaming** |
 | **LiteLLM**   | An OpenAI-compatible **proxy** routing chat + embeddings to Ollama, with **retries**, **fallbacks**, and **Langfuse logging at the proxy** |
 | **Qdrant**    | Collection creation, **batch upsert with payloads**, vector search, and **metadata filtering** |
 | **Langfuse**  | `@observe` tracing, the LangGraph **callback handler**, nested spans, and **session grouping** by `thread_id` |
@@ -68,6 +68,14 @@ Try these in the chat:
 - `What is a LangGraph checkpointer?`  → uses **search_docs** (retrieval)
 - `What are Acme Corp support hours?`  → retrieval with a **topic** the agent can filter on
 - `what is 21 * 2?`                    → uses the **calculator** tool
+- `remember that our refund window is 30 days, under the company topic` →
+  uses **add_note**, the one *mutating* tool — it always pauses for human
+  approval first, regardless of any flag, since it writes to the knowledge
+  base (see GRAPH_PATTERNS.md pattern 15). Plain `make chat` has no way to
+  answer that prompt, so it auto-declines and the agent explains why; run
+  `make chat-stream` instead to actually see and approve/reject it (`y`/`N`)
+
+
 - Ask a follow-up like `and what did I just ask?` → shows **memory**
 
 Then open **http://localhost:3000** to see the traces.
@@ -94,8 +102,18 @@ curl -s -X POST http://localhost:8000/chat \
 Reuse the same `thread_id` across calls to keep conversation **memory**; each
 call is also traced in Langfuse under that id as the session.
 
+`POST /chat` is single-shot — if the agent calls `add_note` (the one
+mutating tool, always gated — see GRAPH_PATTERNS.md pattern 15), there's no
+way for this endpoint to show an approval prompt, so it auto-declines and
+returns the agent's response to that. `POST /chat/stream` surfaces the
+pause as an `approval_required` SSE event instead (no `/chat/resume`
+endpoint yet to act on it from HTTP — see GRAPH_PATTERNS.md's "Extending
+Further"); `make chat-stream` and `app/hitl_demo.py` are the two places
+that actually drive the approve/reject prompt end to end today.
+
 - `GET /metrics` → Prometheus text format (tool calls, retries, HITL decisions,
-  request latency/outcome — see `app/metrics.py`)
+  capability-gate hits, checkpoint issues, request latency/outcome — see
+  `app/metrics.py`)
 
 ## Ports
 
@@ -133,15 +151,16 @@ call is also traced in Langfuse under that id as the session.
 | `app/embeddings.py`    | Embedding client (via LiteLLM) |
 | `app/qdrant_store.py`  | Qdrant collection / upsert / filtered search |
 | `app/ingest.py`        | Embed + load docs |
-| `app/tools.py`         | `search_docs` + `calculator` tools (each wrapped with a timeout budget) |
-| `app/graph.py`         | LangGraph agent (state, edges, memory, safety budgets) |
-| `app/agent.py`         | Shared runtime (used by both CLI and API); request-level timeout + metrics recording |
+| `app/tools.py`         | `search_docs` + `calculator` (read-only) + `add_note` (the one mutating tool) — each wrapped with a timeout budget, each declaring a capability in `TOOL_CAPABILITIES` |
+| `app/graph.py`         | LangGraph agent (state, edges, memory, safety budgets, mandatory capability gate, checkpoint version stamping) |
+| `app/agent.py`         | Shared runtime (used by both CLI and API); request-level timeout + metrics recording; durable-checkpointer init (`init_graph_sync`/`init_graph_async`) |
 | `app/metrics.py`       | Prometheus counters/histograms + the tool-call callback handler |
 | `app/eval.py`          | Golden-dataset evaluation harness (`make eval`) |
 | `app/chat.py`          | Streaming CLI + Langfuse tracing |
+| `app/hitl_demo.py`     | Runnable HITL pause/resume demo against the shared durable graph (`python -m app.hitl_demo "..."`) |
 | `app/schemas.py`       | Pydantic request/response models |
 | `app/api.py`           | FastAPI service (`/health`, `/chat`, `/chat/stream`, `/metrics`) |
-| `tests/`               | pytest suite — routing/node/graph tests against a fake LLM (`make test`) |
+| `tests/`               | pytest suite — routing/node/graph/tool/checkpointer tests against a fake LLM and a real tmp-file SQLite checkpointer (`make test`, no live services) |
 
 ## Troubleshooting
 

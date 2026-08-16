@@ -2,19 +2,32 @@
 
 - `search_docs`: retrieval from Qdrant, with an optional metadata (topic) filter.
 - `calculator`: a second tool so the agent must *choose* which to call.
+- `add_note`: writes a new note into the Qdrant knowledge base — the one
+  *mutating* tool. See `TOOL_CAPABILITIES` below for why it's declared, not
+  just implemented, as mutating.
 
-Both tools declare an explicit **Pydantic `args_schema`**. This is the robust
+All tools declare an explicit **Pydantic `args_schema`**. This is the robust
 way to define tool inputs: the schema (enums, descriptions, validators) is what
 the LLM sees as the tool's JSON schema, so it constrains what the model can
-send and rejects bad arguments loudly instead of failing silently.
+send and rejects bad arguments loudly instead of failing silently. `add_note`
+leans on this harder than the read-only tools do: its args are a fixed,
+closed set (title/content/topic, topic restricted to the existing `Topic`
+enum) — there is no free-form query or generated-write path here, deliberately.
+A tool that let the model construct its own write target (the equivalent of
+letting it generate SQL) would defeat the whole point of gating writes behind
+`add_note`'s narrow, reviewable surface — see GRAPH_PATTERNS.md's "fixed
+tools, never generated queries" note.
 """
 import ast
 import concurrent.futures
 import operator
+import uuid
 from enum import Enum
+from typing import Literal
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field, field_validator
+from qdrant_client.models import PointStruct
 
 from app import qdrant_store
 from app.embeddings import embed_text
@@ -124,4 +137,76 @@ def calculator(expression: str) -> str:
     return _run_with_timeout(_calculator_impl, expression)
 
 
-TOOLS = [search_docs, calculator]
+class AddNoteArgs(BaseModel):
+    title: str = Field(..., description="Short title for the note.")
+    content: str = Field(..., description="The note's text.")
+    topic: Topic = Field(
+        ..., description="Must be one of: langgraph, qdrant, company."
+    )
+
+    @field_validator("title", "content")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("must not be empty")
+        return v
+
+
+def _add_note_impl(title: str, content: str, topic: Topic) -> str:
+    """Embed and upsert one new point into the knowledge base.
+
+    A fixed, single-purpose write: the only variables are the three typed
+    fields above, there's no query/filter/target the model constructs
+    itself. A fresh UUID id (never a caller-supplied one) means this can
+    only ever *add* a point, never overwrite or target an existing one by
+    guessing its id — the write surface this tool exposes is exactly
+    "append one note," nothing broader.
+    """
+    text = f"{title}: {content}"
+    vector = embed_text(text)
+    point = PointStruct(
+        id=str(uuid.uuid4()),
+        vector=vector,
+        payload={"text": text, "topic": topic.value, "title": title},
+    )
+    qdrant_store.upsert([point])
+    return f"Note '{title}' added to the {topic.value} knowledge base."
+
+
+@tool(args_schema=AddNoteArgs)
+def add_note(title: str, content: str, topic: Topic) -> str:
+    """Add a new note to the knowledge base so future searches can find it.
+
+    This WRITES to the knowledge base — unlike search_docs/calculator, this
+    changes what other users and future turns will see. It is declared
+    "mutating" in TOOL_CAPABILITIES, which means app/graph.py's
+    should_continue routes it through human_approval every time, regardless
+    of whether the caller opted into require_approval.
+    """
+    return _run_with_timeout(_add_note_impl, title, content, topic)
+
+
+TOOLS = [search_docs, calculator, add_note]
+
+# --- Tool capability declarations -------------------------------------------
+# Every tool declares which "leg" of exposure it adds: read_only (safe to run
+# immediately), mutating (writes/changes persisted state), or outward
+# (reaches outside the corpus — sends, calls an external service, etc.).
+# app/graph.py's should_continue enforces this: a tool_call batch containing
+# ANY non-read_only tool is routed through human_approval unconditionally —
+# "mandatory," not the opt-in require_approval gate — because a retrieval-
+# augmented agent's context is untrusted content on essentially every turn
+# (see GRAPH_PATTERNS.md pattern 12): once a run already carries "exposure to
+# untrusted content," adding "ability to mutate state" is the second of the
+# two legs a run may hold unsupervised, and the third (private/sensitive
+# data — not distinguished in this single-tenant demo) is never worth
+# gambling on. A tool absent from this mapping defaults to "outward" — fail
+# closed, so a new tool added to TOOLS without a capability entry is gated
+# rather than silently trusted.
+ToolCapability = Literal["read_only", "mutating", "outward"]
+
+TOOL_CAPABILITIES: dict[str, ToolCapability] = {
+    "search_docs": "read_only",
+    "calculator": "read_only",
+    "add_note": "mutating",
+}

@@ -101,6 +101,48 @@ class TestNodeLevelMetrics:
         graph.validate_input({"messages": messages})
         assert _count(metrics.agent_history_compacted_total) == before + 1
 
+    def test_mandatory_gate_increments_capability_gate_counter(self):
+        before = _count(metrics.agent_capability_gate_total, capability="mutating")
+        state = {
+            "iterations": 1,
+            "require_approval": False,
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "add_note", "args": {}, "id": "c1"},
+                    ],
+                )
+            ],
+        }
+        assert graph.should_continue(state) == "human_approval"
+        assert (
+            _count(metrics.agent_capability_gate_total, capability="mutating")
+            == before + 1
+        )
+
+    def test_opt_in_require_approval_does_not_increment_capability_gate_counter(self):
+        """require_approval=True with an all-read_only batch is the
+        pre-existing opt-in path, not the mandatory-capability path — the
+        two are recorded separately (agent_human_approval_total vs
+        agent_capability_gate_total) so they stay distinguishable."""
+        before = _count(metrics.agent_capability_gate_total, capability="mutating")
+        state = {
+            "iterations": 1,
+            "require_approval": True,
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "calculator", "args": {}, "id": "c1"}],
+                )
+            ],
+        }
+        assert graph.should_continue(state) == "human_approval"
+        assert (
+            _count(metrics.agent_capability_gate_total, capability="mutating")
+            == before
+        )
+
 
 class TestToolCallbackMetrics:
     """MetricsCallbackHandler.on_tool_start / on_tool_error fire from
