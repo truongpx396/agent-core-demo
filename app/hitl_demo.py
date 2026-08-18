@@ -20,6 +20,7 @@ it calls the real graph.
 
 Run with: `python -m app.hitl_demo "what is 12 * 7?"`
 """
+import getpass
 import sys
 import uuid
 
@@ -27,12 +28,28 @@ from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from app.agent import get_graph
+from app.config import DEFAULT_TENANT
 from app.graph import resumability_error
+from app.security import SecurityCtx
+
+# Local dev ctx — see app/chat.py's matching _LOCAL_CTX for why this
+# process itself is the trusted boundary and no header-extraction gap
+# applies here the way it does in app/api.py.
+_LOCAL_CTX: SecurityCtx = {
+    "tenant": DEFAULT_TENANT,
+    "principal": f"local:{getpass.getuser()}",
+    "claims": {},
+}
 
 
 def run(question: str, thread_id: str | None = None) -> None:
     graph = get_graph()
-    config = {"configurable": {"thread_id": thread_id or str(uuid.uuid4())}}
+    config = {
+        "configurable": {
+            "thread_id": thread_id or str(uuid.uuid4()),
+            "ctx": _LOCAL_CTX,
+        }
+    }
 
     result = graph.invoke(
         {"messages": [HumanMessage(content=question)], "require_approval": True},

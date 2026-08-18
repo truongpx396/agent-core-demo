@@ -21,6 +21,7 @@ from langchain_core.messages import AIMessage
 from app import agent as agent_module
 from app import metrics
 from app.graph import GraphDeps, build_graph
+from tests.conftest import TEST_CTX
 
 
 def _count(counter, **labels):
@@ -58,7 +59,7 @@ class TestAnswerAutoDecline:
         )
         before = _count(metrics.agent_unattended_pause_total)
 
-        result = agent_module.answer("remember this", str(uuid.uuid4()))
+        result = agent_module.answer("remember this", str(uuid.uuid4()), TEST_CTX)
 
         assert result == "Okay, I won't save that without approval."
         assert _count(metrics.agent_unattended_pause_total) == before + 1
@@ -73,7 +74,7 @@ class TestAnswerAutoDecline:
         )
         before = _count(metrics.agent_unattended_pause_total)
 
-        result = agent_module.answer("what is 1+1", str(uuid.uuid4()))
+        result = agent_module.answer("what is 1+1", str(uuid.uuid4()), TEST_CTX)
 
         assert "equals 2" in result
         assert _count(metrics.agent_unattended_pause_total) == before
@@ -92,7 +93,7 @@ class TestStreamTurnAutoDecline:
         )
         before = _count(metrics.agent_unattended_pause_total)
 
-        chunks = list(agent_module.stream_turn("remember this", str(uuid.uuid4())))
+        chunks = list(agent_module.stream_turn("remember this", str(uuid.uuid4()), TEST_CTX))
 
         assert "".join(chunks) == "Okay, I won't save that without approval."
         assert _count(metrics.agent_unattended_pause_total) == before + 1
@@ -105,7 +106,7 @@ class TestStreamTurnAutoDecline:
         )
         before = _count(metrics.agent_unattended_pause_total)
 
-        chunks = list(agent_module.stream_turn("what is 1+1", str(uuid.uuid4())))
+        chunks = list(agent_module.stream_turn("what is 1+1", str(uuid.uuid4()), TEST_CTX))
 
         assert "equals 2" in "".join(chunks)
         assert _count(metrics.agent_unattended_pause_total) == before

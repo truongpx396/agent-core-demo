@@ -24,6 +24,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from app import agent as agent_module
 from app import metrics
 from app.graph import STATE_SCHEMA_VERSION, GraphDeps, build_graph, resumability_error
+from tests.conftest import TEST_CTX
 
 
 def _count(counter, **labels):
@@ -135,7 +136,7 @@ class TestDurabilityAcrossRestart:
                 graph = build_graph(GraphDeps(llm=_fake_llm()), checkpointer=saver)
                 await graph.ainvoke(
                     {"messages": [HumanMessage(content="remember this")]},
-                    config={"configurable": {"thread_id": thread_id}},
+                    config={"configurable": {"thread_id": thread_id, "ctx": TEST_CTX}},
                 )
 
         async def _read():
@@ -176,7 +177,7 @@ class TestResumabilityError:
             )
         )
         graph = build_graph(GraphDeps(llm=llm))
-        config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+        config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
         graph.invoke(
             {"messages": [HumanMessage(content="hi")], "require_approval": True},
             config=config,

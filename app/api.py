@@ -9,16 +9,45 @@ Reuses the exact same agent runtime as the CLI, so conversation memory
 (keyed by thread_id) and Langfuse tracing work identically here.
 
 Run with: `make serve`  (then open http://localhost:8000/docs)
+
+## Identity: trusted headers, NOT authentication (app/security.py)
+
+`get_ctx` reads `X-Tenant-Id`/`X-Principal-Id` and stamps a `SecurityCtx`.
+This is the seam a real deployment's auth middleware plugs into — it is
+**not** authentication itself: nothing here verifies a password, a JWT, or
+a session, and nothing stops a client from sending any header value it
+likes. That's fine only because nothing downstream trusts an HTTP request
+directly: in production this service sits behind a gateway/reverse proxy
+that authenticates the caller and sets these headers itself, stripping any
+client-supplied copies first — exactly how `X-Forwarded-*` headers are
+conventionally only trusted from a proxy hop, never from the original
+client. Wiring that gateway is out of scope here (see GRAPH_PATTERNS.md);
+what this app owes is the correct shape at the boundary — required
+headers, fail closed (422) if absent, never a body field a client could
+set directly, never a default identity — so dropping in real
+authentication later is a gateway config change, not a rewrite of this file.
 """
 import json
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response
+from fastapi import Depends, FastAPI, Header, Response
 from fastapi.responses import StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.agent import answer, astream_events_turn, init_graph_async
 from app.schemas import ChatRequest, ChatResponse, HealthResponse
+from app.security import SecurityCtx
+
+
+async def get_ctx(
+    x_tenant_id: str = Header(..., description="Trusted-layer tenant id."),
+    x_principal_id: str = Header(..., description="Trusted-layer principal id."),
+) -> SecurityCtx:
+    """FastAPI dependency: required headers, so a request missing either
+    one never reaches an endpoint at all (FastAPI returns 422 before the
+    handler runs) — the fail-closed behavior lives in the *shape* of the
+    dependency, not in a runtime check here."""
+    return {"tenant": x_tenant_id, "principal": x_principal_id, "claims": {}}
 
 
 @asynccontextmanager
@@ -50,13 +79,15 @@ def metrics_endpoint() -> Response:
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest) -> ChatResponse:
-    text = answer(req.message, req.thread_id)
+def chat(req: ChatRequest, ctx: SecurityCtx = Depends(get_ctx)) -> ChatResponse:
+    text = answer(req.message, req.thread_id, ctx)
     return ChatResponse(thread_id=req.thread_id, answer=text)
 
 
 @app.post("/chat/stream")
-async def chat_stream(req: ChatRequest) -> StreamingResponse:
+async def chat_stream(
+    req: ChatRequest, ctx: SecurityCtx = Depends(get_ctx)
+) -> StreamingResponse:
     """Production SSE endpoint — streams typed events as they happen.
 
     Each line is a standard Server-Sent Event:
@@ -69,7 +100,7 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
     Reuse `thread_id` across calls to keep conversation memory.
     """
     async def generate():
-        async for event in astream_events_turn(req.message, req.thread_id):
+        async for event in astream_events_turn(req.message, req.thread_id, ctx):
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(

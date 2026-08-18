@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     collection: str = "docs"
 
+    # Multi-tenant isolation (app/security.py) — the tenant app/ingest.py
+    # stamps on the seeded sample docs. A real deployment ingests per real
+    # tenant; this exists so `make ingest` still has a tenant to stamp
+    # without inventing a signup flow just to run the demo.
+    default_tenant: str = "acme"
+
     # Langfuse
     langfuse_host: str = "http://localhost:3000"
     langfuse_public_key: str = ""
@@ -49,6 +55,7 @@ CHAT_MODEL = settings.chat_model
 EMBED_MODEL = settings.embed_model
 QDRANT_URL = settings.qdrant_url
 COLLECTION = settings.collection
+DEFAULT_TENANT = settings.default_tenant
 LANGFUSE_HOST = settings.langfuse_host
 LANGFUSE_PUBLIC_KEY = settings.langfuse_public_key
 LANGFUSE_SECRET_KEY = settings.langfuse_secret_key

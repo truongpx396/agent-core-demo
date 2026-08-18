@@ -15,6 +15,7 @@ Run with: `make chat`, `make chat-stream`, or
 `python -m app.chat --stream --hitl`
 """
 import asyncio
+import getpass
 import sys
 import uuid
 
@@ -26,6 +27,21 @@ from app.agent import (
     init_graph_async,
     stream_turn,
 )
+from app.config import DEFAULT_TENANT
+from app.security import SecurityCtx
+
+# Local dev ctx: this process IS the trusted boundary (no network hop, no
+# untrusted client to spoof it) — unlike app/api.py's header extraction,
+# which explicitly is NOT authentication (see its module docstring), there
+# is no analogous gap here to name. `tenant` matches DEFAULT_TENANT so the
+# CLI actually sees the docs `make ingest` seeded; `principal` is the OS
+# user, so multiple people on one machine get separate memories
+# (app/tools.py's remember/recall_memories) rather than sharing one.
+_LOCAL_CTX: SecurityCtx = {
+    "tenant": DEFAULT_TENANT,
+    "principal": f"local:{getpass.getuser()}",
+    "claims": {},
+}
 
 
 def main() -> None:
@@ -41,7 +57,7 @@ def main() -> None:
         if not text:
             continue
         print("bot> ", end="", flush=True)
-        for delta in stream_turn(text, thread_id):
+        for delta in stream_turn(text, thread_id, _LOCAL_CTX):
             print(delta, end="", flush=True)
         print()
 
@@ -107,11 +123,13 @@ async def _render_stream(events) -> bool:
 async def _async_turn(text: str, thread_id: str, hitl: bool = False) -> None:
     print("bot> ", end="", flush=True)
     needs_approval = await _render_stream(
-        astream_events_turn(text, thread_id, require_approval=hitl)
+        astream_events_turn(text, thread_id, _LOCAL_CTX, require_approval=hitl)
     )
     while needs_approval:
         decision = input("Approve? [y/N] ").strip().lower() == "y"
-        needs_approval = await _render_stream(astream_events_resume(thread_id, decision))
+        needs_approval = await _render_stream(
+            astream_events_resume(thread_id, decision, _LOCAL_CTX)
+        )
 
 
 async def async_main(hitl: bool = False) -> None:

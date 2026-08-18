@@ -23,6 +23,7 @@ from app.graph import (
     retry_output,
     too_many_tool_calls,
 )
+from tests.conftest import TEST_CTX
 
 
 def _count(counter, **labels):
@@ -32,7 +33,7 @@ def _count(counter, **labels):
 
 def _config():
     return {
-        "configurable": {"thread_id": str(uuid.uuid4())},
+        "configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX},
         "callbacks": [metrics.MetricsCallbackHandler()],
     }
 
@@ -82,12 +83,12 @@ class TestNodeLevelMetrics:
         assert _count(metrics.agent_tool_budget_exceeded_total) == before + 1
 
     def test_retrieve_context_failure_increments_degraded_counter(self):
-        def failing_search_docs(query):
+        def failing_search_docs(query, ctx):
             raise RuntimeError("boom")
 
         retrieve_context = graph.make_retrieve_context_node(failing_search_docs)
         before = _count(metrics.agent_context_retrieval_degraded_total)
-        retrieve_context({"messages": [HumanMessage(content="hi")]})
+        retrieve_context({"messages": [HumanMessage(content="hi")], "ctx": TEST_CTX})
         assert _count(metrics.agent_context_retrieval_degraded_total) == before + 1
 
     def test_history_trim_increments_compacted_counter(self):
@@ -98,7 +99,7 @@ class TestNodeLevelMetrics:
             for i in range(MAX_HISTORY_TURNS + 1)
         ]
         before = _count(metrics.agent_history_compacted_total)
-        graph.validate_input({"messages": messages})
+        graph.validate_input({"messages": messages}, {"configurable": {"ctx": TEST_CTX}})
         assert _count(metrics.agent_history_compacted_total) == before + 1
 
     def test_mandatory_gate_increments_capability_gate_counter(self):

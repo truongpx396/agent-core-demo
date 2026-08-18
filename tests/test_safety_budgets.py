@@ -23,12 +23,17 @@ from app.graph import (
     too_many_tool_calls,
     validate_input,
 )
+from tests.conftest import TEST_CTX
 
 
 def _tool_call_message(name, args, call_id="call_1"):
     return AIMessage(
         content="", tool_calls=[{"name": name, "args": args, "id": call_id}]
     )
+
+
+def _cfg(ctx=TEST_CTX):
+    return {"configurable": {"ctx": ctx}}
 
 
 class TestPerTurnReset:
@@ -42,7 +47,7 @@ class TestPerTurnReset:
             "iterations": 7,
             "total_tokens": 5000,
         }
-        result = validate_input(state)
+        result = validate_input(state, _cfg())
         assert result["iterations"] == 0
         assert result["total_tokens"] == 0
 
@@ -52,8 +57,22 @@ class TestPerTurnReset:
         iterations/total_tokens, or logs from different turns on a
         long-running thread would be indistinguishable."""
         state = {"messages": [HumanMessage(content="hi")], "run_id": "stale"}
-        result = validate_input(state)
+        result = validate_input(state, _cfg())
         assert result["run_id"] and result["run_id"] != "stale"
+
+    def test_validate_input_stamps_ctx_from_config(self):
+        """ctx comes from config["configurable"]["ctx"] — the trusted
+        boundary (app/api.py's header extraction, or a local dev ctx) —
+        never derived from state/message content. See State's docstring
+        for why this is the only node allowed to write it."""
+        state = {"messages": [HumanMessage(content="hi")]}
+        result = validate_input(state, _cfg())
+        assert result["ctx"] == TEST_CTX
+
+    def test_validate_input_stamps_none_when_config_has_no_ctx(self):
+        state = {"messages": [HumanMessage(content="hi")]}
+        result = validate_input(state, {"configurable": {}})
+        assert result["ctx"] is None
 
 
 class TestHistoryBudget:
@@ -100,7 +119,7 @@ class TestHistoryBudget:
     def test_validate_input_applies_the_trim_and_increments_metric(self):
         before = metrics.agent_history_compacted_total._value.get()
         state = {"messages": self._turns(MAX_HISTORY_TURNS + 1)}
-        result = validate_input(state)
+        result = validate_input(state, _cfg())
 
         assert "messages" in result
         assert all(isinstance(m, RemoveMessage) for m in result["messages"])
@@ -108,7 +127,7 @@ class TestHistoryBudget:
 
     def test_validate_input_skips_the_messages_key_when_nothing_to_trim(self):
         state = {"messages": self._turns(1)}
-        result = validate_input(state)
+        result = validate_input(state, _cfg())
         assert "messages" not in result
 
 

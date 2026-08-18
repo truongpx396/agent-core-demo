@@ -28,6 +28,15 @@ Shows real-world scenarios beyond basic "LLM + tools" loop:
 - Node telemetry: every node is wrapped (at graph-registration time, see
   _instrumented) with structured start/complete/failed logs carrying a
   per-turn run_id and duration_ms — metadata only, never message content.
+- Multi-tenant isolation: a SecurityCtx (app/security.py) is stamped once
+  by validate_input from config, never from message content; a missing or
+  malformed one fails closed at reject_context, before any retrieval or
+  spend. Every read/write downstream (search_docs, add_note, remember) is
+  scoped to it via a Qdrant pre-filter, never a Python post-filter.
+- Cross-session memory: recall is automatic (folded into retrieve_context,
+  re-filtered against current ctx on every call); writing is only ever
+  explicit, via the `remember` tool — nothing here extracts facts from
+  turn text autonomously (see app/tools.py's module docstring).
 
 Nodes and routing functions live at module level (not nested inside
 build_graph) specifically so they can be unit-tested directly — imported
@@ -58,6 +67,7 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.errors import GraphBubbleUp
@@ -67,7 +77,8 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.types import RetryPolicy, interrupt
 
 from app.config import CHAT_MODEL, OPENAI_API_BASE, OPENAI_API_KEY
-from app.tools import TOOL_CAPABILITIES, TOOLS, search_docs
+from app.security import SecurityCtx, valid_ctx
+from app.tools import TOOL_CAPABILITIES, TOOLS, recall_memories, search_docs
 from app import metrics
 
 logger = logging.getLogger(__name__)
@@ -145,6 +156,12 @@ class State(TypedDict):
     # point as iterations/total_tokens.
     graph_version: str  # Build that wrote this checkpoint — see _graph_version.
     state_schema_version: int  # See STATE_SCHEMA_VERSION / resumability_error.
+    ctx: SecurityCtx | None  # Stamped ONCE by validate_input, from
+    # config["configurable"]["ctx"] — the trusted boundary (app/api.py's
+    # header extraction, or a local dev ctx from app/chat.py/hitl_demo.py).
+    # Read-only from here on: no other node may write this key. See
+    # app/security.py's SecurityCtx docstring and route_after_validation's
+    # fail-closed check below.
 
 
 def _last_human_message(messages: list[BaseMessage]) -> HumanMessage | None:
@@ -269,25 +286,33 @@ def _make_llm():
 
 
 # --- Node: validate input. Also resets the per-turn safety budgets
-# (iterations, total_tokens, run_id) and trims history: validate_input is
-# the fixed entry point for every graph.invoke() call (START ->
-# validate_input, always), but is *not* re-run when resuming a paused HITL
-# turn via Command(resume=...) — that resumes inside human_approval
-# directly. So this runs exactly once per conversation turn, which is what
-# "per turn" budgets need: without this reset, `iterations`/`total_tokens`
-# persist in the checkpointed state and keep climbing turn over turn, so
-# MAX_ITERATIONS would eventually end the graph on a random future turn
-# regardless of how much work that turn actually did. `run_id` gets a fresh
-# value here for the same reason. History trimming (MAX_HISTORY_TURNS) also
-# runs here since this is the one point every turn passes through exactly
-# once — see _trim_history.
-def validate_input(state: State) -> dict:
+# (iterations, total_tokens, run_id), trims history, and stamps SecurityCtx:
+# validate_input is the fixed entry point for every graph.invoke() call
+# (START -> validate_input, always), but is *not* re-run when resuming a
+# paused HITL turn via Command(resume=...) — that resumes inside
+# human_approval directly. So this runs exactly once per conversation turn,
+# which is what "per turn" budgets need: without this reset,
+# `iterations`/`total_tokens` persist in the checkpointed state and keep
+# climbing turn over turn, so MAX_ITERATIONS would eventually end the graph
+# on a random future turn regardless of how much work that turn actually
+# did. `run_id` gets a fresh value here for the same reason. History
+# trimming (MAX_HISTORY_TURNS) also runs here since this is the one point
+# every turn passes through exactly once — see _trim_history.
+#
+# `ctx` is read from `config["configurable"]["ctx"]` — never from `state`,
+# never from message content — and stamped into state exactly once, here.
+# This is the ONLY node that ever writes state["ctx"]; every other node
+# that needs it reads state["ctx"] as read-only (see State's docstring).
+# route_after_validation checks it's actually valid before anything
+# downstream runs — a missing/malformed ctx never reaches retrieve_context.
+def validate_input(state: State, config: RunnableConfig) -> dict:
     updates: dict = {
         "iterations": 0,
         "total_tokens": 0,
         "run_id": uuid.uuid4().hex[:8],
         "graph_version": _graph_version(),
         "state_schema_version": STATE_SCHEMA_VERSION,
+        "ctx": (config.get("configurable") or {}).get("ctx"),
     }
     trimmed = _trim_history(state["messages"])
     if trimmed:
@@ -348,7 +373,19 @@ def resumability_error(graph, config: dict) -> str | None:
 
 def route_after_validation(
     state: State,
-) -> Literal["retrieve_context", "reject_input"]:
+) -> Literal["retrieve_context", "reject_input", "reject_context"]:
+    """Checked in order: security context first, then the message itself.
+
+    A missing/malformed ctx is a system-level fact (something upstream
+    failed to stamp one — see validate_input) rather than anything the
+    user typed, so it's routed to a distinct node (reject_context) with
+    its own message rather than folded into reject_input's "you typed
+    nothing" — conflating the two would make a real infra problem read
+    like a user error in the transcript and in agent_requests_total's
+    outcome label (see app/agent.py::_turn_outcome).
+    """
+    if not valid_ctx(state.get("ctx")):
+        return "reject_context"
     last_human = _last_human_message(state["messages"])
     if last_human is None or not last_human.content.strip():
         return "reject_input"
@@ -365,18 +402,48 @@ def reject_input(state: State) -> dict:
     }
 
 
-def _default_search(query: str) -> str:
+def reject_context(state: State) -> dict:
+    """Fail closed on a missing/malformed SecurityCtx — before any
+    retrieval, any tool call, any spend. See route_after_validation."""
+    metrics.agent_missing_ctx_total.inc()
+    return {
+        "messages": [
+            AIMessage(
+                content="I couldn't verify who's asking, so I can't help with "
+                "this request. Please try again."
+            )
+        ]
+    }
+
+
+def _default_search(query: str, ctx: SecurityCtx | None) -> str:
     """Adapts the real `search_docs` StructuredTool's `.invoke()` to the
-    plain `Callable[[str], str]` shape `make_retrieve_context_node` expects
-    — isolates the `.invoke()` call (see its BaseTool.__call__ deprecation)
-    to one place instead of spreading it into the injection mechanism
-    itself, so a fake passed to the factory is just a plain function, no
-    `.invoke` attribute required."""
-    return search_docs.invoke(query)
+    `Callable[[str, SecurityCtx | None], str]` shape
+    `make_retrieve_context_node` expects — isolates the `.invoke()` call
+    (see its BaseTool.__call__ deprecation) to one place instead of
+    spreading it into the injection mechanism itself, so a fake passed to
+    the factory is just a plain function, no `.invoke` attribute required.
+
+    `ctx` travels through `config["configurable"]["ctx"]` — the same
+    LLM-invisible channel search_docs reads it from when the *model* calls
+    it as a tool (see app/tools.py) — so pre-fetched and on-demand search
+    are policy-enforced identically; this isn't a second, laxer path.
+
+    Also folds in cross-session memory recall (app/tools.py::
+    recall_memories) — memory injection is automatic, unlike remember
+    (write), which only ever happens on the model's explicit initiative.
+    """
+    doc_context = search_docs.invoke(
+        {"query": query}, config={"configurable": {"ctx": ctx}}
+    )
+    memory_context = recall_memories(ctx, query)
+    return "\n\n".join(part for part in (doc_context, memory_context) if part)
 
 
 # --- Node: enrich context (multi-step pattern) ---
-def make_retrieve_context_node(search: Callable[[str], str] = _default_search):
+def make_retrieve_context_node(
+    search: Callable[[str, "SecurityCtx | None"], str] = _default_search,
+):
     """Factory, not a plain function, because retrieve_context needs a
     search client — same rationale as make_agent_node for `agent`. Tests
     inject a fake via `make_retrieve_context_node(fake)(state)` instead of
@@ -384,7 +451,8 @@ def make_retrieve_context_node(search: Callable[[str], str] = _default_search):
     """
 
     def retrieve_context(state: State) -> dict:
-        """Fetch relevant docs *before* the agent reasons.
+        """Fetch relevant docs (and this principal's memories) *before* the
+        agent reasons.
 
         In production, you might fetch from a database, call an API, etc.
 
@@ -401,7 +469,7 @@ def make_retrieve_context_node(search: Callable[[str], str] = _default_search):
         if last_human is None:
             return {"context": ""}
         try:
-            return {"context": search(last_human.content)}
+            return {"context": search(last_human.content, state.get("ctx"))}
         except Exception as exc:  # noqa: BLE001 - degrade, never crash the turn
             logger.warning(
                 "context retrieval failed; continuing without pre-fetched context",
@@ -625,7 +693,7 @@ class GraphDeps:
     """
 
     llm: Any = None
-    search_docs: Callable[[str], str] | None = None
+    search_docs: Callable[[str, "SecurityCtx | None"], str] | None = None
 
 
 # --- Build the graph ---
@@ -661,6 +729,7 @@ def build_graph(deps: GraphDeps | None = None, checkpointer=None):
     # factory, since they need an injected client.
     builder.add_node("validate_input", _instrumented("validate_input")(validate_input))
     builder.add_node("reject_input", _instrumented("reject_input")(reject_input))
+    builder.add_node("reject_context", _instrumented("reject_context")(reject_context))
     builder.add_node(
         "retrieve_context", _instrumented("retrieve_context")(retrieve_context)
     )
@@ -698,6 +767,7 @@ def build_graph(deps: GraphDeps | None = None, checkpointer=None):
     builder.add_edge(START, "validate_input")
     builder.add_conditional_edges("validate_input", route_after_validation)
     builder.add_edge("reject_input", END)
+    builder.add_edge("reject_context", END)
 
     builder.add_edge("retrieve_context", "agent")
     builder.add_conditional_edges("agent", should_continue)

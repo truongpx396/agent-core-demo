@@ -6,6 +6,7 @@ is the only node that needs one.
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app import graph, metrics
+from tests.conftest import TEST_CTX
 
 
 def test_reject_input_returns_ai_message_not_human():
@@ -16,24 +17,39 @@ def test_reject_input_returns_ai_message_not_human():
     assert "question" in msg.content.lower()
 
 
-def test_retrieve_context_calls_search_docs_with_last_human_message():
+def test_reject_context_returns_ai_message_and_increments_metric():
+    before = metrics.agent_missing_ctx_total._value.get()
+    result = graph.reject_context({"messages": []})
+    assert len(result["messages"]) == 1
+    msg = result["messages"][0]
+    assert isinstance(msg, AIMessage)
+    assert "verify" in msg.content.lower()
+    assert metrics.agent_missing_ctx_total._value.get() == before + 1
+
+
+def test_retrieve_context_calls_search_docs_with_last_human_message_and_ctx():
     captured = {}
 
-    def fake_search_docs(query):
+    def fake_search_docs(query, ctx):
         captured["query"] = query
+        captured["ctx"] = ctx
         return "doc 1\ndoc 2"
 
     retrieve_context = graph.make_retrieve_context_node(fake_search_docs)
 
-    state = {"messages": [HumanMessage(content="what is a checkpointer?")]}
+    state = {
+        "messages": [HumanMessage(content="what is a checkpointer?")],
+        "ctx": TEST_CTX,
+    }
     result = retrieve_context(state)
 
     assert captured["query"] == "what is a checkpointer?"
+    assert captured["ctx"] == TEST_CTX
     assert result == {"context": "doc 1\ndoc 2"}
 
 
 def test_retrieve_context_no_human_message_skips_search():
-    def fail_search_docs(query):
+    def fail_search_docs(query, ctx):
         raise AssertionError("search_docs should not be called")
 
     retrieve_context = graph.make_retrieve_context_node(fail_search_docs)
@@ -48,13 +64,16 @@ def test_retrieve_context_degrades_to_empty_when_search_docs_raises():
     so a Qdrant/embedding outage must degrade to no pre-fetched context
     instead of crashing the whole turn — see its docstring in app/graph.py."""
 
-    def failing_search_docs(query):
+    def failing_search_docs(query, ctx):
         raise RuntimeError("Qdrant unreachable")
 
     retrieve_context = graph.make_retrieve_context_node(failing_search_docs)
     before = metrics.agent_context_retrieval_degraded_total._value.get()
 
-    state = {"messages": [HumanMessage(content="what is a checkpointer?")]}
+    state = {
+        "messages": [HumanMessage(content="what is a checkpointer?")],
+        "ctx": TEST_CTX,
+    }
     result = retrieve_context(state)
 
     assert result == {"context": ""}

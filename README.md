@@ -11,7 +11,7 @@ features of four popular AI-infra tools in one place:
 | **Langfuse**  | `@observe` tracing, the LangGraph **callback handler**, nested spans, and **session grouping** by `thread_id` |
 | **FastAPI + Pydantic** | An HTTP `/chat` API over the same agent, with typed request/response models and auto-generated OpenAPI docs |
 
-Also included: **multi-layer safety budgets** (iteration/tool-call/token/tool-timeout/request-timeout caps), **Prometheus metrics** at `GET /metrics`, a **pytest suite** that runs the graph against a fake LLM (no live services needed), and a **golden-dataset evaluation harness** (`app/eval.py`) that runs against the real model to catch behavior regressions. See [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md) for the full writeup of every pattern in `app/graph.py`.
+Also included: **multi-tenant isolation** (`app/security.py` — every retrieval/write scoped to a `SecurityCtx` and enforced as a Qdrant pre-filter, never a Python post-filter), **cross-session memory** (write-gated, re-filtered on every recall), **multi-layer safety budgets** (iteration/tool-call/token/tool-timeout/request-timeout caps), **Prometheus metrics** at `GET /metrics`, a **pytest suite** that runs the graph against a fake LLM (no live services needed), and a **golden-dataset evaluation harness** (`app/eval.py`) that runs against the real model to catch behavior regressions. See [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md) for the full writeup of every pattern in `app/graph.py`.
 
 Everything runs locally via **Ollama** — no cloud API keys needed.
 
@@ -69,14 +69,18 @@ Try these in the chat:
 - `What are Acme Corp support hours?`  → retrieval with a **topic** the agent can filter on
 - `what is 21 * 2?`                    → uses the **calculator** tool
 - `remember that our refund window is 30 days, under the company topic` →
-  uses **add_note**, the one *mutating* tool — it always pauses for human
+  uses **add_note**, a *mutating* tool — it always pauses for human
   approval first, regardless of any flag, since it writes to the knowledge
   base (see GRAPH_PATTERNS.md pattern 15). Plain `make chat` has no way to
   answer that prompt, so it auto-declines and the agent explains why; run
   `make chat-stream` instead to actually see and approve/reject it (`y`/`N`)
-
-
-- Ask a follow-up like `and what did I just ask?` → shows **memory**
+- `remember that I prefer dark roast coffee` → uses **remember**, the other
+  mutating tool — a personal, cross-session memory scoped to *you*
+  specifically (by OS user, in the CLI), not the shared knowledge base
+  `add_note` writes to. Also gated behind approval. Ask something related
+  in a later session and the agent recalls it automatically — no tool call
+  needed to *read* it back (GRAPH_PATTERNS.md pattern 18)
+- Ask a follow-up like `and what did I just ask?` → shows **memory** (conversation-level, via `thread_id`)
 
 Then open **http://localhost:3000** to see the traces.
 
@@ -90,14 +94,26 @@ make serve          # starts uvicorn on http://localhost:8000
 
 - Interactive docs (Swagger UI): **http://localhost:8000/docs**
 - `GET /health` → `{"status":"ok"}`
-- `POST /chat` with a Pydantic-validated body:
+- `POST /chat` with a Pydantic-validated body — and two **required** headers,
+  `X-Tenant-Id`/`X-Principal-Id`, stamped into a `SecurityCtx`
+  (`app/security.py`) that scopes every retrieval/write this request can see
+  or touch (GRAPH_PATTERNS.md pattern 17). Omit either one and FastAPI
+  rejects the request (422) before it reaches the graph at all — this is
+  not authentication (nothing verifies the header values), it's the seam a
+  real auth gateway plugs into; see `app/api.py`'s module docstring.
 
 ```bash
 curl -s -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
+  -H "X-Tenant-Id: acme" \
+  -H "X-Principal-Id: demo-user" \
   -d '{"message":"what is 21 * 2?","thread_id":"demo"}'
 # -> {"thread_id":"demo","answer":"The result of 21 * 2 is 42."}
 ```
+
+Use `X-Tenant-Id: acme` to see the docs `make ingest` seeded (`acme` is
+`DEFAULT_TENANT` in `app/config.py`) — a different tenant id sees none of
+them, by design.
 
 Reuse the same `thread_id` across calls to keep conversation **memory**; each
 call is also traced in Langfuse under that id as the session.
@@ -151,8 +167,9 @@ that actually drive the approve/reject prompt end to end today.
 | `app/embeddings.py`    | Embedding client (via LiteLLM) |
 | `app/qdrant_store.py`  | Qdrant collection / upsert / filtered search |
 | `app/ingest.py`        | Embed + load docs |
-| `app/tools.py`         | `search_docs` + `calculator` (read-only) + `add_note` (the one mutating tool) — each wrapped with a timeout budget, each declaring a capability in `TOOL_CAPABILITIES` |
-| `app/graph.py`         | LangGraph agent (state, edges, memory, safety budgets, mandatory capability gate, checkpoint version stamping) |
+| `app/security.py`      | `SecurityCtx` + `Policy` — tenant/owner isolation, enforced as a Qdrant pre-filter (GRAPH_PATTERNS.md pattern 17) |
+| `app/tools.py`         | `search_docs` + `calculator` (read-only) + `add_note` + `remember` (mutating) — each wrapped with a timeout budget, each declaring a capability in `TOOL_CAPABILITIES`; ctx-scoped via `app/security.py` |
+| `app/graph.py`         | LangGraph agent (state, edges, memory, safety budgets, mandatory capability gate, checkpoint version stamping, SecurityCtx fail-closed guard) |
 | `app/agent.py`         | Shared runtime (used by both CLI and API); request-level timeout + metrics recording; durable-checkpointer init (`init_graph_sync`/`init_graph_async`) |
 | `app/metrics.py`       | Prometheus counters/histograms + the tool-call callback handler |
 | `app/eval.py`          | Golden-dataset evaluation harness (`make eval`) |

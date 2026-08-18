@@ -29,9 +29,16 @@ from pathlib import Path
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
+from app.config import DEFAULT_TENANT
 from app.graph import build_graph
+from app.security import SecurityCtx
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "eval_runs"
+
+# Every golden case needs a valid ctx to even reach retrieve_context (see
+# graph.py's route_after_validation) — DEFAULT_TENANT so search_docs can
+# actually find the docs `make ingest` seeded under it.
+_EVAL_CTX: SecurityCtx = {"tenant": DEFAULT_TENANT, "principal": "eval-harness", "claims": {}}
 
 
 @dataclass
@@ -101,7 +108,12 @@ class CaseResult:
 
 
 def run_case(graph, case: GoldenCase) -> CaseResult:
-    config = {"configurable": {"thread_id": f"eval-{case.id}-{uuid.uuid4()}"}}
+    config = {
+        "configurable": {
+            "thread_id": f"eval-{case.id}-{uuid.uuid4()}",
+            "ctx": _EVAL_CTX,
+        }
+    }
     start = time.monotonic()
 
     result = graph.invoke(

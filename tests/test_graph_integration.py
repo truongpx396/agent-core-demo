@@ -25,10 +25,11 @@ from app.graph import (
     GraphDeps,
     build_graph,
 )
+from tests.conftest import TEST_CTX
 
 
 def _config():
-    return {"configurable": {"thread_id": str(uuid.uuid4())}}
+    return {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
 
 
 def _fake_llm(*responses):
@@ -308,7 +309,7 @@ class TestContextRetrievalDegradation:
         app/graph.py. The agent still answers, just without pre-fetched
         context (and could still retry search_docs itself as a tool)."""
 
-        def failing_search_docs(query):
+        def failing_search_docs(query, ctx):
             raise RuntimeError("Qdrant unreachable")
 
         llm = _fake_llm(

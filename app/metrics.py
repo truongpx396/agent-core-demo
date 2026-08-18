@@ -102,6 +102,12 @@ agent_checkpoint_issue_total = Counter(
     ["reason"],
 )  # reason: checkpoint_lost | checkpoint_incompatible
 
+agent_missing_ctx_total = Counter(
+    "agent_missing_ctx_total",
+    "Turns rejected by reject_context: no valid SecurityCtx (tenant+principal) "
+    "was stamped on the request before it reached the graph",
+)
+
 agent_unattended_pause_total = Counter(
     "agent_unattended_pause_total",
     "Turns auto-declined by answer()/stream_turn() after pausing at a "

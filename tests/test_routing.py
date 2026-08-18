@@ -15,6 +15,7 @@ from app.graph import (
     route_after_validation,
     should_continue,
 )
+from tests.conftest import TEST_CTX
 
 
 def _tool_call(name, call_id="1"):
@@ -26,23 +27,27 @@ def _tool_call(name, call_id="1"):
 
 class TestRouteAfterValidation:
     def test_empty_input_rejected(self):
-        state = {"messages": [HumanMessage(content="")]}
+        state = {"messages": [HumanMessage(content="")], "ctx": TEST_CTX}
         assert route_after_validation(state) == "reject_input"
 
     def test_whitespace_only_input_rejected(self):
-        state = {"messages": [HumanMessage(content="   ")]}
+        state = {"messages": [HumanMessage(content="   ")], "ctx": TEST_CTX}
         assert route_after_validation(state) == "reject_input"
 
     def test_no_human_message_rejected(self):
-        state = {"messages": [AIMessage(content="hello")]}
+        state = {"messages": [AIMessage(content="hello")], "ctx": TEST_CTX}
         assert route_after_validation(state) == "reject_input"
 
     def test_valid_input_retrieves_context(self):
-        state = {"messages": [HumanMessage(content="What is our refund policy?")]}
+        state = {
+            "messages": [HumanMessage(content="What is our refund policy?")],
+            "ctx": TEST_CTX,
+        }
         assert route_after_validation(state) == "retrieve_context"
 
     def test_uses_last_human_message(self):
         state = {
+            "ctx": TEST_CTX,
             "messages": [
                 HumanMessage(content=""),
                 AIMessage(content="anything"),
@@ -50,6 +55,41 @@ class TestRouteAfterValidation:
             ]
         }
         assert route_after_validation(state) == "retrieve_context"
+
+
+class TestRouteAfterValidationCtx:
+    """SecurityCtx is checked before the message itself — see
+    route_after_validation's docstring in app/graph.py for why a missing
+    ctx gets its own outcome (reject_context) rather than being folded
+    into reject_input's "you typed nothing.\""""
+
+    def test_missing_ctx_rejected(self):
+        state = {"messages": [HumanMessage(content="a real question")]}
+        assert route_after_validation(state) == "reject_context"
+
+    def test_none_ctx_rejected(self):
+        state = {"messages": [HumanMessage(content="a real question")], "ctx": None}
+        assert route_after_validation(state) == "reject_context"
+
+    def test_ctx_missing_tenant_rejected(self):
+        state = {
+            "messages": [HumanMessage(content="a real question")],
+            "ctx": {"tenant": "", "principal": "u1", "claims": {}},
+        }
+        assert route_after_validation(state) == "reject_context"
+
+    def test_ctx_missing_principal_rejected(self):
+        state = {
+            "messages": [HumanMessage(content="a real question")],
+            "ctx": {"tenant": "acme", "principal": "", "claims": {}},
+        }
+        assert route_after_validation(state) == "reject_context"
+
+    def test_missing_ctx_checked_before_empty_message(self):
+        """Both are invalid here — a missing ctx must win, since it's the
+        more fundamental "who is asking" gate (see the docstring)."""
+        state = {"messages": [HumanMessage(content="")]}
+        assert route_after_validation(state) == "reject_context"
 
 
 class TestShouldContinue:

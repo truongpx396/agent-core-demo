@@ -66,6 +66,7 @@ from langgraph.types import Command
 from app import metrics
 from app.config import CHECKPOINT_DB_PATH
 from app.graph import SYSTEM_PROMPT, build_graph, resumability_error
+from app.security import SecurityCtx
 
 try:
     from langfuse.callback import CallbackHandler
@@ -224,9 +225,9 @@ def _ensure_seeded(graph, thread_id: str) -> None:
     _seeded.add(thread_id)
 
 
-def _config(thread_id: str) -> dict:
+def _config(thread_id: str, ctx: SecurityCtx) -> dict:
     return {
-        "configurable": {"thread_id": thread_id},
+        "configurable": {"thread_id": thread_id, "ctx": ctx},
         "callbacks": _callbacks(thread_id),
         "recursion_limit": 12,  # safety net so a weak model can't loop forever
     }
@@ -244,8 +245,16 @@ def _delta_for(state: dict, printed: str) -> str | None:
 
 
 @observe(name="chat-turn-stream")
-def stream_turn(text: str, thread_id: str):
-    """Yield the assistant's answer incrementally (used by the CLI)."""
+def stream_turn(text: str, thread_id: str, ctx: SecurityCtx):
+    """Yield the assistant's answer incrementally (used by the CLI).
+
+    `ctx` is required, not optional-with-a-default: a caller with no valid
+    tenant/principal to stamp shouldn't silently get a default identity
+    (see app/security.py's SecurityCtx docstring) — graph.py's
+    validate_input/route_after_validation fail closed on it regardless,
+    but making it a required parameter here means that failure is visible
+    at the call site, not just three nodes deep in the graph.
+    """
     langfuse_context.update_current_trace(session_id=thread_id)
     graph = get_graph()
     _ensure_seeded(graph, thread_id)
@@ -253,7 +262,7 @@ def stream_turn(text: str, thread_id: str):
     deadline = start + REQUEST_TIMEOUT_SECONDS
     printed = ""
     final_state: dict = {}
-    cfg = _config(thread_id)
+    cfg = _config(thread_id, ctx)
 
     for state in graph.stream(
         {"messages": [HumanMessage(content=text)]}, config=cfg, stream_mode="values"
@@ -320,12 +329,14 @@ def _invoke_with_timeout(graph, graph_input, cfg: dict, start: float):
 
 
 @observe(name="chat-turn")
-def answer(text: str, thread_id: str) -> str:
-    """Run one turn and return the final assistant text (used by the API)."""
+def answer(text: str, thread_id: str, ctx: SecurityCtx) -> str:
+    """Run one turn and return the final assistant text (used by the API).
+
+    `ctx` is required — see stream_turn's matching docstring note."""
     langfuse_context.update_current_trace(session_id=thread_id)
     graph = get_graph()
     _ensure_seeded(graph, thread_id)
-    cfg = _config(thread_id)
+    cfg = _config(thread_id, ctx)
     start = time.monotonic()
 
     result = _invoke_with_timeout(
@@ -479,23 +490,27 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
     yield terminal_event
 
 
-async def astream_events_turn(text: str, thread_id: str, require_approval: bool = False):
+async def astream_events_turn(
+    text: str, thread_id: str, ctx: SecurityCtx, require_approval: bool = False
+):
     """Production async generator — yields typed event dicts (see
     _run_graph_stream for the full shape list, including
     "approval_required").
 
+    `ctx` is required — see stream_turn's matching docstring note.
     `require_approval` mirrors graph.py's opt-in HITL gate (see
     should_continue): when True, a tool call pauses the run instead of
     executing immediately, and the caller must resume via
-    astream_events_resume(thread_id, approved) to continue — the streaming
-    counterpart to app/hitl_demo.py's blocking Command(resume=...) loop.
-    Default False keeps existing callers (app/api.py) unchanged.
+    astream_events_resume(thread_id, approved, ctx) to continue — the
+    streaming counterpart to app/hitl_demo.py's blocking
+    Command(resume=...) loop. Default False keeps existing callers
+    (app/api.py) unchanged.
     """
     graph = await init_graph_async()
     _ensure_seeded(graph, thread_id)
     trace, callbacks = _open_trace("chat-turn-stream", thread_id, text)
     cfg = {
-        "configurable": {"thread_id": thread_id},
+        "configurable": {"thread_id": thread_id, "ctx": ctx},
         "callbacks": callbacks,
         "recursion_limit": 12,
     }
@@ -507,11 +522,21 @@ async def astream_events_turn(text: str, thread_id: str, require_approval: bool 
         yield event
 
 
-async def astream_events_resume(thread_id: str, approved: bool):
+async def astream_events_resume(thread_id: str, approved: bool, ctx: SecurityCtx):
     """Resume a turn paused by astream_events_turn(require_approval=True) —
     the streaming counterpart to app/hitl_demo.py's
     `graph.invoke(Command(resume=approved), config)`. `thread_id` must
     match the paused turn.
+
+    `ctx` is required and re-supplied here, not reused from the original
+    pause: `config["configurable"]` does NOT persist across a resume
+    automatically (verified empirically) — whatever's resolving the
+    approval is expected to re-assert who they are, the same way the
+    original request had to. This is also where a stricter check (e.g.
+    "the resuming principal must match the tenant that paused") would
+    naturally go if this app ever needed one; today `resumability_error`
+    below only checks the checkpoint's build compatibility, not the
+    resumer's identity against the pauser's.
 
     Opens its own Langfuse trace rather than extending the original one: a
     human's approval can take arbitrarily long (minutes, hours), so this is
@@ -533,7 +558,7 @@ async def astream_events_resume(thread_id: str, approved: bool):
         "chat-turn-stream-resume", thread_id, f"resume(approved={approved})"
     )
     cfg = {
-        "configurable": {"thread_id": thread_id},
+        "configurable": {"thread_id": thread_id, "ctx": ctx},
         "callbacks": callbacks,
         "recursion_limit": 12,
     }
@@ -598,12 +623,14 @@ async def _langfuse_trace(name: str, session_id: str, input_text: str):
                 pass
 
 
-async def astream_events_turn_ctx(text: str, thread_id: str):
+async def astream_events_turn_ctx(text: str, thread_id: str, ctx: SecurityCtx):
     """Production async generator — Langfuse tracing via context-manager.
 
     Uses `_langfuse_trace` (an `@asynccontextmanager`) so trace open/flush
     lifecycle is scoped to the `async with` block.  Compare with the sibling
     `astream_events_turn` which manages the trace object manually.
+
+    `ctx` is required — see stream_turn's matching docstring note.
 
     Yields the same event shapes as `astream_events_turn`:
       {"type": "token",      "content": "<text chunk>"}
@@ -624,7 +651,7 @@ async def astream_events_turn_ctx(text: str, thread_id: str):
         callbacks,
     ):
         cfg = {
-            "configurable": {"thread_id": thread_id},
+            "configurable": {"thread_id": thread_id, "ctx": ctx},
             "callbacks": callbacks,
             "recursion_limit": 12,
         }
