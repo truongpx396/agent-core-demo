@@ -116,6 +116,18 @@ agent_unattended_pause_total = Counter(
     "astream_events_turn's approval_required/astream_events_resume flow)",
 )
 
+agent_retrieval_degraded_total = Counter(
+    "agent_retrieval_degraded_total",
+    "Hybrid retrieval stages that failed and degraded (app/qdrant_store.py::hybrid_search)",
+    ["stage"],
+)  # stage: sparse (-> dense-only) | rerank (-> RRF-fused order)
+
+agent_semantic_cache_total = Counter(
+    "agent_semantic_cache_total",
+    "Semantic cache lookups by outcome (app/semantic_cache.py)",
+    ["outcome"],
+)  # outcome: hit | miss | error (degraded — treated as a miss, recorded separately)
+
 
 class MetricsCallbackHandler(BaseCallbackHandler):
     """Records tool-call and tool-error counts. Pass an instance in

@@ -132,6 +132,27 @@ This enhanced graph shows **realistic patterns** you'll use in production LangGr
 - **Why this is the assertion that actually catches the classic cache-buster**: checking that a prefix is stable *across turns* of one conversation is not the same claim as checking it's stable *across principals*, and the difference is exactly where this bites in production. A prefix embedding `ctx["principal"]` is perfectly self-consistent within a single thread — every turn of that conversation renders the same prefix — and looks completely fine until a second principal's traffic shares the same manifest and gets its own, differently-priced prefix instead of the cached one. `tests/test_prompt_cache_stability.py` renders the identical conversation state for two different `SecurityCtx` values and asserts the resulting message list is byte-identical, plus an independent leak sweep confirming neither ctx's tenant/principal string appears anywhere in the rendered content — two checks because either alone leaves a gap the other closes (see the test file's own docstring for which gap is which).
 - **Real-world**: Any agent running behind a provider that discounts a stable prompt prefix (Anthropic's and OpenAI's prompt caching both work this way) — the discount is real money, and it silently disappears the moment something request-specific sneaks into the cached region, with no error, just a slowly climbing bill.
 
+### 20. **Hybrid Retrieval + Cross-Encoder Rerank + Cited Answers (`app/qdrant_store.py::hybrid_search`, `app/tools.py::gather_context`, `check_output`)**
+- **Pattern**: `search_docs`/`recall_memories`/`retrieve_context` no longer run a single dense-vector `search()` — they run `hybrid_search()`: two parallel Qdrant `Prefetch` legs (dense embedding + BM25 sparse, via `fastembed`'s `SparseTextEmbedding`), fused server-side with `FusionQuery(fusion=Fusion.RRF)`, then re-ordered by a local cross-encoder (`fastembed.rerank.cross_encoder.TextCrossEncoder`) for the final top-k. Every hit that reaches the model is numbered (`[1] chunk text`, `[2] ...`) by `_format_cited_context`, with a parallel structured record (`_citation_records`: marker, doc id, title, text, score) stored in `State["citations"]`. `check_output` (pattern 5) now does one more thing after the length check: it scans the final answer text for the markers it actually contains (`_used_citations`) and writes only those into `State["used_citations"]` — **never trusting the model's own claim about what it cited**, the same "verify, don't just ask" discipline pattern 15's fixed-tool boundary already applies to writes, now applied to a *read* result.
+- **Two independent degradation layers, not one**: the sparse leg (BM25) is `fastembed`'s own local ONNX model — if it fails to load or embed, `hybrid_search` catches it and falls back to a dense-only `query_points` call, recording `agent_retrieval_degraded_total{stage="sparse"}`. If the cross-encoder reranker fails, the RRF-fused order (already a real, meaningful ranking — Reciprocal Rank Fusion isn't a fallback hack, it's the standard hybrid-search fusion method) is returned as-is, recording `agent_retrieval_degraded_total{stage="rerank"}`. Either failure still produces a fully cited answer — a retrieval-quality bug degrades ranking, never correctness or citation integrity.
+- **Why local/ONNX models, not an API call**: `fastembed`'s `SparseTextEmbedding`/`TextCrossEncoder` run in-process against a small downloaded ONNX model — no network round trip, no added external dependency on the retrieval hot path, no `torch`/`sentence-transformers` install weight. The same "no live network call on a path that already has a real one (Qdrant) to fail" reasoning pattern 7 applies to tool calls generally.
+- **Why citations are computed, not asked for**: `SYSTEM_PROMPT` (pattern 19 — still static, still ctx-free) instructs the model to cite inline markers from numbered content, but the graph never trusts that instruction was followed correctly. `_used_citations` regexes the actual answer text for `[n]` markers and intersects that with what `retrieve_context` actually offered — a hallucinated marker the model invents, or a real one it forgot to use, both resolve correctly without asking the model to self-report.
+- **Real-world**: Any RAG system where "the model said it used source 3" isn't good enough for an audit trail, a citation-accuracy eval, or a UI that needs to render "sources" as a clickable, verifiably-grounded list rather than a hopeful claim.
+
+### 21. **Fixed-Tool Structured Data Access + MCP Exposure (`app/sql_store.py`, `app/tools.py::query_employees`, `app/mcp_server.py`)**
+- **Pattern**: `query_employees` is a closed, typed query over a relational store (Postgres) — `tenant` (mandatory, from `SecurityCtx`, never model-supplied), `department` (one of a closed `Department` enum), `name_contains` (a substring filter) are the *only* three variables; there is no `execute(sql: str)` escape hatch anywhere in `app/sql_store.py`, and no code path from `app/tools.py` into it except through that one function's parameter set. Every query is parameterized (`%s` placeholders, `psycopg`'s own escaping) and always ANDs `WHERE tenant = %s` onto whatever the caller narrows with — the department/name filters can only ever narrow the tenant scope, never replace or widen it, the same "narrows, never widens" rule pattern 17 already applies to Qdrant's `doc_ids`.
+- **Why this is the same principle as pattern 15's `add_note`, just for reads instead of writes**: pattern 15's real point was never "gate mutations behind approval" specifically — it was **a tool is a fixed, typed, closed-vocabulary operation, never a query the model constructs itself.** `add_note` proved that for a write (a fresh UUID id, a closed `Topic` enum, no caller-supplied target). `query_employees` is the same proof for a read against structured data: the failure mode a hand-rolled `execute_sql(query: str)` tool invites (the model assembling a `WHERE` clause, or worse, full SQL text) is a classic injection/exfiltration surface no per-tenant scoping could reliably bound after the fact — the access boundary has to live in reviewable, testable code, not a string the model writes.
+- **MCP exposure is a second, DIFFERENT trust boundary, not a shortcut to the first one**: `app/mcp_server.py` wraps `_query_employees_impl` behind `mcp.server.fastmcp.FastMCP` (stdio transport) so an external MCP client (Claude Desktop, another agent) can reach the same fixed query this app's own LLM reaches via `config["configurable"]["ctx"]`. But MCP has no equivalent of LangChain's `RunnableConfig` — nothing upstream stamps a tenant/principal onto an MCP tool call the way `app/api.py`'s trusted headers do for this app's own HTTP surface. The demo's honest simplification: `tenant`/`principal` are **explicit tool arguments** here, checked against the same `DEFAULT_POLICY.permit("query_structured_data", ctx)` fail-closed gate, then passed straight into the same mandatory `WHERE tenant = %s` — so the isolation boundary holds even here. What it does *not* do is authenticate the MCP *caller* — a production multi-tenant MCP server would derive identity from the connecting client's own verified auth (MCP's OAuth support, or a proxy ahead of it), never accept it as a caller-supplied argument, for the identical reason pattern 17's `app/api.py` docstring gives for its own header seam.
+- **A dependency-pinning gotcha this hit**: `mcp==2.0.0` (the latest release at the time) is a major rewrite that removed `mcp.server.fastmcp` entirely — verified empirically (`ModuleNotFoundError`) before pinning `requirements.txt` to `mcp[cli]==1.29.0`, the last stable line with the documented, standard `FastMCP` API this pattern is built on.
+- **Real-world**: Any agent that needs to answer "how many..."/"which..."/"list the..." questions against a relational store it doesn't own the schema design freedom to expose as a vector search — HR/directory lookups, order status, inventory counts — where a text-to-SQL tool would be tempting and exactly wrong for the same reason a free-form Qdrant filter would be.
+
+### 22. **Semantic Cache (`app/semantic_cache.py`, `check_semantic_cache` + `write_semantic_cache` nodes)**
+- **Pattern**: Two new nodes bracket the existing turn. `check_semantic_cache` runs immediately after `route_after_validation` (before `retrieve_context`): it embeds the incoming query with the same dense model Qdrant retrieval uses, and does a cosine-KNN lookup in Redis Stack (RediSearch's vector search over JSON documents) restricted to this ctx's tenant **and** principal. A hit within `SEMANTIC_CACHE_SIMILARITY_THRESHOLD` (0.95 cosine similarity) short-circuits straight to a final `AIMessage` built from the cached answer + citations — no `retrieve_context`, no LLM call at all — then rejoins the normal flow at `check_output` so a cache hit still gets the same length-gate/citation-recomputation treatment a fresh answer does (recomputing `used_citations` from cached content is idempotent, and keeps this one exit path rather than a second special-cased one). A miss falls through to `retrieve_context`/`agent` exactly as before. Once a turn is confirmed final (`route_after_check`'s non-retry branch), `write_semantic_cache` writes the query/answer/citations back — **unless** the turn was itself a cache hit (`State["cache_hit"]`), in which case it's a deliberate no-op: re-embedding and re-writing an answer that was already cached would waste work on what's supposed to be the *fast* path.
+- **Why tenant AND principal, not just tenant**: a cached answer can carry citations into that principal's own memories (pattern 18) — the cache has to be at least as narrow as `Policy.lower(ctx, "memories")`, not merely `"documents"`. A cache scoped only to tenant would leak one principal's memory-derived answer to a different principal in the same tenant, the exact cross-owner leak pattern 17/18 already rule out at the retrieval layer — a cache is still a store, and a store-level pre-filter (not a Python post-filter) is the same non-negotiable this whole doc keeps coming back to.
+- **A latency optimization, never a correctness dependency**: `get`/`set` both catch every exception (Redis unreachable, the index missing, an embedding call failing) and degrade — `get` returns `None` (a miss), `set` returns without writing — recording the outcome via `agent_semantic_cache_total{outcome="hit"|"miss"|"error"}` (`app/metrics.py`) rather than ever raising into the turn. This is the same "degrade, never fail the run" contract `retrieve_context` already has for a Qdrant outage (pattern 7) — a cache node gets to be *less* trusted than the primary path it's optimizing, not equally trusted.
+- **A RediSearch escaping gotcha this hit**: TAG field queries treat characters like `-` as query syntax, not literal text — an unescaped tenant value like `"other-co"` raised a syntax error (`Syntax error at offset 15 near other`), verified empirically against a real Redis Stack instance before writing `_escape_tag`. The same category of bug as unparameterized SQL (pattern 21) or an unescaped shell argument: any caller-influenced string interpolated into a query language needs escaping at that boundary, not just "trusted" because it happens to come from `SecurityCtx` instead of raw user input.
+- **Real-world**: Any agent fielding the same or near-duplicate questions repeatedly across a user base — FAQ-style support, internal documentation Q&A — where re-running retrieval + a full LLM call for a question asked five minutes ago by a near-identical phrasing is pure wasted latency and spend.
+
 ## Graph Flow
 
 ```
@@ -148,55 +169,73 @@ route_after_validation?  ← Decide: valid ctx? is the last HumanMessage non-emp
   │    ↓
   │   END
   │
-  └─→ retrieve_context  ← Enrich: fetch relevant docs + this principal's
-       │                  memories (degrades on failure; both tenant/owner
-       │                  -scoped via app/security.py's Policy)
+  └─→ check_semantic_cache  ← tenant+principal-scoped cosine-KNN lookup in
+       │                       Redis (app/semantic_cache.py, pattern 22);
+       │                       degrades to a miss on any failure
        ↓
-      agent  ← Think: call LLM with context injected as a delimited,
-      │        untrusted <retrieved_document> SystemMessage (retried on
-      │        transient LLM failure via AGENT_RETRY_POLICY)
-       ↓
-      should_continue?  ← Decide: tools? too many at once? approval needed? done? over budget?
-       ├─→ too_many_tool_calls  (> MAX_TOOL_CALLS_PER_TURN at once)
-       │    ↓
-       │    agent  ← Loop back with synthesized ToolMessage rejections
-       │
-       ├─→ human_approval  (require_approval=True on input state, OR any
-       │                    pending tool call is non-read_only — mandatory,
-       │                    see TOOL_CAPABILITIES)
-       │    ↓
-       │   route_after_approval?  ← interrupt() paused here for a decision
-       │    ├─→ tools     (approved)
-       │    └─→ agent     (rejected — with synthesized ToolMessage rejections)
-       │
-       ├─→ tools  ← Execute tool calls (concurrently, if there are several)
-       │    ↓
-       │    agent  ← Loop back to think again
-       │
-       └─→ check_output
+      route_after_cache?  ← Decide: near-identical query cached already?
+       ├─→ check_output   (HIT — cached answer appended as a final
+       │    ↑               AIMessage, no retrieval, no LLM call at all)
+       │    │
+       └─→ retrieve_context  ← MISS: enrich — hybrid dense+BM25 search,
+            │                  RRF-fused, cross-encoder reranked, numbered
+            │                  citations (pattern 20); + this principal's
+            │                  memories; degrades on failure; both
+            │                  tenant/owner-scoped via app/security.py's Policy
             ↓
-           route_after_check?  ← Decide: is the answer too short?
-            ├─→ retry_output  ← Append corrective HumanMessage
+           agent  ← Think: call LLM with context injected as a delimited,
+           │        untrusted <retrieved_document> SystemMessage (retried on
+           │        transient LLM failure via AGENT_RETRY_POLICY)
+            ↓
+           should_continue?  ← Decide: tools? too many at once? approval needed? done? over budget?
+            ├─→ too_many_tool_calls  (> MAX_TOOL_CALLS_PER_TURN at once)
             │    ↓
-            │    agent  ← Loop back with feedback
+            │    agent  ← Loop back with synthesized ToolMessage rejections
             │
-            └─→ END
+            ├─→ human_approval  (require_approval=True on input state, OR any
+            │                    pending tool call is non-read_only — mandatory,
+            │                    see TOOL_CAPABILITIES)
+            │    ↓
+            │   route_after_approval?  ← interrupt() paused here for a decision
+            │    ├─→ tools     (approved)
+            │    └─→ agent     (rejected — with synthesized ToolMessage rejections)
+            │
+            ├─→ tools  ← Execute tool calls (concurrently, if there are several)
+            │    ↓
+            │    agent  ← Loop back to think again
+            │
+            └─→ check_output  ← also both cache-hit AND cache-miss paths
+                 │               rejoin here (see above); computes
+                 │               used_citations from the answer text (pattern 20)
+                 ↓
+                route_after_check?  ← Decide: is the answer too short?
+                 ├─→ retry_output  ← Append corrective HumanMessage
+                 │    ↓
+                 │    agent  ← Loop back with feedback
+                 │
+                 └─→ write_semantic_cache  ← writes query/answer/citations
+                      │                       back UNLESS this turn was
+                      │                       itself a cache hit (no-op then)
+                      ↓
+                     END
 ```
 
 ## Differences from Basic Agent
 
 | Aspect | Basic | Enhanced |
 |--------|-------|----------|
-| **State** | Just messages | Messages + context + iterations + total_tokens + run_id + graph_version + state_schema_version + ctx + require_approval + approved |
-| **Nodes** | agent + tools | 11 nodes: validate_input, reject_input, reject_context, retrieve_context, agent, tools, human_approval, too_many_tool_calls, check_output, retry_output |
-| **Flow** | LLM ↔ tools loop | Multi-stage pipeline with five real conditional gates |
-| **Context** | LLM decides what to search | Pre-fetched (docs + this principal's memories), actually injected into the LLM call, delimited as untrusted data (pattern 12), and tenant/owner-scoped (pattern 17) |
-| **Isolation** | None — one shared corpus for everyone | Every read and write scoped to `SecurityCtx` (tenant, and for memory, owner) via a store-level pre-filter, never a Python post-filter (pattern 17) |
-| **Safety** | No loop limit | Seven independent budgets (see pattern 10): iteration cap, tool-call-per-turn cap, token-per-turn cap, conversation-history-turn cap, tool timeout, request timeout, graph recursion limit — plus `retrieve_context` degrades instead of failing the turn, the agent's LLM call gets an automatic retry on transient failure, and failing tools return an error message instead of crashing |
+| **State** | Just messages | Messages + context + citations + used_citations + cache_hit + iterations + total_tokens + run_id + graph_version + state_schema_version + ctx + require_approval + approved |
+| **Nodes** | agent + tools | 13 nodes: validate_input, reject_input, reject_context, check_semantic_cache, retrieve_context, agent, tools, human_approval, too_many_tool_calls, check_output, retry_output, write_semantic_cache |
+| **Flow** | LLM ↔ tools loop | Multi-stage pipeline with a cache short-circuit up front and six real conditional gates |
+| **Context** | LLM decides what to search | Pre-fetched (hybrid dense+BM25 search, RRF-fused, cross-encoder reranked, pattern 20 — plus this principal's memories), actually injected into the LLM call, delimited as untrusted data (pattern 12), and tenant/owner-scoped (pattern 17) |
+| **Answers** | Plain text | Numbered inline citations (`[1]`, `[2]`, ...), filtered post-hoc to only the markers the answer text actually used — never the model's self-report (pattern 20) |
+| **Isolation** | None — one shared corpus for everyone | Every read and write scoped to `SecurityCtx` (tenant, and for memory/cache, owner) via a store-level pre-filter, never a Python post-filter (pattern 17, pattern 22) |
+| **Safety** | No loop limit | Seven independent budgets (see pattern 10): iteration cap, tool-call-per-turn cap, token-per-turn cap, conversation-history-turn cap, tool timeout, request timeout, graph recursion limit — plus `retrieve_context`/`check_semantic_cache` degrade instead of failing the turn, the agent's LLM call gets an automatic retry on transient failure, and failing tools return an error message instead of crashing |
 | **Output** | Whatever LLM says | Validated, with an actual retry path back to `agent` |
-| **Tools** | Two read-only tools | Two read-only tools + two mutating tools (`add_note`, `remember`), each declaring a capability (pattern 15) that decides whether it can even *run* unattended |
+| **Tools** | Two read-only tools | Three read-only tools (`search_docs`, `calculator`, `query_employees` — a fixed, typed structured-data query, pattern 21, also exposed over MCP) + two mutating tools (`add_note`, `remember`), each declaring a capability (pattern 15) that decides whether it can even *run* unattended |
 | **Tool calls** | Run immediately, one at a time in practice | Run immediately (parallel if the LLM asks for several) *or* pause for human approval — opt-in per call for read-only tools, **mandatory and non-optional** for any mutating/outward tool call — capped per turn either way |
 | **Memory** | None, or unscoped | Cross-session, write-gated (`remember` only, never autonomous), re-filtered against current ctx on every recall (pattern 18) |
+| **Repeat queries** | Re-run retrieval + a full LLM call every time | Tenant+principal-scoped semantic cache (Redis Stack vector KNN) short-circuits a near-identical query straight to the cached, cited answer — no retrieval, no LLM call (pattern 22) |
 | **Checkpointing** | Whatever the example used (usually none, or `MemorySaver`) | `MemorySaver` for tests; `AsyncSqliteSaver` for the real CLI/API singleton, so a paused approval survives a restart — with build/schema versioning so a stale checkpoint refuses to resume into an incompatible topology (pattern 16) |
 | **Observability** | None | Langfuse tracing (per-call) + Prometheus metrics at `GET /metrics` (aggregate) + structured per-node lifecycle logs, `run_id`-correlated (pattern 14) |
 | **Regression detection** | None | `tests/` (fake-LLM, routing/logic) + `app/eval.py` golden dataset (real model, behavior) |
@@ -222,12 +261,15 @@ route_after_validation?  ← Decide: valid ctx? is the last HumanMessage non-emp
 - **Multi-tenant isolation**: The moment more than one customer/workspace shares a deployment — retrofit this first, before anything else on this list, since every other pattern here (mandatory HITL, untrusted-content framing, node telemetry) quietly assumes a security boundary already exists. Skippable only for a genuinely single-tenant deployment, and even then the seam costs little to leave in place.
 - **Cross-session memory**: Any agent worth having a "remember this" conversation with. Skip it if every session is truly stateless — the write-gating and re-filtering machinery is pure overhead with nothing to protect.
 - **Prompt-cache stability**: As soon as more than one principal's traffic shares a deployment (which, if you did multi-tenant isolation above, is now true) *and* the provider offers prefix caching. The check is nearly free to add; the failure mode it catches is a silently climbing bill, not a crash, which is exactly the kind of regression that survives unnoticed without it.
+- **Hybrid retrieval + rerank + citations**: As soon as retrieval quality/recall actually matters (not a 6-document demo corpus) and an answer needs to be auditable — sparse (BM25) catches exact keyword/id matches dense embeddings miss, a cross-encoder rerank sharpens the top-k dense+sparse alone gets wrong, and citations turn "trust the model" into "verify the source." Skippable for a small, purely-conversational agent with no real corpus to search.
+- **Fixed-tool structured data access**: The moment an agent needs to answer questions against a relational store (counts, filters, joins) rather than a text corpus. Never build a text-to-SQL tool as the first move — a handful of fixed, parameterized queries covers most real question shapes and closes the injection/exfiltration surface a generated-query tool opens by construction.
+- **MCP exposure**: When a tool this agent already has needs to be reachable by a *different* agent/client, not just this app's own LLM loop. Treat it as a new trust boundary requiring its own identity story, not a free re-export of an existing tool.
+- **Semantic cache**: Once the same or near-duplicate questions repeat across users/sessions often enough that re-running retrieval + a full LLM call each time is wasted latency and spend — FAQ-style support, internal docs Q&A. Skippable for genuinely unique, one-off queries where cache hits would be rare anyway.
 
 ## Extending Further
 
 In production, you might still add:
 - **Fallback node**: If primary path fails, try alternative.
-- **Caching node**: Skip redundant searches for repeated queries.
 - **A real HTTP resume flow**: `app/hitl_demo.py` resumes interrupts from a terminal `input()`, and `astream_events_resume` (`app/agent.py`) provides the streaming equivalent for `app/chat.py --stream`. Neither is exposed over `app/api.py`'s plain HTTP surface — doing that would mean returning the interrupt payload as an HTTP response and adding a second endpoint (e.g. `POST /chat/resume`) that accepts the decision and calls `Command(resume=...)` — not implemented here to keep the API surface small. Until it exists, an `approval_required` SSE event from `POST /chat/stream` has nowhere to go on that endpoint; the run stays durably paused (pattern 16) rather than lost, which is the property that makes waiting for this feature safe.
 - **A real per-model cost budget**: `MAX_TOKENS_PER_TURN` bounds token *count*; turning that into a dollar budget needs a price-per-model lookup table, which is easy to get subtly wrong (pricing changes, per-provider differences) and was left out here as YAGNI for a local demo.
 - **Grafana dashboards / alerting on the `/metrics` endpoint**: this repo exposes the metrics; wiring up a scrape config, dashboards, and alert rules is the natural next step once there's a real Prometheus instance to point at it.

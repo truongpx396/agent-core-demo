@@ -33,3 +33,20 @@ pytest>=8.0,<9
 
 # Observability — Prometheus metrics exposed at GET /metrics (see app/metrics.py)
 prometheus-client>=0.20,<1
+
+# Hybrid retrieval (app/embeddings.py) — local/ONNX BM25 sparse embedding +
+# cross-encoder reranker, no torch/sentence-transformers dependency.
+fastembed>=0.8.0,<1
+
+# Structured-data tool (app/sql_store.py) — psycopg 3, not psycopg2.
+psycopg[binary]>=3.1,<4
+
+# Semantic cache (app/semantic_cache.py) — needs Redis Stack/RediSearch
+# server-side (see docker-compose.yml's `redis` service), not plain Redis.
+redis>=5.0,<9
+
+# MCP server (app/mcp_server.py) exposing query_employees. Pinned to the
+# last stable 1.x line: mcp==2.0.0 removed mcp.server.fastmcp in a rewrite
+# (verified empirically — ModuleNotFoundError on 2.0.0), so this app stays
+# on 1.29.0's documented, standard FastMCP API.
+mcp[cli]==1.29.0

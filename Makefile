@@ -1,4 +1,4 @@
-.PHONY: help up pull-models ingest chat chat-stream chat-stream-hitl serve test eval logs down clean
+.PHONY: help up pull-models ingest chat chat-stream chat-stream-hitl serve mcp-serve test eval logs down clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -25,6 +25,12 @@ chat-stream-hitl:  ## Production streaming CLI with human-in-the-loop tool appro
 
 serve:  ## Start the FastAPI service (http://localhost:8000/docs)
 	uvicorn app.api:app --host 0.0.0.0 --port 8000 --reload
+
+mcp-serve:  ## Start the MCP server exposing query_employees (stdio transport; needs `make up`)
+	python -m app.mcp_server
+
+mcp-inspect:  ## Launch the MCP Inspector against app/mcp_server.py for interactive testing
+	mcp dev app/mcp_server.py
 
 test:  ## Run the graph test suite (no live services needed — fake LLM, no Qdrant)
 	pytest -q

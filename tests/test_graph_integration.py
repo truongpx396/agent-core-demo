@@ -298,7 +298,13 @@ class TestReliabilityPolicy:
         retry would just repeat the same bug — see GRAPH_PATTERNS.md
         pattern 7."""
         g = build_graph(GraphDeps(llm=_fake_llm(AIMessage(content="anything"))))
-        for name in ("retrieve_context", "check_output", "too_many_tool_calls"):
+        for name in (
+            "retrieve_context",
+            "check_output",
+            "too_many_tool_calls",
+            "check_semantic_cache",
+            "write_semantic_cache",
+        ):
             assert g.nodes[name].retry_policy is None
 
 
@@ -324,6 +330,110 @@ class TestContextRetrievalDegradation:
             result["messages"][-1].content
             == "A general-knowledge answer, no context needed."
         )
+
+
+class TestCitations:
+    """End-to-end proof that a citation survives the full trip: injected
+    search_docs -> retrieve_context's State["citations"] -> the model's
+    answer text -> check_output's State["used_citations"] — the same
+    marker-filtering logic unit-tested against check_output directly in
+    test_nodes.py, exercised here through a real compiled graph turn."""
+
+    def test_cited_marker_survives_the_full_turn(self):
+        citations = [
+            {
+                "marker": "[1]",
+                "doc_id": "abc123",
+                "title": "Checkpointers",
+                "text": "Checkpointers persist state across turns.",
+                "score": 0.91,
+            },
+            {
+                "marker": "[2]",
+                "doc_id": "def456",
+                "title": "Unrelated",
+                "text": "Something the model never mentions.",
+                "score": 0.40,
+            },
+        ]
+
+        def fake_search_docs(query, ctx):
+            return "[1] Checkpointers persist state.\n[2] unrelated", citations
+
+        llm = _fake_llm(AIMessage(content="Checkpointers persist state [1]."))
+        g = build_graph(GraphDeps(llm=llm, search_docs=fake_search_docs))
+        result = g.invoke(
+            {"messages": [HumanMessage(content="what is a checkpointer?")]},
+            config=_config(),
+        )
+
+        assert result["citations"] == citations  # everything retrieved
+        assert result["used_citations"] == [citations[0]]  # only what was cited
+
+
+class TestSemanticCache:
+    """End-to-end proof of the check_semantic_cache/write_semantic_cache
+    wiring through a real compiled graph — the node-level mechanics are
+    already covered in tests/test_nodes.py; this proves the topology
+    actually connects them the way GRAPH_PATTERNS.md pattern 22 describes."""
+
+    def test_cache_hit_never_calls_the_llm_and_returns_the_cached_answer(self):
+        llm = _fake_llm()  # would raise StopIteration if .invoke() were ever called
+        cached_citations = [{"marker": "[1]", "text": "cached fact"}]
+        g = build_graph(
+            GraphDeps(
+                llm=llm,
+                cache_get=lambda ctx, query: ("A cached answer [1].", cached_citations),
+            )
+        )
+        result = g.invoke(
+            {"messages": [HumanMessage(content="what is a checkpointer?")]},
+            config=_config(),
+        )
+
+        assert result["messages"][-1].content == "A cached answer [1]."
+        assert result["used_citations"] == cached_citations
+
+    def test_cache_miss_runs_the_full_turn_and_writes_the_result_back(self):
+        written = {}
+
+        def fake_cache_set(ctx, query, answer, citations):
+            written["ctx"] = ctx
+            written["query"] = query
+            written["answer"] = answer
+            written["citations"] = citations
+
+        llm = _fake_llm(AIMessage(content="A general-knowledge answer, no cache yet."))
+        g = build_graph(
+            GraphDeps(llm=llm, cache_get=lambda ctx, query: None, cache_set=fake_cache_set)
+        )
+        result = g.invoke(
+            {"messages": [HumanMessage(content="what is a checkpointer?")]},
+            config=_config(),
+        )
+
+        assert result["messages"][-1].content == "A general-knowledge answer, no cache yet."
+        assert written["query"] == "what is a checkpointer?"
+        assert written["answer"] == "A general-knowledge answer, no cache yet."
+
+    def test_cache_hit_does_not_re_write_itself_back_to_the_cache(self):
+        def fail_cache_set(ctx, query, answer, citations):
+            raise AssertionError("a cache hit must not re-write itself")
+
+        llm = _fake_llm()
+        g = build_graph(
+            GraphDeps(
+                llm=llm,
+                cache_get=lambda ctx, query: ("A cached answer.", []),
+                cache_set=fail_cache_set,
+            )
+        )
+        g.invoke(
+            {"messages": [HumanMessage(content="what is a checkpointer?")]},
+            config=_config(),
+        )
+        # No assertion needed beyond "didn't raise" — fail_cache_set would
+        # have raised AssertionError if it were ever called.
 
 
 class TestTokenBudgetPath:

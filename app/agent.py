@@ -329,8 +329,13 @@ def _invoke_with_timeout(graph, graph_input, cfg: dict, start: float):
 
 
 @observe(name="chat-turn")
-def answer(text: str, thread_id: str, ctx: SecurityCtx) -> str:
-    """Run one turn and return the final assistant text (used by the API).
+def answer(text: str, thread_id: str, ctx: SecurityCtx) -> tuple[str, list[dict]]:
+    """Run one turn and return (final assistant text, used_citations) (used
+    by the API). `used_citations` is state["used_citations"] as computed by
+    graph.py's check_output — already filtered to the markers the answer
+    text actually references, never the full retrieved set (GRAPH_PATTERNS.md
+    pattern 20). Empty on every early-return path below (timeout, auto-decline
+    error) since there's no real model answer to have cited anything.
 
     `ctx` is required — see stream_turn's matching docstring note."""
     langfuse_context.update_current_trace(session_id=thread_id)
@@ -343,7 +348,7 @@ def answer(text: str, thread_id: str, ctx: SecurityCtx) -> str:
         graph, {"messages": [HumanMessage(content=text)]}, cfg, start
     )
     if result is None:
-        return "Sorry, that took too long to answer — please try again."
+        return "Sorry, that took too long to answer — please try again.", []
 
     if graph.get_state(cfg).next:
         # See stream_turn's matching comment: POST /chat is single-shot
@@ -354,13 +359,13 @@ def answer(text: str, thread_id: str, ctx: SecurityCtx) -> str:
         error = resumability_error(graph, cfg)
         if error:  # never resume blindly — see resumability_error's docstring
             _record_turn_metrics(time.monotonic() - start, "error")
-            return f"Sorry, I couldn't complete that — {error}"
+            return f"Sorry, I couldn't complete that — {error}", []
         result = _invoke_with_timeout(graph, Command(resume=False), cfg, start)
         if result is None:
-            return "Sorry, that took too long to answer — please try again."
+            return "Sorry, that took too long to answer — please try again.", []
 
     _record_turn_metrics(time.monotonic() - start, _turn_outcome(result), result)
-    return result["messages"][-1].content
+    return result["messages"][-1].content, result.get("used_citations") or []
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +415,9 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
       {"type": "approval_required", "tool_calls": [{"name":..., "args":...}]}
         — the run paused at human_approval's interrupt() (see graph.py);
           call astream_events_resume(thread_id, approved) to continue.
+      {"type": "citations", "items": [...]} — emitted right before "done",
+        only when the answer actually cited something; same
+        state["used_citations"] shape as ChatResponse.citations (app/schemas.py).
       {"type": "done"}     — the turn actually finished.
       {"type": "error", "content": "<message>"} — it raised.
     Handles Langfuse trace update/flush and turn metrics identically for
@@ -417,6 +425,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
     """
     start = time.monotonic()
     final_answer = []
+    used_citations: list[dict] = []
     try:
         async for event in _iterate_with_timeout(
             graph.astream_events(graph_input, config=cfg, version="v2"),
@@ -476,6 +485,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
             _record_turn_metrics(
                 time.monotonic() - start, _turn_outcome(state.values), state.values
             )
+            used_citations = state.values.get("used_citations") or []
             terminal_event = {"type": "done"}
     finally:
         # Flush so the trace is sent even if the caller exits immediately —
@@ -487,6 +497,8 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
             except Exception:  # noqa: BLE001
                 pass
 
+    if used_citations:
+        yield {"type": "citations", "items": used_citations}
     yield terminal_event
 
 

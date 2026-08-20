@@ -80,8 +80,8 @@ def metrics_endpoint() -> Response:
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest, ctx: SecurityCtx = Depends(get_ctx)) -> ChatResponse:
-    text = answer(req.message, req.thread_id, ctx)
-    return ChatResponse(thread_id=req.thread_id, answer=text)
+    text, citations = answer(req.message, req.thread_id, ctx)
+    return ChatResponse(thread_id=req.thread_id, answer=text, citations=citations)
 
 
 @app.post("/chat/stream")
@@ -94,6 +94,7 @@ async def chat_stream(
       data: {"type": "token",      "content": "Hello"}
       data: {"type": "tool_start", "tool": "search_docs", "args": {...}}
       data: {"type": "tool_end",   "tool": "search_docs"}
+      data: {"type": "citations",  "items": [{"marker": "[1]", ...}]}
       data: {"type": "done"}
 
     The client can consume this with EventSource or any SSE library.

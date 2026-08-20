@@ -61,11 +61,10 @@ from typing import Literal
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field, field_validator
-from qdrant_client.models import PointStruct
 
 from app import qdrant_store
 from app.config import DEFAULT_TENANT
-from app.embeddings import embed_text
+from app.embeddings import embed_sparse, embed_text
 from app.security import DEFAULT_POLICY, SecurityCtx, valid_ctx
 
 # Whitelisted operators for the safe calculator.
@@ -173,15 +172,75 @@ class CalculatorArgs(BaseModel):
         return v
 
 
-def _search_docs_impl(query: str, topic: Topic | None, ctx: SecurityCtx) -> str:
+def _format_cited_context(hits: list, offset: int = 0) -> str:
+    """`[n] chunk text`, one per line — the citation-marker convention
+    every retrieval surface (search_docs, gather_context) uses
+    consistently, so the model sees the same shape whether context
+    arrived pre-fetched (retrieve_context) or via an on-demand tool call.
+    `offset` lets callers combining several hit lists (documents, then
+    memories) keep one continuously-numbered sequence across all of them.
+    """
+    return "\n".join(
+        f"[{i + offset + 1}] {(h.payload or {}).get('text', '')}"
+        for i, h in enumerate(hits)
+    )
+
+
+def _citation_records(hits: list, offset: int = 0) -> list[dict]:
+    """Structured citation metadata — marker, source id, title, text,
+    relevance score — one per hit, same numbering as
+    `_format_cited_context`. app/graph.py stores these in
+    State["citations"]; check_output filters them down to the ones the
+    final answer actually referenced (GRAPH_PATTERNS.md pattern 20)."""
+    records = []
+    for i, h in enumerate(hits):
+        payload = h.payload or {}
+        records.append(
+            {
+                "marker": f"[{i + offset + 1}]",
+                "doc_id": str(h.id),
+                "title": payload.get("title") or payload.get("topic") or payload.get("kind", "source"),
+                "text": payload.get("text", ""),
+                "score": float(h.score),
+            }
+        )
+    return records
+
+
+def _sparse_vector_or_none(text: str) -> tuple[list[int], list[float]] | None:
+    """Best-effort BM25 sparse vector for a write path (add_note, remember):
+    if the local sparse model fails to load/embed, the write still
+    succeeds with a dense-only point (qdrant_store.build_point already
+    treats `sparse_vector=None` as "dense-only") rather than blocking a
+    human-approved write on a hybrid-search quality concern — the same
+    degrade-don't-block posture app/qdrant_store.py's hybrid_search takes
+    on the read side."""
+    try:
+        return embed_sparse(text)
+    except Exception:  # noqa: BLE001 - degrade to dense-only, never block the write
+        return None
+
+
+def _document_hits(ctx: SecurityCtx, query: str, topic: Topic | str | None = None):
     topic_value = topic.value if isinstance(topic, Topic) else topic
     tenant_filter = DEFAULT_POLICY.lower(ctx, "documents")
-    hits = qdrant_store.search(
-        embed_text(query), topic=topic_value, k=3, tenant_filter=tenant_filter
-    )
+    return qdrant_store.hybrid_search(query, topic=topic_value, tenant_filter=tenant_filter)
+
+
+def _memory_hits(ctx: SecurityCtx, query: str):
+    # Reranking is skipped for memories: a principal's own (typically
+    # small) memory set doesn't need cross-encoder precision, and skipping
+    # it avoids paying for a second reranker call on every single turn —
+    # recall runs automatically, unlike a one-off search_docs tool call.
+    tenant_filter = DEFAULT_POLICY.lower(ctx, "memories")
+    return qdrant_store.hybrid_search(query, tenant_filter=tenant_filter, rerank_results=False)
+
+
+def _search_docs_impl(query: str, topic: Topic | None, ctx: SecurityCtx) -> str:
+    hits = _document_hits(ctx, query, topic)
     if not hits:
         return "No relevant documents found."
-    return "\n".join(f"- {h.payload['text']}" for h in hits)
+    return _format_cited_context(hits)
 
 
 @tool(args_schema=SearchDocsArgs)
@@ -235,10 +294,10 @@ def _add_note_impl(title: str, content: str, topic: Topic, ctx: SecurityCtx) -> 
     "append one note to my tenant's knowledge base," nothing broader.
     """
     text = f"{title}: {content}"
-    vector = embed_text(text)
-    point = PointStruct(
-        id=str(uuid.uuid4()),
-        vector=vector,
+    point = qdrant_store.build_point(
+        point_id=str(uuid.uuid4()),
+        dense_vector=embed_text(text),
+        sparse_vector=_sparse_vector_or_none(text),
         payload={
             "text": text,
             "topic": topic.value,
@@ -286,10 +345,10 @@ def _remember_impl(content: str, ctx: SecurityCtx) -> str:
     """Embed and upsert one memory, owned by ctx["principal"] within
     ctx["tenant"] — see the module docstring's "Cross-session memory"
     section for why this is the *only* place a memory gets written."""
-    vector = embed_text(content)
-    point = PointStruct(
-        id=str(uuid.uuid4()),
-        vector=vector,
+    point = qdrant_store.build_point(
+        point_id=str(uuid.uuid4()),
+        dense_vector=embed_text(content),
+        sparse_vector=_sparse_vector_or_none(content),
         payload={
             "text": content,
             "kind": "memory",
@@ -335,14 +394,88 @@ def recall_memories(ctx: SecurityCtx | None, query: str) -> str:
     """
     if not valid_ctx(ctx) or not DEFAULT_POLICY.permit("recall_memory", ctx):
         return ""
-    tenant_filter = DEFAULT_POLICY.lower(ctx, "memories")
-    hits = qdrant_store.search(embed_text(query), k=5, tenant_filter=tenant_filter)
+    hits = _memory_hits(ctx, query)
     if not hits:
         return ""
-    return "\n".join(f"- {h.payload['text']}" for h in hits)
+    return _format_cited_context(hits)
 
 
-TOOLS = [search_docs, calculator, add_note, remember]
+def gather_context(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]]:
+    """Documents + this principal's memories, hybrid-searched and combined
+    into ONE continuously-numbered citation sequence — this is what
+    app/graph.py's `_default_search` calls (the automatic pre-fetch path
+    that runs every turn), NOT the same call `recall_memories`/
+    `_search_docs_impl` make on their own, though all three share the same
+    retrieval/Policy machinery underneath.
+
+    Degrades to `("", [])` on a missing ctx or a retrieval failure —
+    enrichment, never fails the turn (see retrieve_context's docstring in
+    app/graph.py, which wraps this in the actual try/except).
+    """
+    if not valid_ctx(ctx):
+        return "", []
+    doc_hits = _document_hits(ctx, query) if DEFAULT_POLICY.permit("search", ctx) else []
+    memory_hits = _memory_hits(ctx, query) if DEFAULT_POLICY.permit("recall_memory", ctx) else []
+    all_hits = list(doc_hits) + list(memory_hits)
+    if not all_hits:
+        return "", []
+    return _format_cited_context(all_hits), _citation_records(all_hits)
+
+
+class Department(str, Enum):
+    """The only departments that exist — same closed-vocabulary approach
+    as `Topic`, and for the same reason: `query_employees` narrows to
+    exactly what's askable, never a free-form filter the model writes."""
+
+    engineering = "Engineering"
+    support = "Support"
+    sales = "Sales"
+
+
+class QueryEmployeesArgs(BaseModel):
+    department: Department | None = Field(
+        default=None, description="Optional filter. One of: Engineering, Support, Sales."
+    )
+    name_contains: str | None = Field(
+        default=None, description="Optional case-insensitive substring match on name."
+    )
+
+
+def _query_employees_impl(
+    department: Department | None, name_contains: str | None, ctx: SecurityCtx
+) -> str:
+    from app import sql_store
+
+    rows = sql_store.query_employees(
+        tenant=ctx["tenant"],
+        department=department.value if isinstance(department, Department) else department,
+        name_contains=name_contains,
+    )
+    if not rows:
+        return "No matching employees found."
+    return "\n".join(
+        f"- {r['name']} — {r['title']}, {r['department']} (hired {r['hired_on']})"
+        for r in rows
+    )
+
+
+@tool(args_schema=QueryEmployeesArgs)
+def query_employees(
+    config: RunnableConfig,
+    department: Department | None = None,
+    name_contains: str | None = None,
+) -> str:
+    """Look up Acme Corp employees, optionally filtered by department or
+    name. A fixed, structured-data query — not a database the model can
+    ask arbitrary questions of; department and name_contains are the only
+    two ways to narrow the result set."""
+    ctx = _ctx_or_refuse(config, "query_structured_data")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(_query_employees_impl, department, name_contains, ctx)
+
+
+TOOLS = [search_docs, calculator, add_note, remember, query_employees]
 
 # --- Tool capability declarations -------------------------------------------
 # Every tool declares which "leg" of exposure it adds: read_only (safe to run
@@ -364,6 +497,7 @@ ToolCapability = Literal["read_only", "mutating", "outward"]
 TOOL_CAPABILITIES: dict[str, ToolCapability] = {
     "search_docs": "read_only",
     "calculator": "read_only",
+    "query_employees": "read_only",
     "add_note": "mutating",
     "remember": "mutating",
 }

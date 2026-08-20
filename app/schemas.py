@@ -12,9 +12,26 @@ class ChatRequest(BaseModel):
     )
 
 
+class Citation(BaseModel):
+    marker: str = Field(..., description="The bracket marker as it appears in `answer`, e.g. '[1]'.")
+    doc_id: str = Field(..., description="Source point id in Qdrant.")
+    title: str = Field(..., description="Source title/topic/kind, whichever the payload had.")
+    text: str = Field(..., description="The cited chunk's text.")
+    score: float = Field(..., description="Retrieval/rerank relevance score.")
+
+
 class ChatResponse(BaseModel):
     thread_id: str = Field(..., description="Echoes the thread id (memory + Langfuse session).")
     answer: str = Field(..., description="The agent's final answer.")
+    citations: list[Citation] = Field(
+        default_factory=list,
+        description=(
+            "Sources the answer actually cited (by bracket marker) — a subset "
+            "of everything retrieved, filtered post-hoc from the model's "
+            "output text rather than trusted from a self-report (GRAPH_PATTERNS.md "
+            "pattern 20)."
+        ),
+    )
 
 
 class HealthResponse(BaseModel):

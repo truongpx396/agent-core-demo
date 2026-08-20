@@ -45,6 +45,28 @@ class Settings(BaseSettings):
     # on `make up` being up).
     checkpoint_db_path: str = "checkpoints.sqlite3"
 
+    # Hybrid retrieval (app/embeddings.py, app/qdrant_store.py) — sparse
+    # (BM25) + dense, fused server-side, then cross-encoder reranked.
+    # Both models run locally via fastembed/ONNX — no network call, no
+    # LiteLLM route, downloaded once and cached (same "offline after first
+    # pull" shape as the Ollama models). See GRAPH_PATTERNS.md pattern 20.
+    sparse_model: str = "Qdrant/bm25"
+    rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    hybrid_prefetch_limit: int = 20  # candidates pulled per leg (dense, sparse) before fusion
+    rerank_top_k: int = 5            # final results returned after rerank
+
+    # Structured-data tool (app/sql_store.py) — a SEPARATE database in the
+    # same Postgres the stack already runs for LiteLLM/Langfuse (see
+    # postgres-init/02-appdata.sql), not sharing their schema.
+    appdata_database_url: str = "postgresql://langfuse:langfuse@localhost:5432/appdata"
+
+    # Semantic cache (app/semantic_cache.py) — Redis Stack (RediSearch, for
+    # vector KNN), not plain Redis.
+    redis_url: str = "redis://localhost:6379"
+    semantic_cache_similarity_threshold: float = 0.95  # cosine; a query must
+    # be nearly identical in meaning to reuse a cached answer, not just topically close
+    semantic_cache_ttl_seconds: int = 3600
+
 
 settings = Settings()
 
@@ -60,3 +82,11 @@ LANGFUSE_HOST = settings.langfuse_host
 LANGFUSE_PUBLIC_KEY = settings.langfuse_public_key
 LANGFUSE_SECRET_KEY = settings.langfuse_secret_key
 CHECKPOINT_DB_PATH = settings.checkpoint_db_path
+SPARSE_MODEL = settings.sparse_model
+RERANK_MODEL = settings.rerank_model
+HYBRID_PREFETCH_LIMIT = settings.hybrid_prefetch_limit
+RERANK_TOP_K = settings.rerank_top_k
+APPDATA_DATABASE_URL = settings.appdata_database_url
+REDIS_URL = settings.redis_url
+SEMANTIC_CACHE_SIMILARITY_THRESHOLD = settings.semantic_cache_similarity_threshold
+SEMANTIC_CACHE_TTL_SECONDS = settings.semantic_cache_ttl_seconds

@@ -57,16 +57,35 @@ services:
     volumes:
       - qdrant:/qdrant/storage
 
-  # --- Langfuse tracing UI + its Postgres (also used by LiteLLM) ---
+  # --- Semantic cache backing store (app/semantic_cache.py) — Redis Stack,
+  # not plain redis:7, because the semantic cache needs RediSearch's vector
+  # KNN query support (FT.CREATE ... VECTOR, FT.SEARCH ... KNN), which the
+  # base redis image doesn't ship.
+  redis:
+    image: redis/redis-stack-server:latest
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # --- Langfuse tracing UI + its Postgres (also used by LiteLLM and, now,
+  # app/sql_store.py's structured-data tool — see postgres-init/02-appdata.sql) ---
   postgres:
     image: postgres:16
+    ports:
+      - "5432:5432"   # exposed so app/sql_store.py (host process) can connect directly
     environment:
       POSTGRES_USER: langfuse
       POSTGRES_PASSWORD: langfuse
       POSTGRES_DB: langfuse
     volumes:
       - postgres:/var/lib/postgresql/data
-      - ./postgres-init:/docker-entrypoint-initdb.d:ro   # creates litellm db on first start
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro   # creates litellm + appdata dbs on first start
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U langfuse"]
       interval: 10s
@@ -92,3 +111,4 @@ volumes:
   qdrant:
   postgres:
   open-webui:
+  redis:

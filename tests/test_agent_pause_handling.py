@@ -35,13 +35,14 @@ def _tool_call_message(name, args, call_id="call_1"):
     )
 
 
-def _install_fake_graph(monkeypatch, *responses):
+def _install_fake_graph(monkeypatch, *responses, search_docs=None):
     """Point app.agent.get_graph() at a hermetic graph so answer()/
     stream_turn() exercise their real pause-handling logic without a live
     LLM/Qdrant, and without touching the durable checkpointer machinery
     (a different concern, covered elsewhere)."""
     llm = GenericFakeChatModel(messages=iter(responses))
-    graph = build_graph(GraphDeps(llm=llm))
+    deps = GraphDeps(llm=llm, search_docs=search_docs) if search_docs else GraphDeps(llm=llm)
+    graph = build_graph(deps)
     monkeypatch.setattr(agent_module, "get_graph", lambda: graph)
     return graph
 
@@ -59,9 +60,10 @@ class TestAnswerAutoDecline:
         )
         before = _count(metrics.agent_unattended_pause_total)
 
-        result = agent_module.answer("remember this", str(uuid.uuid4()), TEST_CTX)
+        result, citations = agent_module.answer("remember this", str(uuid.uuid4()), TEST_CTX)
 
         assert result == "Okay, I won't save that without approval."
+        assert citations == []
         assert _count(metrics.agent_unattended_pause_total) == before + 1
 
     def test_read_only_tool_call_never_pauses_or_auto_declines(self, monkeypatch):
@@ -74,10 +76,37 @@ class TestAnswerAutoDecline:
         )
         before = _count(metrics.agent_unattended_pause_total)
 
-        result = agent_module.answer("what is 1+1", str(uuid.uuid4()), TEST_CTX)
+        result, citations = agent_module.answer("what is 1+1", str(uuid.uuid4()), TEST_CTX)
 
         assert "equals 2" in result
+        assert citations == []
         assert _count(metrics.agent_unattended_pause_total) == before
+
+    def test_returns_only_the_citations_the_answer_actually_used(self, monkeypatch):
+        cited = {
+            "marker": "[1]",
+            "doc_id": "abc123",
+            "title": "Checkpointers",
+            "text": "Checkpointers persist state.",
+            "score": 0.9,
+        }
+        uncited = {**cited, "marker": "[2]", "doc_id": "def456"}
+
+        def fake_search_docs(query, ctx):
+            return "[1] ...\n[2] ...", [cited, uncited]
+
+        _install_fake_graph(
+            monkeypatch,
+            AIMessage(content="Checkpointers persist state [1]."),
+            search_docs=fake_search_docs,
+        )
+
+        result, citations = agent_module.answer(
+            "what is a checkpointer?", str(uuid.uuid4()), TEST_CTX
+        )
+
+        assert result == "Checkpointers persist state [1]."
+        assert citations == [cited]
 
 
 class TestStreamTurnAutoDecline:

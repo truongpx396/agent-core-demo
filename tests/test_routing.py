@@ -11,6 +11,7 @@ from app.graph import (
     _mandatory_gate_reason,
     _tool_capability,
     route_after_approval,
+    route_after_cache,
     route_after_check,
     route_after_validation,
     should_continue,
@@ -38,12 +39,12 @@ class TestRouteAfterValidation:
         state = {"messages": [AIMessage(content="hello")], "ctx": TEST_CTX}
         assert route_after_validation(state) == "reject_input"
 
-    def test_valid_input_retrieves_context(self):
+    def test_valid_input_checks_semantic_cache_first(self):
         state = {
             "messages": [HumanMessage(content="What is our refund policy?")],
             "ctx": TEST_CTX,
         }
-        assert route_after_validation(state) == "retrieve_context"
+        assert route_after_validation(state) == "check_semantic_cache"
 
     def test_uses_last_human_message(self):
         state = {
@@ -54,7 +55,18 @@ class TestRouteAfterValidation:
                 HumanMessage(content="a real question"),
             ]
         }
-        assert route_after_validation(state) == "retrieve_context"
+        assert route_after_validation(state) == "check_semantic_cache"
+
+
+class TestRouteAfterCache:
+    def test_hit_skips_straight_to_check_output(self):
+        assert route_after_cache({"cache_hit": True}) == "check_output"
+
+    def test_miss_proceeds_to_retrieve_context(self):
+        assert route_after_cache({"cache_hit": False}) == "retrieve_context"
+
+    def test_absent_flag_defaults_to_a_miss(self):
+        assert route_after_cache({}) == "retrieve_context"
 
 
 class TestRouteAfterValidationCtx:
@@ -242,6 +254,6 @@ class TestRouteAfterCheck:
         state = {"messages": [AIMessage(content="")]}
         assert route_after_check(state) == "retry_output"
 
-    def test_long_answer_ends(self):
+    def test_long_answer_goes_to_write_semantic_cache(self):
         state = {"messages": [AIMessage(content="A sufficiently detailed answer.")]}
-        assert route_after_check(state) == "__end__"
+        assert route_after_check(state) == "write_semantic_cache"

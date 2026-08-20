@@ -11,14 +11,16 @@ pause/resume cycle just to reach the implementation).
 """
 import pytest
 
-from app import qdrant_store, tools
+from app import qdrant_store, sql_store, tools
 from app.tools import (
     TOOL_CAPABILITIES,
     TOOLS,
     AddNoteArgs,
+    Department,
     RememberArgs,
     Topic,
     add_note,
+    query_employees,
     recall_memories,
     remember,
     search_docs,
@@ -63,6 +65,7 @@ class TestAddNoteImpl:
             captured["points"] = points
 
         monkeypatch.setattr(tools, "embed_text", fake_embed_text)
+        monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1, 2], [0.5, 0.5]))
         # `tools.qdrant_store` is the same module object as the `qdrant_store`
         # imported above (tools.py does `from app import qdrant_store`) — this
         # patches the one `.upsert` attribute both names resolve to.
@@ -73,7 +76,8 @@ class TestAddNoteImpl:
         assert "points" in captured
         assert len(captured["points"]) == 1
         point = captured["points"][0]
-        assert point.vector == [0.1, 0.2, 0.3]
+        assert point.vector["dense"] == [0.1, 0.2, 0.3]
+        assert point.vector["sparse"].indices == [1, 2]
         assert point.payload["topic"] == "company"
         assert point.payload["title"] == "Refunds"
         assert point.payload["kind"] == "document"
@@ -82,6 +86,25 @@ class TestAddNoteImpl:
         assert "30-day window." in point.payload["text"]
         assert "Refunds" in result
         assert "company" in result
+
+    def test_sparse_embedding_failure_degrades_to_dense_only_point(self, monkeypatch):
+        """A local BM25 model hiccup must not block a human-approved write
+        — see _sparse_vector_or_none's docstring."""
+        captured = {}
+
+        monkeypatch.setattr(tools, "embed_text", lambda text: [0.1])
+
+        def failing_sparse(text):
+            raise RuntimeError("model not loaded")
+
+        monkeypatch.setattr(tools, "embed_sparse", failing_sparse)
+        monkeypatch.setattr(qdrant_store, "upsert", lambda points: captured.update(points=points))
+
+        tools._add_note_impl("Refunds", "30-day window.", Topic.company, TEST_CTX)
+
+        point = captured["points"][0]
+        assert "sparse" not in point.vector
+        assert point.vector["dense"] == [0.1]
 
     def test_each_call_gets_a_fresh_id_never_overwriting(self, monkeypatch):
         """A fresh UUID id per call means add_note can only ever append a
@@ -93,6 +116,7 @@ class TestAddNoteImpl:
             seen_ids.append(points[0].id)
 
         monkeypatch.setattr(tools, "embed_text", lambda text: [0.0])
+        monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1], [1.0]))
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
         tools._add_note_impl("A", "one", Topic.qdrant, TEST_CTX)
@@ -107,6 +131,7 @@ class TestAddNoteImpl:
         embedding/Qdrant call shouldn't be able to stall the turn
         indefinitely either."""
         monkeypatch.setattr(tools, "embed_text", lambda text: [0.0])
+        monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1], [1.0]))
         monkeypatch.setattr(qdrant_store, "upsert", lambda points: None)
 
         result = add_note.invoke(
@@ -132,12 +157,11 @@ class TestSearchDocsCtx:
     def test_applies_tenant_prefilter(self, monkeypatch):
         captured = {}
 
-        def fake_search(vector, topic=None, k=3, tenant_filter=None):
+        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True):
             captured["tenant_filter"] = tenant_filter
             return []
 
-        monkeypatch.setattr(tools, "embed_text", lambda text: [0.0])
-        monkeypatch.setattr(qdrant_store, "search", fake_search)
+        monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
         search_docs.invoke({"query": "hello"}, config=_cfg())
 
@@ -156,12 +180,11 @@ class TestSearchDocsCtx:
         actually buys."""
         seen_filters = []
 
-        def fake_search(vector, topic=None, k=3, tenant_filter=None):
+        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True):
             seen_filters.append(tenant_filter)
             return []
 
-        monkeypatch.setattr(tools, "embed_text", lambda text: [0.0])
-        monkeypatch.setattr(qdrant_store, "search", fake_search)
+        monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
         search_docs.invoke({"query": "hello"}, config=_cfg(TEST_CTX))
         search_docs.invoke({"query": "hello"}, config=_cfg(_OTHER_TENANT_CTX))
@@ -214,12 +237,12 @@ class TestRecallMemories:
     def test_scopes_to_tenant_and_owner(self, monkeypatch):
         captured = {}
 
-        def fake_search(vector, topic=None, k=3, tenant_filter=None):
+        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True):
             captured["tenant_filter"] = tenant_filter
+            captured["rerank_results"] = rerank_results
             return []
 
-        monkeypatch.setattr(tools, "embed_text", lambda text: [0.0])
-        monkeypatch.setattr(qdrant_store, "search", fake_search)
+        monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
         recall_memories(TEST_CTX, "coffee")
 
@@ -228,6 +251,9 @@ class TestRecallMemories:
         assert values["tenant"] == TEST_CTX["tenant"]
         assert values["kind"] == "memory"
         assert values["owner"] == TEST_CTX["principal"]
+        # Reranking is deliberately skipped for memory recall — see
+        # _memory_hits's docstring.
+        assert captured["rerank_results"] is False
 
     def test_two_different_principals_get_different_filters(self, monkeypatch):
         """The concrete manifestation of "a memory belongs to whoever wrote
@@ -235,12 +261,11 @@ class TestRecallMemories:
         must produce filters that scope to different owners."""
         seen_filters = []
 
-        def fake_search(vector, topic=None, k=3, tenant_filter=None):
+        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True):
             seen_filters.append(tenant_filter)
             return []
 
-        monkeypatch.setattr(tools, "embed_text", lambda text: [0.0])
-        monkeypatch.setattr(qdrant_store, "search", fake_search)
+        monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
         other_principal_same_tenant = {**TEST_CTX, "principal": "someone-else"}
         recall_memories(TEST_CTX, "coffee")
@@ -252,10 +277,57 @@ class TestRecallMemories:
         assert owners[0] != owners[1]
 
 
+class TestQueryEmployees:
+    def test_refuses_without_ctx(self):
+        result = query_employees.invoke({})
+        assert "Refused" in result
+
+    def test_passes_tenant_and_filters_through_to_sql_store(self, monkeypatch):
+        captured = {}
+
+        def fake_query_employees(tenant, department=None, name_contains=None):
+            captured["tenant"] = tenant
+            captured["department"] = department
+            captured["name_contains"] = name_contains
+            return [{"name": "Priya Nair", "department": "Engineering", "title": "Staff Engineer", "hired_on": "2021-03-01"}]
+
+        monkeypatch.setattr(sql_store, "query_employees", fake_query_employees)
+
+        result = query_employees.invoke(
+            {"department": "Engineering", "name_contains": "pri"}, config=_cfg()
+        )
+
+        assert captured["tenant"] == TEST_CTX["tenant"]
+        assert captured["department"] == "Engineering"
+        assert captured["name_contains"] == "pri"
+        assert "Priya Nair" in result
+
+    def test_no_matches_returns_a_friendly_string(self, monkeypatch):
+        monkeypatch.setattr(sql_store, "query_employees", lambda **kw: [])
+
+        result = query_employees.invoke({}, config=_cfg())
+
+        assert "No matching employees found." == result
+
+    def test_two_different_tenants_get_different_tenant_param(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            sql_store,
+            "query_employees",
+            lambda tenant, department=None, name_contains=None: seen.append(tenant) or [],
+        )
+
+        query_employees.invoke({}, config=_cfg(TEST_CTX))
+        query_employees.invoke({}, config=_cfg(_OTHER_TENANT_CTX))
+
+        assert seen[0] != seen[1]
+
+
 class TestToolCapabilities:
     def test_read_only_tools_declared_correctly(self):
         assert TOOL_CAPABILITIES["search_docs"] == "read_only"
         assert TOOL_CAPABILITIES["calculator"] == "read_only"
+        assert TOOL_CAPABILITIES["query_employees"] == "read_only"
 
     def test_mutating_tools_declared_correctly(self):
         assert TOOL_CAPABILITIES["add_note"] == "mutating"

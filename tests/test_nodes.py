@@ -27,13 +27,99 @@ def test_reject_context_returns_ai_message_and_increments_metric():
     assert metrics.agent_missing_ctx_total._value.get() == before + 1
 
 
+class TestCheckSemanticCache:
+    def test_hit_short_circuits_with_the_cached_answer_and_citations(self):
+        cached_citations = [{"marker": "[1]", "text": "cached fact"}]
+
+        def fake_cache_get(ctx, query):
+            return "A cached answer [1].", cached_citations
+
+        check_semantic_cache = graph.make_check_semantic_cache_node(fake_cache_get)
+        state = {
+            "messages": [HumanMessage(content="what is a checkpointer?")],
+            "ctx": TEST_CTX,
+        }
+        result = check_semantic_cache(state)
+
+        assert result["cache_hit"] is True
+        assert result["citations"] == cached_citations
+        assert len(result["messages"]) == 1
+        assert result["messages"][0].content == "A cached answer [1]."
+
+    def test_miss_returns_no_state_change(self):
+        check_semantic_cache = graph.make_check_semantic_cache_node(lambda ctx, query: None)
+        state = {
+            "messages": [HumanMessage(content="what is a checkpointer?")],
+            "ctx": TEST_CTX,
+        }
+        assert check_semantic_cache(state) == {}
+
+    def test_no_human_message_skips_the_lookup(self):
+        def fail_cache_get(ctx, query):
+            raise AssertionError("cache_get should not be called")
+
+        check_semantic_cache = graph.make_check_semantic_cache_node(fail_cache_get)
+        result = check_semantic_cache({"messages": [AIMessage(content="hi")]})
+        assert result == {}
+
+
+class TestWriteSemanticCache:
+    def test_writes_the_final_answer_and_used_citations_on_a_miss(self):
+        captured = {}
+
+        def fake_cache_set(ctx, query, answer, citations):
+            captured["ctx"] = ctx
+            captured["query"] = query
+            captured["answer"] = answer
+            captured["citations"] = citations
+
+        write_semantic_cache = graph.make_write_semantic_cache_node(fake_cache_set)
+        state = {
+            "messages": [
+                HumanMessage(content="what is a checkpointer?"),
+                AIMessage(content="A checkpointer persists state [1]."),
+            ],
+            "ctx": TEST_CTX,
+            "used_citations": [{"marker": "[1]", "text": "persists state"}],
+            "cache_hit": False,
+        }
+
+        result = write_semantic_cache(state)
+
+        assert result == {}
+        assert captured["query"] == "what is a checkpointer?"
+        assert captured["answer"] == "A checkpointer persists state [1]."
+        assert captured["citations"] == [{"marker": "[1]", "text": "persists state"}]
+
+    def test_skips_the_write_when_the_turn_was_already_a_cache_hit(self):
+        """A turn served from cache has nothing new to learn — re-embedding
+        and re-writing the same answer would just waste work on what's
+        supposed to be the fast path (see the node's own docstring)."""
+
+        def fail_cache_set(ctx, query, answer, citations):
+            raise AssertionError("cache_set should not be called on a cache hit")
+
+        write_semantic_cache = graph.make_write_semantic_cache_node(fail_cache_set)
+        state = {
+            "messages": [
+                HumanMessage(content="what is a checkpointer?"),
+                AIMessage(content="A cached answer."),
+            ],
+            "ctx": TEST_CTX,
+            "used_citations": [],
+            "cache_hit": True,
+        }
+
+        assert write_semantic_cache(state) == {}
+
+
 def test_retrieve_context_calls_search_docs_with_last_human_message_and_ctx():
     captured = {}
 
     def fake_search_docs(query, ctx):
         captured["query"] = query
         captured["ctx"] = ctx
-        return "doc 1\ndoc 2"
+        return "[1] doc 1\n[2] doc 2", [{"marker": "[1]", "text": "doc 1"}]
 
     retrieve_context = graph.make_retrieve_context_node(fake_search_docs)
 
@@ -45,7 +131,10 @@ def test_retrieve_context_calls_search_docs_with_last_human_message_and_ctx():
 
     assert captured["query"] == "what is a checkpointer?"
     assert captured["ctx"] == TEST_CTX
-    assert result == {"context": "doc 1\ndoc 2"}
+    assert result == {
+        "context": "[1] doc 1\n[2] doc 2",
+        "citations": [{"marker": "[1]", "text": "doc 1"}],
+    }
 
 
 def test_retrieve_context_no_human_message_skips_search():
@@ -55,7 +144,7 @@ def test_retrieve_context_no_human_message_skips_search():
     retrieve_context = graph.make_retrieve_context_node(fail_search_docs)
 
     result = retrieve_context({"messages": [AIMessage(content="hi")]})
-    assert result == {"context": ""}
+    assert result == {"context": "", "citations": []}
 
 
 def test_retrieve_context_degrades_to_empty_when_search_docs_raises():
@@ -76,12 +165,35 @@ def test_retrieve_context_degrades_to_empty_when_search_docs_raises():
     }
     result = retrieve_context(state)
 
-    assert result == {"context": ""}
+    assert result == {"context": "", "citations": []}
     assert metrics.agent_context_retrieval_degraded_total._value.get() == before + 1
 
 
-def test_check_output_is_a_passthrough():
-    assert graph.check_output({"messages": [AIMessage(content="anything")]}) == {}
+class TestCheckOutput:
+    def test_no_citations_returns_empty_used_citations(self):
+        result = graph.check_output({"messages": [AIMessage(content="anything")]})
+        assert result == {"used_citations": []}
+
+    def test_filters_citations_to_markers_actually_used(self):
+        citations = [
+            {"marker": "[1]", "text": "checkpointers persist state"},
+            {"marker": "[2]", "text": "unrelated fact"},
+        ]
+        state = {
+            "messages": [AIMessage(content="Checkpointers persist state [1].")],
+            "citations": citations,
+        }
+        result = graph.check_output(state)
+        assert result == {"used_citations": [citations[0]]}
+
+    def test_no_markers_in_answer_returns_empty_used_citations(self):
+        citations = [{"marker": "[1]", "text": "checkpointers persist state"}]
+        state = {
+            "messages": [AIMessage(content="A general answer with no citation.")],
+            "citations": citations,
+        }
+        result = graph.check_output(state)
+        assert result == {"used_citations": []}
 
 
 def test_retry_output_appends_corrective_human_message():

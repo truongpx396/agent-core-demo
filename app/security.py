@@ -62,7 +62,9 @@ class Policy(Protocol):
         ...
 
 
-_KNOWN_ACTIONS = frozenset({"search", "write_note", "recall_memory", "write_memory"})
+_KNOWN_ACTIONS = frozenset(
+    {"search", "write_note", "recall_memory", "write_memory", "query_structured_data"}
+)
 _TARGETS = frozenset({"documents", "memories"})
 
 
