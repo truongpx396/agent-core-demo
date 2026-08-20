@@ -58,7 +58,7 @@ import subprocess
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Annotated, Any, Callable, Literal, TypedDict
+from typing import TYPE_CHECKING, Annotated, Any, Callable, Literal, TypedDict
 
 from langchain_core.messages import (
     AIMessage,
@@ -82,6 +82,9 @@ from app.security import SecurityCtx, valid_ctx
 from app.tools import TOOL_CAPABILITIES, TOOLS
 from app import metrics
 from app import semantic_cache
+
+if TYPE_CHECKING:
+    from app.manifest import AgentManifest, DomainPlugin
 from app import tools
 
 logger = logging.getLogger(__name__)
@@ -291,7 +294,7 @@ def _friendly_tool_error(error: Exception) -> str:
     return f"Tool failed ({type(error).__name__}: {error}). Try a different approach."
 
 
-def _make_llm():
+def _make_llm(tools: list = TOOLS):
     return ChatOpenAI(
         model=CHAT_MODEL,
         base_url=OPENAI_API_BASE,
@@ -304,7 +307,7 @@ def _make_llm():
         # response.usage_metadata is silently None under --stream mode:
         # MAX_TOKENS_PER_TURN never trips, and Langfuse shows 0 tokens.
         stream_usage=True,
-    ).bind_tools(TOOLS)
+    ).bind_tools(tools)
 
 
 # --- Node: validate input. Also resets the per-turn safety budgets
@@ -614,20 +617,26 @@ def _reject_tool_calls(tool_calls: list, reason: str) -> list[ToolMessage]:
     return [ToolMessage(content=reason, tool_call_id=tc["id"]) for tc in tool_calls]
 
 
-def _tool_capability(name: str) -> str:
-    """A tool absent from TOOL_CAPABILITIES (app/tools.py) defaults to
-    "outward" — fail closed, so a new tool added to TOOLS without a
-    capability entry is gated rather than silently trusted. This is the one
-    place that default is applied; everywhere else just reads the mapping."""
-    return TOOL_CAPABILITIES.get(name, "outward")
+def _tool_capability(name: str, tool_capabilities: dict[str, str] = TOOL_CAPABILITIES) -> str:
+    """A tool absent from `tool_capabilities` defaults to "outward" — fail
+    closed, so a new tool added to a domain's TOOLS without a capability
+    entry is gated rather than silently trusted. This is the one place
+    that default is applied; everywhere else just reads the mapping.
+    `tool_capabilities` defaults to app/tools.py's TOOL_CAPABILITIES (the
+    Acme domain) so every existing direct call/import keeps working
+    unchanged; `build_graph` passes a domain's own mapping instead (see
+    its docstring and app/manifest.py, GRAPH_PATTERNS.md pattern 23)."""
+    return tool_capabilities.get(name, "outward")
 
 
-def _mandatory_gate_reason(tool_calls: list) -> str | None:
+def _mandatory_gate_reason(
+    tool_calls: list, tool_capabilities: dict[str, str] = TOOL_CAPABILITIES
+) -> str | None:
     """None if every call in this batch is read_only; otherwise the more
     severe capability present ("outward" — including any undeclared tool —
     over "mutating"), used only to label the metric in should_continue.
     Gating itself doesn't care which one — either forces human_approval."""
-    capabilities = {_tool_capability(tc["name"]) for tc in tool_calls}
+    capabilities = {_tool_capability(tc["name"], tool_capabilities) for tc in tool_calls}
     if "outward" in capabilities:
         return "outward"
     if "mutating" in capabilities:
@@ -637,7 +646,7 @@ def _mandatory_gate_reason(tool_calls: list) -> str | None:
 
 # --- Edge fn: after agent, route to tools / output check / abort ---
 def should_continue(
-    state: State,
+    state: State, tool_capabilities: dict[str, str] = TOOL_CAPABILITIES
 ) -> Literal[
     "tools", "human_approval", "too_many_tool_calls", "check_output", "__end__"
 ]:
@@ -653,17 +662,28 @@ def should_continue(
     - `require_approval` on the input state — opt-in (default False), so
       the existing CLI/API behavior is unchanged unless a caller asks for
       it. See app/hitl_demo.py.
-    - Any pending tool_call whose declared capability
-      (app/tools.py::TOOL_CAPABILITIES) isn't "read_only" — mandatory,
-      never skippable via `require_approval=False`. A retrieval-augmented
-      agent already carries untrusted content on essentially every turn
-      (GRAPH_PATTERNS.md pattern 12); once that's true, letting a mutating
-      or outward-reaching tool run unsupervised too is exactly the "two of
-      three legs" exposure this app has no reason to gamble on (see
-      app/tools.py::TOOL_CAPABILITIES for the full reasoning). An
-      *undeclared* tool is treated the same as "outward," so forgetting to
-      register a new tool's capability fails toward extra caution, not past
-      it.
+    - Any pending tool_call whose declared capability (`tool_capabilities`
+      — app/tools.py::TOOL_CAPABILITIES by default, or a domain's own
+      mapping, see below) isn't "read_only" — mandatory, never skippable
+      via `require_approval=False`. A retrieval-augmented agent already
+      carries untrusted content on essentially every turn (GRAPH_PATTERNS.md
+      pattern 12); once that's true, letting a mutating or outward-reaching
+      tool run unsupervised too is exactly the "two of three legs" exposure
+      this app has no reason to gamble on (see app/tools.py::TOOL_CAPABILITIES
+      for the full reasoning). An *undeclared* tool is treated the same as
+      "outward," so forgetting to register a new tool's capability fails
+      toward extra caution, not past it.
+
+    `tool_capabilities` defaults to the Acme domain's mapping so every
+    existing test/caller invoking `should_continue(state)` directly is
+    unaffected; `build_graph` binds a domain's own mapping via
+    `functools.partial` before registering this as the `agent` node's
+    conditional edge — see its docstring and GRAPH_PATTERNS.md pattern 23.
+    This stays a plain module-level function (not a factory, unlike
+    `agent`/`retrieve_context`/the semantic-cache nodes) specifically so it
+    remains directly importable and callable with just `state`, matching
+    every other routing function in this file (see this module's own
+    docstring on why routing functions live at module level).
     """
     if state.get("iterations", 0) >= MAX_ITERATIONS:
         return "__end__"
@@ -676,7 +696,7 @@ def should_continue(
     tool_calls = state["messages"][-1].tool_calls or []
     if len(tool_calls) > MAX_TOOL_CALLS_PER_TURN:
         return "too_many_tool_calls"
-    mandatory_reason = _mandatory_gate_reason(tool_calls)
+    mandatory_reason = _mandatory_gate_reason(tool_calls, tool_capabilities)
     if mandatory_reason:
         metrics.agent_capability_gate_total.labels(capability=mandatory_reason).inc()
     if state.get("require_approval") or mandatory_reason:
@@ -831,7 +851,12 @@ class GraphDeps:
 
 
 # --- Build the graph ---
-def build_graph(deps: GraphDeps | None = None, checkpointer=None):
+def build_graph(
+    deps: GraphDeps | None = None,
+    checkpointer=None,
+    manifest: "AgentManifest | None" = None,
+    domain: "DomainPlugin | None" = None,
+):
     """Compile the graph.
 
     `deps` bundles the graph's swappable external clients (LLM, search) —
@@ -847,12 +872,44 @@ def build_graph(deps: GraphDeps | None = None, checkpointer=None):
     process restarts. app/agent.py's get_graph() passes a durable
     AsyncSqliteSaver instead for the CLI/API singleton — see its module
     docstring for why that's not just `checkpointer=SqliteSaver(...)` here.
+
+    `manifest`/`domain` (GRAPH_PATTERNS.md pattern 23, app/manifest.py) are
+    what let this SAME function serve a completely different domain — a
+    different system prompt, tool set, tool-capability mapping, and Policy
+    — without any code in this function branching on which domain it is.
+    Both default to `app.manifest`'s `DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN`
+    (this app's existing Acme setup, unchanged), imported here rather than
+    at module level specifically to avoid a circular import — see
+    app/manifest.py's module docstring for the full reasoning; don't hoist
+    this import without re-reading that. `deps.search_docs`/`cache_get`/
+    `cache_set` remain the separate, already-existing override points for
+    retrieval/caching (pattern 20/22) — a domain plugin whose tools need a
+    different corpus or cache is expected to supply its own `GraphDeps`
+    alongside its manifest/domain, the same way a test already does today.
     """
+    from app.manifest import DEFAULT_DOMAIN_PLUGIN, DEFAULT_MANIFEST
+
     deps = deps or GraphDeps()
-    agent = make_agent_node(deps.llm or _make_llm())
+    domain = domain or DEFAULT_DOMAIN_PLUGIN
+    manifest = manifest or DEFAULT_MANIFEST
+
+    domain_tools = domain.tools()
+    if manifest.allowed_tools:
+        allowed = set(manifest.allowed_tools)
+        domain_tools = [t for t in domain_tools if t.name in allowed]
+    domain_tool_capabilities = domain.tool_capabilities()
+
+    agent = make_agent_node(deps.llm or _make_llm(domain_tools))
     retrieve_context = make_retrieve_context_node(deps.search_docs or _default_search)
     check_semantic_cache = make_check_semantic_cache_node(deps.cache_get or _default_cache_get)
     write_semantic_cache = make_write_semantic_cache_node(deps.cache_set or _default_cache_set)
+    # A plain module-level function (not a factory) bound to this domain's
+    # capability mapping via functools.partial — see should_continue's own
+    # docstring for why it stays a directly-callable module-level function
+    # rather than becoming a fifth factory in this file.
+    domain_should_continue = functools.partial(
+        should_continue, tool_capabilities=domain_tool_capabilities
+    )
 
     builder = StateGraph(State)
 
@@ -889,7 +946,7 @@ def build_graph(deps: GraphDeps | None = None, checkpointer=None):
     # AIMessage (e.g. "search docs AND compute 12*7"), ToolNode already runs
     # them concurrently — that's built in, no extra graph wiring required.
     builder.add_node(
-        "tools", ToolNode(TOOLS, handle_tool_errors=_friendly_tool_error)
+        "tools", ToolNode(domain_tools, handle_tool_errors=_friendly_tool_error)
     )
     builder.add_node(
         "human_approval", _instrumented("human_approval")(human_approval)
@@ -915,7 +972,7 @@ def build_graph(deps: GraphDeps | None = None, checkpointer=None):
 
     builder.add_conditional_edges("check_semantic_cache", route_after_cache)
     builder.add_edge("retrieve_context", "agent")
-    builder.add_conditional_edges("agent", should_continue)
+    builder.add_conditional_edges("agent", domain_should_continue)
     builder.add_conditional_edges("human_approval", route_after_approval)
     builder.add_edge("tools", "agent")
     builder.add_edge("too_many_tool_calls", "agent")
@@ -924,4 +981,10 @@ def build_graph(deps: GraphDeps | None = None, checkpointer=None):
     builder.add_edge("retry_output", "agent")
     builder.add_edge("write_semantic_cache", END)
 
-    return builder.compile(checkpointer=checkpointer or MemorySaver())
+    compiled = builder.compile(checkpointer=checkpointer or MemorySaver())
+    # Not LangGraph API — a plain attribute stash so a caller holding the
+    # compiled graph (chiefly app/agent.py's _ensure_seeded) can recover
+    # which domain built it, and seed the CORRECT system prompt, without
+    # this function's return type changing for every existing call site.
+    compiled.manifest = manifest
+    return compiled

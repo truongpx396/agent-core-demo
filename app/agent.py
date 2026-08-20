@@ -65,7 +65,7 @@ from langgraph.types import Command
 
 from app import metrics
 from app.config import CHECKPOINT_DB_PATH
-from app.graph import SYSTEM_PROMPT, build_graph, resumability_error
+from app.graph import build_graph, resumability_error
 from app.security import SecurityCtx
 
 try:
@@ -215,12 +215,24 @@ def _callbacks(session_id: str):
 
 
 def _ensure_seeded(graph, thread_id: str) -> None:
-    """Seed a new conversation thread with the system prompt exactly once."""
+    """Seed a new conversation thread with the system prompt exactly once.
+
+    Reads `graph.manifest.system_prompt` (stamped by build_graph — see
+    GRAPH_PATTERNS.md pattern 23, app/manifest.py) rather than the
+    module-level `SYSTEM_PROMPT` constant, so this seeds the CORRECT
+    prompt for whichever domain `graph` was actually built for — every
+    graph build_graph() returns always carries a `.manifest`, defaulting
+    to the Acme domain, so `graph.manifest.system_prompt` and the
+    top-level `SYSTEM_PROMPT` import are identical for every caller in
+    this app today (get_graph()/init_graph_sync/init_graph_async never
+    pass a non-default manifest); this only starts to matter the day some
+    caller does.
+    """
     if thread_id in _seeded:
         return
     graph.update_state(
         {"configurable": {"thread_id": thread_id}},
-        {"messages": [SystemMessage(content=SYSTEM_PROMPT)]},
+        {"messages": [SystemMessage(content=graph.manifest.system_prompt)]},
     )
     _seeded.add(thread_id)
 
