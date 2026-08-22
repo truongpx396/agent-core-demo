@@ -21,8 +21,23 @@ Two ways these get incremented:
     (iterations, tokens) — both awkward to reconstruct reliably from
     generic callback events, so a direct `.inc()` is simpler and correct.
 """
+import hashlib
+import logging
+
 from langchain_core.callbacks import BaseCallbackHandler
 from prometheus_client import Counter, Histogram
+
+logger = logging.getLogger(__name__)
+
+
+def _fingerprint(text: str) -> str:
+    """A short, stable fingerprint of `text` for an audit log line — NEVER
+    the raw content itself (matching GRAPH_PATTERNS.md pattern 14's "never
+    message content in a generic log" rule, extended here to tool call
+    args/results specifically). Enough to correlate "was this the same
+    result as last time" without the log line becoming a second,
+    unscrubbed copy of prompt/document text sitting outside Langfuse."""
+    return hashlib.sha256((text or "").encode()).hexdigest()[:16]
 
 agent_requests_total = Counter(
     "agent_requests_total", "Total agent turns by outcome", ["outcome"]
@@ -146,16 +161,79 @@ agent_moderation_total = Counter(
     ["outcome"],
 )  # outcome: allowed | blocked_injection | blocked_denylist | error (degraded — treated as allowed)
 
+agent_memory_deletion_total = Counter(
+    "agent_memory_deletion_total",
+    "Memory deletion calls by outcome (app/memory.py)",
+    ["outcome"],
+)  # outcome: deleted | refused — never carries tenant/principal (see app/memory.py's
+# structured log line for the identified, per-call audit trail instead)
+
+agent_no_progress_total = Counter(
+    "agent_no_progress_total",
+    "Turns ended early for repeating an identical tool-call batch "
+    "MAX_REPEATED_ACTIONS times in a row (app/graph.py::should_continue)",
+)
+
+agent_cost_ceiling_exceeded_total = Counter(
+    "agent_cost_ceiling_exceeded_total",
+    "Turns ended early for exceeding MAX_COST_USD_PER_TURN (app/graph.py::should_continue)",
+)
+
+agent_cancellation_total = Counter(
+    "agent_cancellation_total",
+    "Paused runs cancelled via app/agent.py::cancel_run (GRAPH_PATTERNS.md pattern 36)",
+)
+
+agent_context_window_exceeded_total = Counter(
+    "agent_context_window_exceeded_total",
+    "Turns ended at the context_window_exceeded terminal node: the cumulative "
+    "history_summary stayed over MAX_HISTORY_SUMMARY_CHARS even after "
+    "compact_history just updated it (app/graph.py::route_after_compaction, "
+    "GRAPH_PATTERNS.md pattern 41)",
+)
+
 
 class MetricsCallbackHandler(BaseCallbackHandler):
-    """Records tool-call and tool-error counts. Pass an instance in
-    `config["callbacks"]` — LangChain fires these hooks for every tool run
-    inside the graph's ToolNode, regardless of which tool or how many run
-    in parallel."""
+    """Records tool-call/tool-error counts AND a structured per-call audit
+    line (GRAPH_PATTERNS.md pattern 37) — tool name, a fingerprint (never
+    the raw content) of the args and result, and LangChain's own `run_id`
+    as the correlation key tying a call's start to its outcome. Pass an
+    instance in `config["callbacks"]` — LangChain fires these hooks for
+    every tool run inside the graph's ToolNode, regardless of which tool
+    or how many run in parallel.
 
-    def on_tool_start(self, serialized, input_str, **kwargs) -> None:
+    Logged, not durably stored: the reference design this mirrors says "a
+    tool call that cannot be audited MUST NOT run," which strictly implies
+    a synchronous durable-store write gating dispatch — more audit
+    infrastructure than this demo has. Logging is the honest scope here,
+    not a hollow claim of that stronger guarantee.
+    """
+
+    def on_tool_start(self, serialized, input_str, *, run_id, **kwargs) -> None:
         name = (serialized or {}).get("name", "unknown")
         agent_tool_calls_total.labels(tool=name).inc()
+        logger.info(
+            "tool_called",
+            extra={
+                "tool": name,
+                "run_id": str(run_id),
+                "args_fingerprint": _fingerprint(input_str),
+            },
+        )
 
-    def on_tool_error(self, error, **kwargs) -> None:
+    def on_tool_end(self, output, *, run_id, **kwargs) -> None:
+        result_text = getattr(output, "content", output)
+        logger.info(
+            "tool_succeeded",
+            extra={
+                "run_id": str(run_id),
+                "result_fingerprint": _fingerprint(str(result_text)),
+            },
+        )
+
+    def on_tool_error(self, error, *, run_id, **kwargs) -> None:
         agent_tool_errors_total.inc()
+        logger.warning(
+            "tool_failed",
+            extra={"run_id": str(run_id), "error_class": type(error).__name__},
+        )

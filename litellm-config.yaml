@@ -15,6 +15,29 @@ model_list:
     litellm_params:
       model: ollama_chat/qwen2.5:3b
       api_base: http://ollama:11434
+  # Vision-capable alias slot (GRAPH_PATTERNS.md pattern 44) — "chat" above
+  # (qwen2.5:3b) has no vision capability, so an attached image is carried
+  # through the pipeline correctly but the model can't actually see it.
+  #
+  # IMPORTANT, verified empirically: neither small local Ollama vision
+  # model this session tried (moondream, qwen2.5vl:3b — both pulled and
+  # tested directly against this deployment's real Ollama) supports
+  # Ollama's native tool-calling ("does not support tools", from Ollama
+  # itself) — and make_agent_node's agent() always binds this app's tools
+  # to CHAT_MODEL regardless of whether a given turn attaches an image, so
+  # BOTH failed through this app's actual agent loop despite each working
+  # correctly called directly (outside this app, with no tools bound).
+  # This alias is left pointed at qwen2.5vl:3b as a ready-made slot, not
+  # a working default — genuinely exercising real image understanding
+  # through this app's tool-bound agent needs either a larger local model
+  # Ollama might support tool+vision on, or (more reliably today) a real
+  # cloud-hosted OpenAI-compatible vision endpoint substituted for
+  # OPENAI_API_BASE — a config change, not a code change, thanks to this
+  # app's model-alias architecture (pattern 38).
+  - model_name: vision
+    litellm_params:
+      model: ollama_chat/qwen2.5vl:3b
+      api_base: http://ollama:11434
   # Embedding model (alias "embed" -> Ollama nomic-embed-text)
   - model_name: embed
     litellm_params:

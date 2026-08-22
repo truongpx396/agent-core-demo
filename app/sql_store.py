@@ -17,17 +17,51 @@ caller-supplied text — the same pre-filter discipline
 app/qdrant_store.py's hybrid_search already applies, just against a
 relational store instead of a vector one.
 """
-import psycopg
+from psycopg_pool import ConnectionPool
 
 from app.config import APPDATA_DATABASE_URL
 
+# One pool for the process lifetime — every caller (query_employees below,
+# app/meter.py's usage_ledger reads/writes) shares it via get_connection(),
+# rather than each paying a fresh TCP+auth handshake per call the way a
+# bare `psycopg.connect()` per call did before. Opened lazily (on first
+# get_connection() call, not at import time) so importing this module
+# never implies a network dependency — matches app/qdrant_store.py's
+# get_client() and app/semantic_cache.py's _get_client() doing the same
+# for their own stores.
+_pool: ConnectionPool | None = None
 
-def get_connection() -> psycopg.Connection:
-    """A fresh connection per call — this app's traffic is low enough
-    (a local demo, not a production connection-pool workload) that a
-    pool would be premature; `psycopg.connect` is cheap enough here that
-    adding one would be optimizing a cost that doesn't exist yet."""
-    return psycopg.connect(APPDATA_DATABASE_URL)
+
+def _get_pool() -> ConnectionPool:
+    global _pool
+    if _pool is None:
+        _pool = ConnectionPool(APPDATA_DATABASE_URL, min_size=1, max_size=10, open=True)
+    return _pool
+
+
+def get_connection():
+    """A pooled connection, checked out for the caller's `with` block and
+    returned to the pool (not closed) on exit — verified empirically that
+    `pool.connection()`'s context manager commits on normal exit exactly
+    like a bare `psycopg.connect(...)` block does (the property
+    app/meter.py::record_usage's `with get_connection() as conn:
+    conn.execute(...)` already depends on), so no caller needed to change
+    when this became pooled."""
+    return _get_pool().connection()
+
+
+def close_pool() -> None:
+    """Shut the pool's background worker threads down cleanly. A pool
+    that's never explicitly closed leaves those threads still running at
+    process exit — harmless for a short-lived script/CLI invocation, but
+    verified empirically to print a "couldn't stop thread... within 5.0
+    seconds" warning otherwise. `app/api.py`'s `lifespan` calls this on
+    shutdown; a no-op if the pool was never opened (nothing queried
+    `query_employees`/wrote to the usage ledger this process)."""
+    global _pool
+    if _pool is not None:
+        _pool.close()
+        _pool = None
 
 
 def query_employees(

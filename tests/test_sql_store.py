@@ -101,3 +101,63 @@ def test_returns_dicts_not_raw_tuples(monkeypatch):
             "hired_on": "2021-03-01",
         }
     ]
+
+
+class TestConnectionPool:
+    """The pool itself (GRAPH_PATTERNS.md pattern 31) — a lazy singleton,
+    reset before/after each test so these don't leak a real pool (with
+    live background threads) into other test files."""
+
+    def setup_method(self):
+        sql_store._pool = None
+
+    def teardown_method(self):
+        sql_store.close_pool()
+
+    def test_close_pool_is_a_noop_when_never_opened(self):
+        assert sql_store._pool is None
+        sql_store.close_pool()  # must not raise
+        assert sql_store._pool is None
+
+    def test_get_connection_lazily_opens_a_singleton_pool(self, monkeypatch):
+        created = []
+
+        class _FakePool:
+            def __init__(self, *a, **kw):
+                created.append((a, kw))
+
+            def connection(self):
+                return "a-connection-context-manager"
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(sql_store, "ConnectionPool", _FakePool)
+
+        first = sql_store.get_connection()
+        second = sql_store.get_connection()
+
+        assert len(created) == 1  # the pool itself, constructed once
+        assert first == second == "a-connection-context-manager"
+
+    def test_close_pool_clears_the_singleton_so_a_later_call_reopens(self, monkeypatch):
+        created = []
+
+        class _FakePool:
+            def __init__(self, *a, **kw):
+                created.append(1)
+
+            def connection(self):
+                return None
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(sql_store, "ConnectionPool", _FakePool)
+
+        sql_store.get_connection()
+        sql_store.close_pool()
+        assert sql_store._pool is None
+        sql_store.get_connection()
+
+        assert len(created) == 2

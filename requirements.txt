@@ -38,11 +38,16 @@ prometheus-client>=0.20,<1
 # cross-encoder reranker, no torch/sentence-transformers dependency.
 fastembed>=0.8.0,<1
 
-# Structured-data tool (app/sql_store.py) — psycopg 3, not psycopg2.
-psycopg[binary]>=3.1,<4
+# Structured-data tool (app/sql_store.py) — psycopg 3, not psycopg2 —
+# plus psycopg_pool for a real connection pool (pattern 31), not a fresh
+# TCP+auth handshake per query.
+psycopg[binary,pool]>=3.1,<4
 
 # Semantic cache (app/semantic_cache.py) — needs Redis Stack/RediSearch
 # server-side (see docker-compose.yml's `redis` service), not plain Redis.
+# Also backs app/queue.py's Redis Streams queue (GRAPH_PATTERNS.md pattern
+# 43) via this same package's redis.asyncio — no extra dependency needed,
+# redis-py has bundled async support since 4.2.
 redis>=5.0,<9
 
 # MCP: app/mcp_server.py (server, exposing query_employees) AND

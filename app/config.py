@@ -67,6 +67,30 @@ class Settings(BaseSettings):
     # be nearly identical in meaning to reuse a cached answer, not just topically close
     semantic_cache_ttl_seconds: int = 3600
 
+    # Cross-session memory retention (app/security.py, app/memory.py) — a
+    # memory older than this is invisible at RECALL time (Policy.lower),
+    # not just eventually removed by a sweep script calling
+    # app/memory.py::delete_memories (GRAPH_PATTERNS.md pattern 33).
+    memory_retention_days: int = 365
+
+    # Per-run cost ceiling (app/graph.py::should_continue, GRAPH_PATTERNS.md
+    # pattern 35) — a HARD stop, enforced before the next tool/LLM call,
+    # independent of MAX_TOKENS_PER_TURN: a token cap bounds work done, a
+    # dollar cap bounds what that work is actually worth on whichever
+    # model tier is configured (app/meter.py::PRICE_PER_1K_TOKENS_USD).
+    # $0 for every locally-run Ollama model this demo's own docker-compose
+    # ships, so this never trips in the default local setup — it starts
+    # mattering the moment OPENAI_API_BASE points at a real paid provider.
+    max_cost_usd_per_turn: float = 0.50
+
+    # Telegram channel (app/telegram_channel.py, GRAPH_PATTERNS.md pattern
+    # 42) — empty by default, so the bot refuses to start rather than
+    # silently running with no way to authenticate to Telegram's API. Create
+    # a bot via @BotFather to get a real token; this is the one surface in
+    # this app that necessarily reaches the public internet, unlike the rest
+    # of the stack (fully local via docker-compose).
+    telegram_bot_token: str = ""
+
 
 settings = Settings()
 
@@ -90,3 +114,6 @@ APPDATA_DATABASE_URL = settings.appdata_database_url
 REDIS_URL = settings.redis_url
 SEMANTIC_CACHE_SIMILARITY_THRESHOLD = settings.semantic_cache_similarity_threshold
 SEMANTIC_CACHE_TTL_SECONDS = settings.semantic_cache_ttl_seconds
+MEMORY_RETENTION_DAYS = settings.memory_retention_days
+MAX_COST_USD_PER_TURN = settings.max_cost_usd_per_turn
+TELEGRAM_BOT_TOKEN = settings.telegram_bot_token

@@ -7,12 +7,17 @@ deterministic way it deserves.
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.graph import (
+    MAX_HISTORY_SUMMARY_CHARS,
     MAX_ITERATIONS,
+    MAX_REPEATED_ACTIONS,
+    _consecutive_repeat_count,
     _mandatory_gate_reason,
+    _tool_call_fingerprint,
     _tool_capability,
     route_after_approval,
     route_after_cache,
     route_after_check,
+    route_after_compaction,
     route_after_moderation,
     route_after_validation,
     should_continue,
@@ -40,12 +45,12 @@ class TestRouteAfterValidation:
         state = {"messages": [AIMessage(content="hello")], "ctx": TEST_CTX}
         assert route_after_validation(state) == "reject_input"
 
-    def test_valid_input_goes_to_moderation_first(self):
+    def test_valid_input_goes_to_compact_history_first(self):
         state = {
             "messages": [HumanMessage(content="What is our refund policy?")],
             "ctx": TEST_CTX,
         }
-        assert route_after_validation(state) == "moderate_input"
+        assert route_after_validation(state) == "compact_history"
 
     def test_uses_last_human_message(self):
         state = {
@@ -56,7 +61,87 @@ class TestRouteAfterValidation:
                 HumanMessage(content="a real question"),
             ]
         }
-        assert route_after_validation(state) == "moderate_input"
+        assert route_after_validation(state) == "compact_history"
+
+
+def _tc_batch(*name_args_pairs, call_id_prefix="c"):
+    return [
+        {"name": name, "args": args, "id": f"{call_id_prefix}{i}"}
+        for i, (name, args) in enumerate(name_args_pairs)
+    ]
+
+
+class TestToolCallFingerprint:
+    def test_identical_batches_fingerprint_identically(self):
+        a = _tc_batch(("calculator", {"expression": "1+1"}))
+        b = _tc_batch(("calculator", {"expression": "1+1"}), call_id_prefix="different")
+        assert _tool_call_fingerprint(a) == _tool_call_fingerprint(b)
+
+    def test_different_args_fingerprint_differently(self):
+        a = _tc_batch(("calculator", {"expression": "1+1"}))
+        b = _tc_batch(("calculator", {"expression": "2+2"}))
+        assert _tool_call_fingerprint(a) != _tool_call_fingerprint(b)
+
+    def test_call_order_within_a_batch_does_not_matter(self):
+        a = _tc_batch(("calculator", {"expression": "1+1"}), ("search_docs", {"query": "x"}))
+        b = _tc_batch(("search_docs", {"query": "x"}), ("calculator", {"expression": "1+1"}))
+        assert _tool_call_fingerprint(a) == _tool_call_fingerprint(b)
+
+
+class TestConsecutiveRepeatCount:
+    def test_no_tool_calls_at_all_is_zero(self):
+        messages = [HumanMessage(content="hi"), AIMessage(content="hello")]
+        assert _consecutive_repeat_count(messages) == 0
+
+    def test_a_single_tool_call_counts_as_one(self):
+        messages = [
+            HumanMessage(content="hi"),
+            AIMessage(content="", tool_calls=_tc_batch(("calculator", {"expression": "1+1"}))),
+        ]
+        assert _consecutive_repeat_count(messages) == 1
+
+    def test_repeated_identical_calls_count_up(self):
+        call = AIMessage(content="", tool_calls=_tc_batch(("calculator", {"expression": "1+1"})))
+        messages = [HumanMessage(content="hi"), call, call, call]
+        assert _consecutive_repeat_count(messages) == 3
+
+    def test_a_different_call_resets_the_count(self):
+        messages = [
+            HumanMessage(content="hi"),
+            AIMessage(content="", tool_calls=_tc_batch(("calculator", {"expression": "1+1"}))),
+            AIMessage(content="", tool_calls=_tc_batch(("calculator", {"expression": "1+1"}))),
+            AIMessage(content="", tool_calls=_tc_batch(("calculator", {"expression": "2+2"}))),
+        ]
+        # Only the most recent (different) call counts — the repeat streak broke.
+        assert _consecutive_repeat_count(messages) == 1
+
+    def test_never_scans_across_a_prior_turns_human_message(self):
+        """A model calling the same tool in two DIFFERENT turns hasn't
+        repeated anything within one turn — see the function's own
+        docstring."""
+        same_call = AIMessage(content="", tool_calls=_tc_batch(("calculator", {"expression": "1+1"})))
+        messages = [
+            HumanMessage(content="turn one"),
+            same_call,
+            HumanMessage(content="turn two"),  # a NEW turn starts here
+            same_call,
+        ]
+        assert _consecutive_repeat_count(messages) == 1
+
+
+class TestNoProgressDetection:
+    def _repeating_state(self, count):
+        call = AIMessage(content="", tool_calls=_tc_batch(("calculator", {"expression": "1+1"})))
+        return {
+            "messages": [HumanMessage(content="hi")] + [call] * count,
+            "iterations": count,
+        }
+
+    def test_ends_the_turn_once_max_repeated_actions_is_reached(self):
+        assert should_continue(self._repeating_state(MAX_REPEATED_ACTIONS)) == "__end__"
+
+    def test_does_not_end_below_the_threshold(self):
+        assert should_continue(self._repeating_state(MAX_REPEATED_ACTIONS - 1)) == "tools"
 
 
 class TestRouteAfterModeration:
@@ -68,6 +153,27 @@ class TestRouteAfterModeration:
 
     def test_absent_flag_defaults_to_allowed(self):
         assert route_after_moderation({}) == "check_semantic_cache"
+
+
+class TestRouteAfterCompaction:
+    """AR-015a's edge case (app/graph.py's route_after_compaction) — a
+    history_summary still over MAX_HISTORY_SUMMARY_CHARS after
+    compact_history just updated it ends the turn instead of feeding a
+    runaway summary into agent() on every future call."""
+
+    def test_within_budget_proceeds_to_moderation(self):
+        assert route_after_compaction({"history_summary": "short"}) == "moderate_input"
+
+    def test_absent_summary_proceeds_to_moderation(self):
+        assert route_after_compaction({}) == "moderate_input"
+
+    def test_over_budget_ends_at_context_window_exceeded(self):
+        state = {"history_summary": "x" * (MAX_HISTORY_SUMMARY_CHARS + 1)}
+        assert route_after_compaction(state) == "context_window_exceeded"
+
+    def test_at_exactly_the_limit_still_proceeds(self):
+        state = {"history_summary": "x" * MAX_HISTORY_SUMMARY_CHARS}
+        assert route_after_compaction(state) == "moderate_input"
 
 
 class TestRouteAfterCache:
@@ -255,6 +361,17 @@ class TestRouteAfterApproval:
 
     def test_missing_approved_defaults_to_agent(self):
         assert route_after_approval({}) == "agent"
+
+    def test_cancelled_routes_straight_to_end_never_agent(self):
+        """A cancellation is a caller-initiated abort, not feedback for
+        another attempt — it must never loop back to `agent` the way a
+        rejection does (GRAPH_PATTERNS.md pattern 36)."""
+        assert route_after_approval({"cancelled": True, "approved": False}) == "__end__"
+
+    def test_cancelled_wins_even_if_approved_is_somehow_also_true(self):
+        """cancelled is checked FIRST — an inconsistent state (both set)
+        must still fail toward "stop," never toward "run the tool"."""
+        assert route_after_approval({"cancelled": True, "approved": True}) == "__end__"
 
 
 class TestRouteAfterCheck:

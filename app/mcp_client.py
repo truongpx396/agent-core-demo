@@ -51,6 +51,8 @@ from langchain_core.tools import StructuredTool
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
+from app.scrubbing import scrub
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,6 +62,11 @@ async def _call_remote_tool(params: StdioServerParameters, tool_name: str, kwarg
             await session.initialize()
             result = await session.call_tool(tool_name, kwargs)
             text = "".join(c.text for c in result.content if hasattr(c, "text"))
+            # Scrubbed here too, not just in-process tools' _run_with_timeout
+            # (app/tools.py) — a remote server this app doesn't own is at
+            # least as likely to echo a credential-shaped value back
+            # (GRAPH_PATTERNS.md pattern 32).
+            text = scrub(text)
             if result.isError:
                 return f"Remote tool error: {text}"
             return text

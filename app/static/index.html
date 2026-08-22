@@ -28,8 +28,12 @@
     font-size: .8rem; padding: .3rem .6rem; border-radius: 999px;
     border: 1px solid #8888; background: transparent; cursor: pointer;
   }
-  form { display: flex; gap: .5rem; padding-top: .5rem; border-top: 1px solid #8884; }
+  form { display: flex; gap: .5rem; padding-top: .5rem; border-top: 1px solid #8884; flex-wrap: wrap; }
   input[type=text]#input { flex: 1; padding: .6rem; border-radius: 8px; border: 1px solid #8888; font-size: 1rem; }
+  input[type=text]#imageUrl {
+    flex-basis: 100%; padding: .4rem .6rem; border-radius: 8px; border: 1px solid #8888;
+    font-size: .85rem; color: #888;
+  }
   button[type=submit] { padding: .6rem 1rem; border-radius: 8px; border: none; background: #2563eb; color: white; cursor: pointer; }
   button[type=submit]:disabled { opacity: .5; cursor: default; }
 </style>
@@ -43,6 +47,7 @@
 <form id="form">
   <input id="input" type="text" autocomplete="off" placeholder="Ask something..." autofocus>
   <button type="submit" id="send">Send</button>
+  <input id="imageUrl" type="text" autocomplete="off" placeholder="Optional: image URL to attach (GRAPH_PATTERNS.md pattern 44)">
 </form>
 <script>
 // Everything this page does talks ONLY to app/api.py's published endpoints
@@ -58,6 +63,7 @@ const form = document.getElementById("form");
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
 const principalEl = document.getElementById("principal");
+const imageUrlEl = document.getElementById("imageUrl");
 
 function addMessage(role, text) {
   const div = document.createElement("div");
@@ -76,9 +82,10 @@ function addToolLine(text) {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-async function send(text) {
-  addMessage("user", text);
+async function send(text, imageUrl) {
+  addMessage("user", imageUrl ? `${text}\n[attached image: ${imageUrl}]` : text);
   input.value = "";
+  imageUrlEl.value = "";
   sendBtn.disabled = true;
 
   const assistantEl = addMessage("assistant", "");
@@ -92,7 +99,11 @@ async function send(text) {
         "X-Tenant-Id": "acme",
         "X-Principal-Id": principalEl.value || "web-user",
       },
-      body: JSON.stringify({ message: text, thread_id: threadId }),
+      body: JSON.stringify({
+        message: text,
+        thread_id: threadId,
+        images: imageUrl ? [imageUrl] : [],
+      }),
     });
     if (!response.ok || !response.body) {
       assistantEl.textContent = `[request failed: HTTP ${response.status}]`;
@@ -164,7 +175,7 @@ async function send(text) {
 form.addEventListener("submit", (e) => {
   e.preventDefault();
   const text = input.value.trim();
-  if (text) send(text);
+  if (text) send(text, imageUrlEl.value.trim());
 });
 </script>
 </body>

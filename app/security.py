@@ -20,9 +20,12 @@ has somewhere to add its own facts without changing this module's shape.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Protocol, TypedDict
 
-from qdrant_client.models import FieldCondition, Filter, MatchValue
+from qdrant_client.models import DatetimeRange, FieldCondition, Filter, MatchValue
+
+from app.config import MEMORY_RETENTION_DAYS
 
 
 class SecurityCtx(TypedDict):
@@ -100,6 +103,23 @@ class TenantIsolationPolicy:
         if target == "memories":
             must.append(
                 FieldCondition(key="owner", match=MatchValue(value=ctx["principal"]))
+            )
+            # Retention horizon enforced AT RECALL TIME, not merely by a
+            # background sweep (app/memory.py::delete_memories) — a memory
+            # past MEMORY_RETENTION_DAYS is invisible on the very next
+            # read even if nothing has swept it away yet (GRAPH_PATTERNS.md
+            # pattern 33). Verified empirically: a memory with no
+            # `created_at` at all (written before this field existed) is
+            # ALSO excluded by this `gte` range condition — Qdrant treats
+            # a missing field as never matching a range filter — so this
+            # is a real migration note, not just a future-only guarantee:
+            # any pre-existing memory written before this feature landed
+            # becomes invisible at recall until re-written.
+            cutoff = (
+                datetime.now(timezone.utc) - timedelta(days=MEMORY_RETENTION_DAYS)
+            ).isoformat()
+            must.append(
+                FieldCondition(key="created_at", range=DatetimeRange(gte=cutoff))
             )
         return Filter(must=must)
 

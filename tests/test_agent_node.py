@@ -65,3 +65,30 @@ def test_agent_skips_context_message_when_context_empty():
     agent({"messages": [HumanMessage(content="hi")], "context": ""})
 
     assert not any(isinstance(m, SystemMessage) for m in fake_llm.seen_messages)
+
+
+def test_agent_injects_history_summary_as_system_message_when_present():
+    """AR-015a (GRAPH_PATTERNS.md pattern 41) — compact_history's running
+    summary reaches the model the same way retrieved context does."""
+    fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
+    agent = make_agent_node(fake_llm)
+
+    state = {
+        "messages": [HumanMessage(content="what did we discuss earlier?")],
+        "history_summary": "Earlier, the user asked about refund policy.",
+    }
+    agent(state)
+
+    assert any(
+        isinstance(m, SystemMessage) and "refund policy" in m.content
+        for m in fake_llm.seen_messages
+    )
+
+
+def test_agent_skips_history_summary_message_when_absent():
+    fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
+    agent = make_agent_node(fake_llm)
+
+    agent({"messages": [HumanMessage(content="hi")]})
+
+    assert not any(isinstance(m, SystemMessage) for m in fake_llm.seen_messages)

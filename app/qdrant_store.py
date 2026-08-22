@@ -213,3 +213,12 @@ def delete_by_filter(delete_filter: Filter) -> None:
     get_client().delete(
         collection_name=COLLECTION, points_selector=FilterSelector(filter=delete_filter)
     )
+
+
+def count_by_filter(count_filter: Filter) -> int:
+    """How many points currently match `count_filter` — used by
+    app/memory.py::delete_memories to report how many memories a
+    deletion actually removed (Qdrant's own `delete` call doesn't return
+    a row count, so this is called immediately BEFORE deleting the same
+    filter — see that function's docstring for the accepted race)."""
+    return get_client().count(collection_name=COLLECTION, count_filter=count_filter).count

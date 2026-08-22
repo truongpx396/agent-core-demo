@@ -11,6 +11,7 @@ own test suite.
 import time
 
 import pytest
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage
 
 from app import metrics, tools
@@ -19,6 +20,7 @@ from app.graph import (
     MAX_TOKENS_PER_TURN,
     MAX_TOOL_CALLS_PER_TURN,
     _trim_history,
+    make_compact_history_node,
     should_continue,
     too_many_tool_calls,
     validate_input,
@@ -116,19 +118,77 @@ class TestHistoryBudget:
         removed = _trim_history(messages)
         assert None not in {rm.id for rm in removed}
 
-    def test_validate_input_applies_the_trim_and_increments_metric(self):
-        before = metrics.agent_history_compacted_total._value.get()
+    def test_validate_input_no_longer_touches_messages(self):
+        """Trimming/summarization moved to compact_history (see below) —
+        validate_input stays a plain, dependency-free function of
+        state/config with no LLM call of its own."""
         state = {"messages": self._turns(MAX_HISTORY_TURNS + 1)}
         result = validate_input(state, _cfg())
+        assert "messages" not in result
+
+
+class TestCompactHistoryNode:
+    """compact_history (app/graph.py) replaced validate_input's old
+    discard-only trim with a discard-AND-summarize node — see
+    _messages_to_trim (the shared "what falls outside the window" helper)
+    and make_compact_history_node's docstring."""
+
+    @staticmethod
+    def _turns(n):
+        messages = [SystemMessage(content="seed", id="sys")]
+        for i in range(n):
+            messages.append(HumanMessage(content=f"question {i}", id=f"h{i}"))
+            messages.append(AIMessage(content=f"answer {i}", id=f"a{i}"))
+        return messages
+
+    def test_applies_the_trim_and_increments_metric(self):
+        before = metrics.agent_history_compacted_total._value.get()
+        compact_history = make_compact_history_node(
+            GenericFakeChatModel(messages=iter([AIMessage(content="a summary")]))
+        )
+        state = {"messages": self._turns(MAX_HISTORY_TURNS + 1)}
+        result = compact_history(state)
 
         assert "messages" in result
         assert all(isinstance(m, RemoveMessage) for m in result["messages"])
+        assert result["history_summary"] == "a summary"
         assert metrics.agent_history_compacted_total._value.get() == before + 1
 
-    def test_validate_input_skips_the_messages_key_when_nothing_to_trim(self):
+    def test_returns_nothing_when_within_budget(self):
+        compact_history = make_compact_history_node(GenericFakeChatModel(messages=iter([])))
         state = {"messages": self._turns(1)}
-        result = validate_input(state, _cfg())
-        assert "messages" not in result
+        assert compact_history(state) == {}
+
+    def test_degrades_to_trimming_without_a_summary_on_llm_failure(self):
+        class _BoomLLM:
+            def invoke(self, messages):
+                raise RuntimeError("boom")
+
+        compact_history = make_compact_history_node(_BoomLLM())
+        state = {"messages": self._turns(MAX_HISTORY_TURNS + 1)}
+        result = compact_history(state)
+
+        assert "messages" in result
+        assert all(isinstance(m, RemoveMessage) for m in result["messages"])
+        assert "history_summary" not in result
+
+    def test_extends_a_prior_summary_rather_than_replacing_it(self):
+        captured = {}
+
+        class _RecordingLLM:
+            def invoke(self, messages):
+                captured["prompt"] = messages[0].content
+                return AIMessage(content="an extended summary")
+
+        compact_history = make_compact_history_node(_RecordingLLM())
+        state = {
+            "messages": self._turns(MAX_HISTORY_TURNS + 1),
+            "history_summary": "earlier summary text",
+        }
+        result = compact_history(state)
+
+        assert "earlier summary text" in captured["prompt"]
+        assert result["history_summary"] == "an extended summary"
 
 
 class TestToolCallBudget:

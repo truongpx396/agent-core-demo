@@ -151,6 +151,30 @@ class TestAddNoteImpl:
         assert upserted == []  # never reached Qdrant
 
 
+class TestRunWithTimeoutScrubbing:
+    """_run_with_timeout (app/tools.py) is the one chokepoint every
+    read/write tool impl funnels through — proving scrubbing is wired in
+    HERE, not just that app/scrubbing.py::scrub() works in isolation
+    (already covered in tests/test_scrubbing.py), is what actually
+    guards against a future tool bypassing it (GRAPH_PATTERNS.md
+    pattern 32)."""
+
+    def test_a_credential_shaped_result_is_scrubbed(self):
+        result = tools._run_with_timeout(lambda: "here is a key: sk-abcdefghijklmnopqrstuvwx")
+        assert "sk-abcdefghijklmnopqrstuvwx" not in result
+        assert "[REDACTED]" in result
+
+    def test_an_ordinary_result_is_unaffected(self):
+        result = tools._run_with_timeout(lambda: "Refunds — 30-day window.")
+        assert result == "Refunds — 30-day window."
+
+    def test_a_non_string_result_passes_through_unscrubbed(self):
+        # No current tool returns a non-str, but _run_with_timeout itself
+        # doesn't assume one — scrub() only applies to str results.
+        result = tools._run_with_timeout(lambda: 42)
+        assert result == 42
+
+
 class TestSearchDocsCtx:
     def test_refuses_without_ctx(self):
         result = search_docs.invoke({"query": "anything"})
@@ -290,7 +314,7 @@ class TestRecallMemories:
         recall_memories(TEST_CTX, "coffee")
 
         must = captured["tenant_filter"].must
-        values = {c.key: c.match.value for c in must}
+        values = {c.key: c.match.value for c in must if c.match is not None}
         assert values["tenant"] == TEST_CTX["tenant"]
         assert values["kind"] == "memory"
         assert values["owner"] == TEST_CTX["principal"]

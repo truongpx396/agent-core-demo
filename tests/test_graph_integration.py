@@ -19,7 +19,10 @@ from langgraph.types import Command
 
 from app.graph import (
     AGENT_RETRY_POLICY,
+    MAX_HISTORY_SUMMARY_CHARS,
+    MAX_HISTORY_TURNS,
     MAX_ITERATIONS,
+    MAX_REPEATED_ACTIONS,
     MAX_TOKENS_PER_TURN,
     MAX_TOOL_CALLS_PER_TURN,
     GraphDeps,
@@ -119,14 +122,44 @@ class TestHumanApprovalPath:
             result["messages"][-1].content == "Okay, I will not run that calculation."
         )
 
+    def test_cancelled_tool_call_ends_the_turn_without_reaching_agent_again(self):
+        """GRAPH_PATTERNS.md pattern 36: cancellation ends the run
+        outright — an empty _fake_llm() after the tool call would raise
+        StopIteration if `agent` were ever reached a second time, which
+        it must not be (contrast with the rejected-tool-call test above,
+        where a SECOND response is needed because rejection DOES loop
+        back to `agent`)."""
+        llm = _fake_llm(_tool_call_message("calculator", {"expression": "2+2"}))
+        g = build_graph(GraphDeps(llm=llm))
+        config = _config()
+        g.invoke(
+            {
+                "messages": [HumanMessage(content="what is 2+2?")],
+                "require_approval": True,
+            },
+            config=config,
+        )
+        assert g.get_state(config).next, "graph should be paused at the interrupt"
+
+        from app.graph import CANCEL_SENTINEL
+
+        result = g.invoke(Command(resume=CANCEL_SENTINEL), config=config)
+
+        assert not g.get_state(config).next  # finished, not paused
+        assert "Cancelled" in result["messages"][-1].content
+
 
 class TestIterationCap:
     def test_stops_at_max_iterations_even_if_llm_keeps_calling_tools(self):
         # More tool-call responses than MAX_ITERATIONS allows, to prove the
         # cap — not the model running out of things to say — ends the loop.
+        # Each call uses a DIFFERENT expression so this exercises the
+        # iteration cap in isolation, unconfounded by the no-progress
+        # check (pattern 34) below, which would otherwise end the run
+        # earlier for a different, also-correct reason.
         responses = [
             _tool_call_message(
-                "calculator", {"expression": "1+1"}, call_id=f"call_{i}"
+                "calculator", {"expression": f"{i}+1"}, call_id=f"call_{i}"
             )
             for i in range(MAX_ITERATIONS + 5)
         ]
@@ -136,6 +169,133 @@ class TestIterationCap:
             {"messages": [HumanMessage(content="loop forever")]}, config=_config()
         )
         assert result["iterations"] == MAX_ITERATIONS
+
+
+class TestNoProgressDetection:
+    def test_repeating_the_identical_tool_call_ends_the_turn_before_the_iteration_cap(self):
+        """MAX_REPEATED_ACTIONS (3) is well below MAX_ITERATIONS (10) — if
+        this fires at all, it necessarily fires before the iteration cap
+        would have (GRAPH_PATTERNS.md pattern 34)."""
+        responses = [
+            _tool_call_message("calculator", {"expression": "1+1"}, call_id=f"call_{i}")
+            for i in range(MAX_ITERATIONS)  # far more than enough to hit the cap if unfixed
+        ]
+        llm = _fake_llm(*responses)
+        g = build_graph(GraphDeps(llm=llm))
+
+        result = g.invoke(
+            {"messages": [HumanMessage(content="keep trying")]}, config=_config()
+        )
+
+        assert result["iterations"] < MAX_ITERATIONS
+
+    def test_alternating_different_calls_never_trips_it(self):
+        """A model genuinely making progress (different calls each time)
+        must never be mistaken for one that's stuck."""
+        responses = [
+            _tool_call_message("calculator", {"expression": f"{i}+1"}, call_id=f"call_{i}")
+            for i in range(MAX_REPEATED_ACTIONS + 2)
+        ] + [AIMessage(content="Here is my final, sufficiently long answer.")]
+        llm = _fake_llm(*responses)
+        g = build_graph(GraphDeps(llm=llm))
+
+        result = g.invoke(
+            {"messages": [HumanMessage(content="compute several things")]}, config=_config()
+        )
+
+        assert result["messages"][-1].content == "Here is my final, sufficiently long answer."
+
+
+class TestHistorySummarization:
+    """AR-015a end-to-end: a thread running past MAX_HISTORY_TURNS gets its
+    oldest turn folded into history_summary (compact_history) instead of
+    just discarded, while turns still inside the kept window survive
+    verbatim in state["messages"]. See TestSafetyBudgets' compact_history
+    unit tests for the discard/summarize logic in isolation; this proves
+    the whole graph wires it together across real successive g.invoke()
+    calls sharing one checkpointed thread."""
+
+    def test_oldest_turn_is_summarized_while_recent_turns_stay_verbatim(self):
+        # Turns 1..MAX_HISTORY_TURNS: within budget, compact_history has
+        # nothing to trim yet, so only `agent` consumes a response each turn.
+        agent_responses = [
+            AIMessage(content=f"Answer number {i}, long enough to pass the length check.")
+            for i in range(1, MAX_HISTORY_TURNS + 1)
+        ]
+        # Turn MAX_HISTORY_TURNS + 1 pushes turn_starts over budget: turn 1
+        # falls out of the window, so compact_history calls the LLM once
+        # (consumed BEFORE agent's own call, since compact_history runs
+        # earlier in the graph — see route_after_validation) ...
+        summary_response = AIMessage(content="The user first asked question 1.")
+        # ... then agent answers the new turn as usual.
+        final_response = AIMessage(
+            content=f"Answer number {MAX_HISTORY_TURNS + 1}, long enough to pass."
+        )
+        llm = _fake_llm(*agent_responses, summary_response, final_response)
+        g = build_graph(GraphDeps(llm=llm))
+        cfg = _config()
+
+        for i in range(1, MAX_HISTORY_TURNS + 1):
+            g.invoke({"messages": [HumanMessage(content=f"question {i}?")]}, config=cfg)
+
+        result = g.invoke(
+            {"messages": [HumanMessage(content=f"question {MAX_HISTORY_TURNS + 1}?")]},
+            config=cfg,
+        )
+
+        assert result["history_summary"] == "The user first asked question 1."
+        remaining_contents = [getattr(m, "content", "") for m in result["messages"]]
+        assert "question 1?" not in remaining_contents
+        assert "question 2?" in remaining_contents
+
+    def test_an_oversized_summary_ends_the_turn_without_ever_reaching_agent(self):
+        """route_after_compaction's over-budget branch (context_window_exceeded)
+        — no further agent response is queued, so if the graph reached
+        `agent` anyway this would raise StopIteration instead of ending
+        cleanly (same "would raise if invoked" proof as TestRejectPath)."""
+        agent_responses = [
+            AIMessage(content=f"Answer number {i}, long enough to pass the length check.")
+            for i in range(1, MAX_HISTORY_TURNS + 1)
+        ]
+        oversized_summary = AIMessage(content="x" * (MAX_HISTORY_SUMMARY_CHARS + 1))
+        llm = _fake_llm(*agent_responses, oversized_summary)
+        g = build_graph(GraphDeps(llm=llm))
+        cfg = _config()
+
+        for i in range(1, MAX_HISTORY_TURNS + 1):
+            g.invoke({"messages": [HumanMessage(content=f"question {i}?")]}, config=cfg)
+
+        result = g.invoke(
+            {"messages": [HumanMessage(content=f"question {MAX_HISTORY_TURNS + 1}?")]},
+            config=cfg,
+        )
+
+        assert "too long" in result["messages"][-1].content.lower()
+
+    def test_a_summary_that_stays_within_budget_never_ends_the_turn(self):
+        """route_after_compaction's over-budget branch (context_window_exceeded)
+        must not fire on an ordinary, well-within-budget summary."""
+        agent_responses = [
+            AIMessage(content=f"Answer number {i}, long enough to pass the length check.")
+            for i in range(1, MAX_HISTORY_TURNS + 1)
+        ]
+        summary_response = AIMessage(content="short summary")
+        final_response = AIMessage(
+            content=f"Answer number {MAX_HISTORY_TURNS + 1}, long enough to pass."
+        )
+        llm = _fake_llm(*agent_responses, summary_response, final_response)
+        g = build_graph(GraphDeps(llm=llm))
+        cfg = _config()
+
+        for i in range(1, MAX_HISTORY_TURNS + 1):
+            g.invoke({"messages": [HumanMessage(content=f"question {i}?")]}, config=cfg)
+
+        result = g.invoke(
+            {"messages": [HumanMessage(content=f"question {MAX_HISTORY_TURNS + 1}?")]},
+            config=cfg,
+        )
+
+        assert result["messages"][-1].content == final_response.content
 
 
 class TestOutputRetryPath:
@@ -476,6 +636,41 @@ class TestSemanticCache:
         # have raised AssertionError if it were ever called.
 
 
+class TestUngroundedClaimsCount:
+    def test_an_invented_citation_is_counted_as_ungrounded(self):
+        citations = [{"marker": "[1]", "doc_id": "d1", "title": "T", "text": "x", "score": 0.9}]
+
+        def fake_search_docs(query, ctx):
+            return "[1] Checkpointers persist state.", citations
+
+        llm = _fake_llm(AIMessage(content="Checkpointers persist state [1], see also [7]."))
+        g = build_graph(GraphDeps(llm=llm, search_docs=fake_search_docs))
+
+        result = g.invoke(
+            {"messages": [HumanMessage(content="what is a checkpointer?")]},
+            config=_config(),
+        )
+
+        assert result["ungrounded_claims_count"] == 1
+        assert result["used_citations"] == citations  # [1] is real and used
+
+    def test_a_fully_grounded_answer_has_zero_ungrounded_claims(self):
+        citations = [{"marker": "[1]", "doc_id": "d1", "title": "T", "text": "x", "score": 0.9}]
+
+        def fake_search_docs(query, ctx):
+            return "[1] Checkpointers persist state.", citations
+
+        llm = _fake_llm(AIMessage(content="Checkpointers persist state [1]."))
+        g = build_graph(GraphDeps(llm=llm, search_docs=fake_search_docs))
+
+        result = g.invoke(
+            {"messages": [HumanMessage(content="what is a checkpointer?")]},
+            config=_config(),
+        )
+
+        assert result["ungrounded_claims_count"] == 0
+
+
 class TestClarification:
     def test_model_can_ask_a_clarifying_question_and_relay_it_next_turn(self):
         """ask_clarification is deliberately an ORDINARY read_only tool
@@ -574,3 +769,49 @@ class TestTokenBudgetPath:
         )
         assert result["total_tokens"] >= MAX_TOKENS_PER_TURN
         assert result["iterations"] == 1  # ended after one agent call, tool never ran
+
+
+class TestCostCeilingPath:
+    def test_cost_ceiling_ends_the_turn_without_running_the_pending_tool_call(
+        self, monkeypatch
+    ):
+        """Independent of the token cap above: a deliberately absurd
+        per-1k-token price (not a huge token count) is what trips this
+        one, proving MAX_COST_USD_PER_TURN is its own budget, not a
+        re-derivation of MAX_TOKENS_PER_TURN (GRAPH_PATTERNS.md pattern 35)."""
+        from app import meter
+        from app.config import CHAT_MODEL
+
+        monkeypatch.setitem(meter.PRICE_PER_1K_TOKENS_USD, CHAT_MODEL, 1_000_000.0)
+
+        small_usage_msg = AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "calculator", "args": {"expression": "1+1"}, "id": "c1"}
+            ],
+            usage_metadata={"input_tokens": 10, "output_tokens": 0, "total_tokens": 10},
+        )
+        llm = _fake_llm(small_usage_msg)
+        g = build_graph(GraphDeps(llm=llm))
+
+        result = g.invoke(
+            {"messages": [HumanMessage(content="do something expensive")]},
+            config=_config(),
+        )
+
+        assert result["total_tokens"] == 10  # nowhere near MAX_TOKENS_PER_TURN
+        assert result["total_cost_usd"] > 0
+        assert result["iterations"] == 1  # ended after one agent call, tool never ran
+
+    def test_ordinary_turns_never_approach_the_ceiling_with_local_models(self):
+        """Every model this app's own docker-compose runs locally via
+        Ollama costs $0/1k tokens (app/meter.py's price table has no
+        entry for them) — a normal local turn must never trip this."""
+        llm = _fake_llm(AIMessage(content="A perfectly ordinary local answer."))
+        g = build_graph(GraphDeps(llm=llm))
+
+        result = g.invoke(
+            {"messages": [HumanMessage(content="hello")]}, config=_config()
+        )
+
+        assert result["total_cost_usd"] == 0.0

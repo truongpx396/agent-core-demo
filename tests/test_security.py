@@ -78,8 +78,26 @@ class TestTenantIsolationPolicyLower:
         TenantIsolationPolicy's docstring."""
         policy = TenantIsolationPolicy()
         f = policy.lower(FULL_CTX, "memories")
-        values = {c.key: c.match.value for c in f.must}
+        values = {c.key: c.match.value for c in f.must if c.match is not None}
         assert values == {"tenant": "acme", "kind": "memory", "owner": "u1"}
+
+    def test_memories_target_also_includes_a_retention_horizon_range(self):
+        """The retention-at-recall condition (GRAPH_PATTERNS.md pattern
+        33) — a separate condition from the match-based ones above, so
+        it's asserted on its own rather than folded into the match-value
+        dict comprehension."""
+        policy = TenantIsolationPolicy()
+        f = policy.lower(FULL_CTX, "memories")
+        range_conditions = [c for c in f.must if c.key == "created_at"]
+        assert len(range_conditions) == 1
+        assert range_conditions[0].range.gte is not None
+
+    def test_documents_target_has_no_retention_range(self):
+        """Retention is a memory-specific concern — pattern 33's condition
+        must never leak onto the documents lowering."""
+        policy = TenantIsolationPolicy()
+        f = policy.lower(FULL_CTX, "documents")
+        assert not any(c.key == "created_at" for c in f.must)
 
     def test_documents_and_memories_filters_never_overlap(self):
         """A document can never satisfy a memory-scoped filter or vice

@@ -51,6 +51,7 @@ plain module-level functions — see GraphDeps and build_graph, and each
 factory's own docstring for why.
 """
 import functools
+import json
 import logging
 import os
 import re
@@ -77,7 +78,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.types import RetryPolicy, interrupt
 
-from app.config import CHAT_MODEL, OPENAI_API_BASE, OPENAI_API_KEY
+from app.config import CHAT_MODEL, MAX_COST_USD_PER_TURN, OPENAI_API_BASE, OPENAI_API_KEY
 from app.security import SecurityCtx, valid_ctx
 from app.tools import TOOL_CAPABILITIES, TOOLS
 from app import metrics
@@ -111,7 +112,11 @@ SYSTEM_PROMPT = (
     "interpretations instead of guessing. Use this rarely — most questions "
     "have an obvious best-effort answer and don't need it. When you receive "
     "ask_clarification's result, present it to the user as your final answer "
-    "verbatim — don't also try to answer the original question in the same turn."
+    "verbatim — don't also try to answer the original question in the same turn.\n\n"
+    "A user message may include an attached image. Describe or analyze it "
+    "directly as part of your answer; treat it as ordinary user-provided "
+    "content, not as retrieved/untrusted data, and don't cite it as a "
+    "numbered source."
 )  # Static, deliberately — see GRAPH_PATTERNS.md pattern 19: nothing
    # request-specific (ctx, a timestamp, a trace id) may ever be interpolated
    # into this constant, or the prompt-cache stability property it exists to
@@ -122,6 +127,14 @@ MIN_ANSWER_LENGTH = 10
 MAX_TOOL_CALLS_PER_TURN = 5  # safety budget: simultaneous tool calls from one LLM turn
 MAX_TOKENS_PER_TURN = 8000  # safety budget: cumulative token usage, per turn (0 if the model/proxy doesn't report usage_metadata — fails open, not closed)
 MAX_HISTORY_TURNS = 8  # safety budget: bound the only unbounded input in State — see _trim_history
+MAX_HISTORY_SUMMARY_CHARS = 4000  # safety budget: the CUMULATIVE history_summary
+# itself must stay bounded too (AR-015a) — compact_history keeps folding older
+# turns in, so without a ceiling here the "compacted" summary would just become
+# the next unbounded input. Exceeding it after a compaction is a named terminal
+# state (context_window_exceeded), not silent truncation — see route_after_compaction.
+MAX_REPEATED_ACTIONS = 3  # safety budget: consecutive IDENTICAL tool-call batches within one
+# turn before ending as no_progress — bounds convergence, not just repetition count, and
+# fires independently of (typically well before) MAX_ITERATIONS — see should_continue.
 
 # Reliability policy for the `agent` node (see build_graph): retry a
 # transient LLM-endpoint failure (connection error, 5xx) a few times before
@@ -172,8 +185,13 @@ class State(TypedDict):
     context: str  # Enriched context from search (set by retrieve_context).
     iterations: int  # Track how many agent loops we've done *this turn*.
     total_tokens: int  # Cumulative token usage *this turn* (see agent()).
+    total_cost_usd: float  # Cumulative $ cost *this turn*, computed from
+    # app/meter.py's PRICE_PER_1K_TOKENS_USD — should_continue enforces
+    # MAX_COST_USD_PER_TURN against this (GRAPH_PATTERNS.md pattern 35).
     require_approval: bool  # Opt-in: gate tool calls behind human_approval.
     approved: bool  # Set by human_approval; read by route_after_approval.
+    cancelled: bool  # Set by human_approval on a cancel decision; read by
+    # route_after_approval to end the run outright (GRAPH_PATTERNS.md pattern 36).
     run_id: str  # Per-turn correlation id for node lifecycle logs (see
     # validate_input, _instrumented) — regenerated every turn, same reset
     # point as iterations/total_tokens.
@@ -191,6 +209,8 @@ class State(TypedDict):
     used_citations: list[dict]  # Set by check_output — `citations` filtered
     # down to the markers that actually appear in the final answer text
     # (GRAPH_PATTERNS.md pattern 20). What app/api.py's ChatResponse returns.
+    ungrounded_claims_count: int  # Set by check_output — [n] markers the
+    # answer used that don't match any real citation (GRAPH_PATTERNS.md pattern 39).
     cache_hit: bool  # Set by check_semantic_cache — read by
     # write_semantic_cache to skip a redundant re-embed+write on a turn that
     # was already served from cache (GRAPH_PATTERNS.md pattern 22).
@@ -199,44 +219,175 @@ class State(TypedDict):
     followups: list[str]  # Set by suggest_followups — 2-3 follow-up
     # questions derived from a grounded answer, or [] when the answer had
     # no citations to derive them from (GRAPH_PATTERNS.md pattern 27).
+    history_summary: str  # Set by compact_history — a cumulative summary of
+    # whatever _messages_to_trim has discarded so far, across the WHOLE
+    # thread's lifetime. Deliberately NOT reset per-turn in validate_input
+    # (unlike citations/followups/etc.) — it accumulates turn over turn, the
+    # same way the checkpointed message list itself does. Injected by
+    # agent() as an early SystemMessage (GRAPH_PATTERNS.md pattern 41).
 
 
 def _last_human_message(messages: list[BaseMessage]) -> HumanMessage | None:
     return next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
 
 
-def _trim_history(messages: list[BaseMessage]) -> list[RemoveMessage]:
-    """Drop whole turns older than MAX_HISTORY_TURNS.
+def _human_text(message: BaseMessage | None) -> str:
+    """The TEXT portion of a HumanMessage's content, whether it's a plain
+    string (the overwhelmingly common, text-only case) or a multimodal
+    content list — `[{"type": "text", ...}, {"type": "image_url", ...}]`,
+    the shape app/agent.py::_build_human_content builds when an image is
+    attached (GRAPH_PATTERNS.md pattern 44). Everywhere downstream logic
+    only cares about the WORDS, not the raw content the model actually
+    receives, reads through this: moderation screening, the semantic
+    cache key, the retrieval query. An image-only message (no text part
+    at all) yields "", not an error — see `_human_has_content` below for
+    why that must NOT be treated as "no content."
+    """
+    if message is None:
+        return ""
+    content = message.content
+    if isinstance(content, str):
+        return content
+    return "".join(
+        part.get("text", "")
+        for part in content
+        if isinstance(part, dict) and part.get("type") == "text"
+    )
 
-    `messages` is the only unbounded input this graph's State holds — every
-    other field is capped by construction (MAX_TOOL_CALLS_PER_TURN,
-    MAX_TOKENS_PER_TURN, ...). Left alone, a long-running thread's message
-    list grows forever under the checkpointer: a real cost/context-window
-    risk, not just something to tune later.
 
-    Trims by whole turn (a HumanMessage through the next HumanMessage), never
-    by raw message count, so a tool_call/ToolMessage pair is never split —
-    an orphaned tool_call fails the next LLM call's validation exactly like
-    the HITL-rejection gotcha `_reject_tool_calls` exists to avoid on the
-    *current* turn, just triggered by trimming instead of a disapproval. The
-    seeded system prompt (app/agent.py::_ensure_seeded) is never dropped.
+def _human_has_content(message: BaseMessage | None) -> bool:
+    """True if this message has SOME real content worth acting on —
+    non-empty text OR at least one image part. A plain
+    `_human_text(message).strip()` check alone would wrongly reject a
+    genuine image-only question ("what's in this picture?", no text at
+    all) as empty input in route_after_validation."""
+    if message is None:
+        return False
+    content = message.content
+    if isinstance(content, str):
+        return bool(content.strip())
+    if _human_text(message).strip():
+        return True
+    return any(isinstance(part, dict) and part.get("type") == "image_url" for part in content)
 
-    No summarization of the dropped turns: that needs its own LLM call and a
-    policy nobody has measured yet against a real eval set — the same YAGNI
-    call GRAPH_PATTERNS.md already makes for a real per-model cost budget.
-    A message with no id (only possible outside a compiled graph, e.g. a
-    hand-built dict in a test) is left alone rather than guessed at, since
-    RemoveMessage deletes by id.
+
+def _messages_to_trim(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """The actual message OBJECTS (with content) that fall outside the
+    kept window — everything older than the last MAX_HISTORY_TURNS whole
+    turns. Shared by `compact_history` (which needs the real content to
+    summarize) and, via `_trim_history`, anything that only needs the
+    ids to delete.
+
+    Trims by whole turn (a HumanMessage through the next HumanMessage),
+    never by raw message count, so a tool_call/ToolMessage pair is never
+    split — an orphaned tool_call fails the next LLM call's validation
+    exactly like the HITL-rejection gotcha `_reject_tool_calls` exists to
+    avoid on the *current* turn, just triggered by trimming instead of a
+    disapproval. The seeded system prompt (app/agent.py::_ensure_seeded)
+    is never dropped. A message with no id (only possible outside a
+    compiled graph, e.g. a hand-built dict in a test) is left alone
+    rather than guessed at, since RemoveMessage deletes by id.
     """
     turn_starts = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
     if len(turn_starts) <= MAX_HISTORY_TURNS:
         return []
     cutoff = turn_starts[-MAX_HISTORY_TURNS]
     return [
-        RemoveMessage(id=m.id)
-        for m in messages[:cutoff]
-        if not isinstance(m, SystemMessage) and m.id is not None
+        m for m in messages[:cutoff] if not isinstance(m, SystemMessage) and m.id is not None
     ]
+
+
+def _trim_history(messages: list[BaseMessage]) -> list[RemoveMessage]:
+    """`_messages_to_trim` reduced to `RemoveMessage` deletion stubs —
+    kept as its own function for callers (and tests) that only care which
+    ids get removed, not their content."""
+    return [RemoveMessage(id=m.id) for m in _messages_to_trim(messages)]
+
+
+def _format_turns_for_summary(messages: list[BaseMessage]) -> str:
+    """A plain-text rendering of the turns compact_history is about to
+    discard — for the summarization prompt, not for anything downstream
+    of the graph. Messages with no content (e.g. an AIMessage that's pure
+    tool_calls) are skipped rather than rendered as an empty line. A
+    multimodal HumanMessage (GRAPH_PATTERNS.md pattern 44) renders its
+    text part only, via `_human_text` — the summarization LLM call here
+    is text-only regardless of what the ORIGINAL turn attached, same
+    scope boundary app/agent.py's module docstring draws for this
+    feature: an attached image is seen once, by the model that answered
+    the turn it was attached to, never re-sent on every later turn."""
+    role_names = {"human": "User", "ai": "Assistant", "tool": "Tool"}
+    lines = []
+    for m in messages:
+        content = _human_text(m) if isinstance(m, HumanMessage) else (getattr(m, "content", "") or "")
+        if content:
+            lines.append(f"{role_names.get(m.type, m.type)}: {content}")
+    return "\n".join(lines)
+
+
+_HISTORY_SUMMARY_PROMPT = (
+    "Summarize the following earlier conversation turns concisely, in a "
+    "few sentences. Preserve any facts, decisions, names, or commitments "
+    "that might matter for later turns; drop small talk and anything "
+    "already resolved.\n\n{prior_clause}"
+    "Turns to summarize:\n{turns_text}\n\nSummary:"
+)
+
+
+def make_compact_history_node(llm):
+    """Factory, same rationale as make_agent_node/make_suggest_followups_node:
+    needs an LLM client to turn discarded turns into a running summary
+    instead of just discarding them (AR-015a).
+
+    Runs once per turn, right after validate_input — the one point every
+    turn passes through exactly once (see validate_input's comment) — but
+    kept as its own node rather than folded into validate_input because it
+    needs an LLM call and validate_input is meant to stay a plain,
+    dependency-free function of state/config.
+    """
+
+    def compact_history(state: State) -> dict:
+        """Whatever `_messages_to_trim` would discard gets folded into the
+        running `history_summary` instead of just dropped — the trim
+        itself (which ids get RemoveMessage'd) is unchanged from before;
+        only what happens to their CONTENT is new.
+
+        Degrades to trimming without updating the summary on any LLM
+        failure — bounding `state["messages"]` must not depend on the
+        summarization call succeeding, same reliability posture as
+        suggest_followups.
+        """
+        to_summarize = _messages_to_trim(state["messages"])
+        if not to_summarize:
+            return {}
+
+        removals = [RemoveMessage(id=m.id) for m in to_summarize]
+        metrics.agent_history_compacted_total.inc()
+
+        prior_summary = state.get("history_summary") or ""
+        try:
+            prior_clause = (
+                f"Existing summary so far (extend it, don't discard it):\n{prior_summary}\n\n"
+                if prior_summary
+                else ""
+            )
+            prompt = _HISTORY_SUMMARY_PROMPT.format(
+                prior_clause=prior_clause,
+                turns_text=_format_turns_for_summary(to_summarize),
+            )
+            response = llm.invoke([HumanMessage(content=prompt)])
+            new_summary = (response.content or "").strip()
+        except Exception as exc:  # noqa: BLE001 - never fail the turn over a summary
+            logger.warning(
+                "history summarization failed; trimming without updating the summary",
+                extra={"node": "compact_history", "error_class": type(exc).__name__},
+            )
+            return {"messages": removals}
+
+        if not new_summary:
+            return {"messages": removals}
+        return {"messages": removals, "history_summary": new_summary}
+
+    return compact_history
 
 
 def _instrumented(node_name: str):
@@ -333,8 +484,9 @@ def _make_llm(tools: list = TOOLS):
 # climbing turn over turn, so MAX_ITERATIONS would eventually end the graph
 # on a random future turn regardless of how much work that turn actually
 # did. `run_id` gets a fresh value here for the same reason. History
-# trimming (MAX_HISTORY_TURNS) also runs here since this is the one point
-# every turn passes through exactly once — see _trim_history.
+# trimming+summarization (MAX_HISTORY_TURNS) runs one node later, in
+# compact_history — it needs an LLM call, so it stays out of this node to
+# keep validate_input a plain, dependency-free function of state/config.
 #
 # `ctx` is read from `config["configurable"]["ctx"]` — never from `state`,
 # never from message content — and stamped into state exactly once, here.
@@ -346,6 +498,7 @@ def validate_input(state: State, config: RunnableConfig) -> dict:
     updates: dict = {
         "iterations": 0,
         "total_tokens": 0,
+        "total_cost_usd": 0.0,
         "run_id": uuid.uuid4().hex[:8],
         "graph_version": _graph_version(),
         "state_schema_version": STATE_SCHEMA_VERSION,
@@ -355,14 +508,11 @@ def validate_input(state: State, config: RunnableConfig) -> dict:
         # app/api.py's ChatResponse.
         "citations": [],
         "used_citations": [],
+        "ungrounded_claims_count": 0,
         "cache_hit": False,
         "moderation_blocked": False,
         "followups": [],
     }
-    trimmed = _trim_history(state["messages"])
-    if trimmed:
-        updates["messages"] = trimmed
-        metrics.agent_history_compacted_total.inc()
     return updates
 
 
@@ -444,7 +594,7 @@ async def resumability_error_async(graph, config: dict) -> str | None:
 
 def route_after_validation(
     state: State,
-) -> Literal["moderate_input", "reject_input", "reject_context"]:
+) -> Literal["compact_history", "reject_input", "reject_context"]:
     """Checked in order: security context first, then the message itself.
 
     A missing/malformed ctx is a system-level fact (something upstream
@@ -454,23 +604,36 @@ def route_after_validation(
     nothing" — conflating the two would make a real infra problem read
     like a user error in the transcript and in agent_requests_total's
     outcome label (see app/agent.py::_turn_outcome).
+
+    The valid path goes to compact_history, not straight to
+    moderate_input — trimming/summarizing history runs on every valid
+    turn regardless of what moderate_input decides about THIS turn's
+    input (see route_after_compaction for what runs after it).
     """
     if not valid_ctx(state.get("ctx")):
         return "reject_context"
     last_human = _last_human_message(state["messages"])
-    if last_human is None or not last_human.content.strip():
+    if not _human_has_content(last_human):
         return "reject_input"
-    return "moderate_input"
+    return "compact_history"
 
 
 # --- Node: input moderation (GRAPH_PATTERNS.md pattern 25) — runs BEFORE
 # the semantic cache lookup or retrieval, so a screened-out input never
 # reaches either. ---
 def moderate_input(state: State) -> dict:
+    """Screens the TEXT portion only (`_human_text`) — this app's
+    moderation (app/moderation.py) is a text-pattern screen (known
+    injection/jailbreak phrasings + a denylist); it has no way to inspect
+    an attached image's actual content. An image-only message (no text at
+    all) is a `_human_text` of "", which `moderation.screen` allows
+    through unblocked — a real, honestly-disclosed gap (GRAPH_PATTERNS.md
+    pattern 44), not a silent one: this app screens WORDS, never PIXELS.
+    """
     last_human = _last_human_message(state["messages"])
     if last_human is None:
         return {"moderation_blocked": False}
-    result = moderation.screen(last_human.content)
+    result = moderation.screen(_human_text(last_human))
     return {"moderation_blocked": not result.allowed}
 
 
@@ -517,6 +680,38 @@ def reject_context(state: State) -> dict:
     }
 
 
+def route_after_compaction(
+    state: State,
+) -> Literal["moderate_input", "context_window_exceeded"]:
+    """AR-015a's edge case as a NAMED terminal state, not silent
+    truncation or an ever-growing prompt: if compact_history's updated
+    `history_summary` is still over MAX_HISTORY_SUMMARY_CHARS, end the
+    turn explicitly here rather than let agent() inject a runaway summary
+    on every future call for the rest of the thread's life."""
+    if len(state.get("history_summary") or "") > MAX_HISTORY_SUMMARY_CHARS:
+        metrics.agent_context_window_exceeded_total.inc()
+        return "context_window_exceeded"
+    return "moderate_input"
+
+
+def context_window_exceeded(state: State) -> dict:
+    """Terminal node for route_after_compaction's over-budget branch — a
+    dead-end conversation, not a crash: the thread's history_summary grew
+    past MAX_HISTORY_SUMMARY_CHARS even after compact_history just tried
+    to shrink it, so this ends the turn with an explicit message rather
+    than keep compacting into an unbounded loop or silently truncating
+    the summary (which would quietly drop whatever fell off the end)."""
+    return {
+        "messages": [
+            AIMessage(
+                content="This conversation has grown too long to continue safely "
+                "in this thread, even after compacting earlier turns — please "
+                "start a new conversation."
+            )
+        ]
+    }
+
+
 def _default_cache_get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
     return semantic_cache.get(ctx, query)
 
@@ -551,7 +746,7 @@ def make_check_semantic_cache_node(
         last_human = _last_human_message(state["messages"])
         if last_human is None:
             return {}
-        hit = cache_get(state.get("ctx"), last_human.content)
+        hit = cache_get(state.get("ctx"), _human_text(last_human))
         if hit is None:
             return {}
         answer, citations = hit
@@ -616,7 +811,7 @@ def make_retrieve_context_node(
         if last_human is None:
             return {"context": "", "citations": []}
         try:
-            context, citations = search(last_human.content, state.get("ctx"))
+            context, citations = search(_human_text(last_human), state.get("ctx"))
             return {"context": context, "citations": citations}
         except Exception as exc:  # noqa: BLE001 - degrade, never crash the turn
             logger.warning(
@@ -648,6 +843,21 @@ def make_agent_node(llm):
         actually needs to reach the model on every agent step.
         """
         messages = list(state["messages"])
+        history_summary = state.get("history_summary", "")
+        if history_summary:
+            # Same "extra SystemMessage, appended" mechanism as the context
+            # injection right below — just for turns old enough to have
+            # been compacted (GRAPH_PATTERNS.md pattern 41) instead of
+            # retrieved documents. Appended rather than inserted at a fixed
+            # index: nothing here can assume messages[0] is always the
+            # seeded base SYSTEM_PROMPT (a hand-built test state may omit
+            # it), and the model reads a handful of SystemMessages the
+            # same regardless of their exact position in the list.
+            messages.append(
+                SystemMessage(
+                    content=f"Summary of earlier conversation:\n{history_summary}"
+                )
+            )
         context = state.get("context", "")
         if context:
             # Untrusted content framing: retrieved text is data, never
@@ -668,12 +878,25 @@ def make_agent_node(llm):
         # on Ollama/LiteLLM passing usage through). Missing usage just
         # means the token budget never trips, not an error.
         usage = getattr(response, "usage_metadata", None) or {}
-        total_tokens = state.get("total_tokens", 0) + usage.get("total_tokens", 0)
+        turn_tokens = usage.get("total_tokens", 0)
+        total_tokens = state.get("total_tokens", 0) + turn_tokens
+
+        # Cost ceiling bookkeeping (GRAPH_PATTERNS.md pattern 35) — same
+        # price table app/meter.py's post-hoc ledger uses, applied HERE,
+        # incrementally, so should_continue can stop the run before the
+        # NEXT call rather than only recording what the turn already
+        # spent after it's over.
+        from app.meter import PRICE_PER_1K_TOKENS_USD
+
+        price_per_1k = PRICE_PER_1K_TOKENS_USD.get(CHAT_MODEL, 0.0)
+        turn_cost = (turn_tokens / 1000) * price_per_1k
+        total_cost_usd = state.get("total_cost_usd", 0.0) + turn_cost
 
         return {
             "messages": [response],
             "iterations": state.get("iterations", 0) + 1,
             "total_tokens": total_tokens,
+            "total_cost_usd": total_cost_usd,
         }
 
     return agent
@@ -697,6 +920,54 @@ def _tool_capability(name: str, tool_capabilities: dict[str, str] = TOOL_CAPABIL
     unchanged; `build_graph` passes a domain's own mapping instead (see
     its docstring and app/manifest.py, GRAPH_PATTERNS.md pattern 23)."""
     return tool_capabilities.get(name, "outward")
+
+
+def _tool_call_fingerprint(tool_calls: list) -> str:
+    """A stable fingerprint for one batch of tool calls — same tool
+    name(s) + same args, independent of call order, so a model repeating
+    the identical action (not just a coincidentally similar one) is what
+    gets detected. Sorted so a batch of [A, B] and [B, A] fingerprint
+    identically."""
+    normalized = sorted(
+        (tc["name"], json.dumps(tc["args"], sort_keys=True)) for tc in tool_calls
+    )
+    return json.dumps(normalized)
+
+
+def _current_turn_tool_call_batches(messages: list) -> list:
+    """Tool-call batches from AIMessages within the CURRENT turn only —
+    after the most recent HumanMessage, in reverse order (most recent
+    first) — never spanning into a prior turn's tool calls. This is a
+    per-turn loop-progress check (GRAPH_PATTERNS.md pattern 34), not a
+    cross-conversation one: a model that called search_docs last turn and
+    calls it again this turn hasn't repeated anything."""
+    last_human_index = next(
+        (i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)),
+        None,
+    )
+    turn_messages = messages[last_human_index:] if last_human_index is not None else messages
+    return [
+        m.tool_calls
+        for m in reversed(turn_messages)
+        if isinstance(m, AIMessage) and m.tool_calls
+    ]
+
+
+def _consecutive_repeat_count(messages: list) -> int:
+    """How many of the most recent consecutive tool-call batches (within
+    this turn) share the current one's fingerprint — a pure function of
+    `state["messages"]`, no extra State field needed to track it, since
+    the message history already IS the record of what's been tried."""
+    batches = _current_turn_tool_call_batches(messages)
+    if not batches:
+        return 0
+    target = _tool_call_fingerprint(batches[0])
+    count = 0
+    for batch in batches:
+        if _tool_call_fingerprint(batch) != target:
+            break
+        count += 1
+    return count
 
 
 def _mandatory_gate_reason(
@@ -760,12 +1031,26 @@ def should_continue(
     if state.get("total_tokens", 0) >= MAX_TOKENS_PER_TURN:
         metrics.agent_token_budget_exceeded_total.inc()
         return "__end__"
+    if state.get("total_cost_usd", 0.0) >= MAX_COST_USD_PER_TURN:
+        # A HARD stop (GRAPH_PATTERNS.md pattern 35) — independent of the
+        # token cap above: the same token count costs differently on
+        # different model tiers, so a $ ceiling is not a derived quantity
+        # of the token one, it's its own budget.
+        metrics.agent_cost_ceiling_exceeded_total.inc()
+        return "__end__"
     result = tools_condition(state)
     if result != "tools":
         return "check_output"
     tool_calls = state["messages"][-1].tool_calls or []
     if len(tool_calls) > MAX_TOOL_CALLS_PER_TURN:
         return "too_many_tool_calls"
+    if _consecutive_repeat_count(state["messages"]) >= MAX_REPEATED_ACTIONS:
+        # Checked here, independently of MAX_ITERATIONS — a run looping
+        # on one identical action would otherwise just exhaust the
+        # iteration cap and settle spend indistinguishably from a run
+        # that was actually converging (GRAPH_PATTERNS.md pattern 34).
+        metrics.agent_no_progress_total.inc()
+        return "__end__"
     mandatory_reason = _mandatory_gate_reason(tool_calls, tool_capabilities)
     if mandatory_reason:
         metrics.agent_capability_gate_total.labels(capability=mandatory_reason).inc()
@@ -790,17 +1075,28 @@ def too_many_tool_calls(state: State) -> dict:
 
 
 # --- Node: human-in-the-loop approval gate (opt-in) ---
+CANCEL_SENTINEL = "cancelled"  # app/agent.py::cancel_run resumes a paused run with this value
+
+
 def human_approval(state: State) -> dict:
     """Pause the graph and ask a human to approve pending tool calls.
 
     `interrupt()` suspends execution here (LangGraph persists state via
     the checkpointer); the caller resumes with
-    `graph.invoke(Command(resume=True_or_False), config)`, at which
-    point `interrupt()` returns that value and this node continues.
+    `graph.invoke(Command(resume=True_or_False_or_"cancelled"), config)`,
+    at which point `interrupt()` returns that value and this node
+    continues. Three outcomes, not two (GRAPH_PATTERNS.md pattern 36):
+    approved, rejected (the model sees a ToolMessage and gets a chance to
+    react — apologize, try something else), and CANCELLED
+    (`app/agent.py::cancel_run`) — a caller-initiated abort, which is
+    deliberately NOT the same as a rejection: `route_after_approval`
+    sends a cancelled run straight to `__end__`, never back to `agent`,
+    because cancellation means "stop this run," not "here's feedback for
+    your next attempt."
     """
     last_ai = state["messages"][-1]
     tool_calls = last_ai.tool_calls or []
-    approved = interrupt(
+    decision = interrupt(
         {
             "action": "approve_tool_calls",
             "tool_calls": [
@@ -808,7 +1104,13 @@ def human_approval(state: State) -> dict:
             ],
         }
     )
-    if approved:
+    if decision == CANCEL_SENTINEL:
+        metrics.agent_human_approval_total.labels(decision="cancelled").inc()
+        rejections = _reject_tool_calls(
+            tool_calls, "Cancelled by request — this action will not run."
+        )
+        return {"messages": rejections, "approved": False, "cancelled": True}
+    if decision:
         metrics.agent_human_approval_total.labels(decision="approved").inc()
         return {"approved": True}
     metrics.agent_human_approval_total.labels(decision="rejected").inc()
@@ -816,7 +1118,13 @@ def human_approval(state: State) -> dict:
     return {"messages": rejections, "approved": False}
 
 
-def route_after_approval(state: State) -> Literal["tools", "agent"]:
+def route_after_approval(state: State) -> Literal["tools", "agent", "__end__"]:
+    if state.get("cancelled"):
+        # Cancellation ends the run outright — never back to `agent`,
+        # since that would give the model a chance to react to something
+        # that's a caller-initiated abort, not feedback (see
+        # human_approval's docstring, GRAPH_PATTERNS.md pattern 36).
+        return "__end__"
     return "tools" if state.get("approved") else "agent"
 
 
@@ -840,15 +1148,45 @@ def _used_citations(content: str, citations: list[dict]) -> list[dict]:
     ]
 
 
+def _ungrounded_claims_count(content: str, citations: list[dict]) -> int:
+    """How many `[n]` markers the answer text references that do NOT
+    correspond to any real citation `retrieve_context` actually offered —
+    the model inventing a source number, which `SYSTEM_PROMPT` explicitly
+    tells it never to do (GRAPH_PATTERNS.md pattern 39). A structural
+    field on every run, not just a debug-only signal: `0` is itself a
+    meaningful, valid value ("no hallucinated citations this turn"), the
+    same way `source_count == 0` is a valid state elsewhere in this app,
+    never an error. Deliberately the mirror image of `_used_citations` —
+    that function answers "which real citations got used," this one
+    answers "which referenced markers weren't real" — computed
+    independently rather than derived from one another so a bug in one
+    can't silently mask a bug in the other.
+    """
+    if not isinstance(content, str) or not content:
+        return 0
+    referenced = {int(n) for n in _CITATION_MARKER_RE.findall(content)}
+    real_markers = {
+        int(c["marker"].strip("[]"))
+        for c in citations
+        if c["marker"].strip("[]").isdigit()
+    }
+    return len(referenced - real_markers)
+
+
 # --- Node: check output — also extracts which offered citations the
-# final answer actually used (see _used_citations). Recomputed from
+# final answer actually used (see _used_citations) and how many cited
+# markers were invented (see _ungrounded_claims_count). Recomputed from
 # scratch every time this node runs, so a retry_output loop back to
 # `agent` (a new answer, possibly citing different sources) doesn't leave
-# a stale used_citations list from the rejected short answer. ---
+# stale values from the rejected short answer. ---
 def check_output(state: State) -> dict:
     last = state["messages"][-1]
     content = getattr(last, "content", "") or ""
-    return {"used_citations": _used_citations(content, state.get("citations") or [])}
+    citations = state.get("citations") or []
+    return {
+        "used_citations": _used_citations(content, citations),
+        "ungrounded_claims_count": _ungrounded_claims_count(content, citations),
+    }
 
 
 def route_after_check(state: State) -> Literal["retry_output", "suggest_followups"]:
@@ -947,7 +1285,7 @@ def make_write_semantic_cache_node(
         content = getattr(last, "content", "") or ""
         if last_human is None or not content:
             return {}
-        cache_set(state.get("ctx"), last_human.content, content, state.get("used_citations") or [])
+        cache_set(state.get("ctx"), _human_text(last_human), content, state.get("used_citations") or [])
         return {}
 
     return write_semantic_cache
@@ -1039,6 +1377,10 @@ def build_graph(
     # be a second thing to keep in sync with GraphDeps for no real
     # benefit; a tool-bound client asked a plain question just answers it.
     suggest_followups = make_suggest_followups_node(llm_client)
+    # Reuses the SAME llm client too — same reasoning as suggest_followups
+    # above: a summarization call doesn't need tools bound, and a
+    # tool-bound client asked a plain summarization prompt just answers it.
+    compact_history = make_compact_history_node(llm_client)
     retrieve_context = make_retrieve_context_node(deps.search_docs or _default_search)
     check_semantic_cache = make_check_semantic_cache_node(deps.cache_get or _default_cache_get)
     write_semantic_cache = make_write_semantic_cache_node(deps.cache_set or _default_cache_set)
@@ -1062,6 +1404,13 @@ def build_graph(
     builder.add_node("validate_input", _instrumented("validate_input")(validate_input))
     builder.add_node("reject_input", _instrumented("reject_input")(reject_input))
     builder.add_node("reject_context", _instrumented("reject_context")(reject_context))
+    builder.add_node(
+        "compact_history", _instrumented("compact_history")(compact_history)
+    )
+    builder.add_node(
+        "context_window_exceeded",
+        _instrumented("context_window_exceeded")(context_window_exceeded),
+    )
     builder.add_node("moderate_input", _instrumented("moderate_input")(moderate_input))
     builder.add_node(
         "reject_moderation", _instrumented("reject_moderation")(reject_moderation)
@@ -1115,6 +1464,8 @@ def build_graph(
     builder.add_conditional_edges("validate_input", route_after_validation)
     builder.add_edge("reject_input", END)
     builder.add_edge("reject_context", END)
+    builder.add_conditional_edges("compact_history", route_after_compaction)
+    builder.add_edge("context_window_exceeded", END)
 
     builder.add_conditional_edges("moderate_input", route_after_moderation)
     builder.add_edge("reject_moderation", END)

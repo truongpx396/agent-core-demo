@@ -258,6 +258,81 @@ class TestAsyncSeeding:
         assert not any(e["type"] == "error" for e in events)
         assert events[-1]["type"] == "done"
 
+    def test_cancel_run_ends_a_paused_run_against_a_real_checkpointer(self, monkeypatch):
+        """cancel_run (GRAPH_PATTERNS.md pattern 36) is a third resume path
+        alongside astream_events_resume — same aget_state/ainvoke
+        constraint applies, so it gets the same real-AsyncSqliteSaver,
+        single-shared-event-loop regression coverage as the other two.
+
+        Drives the pause via a plain `graph.ainvoke(...)`, not
+        `astream_events_turn` — verified empirically that
+        `graph.astream_events()` raises "No generations found in stream"
+        for a `.bind_tools()`-wrapped `GenericFakeChatModel` specifically
+        (LangChain's fake model doesn't implement true token streaming for
+        tool-calling responses), a pre-existing test-fixture limitation
+        unrelated to cancel_run itself — `ainvoke` reaches the exact same
+        paused-at-human_approval checkpoint without tripping it.
+        """
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        def _mutating_tool_call_llm():
+            from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+            return GenericFakeChatModel(
+                messages=iter(
+                    [
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "add_note",
+                                    "args": {"title": "T", "content": "C", "topic": "company"},
+                                    "id": "c1",
+                                }
+                            ],
+                        ),
+                    ]
+                )
+            )
+
+        monkeypatch.setattr(
+            agent_module,
+            "build_graph",
+            lambda checkpointer=None: build_graph(
+                GraphDeps(llm=_mutating_tool_call_llm()), checkpointer=checkpointer
+            ),
+        )
+
+        async def _run():
+            graph = await agent_module.init_graph_async()
+            thread_id = str(uuid.uuid4())
+            cfg = {"configurable": {"thread_id": thread_id, "ctx": TEST_CTX}}
+
+            await graph.ainvoke(
+                {"messages": [HumanMessage(content="remember our refund policy")]},
+                config=cfg,
+            )
+            paused_state = await graph.aget_state(cfg)
+            assert paused_state.next, "should be paused"
+
+            cancelled = await agent_module.cancel_run(thread_id, TEST_CTX)
+
+            final_state = await graph.aget_state(cfg)
+            return cancelled, final_state
+
+        cancelled, state = asyncio.run(_run())
+
+        assert cancelled is True
+        assert not state.next  # finished, not paused
+        assert "Cancelled" in state.values["messages"][-1].content
+
+    def test_cancel_run_returns_false_when_nothing_is_paused(self):
+        async def _run():
+            await agent_module.init_graph_async()
+            return await agent_module.cancel_run(str(uuid.uuid4()), TEST_CTX)
+
+        assert asyncio.run(_run()) is False
+
 
 class TestResumabilityError:
     def _paused_graph_and_config(self, monkeypatch):

@@ -27,6 +27,17 @@ def test_reject_context_returns_ai_message_and_increments_metric():
     assert metrics.agent_missing_ctx_total._value.get() == before + 1
 
 
+def test_context_window_exceeded_returns_an_ai_message():
+    """Terminal node for route_after_compaction's over-budget branch
+    (AR-015a) — ends the turn with an explicit message, same shape as
+    reject_input/reject_context/reject_moderation above it."""
+    result = graph.context_window_exceeded({"messages": []})
+    assert len(result["messages"]) == 1
+    msg = result["messages"][0]
+    assert isinstance(msg, AIMessage)
+    assert "too long" in msg.content.lower()
+
+
 class TestModerateInput:
     def test_ordinary_message_is_not_blocked(self):
         state = {"messages": [HumanMessage(content="What is our refund policy?")]}
@@ -264,7 +275,7 @@ def test_retrieve_context_degrades_to_empty_when_search_docs_raises():
 class TestCheckOutput:
     def test_no_citations_returns_empty_used_citations(self):
         result = graph.check_output({"messages": [AIMessage(content="anything")]})
-        assert result == {"used_citations": []}
+        assert result == {"used_citations": [], "ungrounded_claims_count": 0}
 
     def test_filters_citations_to_markers_actually_used(self):
         citations = [
@@ -276,7 +287,10 @@ class TestCheckOutput:
             "citations": citations,
         }
         result = graph.check_output(state)
-        assert result == {"used_citations": [citations[0]]}
+        assert result == {
+            "used_citations": [citations[0]],
+            "ungrounded_claims_count": 0,
+        }
 
     def test_no_markers_in_answer_returns_empty_used_citations(self):
         citations = [{"marker": "[1]", "text": "checkpointers persist state"}]
@@ -285,7 +299,25 @@ class TestCheckOutput:
             "citations": citations,
         }
         result = graph.check_output(state)
-        assert result == {"used_citations": []}
+        assert result == {"used_citations": [], "ungrounded_claims_count": 0}
+
+    def test_a_marker_with_no_matching_citation_is_counted_as_ungrounded(self):
+        citations = [{"marker": "[1]", "text": "checkpointers persist state"}]
+        state = {
+            "messages": [AIMessage(content="Checkpointers persist state [1] and also [5].")],
+            "citations": citations,
+        }
+        result = graph.check_output(state)
+        assert result["ungrounded_claims_count"] == 1
+        assert result["used_citations"] == citations  # [1] is still real and used
+
+    def test_an_invented_marker_with_zero_real_citations_is_still_counted(self):
+        state = {
+            "messages": [AIMessage(content="This is backed by [1], trust me.")],
+            "citations": [],
+        }
+        result = graph.check_output(state)
+        assert result == {"used_citations": [], "ungrounded_claims_count": 1}
 
 
 def test_retry_output_appends_corrective_human_message():
@@ -313,6 +345,23 @@ class TestHumanApproval:
         )
         result = graph.human_approval({"messages": [ai]})
         assert result == {"approved": True}
+
+    def test_cancelled_synthesizes_tool_message_and_sets_cancelled_flag(self, monkeypatch):
+        """The third outcome (GRAPH_PATTERNS.md pattern 36) — distinct
+        from both approved and rejected: `cancelled: True`, not just
+        `approved: False`, is what route_after_approval needs to send
+        this straight to __end__ instead of back to `agent`."""
+        monkeypatch.setattr(graph, "interrupt", lambda payload: graph.CANCEL_SENTINEL)
+        ai = self._ai_with_tool_calls(
+            {"name": "add_note", "args": {"title": "T", "content": "C", "topic": "company"}, "id": "call_1"}
+        )
+        result = graph.human_approval({"messages": [ai]})
+
+        assert result["approved"] is False
+        assert result["cancelled"] is True
+        assert len(result["messages"]) == 1
+        assert isinstance(result["messages"][0], ToolMessage)
+        assert result["messages"][0].tool_call_id == "call_1"
 
     def test_rejected_synthesizes_tool_message_per_pending_call(self, monkeypatch):
         """Regression test for the HITL gotcha documented in

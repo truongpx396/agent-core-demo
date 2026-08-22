@@ -55,6 +55,7 @@ import ast
 import concurrent.futures
 import operator
 import uuid
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal
 
@@ -65,6 +66,7 @@ from pydantic import BaseModel, Field, field_validator
 from app import qdrant_store
 from app.config import DEFAULT_TENANT
 from app.embeddings import embed_sparse, embed_text
+from app.scrubbing import scrub
 from app.security import DEFAULT_POLICY, SecurityCtx, valid_ctx
 
 # Whitelisted operators for the safe calculator.
@@ -97,14 +99,21 @@ def _run_with_timeout(func, *args, **kwargs):
     Soft timeout: Python can't forcibly kill the worker thread, so this
     bounds how long the *graph* waits, not how long the call actually runs
     in the background.
+
+    The result is scrubbed (app/scrubbing.py, GRAPH_PATTERNS.md pattern
+    32) before it reaches the caller — the one chokepoint every read/write
+    tool impl in this module funnels through, so a credential-shaped or
+    actually-bound-secret value in a tool's raw result (a database row, a
+    fetched document) never reaches the model's next prompt or a trace.
     """
     future = _TOOL_EXECUTOR.submit(func, *args, **kwargs)
     try:
-        return future.result(timeout=TOOL_TIMEOUT_SECONDS)
+        result = future.result(timeout=TOOL_TIMEOUT_SECONDS)
     except concurrent.futures.TimeoutError as exc:
         raise TimeoutError(
             f"Tool call exceeded the {TOOL_TIMEOUT_SECONDS}s timeout."
         ) from exc
+    return scrub(result) if isinstance(result, str) else result
 
 
 _NO_CTX_REFUSAL = (
@@ -436,7 +445,13 @@ class RememberArgs(BaseModel):
 def _remember_impl(content: str, ctx: SecurityCtx) -> str:
     """Embed and upsert one memory, owned by ctx["principal"] within
     ctx["tenant"] — see the module docstring's "Cross-session memory"
-    section for why this is the *only* place a memory gets written."""
+    section for why this is the *only* place a memory gets written.
+
+    `created_at` (UTC, ISO 8601) is what `Policy.lower`'s retention-at-
+    recall range filter (app/security.py, GRAPH_PATTERNS.md pattern 33)
+    and `app/memory.py::delete_memories`'s age-based selector both read —
+    stamped once, here, never derived from anything caller-supplied.
+    """
     point = qdrant_store.build_point(
         point_id=str(uuid.uuid4()),
         dense_vector=embed_text(content),
@@ -446,6 +461,7 @@ def _remember_impl(content: str, ctx: SecurityCtx) -> str:
             "kind": "memory",
             "tenant": ctx["tenant"],
             "owner": ctx["principal"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
         },
     )
     qdrant_store.upsert([point])

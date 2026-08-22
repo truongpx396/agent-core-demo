@@ -65,7 +65,8 @@ from langgraph.types import Command
 
 from app import metrics
 from app.config import CHAT_MODEL, CHECKPOINT_DB_PATH
-from app.graph import build_graph, resumability_error, resumability_error_async
+from app.errors import ErrorCode, ErrorEnvelope
+from app.graph import CANCEL_SENTINEL, build_graph, resumability_error, resumability_error_async
 from app.security import SecurityCtx
 
 try:
@@ -290,6 +291,30 @@ def _config(thread_id: str, ctx: SecurityCtx) -> dict:
     }
 
 
+def _build_human_content(text: str, images: list[str] | None) -> str | list[dict]:
+    """Plain `str` when there's no image — the overwhelmingly common case,
+    and what every existing caller/test already expects. A multimodal
+    content list (GRAPH_PATTERNS.md pattern 44) — OpenAI/LiteLLM's
+    documented `[{"type": "text", ...}, {"type": "image_url", ...}]`
+    shape — only when at least one image is actually attached, so a
+    text-only turn produces byte-identical `HumanMessage` content to
+    before this feature existed.
+
+    `images` are data URIs or plain URLs; this app never fetches or
+    decodes them itself — whatever model is configured behind
+    `CHAT_MODEL` does that, the same way it already resolves text tokens.
+    A model with no vision capability just ignores or errors on the
+    image part, exactly as it would for any other request it can't
+    fulfill; this app doesn't detect vision capability up front (see
+    GRAPH_PATTERNS.md pattern 44's scope notes).
+    """
+    if not images:
+        return text
+    parts: list[dict] = [{"type": "text", "text": text}]
+    parts.extend({"type": "image_url", "image_url": {"url": img}} for img in images)
+    return parts
+
+
 def _delta_for(state: dict, printed: str) -> str | None:
     """The new suffix of the latest AI message's content since `printed`,
     or None if this state snapshot has nothing new to show (a tool_call
@@ -302,7 +327,7 @@ def _delta_for(state: dict, printed: str) -> str | None:
 
 
 @observe(name="chat-turn-stream")
-def stream_turn(text: str, thread_id: str, ctx: SecurityCtx):
+def stream_turn(text: str, thread_id: str, ctx: SecurityCtx, images: list[str] | None = None):
     """Yield the assistant's answer incrementally (used by the CLI).
 
     `ctx` is required, not optional-with-a-default: a caller with no valid
@@ -311,6 +336,9 @@ def stream_turn(text: str, thread_id: str, ctx: SecurityCtx):
     validate_input/route_after_validation fail closed on it regardless,
     but making it a required parameter here means that failure is visible
     at the call site, not just three nodes deep in the graph.
+
+    `images` (GRAPH_PATTERNS.md pattern 44) is optional and defaults to
+    None — every existing caller keeps working unchanged.
     """
     langfuse_context.update_current_trace(session_id=thread_id)
     graph = get_graph()
@@ -322,7 +350,9 @@ def stream_turn(text: str, thread_id: str, ctx: SecurityCtx):
     cfg = _config(thread_id, ctx)
 
     for state in graph.stream(
-        {"messages": [HumanMessage(content=text)]}, config=cfg, stream_mode="values"
+        {"messages": [HumanMessage(content=_build_human_content(text, images))]},
+        config=cfg,
+        stream_mode="values",
     ):
         final_state = state
         if time.monotonic() > deadline:
@@ -386,16 +416,52 @@ def _invoke_with_timeout(graph, graph_input, cfg: dict, start: float):
         raise
 
 
-@observe(name="chat-turn")
-def answer(text: str, thread_id: str, ctx: SecurityCtx) -> tuple[str, list[dict]]:
-    """Run one turn and return (final assistant text, used_citations) (used
-    by the API). `used_citations` is state["used_citations"] as computed by
-    graph.py's check_output — already filtered to the markers the answer
-    text actually references, never the full retrieved set (GRAPH_PATTERNS.md
-    pattern 20). Empty on every early-return path below (timeout, auto-decline
-    error) since there's no real model answer to have cited anything.
+_TIMEOUT_MESSAGE = "Sorry, that took too long to answer — please try again."
 
-    `ctx` is required — see stream_turn's matching docstring note."""
+
+def _timeout_envelope() -> ErrorEnvelope:
+    return ErrorEnvelope(code=ErrorCode.TIMEOUT, message=_TIMEOUT_MESSAGE)
+
+
+def _resumability_envelope(error: str) -> ErrorEnvelope:
+    """`resumability_error`'s return value is a human-readable string that
+    always starts with its own error code as a prefix (`"checkpoint_lost:
+    ..."` or `"checkpoint_incompatible: ..."` — see its docstring) — this
+    just maps that prefix onto the canonical `ErrorCode` registry rather
+    than re-deriving the classification from scratch."""
+    code = (
+        ErrorCode.CHECKPOINT_LOST
+        if error.startswith("checkpoint_lost")
+        else ErrorCode.CHECKPOINT_INCOMPATIBLE
+    )
+    return ErrorEnvelope(
+        code=code, message=f"Sorry, I couldn't complete that — {error}"
+    )
+
+
+@observe(name="chat-turn")
+def answer(
+    text: str, thread_id: str, ctx: SecurityCtx, images: list[str] | None = None
+) -> tuple[str, list[dict], ErrorEnvelope | None, int]:
+    """Run one turn and return (final assistant text, used_citations,
+    error, ungrounded_claims_count) (used by the API). `used_citations` is
+    state["used_citations"] as computed by graph.py's check_output —
+    already filtered to the markers the answer text actually references,
+    never the full retrieved set (GRAPH_PATTERNS.md pattern 20). `error`
+    is the canonical `ErrorEnvelope` (GRAPH_PATTERNS.md pattern 30,
+    app/errors.py) — `None` for a normal success OR a successful
+    auto-decline (both produce a real answer text, just not one from a
+    genuine failure); set only when the turn ended in an actual TIMEOUT or
+    a stale/incompatible checkpoint it refused to resume into.
+    `ungrounded_claims_count` (pattern 39) is `state["ungrounded_claims_count"]`
+    — how many cited markers in the answer didn't match any real
+    citation. `used_citations` and `ungrounded_claims_count` are both `0`/
+    empty on every error path — there's no real model answer to have
+    cited anything.
+
+    `ctx` is required — see stream_turn's matching docstring note.
+    `images` (GRAPH_PATTERNS.md pattern 44) is optional, defaulting to
+    None — every existing caller keeps working unchanged."""
     langfuse_context.update_current_trace(session_id=thread_id)
     graph = get_graph()
     _ensure_seeded(graph, thread_id)
@@ -403,10 +469,10 @@ def answer(text: str, thread_id: str, ctx: SecurityCtx) -> tuple[str, list[dict]
     start = time.monotonic()
 
     result = _invoke_with_timeout(
-        graph, {"messages": [HumanMessage(content=text)]}, cfg, start
+        graph, {"messages": [HumanMessage(content=_build_human_content(text, images))]}, cfg, start
     )
     if result is None:
-        return "Sorry, that took too long to answer — please try again.", []
+        return _TIMEOUT_MESSAGE, [], _timeout_envelope(), 0
 
     if graph.get_state(cfg).next:
         # See stream_turn's matching comment: POST /chat is single-shot
@@ -417,15 +483,21 @@ def answer(text: str, thread_id: str, ctx: SecurityCtx) -> tuple[str, list[dict]
         error = resumability_error(graph, cfg)
         if error:  # never resume blindly — see resumability_error's docstring
             _record_turn_metrics(time.monotonic() - start, "error")
-            return f"Sorry, I couldn't complete that — {error}", []
+            envelope = _resumability_envelope(error)
+            return envelope.message, [], envelope, 0
         result = _invoke_with_timeout(graph, Command(resume=False), cfg, start)
         if result is None:
-            return "Sorry, that took too long to answer — please try again.", []
+            return _TIMEOUT_MESSAGE, [], _timeout_envelope(), 0
 
     _record_turn_metrics(
         time.monotonic() - start, _turn_outcome(result), result, ctx=ctx, thread_id=thread_id
     )
-    return result["messages"][-1].content, result.get("used_citations") or []
+    return (
+        result["messages"][-1].content,
+        result.get("used_citations") or [],
+        None,
+        result.get("ungrounded_claims_count") or 0,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +558,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
     start = time.monotonic()
     final_answer = []
     used_citations: list[dict] = []
+    ungrounded_claims_count = 0
     try:
         async for event in _iterate_with_timeout(
             graph.astream_events(graph_input, config=cfg, version="v2"),
@@ -533,7 +606,15 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
             if outcome == "timeout"
             else str(exc)
         )
-        terminal_event = {"type": "error", "content": message}
+        envelope = ErrorEnvelope(
+            code=ErrorCode.TIMEOUT if outcome == "timeout" else ErrorCode.INTERNAL,
+            message=message,
+        )
+        # "content" kept alongside the envelope fields for backward
+        # compatibility with existing consumers (app/chat.py, the web UI)
+        # that already read event["content"] — see app/errors.py's module
+        # docstring for why the envelope is additive here, not a rename.
+        terminal_event = {"type": "error", "content": message, **envelope.to_dict()}
     else:
         # astream_events() simply stops yielding once the run pauses at an
         # interrupt() — there's no exception and no distinct "paused" event,
@@ -566,6 +647,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
                 thread_id=(cfg.get("configurable") or {}).get("thread_id"),
             )
             used_citations = state.values.get("used_citations") or []
+            ungrounded_claims_count = state.values.get("ungrounded_claims_count") or 0
             terminal_event = {"type": "done"}
     finally:
         # Flush so the trace is sent even if the caller exits immediately —
@@ -577,13 +659,21 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
             except Exception:  # noqa: BLE001
                 pass
 
-    if used_citations:
-        yield {"type": "citations", "items": used_citations}
+    if used_citations or ungrounded_claims_count:
+        yield {
+            "type": "citations",
+            "items": used_citations,
+            "ungrounded_claims_count": ungrounded_claims_count,
+        }
     yield terminal_event
 
 
 async def astream_events_turn(
-    text: str, thread_id: str, ctx: SecurityCtx, require_approval: bool = False
+    text: str,
+    thread_id: str,
+    ctx: SecurityCtx,
+    require_approval: bool = False,
+    images: list[str] | None = None,
 ):
     """Production async generator — yields typed event dicts (see
     _run_graph_stream for the full shape list, including
@@ -596,7 +686,8 @@ async def astream_events_turn(
     astream_events_resume(thread_id, approved, ctx) to continue — the
     streaming counterpart to app/hitl_demo.py's blocking
     Command(resume=...) loop. Default False keeps existing callers
-    (app/api.py) unchanged.
+    (app/api.py) unchanged. `images` (GRAPH_PATTERNS.md pattern 44) is
+    optional, defaulting to None — same reasoning.
     """
     graph = await init_graph_async()
     await _ensure_seeded_async(graph, thread_id)
@@ -607,11 +698,46 @@ async def astream_events_turn(
         "recursion_limit": 12,
     }
     graph_input = {
-        "messages": [HumanMessage(content=text)],
+        "messages": [HumanMessage(content=_build_human_content(text, images))],
         "require_approval": require_approval,
     }
     async for event in _run_graph_stream(graph, graph_input, cfg, trace):
         yield event
+
+
+async def astream_events_turn_unattended(
+    text: str,
+    thread_id: str,
+    ctx: SecurityCtx,
+    require_approval: bool = False,
+    images: list[str] | None = None,
+):
+    """astream_events_turn, but auto-declines a single approval_required
+    pause instead of yielding it and waiting for astream_events_resume —
+    for a caller with no interactive human on the other end of THIS call.
+    Today that's app/agent_worker.py (the Redis Streams queue's consumer
+    side, GRAPH_PATTERNS.md pattern 43): a request pulled off a shared
+    queue has no round trip back to whoever originally asked, so it must
+    resolve any pause on its own rather than leave the run paused forever.
+
+    Same one-round auto-decline shape answer()/stream_turn() already use
+    for their own single-shot callers (pattern 8) — not a loop: a SECOND
+    pause on the same turn (e.g. a rejected action followed by another
+    mutating attempt) is left to the model's own next response, exactly
+    like those two functions already handle it.
+    """
+    paused = False
+    async for event in astream_events_turn(
+        text, thread_id, ctx, require_approval=require_approval, images=images
+    ):
+        if event.get("type") == "approval_required":
+            paused = True
+            continue
+        yield event
+    if paused:
+        metrics.agent_unattended_pause_total.inc()
+        async for event in astream_events_resume(thread_id, False, ctx):
+            yield event
 
 
 async def astream_events_resume(thread_id: str, approved: bool, ctx: SecurityCtx):
@@ -656,6 +782,30 @@ async def astream_events_resume(thread_id: str, approved: bool, ctx: SecurityCtx
     }
     async for event in _run_graph_stream(graph, Command(resume=approved), cfg, trace):
         yield event
+
+
+async def cancel_run(thread_id: str, ctx: SecurityCtx) -> bool:
+    """Cancel a run paused at human_approval (GRAPH_PATTERNS.md pattern
+    36) — resumes it with `graph.CANCEL_SENTINEL` instead of `True`/
+    `False`, which `human_approval` treats as a THIRD outcome: the gated
+    action never runs, and — unlike a rejection — the model never gets a
+    turn to react to it. This is a caller-initiated abort ("stop this
+    run"), not feedback for another attempt.
+
+    Returns `True` if a paused run was actually cancelled, `False` if
+    there was nothing to cancel (see `resumability_error_async` — the
+    same checkpoint_lost/checkpoint_incompatible check every other resume
+    path already uses; a stale or missing checkpoint just means there's
+    nothing left to abort, not an error worth raising).
+    """
+    graph = await init_graph_async()
+    error = await resumability_error_async(graph, {"configurable": {"thread_id": thread_id}})
+    if error:
+        return False
+    cfg = {"configurable": {"thread_id": thread_id, "ctx": ctx}, "recursion_limit": 12}
+    await graph.ainvoke(Command(resume=CANCEL_SENTINEL), config=cfg)
+    metrics.agent_cancellation_total.inc()
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -794,7 +944,11 @@ async def astream_events_turn_ctx(text: str, thread_id: str, ctx: SecurityCtx):
                 if outcome == "timeout"
                 else str(exc)
             )
-            yield {"type": "error", "content": message}
+            envelope = ErrorEnvelope(
+                code=ErrorCode.TIMEOUT if outcome == "timeout" else ErrorCode.INTERNAL,
+                message=message,
+            )
+            yield {"type": "error", "content": message, **envelope.to_dict()}
             return  # exit before the else-branch and done event
 
         if trace:

@@ -21,6 +21,7 @@ shape never changes.
 """
 import logging
 
+from app.model_resolver import resolve_model
 from app.security import SecurityCtx, valid_ctx
 from app.sql_store import get_connection
 
@@ -51,13 +52,25 @@ def record_usage(
         return
     price_per_1k = PRICE_PER_1K_TOKENS_USD.get(model_alias, 0.0)
     cost_usd = (total_tokens / 1000) * price_per_1k
+    # The resolved CONCRETE model behind `model_alias` (GRAPH_PATTERNS.md
+    # pattern 38) — None if resolution itself degrades (LiteLLM
+    # unreachable, alias unknown); never blocks the write.
+    resolved_model = resolve_model(model_alias)
     try:
         with get_connection() as conn:
             conn.execute(
                 "INSERT INTO usage_ledger "
-                "(tenant, principal, thread_id, model_alias, total_tokens, cost_usd) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (ctx["tenant"], ctx["principal"], thread_id, model_alias, total_tokens, cost_usd),
+                "(tenant, principal, thread_id, model_alias, total_tokens, cost_usd, resolved_model) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (
+                    ctx["tenant"],
+                    ctx["principal"],
+                    thread_id,
+                    model_alias,
+                    total_tokens,
+                    cost_usd,
+                    resolved_model,
+                ),
             )
     except Exception as exc:  # noqa: BLE001
         logger.warning(

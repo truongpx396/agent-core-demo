@@ -98,8 +98,11 @@ class TestNodeLevelMetrics:
             HumanMessage(content=f"q{i}", id=f"h{i}")
             for i in range(MAX_HISTORY_TURNS + 1)
         ]
+        compact_history = graph.make_compact_history_node(
+            GenericFakeChatModel(messages=iter([AIMessage(content="a summary")]))
+        )
         before = _count(metrics.agent_history_compacted_total)
-        graph.validate_input({"messages": messages}, {"configurable": {"ctx": TEST_CTX}})
+        compact_history({"messages": messages})
         assert _count(metrics.agent_history_compacted_total) == before + 1
 
     def test_mandatory_gate_increments_capability_gate_counter(self):
@@ -182,6 +185,78 @@ class TestToolCallbackMetrics:
             {"messages": [HumanMessage(content="what is nothing?")]}, config=_config()
         )
         assert _count(metrics.agent_tool_errors_total) == before + 1
+
+
+class TestToolCallAuditLog:
+    """GRAPH_PATTERNS.md pattern 37 — a structured audit line per tool
+    call, correlated by LangChain's own run_id, never carrying raw
+    args/result content (only a fingerprint)."""
+
+    def test_successful_tool_call_logs_a_correlated_start_and_success_line(self, caplog):
+        llm = GenericFakeChatModel(
+            messages=iter(
+                [
+                    _tool_call_message("calculator", {"expression": "2+2"}),
+                    AIMessage(content="2 plus 2 equals 4, a proper final answer."),
+                ]
+            )
+        )
+        g = build_graph(GraphDeps(llm=llm))
+        with caplog.at_level("INFO", logger="app.metrics"):
+            g.invoke(
+                {"messages": [HumanMessage(content="what is 2+2?")]}, config=_config()
+            )
+
+        called = [r for r in caplog.records if r.message == "tool_called"]
+        succeeded = [r for r in caplog.records if r.message == "tool_succeeded"]
+        assert len(called) == 1
+        assert len(succeeded) == 1
+        assert called[0].tool == "calculator"
+        assert called[0].run_id == succeeded[0].run_id  # correlated by the same run_id
+        assert called[0].args_fingerprint  # a fingerprint, not raw args
+        assert succeeded[0].result_fingerprint  # a fingerprint, not the raw result
+
+    def test_failed_tool_call_logs_a_correlated_start_and_failure_line(self, caplog):
+        llm = GenericFakeChatModel(
+            messages=iter(
+                [
+                    _tool_call_message("calculator", {"expression": ""}),
+                    AIMessage(content="Sorry, I could not run that calculation."),
+                ]
+            )
+        )
+        g = build_graph(GraphDeps(llm=llm))
+        with caplog.at_level("INFO", logger="app.metrics"):
+            g.invoke(
+                {"messages": [HumanMessage(content="what is nothing?")]}, config=_config()
+            )
+
+        called = [r for r in caplog.records if r.message == "tool_called"]
+        failed = [r for r in caplog.records if r.message == "tool_failed"]
+        assert len(called) == 1
+        assert len(failed) == 1
+        assert called[0].run_id == failed[0].run_id
+        assert failed[0].error_class
+
+    def test_audit_log_never_carries_raw_tool_args_or_result(self, caplog):
+        """The fingerprint, not the argument/result text itself — a
+        secret-looking expression must never appear verbatim in the log."""
+        llm = GenericFakeChatModel(
+            messages=iter(
+                [
+                    _tool_call_message("calculator", {"expression": "31337+1"}),
+                    AIMessage(content="A proper final answer, long enough."),
+                ]
+            )
+        )
+        g = build_graph(GraphDeps(llm=llm))
+        with caplog.at_level("INFO", logger="app.metrics"):
+            g.invoke(
+                {"messages": [HumanMessage(content="compute something")]}, config=_config()
+            )
+
+        for record in caplog.records:
+            assert "31337" not in str(record.__dict__)
 
 
 class TestMetricsEndpoint:
