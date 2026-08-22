@@ -162,6 +162,49 @@ This enhanced graph shows **realistic patterns** you'll use in production LangGr
 - **What this deliberately doesn't do**: make `app/agent.py`'s CLI/API runtime serve multiple domains from one running process — that's a further increment (a per-domain graph registry, domain-aware routing in `app/api.py`, a seeding cache keyed by domain rather than just `thread_id`) this pattern sets up for but doesn't build, since nothing in this app currently needs more than one domain running at once. What IS wired end to end: `build_graph()` stamps `.manifest` onto the compiled graph it returns (a plain attribute, not new LangGraph API), and `app/agent.py::_ensure_seeded` reads `graph.manifest.system_prompt` instead of the hardcoded `SYSTEM_PROMPT` constant — so a caller that *does* build a non-default-domain graph gets correctly seeded, not half-plumbed.
 - **Real-world**: A platform team maintaining one hardened agent runtime (safety budgets, HITL gates, telemetry, checkpointing — everything patterns 1-22 already cover) across several internal products or customer deployments, where each one needs different tools/prompt/policy but forking the graph per product would mean re-auditing all of the above every time one of them changes.
 
+### 24. **General-Purpose Ingestor with Parent-Child Chunking (`app/chunking.py`, `app/ingestor.py`)**
+- **Pattern**: `app/ingest.py` (`make ingest`) used to be the ONLY write path into the document corpus, and it only knew how to load one hardcoded Python list — a standalone deployment could answer questions but never build its own corpus. `app/ingestor.py` fixes that with `ingest_text`/`ingest_file`/`ingest_url`, all funneling through the same chunking → embed → `qdrant_store.build_point` pipeline `make ingest` now uses too (one pipeline, not two that can drift). Every ingested item is stamped with the `SecurityCtx` tenant that owns it and refused without one — content whose ownership can't be established is refused, never ingested as tenant-less/public, the same fail-closed posture every other write in this app already takes.
+- **Why parent AND child chunks, not one chunk size**: a single size fights two jobs with one number — retrieval precision wants small, focused chunks (a page-long block dilutes the one relevant sentence into nine irrelevant ones); answer quality wants enough surrounding context for the model to make sense of what it retrieved. `app/chunking.py::chunk_text` splits paragraph-aware into **parent** chunks (~1200 chars), then each parent into overlapping **child** chunks (~300 chars, 75-char overlap) via a sliding window. Only the child is embedded (both dense and sparse — the small, precise text is what `hybrid_search` actually matches against); the point's payload carries `parent_id`/`parent_text` alongside it, and `app/tools.py::_display_text` prefers `parent_text` when present — so retrieval stays precise while what reaches the LLM is the richer passage, not an isolated fragment.
+- **Why overlapping, not a hard split**: a hard boundary can cut the one sentence that answers a query exactly in half, so neither resulting chunk embeds it whole. The sliding window's overlap means a boundary-straddling fact is still captured whole by at least one child, at the cost of some redundant embedding — a standard, well-understood tradeoff, not a novel one.
+- **The dedup this exposed**: several child chunks from the SAME parent can all score highly for one query, which without `app/tools.py::_dedupe_by_parent` would show the same parent passage two or three times as separate, redundant citations. Dedup keeps the highest-ranked hit per `parent_id` and is a no-op for anything not chunked this way (memories, `add_note`/`remember` points, pre-chunking content) — those have no `parent_id` and are never deduped against each other, since each is genuinely its own independent point.
+- **A pre-existing bug this surfaced and fixed**: `app/ingest.py` had been writing bare, unnamed-vector `PointStruct`s ever since hybrid search (pattern 20) moved the collection schema to named `dense`+`sparse` vectors — `make ingest` was silently incompatible with `ensure_collection`'s own schema until this rewrite routed it through `qdrant_store.build_point`, the one place that assembles the hybrid vector shape correctly (verified empirically: a real `make ingest` run, then a real hybrid-search query, both against a live Qdrant instance, before trusting this fix).
+- **The SSRF guard `ingest_url` needed, honestly scoped**: any URL a caller supplies is attacker-influenceable, so before fetching, `_assert_safe_url` requires `https://` and resolves the hostname's FULL A/AAAA record set, rejecting if *any* resolved address is private/loopback/link-local/reserved/multicast — checked against every record, not just the first, so a mixed public+private record set still gets refused. Redirects are disabled (`follow_redirects=False`): a validated URL redirecting to an unvalidated one would reopen the exact hole the guard closes. Disclosed, not hidden: this validates-then-fetches rather than pinning the connection to the already-validated address, so a narrow DNS-rebinding race (the name resolving differently a moment later, at actual connect time) isn't fully closed — real added complexity for a demo ingestor, so the honest line drawn here is "a real check, with its remaining gap named," not a silently narrower guarantee dressed up as airtight.
+- **Real-world**: Any agent meant to run as a genuine standalone product — "point it at a folder, or a URL, or paste some text, and ask questions about it" — rather than a demo that only ever answers over content someone else pre-loaded.
+
+### 25. **Input Moderation Before Any Spend (`app/moderation.py`, `moderate_input` + `route_after_moderation` + `reject_moderation`)**
+- **Pattern**: A new node, `moderate_input`, runs immediately after `validate_input`'s ctx/empty-input checks and before EVERYTHING else — the semantic cache lookup (pattern 22), retrieval (pattern 20), and any LLM call. `moderation.screen(text)` checks for known prompt-injection/jailbreak phrasings and a small explicit denylist; a match short-circuits straight to `reject_moderation` → `END`, the same shape `reject_input`/`reject_context` already use, so a screened-out turn costs nothing beyond the regex check itself.
+- **Why a real check, not a no-op default**: a moderation port that always returns "allowed" would make a broken/unconfigured deployment look exactly like a properly screened one — worse than shipping no default at all, since nothing about its presence signals that it isn't doing anything. `app/moderation.py` is honestly scoped: pattern-based, not a machine-learning classifier (which would mean either a hosted moderation API — breaking this app's fully-offline commitment — or a local guard model — a whole additional Ollama pull and inference cost on the turn's hot path). Real, testable, positive-and-negative-case behavior against known patterns, not a claim of understanding intent.
+- **Fail-open only on the check's OWN failure, never on a real hit**: `screen()` wraps its own logic in a try/except — a genuine pattern match fails closed (`allowed=False`) and blocks the turn; an unexpected exception in the moderation code itself fails open (allowed, recorded as `outcome="error"`), the same "a failing safety check must not itself crash the turn" posture every other degrade-don't-crash boundary in this app already takes for retrieval/cache/rerank. The two failure modes are deliberately NOT the same thing: one is "we found something bad," the other is "we couldn't check" — conflating them would either block on every hiccup or, worse, silently start letting real hits through.
+- **Real-world**: Any agent with a public or semi-trusted input surface, where "block the obvious jailbreak attempt before spending a model call on it" is worth having even without a full trust-and-safety pipeline.
+
+### 26. **Real Usage/Cost Ledger (`app/meter.py`, wired into `app/agent.py::_record_turn_metrics`)**
+- **Pattern**: `record_usage(ctx, thread_id, model_alias, total_tokens)` writes one row per completed turn into `usage_ledger` (a table in the same `appdata` Postgres database `app/sql_store.py` already uses — one operational-data lifecycle, not a second database), tenant+principal scoped like every other write in this app. Wired at exactly the three "a turn actually completed" call sites in `app/agent.py::_record_turn_metrics` (`answer`, `stream_turn`, `_run_graph_stream`'s success path) — not at every early-return timeout/error branch, which have nothing meaningful to record anyway (`record_usage` itself also no-ops on zero tokens or a missing ctx).
+- **Why a real ledger, not a token counter that discards its own numbers**: `MAX_TOKENS_PER_TURN` (pattern 10) already bounds spend per turn, but bounding isn't the same as recording — nothing kept a durable, queryable record of what was actually spent, by whom, until now. `usage_summary(tenant, principal=None)` is the read path proving the ledger isn't write-only.
+- **Cost is approximate and honestly scoped**: `PRICE_PER_1K_TOKENS_USD` is a small, explicit table: $0 for any model alias not listed, which is every model this app's own docker-compose runs locally via Ollama (local inference has no per-token cost). Tokens are recorded unconditionally regardless of whether a price is known — pointing `OPENAI_API_BASE` at a real paid provider and adding its alias to the price table is the only change needed for real cost tracking; the ledger's shape never changes.
+- **Verified, not assumed**: psycopg3's `with connection:` context manager commits on successful exit and rolls back on an exception — confirmed empirically (write two usage rows via separate connections, read the summed total back) before trusting `record_usage`'s `with get_connection() as conn: conn.execute(...)` to actually persist anything, the same "verify the library behavior before writing production code around it" discipline this whole codebase has followed since `qdrant_client`/`mcp`/`redis`-py's own gotchas earlier in this file.
+- **Real-world**: Any agent serving more than one internal team or paying customer, where "how much did this cost, broken down by who" needs to be an answerable question, not a number that only ever existed for one turn's Prometheus histogram and then was gone.
+
+### 27. **Clarification and Follow-Ups Without Forking the Graph (`ask_clarification` tool, `suggest_followups` node)**
+- **Pattern**: Two different answer-shaping needs, two deliberately different mechanisms. Asking a clarifying question when a request is materially ambiguous is implemented as `ask_clarification` — an ORDINARY `read_only` tool, no new node, no new routing at all. Its result (a formatted, numbered options list) becomes a `ToolMessage`; `SYSTEM_PROMPT` instructs the model to relay that verbatim as its final answer on the next turn rather than guessing. The existing `agent -> tools -> agent -> check_output` loop already does everything this needs — the tool call loop this app already had for `search_docs`/`calculator` turns out to be exactly the right shape for "ask, then answer with what you got back," with zero graph surface area added. Follow-up suggestions are the opposite case: they don't need the MODEL to decide anything mid-turn, so they're a real node, `suggest_followups`, inserted after `check_output`'s non-retry branch, generating 2-3 short questions from the just-produced answer via one more (small, cheap) LLM call.
+- **Why follow-ups are gated on `used_citations`, not a separate "was this grounded" check**: an answer with no citations has nothing derived to build follow-ups from — a refusal, a general-knowledge aside, and an `ask_clarification` response all naturally have empty `used_citations` (pattern 20's post-hoc citation filter), so gating on that ONE existing signal suppresses follow-ups for all three cases without writing three separate detectors. One property, reused, instead of three new special cases.
+- **Why `suggest_followups` is skipped entirely on a cache hit**: `check_semantic_cache` (pattern 22) short-circuits straight to `check_output` with zero LLM calls — the whole point of the fast path. If `suggest_followups` unconditionally made a fresh LLM call after that, a cache hit would go from "zero LLM calls" back to "one LLM call," quietly breaking the property `tests/test_graph_integration.py::TestSemanticCache` explicitly proves. `suggest_followups` checks `state["cache_hit"]` first and returns `{"followups": []}` immediately — the same "skip redundant work on the fast path" reasoning `write_semantic_cache` already applies to itself.
+- **Real-world**: `ask_clarification` — any agent fielding genuinely ambiguous requests where a wrong guess costs more than one extra turn (which read-only tool call, is a mistake). `suggest_followups` — any consumer-facing chat surface where "what would you ask next" chips measurably increase engagement, at the cost of one small extra model call per grounded answer.
+
+### 28. **Consuming a Remote MCP Tool Catalog (`app/mcp_client.py::load_remote_tools`)**
+- **Pattern**: The reverse direction from `app/mcp_server.py` (pattern 21, this app EXPOSING a tool over MCP): `load_remote_tools(command, args, capability_overrides)` connects to an EXTERNAL MCP server over stdio, lists its tools, and wraps each as a LangChain `StructuredTool` — with the remote tool's own JSON Schema passed straight through as `args_schema` (verified empirically: `langchain_core`'s `StructuredTool.from_function` accepts a raw dict schema directly, no Pydantic model needs constructing by hand) so the LLM sees the tool's real parameter names and types, not an opaque `**kwargs`.
+- **Why `capability_overrides` is the ONLY source of truth, never the remote's own metadata**: MCP's `ToolAnnotations` (`readOnlyHint`, `destructiveHint`, ...) are hints a server self-reports, not verified guarantees — confirmed empirically against this app's OWN `app/mcp_server.py`, which sets none of them at all (`annotations: None` on every listed tool). Trusting a remote tool's self-reported safety would let a config-only change (adding a remote MCP server as a tool source) hand an ungated mutating/outward action to a run that's already carrying private-data access and untrusted content — precisely the capability-budget hole pattern 15's "two of three legs" design exists to close. So a remote tool NOT explicitly named in `capability_overrides` (supplied by the LOCAL caller binding the server, never read off the remote) defaults to `"outward"` — the same fail-closed default `app/tools.py::_tool_capability` already applies to an undeclared in-process tool. Once a remote tool is wrapped and merged into a `DomainPlugin`'s tools/capabilities (pattern 23), `should_continue`'s mandatory gate applies to it exactly as it would to any in-process tool — no special-casing needed downstream, because the capability was resolved correctly at the boundary.
+- **Sync AND async, by necessity, not convenience**: each wrapped tool ships both a sync `func` (bridging into the async MCP call via `asyncio.run()`, for `graph.invoke()`'s synchronous `ToolNode` dispatch) and an async `coroutine` (called directly when the graph runs via `astream_events`/`ainvoke`, which are already inside a running event loop — nesting a second `asyncio.run()` there would raise). One connection per call, opened and closed fresh each time — simpler than holding a persistent session across the app's process lifetime, at the cost of per-call latency; an honestly disclosed demo tradeoff, not a hidden one.
+- **Verified against a real subprocess, not just mocked**: before writing the production module, a real stdio round trip against this app's own `app/mcp_server.py` (`python -m app.mcp_server` as the remote) confirmed the tool listing, schema, sync invoke, and async invoke all work end to end — a nice symmetry, since this app can now demonstrate both halves of MCP (server and client) by pointing one at the other.
+- **Real-world**: Any agent that needs to reach tools it doesn't own the implementation of — a partner team's internal MCP server, a third-party integration exposed over MCP — without inventing a second, bespoke integration pattern per remote source, and without accidentally inheriting whatever that remote source claims about its own safety.
+
+### 29. **Built-In Web UI (`app/static/index.html`, `GET /` in `app/api.py`)**
+- **Pattern**: A single, self-contained HTML file — inline CSS and JS, no build step, no CDN dependency (consistent with this app's fully-offline commitment) — served at `GET /`. It talks to exactly one endpoint, `POST /chat/stream`, and renders exactly the published SSE event vocabulary that endpoint's own docstring documents (`token`, `tool_start`, `tool_end`, `citations`, `approval_required`, `error`, `done`) — no special-cased endpoint of its own, so that vocabulary stays the one contract every consumer (this page, `make chat-stream`, a future client) renders from.
+- **Why `fetch()`, not `EventSource`**: the browser's native `EventSource` only supports GET requests and can't send custom headers — but `POST /chat/stream` is a POST endpoint and needs `X-Tenant-Id`/`X-Principal-Id` on every request (pattern 17's trusted-header seam). So the page uses `fetch()` with a manual SSE-frame parser (split on blank lines, parse each `data: {...}` line as JSON) instead — more code than `new EventSource(url)`, but the only way to send required headers on a POST-based stream at all.
+- **A real bug this surfaced**: manually verifying this page against a live `uvicorn` process (not just the existing fake-LLM test suite) caught `asyncio.InvalidStateError` on the very first turn of any brand-new thread — `_ensure_seeded`'s SYNC `graph.update_state()` was being called from `astream_events_turn`, which runs on the SAME event loop `init_graph_async()` opened the durable `AsyncSqliteSaver` on (`AsyncSqliteSaver` refuses a sync call from its own loop; only a *different* thread's sync call is the supported cross-thread path — see pattern 16's docstring). The same bug pattern was hiding at two more call sites once found: `_run_graph_stream`'s `graph.get_state(cfg)` and `astream_events_resume`'s `resumability_error(graph, ...)` (which itself called the sync `graph.get_state` internally). All three needed their async counterpart (`aupdate_state`/`aget_state`, and a new `resumability_error_async`) — fixed together, with a real regression test against a genuine `AsyncSqliteSaver` on a single shared event loop for each (`tests/test_durable_checkpoint.py::TestAsyncSeeding`), not just re-tested by hand. This is exactly the kind of defect the fake-LLM/`MemorySaver`-backed test suite structurally cannot catch — `MemorySaver` has no loop-binding constraint at all — which is why building and manually exercising the web UI against the real stack was worth doing rather than trusting mocked coverage alone.
+- **A second, smaller bug the same session caught**: `asyncio.wait_for`'s own internal timeout (distinct from this app's own deadline check in `_iterate_with_timeout`) raises a bare `TimeoutError` with an EMPTY `str(exc)` — so a real slow-model timeout was reaching the client as `{"type": "error", "content": ""}`, telling a UI nothing useful. Fixed by substituting a fixed, descriptive message whenever the outcome is classified as `"timeout"`.
+- **What it deliberately doesn't do**: drive the HITL approve/reject flow. `POST /chat/stream` can pause with an `approval_required` event, but there's no `POST /chat/resume` endpoint yet (see "Extending Further" below) — the page renders that event as a plain explanatory message instead of hanging silently, and points at `make chat-stream`/`app/hitl_demo.py` for the real approve/reject round trip.
+- **Real-world**: Satisfies AR-033-style "a standalone product needs a usable interface of its own" without adding a frontend framework, a build pipeline, or a new runtime dependency — appropriate for a demo/reference app; a product-grade UI would still want a real framework, but the *contract* (render only the published event vocabulary, never a bespoke endpoint) is the part worth keeping regardless of what renders it.
+
 ## Graph Flow
 
 ```
@@ -178,77 +221,98 @@ route_after_validation?  ← Decide: valid ctx? is the last HumanMessage non-emp
   │    ↓
   │   END
   │
-  └─→ check_semantic_cache  ← tenant+principal-scoped cosine-KNN lookup in
-       │                       Redis (app/semantic_cache.py, pattern 22);
-       │                       degrades to a miss on any failure
+  └─→ moderate_input  ← real pattern-based screen for known injection/
+       │                 jailbreak phrasings + a small denylist (pattern 25);
+       │                 fail-open only on the CHECK's own failure, never on
+       │                 a real hit
        ↓
-      route_after_cache?  ← Decide: near-identical query cached already?
-       ├─→ check_output   (HIT — cached answer appended as a final
-       │    ↑               AIMessage, no retrieval, no LLM call at all)
-       │    │
-       └─→ retrieve_context  ← MISS: enrich — hybrid dense+BM25 search,
-            │                  RRF-fused, cross-encoder reranked, numbered
-            │                  citations (pattern 20); + this principal's
-            │                  memories; degrades on failure; both
-            │                  tenant/owner-scoped via app/security.py's Policy
+      route_after_moderation?  ← Decide: screened out?
+       ├─→ reject_moderation  ("I can't help with that request.")
+       │    ↓
+       │   END
+       │
+       └─→ check_semantic_cache  ← tenant+principal-scoped cosine-KNN lookup in
+            │                       Redis (app/semantic_cache.py, pattern 22);
+            │                       degrades to a miss on any failure
             ↓
-           agent  ← Think: call LLM with context injected as a delimited,
-           │        untrusted <retrieved_document> SystemMessage (retried on
-           │        transient LLM failure via AGENT_RETRY_POLICY)
-            ↓
-           should_continue?  ← Decide: tools? too many at once? approval needed? done? over budget?
-            ├─→ too_many_tool_calls  (> MAX_TOOL_CALLS_PER_TURN at once)
-            │    ↓
-            │    agent  ← Loop back with synthesized ToolMessage rejections
-            │
-            ├─→ human_approval  (require_approval=True on input state, OR any
-            │                    pending tool call is non-read_only — mandatory,
-            │                    see TOOL_CAPABILITIES)
-            │    ↓
-            │   route_after_approval?  ← interrupt() paused here for a decision
-            │    ├─→ tools     (approved)
-            │    └─→ agent     (rejected — with synthesized ToolMessage rejections)
-            │
-            ├─→ tools  ← Execute tool calls (concurrently, if there are several)
-            │    ↓
-            │    agent  ← Loop back to think again
-            │
-            └─→ check_output  ← also both cache-hit AND cache-miss paths
-                 │               rejoin here (see above); computes
-                 │               used_citations from the answer text (pattern 20)
+           route_after_cache?  ← Decide: near-identical query cached already?
+            ├─→ check_output   (HIT — cached answer appended as a final
+            │    ↑               AIMessage, no retrieval, no LLM call at all)
+            │    │
+            └─→ retrieve_context  ← MISS: enrich — hybrid dense+BM25 search,
+                 │                  RRF-fused, cross-encoder reranked, numbered
+                 │                  citations (pattern 20); + this principal's
+                 │                  memories; degrades on failure; both
+                 │                  tenant/owner-scoped via app/security.py's Policy
                  ↓
-                route_after_check?  ← Decide: is the answer too short?
-                 ├─→ retry_output  ← Append corrective HumanMessage
+                agent  ← Think: call LLM with context injected as a delimited,
+                │        untrusted <retrieved_document> SystemMessage (retried on
+                │        transient LLM failure via AGENT_RETRY_POLICY). Can call
+                │        ask_clarification (an ordinary read_only tool, pattern 27)
+                │        when a request is materially ambiguous instead of guessing.
+                 ↓
+                should_continue?  ← Decide: tools? too many at once? approval needed? done? over budget?
+                 ├─→ too_many_tool_calls  (> MAX_TOOL_CALLS_PER_TURN at once)
                  │    ↓
-                 │    agent  ← Loop back with feedback
+                 │    agent  ← Loop back with synthesized ToolMessage rejections
                  │
-                 └─→ write_semantic_cache  ← writes query/answer/citations
-                      │                       back UNLESS this turn was
-                      │                       itself a cache hit (no-op then)
+                 ├─→ human_approval  (require_approval=True on input state, OR any
+                 │                    pending tool call is non-read_only — mandatory,
+                 │                    see TOOL_CAPABILITIES)
+                 │    ↓
+                 │   route_after_approval?  ← interrupt() paused here for a decision
+                 │    ├─→ tools     (approved)
+                 │    └─→ agent     (rejected — with synthesized ToolMessage rejections)
+                 │
+                 ├─→ tools  ← Execute tool calls (concurrently, if there are several) —
+                 │    │       may include remote MCP tools (app/mcp_client.py, pattern 28)
+                 │    ↓       bound into a DomainPlugin like any other tool
+                 │    agent  ← Loop back to think again
+                 │
+                 └─→ check_output  ← also both cache-hit AND cache-miss paths
+                      │               rejoin here (see above); computes
+                      │               used_citations from the answer text (pattern 20)
                       ↓
-                     END
+                     route_after_check?  ← Decide: is the answer too short?
+                      ├─→ retry_output  ← Append corrective HumanMessage
+                      │    ↓
+                      │    agent  ← Loop back with feedback
+                      │
+                      └─→ suggest_followups  ← 2-3 follow-ups from a GROUNDED
+                           │                     answer only (used_citations
+                           │                     non-empty); skipped on a cache
+                           │                     hit or an uncited answer (pattern 27)
+                           ↓
+                          write_semantic_cache  ← writes query/answer/citations
+                           │                       back UNLESS this turn was
+                           │                       itself a cache hit (no-op then)
+                           ↓
+                          END
 ```
 
 ## Differences from Basic Agent
 
 | Aspect | Basic | Enhanced |
 |--------|-------|----------|
-| **State** | Just messages | Messages + context + citations + used_citations + cache_hit + iterations + total_tokens + run_id + graph_version + state_schema_version + ctx + require_approval + approved |
-| **Nodes** | agent + tools | 13 nodes: validate_input, reject_input, reject_context, check_semantic_cache, retrieve_context, agent, tools, human_approval, too_many_tool_calls, check_output, retry_output, write_semantic_cache |
-| **Flow** | LLM ↔ tools loop | Multi-stage pipeline with a cache short-circuit up front and six real conditional gates |
-| **Context** | LLM decides what to search | Pre-fetched (hybrid dense+BM25 search, RRF-fused, cross-encoder reranked, pattern 20 — plus this principal's memories), actually injected into the LLM call, delimited as untrusted data (pattern 12), and tenant/owner-scoped (pattern 17) |
-| **Answers** | Plain text | Numbered inline citations (`[1]`, `[2]`, ...), filtered post-hoc to only the markers the answer text actually used — never the model's self-report (pattern 20) |
+| **State** | Just messages | Messages + context + citations + used_citations + cache_hit + moderation_blocked + followups + iterations + total_tokens + run_id + graph_version + state_schema_version + ctx + require_approval + approved |
+| **Nodes** | agent + tools | 16 nodes: validate_input, reject_input, reject_context, moderate_input, reject_moderation, check_semantic_cache, retrieve_context, agent, tools, human_approval, too_many_tool_calls, check_output, retry_output, suggest_followups, write_semantic_cache |
+| **Flow** | LLM ↔ tools loop | Multi-stage pipeline with a moderation screen and a cache short-circuit up front, and eight real conditional gates |
+| **Safety screening** | None | Real pattern-based moderation (known injection/jailbreak phrasings + a denylist) runs before retrieval, cache, or any spend — a genuine hit fails closed, the check's own failure fails open (pattern 25) |
+| **Context** | LLM decides what to search | Pre-fetched (hybrid dense+BM25 search, RRF-fused, cross-encoder reranked, pattern 20 — plus this principal's memories), actually injected into the LLM call, delimited as untrusted data (pattern 12), and tenant/owner-scoped (pattern 17) — scopable to specific `doc_ids` (narrows, never widens) |
+| **Answers** | Plain text | Numbered inline citations (`[1]`, `[2]`, ...), filtered post-hoc to only the markers the answer text actually used — never the model's self-report (pattern 20); ends in a clarifying question instead of guessing when materially ambiguous, and offers 2-3 grounded follow-ups otherwise (pattern 27) |
 | **Isolation** | None — one shared corpus for everyone | Every read and write scoped to `SecurityCtx` (tenant, and for memory/cache, owner) via a store-level pre-filter, never a Python post-filter (pattern 17, pattern 22) |
-| **Safety** | No loop limit | Seven independent budgets (see pattern 10): iteration cap, tool-call-per-turn cap, token-per-turn cap, conversation-history-turn cap, tool timeout, request timeout, graph recursion limit — plus `retrieve_context`/`check_semantic_cache` degrade instead of failing the turn, the agent's LLM call gets an automatic retry on transient failure, and failing tools return an error message instead of crashing |
+| **Safety** | No loop limit | Seven independent budgets (see pattern 10): iteration cap, tool-call-per-turn cap, token-per-turn cap, conversation-history-turn cap, tool timeout, request timeout, graph recursion limit — plus `retrieve_context`/`check_semantic_cache`/`suggest_followups` degrade instead of failing the turn, the agent's LLM call gets an automatic retry on transient failure, and failing tools return an error message instead of crashing |
 | **Output** | Whatever LLM says | Validated, with an actual retry path back to `agent` |
-| **Tools** | Two read-only tools | Three read-only tools (`search_docs`, `calculator`, `query_employees` — a fixed, typed structured-data query, pattern 21, also exposed over MCP) + two mutating tools (`add_note`, `remember`), each declaring a capability (pattern 15) that decides whether it can even *run* unattended |
+| **Tools** | Two read-only tools | Five read-only tools (`search_docs`, `calculator`, `query_employees` — a fixed, typed structured-data query with a declared result cap and truncation marker, pattern 21, also exposed over MCP — `ask_clarification`, and any tools bound from a remote MCP catalog, pattern 28) + two mutating tools (`add_note`, `remember`), each declaring a capability (pattern 15) that decides whether it can even *run* unattended |
 | **Tool calls** | Run immediately, one at a time in practice | Run immediately (parallel if the LLM asks for several) *or* pause for human approval — opt-in per call for read-only tools, **mandatory and non-optional** for any mutating/outward tool call — capped per turn either way |
 | **Memory** | None, or unscoped | Cross-session, write-gated (`remember` only, never autonomous), re-filtered against current ctx on every recall (pattern 18) |
 | **Repeat queries** | Re-run retrieval + a full LLM call every time | Tenant+principal-scoped semantic cache (Redis Stack vector KNN) short-circuits a near-identical query straight to the cached, cited answer — no retrieval, no LLM call (pattern 22) |
+| **Ingestion** | Whatever the example seeded once | A general-purpose `Ingestor` (files/URLs/pasted text), parent-child sliding-window chunking, SSRF-guarded URL fetch (pattern 24) |
 | **Checkpointing** | Whatever the example used (usually none, or `MemorySaver`) | `MemorySaver` for tests; `AsyncSqliteSaver` for the real CLI/API singleton, so a paused approval survives a restart — with build/schema versioning so a stale checkpoint refuses to resume into an incompatible topology (pattern 16) |
-| **Observability** | None | Langfuse tracing (per-call) + Prometheus metrics at `GET /metrics` (aggregate) + structured per-node lifecycle logs, `run_id`-correlated (pattern 14) |
+| **Observability** | None | Langfuse tracing (per-call) + Prometheus metrics at `GET /metrics` (aggregate) + structured per-node lifecycle logs, `run_id`-correlated (pattern 14) + a real per-tenant/principal usage-cost ledger (pattern 26) |
 | **Regression detection** | None | `tests/` (fake-LLM, routing/logic) + `app/eval.py` golden dataset (real model, behavior) |
 | **Domains** | One hardcoded agent, forked to reuse elsewhere | One graph, adapted to a new domain by swapping an `AgentManifest` (config) + `DomainPlugin` (code) — proven with a second, structurally different domain in `tests/test_manifest.py` (pattern 23) |
+| **Interface** | Whatever the example used (usually none) | CLI (`make chat`/`make chat-stream`) + HTTP API + a built-in web UI (`GET /`, pattern 29), all rendering the same published event vocabulary |
 
 ## When to Use Each Pattern
 
@@ -276,6 +340,12 @@ route_after_validation?  ← Decide: valid ctx? is the last HumanMessage non-emp
 - **MCP exposure**: When a tool this agent already has needs to be reachable by a *different* agent/client, not just this app's own LLM loop. Treat it as a new trust boundary requiring its own identity story, not a free re-export of an existing tool.
 - **Semantic cache**: Once the same or near-duplicate questions repeat across users/sessions often enough that re-running retrieval + a full LLM call each time is wasted latency and spend — FAQ-style support, internal docs Q&A. Skippable for genuinely unique, one-off queries where cache hits would be rare anyway.
 - **Config-first multi-domain composition**: The moment a second, genuinely different use case needs the same hardened graph (safety budgets, HITL gates, telemetry, checkpointing) but with different tools/prompt/policy — write a `DomainPlugin`, not a fork. Skip it for a single-domain app with no near-term plan to reuse the graph elsewhere; the manifest/plugin split is only worth its ceremony once there's a real second domain to prove it against (see pattern 23's own note on why the test, not the types, is what makes this real).
+- **General-purpose ingestion + chunking**: As soon as this needs to be a product someone can point at their own content, not a demo answering over one hardcoded corpus. Skip the parent-child split specifically for a corpus that's already short, well-segmented documents (this app's own sample docs) — chunking a document that's already the right size just adds a no-op indirection.
+- **Input moderation**: Any input surface reachable by someone who isn't fully trusted — which is most of them. A real, even narrowly-scoped check beats a no-op default that makes an unscreened deployment look configured; skip it only for a genuinely closed, single-operator tool with no adversarial input model at all.
+- **A real usage/cost ledger**: The moment more than one team or paying customer shares a deployment and "how much did this cost, by whom" needs to be an answerable question later, not just a number that existed for one turn's histogram. Skippable for a single-operator local tool where nobody's asking.
+- **Clarification and follow-ups**: Clarification — any agent whose wrong guesses are expensive enough that one extra turn is cheaper (support, anything transactional). Follow-ups — any consumer-facing chat surface where "what next" suggestions measurably help; skip both for a narrow, single-purpose tool where the question space is small enough that ambiguity rarely comes up.
+- **Consuming a remote MCP tool catalog**: When a genuinely useful tool already exists as an MCP server this app doesn't own — a partner integration, a third-party catalog — rather than reimplementing it in-process. Always pair with explicit `capability_overrides`; never trust a remote tool's self-reported safety.
+- **A built-in web UI**: As soon as "standalone product," not "library other things call," is actually the claim being made — a CLI and an HTTP API alone don't get someone to a first answer without already knowing how to write a curl command. Skippable for a pure backend/embedded-runtime deployment with its own front end.
 
 ## Extending Further
 

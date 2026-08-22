@@ -159,6 +159,12 @@ class SearchDocsArgs(BaseModel):
         description="Optional filter. Must be one of: langgraph, qdrant, company. "
         "Omit it to search across all topics.",
     )
+    doc_ids: list[str] | None = Field(
+        default=None,
+        description="Optional: scope the search to these specific document ids only "
+        "(e.g. ones the caller already knows about/is cleared to read). Narrows the "
+        "search — never a way to reach documents outside the caller's tenant.",
+    )
 
 
 class CalculatorArgs(BaseModel):
@@ -172,6 +178,38 @@ class CalculatorArgs(BaseModel):
         return v
 
 
+def _display_text(hit) -> str:
+    """The text a citation shows: `parent_text` when the hit is a child
+    chunk of a larger parent (app/chunking.py, app/ingestor.py — the small
+    child is what was *embedded and matched*, but the model gets the
+    richer surrounding passage), falling back to the point's own `text`
+    for anything not chunked this way (add_note/remember/pre-chunking
+    sample docs, and memories, which are never split into parent/child)."""
+    payload = hit.payload or {}
+    return payload.get("parent_text") or payload.get("text", "")
+
+
+def _dedupe_by_parent(hits: list) -> list:
+    """Multiple child chunks from the SAME parent (app/chunking.py) can
+    all score highly for one query — without this, the same parent
+    passage would show up as two or three separate, redundant citations.
+    Keeps the highest-ranked hit per `parent_id` (hits arrive pre-sorted
+    by relevance) and drops the rest. Hits with no `parent_id` — memories,
+    add_note/remember points, anything ingested before chunking existed —
+    are never deduped against EACH OTHER: each is its own independent
+    point, not a fragment of some larger shared unit."""
+    seen_parents: set[str] = set()
+    deduped = []
+    for h in hits:
+        parent_id = (h.payload or {}).get("parent_id")
+        if parent_id:
+            if parent_id in seen_parents:
+                continue
+            seen_parents.add(parent_id)
+        deduped.append(h)
+    return deduped
+
+
 def _format_cited_context(hits: list, offset: int = 0) -> str:
     """`[n] chunk text`, one per line — the citation-marker convention
     every retrieval surface (search_docs, gather_context) uses
@@ -181,8 +219,7 @@ def _format_cited_context(hits: list, offset: int = 0) -> str:
     memories) keep one continuously-numbered sequence across all of them.
     """
     return "\n".join(
-        f"[{i + offset + 1}] {(h.payload or {}).get('text', '')}"
-        for i, h in enumerate(hits)
+        f"[{i + offset + 1}] {_display_text(h)}" for i, h in enumerate(hits)
     )
 
 
@@ -200,7 +237,7 @@ def _citation_records(hits: list, offset: int = 0) -> list[dict]:
                 "marker": f"[{i + offset + 1}]",
                 "doc_id": str(h.id),
                 "title": payload.get("title") or payload.get("topic") or payload.get("kind", "source"),
-                "text": payload.get("text", ""),
+                "text": _display_text(h),
                 "score": float(h.score),
             }
         )
@@ -221,10 +258,23 @@ def _sparse_vector_or_none(text: str) -> tuple[list[int], list[float]] | None:
         return None
 
 
-def _document_hits(ctx: SecurityCtx, query: str, topic: Topic | str | None = None):
+def _document_hits(
+    ctx: SecurityCtx,
+    query: str,
+    topic: Topic | str | None = None,
+    doc_ids: list[str] | None = None,
+):
     topic_value = topic.value if isinstance(topic, Topic) else topic
+    # Policy.lower is computed from ctx FIRST and applied inside the same
+    # query as doc_ids — doc_ids narrows this already-scoped filter, it
+    # never substitutes for it; a caller can't pass doc_ids to reach a
+    # point outside their own tenant, since the tenant predicate is
+    # ANDed on regardless (app/qdrant_store.py::_build_filter).
     tenant_filter = DEFAULT_POLICY.lower(ctx, "documents")
-    return qdrant_store.hybrid_search(query, topic=topic_value, tenant_filter=tenant_filter)
+    hits = qdrant_store.hybrid_search(
+        query, topic=topic_value, tenant_filter=tenant_filter, doc_ids=doc_ids
+    )
+    return _dedupe_by_parent(hits)
 
 
 def _memory_hits(ctx: SecurityCtx, query: str):
@@ -236,8 +286,10 @@ def _memory_hits(ctx: SecurityCtx, query: str):
     return qdrant_store.hybrid_search(query, tenant_filter=tenant_filter, rerank_results=False)
 
 
-def _search_docs_impl(query: str, topic: Topic | None, ctx: SecurityCtx) -> str:
-    hits = _document_hits(ctx, query, topic)
+def _search_docs_impl(
+    query: str, topic: Topic | None, ctx: SecurityCtx, doc_ids: list[str] | None = None
+) -> str:
+    hits = _document_hits(ctx, query, topic, doc_ids)
     if not hits:
         return "No relevant documents found."
     return _format_cited_context(hits)
@@ -245,13 +297,16 @@ def _search_docs_impl(query: str, topic: Topic | None, ctx: SecurityCtx) -> str:
 
 @tool(args_schema=SearchDocsArgs)
 def search_docs(
-    query: str, config: RunnableConfig, topic: Topic | None = None
+    query: str,
+    config: RunnableConfig,
+    topic: Topic | None = None,
+    doc_ids: list[str] | None = None,
 ) -> str:
     """Search the knowledge base for relevant documents."""
     ctx = _ctx_or_refuse(config, "search")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_search_docs_impl, query, topic, ctx)
+    return _run_with_timeout(_search_docs_impl, query, topic, ctx, doc_ids)
 
 
 def _calculator_impl(expression: str) -> str:
@@ -265,6 +320,43 @@ def _calculator_impl(expression: str) -> str:
 def calculator(expression: str) -> str:
     """Evaluate a basic arithmetic expression, e.g. '21 * 2'."""
     return _run_with_timeout(_calculator_impl, expression)
+
+
+class AskClarificationArgs(BaseModel):
+    question: str = Field(
+        ..., description="A brief restatement of what's ambiguous about the request."
+    )
+    options: list[str] = Field(
+        ...,
+        min_length=2,
+        max_length=4,
+        description="2-4 concrete interpretations to choose from — never a single "
+        "option, and never more than 4.",
+    )
+
+
+def _ask_clarification_impl(question: str, options: list[str]) -> str:
+    numbered = "\n".join(f"{i + 1}. {opt}" for i, opt in enumerate(options))
+    return (
+        f"{question}\n{numbered}\n\n"
+        "(Or describe what you meant in your own words.)"
+    )
+
+
+@tool(args_schema=AskClarificationArgs)
+def ask_clarification(question: str, options: list[str]) -> str:
+    """Use this ONLY when a question is ambiguous in a way that would
+    materially change the answer — offer 2-4 concrete interpretations
+    instead of guessing. Deliberately NOT special-cased in the graph
+    (GRAPH_PATTERNS.md pattern 27): this is an ordinary read_only tool —
+    its result is a formatted options list that becomes a ToolMessage,
+    and the SYSTEM_PROMPT instructs the model to relay that list back to
+    the user verbatim as its final answer on the very next turn, rather
+    than trying to answer the original (still-ambiguous) question. No new
+    node, no new routing — the existing agent -> tools -> agent loop
+    already does exactly what this needs.
+    """
+    return _run_with_timeout(_ask_clarification_impl, question, options)
 
 
 class AddNoteArgs(BaseModel):
@@ -446,17 +538,29 @@ def _query_employees_impl(
 ) -> str:
     from app import sql_store
 
+    cap = TOOL_RESULT_CAPS["query_employees"]
     rows = sql_store.query_employees(
         tenant=ctx["tenant"],
         department=department.value if isinstance(department, Department) else department,
         name_contains=name_contains,
+        limit=cap + 1,  # +1: enough to detect "more than cap exist" without a second query
     )
     if not rows:
         return "No matching employees found."
-    return "\n".join(
+
+    truncated = len(rows) > cap
+    rows = rows[:cap]
+    lines = [
         f"- {r['name']} — {r['title']}, {r['department']} (hired {r['hired_on']})"
         for r in rows
-    )
+    ]
+    if truncated:
+        # Marked, never silently shortened — "these are the first {cap}
+        # matches" and "these are all the matches" read very differently,
+        # and a caller/model acting on the count needs to know which one
+        # this is (see TOOL_RESULT_CAPS's docstring).
+        lines.append(f"[truncated: showing the first {cap} matches; more exist]")
+    return "\n".join(lines)
 
 
 @tool(args_schema=QueryEmployeesArgs)
@@ -475,7 +579,7 @@ def query_employees(
     return _run_with_timeout(_query_employees_impl, department, name_contains, ctx)
 
 
-TOOLS = [search_docs, calculator, add_note, remember, query_employees]
+TOOLS = [search_docs, calculator, add_note, remember, query_employees, ask_clarification]
 
 # --- Tool capability declarations -------------------------------------------
 # Every tool declares which "leg" of exposure it adds: read_only (safe to run
@@ -498,6 +602,21 @@ TOOL_CAPABILITIES: dict[str, ToolCapability] = {
     "search_docs": "read_only",
     "calculator": "read_only",
     "query_employees": "read_only",
+    "ask_clarification": "read_only",
     "add_note": "mutating",
     "remember": "mutating",
+}
+
+# --- Tool result-size declarations -------------------------------------------
+# A structured tool with no inherent row limit (query_employees's filters can
+# match arbitrarily many rows) pays for a broad match in full at the store,
+# then again formatting it, unless something bounds it. Declared per-tool
+# (like TOOL_CAPABILITIES above) rather than one global constant, since the
+# right cap is a property of the tool, not the app. A capped result is always
+# MARKED as truncated (see _query_employees_impl) — "these are the first 20
+# matches" and "these are all the matches" read very differently, and neither
+# a caller nor the model acting on the count should have to guess which one
+# it got.
+TOOL_RESULT_CAPS: dict[str, int] = {
+    "query_employees": 20,
 }

@@ -13,6 +13,7 @@ from app.graph import (
     route_after_approval,
     route_after_cache,
     route_after_check,
+    route_after_moderation,
     route_after_validation,
     should_continue,
 )
@@ -39,12 +40,12 @@ class TestRouteAfterValidation:
         state = {"messages": [AIMessage(content="hello")], "ctx": TEST_CTX}
         assert route_after_validation(state) == "reject_input"
 
-    def test_valid_input_checks_semantic_cache_first(self):
+    def test_valid_input_goes_to_moderation_first(self):
         state = {
             "messages": [HumanMessage(content="What is our refund policy?")],
             "ctx": TEST_CTX,
         }
-        assert route_after_validation(state) == "check_semantic_cache"
+        assert route_after_validation(state) == "moderate_input"
 
     def test_uses_last_human_message(self):
         state = {
@@ -55,7 +56,18 @@ class TestRouteAfterValidation:
                 HumanMessage(content="a real question"),
             ]
         }
-        assert route_after_validation(state) == "check_semantic_cache"
+        assert route_after_validation(state) == "moderate_input"
+
+
+class TestRouteAfterModeration:
+    def test_blocked_routes_to_reject_moderation(self):
+        assert route_after_moderation({"moderation_blocked": True}) == "reject_moderation"
+
+    def test_allowed_routes_to_check_semantic_cache(self):
+        assert route_after_moderation({"moderation_blocked": False}) == "check_semantic_cache"
+
+    def test_absent_flag_defaults_to_allowed(self):
+        assert route_after_moderation({}) == "check_semantic_cache"
 
 
 class TestRouteAfterCache:
@@ -254,6 +266,6 @@ class TestRouteAfterCheck:
         state = {"messages": [AIMessage(content="")]}
         assert route_after_check(state) == "retry_output"
 
-    def test_long_answer_goes_to_write_semantic_cache(self):
+    def test_long_answer_goes_to_suggest_followups(self):
         state = {"messages": [AIMessage(content="A sufficiently detailed answer.")]}
-        assert route_after_check(state) == "write_semantic_cache"
+        assert route_after_check(state) == "suggest_followups"

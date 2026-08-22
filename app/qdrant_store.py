@@ -38,6 +38,7 @@ from qdrant_client.models import (
     FilterSelector,
     Fusion,
     FusionQuery,
+    HasIdCondition,
     MatchValue,
     PointStruct,
     Prefetch,
@@ -96,12 +97,22 @@ def upsert(points: list[PointStruct]) -> None:
     get_client().upsert(collection_name=COLLECTION, points=points)
 
 
-def _build_filter(topic: str | None, tenant_filter: Filter | None) -> Filter | None:
-    must: list[FieldCondition] = []
+def _build_filter(
+    topic: str | None, tenant_filter: Filter | None, doc_ids: list[str] | None = None
+) -> Filter | None:
+    must: list[FieldCondition | HasIdCondition] = []
     if topic:
         must.append(FieldCondition(key="topic", match=MatchValue(value=topic)))
     if tenant_filter is not None:
         must.extend(tenant_filter.must or [])
+    if doc_ids:
+        # ANDed onto whatever's already in `must` (tenant, topic) — this
+        # can only NARROW the result set to a caller-chosen subset of
+        # already-permitted points, never widen it past the tenant filter
+        # above (app/security.py's Policy.lower is still applied, and
+        # applied first in every real call site — see app/tools.py's
+        # search_docs docstring for why the ordering matters).
+        must.append(HasIdCondition(has_id=doc_ids))
     return Filter(must=must) if must else None
 
 
@@ -111,17 +122,21 @@ def hybrid_search(
     k: int | None = None,
     tenant_filter: Filter | None = None,
     rerank_results: bool = True,
+    doc_ids: list[str] | None = None,
 ):
     """Dense+sparse hybrid search, RRF-fused, cross-encoder reranked —
     degrading gracefully at each stage (see module docstring). Returns a
     list of scored points (each has a `.payload`), reranked-and-truncated
     to `k` (default `RERANK_TOP_K`) when reranking succeeds, or the
     RRF/dense order truncated to `k` when it doesn't.
+
+    `doc_ids`, when given, narrows results to those specific Qdrant point
+    ids — ANDed onto the tenant/topic filter, never a replacement for it.
     """
     from app import embeddings  # deferred: avoids importing fastembed at module load
 
     k = k or RERANK_TOP_K
-    query_filter = _build_filter(topic, tenant_filter)
+    query_filter = _build_filter(topic, tenant_filter, doc_ids)
     dense_vector = embeddings.embed_text(query_text)
 
     try:

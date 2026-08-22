@@ -16,10 +16,12 @@ from app.tools import (
     TOOL_CAPABILITIES,
     TOOLS,
     AddNoteArgs,
+    AskClarificationArgs,
     Department,
     RememberArgs,
     Topic,
     add_note,
+    ask_clarification,
     query_employees,
     recall_memories,
     remember,
@@ -157,7 +159,7 @@ class TestSearchDocsCtx:
     def test_applies_tenant_prefilter(self, monkeypatch):
         captured = {}
 
-        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True):
+        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None):
             captured["tenant_filter"] = tenant_filter
             return []
 
@@ -180,7 +182,7 @@ class TestSearchDocsCtx:
         actually buys."""
         seen_filters = []
 
-        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True):
+        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None):
             seen_filters.append(tenant_filter)
             return []
 
@@ -193,6 +195,47 @@ class TestSearchDocsCtx:
             next(c.match.value for c in f.must if c.key == "tenant") for f in seen_filters
         ]
         assert tenants[0] != tenants[1]
+
+    def test_doc_ids_is_anded_onto_the_tenant_filter_not_a_replacement(self, monkeypatch):
+        """doc_ids narrows an already tenant-scoped query — it must never
+        be able to substitute for the tenant predicate. Checked at the
+        qdrant_store.hybrid_search boundary (mocked) since that's where
+        _build_filter actually composes the two."""
+        captured = {}
+
+        def fake_hybrid_search(
+            query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None
+        ):
+            captured["tenant_filter"] = tenant_filter
+            captured["doc_ids"] = doc_ids
+            return []
+
+        monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
+
+        search_docs.invoke({"query": "hello", "doc_ids": ["abc", "def"]}, config=_cfg())
+
+        assert captured["doc_ids"] == ["abc", "def"]
+        # The tenant filter is passed through UNCHANGED alongside doc_ids
+        # — _build_filter (app/qdrant_store.py) is what ANDs them
+        # together server-side, not search_docs replacing one with the other.
+        must = captured["tenant_filter"].must
+        values = {c.key: c.match.value for c in must}
+        assert values["tenant"] == TEST_CTX["tenant"]
+
+    def test_doc_ids_actually_narrows_the_qdrant_filter(self):
+        """Unmocked, at the real qdrant_store._build_filter boundary:
+        doc_ids becomes a HasIdCondition ANDed alongside the tenant/kind
+        predicate — not a filter that could stand in for it."""
+        from app.security import DEFAULT_POLICY
+
+        tenant_filter = DEFAULT_POLICY.lower(TEST_CTX, "documents")
+        built = qdrant_store._build_filter(None, tenant_filter, doc_ids=["abc", "def"])
+
+        assert any(getattr(c, "has_id", None) == ["abc", "def"] for c in built.must)
+        assert any(
+            getattr(c, "key", None) == "tenant" and c.match.value == TEST_CTX["tenant"]
+            for c in built.must
+        )
 
 
 class TestRememberArgsValidation:
@@ -237,7 +280,7 @@ class TestRecallMemories:
     def test_scopes_to_tenant_and_owner(self, monkeypatch):
         captured = {}
 
-        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True):
+        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None):
             captured["tenant_filter"] = tenant_filter
             captured["rerank_results"] = rerank_results
             return []
@@ -261,7 +304,7 @@ class TestRecallMemories:
         must produce filters that scope to different owners."""
         seen_filters = []
 
-        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True):
+        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None):
             seen_filters.append(tenant_filter)
             return []
 
@@ -285,7 +328,7 @@ class TestQueryEmployees:
     def test_passes_tenant_and_filters_through_to_sql_store(self, monkeypatch):
         captured = {}
 
-        def fake_query_employees(tenant, department=None, name_contains=None):
+        def fake_query_employees(tenant, department=None, name_contains=None, limit=None):
             captured["tenant"] = tenant
             captured["department"] = department
             captured["name_contains"] = name_contains
@@ -302,6 +345,45 @@ class TestQueryEmployees:
         assert captured["name_contains"] == "pri"
         assert "Priya Nair" in result
 
+    def test_passes_cap_plus_one_as_the_sql_limit(self, monkeypatch):
+        """See TOOL_RESULT_CAPS's docstring: limit=cap+1 is exactly enough
+        to detect "more rows exist" without a second COUNT(*) query."""
+        captured = {}
+        monkeypatch.setattr(
+            sql_store,
+            "query_employees",
+            lambda tenant, department=None, name_contains=None, limit=None: captured.update(limit=limit) or [],
+        )
+
+        query_employees.invoke({}, config=_cfg())
+
+        assert captured["limit"] == tools.TOOL_RESULT_CAPS["query_employees"] + 1
+
+    def test_result_beyond_the_cap_is_marked_truncated_not_silently_dropped(self, monkeypatch):
+        cap = tools.TOOL_RESULT_CAPS["query_employees"]
+        rows = [
+            {"name": f"Employee {i}", "department": "Engineering", "title": "Engineer", "hired_on": "2021-01-01"}
+            for i in range(cap + 1)  # sql_store.query_employees(limit=cap+1) returning cap+1 rows means "more exist"
+        ]
+        monkeypatch.setattr(sql_store, "query_employees", lambda **kw: rows)
+
+        result = query_employees.invoke({}, config=_cfg())
+
+        assert "truncated" in result
+        assert result.count("Employee") == cap  # exactly `cap` rows shown, not cap + 1
+
+    def test_result_at_or_under_the_cap_is_not_marked_truncated(self, monkeypatch):
+        cap = tools.TOOL_RESULT_CAPS["query_employees"]
+        rows = [
+            {"name": f"Employee {i}", "department": "Engineering", "title": "Engineer", "hired_on": "2021-01-01"}
+            for i in range(cap)  # exactly at the cap, not over it
+        ]
+        monkeypatch.setattr(sql_store, "query_employees", lambda **kw: rows)
+
+        result = query_employees.invoke({}, config=_cfg())
+
+        assert "truncated" not in result
+
     def test_no_matches_returns_a_friendly_string(self, monkeypatch):
         monkeypatch.setattr(sql_store, "query_employees", lambda **kw: [])
 
@@ -314,7 +396,7 @@ class TestQueryEmployees:
         monkeypatch.setattr(
             sql_store,
             "query_employees",
-            lambda tenant, department=None, name_contains=None: seen.append(tenant) or [],
+            lambda tenant, department=None, name_contains=None, limit=None: seen.append(tenant) or [],
         )
 
         query_employees.invoke({}, config=_cfg(TEST_CTX))
@@ -323,11 +405,47 @@ class TestQueryEmployees:
         assert seen[0] != seen[1]
 
 
+class TestAskClarificationArgsValidation:
+    def test_fewer_than_two_options_rejected(self):
+        with pytest.raises(ValueError):
+            AskClarificationArgs(question="Which one?", options=["only one"])
+
+    def test_more_than_four_options_rejected(self):
+        with pytest.raises(ValueError):
+            AskClarificationArgs(question="Which one?", options=["a", "b", "c", "d", "e"])
+
+    def test_two_to_four_options_accepted(self):
+        args = AskClarificationArgs(question="Which one?", options=["a", "b", "c"])
+        assert args.options == ["a", "b", "c"]
+
+
+class TestAskClarification:
+    def test_formats_the_question_and_numbered_options(self):
+        result = ask_clarification.invoke(
+            {
+                "question": "Do you mean the LangGraph checkpointer or the database one?",
+                "options": ["The LangGraph checkpointer", "A database checkpoint"],
+            }
+        )
+        assert "Do you mean the LangGraph checkpointer" in result
+        assert "1. The LangGraph checkpointer" in result
+        assert "2. A database checkpoint" in result
+
+    def test_needs_no_ctx_it_is_read_only_and_has_no_side_effects(self):
+        # Unlike search_docs/add_note/remember/query_employees, this tool
+        # never touches SecurityCtx at all — it's pure text formatting.
+        result = ask_clarification.invoke(
+            {"question": "Which?", "options": ["A", "B"]}
+        )
+        assert "Refused" not in result
+
+
 class TestToolCapabilities:
     def test_read_only_tools_declared_correctly(self):
         assert TOOL_CAPABILITIES["search_docs"] == "read_only"
         assert TOOL_CAPABILITIES["calculator"] == "read_only"
         assert TOOL_CAPABILITIES["query_employees"] == "read_only"
+        assert TOOL_CAPABILITIES["ask_clarification"] == "read_only"
 
     def test_mutating_tools_declared_correctly(self):
         assert TOOL_CAPABILITIES["add_note"] == "mutating"

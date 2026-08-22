@@ -45,8 +45,15 @@ psycopg[binary]>=3.1,<4
 # server-side (see docker-compose.yml's `redis` service), not plain Redis.
 redis>=5.0,<9
 
-# MCP server (app/mcp_server.py) exposing query_employees. Pinned to the
-# last stable 1.x line: mcp==2.0.0 removed mcp.server.fastmcp in a rewrite
-# (verified empirically — ModuleNotFoundError on 2.0.0), so this app stays
-# on 1.29.0's documented, standard FastMCP API.
+# MCP: app/mcp_server.py (server, exposing query_employees) AND
+# app/mcp_client.py (client, consuming a remote MCP tool catalog). Pinned
+# to the last stable 1.x line: mcp==2.0.0 removed mcp.server.fastmcp in a
+# rewrite (verified empirically — ModuleNotFoundError on 2.0.0), so this
+# app stays on 1.29.0's documented, standard FastMCP/ClientSession API.
 mcp[cli]==1.29.0
+
+# General-purpose Ingestor's URL fetch (app/ingestor.py) — already a
+# transitive dependency (fastapi/openai pull it in), declared directly
+# here since app/ingestor.py now imports it as a first-class dependency,
+# not an implicit one.
+httpx>=0.27,<1

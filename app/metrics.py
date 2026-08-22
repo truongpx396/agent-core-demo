@@ -128,6 +128,24 @@ agent_semantic_cache_total = Counter(
     ["outcome"],
 )  # outcome: hit | miss | error (degraded — treated as a miss, recorded separately)
 
+agent_ingest_total = Counter(
+    "agent_ingest_total",
+    "Successful ingest_text calls by source kind (app/ingestor.py)",
+    ["source"],
+)  # source: text | file | url
+
+agent_ingest_refused_total = Counter(
+    "agent_ingest_refused_total",
+    "Refused ingest attempts by reason (app/ingestor.py)",
+    ["reason"],
+)  # reason: no_ctx | bad_file_type | ssrf_blocked | fetch_failed | too_large
+
+agent_moderation_total = Counter(
+    "agent_moderation_total",
+    "Input moderation screens by outcome (app/moderation.py)",
+    ["outcome"],
+)  # outcome: allowed | blocked_injection | blocked_denylist | error (degraded — treated as allowed)
+
 
 class MetricsCallbackHandler(BaseCallbackHandler):
     """Records tool-call and tool-error counts. Pass an instance in

@@ -1,6 +1,7 @@
 """FastAPI service exposing the LangGraph agent over HTTP.
 
 Endpoints:
+- GET  /             -> the built-in web UI (app/static/index.html)
 - GET  /health       -> liveness check
 - POST /chat         -> non-streaming, returns full answer (Pydantic in/out)
 - POST /chat/stream  -> production SSE streaming via astream_events v2
@@ -29,9 +30,10 @@ authentication later is a gateway config change, not a rewrite of this file.
 """
 import json
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.agent import answer, astream_events_turn, init_graph_async
@@ -65,6 +67,24 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Core AI Stack Demo", version="1.0.0", lifespan=lifespan)
+
+_UI_HTML_PATH = Path(__file__).parent / "static" / "index.html"
+
+
+@app.get("/", response_class=HTMLResponse)
+def ui() -> str:
+    """The built-in standalone-product web UI (GRAPH_PATTERNS.md pattern
+    29) — a single self-contained page, no build step, no CDN dependency
+    (consistent with this app's fully-offline commitment). Talks ONLY to
+    `POST /chat/stream`'s published SSE event vocabulary (see that
+    endpoint's own docstring) — never a special-cased endpoint of its
+    own, so the vocabulary stays the one true contract every client
+    (this page, `make chat-stream`, a future one) renders from. Read from
+    disk per request (not cached at import time) so editing
+    app/static/index.html and refreshing the browser is enough during
+    development — this file is tiny and this isn't a hot path.
+    """
+    return _UI_HTML_PATH.read_text()
 
 
 @app.get("/health", response_model=HealthResponse)

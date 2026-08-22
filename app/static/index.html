@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>practice-core-ai-1</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    max-width: 720px; margin: 0 auto; padding: 1rem;
+    display: flex; flex-direction: column; height: 100vh; box-sizing: border-box;
+  }
+  header { display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; }
+  header h1 { font-size: 1rem; margin: 0; flex: 1; }
+  header input {
+    font-size: .85rem; padding: .3rem .5rem; border-radius: 6px;
+    border: 1px solid #8888; width: 8rem;
+  }
+  #messages { flex: 1; overflow-y: auto; padding: .5rem 0; }
+  .msg { margin: .5rem 0; padding: .6rem .8rem; border-radius: 10px; max-width: 85%; white-space: pre-wrap; }
+  .msg.user { background: #2563eb; color: white; margin-left: auto; }
+  .msg.assistant { background: #8883; }
+  .msg.system { background: transparent; color: #888; font-size: .85rem; font-style: italic; text-align: center; max-width: 100%; }
+  .tool-line { font-size: .8rem; color: #888; margin: .2rem 0; }
+  .citations { font-size: .8rem; color: #888; margin-top: .4rem; border-top: 1px solid #8884; padding-top: .3rem; }
+  .followups { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .4rem; }
+  .followups button {
+    font-size: .8rem; padding: .3rem .6rem; border-radius: 999px;
+    border: 1px solid #8888; background: transparent; cursor: pointer;
+  }
+  form { display: flex; gap: .5rem; padding-top: .5rem; border-top: 1px solid #8884; }
+  input[type=text]#input { flex: 1; padding: .6rem; border-radius: 8px; border: 1px solid #8888; font-size: 1rem; }
+  button[type=submit] { padding: .6rem 1rem; border-radius: 8px; border: none; background: #2563eb; color: white; cursor: pointer; }
+  button[type=submit]:disabled { opacity: .5; cursor: default; }
+</style>
+</head>
+<body>
+<header>
+  <h1>practice-core-ai-1</h1>
+  <input id="principal" type="text" value="web-user" title="Your principal id (X-Principal-Id)">
+</header>
+<div id="messages"></div>
+<form id="form">
+  <input id="input" type="text" autocomplete="off" placeholder="Ask something..." autofocus>
+  <button type="submit" id="send">Send</button>
+</form>
+<script>
+// Everything this page does talks ONLY to app/api.py's published endpoints
+// (POST /chat/stream) and renders ONLY the documented SSE event vocabulary
+// (token, tool_start, tool_end, citations, approval_required, error, done)
+// — see GRAPH_PATTERNS.md's AR-033-style "no special-case endpoints" note.
+// EventSource can't send custom headers or do POST, so this uses fetch()'s
+// streaming response body directly and parses SSE framing by hand.
+
+const threadId = crypto.randomUUID();
+const messagesEl = document.getElementById("messages");
+const form = document.getElementById("form");
+const input = document.getElementById("input");
+const sendBtn = document.getElementById("send");
+const principalEl = document.getElementById("principal");
+
+function addMessage(role, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  div.textContent = text;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return div;
+}
+
+function addToolLine(text) {
+  const div = document.createElement("div");
+  div.className = "tool-line";
+  div.textContent = text;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+async function send(text) {
+  addMessage("user", text);
+  input.value = "";
+  sendBtn.disabled = true;
+
+  const assistantEl = addMessage("assistant", "");
+  let assistantText = "";
+
+  try {
+    const response = await fetch("/chat/stream", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Tenant-Id": "acme",
+        "X-Principal-Id": principalEl.value || "web-user",
+      },
+      body: JSON.stringify({ message: text, thread_id: threadId }),
+    });
+    if (!response.ok || !response.body) {
+      assistantEl.textContent = `[request failed: HTTP ${response.status}]`;
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE frames are separated by a blank line; each frame's payload
+      // line is "data: {...json...}".
+      let sepIndex;
+      while ((sepIndex = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, sepIndex);
+        buffer = buffer.slice(sepIndex + 2);
+        const line = frame.split("\n").find((l) => l.startsWith("data: "));
+        if (!line) continue;
+        const event = JSON.parse(line.slice("data: ".length));
+        handleEvent(event);
+      }
+    }
+  } catch (err) {
+    assistantEl.textContent = assistantText || `[error: ${err}]`;
+  } finally {
+    sendBtn.disabled = false;
+    input.focus();
+  }
+
+  function handleEvent(event) {
+    if (event.type === "token") {
+      assistantText += event.content;
+      assistantEl.textContent = assistantText;
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    } else if (event.type === "tool_start") {
+      addToolLine(`🔧 ${event.tool}(${JSON.stringify(event.args)})`);
+    } else if (event.type === "tool_end") {
+      addToolLine(`✓ ${event.tool} finished`);
+    } else if (event.type === "citations") {
+      const div = document.createElement("div");
+      div.className = "citations";
+      div.textContent =
+        "Sources: " +
+        event.items.map((c) => `${c.marker} ${c.title}`).join("  ");
+      assistantEl.appendChild(document.createElement("br"));
+      assistantEl.appendChild(div);
+    } else if (event.type === "approval_required") {
+      addMessage(
+        "system",
+        "⏸ Paused: this would need human approval (" +
+          event.tool_calls.map((t) => t.name).join(", ") +
+          ") — there's no HTTP resume endpoint yet (see GRAPH_PATTERNS.md's " +
+          "\"Extending Further\"); use `make chat-stream` or app/hitl_demo.py " +
+          "to approve/reject this kind of action."
+      );
+    } else if (event.type === "error") {
+      assistantEl.textContent = assistantText || `[error: ${event.content}]`;
+    }
+    // "done" needs no rendering of its own — the assistant text is
+    // already fully rendered by the time it arrives.
+  }
+}
+
+form.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const text = input.value.trim();
+  if (text) send(text);
+});
+</script>
+</body>
+</html>

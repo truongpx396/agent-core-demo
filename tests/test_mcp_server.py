@@ -50,7 +50,7 @@ def test_invalid_department_returns_a_friendly_error(monkeypatch):
 def test_valid_department_passes_through_as_the_enum_value(monkeypatch):
     captured = {}
 
-    def fake_query_employees(tenant, department=None, name_contains=None):
+    def fake_query_employees(tenant, department=None, name_contains=None, limit=None):
         captured["tenant"] = tenant
         captured["department"] = department
         return []
@@ -71,7 +71,7 @@ def test_two_different_tenants_get_different_tenant_param(monkeypatch):
     monkeypatch.setattr(
         sql_store,
         "query_employees",
-        lambda tenant, department=None, name_contains=None: seen.append(tenant) or [],
+        lambda tenant, department=None, name_contains=None, limit=None: seen.append(tenant) or [],
     )
 
     _call("query_employees", {"tenant": "acme", "principal": "p"})

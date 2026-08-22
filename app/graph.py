@@ -81,6 +81,7 @@ from app.config import CHAT_MODEL, OPENAI_API_BASE, OPENAI_API_KEY
 from app.security import SecurityCtx, valid_ctx
 from app.tools import TOOL_CAPABILITIES, TOOLS
 from app import metrics
+from app import moderation
 from app import semantic_cache
 
 if TYPE_CHECKING:
@@ -104,7 +105,13 @@ SYSTEM_PROMPT = (
     "bracket marker, e.g. 'Checkpointers persist state [2].' Only cite "
     "markers that actually appear in the retrieved content — never invent "
     "one. Don't cite anything for facts you already knew or that came from "
-    "the calculator."
+    "the calculator.\n\n"
+    "If a question is ambiguous in a way that would materially change your "
+    "answer (not just slightly), call ask_clarification with 2-4 concrete "
+    "interpretations instead of guessing. Use this rarely — most questions "
+    "have an obvious best-effort answer and don't need it. When you receive "
+    "ask_clarification's result, present it to the user as your final answer "
+    "verbatim — don't also try to answer the original question in the same turn."
 )  # Static, deliberately — see GRAPH_PATTERNS.md pattern 19: nothing
    # request-specific (ctx, a timestamp, a trace id) may ever be interpolated
    # into this constant, or the prompt-cache stability property it exists to
@@ -187,6 +194,11 @@ class State(TypedDict):
     cache_hit: bool  # Set by check_semantic_cache — read by
     # write_semantic_cache to skip a redundant re-embed+write on a turn that
     # was already served from cache (GRAPH_PATTERNS.md pattern 22).
+    moderation_blocked: bool  # Set by moderate_input — read by
+    # route_after_moderation (GRAPH_PATTERNS.md pattern 25).
+    followups: list[str]  # Set by suggest_followups — 2-3 follow-up
+    # questions derived from a grounded answer, or [] when the answer had
+    # no citations to derive them from (GRAPH_PATTERNS.md pattern 27).
 
 
 def _last_human_message(messages: list[BaseMessage]) -> HumanMessage | None:
@@ -344,6 +356,8 @@ def validate_input(state: State, config: RunnableConfig) -> dict:
         "citations": [],
         "used_citations": [],
         "cache_hit": False,
+        "moderation_blocked": False,
+        "followups": [],
     }
     trimmed = _trim_history(state["messages"])
     if trimmed:
@@ -352,11 +366,48 @@ def validate_input(state: State, config: RunnableConfig) -> dict:
     return updates
 
 
+def _resumability_error_from_state(state) -> str | None:
+    """The actual check, factored out of graph/config-fetching so
+    `resumability_error` (sync) and `resumability_error_async` (async) —
+    which differ ONLY in whether they call `graph.get_state` or `await
+    graph.aget_state` — can share one implementation instead of two
+    copies that could drift. See `resumability_error`'s docstring for the
+    two failure modes this distinguishes.
+    """
+    if not state.next:
+        metrics.agent_checkpoint_issue_total.labels(reason="checkpoint_lost").inc()
+        return (
+            "checkpoint_lost: no paused run found for this thread — it may "
+            "have completed, never existed, or its checkpoint was lost."
+        )
+    paused_schema = state.values.get("state_schema_version")
+    if paused_schema != STATE_SCHEMA_VERSION:
+        metrics.agent_checkpoint_issue_total.labels(
+            reason="checkpoint_incompatible"
+        ).inc()
+        return (
+            f"checkpoint_incompatible: paused under state_schema_version "
+            f"{paused_schema!r}, this build is {STATE_SCHEMA_VERSION!r} — "
+            "refusing to resume into a possibly different topology."
+        )
+    return None
+
+
 def resumability_error(graph, config: dict) -> str | None:
     """Check before every Command(resume=...) call — never resume blindly.
     Returns None if resuming is safe, otherwise a human-readable reason
     (and increments agent_checkpoint_issue_total, so this is visible in
     metrics rather than only to whichever caller happened to check).
+
+    SYNC ONLY — for callers on a different thread than the checkpointer's
+    own event loop (`app/agent.py`'s `stream_turn`/`answer`,
+    `app/hitl_demo.py`). An async caller running ON that loop
+    (`astream_events_resume`) MUST use `resumability_error_async` instead
+    — calling this one there raises `asyncio.InvalidStateError`
+    (`AsyncSqliteSaver` refuses a sync call from its own loop; verified
+    empirically — this split exists because an earlier version of this
+    function had exactly one implementation and `astream_events_resume`
+    hit that crash on every resume against a real durable checkpointer).
 
     Two distinct failures, matching the two intel-agent names this mirrors
     (see the "Durable checkpointer" note in GRAPH_PATTERNS.md):
@@ -382,29 +433,18 @@ def resumability_error(graph, config: dict) -> str | None:
       see STATE_SCHEMA_VERSION's docstring for the bump discipline that
       keeps this distinction meaningful.
     """
-    state = graph.get_state(config)
-    if not state.next:
-        metrics.agent_checkpoint_issue_total.labels(reason="checkpoint_lost").inc()
-        return (
-            "checkpoint_lost: no paused run found for this thread — it may "
-            "have completed, never existed, or its checkpoint was lost."
-        )
-    paused_schema = state.values.get("state_schema_version")
-    if paused_schema != STATE_SCHEMA_VERSION:
-        metrics.agent_checkpoint_issue_total.labels(
-            reason="checkpoint_incompatible"
-        ).inc()
-        return (
-            f"checkpoint_incompatible: paused under state_schema_version "
-            f"{paused_schema!r}, this build is {STATE_SCHEMA_VERSION!r} — "
-            "refusing to resume into a possibly different topology."
-        )
-    return None
+    return _resumability_error_from_state(graph.get_state(config))
+
+
+async def resumability_error_async(graph, config: dict) -> str | None:
+    """The ASYNC counterpart to `resumability_error` — see its docstring
+    for why the split exists and which callers need which one."""
+    return _resumability_error_from_state(await graph.aget_state(config))
 
 
 def route_after_validation(
     state: State,
-) -> Literal["check_semantic_cache", "reject_input", "reject_context"]:
+) -> Literal["moderate_input", "reject_input", "reject_context"]:
     """Checked in order: security context first, then the message itself.
 
     A missing/malformed ctx is a system-level fact (something upstream
@@ -420,7 +460,37 @@ def route_after_validation(
     last_human = _last_human_message(state["messages"])
     if last_human is None or not last_human.content.strip():
         return "reject_input"
-    return "check_semantic_cache"
+    return "moderate_input"
+
+
+# --- Node: input moderation (GRAPH_PATTERNS.md pattern 25) — runs BEFORE
+# the semantic cache lookup or retrieval, so a screened-out input never
+# reaches either. ---
+def moderate_input(state: State) -> dict:
+    last_human = _last_human_message(state["messages"])
+    if last_human is None:
+        return {"moderation_blocked": False}
+    result = moderation.screen(last_human.content)
+    return {"moderation_blocked": not result.allowed}
+
+
+def route_after_moderation(
+    state: State,
+) -> Literal["reject_moderation", "check_semantic_cache"]:
+    return "reject_moderation" if state.get("moderation_blocked") else "check_semantic_cache"
+
+
+def reject_moderation(state: State) -> dict:
+    """Screened out by moderate_input — short-circuits BEFORE the
+    semantic cache, retrieval, or any LLM call, same as reject_input/
+    reject_context above it in the turn."""
+    return {
+        "messages": [
+            AIMessage(
+                content="I can't help with that request."
+            )
+        ]
+    }
 
 
 def reject_input(state: State) -> dict:
@@ -781,12 +851,75 @@ def check_output(state: State) -> dict:
     return {"used_citations": _used_citations(content, state.get("citations") or [])}
 
 
-def route_after_check(state: State) -> Literal["retry_output", "write_semantic_cache"]:
+def route_after_check(state: State) -> Literal["retry_output", "suggest_followups"]:
     last = state["messages"][-1]
     content = getattr(last, "content", "") or ""
     if isinstance(content, str) and len(content) < MIN_ANSWER_LENGTH:
         return "retry_output"
-    return "write_semantic_cache"
+    return "suggest_followups"
+
+
+_FOLLOWUP_PROMPT = (
+    "Based on the answer below, suggest 2-3 short, natural follow-up "
+    "questions a user might ask next. Respond with ONLY the questions, "
+    "one per line, no numbering, no extra commentary.\n\nAnswer:\n{answer}"
+)
+
+
+# --- Node: follow-up suggestions (GRAPH_PATTERNS.md pattern 27) ---
+def make_suggest_followups_node(llm):
+    """Factory, same rationale as make_agent_node: needs an LLM client.
+
+    Only reached once a turn is confirmed final (route_after_check's
+    non-retry branch), so it never runs on an answer about to be retried.
+    """
+
+    def suggest_followups(state: State) -> dict:
+        """Suggests follow-ups only for a GROUNDED answer (`used_citations`
+        non-empty) — an answer with no citations has nothing derived to
+        build follow-ups from, which naturally suppresses this for a
+        refusal, a general-knowledge aside, or an ask_clarification
+        response (none of those cite anything), without needing to
+        specially detect any of those cases.
+
+        Skipped entirely on a cache hit (`state["cache_hit"]`): generating
+        follow-ups would mean a fresh LLM call on what's supposed to be
+        the FAST, zero-LLM-call path (see check_semantic_cache's
+        docstring) — the same reasoning write_semantic_cache already
+        applies to skip its own redundant work on a hit.
+
+        Degrades to `{"followups": []}` on any failure — this is
+        enrichment on top of an already-complete answer, never something
+        that should fail the turn (same reliability posture as
+        retrieve_context/check_semantic_cache).
+        """
+        if state.get("cache_hit"):
+            return {"followups": []}
+        used_citations = state.get("used_citations") or []
+        if not used_citations:
+            return {"followups": []}
+        last = state["messages"][-1]
+        content = getattr(last, "content", "") or ""
+        if not content:
+            return {"followups": []}
+        try:
+            response = llm.invoke(
+                [HumanMessage(content=_FOLLOWUP_PROMPT.format(answer=content))]
+            )
+            lines = [
+                line.strip("-•* ").strip()
+                for line in (response.content or "").split("\n")
+                if line.strip()
+            ]
+            return {"followups": lines[:3]}
+        except Exception as exc:  # noqa: BLE001 - enrichment, never fail the turn
+            logger.warning(
+                "follow-up suggestion failed; continuing without follow-ups",
+                extra={"node": "suggest_followups", "error_class": type(exc).__name__},
+            )
+            return {"followups": []}
+
+    return suggest_followups
 
 
 # --- Node: semantic cache write-through (GRAPH_PATTERNS.md pattern 22) ---
@@ -899,7 +1032,13 @@ def build_graph(
         domain_tools = [t for t in domain_tools if t.name in allowed]
     domain_tool_capabilities = domain.tool_capabilities()
 
-    agent = make_agent_node(deps.llm or _make_llm(domain_tools))
+    llm_client = deps.llm or _make_llm(domain_tools)
+    agent = make_agent_node(llm_client)
+    # Reuses the SAME llm client as `agent` — a second, separately
+    # configured client for one follow-up-suggestion call per turn would
+    # be a second thing to keep in sync with GraphDeps for no real
+    # benefit; a tool-bound client asked a plain question just answers it.
+    suggest_followups = make_suggest_followups_node(llm_client)
     retrieve_context = make_retrieve_context_node(deps.search_docs or _default_search)
     check_semantic_cache = make_check_semantic_cache_node(deps.cache_get or _default_cache_get)
     write_semantic_cache = make_write_semantic_cache_node(deps.cache_set or _default_cache_set)
@@ -923,6 +1062,10 @@ def build_graph(
     builder.add_node("validate_input", _instrumented("validate_input")(validate_input))
     builder.add_node("reject_input", _instrumented("reject_input")(reject_input))
     builder.add_node("reject_context", _instrumented("reject_context")(reject_context))
+    builder.add_node("moderate_input", _instrumented("moderate_input")(moderate_input))
+    builder.add_node(
+        "reject_moderation", _instrumented("reject_moderation")(reject_moderation)
+    )
     builder.add_node(
         "check_semantic_cache",
         _instrumented("check_semantic_cache")(check_semantic_cache),
@@ -961,6 +1104,9 @@ def build_graph(
     builder.add_node("check_output", _instrumented("check_output")(check_output))
     builder.add_node("retry_output", _instrumented("retry_output")(retry_output))
     builder.add_node(
+        "suggest_followups", _instrumented("suggest_followups")(suggest_followups)
+    )
+    builder.add_node(
         "write_semantic_cache",
         _instrumented("write_semantic_cache")(write_semantic_cache),
     )
@@ -969,6 +1115,9 @@ def build_graph(
     builder.add_conditional_edges("validate_input", route_after_validation)
     builder.add_edge("reject_input", END)
     builder.add_edge("reject_context", END)
+
+    builder.add_conditional_edges("moderate_input", route_after_moderation)
+    builder.add_edge("reject_moderation", END)
 
     builder.add_conditional_edges("check_semantic_cache", route_after_cache)
     builder.add_edge("retrieve_context", "agent")
@@ -979,6 +1128,7 @@ def build_graph(
 
     builder.add_conditional_edges("check_output", route_after_check)
     builder.add_edge("retry_output", "agent")
+    builder.add_edge("suggest_followups", "write_semantic_cache")
     builder.add_edge("write_semantic_cache", END)
 
     compiled = builder.compile(checkpointer=checkpointer or MemorySaver())

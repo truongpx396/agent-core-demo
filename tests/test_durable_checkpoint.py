@@ -152,6 +152,113 @@ class TestDurabilityAcrossRestart:
         assert "remember this" in contents
 
 
+class TestAsyncSeeding:
+    """Regression test for a real bug found while manually verifying the
+    web UI against a live `uvicorn` process: `_ensure_seeded` (the sync
+    `graph.update_state`) was being called from `astream_events_turn` —
+    which runs on the SAME event loop `init_graph_async()` opened the
+    `AsyncSqliteSaver` on — and raised `asyncio.InvalidStateError` on the
+    very first turn of any brand-new `thread_id` (`AsyncSqliteSaver`
+    refuses a sync call from its own loop; only a DIFFERENT thread's sync
+    call is the supported cross-thread path — see app/agent.py's module
+    docstring). Fixed by splitting into `_ensure_seeded` (sync callers:
+    `stream_turn`/`answer`) and `_ensure_seeded_async` (async callers:
+    `astream_events_turn`/`astream_events_turn_ctx`, using
+    `graph.aupdate_state`)."""
+
+    def test_astream_events_turn_seeds_a_brand_new_thread_without_raising(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            agent_module,
+            "build_graph",
+            lambda checkpointer=None: build_graph(
+                GraphDeps(llm=_fake_llm()), checkpointer=checkpointer
+            ),
+        )
+
+        async def _run():
+            await agent_module.init_graph_async()
+            events = []
+            async for event in agent_module.astream_events_turn(
+                "hello", str(uuid.uuid4()), TEST_CTX
+            ):
+                events.append(event)
+            return events
+
+        events = asyncio.run(_run())
+
+        assert not any(e["type"] == "error" for e in events)
+        assert events[-1]["type"] == "done"
+
+    def test_astream_events_resume_checks_resumability_without_raising(
+        self, monkeypatch
+    ):
+        """Same bug class, different call site: astream_events_resume
+        used the SYNC `resumability_error` (app/graph.py), which also
+        raises InvalidStateError from the checkpointer's own loop. Fixed
+        by resumability_error_async (aget_state) — this is the real
+        production resume path (`make chat-stream`'s HITL round trip),
+        so it gets its own regression test rather than relying on
+        coverage from the seeding test above."""
+        from langchain_core.messages import AIMessage
+
+        def _mutating_tool_call_llm():
+            from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+            return GenericFakeChatModel(
+                messages=iter(
+                    [
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "add_note",
+                                    "args": {
+                                        "title": "T",
+                                        "content": "C",
+                                        "topic": "company",
+                                    },
+                                    "id": "c1",
+                                }
+                            ],
+                        ),
+                        AIMessage(content="Okay, I saved that note for you."),
+                    ]
+                )
+            )
+
+        monkeypatch.setattr(
+            agent_module,
+            "build_graph",
+            lambda checkpointer=None: build_graph(
+                GraphDeps(llm=_mutating_tool_call_llm()), checkpointer=checkpointer
+            ),
+        )
+
+        async def _run():
+            await agent_module.init_graph_async()
+            thread_id = str(uuid.uuid4())
+            # Drive the turn to a pause at the mandatory human_approval gate.
+            async for _ in agent_module.astream_events_turn(
+                "remember our refund policy", thread_id, TEST_CTX
+            ):
+                pass
+            # Now resume it — this is where resumability_error_async's
+            # aget_state must be used, not the sync version.
+            events = []
+            async for event in agent_module.astream_events_resume(
+                thread_id, True, TEST_CTX
+            ):
+                events.append(event)
+            return events
+
+        events = asyncio.run(_run())
+
+        assert not any(e["type"] == "error" for e in events)
+        assert events[-1]["type"] == "done"
+
+
 class TestResumabilityError:
     def _paused_graph_and_config(self, monkeypatch):
         """A graph paused at human_approval (require_approval=True, a

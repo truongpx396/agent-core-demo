@@ -64,8 +64,8 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
 from app import metrics
-from app.config import CHECKPOINT_DB_PATH
-from app.graph import build_graph, resumability_error
+from app.config import CHAT_MODEL, CHECKPOINT_DB_PATH
+from app.graph import build_graph, resumability_error, resumability_error_async
 from app.security import SecurityCtx
 
 try:
@@ -92,7 +92,13 @@ REQUEST_TIMEOUT_SECONDS = 60
 _REQUEST_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="request-timeout")
 
 
-def _record_turn_metrics(elapsed: float, outcome: str, state: dict | None = None) -> None:
+def _record_turn_metrics(
+    elapsed: float,
+    outcome: str,
+    state: dict | None = None,
+    ctx: SecurityCtx | None = None,
+    thread_id: str | None = None,
+) -> None:
     metrics.agent_requests_total.labels(outcome=outcome).inc()
     metrics.agent_latency_seconds.observe(elapsed)
     if state is not None:
@@ -100,6 +106,17 @@ def _record_turn_metrics(elapsed: float, outcome: str, state: dict | None = None
         total_tokens = state.get("total_tokens", 0)
         if total_tokens:
             metrics.agent_tokens_total.inc(total_tokens)
+            # Real usage ledger (GRAPH_PATTERNS.md pattern 26) — only at a
+            # call site that actually has ctx/thread_id (a completed turn),
+            # never at every early-return timeout/error branch above, which
+            # would mean threading both through call sites that already
+            # have nothing meaningful to record (total_tokens is 0 there
+            # regardless). meter.record_usage degrades to a no-op on its
+            # own failure — see its docstring — so this can't fail the turn.
+            if ctx is not None and thread_id is not None:
+                from app import meter
+
+                meter.record_usage(ctx, thread_id, CHAT_MODEL, total_tokens)
 
 
 def _turn_outcome(state: dict) -> str:
@@ -215,7 +232,19 @@ def _callbacks(session_id: str):
 
 
 def _ensure_seeded(graph, thread_id: str) -> None:
-    """Seed a new conversation thread with the system prompt exactly once.
+    """Seed a new conversation thread with the system prompt exactly once
+    — the SYNC path, for stream_turn/answer only (both reach the graph
+    via get_graph(), which for the durable singleton is init_graph_sync()'s
+    background-thread-hosted checkpointer; this sync `update_state` call
+    runs on the CALLING thread, a different one than the checkpointer's
+    own — the documented, supported cross-thread path, see this module's
+    docstring). `astream_events_turn`/`astream_events_turn_ctx` run
+    directly ON the checkpointer's own loop instead and MUST use
+    `_ensure_seeded_async` below — calling this sync version from there
+    raises `asyncio.InvalidStateError` (`AsyncSqliteSaver` refuses a sync
+    call from the same loop it was created on), caught empirically via a
+    real `POST /chat/stream` request against a fresh thread_id before
+    this split existed.
 
     Reads `graph.manifest.system_prompt` (stamped by build_graph — see
     GRAPH_PATTERNS.md pattern 23, app/manifest.py) rather than the
@@ -231,6 +260,22 @@ def _ensure_seeded(graph, thread_id: str) -> None:
     if thread_id in _seeded:
         return
     graph.update_state(
+        {"configurable": {"thread_id": thread_id}},
+        {"messages": [SystemMessage(content=graph.manifest.system_prompt)]},
+    )
+    _seeded.add(thread_id)
+
+
+async def _ensure_seeded_async(graph, thread_id: str) -> None:
+    """The ASYNC counterpart to `_ensure_seeded` — see its docstring for
+    why the split exists. Used by `astream_events_turn`/
+    `astream_events_turn_ctx`, both of which run directly on the
+    checkpointer's own event loop (via `init_graph_async()`), where only
+    the checkpointer's async methods (`aupdate_state`, not
+    `update_state`) are safe to call."""
+    if thread_id in _seeded:
+        return
+    await graph.aupdate_state(
         {"configurable": {"thread_id": thread_id}},
         {"messages": [SystemMessage(content=graph.manifest.system_prompt)]},
     )
@@ -319,7 +364,8 @@ def stream_turn(text: str, thread_id: str, ctx: SecurityCtx):
                 yield delta
 
     _record_turn_metrics(
-        time.monotonic() - start, _turn_outcome(final_state), final_state
+        time.monotonic() - start, _turn_outcome(final_state), final_state,
+        ctx=ctx, thread_id=thread_id,
     )
 
 
@@ -376,7 +422,9 @@ def answer(text: str, thread_id: str, ctx: SecurityCtx) -> tuple[str, list[dict]
         if result is None:
             return "Sorry, that took too long to answer — please try again.", []
 
-    _record_turn_metrics(time.monotonic() - start, _turn_outcome(result), result)
+    _record_turn_metrics(
+        time.monotonic() - start, _turn_outcome(result), result, ctx=ctx, thread_id=thread_id
+    )
     return result["messages"][-1].content, result.get("used_citations") or []
 
 
@@ -473,14 +521,30 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
             trace.update(output=f"error: {exc}", level="ERROR")
         outcome = "timeout" if isinstance(exc, TimeoutError) else "error"
         _record_turn_metrics(time.monotonic() - start, outcome)
-        terminal_event = {"type": "error", "content": str(exc)}
+        # asyncio.wait_for's OWN internal timeout (inside
+        # _iterate_with_timeout, when a single step — not the overall
+        # deadline check — runs out of remaining budget) raises a bare
+        # TimeoutError with an EMPTY str(exc) — verified against a real
+        # slow local-model turn before adding this fallback message, since
+        # a blank {"type": "error", "content": ""} SSE event tells a
+        # client/UI nothing useful about what happened.
+        message = (
+            f"Request exceeded {REQUEST_TIMEOUT_SECONDS}s timeout"
+            if outcome == "timeout"
+            else str(exc)
+        )
+        terminal_event = {"type": "error", "content": message}
     else:
         # astream_events() simply stops yielding once the run pauses at an
         # interrupt() — there's no exception and no distinct "paused" event,
         # so the only reliable way to tell "paused" from "finished" is to
         # check get_state().next afterwards, same as app/hitl_demo.py's
-        # sync loop.
-        state = graph.get_state(cfg)
+        # sync loop. aget_state, not get_state: this async function runs
+        # directly on the checkpointer's own event loop (via
+        # init_graph_async()), where only the async accessor is safe to
+        # call — see resumability_error_async's docstring for the same
+        # constraint, caught here by a real regression test.
+        state = await graph.aget_state(cfg)
         if state.next:
             pending = state.tasks[0].interrupts[0].value
             if trace:
@@ -495,7 +559,11 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
             if trace:
                 trace.update(output="".join(final_answer))
             _record_turn_metrics(
-                time.monotonic() - start, _turn_outcome(state.values), state.values
+                time.monotonic() - start,
+                _turn_outcome(state.values),
+                state.values,
+                ctx=(cfg.get("configurable") or {}).get("ctx"),
+                thread_id=(cfg.get("configurable") or {}).get("thread_id"),
             )
             used_citations = state.values.get("used_citations") or []
             terminal_event = {"type": "done"}
@@ -531,7 +599,7 @@ async def astream_events_turn(
     (app/api.py) unchanged.
     """
     graph = await init_graph_async()
-    _ensure_seeded(graph, thread_id)
+    await _ensure_seeded_async(graph, thread_id)
     trace, callbacks = _open_trace("chat-turn-stream", thread_id, text)
     cfg = {
         "configurable": {"thread_id": thread_id, "ctx": ctx},
@@ -572,7 +640,7 @@ async def astream_events_resume(thread_id: str, approved: bool, ctx: SecurityCtx
     to actually hit a stale or incompatible checkpoint in practice.
     """
     graph = await init_graph_async()
-    error = resumability_error(graph, {"configurable": {"thread_id": thread_id}})
+    error = await resumability_error_async(graph, {"configurable": {"thread_id": thread_id}})
     if error:
         yield {"type": "error", "content": error}
         yield {"type": "done"}
@@ -664,7 +732,7 @@ async def astream_events_turn_ctx(text: str, thread_id: str, ctx: SecurityCtx):
       {"type": "error",      "content": "<message>"}
     """
     graph = await init_graph_async()
-    _ensure_seeded(graph, thread_id)
+    await _ensure_seeded_async(graph, thread_id)
 
     final_answer: list[str] = []
 
@@ -719,12 +787,21 @@ async def astream_events_turn_ctx(text: str, thread_id: str, ctx: SecurityCtx):
                 trace.update(output=f"error: {exc}", level="ERROR")
             outcome = "timeout" if isinstance(exc, TimeoutError) else "error"
             _record_turn_metrics(time.monotonic() - start, outcome)
-            yield {"type": "error", "content": str(exc)}
+            # See _run_graph_stream's matching comment: a bare
+            # asyncio.wait_for timeout has an empty str(exc).
+            message = (
+                f"Request exceeded {REQUEST_TIMEOUT_SECONDS}s timeout"
+                if outcome == "timeout"
+                else str(exc)
+            )
+            yield {"type": "error", "content": message}
             return  # exit before the else-branch and done event
 
         if trace:
             trace.update(output="".join(final_answer))
-        final_state = graph.get_state(cfg).values
+        # aget_state, not get_state — see _run_graph_stream's matching
+        # comment: this runs on the checkpointer's own event loop.
+        final_state = (await graph.aget_state(cfg)).values
         _record_turn_metrics(
             time.monotonic() - start, _turn_outcome(final_state), final_state
         )
