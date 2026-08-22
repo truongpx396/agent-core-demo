@@ -138,6 +138,7 @@ async def chat_stream(
       data: {"type": "tool_start", "tool": "search_docs", "args": {...}}
       data: {"type": "tool_end",   "tool": "search_docs"}
       data: {"type": "citations",  "items": [{"marker": "[1]", ...}]}
+      data: {"type": "followups",  "items": ["...", ...]}
       data: {"type": "done"}
 
     The client can consume this with EventSource or any SSE library.

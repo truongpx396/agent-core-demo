@@ -24,7 +24,15 @@ chat-stream-hitl:  ## Production streaming CLI with human-in-the-loop tool appro
 	python -m app.chat --stream --hitl
 
 serve:  ## Start the FastAPI service (http://localhost:8000/docs)
-	uvicorn app.api:app --host 0.0.0.0 --port 8000 --reload
+	# --reload-dir scopes the file watcher to app/ only. Without it, uvicorn
+	# watches the ENTIRE working directory recursively, including .venv —
+	# 17k+ files here vs ~150 in app/ — and continuously re-scans that whole
+	# tree (verified empirically via `sample`: hundreds of lstat/open/
+	# getdirentries syscalls per second). That's real, sustained CPU
+	# competing directly with Ollama's own CPU-bound inference in this
+	# docker-compose stack — on a resource-constrained machine it was
+	# measurably slowing down/timing out ordinary chat turns.
+	uvicorn app.api:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
 
 mcp-serve:  ## Start the MCP server exposing query_employees (stdio transport; needs `make up`)
 	python -m app.mcp_server

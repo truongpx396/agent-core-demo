@@ -550,6 +550,10 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
       {"type": "citations", "items": [...]} — emitted right before "done",
         only when the answer actually cited something; same
         state["used_citations"] shape as ChatResponse.citations (app/schemas.py).
+      {"type": "followups", "items": ["...", ...]} — emitted right before
+        "done", only when suggest_followups (pattern 27) produced any;
+        same state["followups"] shape, never sent for a cache hit or an
+        uncited answer (see suggest_followups's own docstring).
       {"type": "done"}     — the turn actually finished.
       {"type": "error", "content": "<message>"} — it raised.
     Handles Langfuse trace update/flush and turn metrics identically for
@@ -559,6 +563,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
     final_answer = []
     used_citations: list[dict] = []
     ungrounded_claims_count = 0
+    followups: list[str] = []
     try:
         async for event in _iterate_with_timeout(
             graph.astream_events(graph_input, config=cfg, version="v2"),
@@ -648,6 +653,28 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
             )
             used_citations = state.values.get("used_citations") or []
             ungrounded_claims_count = state.values.get("ungrounded_claims_count") or 0
+            followups = state.values.get("followups") or []
+            if not final_answer:
+                # No on_chat_model_stream events fired this turn — every
+                # node that produces a final AIMessage WITHOUT calling the
+                # chat model (reject_input, reject_context,
+                # reject_moderation, context_window_exceeded, and a
+                # semantic-cache HIT, pattern 22) hits this: `final_answer`
+                # only ever accumulates from token-streaming events, so a
+                # turn that never streamed anything left the caller with
+                # nothing but a bare "done" and no way to learn what the
+                # answer actually was — a real, previously-undiscovered
+                # bug, caught live against a cached "hi" response that
+                # streamed only {"type": "done"} despite a real cached
+                # answer sitting in state.values["messages"][-1]. Sent as
+                # one synthetic "token" event (not a new event type) so
+                # every existing client already renders it correctly.
+                final_message = state.values["messages"][-1]
+                skipped_text = (
+                    final_message.content if isinstance(final_message.content, str) else ""
+                )
+                if skipped_text:
+                    yield {"type": "token", "content": skipped_text}
             terminal_event = {"type": "done"}
     finally:
         # Flush so the trace is sent even if the caller exits immediately —
@@ -665,6 +692,15 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
             "items": used_citations,
             "ungrounded_claims_count": ungrounded_claims_count,
         }
+    if followups:
+        # suggest_followups (GRAPH_PATTERNS.md pattern 27) computes real
+        # follow-up questions into state["followups"], but this streaming
+        # path never surfaced them — a real, previously-undiscovered gap:
+        # the web UI already ships CSS for rendering them as clickable
+        # suggestion chips (app/static/index.html's .followups/.followups
+        # button classes) but had no event to populate it from, and no
+        # client code ever reads this field, so it was silently dead.
+        yield {"type": "followups", "items": followups}
     yield terminal_event
 
 

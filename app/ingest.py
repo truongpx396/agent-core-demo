@@ -38,7 +38,7 @@ def main() -> None:
         for doc in DOCS:
             total_chunks += ingestor.ingest_text(
                 doc["text"],
-                title=doc["topic"],
+                title=doc["title"],
                 ctx=_INGEST_CTX,
                 source="sample_docs",
                 topic=doc["topic"],
