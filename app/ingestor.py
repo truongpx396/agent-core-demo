@@ -208,7 +208,7 @@ def ingest_url(url: str, ctx: SecurityCtx | None, topic: str | None = None) -> i
     try:
         with httpx.Client(follow_redirects=False, timeout=_URL_TIMEOUT_SECONDS) as client:
             response = client.get(
-                url, headers={"User-Agent": "practice-core-ai-1-ingestor/1.0"}
+                url, headers={"User-Agent": "agent-core-demo-ingestor/1.0"}
             )
     except httpx.HTTPError as exc:
         metrics.agent_ingest_refused_total.labels(reason="fetch_failed").inc()

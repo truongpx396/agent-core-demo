@@ -1,4 +1,4 @@
-# practice-core-ai-1 — Local Core AI Stack Demo
+# agent-core-demo — Local Core AI Stack Demo
 
 A tiny, **fully offline** project that lets you grab the core, frequently-used
 features of four popular AI-infra tools in one place:
@@ -49,7 +49,7 @@ Langfuse — with a semantic cache in front to skip repeat work.
 ## Quickstart
 
 ```bash
-cd practice-core-ai-1
+cd agent-core-demo
 
 # 1. Config + Python deps
 cp .env.example .env
