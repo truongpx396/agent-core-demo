@@ -121,7 +121,12 @@ SYSTEM_PROMPT = (
     "A user message may include an attached image. Describe or analyze it "
     "directly as part of your answer; treat it as ordinary user-provided "
     "content, not as retrieved/untrusted data, and don't cite it as a "
-    "numbered source."
+    "numbered source.\n\n"
+    "You may be given a 'Summary of earlier conversation' as background "
+    "context. That summary is for your reference only — never repeat, "
+    "quote, or restate its contents in your answer unless the user's "
+    "current question specifically asks about that earlier topic. Answer "
+    "only what the user just asked."
 )  # Static, deliberately — see GRAPH_PATTERNS.md pattern 19: nothing
    # request-specific (ctx, a timestamp, a trace id) may ever be interpolated
    # into this constant, or the prompt-cache stability property it exists to
@@ -155,7 +160,7 @@ AGENT_RETRY_POLICY = RetryPolicy(max_attempts=3)
 # change is backward-compatible" is to leave the number alone *deliberately*
 # in the same PR, never to relax the comparison in resumability_error.
 # Meaningful only with a durable checkpointer (app/agent.py's
-# AsyncSqliteSaver wiring) — MemorySaver never survives a restart, so there
+# AsyncPostgresSaver wiring) — MemorySaver never survives a restart, so there
 # is never a stale checkpoint to compare against.
 STATE_SCHEMA_VERSION = 1
 
@@ -558,11 +563,13 @@ def resumability_error(graph, config: dict) -> str | None:
     own event loop (`app/agent.py`'s `stream_turn`/`answer`,
     `app/hitl_demo.py`). An async caller running ON that loop
     (`astream_events_resume`) MUST use `resumability_error_async` instead
-    — calling this one there raises `asyncio.InvalidStateError`
-    (`AsyncSqliteSaver` refuses a sync call from its own loop; verified
-    empirically — this split exists because an earlier version of this
-    function had exactly one implementation and `astream_events_resume`
-    hit that crash on every resume against a real durable checkpointer).
+    — calling this one there raises `asyncio.InvalidStateError` (the
+    checkpointer refuses a sync call from its own loop; verified
+    empirically against the original AsyncSqliteSaver, and the same
+    loop-binding constraint holds for AsyncPostgresSaver — this split
+    exists because an earlier version of this function had exactly one
+    implementation and `astream_events_resume` hit that crash on every
+    resume against a real durable checkpointer).
 
     Two distinct failures, matching the two intel-agent names this mirrors
     (see the "Durable checkpointer" note in GRAPH_PATTERNS.md):
@@ -860,7 +867,10 @@ def make_agent_node(llm):
             # same regardless of their exact position in the list.
             messages.append(
                 SystemMessage(
-                    content=f"Summary of earlier conversation:\n{history_summary}"
+                    content=(
+                        "Summary of earlier conversation (background only — "
+                        f"do not restate this verbatim in your answer):\n{history_summary}"
+                    )
                 )
             )
         context = state.get("context", "")
@@ -990,18 +1000,54 @@ def _mandatory_gate_reason(
     return None
 
 
+def _invalid_tool_call_names(
+    tool_calls: list, valid_tool_names: frozenset[str] = frozenset(t.name for t in TOOLS)
+) -> list[str]:
+    """Names in this batch that aren't a real registered tool at all — a
+    stricter, more severe check than `_tool_capability`'s "outward" default
+    (which still assumes the name refers to a real tool, just an undeclared
+    one). Guards against the model itself emitting a malformed/hallucinated
+    tool call — e.g. Ollama's native tool-calling on a small model (verified
+    against a real deployment: `qwen2.5:3b`, asked "list all tools available
+    there," a query that shouldn't trigger any tool call) returning a
+    garbled name for a query that shouldn't have triggered any tool call at
+    all. Verified empirically that this app's own interrupt-payload/SSE-event
+    plumbing (`human_approval` below, `app/agent.py`'s pass-through, the
+    CLI/web UI's rendering) cannot itself produce a malformed name — every
+    list construction and render path along that chain is structurally
+    correct, so a bad name here can only be what the model already emitted.
+    `valid_tool_names` defaults to app/tools.py's TOOLS (the Acme domain) so
+    every existing direct call keeps working unchanged; `build_graph` passes
+    a domain's own tool set instead, same pattern as `tool_capabilities`
+    above."""
+    return [tc["name"] for tc in tool_calls if tc["name"] not in valid_tool_names]
+
+
 # --- Edge fn: after agent, route to tools / output check / abort ---
 def should_continue(
-    state: State, tool_capabilities: dict[str, str] = TOOL_CAPABILITIES
+    state: State,
+    tool_capabilities: dict[str, str] = TOOL_CAPABILITIES,
+    valid_tool_names: frozenset[str] = frozenset(t.name for t in TOOLS),
 ) -> Literal[
-    "tools", "human_approval", "too_many_tool_calls", "check_output", "__end__"
+    "tools",
+    "human_approval",
+    "too_many_tool_calls",
+    "invalid_tool_call",
+    "check_output",
+    "__end__",
 ]:
     """Did the LLM call a tool, give a final answer, or hit a safety budget?
 
     Checked in order: the iteration cap and token cap are turn-wide safety
     nets (checked first, regardless of what the LLM just said); then
     whether this is a tool call at all; then whether it's *too many* tool
-    calls at once; then whether it needs human approval before running.
+    calls at once; then whether any of them isn't a real registered tool at
+    all (`invalid_tool_call` — see `_invalid_tool_call_names`); then whether
+    it needs human approval before running. The invalid-name check runs
+    BEFORE the human-approval gate deliberately: a malformed name isn't a
+    real tool anyone could meaningfully approve or reject, so it's rejected
+    and looped back to `agent` for a self-correcting retry instead of ever
+    reaching a human with garbage to review.
 
     Two independent reasons route to `human_approval`, and only one of them
     is optional:
@@ -1020,11 +1066,12 @@ def should_continue(
       "outward," so forgetting to register a new tool's capability fails
       toward extra caution, not past it.
 
-    `tool_capabilities` defaults to the Acme domain's mapping so every
-    existing test/caller invoking `should_continue(state)` directly is
-    unaffected; `build_graph` binds a domain's own mapping via
-    `functools.partial` before registering this as the `agent` node's
-    conditional edge — see its docstring and GRAPH_PATTERNS.md pattern 23.
+    `tool_capabilities`/`valid_tool_names` both default to the Acme domain's
+    mapping/tool set so every existing test/caller invoking
+    `should_continue(state)` directly is unaffected; `build_graph` binds a
+    domain's own values for both via `functools.partial` before registering
+    this as the `agent` node's conditional edge — see its docstring and
+    GRAPH_PATTERNS.md pattern 23.
     This stays a plain module-level function (not a factory, unlike
     `agent`/`retrieve_context`/the semantic-cache nodes) specifically so it
     remains directly importable and callable with just `state`, matching
@@ -1049,6 +1096,8 @@ def should_continue(
     tool_calls = state["messages"][-1].tool_calls or []
     if len(tool_calls) > MAX_TOOL_CALLS_PER_TURN:
         return "too_many_tool_calls"
+    if _invalid_tool_call_names(tool_calls, valid_tool_names):
+        return "invalid_tool_call"
     if _consecutive_repeat_count(state["messages"]) >= MAX_REPEATED_ACTIONS:
         # Checked here, independently of MAX_ITERATIONS — a run looping
         # on one identical action would otherwise just exhaust the
@@ -1075,6 +1124,33 @@ def too_many_tool_calls(state: State) -> dict:
         tool_calls,
         f"Too many tool calls requested at once (limit: {MAX_TOOL_CALLS_PER_TURN}). "
         "Please make fewer, more targeted tool calls.",
+    )
+    return {"messages": rejections}
+
+
+# --- Node: safety guardrail — abort a batch containing a tool name that
+# isn't a real registered tool at all, instead of dispatching it or (worse)
+# surfacing it to a human at human_approval, where nobody could meaningfully
+# approve or reject a name that doesn't correspond to anything. Same
+# "reject the whole batch + loop back to agent for a self-correcting retry"
+# shape as too_many_tool_calls above — see _invalid_tool_call_names for why
+# this exists (a small-model tool-calling fidelity issue, not a bug in this
+# app's own control flow). Uses the module-default `valid_tool_names` (the
+# Acme domain's TOOLS) to name the offending tool(s) in its message even
+# for a non-default domain — should_continue already routed here using the
+# CORRECT domain-bound set, so the whole batch is rejected regardless; this
+# only affects which name(s), if any, get cited in the retry message for a
+# custom domain whose tool set differs from Acme's. ---
+def invalid_tool_call(state: State) -> dict:
+    last_ai = state["messages"][-1]
+    tool_calls = last_ai.tool_calls or []
+    metrics.agent_invalid_tool_call_total.inc()
+    bad_names = sorted(set(_invalid_tool_call_names(tool_calls)))
+    names_text = ", ".join(repr(n) for n in bad_names) if bad_names else "one of them"
+    rejections = _reject_tool_calls(
+        tool_calls,
+        f"I tried to call a tool that doesn't exist ({names_text}). Let me try again "
+        "using only the tools actually available to me.",
     )
     return {"messages": rejections}
 
@@ -1346,8 +1422,8 @@ def build_graph(
     pause: a mandatory or opt-in human_approval gate parks the run
     indefinitely, and MemorySaver's "durability" ends the moment the
     process restarts. app/agent.py's get_graph() passes a durable
-    AsyncSqliteSaver instead for the CLI/API singleton — see its module
-    docstring for why that's not just `checkpointer=SqliteSaver(...)` here.
+    AsyncPostgresSaver instead for the CLI/API singleton — see its module
+    docstring for why that's not just `checkpointer=PostgresSaver(...)` here.
 
     `manifest`/`domain` (GRAPH_PATTERNS.md pattern 23, app/manifest.py) are
     what let this SAME function serve a completely different domain — a
@@ -1374,6 +1450,7 @@ def build_graph(
         allowed = set(manifest.allowed_tools)
         domain_tools = [t for t in domain_tools if t.name in allowed]
     domain_tool_capabilities = domain.tool_capabilities()
+    domain_valid_tool_names = frozenset(t.name for t in domain_tools)
 
     llm_client = deps.llm or _make_llm(domain_tools)
     agent = make_agent_node(llm_client)
@@ -1394,7 +1471,9 @@ def build_graph(
     # docstring for why it stays a directly-callable module-level function
     # rather than becoming a fifth factory in this file.
     domain_should_continue = functools.partial(
-        should_continue, tool_capabilities=domain_tool_capabilities
+        should_continue,
+        tool_capabilities=domain_tool_capabilities,
+        valid_tool_names=domain_valid_tool_names,
     )
 
     builder = StateGraph(State)
@@ -1455,6 +1534,10 @@ def build_graph(
         "too_many_tool_calls",
         _instrumented("too_many_tool_calls")(too_many_tool_calls),
     )
+    builder.add_node(
+        "invalid_tool_call",
+        _instrumented("invalid_tool_call")(invalid_tool_call),
+    )
     builder.add_node("check_output", _instrumented("check_output")(check_output))
     builder.add_node("retry_output", _instrumented("retry_output")(retry_output))
     builder.add_node(
@@ -1481,6 +1564,7 @@ def build_graph(
     builder.add_conditional_edges("human_approval", route_after_approval)
     builder.add_edge("tools", "agent")
     builder.add_edge("too_many_tool_calls", "agent")
+    builder.add_edge("invalid_tool_call", "agent")
 
     builder.add_conditional_edges("check_output", route_after_check)
     builder.add_edge("retry_output", "agent")

@@ -21,6 +21,26 @@ langgraph-checkpoint-sqlite<3
 # (reproduced and fixed while wiring this up — see
 # tests/test_durable_checkpoint.py, which would have caught it).
 aiosqlite<0.22
+# Postgres-backed checkpointer (app/agent.py) — replaces the SQLite one
+# above for multi-process safety (API process + independently-scaled
+# agent_worker.py processes all sharing one checkpoint store; a single
+# SQLite file's writer-locking is fragile under that, Postgres isn't).
+# PIN DOWN TO EXACTLY 2.0.25, not just "<3" — verified empirically against
+# a real Postgres (tests/test_durable_checkpoint.py) that 2.0.24 (and
+# presumably earlier 2.0.x) has a real bug against this app's
+# langgraph-checkpoint 2.1.2 core: AsyncPostgresSaver.aput() fails to pop a
+# HumanMessage out of channel_values into blob storage, so psycopg's Jsonb
+# adapter tries to raw-json.dumps() a LangChain message object and raises
+# `TypeError: Object of type HumanMessage is not JSON serializable` on the
+# very first turn with real message content. 2.0.25 fixes this — it DOES
+# also add a runtime warning ("incompatible versions of langgraph and
+# checkpoint-postgres... upgrade langgraph") whenever langgraph<0.5, which
+# this app's pinned langgraph<0.3 always triggers — but that warning is
+# cosmetic in practice: the full regression suite (write, read-back,
+# resume, cancel, async seeding) passes cleanly against 2.0.25 with this
+# app's langgraph version. Uses the psycopg driver already pinned below
+# (app/sql_store.py) — no separate driver dep.
+langgraph-checkpoint-postgres==2.0.25
 langfuse>=2.50.0,<3.0.0
 python-dotenv>=1.0.0
 pydantic>=2.5,<3

@@ -5,7 +5,7 @@ features of four popular AI-infra tools in one place:
 
 | Tool          | What this demo shows |
 |---------------|----------------------|
-| **LangGraph** | Typed state, nodes, conditional edges, a tool-calling **agent loop**, a **durable checkpointer** (`AsyncSqliteSaver`; `MemorySaver` for tests) giving both **memory** and a human-approval pause that survives a restart, and **streaming** |
+| **LangGraph** | Typed state, nodes, conditional edges, a tool-calling **agent loop**, a **durable, Postgres-backed checkpointer** (`AsyncPostgresSaver`, safe under concurrent access from the API process and multiple worker processes at once; `MemorySaver` for tests) giving both **memory** and a human-approval pause that survives a restart, and **streaming** |
 | **LiteLLM**   | An OpenAI-compatible **proxy** routing chat + embeddings to Ollama, with **retries**, **fallbacks**, and **Langfuse logging at the proxy** |
 | **Qdrant**    | Collection creation, **batch upsert with payloads**, vector search, and **metadata filtering** |
 | **Langfuse**  | `@observe` tracing, the LangGraph **callback handler**, nested spans, and **session grouping** by `thread_id` |

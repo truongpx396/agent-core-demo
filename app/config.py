@@ -38,12 +38,21 @@ class Settings(BaseSettings):
 
     # Durable checkpointer (app/agent.py) — survives a process restart,
     # unlike the in-memory MemorySaver build_graph() defaults to for tests.
-    # A bare relative filename by design: no parent directory to create,
-    # no docker-compose service required (see GRAPH_PATTERNS.md's durable
-    # checkpointer note for why this isn't Postgres, which the stack
-    # already runs for LiteLLM but which would make the test suite depend
-    # on `make up` being up).
-    checkpoint_db_path: str = "checkpoints.sqlite3"
+    # A SEPARATE database in the same Postgres the stack already runs for
+    # LiteLLM/Langfuse/appdata (see postgres-init/05-checkpointer-db.sql),
+    # not sharing their schema — AsyncPostgresSaver.setup() owns and
+    # migrates its own multi-table schema (checkpoints/checkpoint_blobs/
+    # checkpoint_writes), which shouldn't share a lifecycle with
+    # hand-maintained app tables. Postgres, not a SQLite file, because this
+    # checkpoint store is now shared across multiple OS processes at once
+    # (the API process plus one or more independently-scaled
+    # app/agent_worker.py processes) — a single SQLite file's
+    # writer-locking is fragile under that; Postgres is built for it. The
+    # test suite degrades gracefully when this isn't reachable (see
+    # tests/test_durable_checkpoint.py's connectivity-probe skip fixture),
+    # so `pytest -q` still needs no live services for its non-checkpoint
+    # coverage.
+    checkpointer_database_url: str = "postgresql://langfuse:langfuse@localhost:5432/checkpointer"
 
     # Hybrid retrieval (app/embeddings.py, app/qdrant_store.py) — sparse
     # (BM25) + dense, fused server-side, then cross-encoder reranked.
@@ -105,7 +114,7 @@ DEFAULT_TENANT = settings.default_tenant
 LANGFUSE_HOST = settings.langfuse_host
 LANGFUSE_PUBLIC_KEY = settings.langfuse_public_key
 LANGFUSE_SECRET_KEY = settings.langfuse_secret_key
-CHECKPOINT_DB_PATH = settings.checkpoint_db_path
+CHECKPOINTER_DATABASE_URL = settings.checkpointer_database_url
 SPARSE_MODEL = settings.sparse_model
 RERANK_MODEL = settings.rerank_model
 HYBRID_PREFETCH_LIMIT = settings.hybrid_prefetch_limit
