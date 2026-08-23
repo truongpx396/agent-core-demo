@@ -82,3 +82,18 @@ mcp[cli]==1.29.0
 # here since app/ingestor.py now imports it as a first-class dependency,
 # not an implicit one.
 httpx>=0.27,<1
+
+# Production ingestion pipeline (app/object_store.py, app/extractors.py,
+# app/ingest_worker.py, GRAPH_PATTERNS.md's roadmap item #1):
+# - minio: the official MinIO Python SDK for object_store.py — chosen over
+#   boto3 (smaller, purpose-built for exactly put/get/presign, no large
+#   AWS-SDK dependency tree for a single self-hosted S3-compatible target).
+# - pypdf / python-docx: PDF/DOCX text extraction (app/extractors.py) —
+#   app/ingestor.py::ingest_file was deliberately scoped to .txt/.md only
+#   (a real extraction library each was called out there as future work);
+#   these are that library, feeding the SAME ingest_text pipeline.
+# - python-multipart: FastAPI's file-upload form parsing (POST /ingest/upload).
+minio>=7.2,<8
+pypdf>=4.0,<6
+python-docx>=1.1,<2
+python-multipart>=0.0.9,<1

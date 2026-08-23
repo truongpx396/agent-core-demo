@@ -24,6 +24,13 @@ Endpoints:
 - GET  /chat/sessions     -> this caller's past conversation threads, most
                               recently active first (the session switcher)
 - GET  /chat/sessions/{thread_id}/messages -> that thread's transcript
+- POST /ingest/upload     -> upload one or more PDF/DOCX documents; each
+                              becomes its own job on a SEPARATE queue from
+                              chat turns (app/ingest_queue.py), processed
+                              by app/ingest_worker.py — this endpoint does
+                              no parsing/embedding of its own, just
+                              MinIO upload + job publish
+- GET  /ingest/stream/{job_id} -> SSE progress for one upload's job
 
 Reuses the exact same agent runtime as the CLI, so conversation memory
 (keyed by thread_id) and Langfuse tracing work identically here.
@@ -47,23 +54,26 @@ headers, fail closed (422) if absent, never a body field a client could
 set directly, never a default identity — so dropping in real
 authentication later is a gateway config change, not a rewrite of this file.
 """
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Response, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 import uuid
 
-from app import queue, sessions, sql_store
+from app import ingest_queue, object_store, queue, sessions, sql_store
 from app.agent import answer, astream_events_turn, get_session_messages, init_graph_async
+from app.extractors import EXTRACTORS_BY_SUFFIX
 from app.schemas import (
     CancelRequest,
     ChatRequest,
     ChatResponse,
     HealthResponse,
+    IngestUploadResult,
     ResumeRequest,
     SessionMessage,
     SessionSummary,
@@ -325,3 +335,94 @@ async def chat_session_messages(
     if not sessions.session_belongs_to(ctx, thread_id):
         raise HTTPException(status_code=404, detail="session not found")
     return await get_session_messages(thread_id)
+
+
+@app.post("/ingest/upload", response_model=list[IngestUploadResult])
+async def ingest_upload(
+    files: list[UploadFile] = File(...),
+    topic: str | None = Form(None),
+    ctx: SecurityCtx = Depends(get_ctx),
+) -> list[IngestUploadResult]:
+    """Upload one or more documents to build this tenant's retrievable
+    corpus (GRAPH_PATTERNS.md roadmap item #1) — PDF/DOCX only today
+    (app/extractors.py); `.txt`/`.md` already have their own path
+    (app/ingestor.py::ingest_file, the CLI/script-driven one).
+
+    Fire-and-forget per file, not a blocking wait: this handler's only
+    job is getting the bytes into MinIO and a job onto the queue — actual
+    parsing/embedding happens in app/ingest_worker.py, a separate process
+    on a SEPARATE queue from chat turns (see app/ingest_queue.py's module
+    docstring for why sharing one would be a mistake). Each file's
+    outcome is tracked independently via its own `job_id`
+    (`GET /ingest/stream/{job_id}`), so one slow/failing file in a batch
+    never blocks or hides the others.
+
+    An unsupported extension is rejected here, synchronously, before any
+    MinIO write — no reason to pay for an upload this app already knows
+    it can't process.
+    """
+    client = queue.get_client()  # ingest_queue reuses this same Redis client — see its module docstring
+    results = []
+    for upload in files:
+        filename = Path(upload.filename or "").name  # strip any path component a client might send
+        suffix = Path(filename).suffix.lower()
+        if suffix not in EXTRACTORS_BY_SUFFIX:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unsupported file type {suffix!r} for {filename!r} — "
+                f"only {sorted(EXTRACTORS_BY_SUFFIX)} are supported",
+            )
+        data = await upload.read()
+        job_id = uuid.uuid4().hex
+        object_key = f"{ctx['tenant']}/{job_id}-{filename}"
+        # Blocking MinIO I/O off the event loop — this IS the shared
+        # SSE-serving process (unlike app/ingest_worker.py, a dedicated
+        # single-purpose process where the same call runs directly), so a
+        # large upload must not stall every other concurrent request.
+        await asyncio.to_thread(
+            object_store.upload_bytes,
+            object_key,
+            data,
+            upload.content_type or "application/octet-stream",
+        )
+        await ingest_queue.publish_ingest_request(
+            client,
+            job_id=job_id,
+            object_key=object_key,
+            filename=filename,
+            content_type=upload.content_type or "application/octet-stream",
+            ctx=ctx,
+            topic=topic,
+        )
+        results.append(IngestUploadResult(filename=filename, job_id=job_id))
+    return results
+
+
+@app.get("/ingest/stream/{job_id}")
+async def ingest_stream(job_id: str) -> StreamingResponse:
+    """SSE progress for one upload's job — `{"type": "started"}`, then
+    exactly one terminal event: `{"type": "done", "chunks": N}` or
+    `{"type": "error", "content": "..."}`. Deliberately NOT
+    ownership-checked against app/sessions.py-style records (this
+    pipeline doesn't maintain a job directory the way chat sessions do) —
+    `job_id` is a `uuid4().hex`, unguessable in practice, the same
+    "unguessable id is the access control" posture
+    app/queue.py's chat results streams already rely on.
+    """
+    client = ingest_queue.get_client()
+
+    async def generate():
+        try:
+            async for event in ingest_queue.read_results(client, job_id):
+                yield f"data: {json.dumps(event)}\n\n"
+        finally:
+            await ingest_queue.delete_results_stream(client, job_id)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

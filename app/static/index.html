@@ -85,10 +85,27 @@
   .followups button:hover { background: #8882; }
   form { display: flex; gap: .5rem; padding-top: .5rem; border-top: 1px solid #8884; flex-wrap: wrap; }
   input[type=text]#input { flex: 1; padding: .6rem; border-radius: 8px; border: 1px solid #8888; font-size: 1rem; }
+  .image-attach { flex-basis: 100%; display: flex; gap: .5rem; align-items: center; }
   input[type=text]#imageUrl {
-    flex-basis: 100%; padding: .4rem .6rem; border-radius: 8px; border: 1px solid #8888;
+    flex: 1; padding: .4rem .6rem; border-radius: 8px; border: 1px solid #8888;
     font-size: .85rem; color: #888;
   }
+  label.drop-zone {
+    font-size: .8rem; color: #888; padding: .4rem .7rem; border-radius: 8px;
+    border: 1px dashed #8888; cursor: pointer; white-space: nowrap;
+  }
+  label.drop-zone.drag-over { border-color: #2563eb; color: #2563eb; background: #2563eb14; }
+  .image-preview {
+    flex-basis: 100%; display: flex; align-items: center; gap: .5rem;
+    font-size: .8rem; color: #888; padding: .3rem .5rem; border-radius: 8px; background: #8882;
+  }
+  .image-preview img { width: 2rem; height: 2rem; object-fit: cover; border-radius: 4px; }
+  .image-preview span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .image-preview button {
+    border: none; background: transparent; color: inherit; cursor: pointer; font-size: .9rem;
+    padding: 0 .3rem;
+  }
+  .vision-note { flex-basis: 100%; font-size: .72rem; color: #888; opacity: .8; }
   button[type=submit] { padding: .6rem 1rem; border-radius: 8px; border: none; background: #2563eb; color: white; cursor: pointer; }
   button[type=submit]:disabled { opacity: .5; cursor: default; }
   button#stop {
@@ -97,6 +114,27 @@
   }
   button#stop:hover { background: #8882; }
   .approval button:last-child { border-color: #dc262699; color: #dc2626; }
+
+  details#uploadPanel {
+    border: 1px solid #8884; border-radius: 8px; padding: .5rem .7rem; margin-bottom: .5rem;
+    font-size: .85rem;
+  }
+  details#uploadPanel summary { cursor: pointer; color: #888; }
+  details#uploadPanel summary:hover { color: inherit; }
+  #uploadForm { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .5rem; }
+  #uploadForm input[type=text] {
+    flex: 1; min-width: 8rem; padding: .4rem .6rem; border-radius: 8px; border: 1px solid #8888;
+    font-size: .85rem; background: transparent; color: inherit;
+  }
+  #uploadForm button {
+    padding: .4rem .8rem; border-radius: 8px; border: none; background: #2563eb; color: white; cursor: pointer;
+  }
+  #uploadForm button:disabled { opacity: .5; cursor: default; }
+  #uploadStatus { margin-top: .5rem; display: flex; flex-direction: column; gap: .3rem; }
+  .upload-status-line { display: flex; align-items: center; gap: .4rem; font-size: .8rem; color: #888; }
+  .upload-status-line .upload-filename { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .upload-status-line.upload-done { color: #16a34a; }
+  .upload-status-line.upload-error { color: #dc2626; }
 </style>
 </head>
 <body>
@@ -105,12 +143,35 @@
   <select id="sessionSelect" title="Switch conversation"></select>
   <input id="principal" type="text" value="web-user" title="Your principal id (X-Principal-Id)">
 </header>
+<details id="uploadPanel">
+  <summary>📄 Upload documents (PDF/DOCX) to the knowledge base</summary>
+  <form id="uploadForm">
+    <input id="uploadFiles" type="file" accept=".pdf,.docx" multiple>
+    <input id="uploadTopic" type="text" placeholder="Optional topic">
+    <button type="submit" id="uploadSubmit">Upload</button>
+  </form>
+  <div id="uploadStatus"></div>
+</details>
 <div id="messages"></div>
 <form id="form">
   <input id="input" type="text" autocomplete="off" placeholder="Ask something..." autofocus>
   <button type="submit" id="send">Send</button>
   <button type="button" id="stop" hidden>Stop</button>
-  <input id="imageUrl" type="text" autocomplete="off" placeholder="Optional: image URL to attach (GRAPH_PATTERNS.md pattern 44)">
+  <div class="image-attach">
+    <input id="imageUrl" type="text" autocomplete="off" placeholder="Image URL (optional)">
+    <label id="dropZone" for="imageFile" class="drop-zone">📎 or drop/choose an image</label>
+    <input id="imageFile" type="file" accept="image/*" hidden>
+  </div>
+  <div id="imagePreview" class="image-preview" hidden>
+    <img id="imagePreviewThumb" alt="">
+    <span id="imagePreviewName"></span>
+    <button type="button" id="imageRemove" title="Remove attached image">✕</button>
+  </div>
+  <div class="vision-note">
+    Note: the default local model can't actually see attached images yet (no small local
+    model this project verified supports vision + tool-calling together) — see
+    GRAPH_PATTERNS.md pattern 44 for enabling real vision support.
+  </div>
 </form>
 <script>
 // Everything this page does talks ONLY to app/api.py's published endpoints
@@ -152,6 +213,24 @@ const stopBtn = document.getElementById("stop");
 const sessionSelect = document.getElementById("sessionSelect");
 const principalEl = document.getElementById("principal");
 const imageUrlEl = document.getElementById("imageUrl");
+const dropZone = document.getElementById("dropZone");
+const imageFileEl = document.getElementById("imageFile");
+const imagePreviewEl = document.getElementById("imagePreview");
+const imagePreviewThumbEl = document.getElementById("imagePreviewThumb");
+const imagePreviewNameEl = document.getElementById("imagePreviewName");
+const imageRemoveEl = document.getElementById("imageRemove");
+const uploadForm = document.getElementById("uploadForm");
+const uploadFilesEl = document.getElementById("uploadFiles");
+const uploadTopicEl = document.getElementById("uploadTopic");
+const uploadSubmitEl = document.getElementById("uploadSubmit");
+const uploadStatusEl = document.getElementById("uploadStatus");
+
+// A locally-picked/dropped file, base64-encoded — takes priority over
+// imageUrlEl's URL text field when both are somehow set (see
+// getAttachedImage() below). ChatRequest.images already accepts a data
+// URI exactly like a real URL (GRAPH_PATTERNS.md pattern 44) — no backend
+// change needed for this to reach the agent.
+let attachedImageDataUri = null;
 
 function headers() {
   return {
@@ -160,6 +239,177 @@ function headers() {
     "X-Principal-Id": principalEl.value || "web-user",
   };
 }
+
+// Same identity headers, minus Content-Type — POST /ingest/upload is
+// multipart/form-data, and the browser must set that header itself
+// (it includes a random boundary string fetch() has no way to know
+// ahead of time); forcing "application/json" here would make the
+// request body unparseable server-side.
+function multipartHeaders() {
+  const h = headers();
+  delete h["Content-Type"];
+  return h;
+}
+
+// Reads a locally picked/dropped File as a base64 data URI and shows a
+// thumbnail preview. Rejects anything that isn't an image client-side
+// (accept="image/*" on the file input already steers the OS picker, but
+// a DROPPED file bypasses that filter entirely — this is the actual
+// enforcement point).
+// Set alongside attachedImageDataUri, not re-derived from imageFileEl.files
+// later — a DROPPED file never touches imageFileEl.files at all (only the
+// native file picker populates that), so getAttachedImage() re-reading it
+// would silently lose the filename for every drag-and-drop attachment.
+let attachedImageName = null;
+
+function handleImageFile(file) {
+  if (!file || !file.type.startsWith("image/")) {
+    addMessage("system", "That doesn't look like an image file.");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    attachedImageDataUri = reader.result;
+    attachedImageName = file.name;
+    imageUrlEl.value = ""; // a file attachment supersedes the URL field
+    imagePreviewThumbEl.src = attachedImageDataUri;
+    imagePreviewNameEl.textContent = file.name;
+    imagePreviewEl.hidden = false;
+  };
+  reader.readAsDataURL(file);
+}
+
+function clearAttachedImage() {
+  attachedImageDataUri = null;
+  attachedImageName = null;
+  imagePreviewEl.hidden = true;
+  imagePreviewThumbEl.src = "";
+  imageFileEl.value = "";
+}
+
+// A file attachment takes priority over the URL text field — send() only
+// ever attaches ONE image per turn (matches ChatRequest.images being a
+// list this app always populates with at most one entry today). Returns
+// `{uri, label}` (uri is what's actually sent to the API; label is a
+// short, human-readable stand-in for the chat bubble — a data URI can be
+// megabytes of base64, never something to literally print) or `null` if
+// nothing is attached.
+function getAttachedImage() {
+  if (attachedImageDataUri) {
+    return { uri: attachedImageDataUri, label: attachedImageName || "attached image" };
+  }
+  const url = imageUrlEl.value.trim();
+  return url ? { uri: url, label: url } : null;
+}
+
+imageFileEl.addEventListener("change", () => {
+  if (imageFileEl.files[0]) handleImageFile(imageFileEl.files[0]);
+});
+
+imageRemoveEl.addEventListener("click", clearAttachedImage);
+
+// Typing a URL after a file was already attached means the user changed
+// their mind — the file attachment is what getAttachedImage() would
+// otherwise still prefer, so clear it to avoid silently ignoring what
+// they just typed.
+imageUrlEl.addEventListener("input", () => {
+  if (imageUrlEl.value.trim() && attachedImageDataUri) clearAttachedImage();
+});
+
+for (const evt of ["dragover", "dragleave", "drop"]) {
+  dropZone.addEventListener(evt, (e) => e.preventDefault());
+}
+dropZone.addEventListener("dragover", () => dropZone.classList.add("drag-over"));
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
+dropZone.addEventListener("drop", (e) => {
+  dropZone.classList.remove("drag-over");
+  const file = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (file) handleImageFile(file);
+});
+
+// Document upload (GRAPH_PATTERNS.md roadmap item #1) — a SEPARATE
+// concept from the per-turn image attach above: this builds the
+// retrievable knowledge base (POST /ingest/upload -> MinIO + a queued
+// ingest job), not a one-turn multimodal attachment. Deliberately its own
+// panel, not folded into the chat form, since uploading a document isn't
+// "sending a message."
+function addUploadStatusLine(filename) {
+  const line = document.createElement("div");
+  line.className = "upload-status-line";
+  const name = document.createElement("span");
+  name.className = "upload-filename";
+  name.textContent = filename;
+  const state = document.createElement("span");
+  state.className = "upload-state";
+  state.textContent = "uploading…";
+  line.appendChild(name);
+  line.appendChild(state);
+  uploadStatusEl.appendChild(line);
+  return { line, state };
+}
+
+// Streams one upload's progress (started/done/error — see
+// app/api.py::ingest_stream) into its own status line, independently of
+// every other file in the same batch — one slow or failing file never
+// blocks or hides the others' outcomes.
+async function trackIngestJob(filename, jobId) {
+  const { line, state } = addUploadStatusLine(filename);
+  try {
+    const response = await fetch(`/ingest/stream/${encodeURIComponent(jobId)}`, {
+      headers: headers(),
+    });
+    await pumpSSE(response, (event) => {
+      if (event.type === "started") {
+        state.textContent = "processing…";
+      } else if (event.type === "done") {
+        line.classList.add("upload-done");
+        state.textContent = `✓ indexed (${event.chunks} chunk${event.chunks === 1 ? "" : "s"})`;
+      } else if (event.type === "error") {
+        line.classList.add("upload-error");
+        state.textContent = `✕ ${event.content}`;
+      }
+    });
+  } catch (err) {
+    line.classList.add("upload-error");
+    state.textContent = `✕ ${err}`;
+  }
+}
+
+uploadForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const files = Array.from(uploadFilesEl.files || []);
+  if (!files.length) return;
+
+  uploadSubmitEl.disabled = true;
+  const formData = new FormData();
+  for (const file of files) formData.append("files", file);
+  const topic = uploadTopicEl.value.trim();
+  if (topic) formData.append("topic", topic);
+
+  try {
+    const response = await fetch("/ingest/upload", {
+      method: "POST",
+      headers: multipartHeaders(),
+      body: formData,
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      addUploadStatusLine(files.map((f) => f.name).join(", ")).state.textContent =
+        `✕ ${body.detail || `HTTP ${response.status}`}`;
+      return;
+    }
+    const uploads = await response.json();
+    uploadFilesEl.value = "";
+    uploadTopicEl.value = "";
+    for (const { filename, job_id } of uploads) {
+      trackIngestJob(filename, job_id); // not awaited — each job tracks independently, in parallel
+    }
+  } catch (err) {
+    addUploadStatusLine(files.map((f) => f.name).join(", ")).state.textContent = `✕ ${err}`;
+  } finally {
+    uploadSubmitEl.disabled = false;
+  }
+});
 
 // The one turn this page can have in flight at a time (sendBtn.disabled
 // enforces that there's never a second) — set at the start of send(),
@@ -372,7 +622,7 @@ function renderFollowups(container, items) {
     btn.type = "button";
     btn.textContent = question;
     btn.addEventListener("click", () => {
-      if (!sendBtn.disabled) send(question, "");
+      if (!sendBtn.disabled) send(question, null);
     });
     box.appendChild(btn);
   }
@@ -400,7 +650,7 @@ function renderClarification(container, beforeEl, question, options) {
     btn.type = "button";
     btn.textContent = option;
     btn.addEventListener("click", () => {
-      if (!sendBtn.disabled) send(option, "");
+      if (!sendBtn.disabled) send(option, null);
     });
     btnRow.appendChild(btn);
   }
@@ -482,10 +732,11 @@ function finishTurn() {
   loadSessions();
 }
 
-async function send(text, imageUrl) {
-  addMessage("user", imageUrl ? `${text}\n[attached image: ${imageUrl}]` : text);
+async function send(text, image) {
+  addMessage("user", image ? `${text}\n[attached image: ${image.label}]` : text);
   input.value = "";
   imageUrlEl.value = "";
+  clearAttachedImage();
   sendBtn.disabled = true;
   stopBtn.hidden = false;
   sessionSelect.disabled = true;
@@ -599,7 +850,7 @@ async function send(text, imageUrl) {
       body: JSON.stringify({
         message: text,
         thread_id: threadId,
-        images: imageUrl ? [imageUrl] : [],
+        images: image ? [image.uri] : [],
       }),
     });
     await pumpSSE(response, handleEvent);
@@ -754,7 +1005,7 @@ stopBtn.addEventListener("click", async () => {
 form.addEventListener("submit", (e) => {
   e.preventDefault();
   const text = input.value.trim();
-  if (text && !activeTurn) send(text, imageUrlEl.value.trim());
+  if (text && !activeTurn) send(text, getAttachedImage());
 });
 </script>
 </body>

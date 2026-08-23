@@ -41,6 +41,11 @@ class CancelRequest(BaseModel):
     )
 
 
+class IngestUploadResult(BaseModel):
+    filename: str = Field(..., description="The uploaded file's original name.")
+    job_id: str = Field(..., description="Poll/stream this at GET /ingest/stream/{job_id}.")
+
+
 class SessionSummary(BaseModel):
     thread_id: str = Field(..., description="Reuse as ChatRequest.thread_id to continue this session.")
     title: str = Field(..., description="The opening message that started this session, truncated.")

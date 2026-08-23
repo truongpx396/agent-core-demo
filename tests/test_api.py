@@ -8,9 +8,13 @@ function, not the framework wiring" approach the rest of this codebase
 already takes for graph nodes (see tests/test_nodes.py's module docstring).
 """
 import asyncio
+import io
 import json
 
-from app import api, queue, sessions
+import pytest
+from fastapi import HTTPException
+
+from app import api, ingest_queue, queue, sessions
 from app.api import ui
 from app.schemas import CancelRequest, ChatRequest, ResumeRequest
 from tests.conftest import TEST_CTX
@@ -259,3 +263,153 @@ class TestChatSessionMessages:
             asyncio.run(api.chat_session_messages("someone-elses-thread", ctx=TEST_CTX))
 
         assert exc_info.value.status_code == 404
+
+
+def _upload_file(filename, data, content_type):
+    from starlette.datastructures import Headers
+
+    from fastapi import UploadFile
+
+    return UploadFile(
+        file=io.BytesIO(data), filename=filename, headers=Headers({"content-type": content_type})
+    )
+
+
+class TestIngestUpload:
+    """POST /ingest/upload — MinIO upload + a job published onto
+    app/ingest_queue.py's SEPARATE queue from chat turns. Both
+    object_store.upload_bytes and ingest_queue.publish_ingest_request are
+    monkeypatched, matching this file's "test the function, not live
+    services" convention."""
+
+    def test_uploads_to_minio_and_publishes_a_job_per_file(self, monkeypatch):
+        uploaded = []
+        published = []
+
+        monkeypatch.setattr(
+            api.object_store,
+            "upload_bytes",
+            lambda key, data, content_type: uploaded.append((key, data, content_type)),
+        )
+
+        async def fake_publish(client, *, job_id, object_key, filename, content_type, ctx, topic=None):
+            published.append(
+                {
+                    "job_id": job_id,
+                    "object_key": object_key,
+                    "filename": filename,
+                    "content_type": content_type,
+                    "ctx": ctx,
+                    "topic": topic,
+                }
+            )
+
+        monkeypatch.setattr(api.ingest_queue, "publish_ingest_request", fake_publish)
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        files = [_upload_file("report.pdf", b"pdf-bytes", "application/pdf")]
+
+        result = asyncio.run(api.ingest_upload(files=files, topic="company", ctx=TEST_CTX))
+
+        assert len(uploaded) == 1
+        key, data, content_type = uploaded[0]
+        assert key.startswith(f"{TEST_CTX['tenant']}/")
+        assert key.endswith("-report.pdf")
+        assert data == b"pdf-bytes"
+        assert content_type == "application/pdf"
+
+        assert len(published) == 1
+        assert published[0]["filename"] == "report.pdf"
+        assert published[0]["topic"] == "company"
+        assert published[0]["ctx"] == TEST_CTX
+        assert published[0]["object_key"] == key
+
+        assert len(result) == 1
+        assert result[0].filename == "report.pdf"
+        assert result[0].job_id == published[0]["job_id"]
+
+    def test_multiple_files_each_get_their_own_job(self, monkeypatch):
+        monkeypatch.setattr(api.object_store, "upload_bytes", lambda *a, **kw: None)
+
+        async def fake_publish(client, **kw):
+            pass
+
+        monkeypatch.setattr(api.ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(queue, "get_client", lambda: FakeRedis())
+
+        files = [
+            _upload_file("report.pdf", b"a", "application/pdf"),
+            _upload_file(
+                "notes.docx",
+                b"b",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ),
+        ]
+
+        result = asyncio.run(api.ingest_upload(files=files, topic=None, ctx=TEST_CTX))
+
+        assert [r.filename for r in result] == ["report.pdf", "notes.docx"]
+        assert result[0].job_id != result[1].job_id
+
+    def test_an_unsupported_extension_is_rejected_before_any_upload(self, monkeypatch):
+        uploaded = []
+        monkeypatch.setattr(api.object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
+
+        files = [_upload_file("spreadsheet.xlsx", b"data", "application/vnd.ms-excel")]
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(api.ingest_upload(files=files, topic=None, ctx=TEST_CTX))
+
+        assert exc_info.value.status_code == 400
+        assert uploaded == []  # never reached MinIO
+
+    def test_a_path_component_in_the_filename_is_stripped(self, monkeypatch):
+        """A client-supplied filename is untrusted input — the object key
+        it feeds into must never carry a caller-controlled directory
+        component, even though S3-style object keys aren't literal
+        filesystem paths (no real traversal risk), just for a sane,
+        predictable key shape."""
+        uploaded = []
+        monkeypatch.setattr(api.object_store, "upload_bytes", lambda key, *a, **kw: uploaded.append(key))
+
+        async def fake_publish(client, **kw):
+            pass
+
+        monkeypatch.setattr(api.ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(queue, "get_client", lambda: FakeRedis())
+
+        files = [_upload_file("../../etc/passwd.pdf", b"x", "application/pdf")]
+        asyncio.run(api.ingest_upload(files=files, topic=None, ctx=TEST_CTX))
+
+        assert "../" not in uploaded[0]
+        assert uploaded[0].endswith("-passwd.pdf")
+
+
+class TestIngestStream:
+    def test_streams_back_whatever_a_worker_publishes(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(ingest_queue, "get_client", lambda: client)
+
+        async def _run():
+            response = await api.ingest_stream("j1")
+            await ingest_queue.publish_result(client, "j1", {"type": "started"})
+            await ingest_queue.publish_result(client, "j1", {"type": "done", "chunks": 4})
+            return [chunk async for chunk in response.body_iterator]
+
+        chunks = asyncio.run(_run())
+        assert any('"type": "started"' in c for c in chunks)
+        assert any('"type": "done"' in c and '"chunks": 4' in c for c in chunks)
+
+    def test_deletes_the_results_stream_once_terminal(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(ingest_queue, "get_client", lambda: client)
+
+        async def _run():
+            response = await api.ingest_stream("j2")
+            await ingest_queue.publish_result(client, "j2", {"type": "error", "content": "bad file"})
+            async for _ in response.body_iterator:
+                pass
+
+        asyncio.run(_run())
+        assert ingest_queue.results_stream_key("j2") in client.deleted

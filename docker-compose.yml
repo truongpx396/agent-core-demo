@@ -119,9 +119,30 @@ services:
       postgres:
         condition: service_healthy
 
+  # --- Object storage for uploaded documents (app/object_store.py) — a
+  # self-hosted, S3-compatible MinIO, consistent with this app's
+  # fully-offline/self-hosted posture everywhere else (no real cloud
+  # dependency for a demo). No healthcheck here, matching qdrant/litellm/
+  # langfuse-web above: the official minio image ships no curl to probe
+  # with, and this app's own object_store.py already degrades a
+  # not-yet-ready MinIO into a clear upload-time error rather than
+  # depending on compose-level health gating.
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    ports:
+      - "9000:9000"   # S3 API — app/object_store.py talks to this
+      - "9001:9001"   # web console (http://localhost:9001) — browse uploads by hand
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio:/data
+
 volumes:
   ollama:
   qdrant:
   postgres:
   open-webui:
   redis:
+  minio:
