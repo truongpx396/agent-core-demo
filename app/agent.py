@@ -9,12 +9,19 @@ Production streaming is also provided via `astream_events_turn` — see below.
 
 ## Durable checkpointing (init_graph_sync / init_graph_async)
 
-The graph is built with an `AsyncSqliteSaver` (survives a process restart),
-not `build_graph()`'s bare-call default `MemorySaver` (gone the moment the
-process exits) — a paused human_approval gate is only a meaningful safety
-control if the pause actually survives a redeploy while someone reviews it.
+The graph is built with an `AsyncPostgresSaver` (survives a process
+restart, and — unlike a single SQLite file — is safe under concurrent
+access from multiple OS processes at once), not `build_graph()`'s
+bare-call default `MemorySaver` (gone the moment the process exits) — a
+paused human_approval gate is only a meaningful safety control if the
+pause actually survives a redeploy while someone reviews it. Postgres
+over SQLite specifically because this app now runs as more than one
+process sharing one checkpoint store (the FastAPI process plus one or
+more independently-scaled `app/agent_worker.py` processes, all attaching
+to the same `thread_id`s) — a single SQLite file's writer-locking is
+fragile under that; Postgres is built for it.
 
-Why two init functions instead of one: `AsyncSqliteSaver`'s async
+Why two init functions instead of one: `AsyncPostgresSaver`'s async
 lock/state is bound to whichever asyncio event loop it was created on.
 Its SYNC methods (used by `graph.invoke`/`graph.stream`, i.e.
 answer()/stream_turn()) work correctly when called from any *other*
@@ -23,7 +30,9 @@ path. Its ASYNC methods (used by `graph.ainvoke`/`graph.astream_events`,
 i.e. astream_events_turn/_resume) do NOT: calling them from a different
 loop than the one they were created on raises "bound to a different event
 loop" (asyncio locks are loop-bound, verified empirically before writing
-this). So which loop the checkpointer is opened on matters:
+this, originally against AsyncSqliteSaver — the same driver-level
+constraint holds for AsyncPostgresSaver). So which loop the checkpointer
+is opened on matters:
 
 - `init_graph_async()` — for a process with an asyncio loop it keeps
   alive for its whole lifetime (FastAPI's lifespan, running on uvicorn's
@@ -60,11 +69,11 @@ from contextlib import asynccontextmanager
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langfuse.decorators import langfuse_context, observe
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
 
 from app import metrics
-from app.config import CHAT_MODEL, CHECKPOINT_DB_PATH
+from app.config import CHAT_MODEL, CHECKPOINTER_DATABASE_URL
 from app.errors import ErrorCode, ErrorEnvelope
 from app.graph import CANCEL_SENTINEL, build_graph, resumability_error, resumability_error_async
 from app.security import SecurityCtx
@@ -75,10 +84,12 @@ except Exception:  # noqa: BLE001 - Langfuse optional if keys unset
     CallbackHandler = None
 
 _graph = None
-_checkpointer_cm = None  # keeps AsyncSqliteSaver's context manager alive —
+_checkpointer_cm = None  # keeps AsyncPostgresSaver's context manager alive —
 # from_conn_string is an @asynccontextmanager; letting the returned object
 # get garbage-collected closes the connection out from under the saver
-# (verified empirically: the very next call fails "no active connection").
+# (verified empirically against AsyncSqliteSaver's identical shape: the
+# very next call fails "no active connection" — the same contract holds
+# for AsyncPostgresSaver).
 _seeded: set[str] = set()
 
 # Safety budget: bound total wall-clock time per turn, beneath which
@@ -146,12 +157,15 @@ async def _iterate_with_timeout(aiter, timeout_seconds: float):
 
 
 async def _open_checkpointer():
-    """Open the AsyncSqliteSaver on whichever loop calls this — see this
+    """Open the AsyncPostgresSaver on whichever loop calls this — see this
     module's docstring for why the calling loop matters. Returns the saver;
     stashes the context manager in the module global so it isn't
-    garbage-collected out from under the connection."""
+    garbage-collected out from under the connection. `saver.setup()` is
+    idempotent (creates its checkpoints/checkpoint_blobs/checkpoint_writes
+    tables on first run only) — safe to call on every process start,
+    including every independently-scaled agent_worker.py instance."""
     global _checkpointer_cm
-    cm = AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB_PATH)
+    cm = AsyncPostgresSaver.from_conn_string(CHECKPOINTER_DATABASE_URL)
     saver = await cm.__aenter__()
     await saver.setup()
     _checkpointer_cm = cm
@@ -178,10 +192,10 @@ def init_graph_sync() -> None:
     """Initialize the shared graph for a process with no event loop of its
     own (the CLI's plain mode; app/hitl_demo.py) — see this module's
     docstring. Starts one small daemon thread hosting a persistent loop
-    purely so AsyncSqliteSaver has somewhere to live; that thread is never
-    explicitly stopped (a daemon thread dies with the process, and SQLite's
-    own journal makes an abrupt kill safe — same as a real deployment being
-    SIGKILLed)."""
+    purely so AsyncPostgresSaver has somewhere to live; that thread is
+    never explicitly stopped (a daemon thread dies with the process, and
+    Postgres's own WAL makes an abrupt disconnect safe — same as a real
+    deployment being SIGKILLed)."""
     global _graph
     if _graph is not None:
         return
@@ -242,10 +256,11 @@ def _ensure_seeded(graph, thread_id: str) -> None:
     docstring). `astream_events_turn`/`astream_events_turn_ctx` run
     directly ON the checkpointer's own loop instead and MUST use
     `_ensure_seeded_async` below — calling this sync version from there
-    raises `asyncio.InvalidStateError` (`AsyncSqliteSaver` refuses a sync
-    call from the same loop it was created on), caught empirically via a
-    real `POST /chat/stream` request against a fresh thread_id before
-    this split existed.
+    raises `asyncio.InvalidStateError` (the checkpointer refuses a sync
+    call from the same loop it was created on — originally caught against
+    `AsyncSqliteSaver`; the same loop-binding constraint holds for
+    `AsyncPostgresSaver`), caught empirically via a real `POST /chat/stream`
+    request against a fresh thread_id before this split existed.
 
     Reads `graph.manifest.system_prompt` (stamped by build_graph — see
     GRAPH_PATTERNS.md pattern 23, app/manifest.py) rather than the

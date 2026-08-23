@@ -47,7 +47,7 @@ def _api_url(method: str) -> str:
 
 def _thread_id_for_chat(chat_id: int) -> str:
     """One durable conversation thread per Telegram chat — stable across
-    process restarts (the durable AsyncSqliteSaver checkpointer, same as
+    process restarts (the durable AsyncPostgresSaver checkpointer, same as
     every other interface), so a user's history survives a bot restart."""
     return f"telegram:{chat_id}"
 

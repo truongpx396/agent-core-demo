@@ -21,8 +21,49 @@
   .msg.user { background: #2563eb; color: white; margin-left: auto; white-space: pre-wrap; }
   .msg.assistant { background: #8883; }
   .msg.system { background: transparent; color: #888; font-size: .85rem; font-style: italic; text-align: center; max-width: 100%; }
-  .answer-text { white-space: pre-wrap; }
-  .tool-line { font-size: .8rem; color: #888; margin: .2rem 0; }
+
+  /* Live turn status ("Thinking…" / "Using X…") — lives INSIDE the
+     assistant bubble, above the tool-activity log and answer text, so it
+     paints in the correct temporal position regardless of whether the
+     backend emits tool_start before or after the first token (it always
+     does, for a genuine tool call — see index.html's send()). Hidden
+     (display:none) once real output/no-more-activity makes it stale,
+     never removed, so re-showing it later needs no re-creation. */
+  .status { font-size: .85rem; color: #888; margin-bottom: .3rem; }
+  .status::after { content: ""; animation: ellipsis 1.2s steps(4, end) infinite; }
+  @keyframes ellipsis { 0%, 100% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+
+  /* Permanent record of tool calls this turn made — appended in real
+     time, in order, ABOVE the answer text (never appended to the end of
+     #messages the way earlier versions of this page did, which is what
+     made tool activity visually land below an already-streaming answer
+     regardless of the real event order). */
+  .tool-activity { font-size: .8rem; color: #888; }
+  .tool-activity-line { margin: .2rem 0; }
+  .tool-activity-line.done { opacity: .75; }
+
+  .answer-text { display: block; }
+  .answer-text.muted-restatement { font-size: .8rem; opacity: .65; margin-top: .5rem; }
+  .answer-text p { margin: 0 0 .6em; }
+  .answer-text p:last-child { margin-bottom: 0; }
+  .answer-text ul, .answer-text ol { margin: .3em 0 .6em; padding-left: 1.3em; }
+  .answer-text li { margin: .15em 0; }
+  .answer-text h1, .answer-text h2, .answer-text h3 { font-size: 1em; margin: .6em 0 .3em; }
+  .answer-text code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: #8882; padding: .1em .3em; border-radius: 4px; font-size: .9em;
+  }
+  .answer-text pre {
+    background: #8882; padding: .6em .7em; border-radius: 8px; overflow-x: auto; margin: .4em 0;
+  }
+  .answer-text pre code { background: none; padding: 0; }
+  .answer-text a { color: inherit; }
+
+  .clarification {
+    margin: .5rem 0; padding: .5rem .6rem; border-radius: 8px; background: #8882;
+  }
+  .clarification-question { font-size: .85rem; margin-bottom: .4rem; }
+
   .citations {
     font-size: .78rem; color: #888; margin-top: .6rem; padding-top: .5rem;
     border-top: 1px solid #8884; display: flex; flex-direction: column; gap: .15rem;
@@ -61,10 +102,11 @@
 <script>
 // Everything this page does talks ONLY to app/api.py's published endpoints
 // (POST /chat/stream) and renders ONLY the documented SSE event vocabulary
-// (token, tool_start, tool_end, citations, approval_required, error, done)
-// — see GRAPH_PATTERNS.md's AR-033-style "no special-case endpoints" note.
-// EventSource can't send custom headers or do POST, so this uses fetch()'s
-// streaming response body directly and parses SSE framing by hand.
+// (token, tool_start, tool_end, citations, followups, approval_required,
+// error, done) — see GRAPH_PATTERNS.md's AR-033-style "no special-case
+// endpoints" note. EventSource can't send custom headers or do POST, so
+// this uses fetch()'s streaming response body directly and parses SSE
+// framing by hand.
 
 function randomId() {
   // crypto.randomUUID() only exists in a "secure context" (HTTPS, or
@@ -102,32 +144,167 @@ function addMessage(role, text) {
   return div;
 }
 
-// The assistant bubble is a container, not a plain text node: an inner
-// .answer-text span holds the streamed tokens, and citations/followups
-// are appended as SEPARATE sibling elements below it. Keeping the
-// streamed text in its own element (rather than doing
-// assistantEl.textContent = ...) means a later citations/followups
-// event can never accidentally wipe out a sibling appended before it,
-// regardless of event ordering — structural, not just "the backend
-// happens to send citations/followups last".
+// --- Minimal markdown -> HTML renderer, hand-written rather than a
+// vendored library. This app's whole ethos is offline-first with no CDN
+// dependency (GRAPH_PATTERNS.md pattern 29) — a "vendored" copy of a real
+// library pasted in by hand here would be unverifiable against its real
+// upstream release anyway, so a short, auditable, purpose-built renderer
+// is more trustworthy than an opaque blob claiming to be a known library.
+// Safety is structural, not a separate sanitizer bolted on afterward: the
+// ENTIRE input is HTML-escaped FIRST, so the only tags that can ever
+// appear in the output are the ones this function inserts itself —
+// nothing from the model's own text (or, transitively, a prompt-injection
+// attempt buried in retrieved document content the model might repeat)
+// can ever become a live tag or attribute. Deliberately narrow scope,
+// matched to what this app's concise assistant answers actually contain:
+// bold/italic, inline code, fenced code blocks, links, headers, and
+// paragraphs/lists — not a full CommonMark implementation.
+function escapeHtml(s) {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function safeHref(url) {
+  // http(s)/mailto, or a relative/anchor link — never javascript:, data:,
+  // or any other scheme that could execute on click.
+  return /^(https?:|mailto:)/i.test(url) || /^[/#.]/.test(url) ? url : "#";
+}
+
+function renderBlock(block) {
+  const lines = block.split("\n").filter((l) => l.length > 0);
+  if (lines.length === 0) return "";
+  // A block that's ENTIRELY a header or a restored-later code-block
+  // placeholder passes through untouched, rather than getting wrapped in
+  // a <p> (which would be redundant for a header, or invalid nesting
+  // around the eventual <pre>).
+  if (lines.length === 1 && /^(<h[1-3]>.*<\/h[1-3]>| B\d+ )$/.test(lines[0])) {
+    return lines[0];
+  }
+  const isOrdered = lines.every((l) => /^\s*\d+\.\s+/.test(l));
+  const isUnordered = lines.every((l) => /^\s*-\s+/.test(l));
+  // Only "-" is treated as a bullet marker (not "*"): "*" is already used
+  // for bold/italic, and a line like "* text *emphasis*" would otherwise
+  // let the leading bullet asterisk pair up with the emphasis marker
+  // instead of it — restricting bullets to "-" sidesteps that ambiguity
+  // entirely rather than trying to disambiguate it.
+  if (isOrdered || isUnordered) {
+    const tag = isOrdered ? "ol" : "ul";
+    const items = lines
+      .map((l) => l.replace(/^\s*(?:\d+\.|-)\s+/, ""))
+      .map((l) => `<li>${l}</li>`)
+      .join("");
+    return `<${tag}>${items}</${tag}>`;
+  }
+  return `<p>${lines.join("<br>")}</p>`;
+}
+
+function renderMarkdown(raw) {
+  const codeBlocks = [];
+  const inlineCode = [];
+
+  let html = escapeHtml(raw);
+
+  // Fenced code blocks first, pulled out (as an opaque placeholder) before
+  // anything else can transform their contents.
+  html = html.replace(/```[^\n]*\n([\s\S]*?)```/g, (_, code) => {
+    codeBlocks.push(code.replace(/\n$/, ""));
+    return ` B${codeBlocks.length - 1} `;
+  });
+  // Inline code, same reasoning.
+  html = html.replace(/`([^`\n]+)`/g, (_, code) => {
+    inlineCode.push(code);
+    return ` I${inlineCode.length - 1} `;
+  });
+
+  // Links: [text](url). Runs before bold/italic so a bracketed link label
+  // isn't itself mistaken for something else; url is narrowed by
+  // safeHref, never trusted as-is. The url group allows ")" (not just
+  // "[^)\s]+") and relies on regex backtracking to find the LAST ")"
+  // before whitespace/end — otherwise a URL containing its own literal
+  // ")" (e.g. a Wikipedia-style "...wiki/Foo_(bar)") would get truncated
+  // at its first internal paren instead of the one that actually closes
+  // the markdown link syntax.
+  html = html.replace(/\[([^\]]+)\]\(([^\s]+)\)/g, (_, text, url) =>
+    `<a href="${safeHref(url)}" target="_blank" rel="noopener noreferrer">${text}</a>`
+  );
+
+  // Bold before italic: "**x**" must be consumed as bold first, or the
+  // italic rule would eat one "*" from each side and leave the other two
+  // as literal asterisks.
+  html = html.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+
+  html = html.replace(/^### (.*)$/gm, "<h3>$1</h3>");
+  html = html.replace(/^## (.*)$/gm, "<h2>$1</h2>");
+  html = html.replace(/^# (.*)$/gm, "<h1>$1</h1>");
+
+  html = html.split(/\n{2,}/).map(renderBlock).join("\n");
+
+  // Restore code — already HTML-escaped (it went through escapeHtml
+  // before extraction above), so this is safe to insert verbatim now.
+  html = html.replace(/ B(\d+) /g, (_, i) => `<pre><code>${codeBlocks[i]}</code></pre>`);
+  html = html.replace(/ I(\d+) /g, (_, i) => `<code>${inlineCode[i]}</code>`);
+
+  return html;
+}
+
+// The assistant bubble is a container, not a plain text node: a live
+// .status line, a permanent .tool-activity log, and the .answer-text
+// span are three SEPARATE elements in a fixed visual order (status, then
+// activity, then answer) — so tool calls always render in the right
+// place regardless of arrival order, and citations/followups (appended
+// after .answer-text later) can never accidentally clobber a sibling.
 function addAssistantMessage() {
   const div = document.createElement("div");
   div.className = "msg assistant";
+
+  const statusEl = document.createElement("div");
+  statusEl.className = "status";
+  statusEl.textContent = "Thinking";
+  div.appendChild(statusEl);
+
+  const activityEl = document.createElement("div");
+  activityEl.className = "tool-activity";
+  div.appendChild(activityEl);
+
   const textSpan = document.createElement("span");
   textSpan.className = "answer-text";
-  textSpan.textContent = "…"; // visible immediately; see send()'s comment
   div.appendChild(textSpan);
+
   messagesEl.appendChild(div);
   messagesEl.scrollTop = messagesEl.scrollHeight;
-  return { el: div, textEl: textSpan };
+  return { el: div, textEl: textSpan, statusEl, activityEl };
 }
 
-function addToolLine(text) {
-  const div = document.createElement("div");
-  div.className = "tool-line";
-  div.textContent = text;
-  messagesEl.appendChild(div);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+function setStatus(statusEl, text) {
+  if (text) {
+    statusEl.textContent = text;
+    statusEl.style.display = "";
+  } else {
+    statusEl.style.display = "none";
+  }
+}
+
+function addToolActivityLine(activityEl, tool, args) {
+  const line = document.createElement("div");
+  line.className = "tool-activity-line";
+  line.dataset.tool = tool;
+  line.textContent = `🔧 ${tool}(${JSON.stringify(args)})`;
+  activityEl.appendChild(line);
+}
+
+function markToolActivityDone(activityEl, tool) {
+  const lines = activityEl.querySelectorAll(".tool-activity-line:not(.done)");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].dataset.tool === tool) {
+      lines[i].classList.add("done");
+      lines[i].textContent = lines[i].textContent.replace("🔧", "✓");
+      break;
+    }
+  }
 }
 
 function renderCitations(container, items) {
@@ -167,18 +344,59 @@ function renderFollowups(container, items) {
   container.appendChild(box);
 }
 
+// ask_clarification's options, rendered as the SAME clickable-chip pattern
+// followups already uses — inserted BEFORE the answer text (which will,
+// per SYSTEM_PROMPT, restate this same question+options as plain text on
+// the model's very next turn) so the actionable buttons are what a user's
+// eye lands on first; the redundant restatement is shrunk via
+// .muted-restatement rather than hidden outright, so nothing disappears
+// if the model phrases it slightly differently than expected.
+function renderClarification(container, beforeEl, question, options) {
+  const box = document.createElement("div");
+  box.className = "clarification";
+  const label = document.createElement("div");
+  label.className = "clarification-question";
+  label.textContent = question;
+  box.appendChild(label);
+  const btnRow = document.createElement("div");
+  btnRow.className = "followups";
+  for (const option of options) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = option;
+    btn.addEventListener("click", () => {
+      if (!sendBtn.disabled) send(option, "");
+    });
+    btnRow.appendChild(btn);
+  }
+  box.appendChild(btnRow);
+  container.insertBefore(box, beforeEl);
+}
+
 async function send(text, imageUrl) {
   addMessage("user", imageUrl ? `${text}\n[attached image: ${imageUrl}]` : text);
   input.value = "";
   imageUrlEl.value = "";
   sendBtn.disabled = true;
 
-  // A visible placeholder immediately, not an empty bubble — the first
-  // token can take a while (a local Ollama model that's idled out of
-  // memory has to reload before it generates anything), and an empty
-  // div gives no visual sign a request is even in flight.
-  const { el: assistantEl, textEl: assistantTextEl } = addAssistantMessage();
+  const { el: assistantEl, textEl: assistantTextEl, statusEl, activityEl } = addAssistantMessage();
   let assistantText = "";
+
+  // Re-parsing + re-rendering markdown on every single token would be
+  // wasteful over a long streamed answer (worse than the old plain
+  // textContent reassignment this replaces) — throttled to one render per
+  // ~50ms of token activity, with one guaranteed final render once the
+  // stream ends so the last few tokens are never left unflushed.
+  let renderPending = false;
+  function scheduleRender() {
+    if (renderPending) return;
+    renderPending = true;
+    setTimeout(() => {
+      renderPending = false;
+      assistantTextEl.innerHTML = renderMarkdown(assistantText);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }, 50);
+  }
 
   try {
     const response = await fetch("/chat/stream", {
@@ -195,6 +413,7 @@ async function send(text, imageUrl) {
       }),
     });
     if (!response.ok || !response.body) {
+      setStatus(statusEl, null);
       assistantTextEl.textContent = `[request failed: HTTP ${response.status}]`;
       return;
     }
@@ -220,7 +439,13 @@ async function send(text, imageUrl) {
         handleEvent(event);
       }
     }
+
+    // Guaranteed final render — a scheduled throttled render from the
+    // last token(s) may not have fired yet by the time the stream ends.
+    setStatus(statusEl, null);
+    if (assistantText) assistantTextEl.innerHTML = renderMarkdown(assistantText);
   } catch (err) {
+    setStatus(statusEl, null);
     assistantTextEl.textContent = assistantText || `[error: ${err}]`;
   } finally {
     sendBtn.disabled = false;
@@ -229,18 +454,25 @@ async function send(text, imageUrl) {
 
   function handleEvent(event) {
     if (event.type === "token") {
+      setStatus(statusEl, null);
       assistantText += event.content;
-      assistantTextEl.textContent = assistantText;
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      scheduleRender();
     } else if (event.type === "tool_start") {
-      addToolLine(`🔧 ${event.tool}(${JSON.stringify(event.args)})`);
+      setStatus(statusEl, `Using ${event.tool}`);
+      addToolActivityLine(activityEl, event.tool, event.args);
+      if (event.tool === "ask_clarification" && event.args && Array.isArray(event.args.options)) {
+        assistantTextEl.classList.add("muted-restatement");
+        renderClarification(assistantEl, assistantTextEl, event.args.question, event.args.options);
+      }
     } else if (event.type === "tool_end") {
-      addToolLine(`✓ ${event.tool} finished`);
+      markToolActivityDone(activityEl, event.tool);
+      setStatus(statusEl, "Thinking");
     } else if (event.type === "citations") {
       renderCitations(assistantEl, event.items);
     } else if (event.type === "followups") {
       renderFollowups(assistantEl, event.items);
     } else if (event.type === "approval_required") {
+      setStatus(statusEl, null);
       addMessage(
         "system",
         "⏸ Paused: this would need human approval (" +
@@ -250,11 +482,14 @@ async function send(text, imageUrl) {
           "to approve/reject this kind of action."
       );
     } else if (event.type === "error") {
+      setStatus(statusEl, null);
+      assistantTextEl.classList.remove("muted-restatement");
       assistantTextEl.textContent = assistantText || `[error: ${event.content}]`;
     }
     messagesEl.scrollTop = messagesEl.scrollHeight;
     // "done" needs no rendering of its own — the assistant text is
-    // already fully rendered by the time it arrives.
+    // already fully rendered (via the guaranteed final render above) by
+    // the time it arrives.
   }
 }
 

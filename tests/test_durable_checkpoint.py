@@ -1,12 +1,23 @@
 """Tests for the durable checkpointer machinery in app/agent.py
 (init_graph_sync/init_graph_async) and app/graph.py's resumability_error.
 
-Everything here uses a real AsyncSqliteSaver against a tmp_path file — no
-network, no Qdrant/LiteLLM — so it stays inside this suite's "no live
+Everything here uses a real AsyncPostgresSaver against docker-compose's
+`checkpointer` database (see postgres-init/05-checkpointer-db.sql) — no
+Qdrant/LiteLLM — so it stays as close as possible to this suite's "no live
 services" contract while actually exercising the real dependency (the
-aiosqlite/langgraph-checkpoint-sqlite version pairing this needed pinning
-for — see requirements.txt — is exactly the kind of thing that breaks
-silently without a real test).
+langgraph-checkpoint-postgres/psycopg version pairing is exactly the kind
+of thing that breaks silently without a real test, the same reasoning the
+original SQLite-backed version of this file used). Unlike a SQLite file
+(a bare tmp_path, no service required), a real Postgres server IS an
+external dependency this suite otherwise avoids — so every test here is
+gated by `_require_postgres`, which skips cleanly (not fails) when it's
+unreachable, keeping `pytest -q` green with zero services running while
+`make up && pytest -q` gets full real-backend coverage. Test isolation
+doesn't need a fresh database per test (unlike the old tmp_path-per-test
+SQLite file): every test already scopes its checkpoint rows by a unique
+`uuid.uuid4()` thread_id, and AsyncPostgresSaver's tables are keyed by
+thread_id — sharing one database across test runs just means old rows
+accumulate harmlessly in a throwaway dev database, not a correctness issue.
 
 `app.agent._graph`/`_checkpointer_cm` are module-level singletons; the
 `reset_agent_singleton` fixture below resets them before and after every
@@ -17,12 +28,14 @@ by whichever checkpointer happened to win the singleton race).
 import asyncio
 import uuid
 
+import psycopg
 import pytest
 from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app import agent as agent_module
 from app import metrics
+from app.config import CHECKPOINTER_DATABASE_URL
 from app.graph import STATE_SCHEMA_VERSION, GraphDeps, build_graph, resumability_error
 from tests.conftest import TEST_CTX
 
@@ -32,9 +45,23 @@ def _count(counter, **labels):
     return target._value.get()
 
 
+def _require_postgres() -> None:
+    """Skip (not fail) the calling test if the checkpointer database isn't
+    reachable — a real connection attempt, not just a TCP probe, so this
+    also catches "server's up but the `checkpointer` database itself
+    doesn't exist yet" (e.g. an existing docker volume that predates
+    postgres-init/05-checkpointer-db.sql, which only runs on a fresh
+    volume — see that file's own comment)."""
+    try:
+        with psycopg.connect(CHECKPOINTER_DATABASE_URL, connect_timeout=2):
+            pass
+    except Exception as exc:  # noqa: BLE001 - any failure means "skip", not "fail"
+        pytest.skip(f"checkpointer Postgres database not reachable ({exc}) — run `make up`")
+
+
 @pytest.fixture(autouse=True)
-def reset_agent_singleton(monkeypatch, tmp_path):
-    monkeypatch.setattr(agent_module, "CHECKPOINT_DB_PATH", str(tmp_path / "cp.sqlite3"))
+def reset_agent_singleton():
+    _require_postgres()
     agent_module._graph = None
     agent_module._checkpointer_cm = None
     yield
@@ -114,24 +141,29 @@ class TestInitGraphAsync:
 
 
 class TestDurabilityAcrossRestart:
-    """The whole point of swapping MemorySaver for AsyncSqliteSaver: state
+    """The whole point of swapping MemorySaver for AsyncPostgresSaver: state
     written by one checkpointer instance must be readable by a completely
-    separate instance pointed at the same file — simulating a process
+    separate instance pointed at the same database — simulating a process
     restart without actually restarting a process.
 
     Deliberately bypasses app.agent's singleton/threading machinery (that's
     what TestInitGraphSync/TestInitGraphAsync above already prove works) and
-    talks to build_graph()+AsyncSqliteSaver directly with a fake LLM, each
-    "instance" on its own short-lived asyncio.run() loop — the cleanest way
-    to actually simulate two separate processes sharing one file.
+    talks to build_graph()+AsyncPostgresSaver directly with a fake LLM, each
+    "instance" on its own short-lived asyncio.run() loop with its own fresh
+    connection — the cleanest way to actually simulate two separate
+    processes sharing one database (exactly the API-process-plus-workers
+    shape this migration exists for). Isolated from every other test in
+    this file by a unique thread_id, not a unique database — see this
+    module's docstring for why that's sufficient here.
     """
 
-    def test_checkpoint_survives_a_fresh_instance_at_the_same_path(self, tmp_path):
-        db_path = str(tmp_path / "durable.sqlite3")
+    def test_checkpoint_survives_a_fresh_instance_at_the_same_database(self):
         thread_id = str(uuid.uuid4())
 
         async def _write():
-            async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+            async with AsyncPostgresSaver.from_conn_string(
+                CHECKPOINTER_DATABASE_URL
+            ) as saver:
                 await saver.setup()
                 graph = build_graph(GraphDeps(llm=_fake_llm()), checkpointer=saver)
                 await graph.ainvoke(
@@ -140,7 +172,9 @@ class TestDurabilityAcrossRestart:
                 )
 
         async def _read():
-            async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+            async with AsyncPostgresSaver.from_conn_string(
+                CHECKPOINTER_DATABASE_URL
+            ) as saver:
                 graph = build_graph(GraphDeps(llm=_fake_llm()), checkpointer=saver)
                 state = await graph.aget_state(
                     {"configurable": {"thread_id": thread_id}}
@@ -157,9 +191,11 @@ class TestAsyncSeeding:
     web UI against a live `uvicorn` process: `_ensure_seeded` (the sync
     `graph.update_state`) was being called from `astream_events_turn` —
     which runs on the SAME event loop `init_graph_async()` opened the
-    `AsyncSqliteSaver` on — and raised `asyncio.InvalidStateError` on the
-    very first turn of any brand-new `thread_id` (`AsyncSqliteSaver`
-    refuses a sync call from its own loop; only a DIFFERENT thread's sync
+    checkpointer on (originally `AsyncSqliteSaver`, now `AsyncPostgresSaver`
+    — the same loop-binding constraint holds for both) — and raised
+    `asyncio.InvalidStateError` on the very first turn of any brand-new
+    `thread_id` (the checkpointer refuses a sync call from its own loop;
+    only a DIFFERENT thread's sync
     call is the supported cross-thread path — see app/agent.py's module
     docstring). Fixed by splitting into `_ensure_seeded` (sync callers:
     `stream_turn`/`answer`) and `_ensure_seeded_async` (async callers:
@@ -261,7 +297,7 @@ class TestAsyncSeeding:
     def test_cancel_run_ends_a_paused_run_against_a_real_checkpointer(self, monkeypatch):
         """cancel_run (GRAPH_PATTERNS.md pattern 36) is a third resume path
         alongside astream_events_resume — same aget_state/ainvoke
-        constraint applies, so it gets the same real-AsyncSqliteSaver,
+        constraint applies, so it gets the same real-AsyncPostgresSaver,
         single-shared-event-loop regression coverage as the other two.
 
         Drives the pause via a plain `graph.ainvoke(...)`, not

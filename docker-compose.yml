@@ -3,8 +3,21 @@ services:
   # --- LLM + embeddings, fully local ---
   ollama:
     image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
+    # No host port published: this container is CPU-only (Docker Desktop on
+    # Mac can't pass Metal/GPU through), so app/litellm-config.yaml now
+    # targets a native macOS Ollama on the host's :11434 instead (real GPU
+    # acceleration — see litellm-config.yaml's api_base comments). This
+    # container stays up only to serve open-webui's OLLAMA_BASE_URL
+    # (internal docker-network hostname "ollama", unaffected by dropping
+    # the host port publish).
+    environment:
+      # Default keep_alive is 5m — normal chat pacing (read a reply, think,
+      # type the next message) easily exceeds that, so the ~2.4GB chat model
+      # unloads between turns and the next message pays a ~10s reload before
+      # prefill even starts (verified empirically: load_duration alone was
+      # 10.27s of a 13.01s cold call). Keeping it loaded for an hour trades
+      # idle RAM for eliminating that reload tax during a dev/demo session.
+      OLLAMA_KEEP_ALIVE: 60m
     volumes:
       - ollama:/root/.ollama
     healthcheck:

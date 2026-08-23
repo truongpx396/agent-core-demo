@@ -7,7 +7,7 @@ tool call runs immediately for them — human_approval is opt-in for those
 the gate unconditionally: drive the pause/resume cycle by hand.
 
 Uses app.agent's shared, DURABLE graph (app.agent.get_graph(), backed by
-AsyncSqliteSaver — see its module docstring) rather than calling
+AsyncPostgresSaver — see its module docstring) rather than calling
 build_graph() directly, so a pause created here survives a restart exactly
 as it would from the CLI or API, and resumability_error's cross-restart
 check below is actually exercising something real: pause this script (^C
@@ -15,8 +15,9 @@ after the approval prompt appears, or answer with an unrecognized decision
 and re-run pointed at the same thread_id), and the pending approval is
 still there.
 
-Needs the same live backends as the rest of the app (LiteLLM + Qdrant), since
-it calls the real graph.
+Needs the same live backends as the rest of the app (LiteLLM + Qdrant +
+Postgres, for the checkpointer itself now — see `make up`), since it
+calls the real graph.
 
 Run with: `python -m app.hitl_demo "what is 12 * 7?"`
 """

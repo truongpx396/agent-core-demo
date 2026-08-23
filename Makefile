@@ -1,4 +1,4 @@
-.PHONY: help up pull-models ingest chat chat-stream chat-stream-hitl serve mcp-serve telegram agent-worker test eval logs down clean
+.PHONY: help up pull-models ingest chat chat-stream chat-stream-hitl serve mcp-serve telegram agent-worker test eval logs down clean clear-cache
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -57,6 +57,9 @@ logs:  ## Tail logs from all services
 
 down:  ## Stop all services (keep volumes)
 	docker compose down
+
+clear-cache:  ## Flush the semantic cache (Redis) only — leaves the agent-worker queue and other volumes intact
+	docker compose exec redis sh -c "redis-cli --scan --pattern 'cache:*' | xargs -r redis-cli del"
 
 clean:  ## Stop services and delete volumes (models, vectors, traces)
 	docker compose down -v

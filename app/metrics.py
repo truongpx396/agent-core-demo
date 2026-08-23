@@ -89,6 +89,13 @@ agent_tool_budget_exceeded_total = Counter(
     "Turns where the LLM requested more tool calls at once than MAX_TOOL_CALLS_PER_TURN allows",
 )
 
+agent_invalid_tool_call_total = Counter(
+    "agent_invalid_tool_call_total",
+    "Turns where the LLM emitted a tool_call whose name isn't a real registered tool "
+    "(app/graph.py's invalid_tool_call node) — a model output-quality issue, not dispatched "
+    "or surfaced to human_approval",
+)
+
 agent_token_budget_exceeded_total = Counter(
     "agent_token_budget_exceeded_total",
     "Turns cut short by MAX_TOKENS_PER_TURN",

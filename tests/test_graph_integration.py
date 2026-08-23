@@ -381,6 +381,66 @@ class TestToolCallBudgetPath:
         assert "equals 2" in result["messages"][-1].content
 
 
+class TestInvalidToolCallGuardrail:
+    """A tool_call whose name isn't a real registered tool at all (e.g. a
+    small local model's native tool-calling emitting a malformed/hallucinated
+    name for a query that shouldn't have triggered any tool call) must be
+    rejected and retried — never dispatched to ToolNode, and never surfaced
+    to human_approval, where nobody could meaningfully approve or reject a
+    name that doesn't correspond to anything real."""
+
+    def test_bogus_tool_name_is_rejected_then_agent_retries_without_pausing(self):
+        bogus = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "search_docscalculatoradd_note",
+                    "args": {"query": "list all tools available there", "topic": None},
+                    "id": "c1",
+                }
+            ],
+        )
+        llm = _fake_llm(
+            bogus,
+            AIMessage(content="Here are the tools available: search_docs, calculator, ..."),
+        )
+        g = build_graph(GraphDeps(llm=llm))
+        config = _config()
+
+        result = g.invoke(
+            {"messages": [HumanMessage(content="list all tools available there")]},
+            config=config,
+        )
+
+        state = g.get_state(config)
+        assert not state.next, "must never pause at human_approval for a bogus tool name"
+        assert "tools available" in result["messages"][-1].content
+
+    def test_valid_and_invalid_names_in_the_same_batch_are_both_rejected(self):
+        """The whole batch is rejected, not just the bad call — a partial
+        rejection would leave the valid call's tool_call_id without a
+        matching ToolMessage, which fails the next LLM call's validation."""
+        mixed = AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "calculator", "args": {"expression": "1+1"}, "id": "c1"},
+                {"name": "not_a_real_tool", "args": {}, "id": "c2"},
+            ],
+        )
+        llm = _fake_llm(mixed, AIMessage(content="Let me try that again properly."))
+        g = build_graph(GraphDeps(llm=llm))
+        config = _config()
+
+        result = g.invoke(
+            {"messages": [HumanMessage(content="do two things")]},
+            config=config,
+        )
+
+        state = g.get_state(config)
+        assert not state.next
+        assert result["messages"][-1].content == "Let me try that again properly."
+
+
 class TestMandatoryCapabilityGate:
     """A mutating tool call must pause at human_approval even when the
     caller never set require_approval=True — see should_continue's

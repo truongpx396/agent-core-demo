@@ -85,6 +85,32 @@ def test_agent_injects_history_summary_as_system_message_when_present():
     )
 
 
+def test_history_summary_injection_tells_the_model_not_to_restate_it_verbatim():
+    """Guardrail against a small model regurgitating its injected summary
+    back into the final answer instead of treating it as background-only
+    reference (observed against a real qwen2.5:3b deployment: a later
+    question's answer dumped an earlier turn's summary/facts/citations all
+    into one blob). The instruction lives at the injection site itself
+    (closer to the end of the prompt = more recency-weighted for a small
+    model), not just in the base SYSTEM_PROMPT — see make_agent_node."""
+    fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
+    agent = make_agent_node(fake_llm)
+
+    state = {
+        "messages": [HumanMessage(content="what did we discuss earlier?")],
+        "history_summary": "Earlier, the user asked about refund policy.",
+    }
+    agent(state)
+
+    summary_messages = [
+        m.content
+        for m in fake_llm.seen_messages
+        if isinstance(m, SystemMessage) and "refund policy" in m.content
+    ]
+    assert summary_messages, "the history summary should have been injected"
+    assert "do not restate this verbatim" in summary_messages[0]
+
+
 def test_agent_skips_history_summary_message_when_absent():
     fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
     agent = make_agent_node(fake_llm)

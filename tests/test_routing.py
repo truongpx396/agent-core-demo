@@ -317,12 +317,26 @@ class TestShouldContinueMandatoryGate:
         assert should_continue(state) == "human_approval"
 
     def test_undeclared_tool_gates_even_without_require_approval(self):
+        """A tool that's genuinely registered (in valid_tool_names — i.e. it
+        was actually bound to the LLM and is dispatchable) but missing from
+        TOOL_CAPABILITIES — the "a developer added a new tool and forgot to
+        declare its capability" scenario — still fails closed to
+        human_approval. Contrast with TestShouldContinueInvalidToolCall
+        below: a name that ISN'T registered anywhere is a different, more
+        severe case (the model hallucinated a call to something that
+        doesn't exist at all) and is intercepted earlier, before this gate,
+        so it never reaches a human with nothing meaningful to approve."""
         state = {
             "iterations": 1,
             "require_approval": False,
             "messages": [_tool_call("some_new_tool_nobody_registered")],
         }
-        assert should_continue(state) == "human_approval"
+        assert (
+            should_continue(
+                state, valid_tool_names=frozenset({"some_new_tool_nobody_registered"})
+            )
+            == "human_approval"
+        )
 
     def test_read_only_tool_still_runs_directly_without_require_approval(self):
         """Regression guard: the mandatory gate must not become an
@@ -350,6 +364,52 @@ class TestShouldContinueMandatoryGate:
             ],
         }
         assert should_continue(state) == "human_approval"
+
+
+class TestShouldContinueInvalidToolCall:
+    """A tool_call whose name isn't in valid_tool_names at all (unlike
+    TestShouldContinueMandatoryGate's "registered but undeclared capability"
+    case above) is a more severe condition — the model itself emitted a
+    malformed/hallucinated call, not a real dispatchable tool with unknown
+    risk. Routes to invalid_tool_call, checked BEFORE the mandatory
+    capability gate, so it never reaches human_approval with a name nobody
+    could meaningfully approve."""
+
+    def test_name_absent_from_valid_tool_names_routes_to_invalid_tool_call(self):
+        state = {
+            "iterations": 1,
+            "require_approval": False,
+            "messages": [_tool_call("search_docscalculatoradd_note")],
+        }
+        assert (
+            should_continue(state, valid_tool_names=frozenset({"search_docs", "calculator"}))
+            == "invalid_tool_call"
+        )
+
+    def test_checked_before_the_mandatory_capability_gate(self):
+        """Even a name that WOULD otherwise be mutating/outward (fails
+        closed) is intercepted first if it isn't a registered tool at all —
+        there's no real capability to gate if the tool doesn't exist."""
+        state = {
+            "iterations": 1,
+            "require_approval": False,
+            "messages": [_tool_call("add_note_but_typo")],
+        }
+        assert (
+            should_continue(state, valid_tool_names=frozenset({"add_note"}))
+            == "invalid_tool_call"
+        )
+
+    def test_registered_name_is_unaffected(self):
+        state = {
+            "iterations": 1,
+            "require_approval": False,
+            "messages": [_tool_call("calculator")],
+        }
+        assert (
+            should_continue(state, valid_tool_names=frozenset({"search_docs", "calculator"}))
+            == "tools"
+        )
 
 
 class TestRouteAfterApproval:
