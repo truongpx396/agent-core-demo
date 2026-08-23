@@ -533,12 +533,36 @@ def _resumability_error_from_state(state) -> str | None:
     graph.aget_state` — can share one implementation instead of two
     copies that could drift. See `resumability_error`'s docstring for the
     two failure modes this distinguishes.
+
+    `state.next` ALONE is not enough to mean "paused" — verified
+    empirically (a real race, reproduced against a live checkpointer):
+    `state.next` is truthy for ANY checkpoint written mid-run, between two
+    ordinary supersteps of a turn that's simply still executing, not
+    suspended at an interrupt() at all. Checking only `state.next` let a
+    concurrent `Command(resume=...)`/`Command(resume=CANCEL_SENTINEL)`
+    (GRAPH_PATTERNS.md pattern 43's `POST /chat/cancel`/`/chat/resume`,
+    which can legitimately race an ACTIVELY STREAMING — not yet paused —
+    turn for the same thread_id) sail through as "safe," then actually
+    start a SECOND, competing Pregel execution against the same
+    checkpoint: reproduced directly — the second call silently drove the
+    turn to completion through its own `ainvoke`, while the FIRST (real)
+    caller's own `astream_events()` received zero further tokens, an
+    unrelated CANCEL_SENTINEL/approval value got treated as ordinary
+    continuation input since nothing was actually waiting to consume it,
+    and no exception surfaced any of this. `state.tasks[i].interrupts` is
+    the actual, specific signal `human_approval`'s `interrupt()` leaves
+    behind (already what `_run_graph_stream` itself reads to build the
+    `approval_required` event, `state.tasks[0].interrupts[0].value`) — so
+    checking for at least one real pending interrupt, not just any
+    pending task, is what actually distinguishes "genuinely paused" from
+    "still running."
     """
-    if not state.next:
+    if not state.next or not any(task.interrupts for task in state.tasks):
         metrics.agent_checkpoint_issue_total.labels(reason="checkpoint_lost").inc()
         return (
             "checkpoint_lost: no paused run found for this thread — it may "
-            "have completed, never existed, or its checkpoint was lost."
+            "have completed, never existed, its checkpoint was lost, or "
+            "it's still actively running (not yet paused at an approval gate)."
         )
     paused_schema = state.values.get("state_schema_version")
     if paused_schema != STATE_SCHEMA_VERSION:

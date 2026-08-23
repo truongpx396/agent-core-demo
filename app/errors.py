@@ -31,6 +31,18 @@ class ErrorCode(str, Enum):
     INTERNAL = "internal"
 
 
+class TurnCancelled(Exception):
+    """Raised by app/agent.py::_iterate_with_timeout when its optional
+    `cancel_check` callback reports a user-initiated stop mid-turn
+    (GRAPH_PATTERNS.md pattern 43's `POST /chat/cancel` — the "actively
+    streaming, not paused at approval" case; a run already paused at
+    human_approval is cancelled directly via `cancel_run` instead, with no
+    exception involved). Caught specifically in `_run_graph_stream`,
+    distinct from the generic `except Exception` there, so a deliberate
+    stop is reported via `ErrorCode.CANCELLED` rather than looking like an
+    unexpected failure."""
+
+
 @dataclass(frozen=True)
 class ErrorEnvelope:
     code: ErrorCode

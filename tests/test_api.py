@@ -10,9 +10,9 @@ already takes for graph nodes (see tests/test_nodes.py's module docstring).
 import asyncio
 import json
 
-from app import api, queue
+from app import api, queue, sessions
 from app.api import ui
-from app.schemas import ChatRequest
+from app.schemas import CancelRequest, ChatRequest, ResumeRequest
 from tests.conftest import TEST_CTX
 from tests.test_queue import FakeRedis
 
@@ -117,3 +117,145 @@ class TestChatStreamQueued:
 
         payload = asyncio.run(_run())
         assert payload["images"] == ["https://example.com/cat.png"]
+
+
+class TestChatResume:
+    """POST /chat/resume — publishes a `"resume"` job onto the SAME
+    Redis Stream a new turn uses (app/queue.py::publish_resume_request),
+    not a separate queue; app/agent_worker.py dispatches on
+    `payload["kind"]`."""
+
+    def test_publishes_a_resume_job_with_approved_and_thread_id(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        async def _run():
+            req = ResumeRequest(thread_id="t1", approved=True)
+            response = await api.chat_resume(req, ctx=TEST_CTX)
+
+            published = client.streams[queue.REQUESTS_STREAM]
+            assert len(published) == 1
+            payload = json.loads(published[0][1]["payload"])
+            assert payload["kind"] == "resume"
+            assert payload["thread_id"] == "t1"
+            assert payload["approved"] is True
+            assert payload["ctx"] == TEST_CTX
+            request_id = payload["request_id"]
+
+            await queue.publish_result(client, request_id, {"type": "done"})
+            return [chunk async for chunk in response.body_iterator]
+
+        chunks = asyncio.run(_run())
+        assert any('"type": "done"' in c for c in chunks)
+
+    def test_a_rejection_carries_approved_false(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        async def _run():
+            req = ResumeRequest(thread_id="t2", approved=False)
+            await api.chat_resume(req, ctx=TEST_CTX)
+            return json.loads(client.streams[queue.REQUESTS_STREAM][0][1]["payload"])
+
+        payload = asyncio.run(_run())
+        assert payload["approved"] is False
+
+
+class TestChatCancel:
+    """POST /chat/cancel — two independent mechanisms fired unconditionally
+    (app/api.py's own docstring): a Redis cancel-flag AND a `"cancel"` job
+    published onto the same queue."""
+
+    def test_sets_the_cancel_flag_and_publishes_a_cancel_job(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        async def _run():
+            req = CancelRequest(thread_id="t1")
+            response = await api.chat_cancel(req, ctx=TEST_CTX)
+
+            assert await queue.is_cancelled(client, "t1") is True
+
+            published = client.streams[queue.REQUESTS_STREAM]
+            assert len(published) == 1
+            payload = json.loads(published[0][1]["payload"])
+            assert payload["kind"] == "cancel"
+            assert payload["thread_id"] == "t1"
+            assert payload["ctx"] == TEST_CTX
+            request_id = payload["request_id"]
+
+            await queue.publish_result(client, request_id, {"type": "done"})
+            return [chunk async for chunk in response.body_iterator]
+
+        chunks = asyncio.run(_run())
+        assert any('"type": "done"' in c for c in chunks)
+
+
+class TestChatSessions:
+    """GET /chat/sessions — a thin pass-through to app/sessions.py::list_sessions,
+    scoped by whatever ctx get_ctx resolved (not a caller-supplied field)."""
+
+    def test_returns_whatever_list_sessions_reports(self, monkeypatch):
+        rows = [
+            {
+                "thread_id": "t1",
+                "title": "Refund question",
+                "created_at": "2026-01-01T00:00:00Z",
+                "last_active_at": "2026-01-02T00:00:00Z",
+            }
+        ]
+        captured = {}
+
+        def fake_list_sessions(ctx):
+            captured["ctx"] = ctx
+            return rows
+
+        monkeypatch.setattr(sessions, "list_sessions", fake_list_sessions)
+
+        result = api.chat_sessions(ctx=TEST_CTX)
+
+        # Calling the handler directly (this file's established
+        # convention) bypasses FastAPI's response_model coercion — that
+        # only happens through the real ASGI request/response cycle, so
+        # this is the raw list[dict] list_sessions itself returned.
+        assert captured["ctx"] == TEST_CTX
+        assert [r["thread_id"] for r in result] == ["t1"]
+        assert result[0]["title"] == "Refund question"
+
+
+class TestChatSessionMessages:
+    """GET /chat/sessions/{thread_id}/messages — session_belongs_to is the
+    ENTIRE authorization boundary (the shared checkpointer
+    get_session_messages reads has no tenant/principal of its own)."""
+
+    def test_returns_the_transcript_when_owned(self, monkeypatch):
+        monkeypatch.setattr(sessions, "session_belongs_to", lambda ctx, thread_id: True)
+
+        async def fake_get_session_messages(thread_id):
+            assert thread_id == "t1"
+            return [{"role": "user", "text": "hi"}, {"role": "assistant", "text": "hello"}]
+
+        monkeypatch.setattr(api, "get_session_messages", fake_get_session_messages)
+
+        result = asyncio.run(api.chat_session_messages("t1", ctx=TEST_CTX))
+
+        # Same note as TestChatSessions above — raw dicts, not
+        # response_model-coerced Pydantic objects, when called directly.
+        assert [m["role"] for m in result] == ["user", "assistant"]
+        assert result[0]["text"] == "hi"
+
+    def test_404s_when_not_owned_never_reading_the_transcript(self, monkeypatch):
+        import pytest
+        from fastapi import HTTPException
+
+        monkeypatch.setattr(sessions, "session_belongs_to", lambda ctx, thread_id: False)
+
+        async def fail_if_called(thread_id):
+            raise AssertionError("get_session_messages should not be called")
+
+        monkeypatch.setattr(api, "get_session_messages", fail_if_called)
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(api.chat_session_messages("someone-elses-thread", ctx=TEST_CTX))
+
+        assert exc_info.value.status_code == 404
