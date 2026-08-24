@@ -191,6 +191,13 @@ agent_cancellation_total = Counter(
     "Paused runs cancelled via app/agent.py::cancel_run (GRAPH_PATTERNS.md pattern 36)",
 )
 
+agent_streaming_cancellation_total = Counter(
+    "agent_streaming_cancellation_total",
+    "Actively-streaming (not paused) turns stopped via app/agent.py's cancel_check "
+    "mechanism — the POST /chat/cancel queued-path counterpart to agent_cancellation_total, "
+    "for a turn that wasn't paused at human_approval when the stop was requested",
+)
+
 agent_context_window_exceeded_total = Counter(
     "agent_context_window_exceeded_total",
     "Turns ended at the context_window_exceeded terminal node: the cumulative "
