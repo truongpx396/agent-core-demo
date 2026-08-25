@@ -92,6 +92,16 @@ class Settings(BaseSettings):
     # mattering the moment OPENAI_API_BASE points at a real paid provider.
     max_cost_usd_per_turn: float = 0.50
 
+    # Object storage for uploaded documents (app/object_store.py) — MinIO,
+    # a self-hosted S3-compatible store (docker-compose's `minio` service),
+    # consistent with this app's fully-offline posture everywhere else.
+    # Defaults match that service's own MINIO_ROOT_USER/MINIO_ROOT_PASSWORD.
+    minio_endpoint: str = "localhost:9000"
+    minio_access_key: str = "minioadmin"
+    minio_secret_key: str = "minioadmin"
+    minio_bucket: str = "ingest-uploads"
+    minio_secure: bool = False  # plain http:// for local docker-compose; a real deployment sets this True
+
     # Telegram channel (app/telegram_channel.py, GRAPH_PATTERNS.md pattern
     # 42) — empty by default, so the bot refuses to start rather than
     # silently running with no way to authenticate to Telegram's API. Create
@@ -126,3 +136,8 @@ SEMANTIC_CACHE_TTL_SECONDS = settings.semantic_cache_ttl_seconds
 MEMORY_RETENTION_DAYS = settings.memory_retention_days
 MAX_COST_USD_PER_TURN = settings.max_cost_usd_per_turn
 TELEGRAM_BOT_TOKEN = settings.telegram_bot_token
+MINIO_ENDPOINT = settings.minio_endpoint
+MINIO_ACCESS_KEY = settings.minio_access_key
+MINIO_SECRET_KEY = settings.minio_secret_key
+MINIO_BUCKET = settings.minio_bucket
+MINIO_SECURE = settings.minio_secure

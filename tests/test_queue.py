@@ -32,6 +32,7 @@ class FakeRedis:
         self.expiries: dict[str, int] = {}
         self.acked: list[str] = []
         self.deleted: list[str] = []
+        self.kv: dict[str, str] = {}  # plain SET/GET/DELETE keys — the cancel flag
         self._counter = 0
         self._delivered: set[str] = set()
 
@@ -84,6 +85,13 @@ class FakeRedis:
     async def delete(self, key):
         self.deleted.append(key)
         self.streams.pop(key, None)
+        self.kv.pop(key, None)
+
+    async def set(self, key, value, ex=None):
+        self.kv[key] = value
+
+    async def get(self, key):
+        return self.kv.get(key)
 
 
 class TestGetClient:
@@ -145,6 +153,7 @@ class TestPublishRequest:
         assert len(entries) == 1
         payload = json.loads(entries[0][1]["payload"])
         assert payload == {
+            "kind": "turn",
             "request_id": "r1",
             "text": "hello",
             "thread_id": "t1",
@@ -167,6 +176,96 @@ class TestPublishRequest:
         )
         payload = json.loads(client.streams[queue.REQUESTS_STREAM][0][1]["payload"])
         assert payload["images"] == ["data:image/png;base64,abc123"]
+
+
+class TestPublishResumeRequest:
+    def test_enqueues_a_resume_job_onto_the_same_stream(self):
+        """Same REQUESTS_STREAM as a new turn — one consumer group, one
+        dispatch-by-kind in app/agent_worker.py, not a second queue."""
+        client = FakeRedis()
+        asyncio.run(
+            queue.publish_resume_request(
+                client,
+                request_id="r1",
+                thread_id="t1",
+                approved=True,
+                ctx={"tenant": "acme", "principal": "p1", "claims": {}},
+            )
+        )
+        entries = client.streams[queue.REQUESTS_STREAM]
+        assert len(entries) == 1
+        payload = json.loads(entries[0][1]["payload"])
+        assert payload == {
+            "kind": "resume",
+            "request_id": "r1",
+            "thread_id": "t1",
+            "approved": True,
+            "ctx": {"tenant": "acme", "principal": "p1", "claims": {}},
+        }
+
+
+class TestPublishCancelRequest:
+    def test_enqueues_a_cancel_job_onto_the_same_stream(self):
+        client = FakeRedis()
+        asyncio.run(
+            queue.publish_cancel_request(
+                client,
+                request_id="r1",
+                thread_id="t1",
+                ctx={"tenant": "acme", "principal": "p1", "claims": {}},
+            )
+        )
+        entries = client.streams[queue.REQUESTS_STREAM]
+        assert len(entries) == 1
+        payload = json.loads(entries[0][1]["payload"])
+        assert payload == {
+            "kind": "cancel",
+            "request_id": "r1",
+            "thread_id": "t1",
+            "ctx": {"tenant": "acme", "principal": "p1", "claims": {}},
+        }
+
+
+class TestCancelFlag:
+    """The separate, per-thread (not per-request) mechanism POST
+    /chat/cancel uses to stop an ACTIVELY STREAMING turn — see
+    app/agent_worker.py's cancel_check wiring."""
+
+    def test_is_cancelled_false_before_anything_is_set(self):
+        client = FakeRedis()
+        assert asyncio.run(queue.is_cancelled(client, "t1")) is False
+
+    def test_set_then_is_cancelled_true(self):
+        client = FakeRedis()
+
+        async def _run():
+            await queue.set_cancel_flag(client, "t1")
+            return await queue.is_cancelled(client, "t1")
+
+        assert asyncio.run(_run()) is True
+
+    def test_set_flag_is_scoped_to_its_own_thread_id(self):
+        client = FakeRedis()
+
+        async def _run():
+            await queue.set_cancel_flag(client, "t1")
+            return await queue.is_cancelled(client, "t2")
+
+        assert asyncio.run(_run()) is False
+
+    def test_clear_removes_the_flag(self):
+        client = FakeRedis()
+
+        async def _run():
+            await queue.set_cancel_flag(client, "t1")
+            await queue.clear_cancel_flag(client, "t1")
+            return await queue.is_cancelled(client, "t1")
+
+        assert asyncio.run(_run()) is False
+
+    def test_clear_on_a_never_set_thread_id_does_not_raise(self):
+        client = FakeRedis()
+        asyncio.run(queue.clear_cancel_flag(client, "never-set"))  # must not raise
 
 
 class TestPublishResultAndReadResults:
@@ -194,6 +293,28 @@ class TestPublishResultAndReadResults:
             return [event async for event in queue.read_results(client, "r1")]
 
         assert asyncio.run(_run()) == [{"type": "error", "content": "boom"}]
+
+    def test_read_results_stops_at_approval_required_too(self):
+        """approval_required is the last event a "turn" job's worker ever
+        publishes for a paused turn (app/agent.py::_run_graph_stream never
+        yields anything after it) — without treating it as terminal here,
+        this generator would block forever waiting for a "done"/"error"
+        that will never come on THIS results stream (resuming is a
+        separate job with its own — see publish_resume_request above)."""
+        client = FakeRedis()
+
+        async def _run():
+            await queue.publish_result(client, "r1", {"type": "token", "content": "hi"})
+            await queue.publish_result(
+                client, "r1", {"type": "approval_required", "tool_calls": []}
+            )
+            return [event async for event in queue.read_results(client, "r1")]
+
+        events = asyncio.run(_run())
+        assert events == [
+            {"type": "token", "content": "hi"},
+            {"type": "approval_required", "tool_calls": []},
+        ]
 
     def test_read_results_ignores_events_from_a_different_request(self):
         client = FakeRedis()

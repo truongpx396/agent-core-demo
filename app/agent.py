@@ -67,14 +67,14 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import asynccontextmanager
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langfuse.decorators import langfuse_context, observe
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
 
 from app import metrics
 from app.config import CHAT_MODEL, CHECKPOINTER_DATABASE_URL
-from app.errors import ErrorCode, ErrorEnvelope
+from app.errors import ErrorCode, ErrorEnvelope, TurnCancelled
 from app.graph import CANCEL_SENTINEL, build_graph, resumability_error, resumability_error_async
 from app.security import SecurityCtx
 
@@ -131,18 +131,59 @@ def _record_turn_metrics(
                 meter.record_usage(ctx, thread_id, CHAT_MODEL, total_tokens)
 
 
+def _text_content(content) -> str:
+    """LangChain message `.content` is either a plain str or a list of
+    multimodal parts (GRAPH_PATTERNS.md pattern 44 — an attached image
+    rides alongside text in the same list); this flattens either shape to
+    plain text. Shared by _run_graph_stream's token-chunk handling and
+    get_session_messages' transcript replay below, rather than
+    duplicating the same normalization at each call site."""
+    if isinstance(content, list):
+        return "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in content)
+    return content
+
+
+def _upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> None:
+    """Record/refresh this thread_id in the session directory (item #9's
+    switcher, app/sessions.py) — called at the START of every turn
+    (stream_turn/answer/astream_events_turn), unlike
+    meter.record_usage/_record_turn_metrics which only fire on a
+    completed turn with real token usage. Deliberate: a rejected,
+    moderated, or otherwise short-circuited turn still represents a real
+    conversation the user started on this thread_id and should still show
+    up in "switch conversation," even though it has nothing to meter.
+    upsert_session degrades to a no-op on its own failure (see its
+    docstring) — this can't fail the turn."""
+    from app import sessions
+
+    sessions.upsert_session(ctx, thread_id, text)
+
+
 def _turn_outcome(state: dict) -> str:
     # validate_input resets iterations to 0 every turn; it only stays 0 if
     # the turn never reached `agent` at all, i.e. the reject_input path.
     return "rejected" if state.get("iterations", 0) == 0 else "success"
 
 
-async def _iterate_with_timeout(aiter, timeout_seconds: float):
+async def _iterate_with_timeout(aiter, timeout_seconds: float, cancel_check=None):
     """Wrap an async iterator so the whole run aborts if total wall-clock
     time exceeds `timeout_seconds` — enforces REQUEST_TIMEOUT_SECONDS for
     the astream_events paths. Raises TimeoutError on the next pending
     event; callers already have a generic `except Exception` around this
     loop (for Langfuse error-marking), so no separate handling is needed.
+
+    `cancel_check` (optional, `Callable[[], Awaitable[bool]]`) is polled
+    once per loop iteration, before waiting on the next upstream event —
+    if it returns True, raises `TurnCancelled` instead of continuing.
+    Same caveat as the timeout above: this bounds how long the CALLER
+    waits between checkpoints, not how long a single already-in-flight
+    upstream step (one slow tool call, one slow model response) keeps
+    running underneath — cancellation takes effect at the next event
+    boundary, not instantly. Used by app/agent_worker.py to let
+    `POST /chat/cancel` (app/api.py) stop an actively-streaming (not yet
+    paused) turn via a Redis flag (app/queue.py::is_cancelled) — every
+    other caller (the in-process `/chat/stream` path, app/chat.py) passes
+    nothing here and keeps today's timeout-only behavior unchanged.
     """
     aiter = aiter.__aiter__()
     deadline = time.monotonic() + timeout_seconds
@@ -150,6 +191,8 @@ async def _iterate_with_timeout(aiter, timeout_seconds: float):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError(f"Request exceeded {timeout_seconds}s timeout")
+        if cancel_check is not None and await cancel_check():
+            raise TurnCancelled()
         try:
             yield await asyncio.wait_for(aiter.__anext__(), timeout=remaining)
         except StopAsyncIteration:
@@ -358,6 +401,7 @@ def stream_turn(text: str, thread_id: str, ctx: SecurityCtx, images: list[str] |
     langfuse_context.update_current_trace(session_id=thread_id)
     graph = get_graph()
     _ensure_seeded(graph, thread_id)
+    _upsert_session(ctx, thread_id, text)
     start = time.monotonic()
     deadline = start + REQUEST_TIMEOUT_SECONDS
     printed = ""
@@ -480,6 +524,7 @@ def answer(
     langfuse_context.update_current_trace(session_id=thread_id)
     graph = get_graph()
     _ensure_seeded(graph, thread_id)
+    _upsert_session(ctx, thread_id, text)
     cfg = _config(thread_id, ctx)
     start = time.monotonic()
 
@@ -555,7 +600,7 @@ def _open_trace(name: str, session_id: str, input_text: str):
     return trace, callbacks
 
 
-async def _run_graph_stream(graph, graph_input, cfg, trace):
+async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
     """Shared core of astream_events_turn/astream_events_resume: drive one
     graph.astream_events() call, translate events to the app's typed event
     shapes, and yield exactly one terminal event:
@@ -570,9 +615,14 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
         same state["followups"] shape, never sent for a cache hit or an
         uncited answer (see suggest_followups's own docstring).
       {"type": "done"}     — the turn actually finished.
-      {"type": "error", "content": "<message>"} — it raised.
+      {"type": "error", "content": "<message>"} — it raised, INCLUDING a
+        user-initiated stop (`code: "cancelled"`, see TurnCancelled below)
+        — modeled as a terminal-outcome envelope like any other, not a
+        separate SSE event type (GRAPH_PATTERNS.md pattern 30).
     Handles Langfuse trace update/flush and turn metrics identically for
-    both entry points.
+    both entry points. `cancel_check` (optional) is forwarded straight to
+    `_iterate_with_timeout` — see its docstring; only app/agent_worker.py's
+    `"turn"`-job dispatch passes one today.
     """
     start = time.monotonic()
     final_answer = []
@@ -583,18 +633,13 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
         async for event in _iterate_with_timeout(
             graph.astream_events(graph_input, config=cfg, version="v2"),
             REQUEST_TIMEOUT_SECONDS,
+            cancel_check=cancel_check,
         ):
             kind = event["event"]
 
             if kind == "on_chat_model_stream":
                 # Raw token chunk — content may be str or list (multimodal)
-                chunk = event["data"]["chunk"]
-                content = chunk.content
-                if isinstance(content, list):
-                    content = "".join(
-                        p.get("text", "") if isinstance(p, dict) else str(p)
-                        for p in content
-                    )
+                content = _text_content(event["data"]["chunk"].content)
                 if content:
                     final_answer.append(content)
                     yield {"type": "token", "content": content}
@@ -609,6 +654,18 @@ async def _run_graph_stream(graph, graph_input, cfg, trace):
             elif kind == "on_tool_end":
                 yield {"type": "tool_end", "tool": event["name"]}
 
+    except TurnCancelled:
+        # Checked BEFORE the generic except below — a deliberate stop is
+        # not "an unexpected failure," it gets its own ErrorCode rather
+        # than falling into ErrorCode.INTERNAL alongside a real bug.
+        if trace:
+            trace.update(
+                output="".join(final_answer) + " [cancelled by user]", level="WARNING"
+            )
+        _record_turn_metrics(time.monotonic() - start, "cancelled")
+        metrics.agent_streaming_cancellation_total.inc()
+        envelope = ErrorEnvelope(code=ErrorCode.CANCELLED, message="Cancelled by user.")
+        terminal_event = {"type": "error", "content": envelope.message, **envelope.to_dict()}
     except Exception as exc:  # noqa: BLE001
         if trace:
             trace.update(output=f"error: {exc}", level="ERROR")
@@ -725,6 +782,7 @@ async def astream_events_turn(
     ctx: SecurityCtx,
     require_approval: bool = False,
     images: list[str] | None = None,
+    cancel_check=None,
 ):
     """Production async generator — yields typed event dicts (see
     _run_graph_stream for the full shape list, including
@@ -738,10 +796,15 @@ async def astream_events_turn(
     streaming counterpart to app/hitl_demo.py's blocking
     Command(resume=...) loop. Default False keeps existing callers
     (app/api.py) unchanged. `images` (GRAPH_PATTERNS.md pattern 44) is
-    optional, defaulting to None — same reasoning.
+    optional, defaulting to None — same reasoning. `cancel_check`
+    (optional, `Callable[[], Awaitable[bool]]`) is forwarded straight to
+    `_run_graph_stream`/`_iterate_with_timeout` — see their docstrings;
+    only app/agent_worker.py's `"turn"`-job dispatch passes one, wiring it
+    to a Redis flag `POST /chat/cancel` sets (app/queue.py::is_cancelled).
     """
     graph = await init_graph_async()
     await _ensure_seeded_async(graph, thread_id)
+    _upsert_session(ctx, thread_id, text)
     trace, callbacks = _open_trace("chat-turn-stream", thread_id, text)
     cfg = {
         "configurable": {"thread_id": thread_id, "ctx": ctx},
@@ -752,7 +815,7 @@ async def astream_events_turn(
         "messages": [HumanMessage(content=_build_human_content(text, images))],
         "require_approval": require_approval,
     }
-    async for event in _run_graph_stream(graph, graph_input, cfg, trace):
+    async for event in _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=cancel_check):
         yield event
 
 
@@ -859,6 +922,47 @@ async def cancel_run(thread_id: str, ctx: SecurityCtx) -> bool:
     return True
 
 
+async def get_session_messages(thread_id: str) -> list[dict]:
+    """The session switcher's transcript replay (item #9, app/api.py's
+    `GET /chat/sessions/{thread_id}/messages`) — reads the SAME shared
+    Postgres checkpointer every other resume/cancel path uses
+    (app/sessions.py's own `chat_sessions` table only has a title/
+    timestamps, not message content). Ownership (does this thread_id
+    belong to the caller's tenant+principal) is the CALLER's
+    responsibility to check first via app/sessions.py::list_sessions —
+    this function has no ctx to check it against, on purpose: a
+    thread_id's checkpoint carries no owner of its own to compare against
+    (see app/sessions.py's module docstring on why the checkpointer's own
+    tables aren't tenant/principal-scoped at all).
+
+    Returns `[{"role": "user"|"assistant", "text": str}, ...]` — the same
+    two roles the web UI already renders bubbles for. Deliberately
+    narrower than the full persisted state: `SystemMessage`s (the
+    ephemeral history-summary/context injections are never actually
+    persisted back to state, but a seeded base prompt is) and
+    `ToolMessage`s (tool call/result pairs) are both omitted — this is a
+    replay of the conversational back-and-forth a user saw, not a full
+    forensic trace (that's what Langfuse is for); an AIMessage with no
+    text of its own (a pure tool-calling turn — the model's visible
+    answer came on a LATER message once the tool result came back) is
+    skipped the same way the live UI never rendered an empty bubble for it.
+    """
+    graph = await init_graph_async()
+    state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+    messages = []
+    for m in state.values.get("messages", []):
+        if isinstance(m, HumanMessage):
+            role = "user"
+        elif isinstance(m, AIMessage):
+            role = "assistant"
+        else:
+            continue
+        text = _text_content(m.content)
+        if text:
+            messages.append({"role": role, "text": text})
+    return messages
+
+
 # ---------------------------------------------------------------------------
 # Alternative: Langfuse via @asynccontextmanager
 # ---------------------------------------------------------------------------
@@ -962,13 +1066,7 @@ async def astream_events_turn_ctx(text: str, thread_id: str, ctx: SecurityCtx):
                 kind = event["event"]
 
                 if kind == "on_chat_model_stream":
-                    chunk = event["data"]["chunk"]
-                    content = chunk.content
-                    if isinstance(content, list):
-                        content = "".join(
-                            p.get("text", "") if isinstance(p, dict) else str(p)
-                            for p in content
-                        )
+                    content = _text_content(event["data"]["chunk"].content)
                     if content:
                         final_answer.append(content)
                         yield {"type": "token", "content": content}

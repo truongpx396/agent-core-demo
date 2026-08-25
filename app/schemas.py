@@ -1,5 +1,6 @@
 """Pydantic request/response models for the FastAPI service."""
 import uuid
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -20,6 +21,41 @@ class ChatRequest(BaseModel):
             "fetched or decoded by this app itself."
         ),
     )
+
+
+class ResumeRequest(BaseModel):
+    thread_id: str = Field(..., description="The paused conversation's thread id.")
+    approved: bool = Field(
+        ..., description="Approve (true) or reject (false) the pending tool call(s)."
+    )
+
+
+class CancelRequest(BaseModel):
+    thread_id: str = Field(
+        ...,
+        description=(
+            "The conversation's thread id to cancel — whether it's actively "
+            "streaming right now or paused at human_approval; POST /chat/cancel "
+            "handles both cases from this one field."
+        ),
+    )
+
+
+class IngestUploadResult(BaseModel):
+    filename: str = Field(..., description="The uploaded file's original name.")
+    job_id: str = Field(..., description="Poll/stream this at GET /ingest/stream/{job_id}.")
+
+
+class SessionSummary(BaseModel):
+    thread_id: str = Field(..., description="Reuse as ChatRequest.thread_id to continue this session.")
+    title: str = Field(..., description="The opening message that started this session, truncated.")
+    created_at: datetime = Field(..., description="When this thread_id was first seen.")
+    last_active_at: datetime = Field(..., description="Most recent turn on this thread_id.")
+
+
+class SessionMessage(BaseModel):
+    role: str = Field(..., description='"user" or "assistant".')
+    text: str = Field(..., description="The message's text content.")
 
 
 class Citation(BaseModel):
