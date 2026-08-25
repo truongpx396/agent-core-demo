@@ -1,10 +1,10 @@
-.PHONY: help up pull-models ingest chat chat-stream chat-stream-hitl serve mcp-serve telegram agent-worker test eval logs down clean clear-cache
+.PHONY: help up pull-models ingest chat chat-stream chat-stream-hitl serve mcp-serve telegram agent-worker ingest-worker test eval logs down clean clear-cache
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-up:  ## Start all services (ollama, litellm, qdrant, langfuse, postgres)
+up:  ## Start all services (ollama, litellm, qdrant, langfuse, postgres, minio)
 	docker compose up -d
 
 pull-models:  ## Download the Ollama chat + embedding models
@@ -45,6 +45,9 @@ telegram:  ## Start the Telegram bot channel (needs TELEGRAM_BOT_TOKEN in .env; 
 
 agent-worker:  ## Start a Redis Streams agent worker (run several for independent scaling; see POST /chat/stream/queued)
 	python -m app.agent_worker
+
+ingest-worker:  ## Start a document-ingestion worker (PDF/DOCX uploads; run several for independent scaling; see POST /ingest/upload)
+	python -m app.ingest_worker
 
 test:  ## Run the graph test suite (no live services needed — fake LLM, no Qdrant)
 	pytest -q
