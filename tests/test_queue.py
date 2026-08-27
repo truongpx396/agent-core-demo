@@ -12,7 +12,6 @@ closure via `asyncio.run(...)`.
 import asyncio
 import json
 
-import pytest
 from redis.exceptions import ResponseError
 
 from app import queue

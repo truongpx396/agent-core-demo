@@ -108,4 +108,4 @@ def query_employees(
     with get_connection() as conn:
         cur = conn.execute(sql, params)
         columns = [desc.name for desc in cur.description]
-        return [dict(zip(columns, row)) for row in cur.fetchall()]
+        return [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]

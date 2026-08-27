@@ -1,4 +1,23 @@
 # One command (`make up`) brings up the whole offline AI stack.
+
+# Shared env for the containerized app roles below (services: api,
+# agent-worker, ingest-worker) — every URL points at the OTHER containers'
+# in-network service names (e.g. `litellm:4000`), not `localhost` — a
+# container can't reach another container via the host's own localhost the
+# way a host process can (see app/config.py's Settings defaults, all
+# `localhost:*`, which assume exactly that host-process case and are
+# overridden here).
+x-app-env: &app-env
+  OPENAI_API_BASE: http://litellm:4000/v1
+  QDRANT_URL: http://qdrant:6333
+  CHECKPOINTER_DATABASE_URL: postgresql://langfuse:langfuse@postgres:5432/checkpointer
+  APPDATA_DATABASE_URL: postgresql://langfuse:langfuse@postgres:5432/appdata
+  REDIS_URL: redis://redis:6379
+  MINIO_ENDPOINT: minio:9000
+  LANGFUSE_HOST: http://langfuse-web:3000
+  LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+  LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+
 services:
   # --- LLM + embeddings, fully local ---
   ollama:
@@ -138,6 +157,57 @@ services:
       MINIO_ROOT_PASSWORD: minioadmin
     volumes:
       - minio:/data
+
+  # --- Containerized app roles (opt-in, NOT started by `make up`) ---
+  #
+  # Everyday dev/demo still runs `make serve`/`make agent-worker`/
+  # `make ingest-worker` as host processes against the infra above (fast
+  # --reload iteration, see Makefile) — that workflow is untouched. These
+  # three services are the actual deployable artifact (see Dockerfile's own
+  # header) for anyone who wants this stack running as containers instead;
+  # behind the "app" profile so `docker compose up`/`make up` never starts
+  # them by accident. Bring them up explicitly with `make up-app` (or
+  # `docker compose --profile app up -d --build`).
+  api:
+    build: .
+    profiles: ["app"]
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  agent-worker:
+    build: .
+    profiles: ["app"]
+    restart: unless-stopped
+    command: ["python", "-m", "app.agent_worker"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Run several for independent scaling (GRAPH_PATTERNS.md pattern 43):
+    #   docker compose --profile app up -d --scale agent-worker=3
+
+  ingest-worker:
+    build: .
+    profiles: ["app"]
+    restart: unless-stopped
+    command: ["python", "-m", "app.ingest_worker"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
 
 volumes:
   ollama:

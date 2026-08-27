@@ -12,7 +12,12 @@ import time
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    RemoveMessage,
+    SystemMessage,
+)
 
 from app import metrics, tools
 from app.graph import (
@@ -223,7 +228,7 @@ class TestToolCallBudget:
         ai = AIMessage(content="", tool_calls=calls)
         result = too_many_tool_calls({"messages": [ai]})
         assert len(result["messages"]) == len(calls)
-        for msg, call in zip(result["messages"], calls):
+        for msg, call in zip(result["messages"], calls, strict=True):
             assert msg.tool_call_id == call["id"]
             assert "too many tool calls" in msg.content.lower()
 

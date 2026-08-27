@@ -17,7 +17,6 @@ from app.tools import (
     TOOLS,
     AddNoteArgs,
     AskClarificationArgs,
-    Department,
     RememberArgs,
     Topic,
     add_note,

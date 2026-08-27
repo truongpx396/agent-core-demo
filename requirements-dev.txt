@@ -1,0 +1,6 @@
+# Dev/CI-only tooling on top of the runtime deps — never installed in the
+# Docker image (see Dockerfile), which installs requirements-lock.txt alone.
+-r requirements.txt
+
+ruff==0.16.4
+mypy==2.3.1

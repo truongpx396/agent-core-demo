@@ -12,13 +12,73 @@ import io
 import json
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 from app import api, ingest_queue, queue, sessions
 from app.api import ui
 from app.schemas import CancelRequest, ChatRequest, ResumeRequest
 from tests.conftest import TEST_CTX
 from tests.test_queue import FakeRedis
+
+
+class TestHealthReady:
+    """GET /health/ready — see app/health.py's own tests for
+    check_dependencies() itself; this just checks the HTTP-shape mapping
+    (status code + body) on top of it."""
+
+    def test_200_and_ready_when_every_dependency_is_up(self, monkeypatch):
+        async def fake_check_dependencies():
+            return {"qdrant": True, "appdata_postgres": True, "checkpointer_postgres": True, "redis": True}
+
+        monkeypatch.setattr(api.health_checks, "check_dependencies", fake_check_dependencies)
+        response = Response()
+
+        result = asyncio.run(api.health_ready(response))
+
+        assert response.status_code == 200
+        assert result.status == "ready"
+        assert result.checks["qdrant"] is True
+
+    def test_503_and_degraded_when_any_dependency_is_down(self, monkeypatch):
+        async def fake_check_dependencies():
+            return {"qdrant": False, "appdata_postgres": True, "checkpointer_postgres": True, "redis": True}
+
+        monkeypatch.setattr(api.health_checks, "check_dependencies", fake_check_dependencies)
+        response = Response()
+
+        result = asyncio.run(api.health_ready(response))
+
+        assert response.status_code == 503
+        assert result.status == "degraded"
+        assert result.checks["qdrant"] is False
+
+
+class TestUsage:
+    """GET /usage — a thin pass-through to app/meter.py::usage_summary,
+    called once all-time and once scoped to the rolling 24h window
+    app/agent.py::_tenant_over_daily_budget itself checks."""
+
+    def test_reports_all_time_and_rolling_24h_figures(self, monkeypatch):
+        calls = []
+
+        def fake_usage_summary(tenant, principal=None, since=None):
+            calls.append({"tenant": tenant, "since": since})
+            if since is None:
+                return {"total_tokens": 5000, "total_cost_usd": 3.5}
+            return {"total_tokens": 200, "total_cost_usd": 0.1}
+
+        monkeypatch.setattr(api.meter, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(api, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
+
+        result = api.usage(ctx=TEST_CTX)
+
+        assert result.total_tokens == 5000
+        assert result.total_cost_usd == 3.5
+        assert result.last_24h_cost_usd == 0.1
+        assert result.daily_budget_usd == 20.0
+        assert len(calls) == 2
+        assert calls[0]["tenant"] == TEST_CTX["tenant"]
+        assert calls[1]["since"] is not None
 
 
 class TestUi:
@@ -266,9 +326,8 @@ class TestChatSessionMessages:
 
 
 def _upload_file(filename, data, content_type):
-    from starlette.datastructures import Headers
-
     from fastapi import UploadFile
+    from starlette.datastructures import Headers
 
     return UploadFile(
         file=io.BytesIO(data), filename=filename, headers=Headers({"content-type": content_type})
@@ -384,6 +443,41 @@ class TestIngestUpload:
 
         assert "../" not in uploaded[0]
         assert uploaded[0].endswith("-passwd.pdf")
+
+    def test_a_file_over_the_size_cap_is_rejected_before_any_upload(self, monkeypatch):
+        """_read_bounded (app/api.py) checks the running total WHILE
+        reading, not after — this only has to prove the outcome (413,
+        never reaches MinIO), not the memory-bounding mechanism itself."""
+        monkeypatch.setattr(api, "_MAX_UPLOAD_BYTES", 10)  # tiny, so the test payload need not be huge
+        monkeypatch.setattr(api, "_UPLOAD_READ_CHUNK_BYTES", 4)
+        uploaded = []
+        monkeypatch.setattr(api.object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
+
+        files = [_upload_file("report.pdf", b"x" * 100, "application/pdf")]
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(api.ingest_upload(files=files, topic=None, ctx=TEST_CTX))
+
+        assert exc_info.value.status_code == 413
+        assert uploaded == []  # never reached MinIO
+
+    def test_a_file_within_the_size_cap_still_uploads(self, monkeypatch):
+        monkeypatch.setattr(api, "_MAX_UPLOAD_BYTES", 1000)
+        uploaded = []
+        monkeypatch.setattr(
+            api.object_store, "upload_bytes", lambda key, data, ct: uploaded.append(data)
+        )
+
+        async def fake_publish(client, **kw):
+            pass
+
+        monkeypatch.setattr(api.ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(queue, "get_client", lambda: FakeRedis())
+
+        files = [_upload_file("report.pdf", b"x" * 100, "application/pdf")]
+        asyncio.run(api.ingest_upload(files=files, topic=None, ctx=TEST_CTX))
+
+        assert uploaded == [b"x" * 100]
 
 
 class TestIngestStream:

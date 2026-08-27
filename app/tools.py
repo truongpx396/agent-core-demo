@@ -55,7 +55,8 @@ import ast
 import concurrent.futures
 import operator
 import uuid
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Literal
 
@@ -64,13 +65,12 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field, field_validator
 
 from app import qdrant_store
-from app.config import DEFAULT_TENANT
 from app.embeddings import embed_sparse, embed_text
 from app.scrubbing import scrub
 from app.security import DEFAULT_POLICY, SecurityCtx, valid_ctx
 
 # Whitelisted operators for the safe calculator.
-_OPS = {
+_OPS: dict[type, Callable[..., float]] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,
@@ -145,6 +145,8 @@ def _ctx_or_refuse(config: RunnableConfig | None, action: str) -> SecurityCtx | 
 
 def _safe_eval(node: ast.AST) -> float:
     if isinstance(node, ast.Constant):  # numbers
+        if not isinstance(node.value, int | float):
+            raise ValueError("Unsupported expression")
         return node.value
     if isinstance(node, ast.BinOp):
         return _OPS[type(node.op)](_safe_eval(node.left), _safe_eval(node.right))
@@ -461,7 +463,7 @@ def _remember_impl(content: str, ctx: SecurityCtx) -> str:
             "kind": "memory",
             "tenant": ctx["tenant"],
             "owner": ctx["principal"],
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
         },
     )
     qdrant_store.upsert([point])

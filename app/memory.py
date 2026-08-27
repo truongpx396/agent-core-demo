@@ -14,9 +14,16 @@ real data-subject-request handler or a retention-sweep script calls
 directly — a trusted OPERATIONAL caller, never the graph.
 """
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from typing import cast
 
-from qdrant_client.models import DatetimeRange, FieldCondition, Filter, HasIdCondition, MatchValue
+from qdrant_client.models import (
+    DatetimeRange,
+    FieldCondition,
+    Filter,
+    HasIdCondition,
+    MatchValue,
+)
 
 from app import metrics, qdrant_store
 from app.security import SecurityCtx, valid_ctx
@@ -78,7 +85,7 @@ def delete_memories(
     if memory_id is not None:
         must.append(HasIdCondition(has_id=[memory_id]))
     else:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat()
+        cutoff = datetime.now(UTC) - timedelta(days=cast(int, older_than_days))
         must.append(FieldCondition(key="created_at", range=DatetimeRange(lt=cutoff)))
 
     selector = Filter(must=must)

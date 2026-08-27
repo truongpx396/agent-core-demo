@@ -60,12 +60,13 @@ background-thread-bound checkpointer from a different loop and hit the
 same "bound to a different event loop" failure this design exists to avoid.
 """
 import asyncio
-import json
+import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langfuse.decorators import langfuse_context, observe
@@ -73,10 +74,21 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
 
 from app import metrics
-from app.config import CHAT_MODEL, CHECKPOINTER_DATABASE_URL
+from app.config import (
+    CHAT_MODEL,
+    CHECKPOINTER_DATABASE_URL,
+    MAX_COST_USD_PER_TENANT_PER_DAY,
+)
 from app.errors import ErrorCode, ErrorEnvelope, TurnCancelled
-from app.graph import CANCEL_SENTINEL, build_graph, resumability_error, resumability_error_async
-from app.security import SecurityCtx
+from app.graph import (
+    CANCEL_SENTINEL,
+    build_graph,
+    resumability_error,
+    resumability_error_async,
+)
+from app.security import SecurityCtx, valid_ctx
+
+logger = logging.getLogger(__name__)
 
 try:
     from langfuse.callback import CallbackHandler
@@ -129,6 +141,62 @@ def _record_turn_metrics(
                 from app import meter
 
                 meter.record_usage(ctx, thread_id, CHAT_MODEL, total_tokens)
+
+
+_TENANT_BUDGET_WARNING_FRACTION = 0.8  # log/count once a tenant crosses 80% of its daily cap
+
+
+def _tenant_over_daily_budget(ctx: SecurityCtx | None) -> bool:
+    """True if `ctx`'s tenant has already spent >= MAX_COST_USD_PER_TENANT_PER_DAY
+    over the last rolling 24 hours (app/meter.py's usage_ledger) — checked
+    BEFORE a turn starts (answer/stream_turn/astream_events_turn), so an
+    over-budget tenant is refused without ever reaching the LLM/tool loop
+    at all. Distinct from MAX_COST_USD_PER_TURN
+    (app/graph.py::should_continue): that ceiling only ever sees ONE
+    turn's own running total and has no memory of what the same tenant
+    already spent on turns before it — this is the ceiling that
+    accumulates ACROSS turns.
+
+    Fails OPEN (never blocks a turn) if the ledger read itself fails — a
+    usage-ledger outage must not ALSO take down every turn on top of
+    whatever already took the ledger down, same degrade-don't-crash
+    posture as meter.record_usage's own write path and
+    app/semantic_cache.py/app/moderation.py's read paths.
+    """
+    if not valid_ctx(ctx):
+        return False
+    from app import meter
+
+    try:
+        since = datetime.now(UTC) - timedelta(hours=24)
+        spent = meter.usage_summary(ctx["tenant"], since=since)["total_cost_usd"]
+    except Exception as exc:  # noqa: BLE001 - a ledger read failing must not also block every turn
+        logger.warning(
+            "tenant_budget_check_failed", extra={"error_class": type(exc).__name__}
+        )
+        return False
+
+    if spent >= MAX_COST_USD_PER_TENANT_PER_DAY:
+        metrics.agent_tenant_budget_exceeded_total.inc()
+        return True
+    if spent >= _TENANT_BUDGET_WARNING_FRACTION * MAX_COST_USD_PER_TENANT_PER_DAY:
+        metrics.agent_tenant_budget_warning_total.inc()
+        logger.warning(
+            "tenant_approaching_daily_budget",
+            extra={
+                "tenant": ctx["tenant"],
+                "spent_usd": spent,
+                "limit_usd": MAX_COST_USD_PER_TENANT_PER_DAY,
+            },
+        )
+    return False
+
+
+def _tenant_budget_envelope() -> ErrorEnvelope:
+    return ErrorEnvelope(
+        code=ErrorCode.TENANT_BUDGET_EXCEEDED,
+        message="This tenant's daily usage budget has been reached. Please try again later.",
+    )
 
 
 def _text_content(content) -> str:
@@ -284,7 +352,7 @@ def _callbacks(session_id: str):
     if CallbackHandler is not None:
         try:
             callbacks.append(CallbackHandler(session_id=session_id))
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110 - Langfuse optional, no session_id means no callback
             pass
     return callbacks
 
@@ -349,7 +417,7 @@ def _config(thread_id: str, ctx: SecurityCtx) -> dict:
     }
 
 
-def _build_human_content(text: str, images: list[str] | None) -> str | list[dict]:
+def _build_human_content(text: str, images: list[str] | None) -> str | list[str | dict]:
     """Plain `str` when there's no image — the overwhelmingly common case,
     and what every existing caller/test already expects. A multimodal
     content list (GRAPH_PATTERNS.md pattern 44) — OpenAI/LiteLLM's
@@ -368,7 +436,7 @@ def _build_human_content(text: str, images: list[str] | None) -> str | list[dict
     """
     if not images:
         return text
-    parts: list[dict] = [{"type": "text", "text": text}]
+    parts: list[str | dict] = [{"type": "text", "text": text}]
     parts.extend({"type": "image_url", "image_url": {"url": img}} for img in images)
     return parts
 
@@ -399,10 +467,14 @@ def stream_turn(text: str, thread_id: str, ctx: SecurityCtx, images: list[str] |
     None — every existing caller keeps working unchanged.
     """
     langfuse_context.update_current_trace(session_id=thread_id)
+    start = time.monotonic()
+    if _tenant_over_daily_budget(ctx):
+        yield "\n[This tenant's daily usage budget has been reached. Please try again later.]"
+        _record_turn_metrics(time.monotonic() - start, "rejected")
+        return
     graph = get_graph()
     _ensure_seeded(graph, thread_id)
     _upsert_session(ctx, thread_id, text)
-    start = time.monotonic()
     deadline = start + REQUEST_TIMEOUT_SECONDS
     printed = ""
     final_state: dict = {}
@@ -510,8 +582,11 @@ def answer(
     is the canonical `ErrorEnvelope` (GRAPH_PATTERNS.md pattern 30,
     app/errors.py) — `None` for a normal success OR a successful
     auto-decline (both produce a real answer text, just not one from a
-    genuine failure); set only when the turn ended in an actual TIMEOUT or
-    a stale/incompatible checkpoint it refused to resume into.
+    genuine failure); set when the turn ended in an actual TIMEOUT, a
+    stale/incompatible checkpoint it refused to resume into, or this
+    tenant's rolling 24h spend already reached
+    MAX_COST_USD_PER_TENANT_PER_DAY (`_tenant_over_daily_budget`) — that
+    last case never even reaches the graph.
     `ungrounded_claims_count` (pattern 39) is `state["ungrounded_claims_count"]`
     — how many cited markers in the answer didn't match any real
     citation. `used_citations` and `ungrounded_claims_count` are both `0`/
@@ -522,11 +597,15 @@ def answer(
     `images` (GRAPH_PATTERNS.md pattern 44) is optional, defaulting to
     None — every existing caller keeps working unchanged."""
     langfuse_context.update_current_trace(session_id=thread_id)
+    start = time.monotonic()
+    if _tenant_over_daily_budget(ctx):
+        _record_turn_metrics(time.monotonic() - start, "rejected")
+        envelope = _tenant_budget_envelope()
+        return envelope.message, [], envelope, 0
     graph = get_graph()
     _ensure_seeded(graph, thread_id)
     _upsert_session(ctx, thread_id, text)
     cfg = _config(thread_id, ctx)
-    start = time.monotonic()
 
     result = _invoke_with_timeout(
         graph, {"messages": [HumanMessage(content=_build_human_content(text, images))]}, cfg, start
@@ -595,7 +674,7 @@ def _open_trace(name: str, session_id: str, input_text: str):
             callbacks.append(
                 CallbackHandler(stateful_client=trace, session_id=session_id)
             )
-        except Exception:  # noqa: BLE001 - Langfuse optional
+        except Exception:  # noqa: BLE001, S110 - Langfuse optional
             pass
     return trace, callbacks
 
@@ -755,7 +834,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
             try:
                 from langfuse import Langfuse
                 Langfuse().flush()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110 - best-effort flush on the way out
                 pass
 
     if used_citations or ungrounded_claims_count:
@@ -801,7 +880,16 @@ async def astream_events_turn(
     `_run_graph_stream`/`_iterate_with_timeout` — see their docstrings;
     only app/agent_worker.py's `"turn"`-job dispatch passes one, wiring it
     to a Redis flag `POST /chat/cancel` sets (app/queue.py::is_cancelled).
+
+    Refused up front (an `error` event, never reaching the graph) if this
+    tenant's rolling 24h spend already reached
+    MAX_COST_USD_PER_TENANT_PER_DAY — see `_tenant_over_daily_budget`.
     """
+    if _tenant_over_daily_budget(ctx):
+        metrics.agent_requests_total.labels(outcome="rejected").inc()
+        envelope = _tenant_budget_envelope()
+        yield {"type": "error", "content": envelope.message, **envelope.to_dict()}
+        return
     graph = await init_graph_async()
     await _ensure_seeded_async(graph, thread_id)
     _upsert_session(ctx, thread_id, text)
@@ -1007,7 +1095,7 @@ async def _langfuse_trace(name: str, session_id: str, input_text: str):
             callbacks.append(
                 CallbackHandler(stateful_client=trace, session_id=session_id)
             )
-        except Exception:  # noqa: BLE001 — Langfuse optional
+        except Exception:  # noqa: BLE001, S110 — Langfuse optional
             pass
     try:
         yield trace, callbacks
@@ -1016,7 +1104,7 @@ async def _langfuse_trace(name: str, session_id: str, input_text: str):
             try:
                 from langfuse import Langfuse
                 Langfuse().flush()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110 - best-effort flush on the way out
                 pass
 
 

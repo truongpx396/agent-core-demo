@@ -4,8 +4,8 @@ Values are read from the environment / .env. A single `Settings` instance is
 created and its fields are also re-exported as module constants so existing
 imports (`from app.config import QDRANT_URL`) keep working.
 """
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Also load .env into os.environ so third-party SDKs that read env vars
 # directly (e.g. the Langfuse client) pick up their keys.
@@ -92,6 +92,16 @@ class Settings(BaseSettings):
     # mattering the moment OPENAI_API_BASE points at a real paid provider.
     max_cost_usd_per_turn: float = 0.50
 
+    # Per-tenant ceiling across MANY turns (app/agent.py's
+    # _tenant_over_daily_budget), a rolling 24-hour window against
+    # app/meter.py's usage_ledger — distinct from MAX_COST_USD_PER_TURN
+    # above, which only ever sees ONE turn at a time and has no memory of
+    # what a tenant already spent on turns before it. Same "$0 for every
+    # locally-run Ollama model" note as MAX_COST_USD_PER_TURN: this never
+    # trips against this demo's own docker-compose stack, only once
+    # OPENAI_API_BASE points at a real paid provider.
+    max_cost_usd_per_tenant_per_day: float = 20.0
+
     # Object storage for uploaded documents (app/object_store.py) — MinIO,
     # a self-hosted S3-compatible store (docker-compose's `minio` service),
     # consistent with this app's fully-offline posture everywhere else.
@@ -109,6 +119,34 @@ class Settings(BaseSettings):
     # this app that necessarily reaches the public internet, unlike the rest
     # of the stack (fully local via docker-compose).
     telegram_bot_token: str = ""
+
+    # API-layer protections (app/api.py) — a single client (or one
+    # misbehaving/compromised tenant) must not be able to flood the shared
+    # Redis Streams queue (app/queue.py) or starve every other tenant's
+    # turns. Rate limiting is per-tenant (X-Tenant-Id), backed by the SAME
+    # Redis this app already depends on — not in-process memory, which
+    # would silently stop working the moment more than one `uvicorn`
+    # process is running (this app's own scaling story, see
+    # GRAPH_PATTERNS.md pattern 43) since each process would count hits
+    # independently. Fails OPEN if Redis itself is unreachable (see
+    # app/api.py's limiter construction) — the same "an ancillary system's
+    # outage must not take down the core turn" posture
+    # app/semantic_cache.py/app/moderation.py already established, applied
+    # here to a THIRD ancillary system.
+    rate_limit_per_minute: int = 30
+
+    # Comma-separated list of allowed origins for CORS, or "*" for any
+    # (the default — appropriate for a local demo with no other frontend
+    # pointed at it; a real multi-origin deployment narrows this). The
+    # built-in web UI (app/static/index.html) is same-origin and never
+    # needs CORS at all — this only matters for a DIFFERENT origin calling
+    # this API directly from a browser.
+    cors_allowed_origins: str = "*"
+
+    # POST /ingest/upload's per-file cap, enforced before any MinIO write
+    # (app/api.py) — an unbounded upload is a memory/storage exhaustion
+    # vector, not just a slow request.
+    max_upload_size_mb: int = 25
 
 
 settings = Settings()
@@ -135,9 +173,13 @@ SEMANTIC_CACHE_SIMILARITY_THRESHOLD = settings.semantic_cache_similarity_thresho
 SEMANTIC_CACHE_TTL_SECONDS = settings.semantic_cache_ttl_seconds
 MEMORY_RETENTION_DAYS = settings.memory_retention_days
 MAX_COST_USD_PER_TURN = settings.max_cost_usd_per_turn
+MAX_COST_USD_PER_TENANT_PER_DAY = settings.max_cost_usd_per_tenant_per_day
 TELEGRAM_BOT_TOKEN = settings.telegram_bot_token
 MINIO_ENDPOINT = settings.minio_endpoint
 MINIO_ACCESS_KEY = settings.minio_access_key
 MINIO_SECRET_KEY = settings.minio_secret_key
 MINIO_BUCKET = settings.minio_bucket
 MINIO_SECURE = settings.minio_secure
+RATE_LIMIT_PER_MINUTE = settings.rate_limit_per_minute
+CORS_ALLOWED_ORIGINS = settings.cors_allowed_origins
+MAX_UPLOAD_SIZE_MB = settings.max_upload_size_mb

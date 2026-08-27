@@ -58,8 +58,9 @@ import re
 import subprocess
 import time
 import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, Callable, Literal, TypedDict
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict, cast
 
 from langchain_core.messages import (
     AIMessage,
@@ -77,13 +78,17 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.types import RetryPolicy, interrupt
+from pydantic import SecretStr
 
-from app.config import CHAT_MODEL, MAX_COST_USD_PER_TURN, OPENAI_API_BASE, OPENAI_API_KEY
+from app import metrics, moderation, semantic_cache
+from app.config import (
+    CHAT_MODEL,
+    MAX_COST_USD_PER_TURN,
+    OPENAI_API_BASE,
+    OPENAI_API_KEY,
+)
 from app.security import SecurityCtx, valid_ctx
 from app.tools import TOOL_CAPABILITIES, TOOLS
-from app import metrics
-from app import moderation
-from app import semantic_cache
 
 if TYPE_CHECKING:
     from app.manifest import AgentManifest, DomainPlugin
@@ -311,7 +316,7 @@ def _trim_history(messages: list[BaseMessage]) -> list[RemoveMessage]:
     """`_messages_to_trim` reduced to `RemoveMessage` deletion stubs —
     kept as its own function for callers (and tests) that only care which
     ids get removed, not their content."""
-    return [RemoveMessage(id=m.id) for m in _messages_to_trim(messages)]
+    return [RemoveMessage(id=cast(str, m.id)) for m in _messages_to_trim(messages)]
 
 
 def _format_turns_for_summary(messages: list[BaseMessage]) -> str:
@@ -370,7 +375,7 @@ def make_compact_history_node(llm):
         if not to_summarize:
             return {}
 
-        removals = [RemoveMessage(id=m.id) for m in to_summarize]
+        removals = [RemoveMessage(id=cast(str, m.id)) for m in to_summarize]
         metrics.agent_history_compacted_total.inc()
 
         prior_summary = state.get("history_summary") or ""
@@ -471,7 +476,7 @@ def _make_llm(tools: list = TOOLS):
     return ChatOpenAI(
         model=CHAT_MODEL,
         base_url=OPENAI_API_BASE,
-        api_key=OPENAI_API_KEY,
+        api_key=SecretStr(OPENAI_API_KEY),
         temperature=0,
         # astream_events (app/agent.py's astream_events_turn) forces this
         # model through its streaming code path even though agent() calls
@@ -949,7 +954,7 @@ def _reject_tool_calls(tool_calls: list, reason: str) -> list[ToolMessage]:
     return [ToolMessage(content=reason, tool_call_id=tc["id"]) for tc in tool_calls]
 
 
-def _tool_capability(name: str, tool_capabilities: dict[str, str] = TOOL_CAPABILITIES) -> str:
+def _tool_capability(name: str, tool_capabilities: Mapping[str, str] = TOOL_CAPABILITIES) -> str:
     """A tool absent from `tool_capabilities` defaults to "outward" — fail
     closed, so a new tool added to a domain's TOOLS without a capability
     entry is gated rather than silently trusted. This is the one place
@@ -1010,7 +1015,7 @@ def _consecutive_repeat_count(messages: list) -> int:
 
 
 def _mandatory_gate_reason(
-    tool_calls: list, tool_capabilities: dict[str, str] = TOOL_CAPABILITIES
+    tool_calls: list, tool_capabilities: Mapping[str, str] = TOOL_CAPABILITIES
 ) -> str | None:
     """None if every call in this batch is read_only; otherwise the more
     severe capability present ("outward" — including any undeclared tool —
@@ -1024,8 +1029,11 @@ def _mandatory_gate_reason(
     return None
 
 
+_DEFAULT_VALID_TOOL_NAMES = frozenset(t.name for t in TOOLS)
+
+
 def _invalid_tool_call_names(
-    tool_calls: list, valid_tool_names: frozenset[str] = frozenset(t.name for t in TOOLS)
+    tool_calls: list, valid_tool_names: frozenset[str] = _DEFAULT_VALID_TOOL_NAMES
 ) -> list[str]:
     """Names in this batch that aren't a real registered tool at all — a
     stricter, more severe check than `_tool_capability`'s "outward" default
@@ -1050,8 +1058,8 @@ def _invalid_tool_call_names(
 # --- Edge fn: after agent, route to tools / output check / abort ---
 def should_continue(
     state: State,
-    tool_capabilities: dict[str, str] = TOOL_CAPABILITIES,
-    valid_tool_names: frozenset[str] = frozenset(t.name for t in TOOLS),
+    tool_capabilities: Mapping[str, str] = TOOL_CAPABILITIES,
+    valid_tool_names: frozenset[str] = _DEFAULT_VALID_TOOL_NAMES,
 ) -> Literal[
     "tools",
     "human_approval",
@@ -1114,10 +1122,10 @@ def should_continue(
         # of the token one, it's its own budget.
         metrics.agent_cost_ceiling_exceeded_total.inc()
         return "__end__"
-    result = tools_condition(state)
+    result = tools_condition(state)  # type: ignore[arg-type]  # State is a valid Mapping at runtime; tools_condition's stub just doesn't say so
     if result != "tools":
         return "check_output"
-    tool_calls = state["messages"][-1].tool_calls or []
+    tool_calls = cast(AIMessage, state["messages"][-1]).tool_calls or []
     if len(tool_calls) > MAX_TOOL_CALLS_PER_TURN:
         return "too_many_tool_calls"
     if _invalid_tool_call_names(tool_calls, valid_tool_names):
@@ -1141,7 +1149,7 @@ def should_continue(
 # calls at once than MAX_TOOL_CALLS_PER_TURN allows (e.g. a confused model
 # fanning out into dozens of searches), instead of running all of them. ---
 def too_many_tool_calls(state: State) -> dict:
-    last_ai = state["messages"][-1]
+    last_ai = cast(AIMessage, state["messages"][-1])
     tool_calls = last_ai.tool_calls or []
     metrics.agent_tool_budget_exceeded_total.inc()
     rejections = _reject_tool_calls(
@@ -1166,7 +1174,7 @@ def too_many_tool_calls(state: State) -> dict:
 # only affects which name(s), if any, get cited in the retry message for a
 # custom domain whose tool set differs from Acme's. ---
 def invalid_tool_call(state: State) -> dict:
-    last_ai = state["messages"][-1]
+    last_ai = cast(AIMessage, state["messages"][-1])
     tool_calls = last_ai.tool_calls or []
     metrics.agent_invalid_tool_call_total.inc()
     bad_names = sorted(set(_invalid_tool_call_names(tool_calls)))
@@ -1199,7 +1207,7 @@ def human_approval(state: State) -> dict:
     because cancellation means "stop this run," not "here's feedback for
     your next attempt."
     """
-    last_ai = state["messages"][-1]
+    last_ai = cast(AIMessage, state["messages"][-1])
     tool_calls = last_ai.tool_calls or []
     decision = interrupt(
         {
@@ -1600,5 +1608,5 @@ def build_graph(
     # compiled graph (chiefly app/agent.py's _ensure_seeded) can recover
     # which domain built it, and seed the CORRECT system prompt, without
     # this function's return type changing for every existing call site.
-    compiled.manifest = manifest
+    compiled.manifest = manifest  # type: ignore[attr-defined]  # deliberate stash, see comment above
     return compiled

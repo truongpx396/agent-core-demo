@@ -183,7 +183,7 @@ def _assert_safe_url(url: str) -> None:
         addr_info = socket.getaddrinfo(parsed.hostname, None)
     except socket.gaierror as exc:
         metrics.agent_ingest_refused_total.labels(reason="ssrf_blocked").inc()
-        raise IngestRefused(f"could not resolve host {parsed.hostname!r}: {exc}")
+        raise IngestRefused(f"could not resolve host {parsed.hostname!r}: {exc}") from exc
 
     for _family, _type, _proto, _canonname, sockaddr in addr_info:
         ip = ipaddress.ip_address(sockaddr[0])
@@ -212,7 +212,7 @@ def ingest_url(url: str, ctx: SecurityCtx | None, topic: str | None = None) -> i
             )
     except httpx.HTTPError as exc:
         metrics.agent_ingest_refused_total.labels(reason="fetch_failed").inc()
-        raise IngestRefused(f"fetch failed: {exc}")
+        raise IngestRefused(f"fetch failed: {exc}") from exc
 
     if response.status_code >= 400:
         metrics.agent_ingest_refused_total.labels(reason="fetch_failed").inc()

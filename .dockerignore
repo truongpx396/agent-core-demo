@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.git/
+.pytest_cache/
+tests/
+eval_runs/
+checkpoints.sqlite3*
+.env
+.env.example
+*.md

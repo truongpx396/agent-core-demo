@@ -1,4 +1,4 @@
-.PHONY: help up pull-models ingest chat chat-stream chat-stream-hitl serve mcp-serve telegram agent-worker ingest-worker test eval logs down clean clear-cache
+.PHONY: help up up-app pull-models ingest chat chat-stream chat-stream-hitl serve mcp-serve telegram agent-worker ingest-worker test lint typecheck eval logs down clean clear-cache
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -6,6 +6,9 @@ help:  ## Show this help
 
 up:  ## Start all services (ollama, litellm, qdrant, langfuse, postgres, minio)
 	docker compose up -d
+
+up-app:  ## Start infra + the containerized app itself (api, agent-worker, ingest-worker; see Dockerfile)
+	docker compose --profile app up -d --build
 
 pull-models:  ## Download the Ollama chat + embedding models
 	docker compose exec ollama ollama pull qwen2.5:3b
@@ -51,6 +54,12 @@ ingest-worker:  ## Start a document-ingestion worker (PDF/DOCX uploads; run seve
 
 test:  ## Run the graph test suite (no live services needed — fake LLM, no Qdrant)
 	pytest -q
+
+lint:  ## Static checks: ruff (style/correctness) — see pyproject.toml's [tool.ruff]
+	ruff check .
+
+typecheck:  ## Static checks: mypy over app/ — see pyproject.toml's [tool.mypy]
+	mypy
 
 eval:  ## Run the golden-dataset evaluation against the real stack (needs `make up` + `make ingest`)
 	python -m app.eval

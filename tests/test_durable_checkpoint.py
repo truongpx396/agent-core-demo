@@ -89,7 +89,6 @@ class TestInitGraphSync:
     def test_builds_a_working_graph(self):
         agent_module.init_graph_sync()
         graph = agent_module.get_graph()
-        config = {"configurable": {"thread_id": str(uuid.uuid4())}}
         # The singleton graph binds the real ChatOpenAI client — just prove
         # it's a real compiled graph with a durable (non-Memory) checkpointer
         # wired in, rather than driving a live LLM call here.
@@ -268,7 +267,9 @@ class TestAsyncSeeding:
         from langchain_core.messages import AIMessage
 
         def _mutating_tool_call_llm():
-            from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+            from langchain_core.language_models.fake_chat_models import (
+                GenericFakeChatModel,
+            )
 
             return GenericFakeChatModel(
                 messages=iter(
@@ -342,7 +343,9 @@ class TestAsyncSeeding:
         from langchain_core.messages import AIMessage, HumanMessage
 
         def _mutating_tool_call_llm():
-            from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+            from langchain_core.language_models.fake_chat_models import (
+                GenericFakeChatModel,
+            )
 
             return GenericFakeChatModel(
                 messages=iter(
@@ -405,8 +408,8 @@ class TestResumabilityError:
         """A graph paused at human_approval (require_approval=True, a
         tool call pending) — the real "waiting for a human" state
         resumability_error is meant to guard."""
-        from langchain_core.messages import AIMessage
         from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+        from langchain_core.messages import AIMessage
 
         llm = GenericFakeChatModel(
             messages=iter(

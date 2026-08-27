@@ -377,7 +377,7 @@ class TestHumanApproval:
 
         assert result["approved"] is False
         assert len(result["messages"]) == 2
-        for msg, tc in zip(result["messages"], ai.tool_calls):
+        for msg, tc in zip(result["messages"], ai.tool_calls, strict=True):
             assert isinstance(msg, ToolMessage)
             assert msg.tool_call_id == tc["id"]
 

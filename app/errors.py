@@ -27,6 +27,7 @@ class ErrorCode(str, Enum):
     UNATTENDED_PAUSE = "unattended_pause"
     CANCELLED = "cancelled"
     COST_CEILING_EXCEEDED = "cost_ceiling_exceeded"
+    TENANT_BUDGET_EXCEEDED = "tenant_budget_exceeded"
     NO_PROGRESS = "no_progress"
     INTERNAL = "internal"
 

@@ -114,3 +114,30 @@ class ChatResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str = "ok"
+
+
+class ReadinessResponse(BaseModel):
+    """GET /health/ready's body — see app/health.py's module docstring for
+    why this is a separate question from GET /health's liveness probe."""
+
+    status: str = Field(..., description='"ready" if every check passed, else "degraded".')
+    checks: dict[str, bool] = Field(
+        ..., description="Per-dependency reachability (app/health.py::check_dependencies)."
+    )
+
+
+class UsageResponse(BaseModel):
+    """GET /usage's body (app/meter.py::usage_summary) — this caller's own
+    tenant, all-time, plus the same rolling-24h number
+    app/agent.py::_tenant_over_daily_budget checks before every turn, so a
+    caller can see how close they are to MAX_COST_USD_PER_TENANT_PER_DAY
+    without waiting to actually get refused by it."""
+
+    total_tokens: int = Field(..., description="All-time tokens recorded for this tenant.")
+    total_cost_usd: float = Field(..., description="All-time cost (USD) recorded for this tenant.")
+    last_24h_cost_usd: float = Field(
+        ..., description="Cost recorded in the last rolling 24h — what the daily budget check sees."
+    )
+    daily_budget_usd: float = Field(
+        ..., description="MAX_COST_USD_PER_TENANT_PER_DAY — the ceiling last_24h_cost_usd is checked against."
+    )

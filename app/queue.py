@@ -35,12 +35,26 @@ actually runs the graph.
 """
 import json
 import logging
+from typing import cast
 
 import redis.asyncio as redis
 
 from app.config import REDIS_URL
+from app.security import SecurityCtx
 
 logger = logging.getLogger(__name__)
+
+# The actual shape of a redis-py Streams read response with
+# decode_responses=True — [(stream_name, [(entry_id, {field: value}), ...])].
+# redis-py's own stubs type xread/xreadgroup's return as a much wider union
+# covering every decode_responses/RESP-protocol combination it supports,
+# since that flag is a runtime instance attribute the stub can't key an
+# overload on; every call site in this app always constructs its client with
+# decode_responses=True (see get_client below), so the wide union is never
+# actually possible here — just unprovable to the type checker without this
+# cast. Shared with app/ingest_queue.py, app/agent_worker.py, and
+# app/ingest_worker.py, which read streams the identical way.
+StreamReadResponse = list[tuple[str, list[tuple[str, dict[str, str]]]]]
 
 REQUESTS_STREAM = "agent:requests"
 CONSUMER_GROUP = "agent-workers"
@@ -103,7 +117,7 @@ async def publish_request(
     request_id: str,
     text: str,
     thread_id: str,
-    ctx: dict,
+    ctx: SecurityCtx,
     require_approval: bool = False,
     images: list[str] | None = None,
 ) -> None:
@@ -138,7 +152,7 @@ async def publish_request(
 
 
 async def publish_resume_request(
-    client: redis.Redis, *, request_id: str, thread_id: str, approved: bool, ctx: dict
+    client: redis.Redis, *, request_id: str, thread_id: str, approved: bool, ctx: SecurityCtx
 ) -> None:
     """Producer side: enqueue a resume decision for a turn paused at
     human_approval — the queued-path counterpart to
@@ -160,7 +174,7 @@ async def publish_resume_request(
 
 
 async def publish_cancel_request(
-    client: redis.Redis, *, request_id: str, thread_id: str, ctx: dict
+    client: redis.Redis, *, request_id: str, thread_id: str, ctx: SecurityCtx
 ) -> None:
     """Producer side: enqueue a cancel for a turn paused at human_approval
     (the queued-path counterpart to app/agent.py::cancel_run). Deliberately
@@ -235,7 +249,7 @@ async def read_results(client: redis.Redis, request_id: str, *, block_ms: int = 
     key = results_stream_key(request_id)
     last_id = "0"
     while True:
-        response = await client.xread({key: last_id}, block=block_ms, count=10)
+        response = cast(StreamReadResponse, await client.xread({key: last_id}, block=block_ms, count=10))
         if not response:
             continue  # no new entries within block_ms — poll again
         _, entries = response[0]

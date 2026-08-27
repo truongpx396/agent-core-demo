@@ -47,7 +47,7 @@ class TestChunkText:
         assert len(children) > 1
         # Consecutive children share exactly `child_overlap` characters at
         # the boundary (the sliding window's step is child_chars - overlap).
-        for a, b in zip(children, children[1:]):
+        for a, b in zip(children, children[1:], strict=False):
             assert a[-75:] == b[:75]
 
     def test_children_reconstruct_the_full_parent_when_overlap_is_removed(self):

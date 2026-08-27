@@ -1,5 +1,5 @@
-"""PDF/DOCX → plain text (production ingestion pipeline, GRAPH_PATTERNS.md
-roadmap item #1). Each extractor here is deliberately NOT wired into
+"""PDF/DOCX → plain text (production ingestion pipeline). Each extractor
+here is deliberately NOT wired into
 app/ingestor.py::ingest_file's `.txt`/`.md` gate — that scope line was
 documented there as intentional, not an oversight ("adding a format later
 means adding one more `ingest_*` front end that produces plain text and

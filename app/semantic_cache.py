@@ -25,6 +25,7 @@ import json
 import logging
 import re
 import uuid
+from typing import cast
 
 import numpy as np
 import redis
@@ -32,6 +33,7 @@ from redis.commands.search.field import TagField, TextField, VectorField
 from redis.commands.search.index_definition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
 
+from app import metrics
 from app.config import (
     REDIS_URL,
     SEMANTIC_CACHE_SIMILARITY_THRESHOLD,
@@ -39,7 +41,6 @@ from app.config import (
 )
 from app.embeddings import embed_text
 from app.security import SecurityCtx
-from app import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ def _ensure_index(client: redis.Redis) -> None:
     if _index_ready:
         return
     dim = len(embed_text("dimension probe"))
-    schema = (
+    schema = [
         TagField("$.tenant", as_name="tenant"),
         TagField("$.principal", as_name="principal"),
         TextField("$.query", as_name="query"),
@@ -100,7 +101,7 @@ def _ensure_index(client: redis.Redis) -> None:
             {"TYPE": "FLOAT32", "DIM": dim, "DISTANCE_METRIC": "COSINE"},
             as_name="embedding",
         ),
-    )
+    ]
     try:
         client.ft(INDEX_NAME).create_index(
             schema, definition=IndexDefinition(prefix=[KEY_PREFIX], index_type=IndexType.JSON)
@@ -170,7 +171,7 @@ def set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict])
                 "query": query,
                 "answer": answer,
                 "citations": json.dumps(citations),
-                "embedding": vector,
+                "embedding": cast(list, vector),
             },
         )
         client.expire(key, SEMANTIC_CACHE_TTL_SECONDS)

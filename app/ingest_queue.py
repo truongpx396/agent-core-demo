@@ -1,6 +1,6 @@
-"""Redis Streams queue for the production ingestion pipeline
-(GRAPH_PATTERNS.md roadmap item #1) — a SEPARATE stream/consumer group
-from app/queue.py's chat-turn queue (`agent:requests`), not a generalized
+"""Redis Streams queue for the production ingestion pipeline — a SEPARATE
+stream/consumer group from app/queue.py's chat-turn queue
+(`agent:requests`), not a generalized
 reuse of it. Deliberate: chat turns are short and human-latency-sensitive;
 an ingest job (parsing a large PDF) can run for many seconds. Sharing one
 Redis consumer group would mean a burst of large ingest jobs delays
@@ -23,10 +23,15 @@ actually downloads from MinIO and runs extraction/ingestion.
 """
 import json
 import logging
+from typing import cast
 
 import redis.asyncio as redis
 
-from app.queue import get_client  # noqa: F401 - re-exported for callers that only need one import
+from app.queue import (
+    StreamReadResponse,
+    get_client,  # noqa: F401 - re-exported for callers that only need one import
+)
+from app.security import SecurityCtx
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +61,7 @@ async def publish_ingest_request(
     object_key: str,
     filename: str,
     content_type: str,
-    ctx: dict,
+    ctx: SecurityCtx,
     topic: str | None = None,
 ) -> None:
     """Producer side: enqueue one ingest job. `object_key` points at the
@@ -93,7 +98,7 @@ async def read_results(client: redis.Redis, job_id: str, *, block_ms: int = 5000
     key = results_stream_key(job_id)
     last_id = "0"
     while True:
-        response = await client.xread({key: last_id}, block=block_ms, count=10)
+        response = cast(StreamReadResponse, await client.xread({key: last_id}, block=block_ms, count=10))
         if not response:
             continue
         _, entries = response[0]

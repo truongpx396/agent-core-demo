@@ -29,9 +29,12 @@ Both are recorded via `agent_retrieval_degraded_total{stage=...}`
 (`app/metrics.py`), never silently absorbed.
 """
 import logging
+from typing import cast
+from uuid import UUID
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
+    Condition,
     Distance,
     FieldCondition,
     Filter,
@@ -100,11 +103,12 @@ def upsert(points: list[PointStruct]) -> None:
 def _build_filter(
     topic: str | None, tenant_filter: Filter | None, doc_ids: list[str] | None = None
 ) -> Filter | None:
-    must: list[FieldCondition | HasIdCondition] = []
+    must: list[Condition] = []
     if topic:
         must.append(FieldCondition(key="topic", match=MatchValue(value=topic)))
     if tenant_filter is not None:
-        must.extend(tenant_filter.must or [])
+        existing = tenant_filter.must
+        must.extend(existing if isinstance(existing, list) else [existing] if existing else [])
     if doc_ids:
         # ANDed onto whatever's already in `must` (tenant, topic) — this
         # can only NARROW the result set to a caller-chosen subset of
@@ -112,7 +116,7 @@ def _build_filter(
         # above (app/security.py's Policy.lower is still applied, and
         # applied first in every real call site — see app/tools.py's
         # search_docs docstring for why the ordering matters).
-        must.append(HasIdCondition(has_id=doc_ids))
+        must.append(HasIdCondition(has_id=cast("list[int | str | UUID]", doc_ids)))
     return Filter(must=must) if must else None
 
 
@@ -183,7 +187,7 @@ def hybrid_search(
         return points[:k]
 
     try:
-        texts = [p.payload.get("text", "") for p in points]
+        texts = [(p.payload or {}).get("text", "") for p in points]
         scores = embeddings.rerank(query_text, texts)
         order = sorted(range(len(points)), key=lambda i: scores[i], reverse=True)
         return [points[i] for i in order][:k]

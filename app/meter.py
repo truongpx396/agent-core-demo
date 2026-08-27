@@ -20,6 +20,7 @@ table is the only change needed for real cost tracking — the ledger's
 shape never changes.
 """
 import logging
+from datetime import datetime
 
 from app.model_resolver import resolve_model
 from app.security import SecurityCtx, valid_ctx
@@ -79,15 +80,28 @@ def record_usage(
         )
 
 
-def usage_summary(tenant: str, principal: str | None = None) -> dict:
+def usage_summary(
+    tenant: str, principal: str | None = None, since: datetime | None = None
+) -> dict:
     """Real read path proving the ledger isn't write-only: total tokens
     and cost for `tenant`, optionally narrowed to one `principal` — never
-    the other way around (no way to query across tenants)."""
+    the other way around (no way to query across tenants) — and/or to
+    usage recorded on or after `since`. `since` is what
+    `_tenant_over_daily_budget` (app/agent.py) uses for a ROLLING
+    24-hour-window budget check (`since = now - 24h`, not calendar-day
+    boundaries, so the window a request is checked against never resets a
+    tenant's near-limit status mid-day the way a midnight-UTC boundary
+    would) — `usage_summary`'s own all-time default (`since=None`) stays
+    the right shape for `GET /usage`'s "how much has this tenant ever
+    spent" question, a different one."""
     where = ["tenant = %s"]
     params: list = [tenant]
     if principal:
         where.append("principal = %s")
         params.append(principal)
+    if since is not None:
+        where.append("recorded_at >= %s")
+        params.append(since)
 
     sql = (
         "SELECT COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0) "
