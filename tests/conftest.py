@@ -10,7 +10,7 @@ instead — via `GraphDeps(search_docs=fake)`/`GraphDeps(cache_get=fake, ...)`
 `graph.make_check_semantic_cache_node(fake)` (node-level) — which simply
 bypasses these defaults.
 
-`TEST_CTX`: a valid SecurityCtx (app/security.py) every test that drives a
+`TEST_CTX`: a valid SecurityCtx (app/core/security.py) every test that drives a
 turn through validate_input needs — route_after_validation fails closed
 without one (see graph.py). Each test file imports it directly
 (`from tests.conftest import TEST_CTX`) rather than via a pytest fixture,
@@ -19,7 +19,7 @@ config/state dict, not injected as a test function parameter.
 """
 import pytest
 
-from app import graph
+from app.agent import graph
 
 TEST_CTX = {"tenant": "acme", "principal": "test-user", "claims": {}}
 
