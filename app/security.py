@@ -20,10 +20,16 @@ has somewhere to add its own facts without changing this module's shape.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Protocol, TypedDict
+from datetime import UTC, datetime, timedelta
+from typing import Protocol, TypedDict, TypeGuard
 
-from qdrant_client.models import DatetimeRange, FieldCondition, Filter, MatchValue
+from qdrant_client.models import (
+    Condition,
+    DatetimeRange,
+    FieldCondition,
+    Filter,
+    MatchValue,
+)
 
 from app.config import MEMORY_RETENTION_DAYS
 
@@ -93,7 +99,7 @@ class TenantIsolationPolicy:
     def lower(self, ctx: SecurityCtx, target: str) -> Filter:
         if target not in _TARGETS:
             raise ValueError(f"unknown lowering target: {target!r}")
-        must = [
+        must: list[Condition] = [
             FieldCondition(key="tenant", match=MatchValue(value=ctx["tenant"])),
             FieldCondition(
                 key="kind",
@@ -115,9 +121,7 @@ class TenantIsolationPolicy:
             # is a real migration note, not just a future-only guarantee:
             # any pre-existing memory written before this feature landed
             # becomes invisible at recall until re-written.
-            cutoff = (
-                datetime.now(timezone.utc) - timedelta(days=MEMORY_RETENTION_DAYS)
-            ).isoformat()
+            cutoff = datetime.now(UTC) - timedelta(days=MEMORY_RETENTION_DAYS)
             must.append(
                 FieldCondition(key="created_at", range=DatetimeRange(gte=cutoff))
             )
@@ -127,12 +131,20 @@ class TenantIsolationPolicy:
 DEFAULT_POLICY: Policy = TenantIsolationPolicy()
 
 
-def valid_ctx(ctx: SecurityCtx | None) -> bool:
+def valid_ctx(ctx: SecurityCtx | None) -> TypeGuard[SecurityCtx]:
     """True if `ctx` is present and has a non-empty tenant and principal —
     the one check every fail-closed call site (validate_input, each tool)
     needs before doing anything else. Deliberately not a Policy method:
     this is a structural presence check on `ctx` itself, independent of
     which Policy ends up wired in, so it stays correct even for a future
     Policy whose `permit` rules are more elaborate than tenant equality.
+
+    Typed as a `TypeGuard` (not a plain `bool`) so every `if valid_ctx(ctx):`
+    /`if not valid_ctx(ctx): return ...` guard clause already used
+    throughout this codebase also narrows `ctx` from `SecurityCtx | None`
+    to `SecurityCtx` for the type checker — matching what was already true
+    at runtime, not a behavior change.
     """
-    return bool(ctx) and bool(ctx.get("tenant")) and bool(ctx.get("principal"))
+    if ctx is None:
+        return False
+    return bool(ctx.get("tenant")) and bool(ctx.get("principal"))

@@ -19,13 +19,20 @@ pay startup cost for a path a given process might never exercise (a test
 run that never calls `embed_sparse`/`rerank` never downloads anything).
 """
 from langchain_openai import OpenAIEmbeddings
+from pydantic import SecretStr
 
-from app.config import EMBED_MODEL, OPENAI_API_BASE, OPENAI_API_KEY, RERANK_MODEL, SPARSE_MODEL
+from app.config import (
+    EMBED_MODEL,
+    OPENAI_API_BASE,
+    OPENAI_API_KEY,
+    RERANK_MODEL,
+    SPARSE_MODEL,
+)
 
 embeddings = OpenAIEmbeddings(
     model=EMBED_MODEL,
     base_url=OPENAI_API_BASE,
-    api_key=OPENAI_API_KEY,
+    api_key=SecretStr(OPENAI_API_KEY),
     check_embedding_ctx_length=False,  # let the proxy/Ollama handle chunking
 )
 

@@ -77,6 +77,12 @@ redis>=5.0,<9
 # app stays on 1.29.0's documented, standard FastMCP/ClientSession API.
 mcp[cli]==1.29.0
 
+# Per-tenant HTTP rate limiting (app/rate_limit.py) — Redis-backed sliding
+# window over the SAME Redis this app already depends on. Used directly
+# (its own strategies/storage API), not via slowapi's route-decorator
+# wrapper around it — see app/rate_limit.py's module docstring for why.
+limits>=4.0,<6
+
 # General-purpose Ingestor's URL fetch (app/ingestor.py) — already a
 # transitive dependency (fastapi/openai pull it in), declared directly
 # here since app/ingestor.py now imports it as a first-class dependency,

@@ -46,7 +46,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -336,7 +336,7 @@ def load_previous_run() -> dict[str, dict] | None:
 
 def save_run(results: list[CaseResult]) -> Path:
     RESULTS_DIR.mkdir(exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     payload = json.dumps(_to_jsonable(results), indent=2)
     (RESULTS_DIR / f"{ts}.json").write_text(payload)
     (RESULTS_DIR / "latest.json").write_text(payload)

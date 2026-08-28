@@ -15,7 +15,7 @@ from langchain_core.tools import tool
 from langgraph.types import Command
 
 from app.graph import GraphDeps, build_graph
-from app.manifest import AgentManifest, DEFAULT_DOMAIN_PLUGIN, DEFAULT_MANIFEST
+from app.manifest import DEFAULT_DOMAIN_PLUGIN, DEFAULT_MANIFEST, AgentManifest
 from app.security import Policy, SecurityCtx, valid_ctx
 
 WIDGET_CTX: SecurityCtx = {"tenant": "widgetco", "principal": "support-agent", "claims": {}}

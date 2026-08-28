@@ -48,14 +48,24 @@ app/api.py's `POST /chat/stream/queued` for the producer half).
 import asyncio
 import json
 import logging
+import signal
 import socket
 import uuid
+from typing import cast
 
-from app.agent import astream_events_resume, astream_events_turn, cancel_run, init_graph_async
+from app import sql_store
+from app.agent import (
+    astream_events_resume,
+    astream_events_turn,
+    cancel_run,
+    init_graph_async,
+)
 from app.errors import ErrorCode, ErrorEnvelope
+from app.logging_config import bind_request_id, configure_logging
 from app.queue import (
     CONSUMER_GROUP,
     REQUESTS_STREAM,
+    StreamReadResponse,
     clear_cancel_flag,
     ensure_consumer_group,
     get_client,
@@ -125,18 +135,19 @@ async def process_request(client, entry_id: str, fields: dict) -> None:
     request_id = payload["request_id"]
     kind = payload.get("kind", "turn")
     handler = _DISPATCH.get(kind)
-    try:
-        if handler is None:
-            raise ValueError(f"unknown job kind: {kind!r}")
-        await handler(client, request_id, payload)
-    except Exception as exc:  # noqa: BLE001 - the queue must keep moving regardless
-        logger.warning(
-            "agent_worker_turn_failed",
-            extra={"request_id": request_id, "kind": kind, "error_class": type(exc).__name__},
-        )
-        await publish_result(client, request_id, {"type": "error", "content": str(exc)})
-    finally:
-        await client.xack(REQUESTS_STREAM, CONSUMER_GROUP, entry_id)
+    with bind_request_id(request_id):
+        try:
+            if handler is None:
+                raise ValueError(f"unknown job kind: {kind!r}")
+            await handler(client, request_id, payload)
+        except Exception as exc:  # noqa: BLE001 - the queue must keep moving regardless
+            logger.warning(
+                "agent_worker_turn_failed",
+                extra={"request_id": request_id, "kind": kind, "error_class": type(exc).__name__},
+            )
+            await publish_result(client, request_id, {"type": "error", "content": str(exc)})
+        finally:
+            await client.xack(REQUESTS_STREAM, CONSUMER_GROUP, entry_id)
 
 
 async def run() -> None:
@@ -144,13 +155,32 @@ async def run() -> None:
     client = get_client()
     await ensure_consumer_group(client)
     logger.info("agent_worker_started", extra={"consumer": CONSUMER_NAME})
-    while True:
-        response = await client.xreadgroup(
-            CONSUMER_GROUP,
-            CONSUMER_NAME,
-            {REQUESTS_STREAM: ">"},
-            count=_READ_COUNT,
-            block=_BLOCK_MS,
+
+    # Graceful shutdown: a SIGTERM/SIGINT (docker stop, a process supervisor
+    # restarting this worker, Ctrl-C) sets this instead of killing the loop
+    # mid-read. Checked only BETWEEN xreadgroup calls, never inside the
+    # entries loop below — so a job already claimed by this worker (that
+    # `xreadgroup(">")` , `_READ_COUNT = 1`, always finishes before the next
+    # blocking read starts) always runs to completion and gets acked before
+    # exit, rather than being abandoned mid-turn the way an unhandled kill
+    # signal would (compounding with the lack of XCLAIM/XAUTOCLAIM
+    # redelivery this module's own docstring already flags — a job dropped
+    # THAT way has no automatic recovery at all).
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop_event.set)
+
+    while not stop_event.is_set():
+        response = cast(
+            StreamReadResponse,
+            await client.xreadgroup(
+                CONSUMER_GROUP,
+                CONSUMER_NAME,
+                {REQUESTS_STREAM: ">"},
+                count=_READ_COUNT,
+                block=_BLOCK_MS,
+            ),
         )
         if not response:
             continue
@@ -158,7 +188,16 @@ async def run() -> None:
         for entry_id, fields in entries:
             await process_request(client, entry_id, fields)
 
+    logger.info("agent_worker_stopping", extra={"consumer": CONSUMER_NAME})
+    await client.aclose()
+    # Same reasoning as app/api.py's lifespan shutdown: a turn this worker
+    # ran may have opened app/sql_store.py's connection pool (query_employees,
+    # app/meter.py::record_usage) — leaving it open past process exit is
+    # what produces the "couldn't stop thread... within 5.0 seconds" warning
+    # documented there. A no-op if this worker never touched it.
+    sql_store.close_pool()
+
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     asyncio.run(run())

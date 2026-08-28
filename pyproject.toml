@@ -1,3 +1,45 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+# Deliberately no "E"/pycodestyle line-length rule: this codebase's
+# docstrings/comments are its documentation, intentionally long-form (see
+# GRAPH_PATTERNS.md), not code wrapped to a column limit.
+# F/I/UP: pyflakes, isort, pyupgrade — uncontroversial correctness/hygiene.
+# B: flake8-bugbear, minus B008 (FastAPI's Depends()/File() call as an
+# argument default is the framework's own idiom, not a bug).
+# BLE: flake8-blind-except — this codebase already annotates every
+# deliberate `except Exception` with a justifying `# noqa: BLE001 - ...`
+# comment (see app/agent.py, app/telegram_channel.py, etc.), so enabling
+# the rule just makes those pre-existing comments meaningful instead of
+# decorative.
+# S110: bandit's try/except/pass check, paired with BLE001 for the same
+# reason — a handful of genuinely-fine silent swallows (a best-effort
+# trace flush, a cosmetic typing indicator) are individually noqa'd.
+select = ["F", "I", "UP", "B", "BLE", "S110"]
+ignore = [
+    "B008",   # FastAPI's Depends()/File() in an argument default is the framework's own idiom
+    "UP042",  # str+Enum -> StrEnum for ErrorCode/Topic/Department is a deliberate call for a
+              # separate change, not something a lint-config pass should silently rewrite
+]
+
+[tool.mypy]
+# No explicit python_version pin: mypy infers it from whatever interpreter
+# it's run under. Pinning it lower than that interpreter (e.g. to match
+# this app's "3.11+" minimum) makes mypy reject newer syntax it encounters
+# in third-party stubs transitively imported along the way (numpy's own
+# .pyi files use a 3.12-only construct) — a stub-parsing conflict that has
+# nothing to do with this app's own code. CI pins the actual interpreter
+# version directly instead (see .github/workflows/ci.yml).
+ignore_missing_imports = true
+# Third-party stubs this app depends on (redis-py's Streams commands,
+# qdrant-client's Filter/Condition unions, RediSearch's create_index) are
+# themselves imprecise in ways this app's own code isn't — see the `cast`/
+# `# type: ignore[...]` comments at each such site in app/ for the specific
+# reason. Scoped to app/ (not tests/) — tests are exercised by actually
+# running them (`make test`), not by static typing.
+files = ["app"]

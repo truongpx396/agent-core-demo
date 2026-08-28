@@ -1,0 +1,51 @@
+name: CI
+
+# Runs on every push/PR against main. Deliberately does NOT run app/eval.py
+# here (see README's Troubleshooting / GRAPH_PATTERNS.md) — that harness
+# needs the real stack (Ollama models, Qdrant, a warm local model) and is
+# meant for a maintainer to run deliberately (`make eval`) before a release,
+# not as a per-PR gate against free-tier CI minutes and a cold model. The
+# suite below (tests/) is exactly the subset designed to need none of that
+# (a fake LLM, no live services — see tests/conftest.py).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install ruff==0.16.4
+      - run: ruff check .
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements-lock.txt mypy==2.3.1
+      - run: mypy
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements-lock.txt
+      - run: pytest -q
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t agent-core-demo:ci .

@@ -27,11 +27,14 @@ since it's opt-in and needs a real bot token to do anything at all.
 """
 import asyncio
 import logging
+import signal
 
 import httpx
 
+from app import sql_store
 from app.agent import answer, get_graph
 from app.config import DEFAULT_TENANT, TELEGRAM_BOT_TOKEN
+from app.logging_config import configure_logging
 from app.security import SecurityCtx
 
 logger = logging.getLogger(__name__)
@@ -111,7 +114,7 @@ async def handle_message(client: httpx.AsyncClient, message: dict) -> None:
         await client.post(
             _api_url("sendChatAction"), json={"chat_id": chat_id, "action": "typing"}
         )
-    except Exception:  # noqa: BLE001 - a typing indicator is cosmetic, never worth failing over
+    except Exception:  # noqa: BLE001, S110 - a typing indicator is cosmetic, never worth failing over
         pass
 
     reply_text, citations, _error, _ungrounded = await asyncio.to_thread(
@@ -138,9 +141,24 @@ async def run() -> None:
 
     get_graph()  # prime the durable checkpointer on its own background thread up front
     offset = 0
+
+    # Graceful shutdown: a SIGTERM/SIGINT stops this loop from starting a
+    # NEW getUpdates poll, but never interrupts a message already being
+    # handled — same "finish what's claimed, never abandon it mid-turn"
+    # shape as app/agent_worker.py's `run()`. Bounded by how long a single
+    # getUpdates call can block (`_POLL_TIMEOUT_SECONDS`, Telegram's own
+    # long-poll window) rather than instant, since that call itself isn't
+    # cancelled mid-flight — the tradeoff a long-poll design accepts, per
+    # this function's own docstring on why a real webhook deployment would
+    # differ.
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop_event.set)
+
     async with httpx.AsyncClient(timeout=_POLL_TIMEOUT_SECONDS + 10) as client:
         logger.info("telegram_channel_started")
-        while True:
+        while not stop_event.is_set():
             try:
                 resp = await client.get(
                     _api_url("getUpdates"),
@@ -159,7 +177,14 @@ async def run() -> None:
                 if message:
                     await handle_message(client, message)
 
+    logger.info("telegram_channel_stopping")
+    # Same reasoning as app/api.py's lifespan shutdown: handle_message ->
+    # answer() runs the full graph, which may have opened
+    # app/sql_store.py's connection pool (query_employees,
+    # app/meter.py::record_usage). A no-op if this process never touched it.
+    sql_store.close_pool()
+
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     asyncio.run(run())

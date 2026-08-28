@@ -6,8 +6,8 @@ query), app/agent.py's `_build_human_content` (constructing the multimodal
 content list actually sent to the model), and the routing/node-level call
 sites that had to switch from `.content` to these helpers.
 """
-from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, HumanMessage
 
 from app import agent as agent_module
 from app import graph

@@ -1,6 +1,5 @@
-"""Session directory for the web UI's session switcher (item #9 of the
-production-hardening roadmap) — lets a user list and switch between their
-own past conversation threads.
+"""Session directory for the web UI's session switcher — lets a user list
+and switch between their own past conversation threads.
 
 Persisted in the same `appdata` Postgres database app/sql_store.py and
 app/meter.py already use (`chat_sessions` table, postgres-init/06-chat-sessions.sql)
@@ -78,7 +77,7 @@ def list_sessions(ctx: SecurityCtx | None) -> list[dict]:
             (ctx["tenant"], ctx["principal"]),
         )
         columns = [desc.name for desc in cur.description]
-        return [dict(zip(columns, row)) for row in cur.fetchall()]
+        return [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
 
 
 def session_belongs_to(ctx: SecurityCtx | None, thread_id: str) -> bool:

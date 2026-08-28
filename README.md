@@ -157,7 +157,11 @@ make serve          # starts uvicorn on http://localhost:8000
 ```
 
 - Interactive docs (Swagger UI): **http://localhost:8000/docs**
-- `GET /health` → `{"status":"ok"}`
+- `GET /health` → `{"status":"ok"}` (liveness only — always 200 if the
+  process is up)
+- `GET /health/ready` → 200 only if Qdrant/both Postgres databases/Redis
+  are actually reachable right now, 503 otherwise, with which one(s)
+  failed in the body (`app/health.py`)
 - `POST /chat` with a Pydantic-validated body — and two **required** headers,
   `X-Tenant-Id`/`X-Principal-Id`, stamped into a `SecurityCtx`
   (`app/security.py`) that scopes every retrieval/write this request can see
@@ -185,15 +189,24 @@ call is also traced in Langfuse under that id as the session.
 `POST /chat` is single-shot — if the agent calls `add_note` (the one
 mutating tool, always gated — see GRAPH_PATTERNS.md pattern 15), there's no
 way for this endpoint to show an approval prompt, so it auto-declines and
-returns the agent's response to that. `POST /chat/stream` surfaces the
-pause as an `approval_required` SSE event instead (no `/chat/resume`
-endpoint yet to act on it from HTTP — see GRAPH_PATTERNS.md's "Extending
-Further"); `make chat-stream` and `app/hitl_demo.py` are the two places
-that actually drive the approve/reject prompt end to end today.
+returns the agent's response to that. `POST /chat/stream/queued` (the web
+UI's default path) surfaces the pause as a real, actionable
+`approval_required` SSE event instead — `POST /chat/resume` accepts the
+approve/reject decision over HTTP, queue-first like every other turn (see
+"MCP"'s neighboring section and GRAPH_PATTERNS.md pattern 43), so a
+browser client can drive the same approve/reject flow `make chat-stream`
+and `app/hitl_demo.py` already could from a terminal.
 
+- `GET /usage` → this caller's own tenant usage/cost (`app/meter.py`),
+  including the rolling-24h figure checked against
+  `MAX_COST_USD_PER_TENANT_PER_DAY` before every turn
 - `GET /metrics` → Prometheus text format (tool calls, retries, HITL decisions,
   capability-gate hits, checkpoint issues, request latency/outcome, retrieval
-  degradation, semantic cache hit/miss — see `app/metrics.py`)
+  degradation, semantic cache hit/miss, rate-limit rejections, tenant budget
+  warnings — see `app/metrics.py`)
+- Per-tenant HTTP rate limiting (`RATE_LIMIT_PER_MINUTE`, default 30/minute,
+  Redis-backed — `app/rate_limit.py`) on the turn-creating endpoints; CORS is
+  configurable via `CORS_ALLOWED_ORIGINS` (`app/config.py`)
 
 `POST /chat`'s response also carries `citations`: the sources the answer
 actually referenced (by bracket marker), not everything retrieved — see
@@ -256,7 +269,8 @@ an in-process one.
 
 | Target            | Description |
 |-------------------|-------------|
-| `make up`         | Start all services |
+| `make up`         | Start all infra services |
+| `make up-app`     | `make up`, plus the containerized app itself (`api`/`agent-worker`/`ingest-worker`, built from `Dockerfile`) |
 | `make pull-models`| Download Ollama chat + embedding models |
 | `make ingest`     | Embed sample docs → Qdrant |
 | `make chat`       | Start the agent CLI |
@@ -264,6 +278,8 @@ an in-process one.
 | `make mcp-serve`  | Start the MCP server exposing `query_employees` (stdio transport) |
 | `make mcp-inspect`| Launch the MCP Inspector against `app/mcp_server.py` |
 | `make test`       | Run the pytest suite (fake LLM, no live services needed) |
+| `make lint`       | `ruff check .` — see `pyproject.toml`'s `[tool.ruff]` |
+| `make typecheck`  | `mypy` over `app/` — see `pyproject.toml`'s `[tool.mypy]` |
 | `make eval`       | Run the golden-dataset evaluation against the real stack |
 | `make logs`       | Tail service logs |
 | `make down`       | Stop services (keep data) |
@@ -273,7 +289,10 @@ an in-process one.
 
 | File | Responsibility |
 |------|----------------|
-| `docker-compose.yml`   | All 7 services |
+| `docker-compose.yml`   | All 7 infra services, plus an opt-in `app` profile (`make up-app`) containerizing the app itself — `api`/`agent-worker`/`ingest-worker`, built from `Dockerfile` |
+| `Dockerfile`           | The deployable image (one image, three roles via `command:` override) — non-root user, `HEALTHCHECK` against `/health/ready`, installs from `requirements-lock.txt` |
+| `.github/workflows/ci.yml` | Runs `ruff`/`mypy`/`pytest` (no live services needed) and a Docker build check on every push/PR against `main` |
+| `requirements-lock.txt`| Fully pinned freeze of `requirements.txt`'s runtime deps — what the `Dockerfile`/CI actually install from, so a build today and next year resolve identically |
 | `litellm-config.yaml`  | Model routing, retries, fallbacks, Langfuse callback |
 | `postgres-init/`       | SQL run automatically on a fresh postgres volume — `01-*.sql` (litellm/langfuse), `02-appdata.sql` (the `employees` table `query_employees` reads), `03-meter.sql` (the `usage_ledger` table `app/meter.py` reads/writes) |
 | `app/config.py`        | Typed settings (Pydantic `BaseSettings`) |
@@ -294,11 +313,14 @@ an in-process one.
 | `app/mcp_server.py`    | MCP server exposing `query_employees` over stdio (`make mcp-serve`) — a separate trust boundary from the in-process LLM (pattern 21) |
 | `app/mcp_client.py`    | MCP client — binds an external MCP server's tools into this app's own graph, with local `capability_overrides` as the sole trust source (pattern 28) |
 | `app/metrics.py`       | Prometheus counters/histograms + the tool-call callback handler |
+| `app/logging_config.py`| Structured (JSON) logging for every long-running service process, plus automatic `request_id`/`thread_id` propagation onto every log line touched while handling one turn (a contextvar + logging filter, zero changes to individual `logger.info(...)` call sites) |
+| `app/health.py`        | Real dependency checks for `GET /health/ready` (Qdrant, both Postgres databases, Redis) — bounded per-check timeouts, run concurrently |
+| `app/rate_limit.py`    | Per-tenant, Redis-backed HTTP rate limiting (`RATE_LIMIT_PER_MINUTE`) on the turn-creating endpoints — fails open if Redis itself is down |
 | `app/eval.py`          | Golden-dataset evaluation harness (`make eval`) |
 | `app/chat.py`          | Streaming CLI + Langfuse tracing |
 | `app/hitl_demo.py`     | Runnable HITL pause/resume demo against the shared durable graph (`python -m app.hitl_demo "..."`) |
 | `app/schemas.py`       | Pydantic request/response models, including `ChatResponse.citations` |
-| `app/api.py`           | FastAPI service (`/`, `/health`, `/chat`, `/chat/stream`, `/metrics`) |
+| `app/api.py`           | FastAPI service (`/`, `/health`, `/health/ready`, `/chat`, `/chat/stream`, `/chat/stream/queued`, `/chat/resume`, `/chat/cancel`, `/chat/sessions`, `/usage`, `/ingest/upload`, `/metrics`) — per-tenant rate limiting, CORS, and a bounded per-file upload size cap all wired in as middleware/checks, not just documented |
 | `app/static/index.html`| The built-in web UI — self-contained, no build step, no CDN dependency (pattern 29) |
 | `app/manifest.py`      | `AgentManifest` (config) + `DomainPlugin` (code) — the multi-domain composition layer `build_graph(manifest=..., domain=...)` reads (pattern 23); `DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN` wrap this app's own Acme setup unchanged |
 | `tests/`               | pytest suite — routing/node/graph/tool/checkpointer/sql_store/mcp_server/mcp_client/ingestor/chunking/moderation/api tests against a fake LLM and mocked stores (`make test`, no live services) |

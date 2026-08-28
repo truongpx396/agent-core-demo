@@ -15,6 +15,7 @@ from app import ingestor, qdrant_store
 from app.config import DEFAULT_TENANT
 from app.embeddings import embed_text
 from app.sample_docs import DOCS
+from app.security import SecurityCtx
 
 # Ingestion needs a real SecurityCtx (app/security.py) — `ingest_text`
 # refuses without one (content whose ownership can't be established is
@@ -22,7 +23,7 @@ from app.sample_docs import DOCS
 # dev/seed operation with no request to derive one from, so it stamps a
 # fixed principal identifying itself as the seeding script, same spirit as
 # app/chat.py's local dev ctx.
-_INGEST_CTX = {"tenant": DEFAULT_TENANT, "principal": "make-ingest", "claims": {}}
+_INGEST_CTX: SecurityCtx = {"tenant": DEFAULT_TENANT, "principal": "make-ingest", "claims": {}}
 
 
 def main() -> None:
@@ -47,7 +48,7 @@ def main() -> None:
         raise SystemExit(
             f"Failed to ingest sample docs: {exc}\n"
             "Is the stack running? Try `make up` and `make pull-models` first."
-        )
+        ) from exc
 
     print(
         f"Ingested {len(DOCS)} sample docs as {total_chunks} chunks into Qdrant "

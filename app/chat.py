@@ -63,7 +63,7 @@ def main() -> None:
 
     try:
         langfuse_context.flush()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 - best-effort flush on the way out
         pass
     print("Bye!")
 
@@ -161,7 +161,7 @@ async def async_main(hitl: bool = False) -> None:
 
     try:
         langfuse_context.flush()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 - best-effort flush on the way out
         pass
     print("Bye!")
 

@@ -1,6 +1,15 @@
 """A tiny hand-written knowledge base to ingest into Qdrant."""
+from typing import TypedDict
 
-DOCS = [
+
+class SampleDoc(TypedDict):
+    id: int
+    topic: str
+    title: str
+    text: str
+
+
+DOCS: list[SampleDoc] = [
     {
         "id": 1,
         "topic": "langgraph",

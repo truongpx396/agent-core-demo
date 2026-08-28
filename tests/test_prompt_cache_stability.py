@@ -68,7 +68,7 @@ class TestPrefixIdenticalAcrossPrincipals:
         rendered_b = _render(CTX_B)
 
         assert len(rendered_a) == len(rendered_b)
-        for msg_a, msg_b in zip(rendered_a, rendered_b):
+        for msg_a, msg_b in zip(rendered_a, rendered_b, strict=True):
             assert type(msg_a) is type(msg_b)
             assert msg_a.content == msg_b.content
 

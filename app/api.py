@@ -2,7 +2,9 @@
 
 Endpoints:
 - GET  /                  -> the built-in web UI (app/static/index.html)
-- GET  /health            -> liveness check
+- GET  /health            -> liveness check (always 200 if the process is up)
+- GET  /health/ready      -> readiness check (200 only if Qdrant/Postgres/
+                              Redis are actually reachable, see app/health.py)
 - POST /chat              -> non-streaming, returns full answer (Pydantic in/out)
 - POST /chat/stream       -> production SSE streaming via astream_events v2,
                               running the graph in-process, in this request —
@@ -24,6 +26,9 @@ Endpoints:
 - GET  /chat/sessions     -> this caller's past conversation threads, most
                               recently active first (the session switcher)
 - GET  /chat/sessions/{thread_id}/messages -> that thread's transcript
+- GET  /usage             -> this caller's own tenant usage/cost (app/meter.py),
+                              including the rolling-24h number
+                              app/agent.py::_tenant_over_daily_budget checks
 - POST /ingest/upload     -> upload one or more PDF/DOCX documents; each
                               becomes its own job on a SEPARATE queue from
                               chat turns (app/ingest_queue.py), processed
@@ -56,29 +61,65 @@ authentication later is a gateway config change, not a rewrite of this file.
 """
 import asyncio
 import json
+import uuid
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Response, UploadFile
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Response,
+    UploadFile,
+)
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-import uuid
-
-from app import ingest_queue, object_store, queue, sessions, sql_store
-from app.agent import answer, astream_events_turn, get_session_messages, init_graph_async
+from app import (
+    health as health_checks,  # `health` is also this module's own liveness endpoint name below
+)
+from app import ingest_queue, meter, metrics, object_store, queue, sessions, sql_store
+from app.agent import (
+    answer,
+    astream_events_turn,
+    get_session_messages,
+    init_graph_async,
+)
+from app.config import (
+    CORS_ALLOWED_ORIGINS,
+    MAX_COST_USD_PER_TENANT_PER_DAY,
+    MAX_UPLOAD_SIZE_MB,
+)
 from app.extractors import EXTRACTORS_BY_SUFFIX
+from app.logging_config import bind_request_id, configure_logging
+from app.rate_limit import TenantRateLimitMiddleware
 from app.schemas import (
     CancelRequest,
     ChatRequest,
     ChatResponse,
     HealthResponse,
     IngestUploadResult,
+    ReadinessResponse,
     ResumeRequest,
     SessionMessage,
     SessionSummary,
+    UsageResponse,
 )
 from app.security import SecurityCtx
+
+# Called at import time, before uvicorn (or anything else) has a chance to
+# log through this module — see app/logging_config.py's own docstring for
+# why this matters here specifically: without it, this service had NO
+# logging handler configured at all (verified empirically), so every
+# `logger.info(...)` call throughout this app's tool/graph/turn
+# instrumentation was silently discarded under `make serve`, not merely
+# unstructured.
+configure_logging()
 
 
 async def get_ctx(
@@ -115,6 +156,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Core AI Stack Demo", version="1.0.0", lifespan=lifespan)
 
+# Per-tenant, Redis-backed — see app/rate_limit.py's own module docstring
+# for why this is a plain Starlette middleware rather than a per-route
+# decorator (this app's test suite calls every handler directly as a
+# plain function, and a decorator needing its own `request: Request`
+# parameter on every rate-limited endpoint would mean changing all of
+# their signatures just to satisfy it).
+app.add_middleware(TenantRateLimitMiddleware)
+
+# "*" (the default, CORS_ALLOWED_ORIGINS) is fine for a local demo with no
+# other frontend pointed at this API — app/static/index.html is
+# same-origin and never touches CORS at all. A real multi-origin
+# deployment sets CORS_ALLOWED_ORIGINS to a comma-separated allowlist.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"] if CORS_ALLOWED_ORIGINS == "*" else CORS_ALLOWED_ORIGINS.split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 _UI_HTML_PATH = Path(__file__).parent / "static" / "index.html"
 
 
@@ -136,7 +196,25 @@ def ui() -> str:
 
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
+    """Liveness only — always 200 if this process can respond at all. See
+    `GET /health/ready` for whether it can actually complete a turn right
+    now; conflating the two into one endpoint would make an orchestrator
+    unable to tell "the process is wedged" apart from "a downstream store
+    is down" (app/health.py's module docstring)."""
     return HealthResponse()
+
+
+@app.get("/health/ready", response_model=ReadinessResponse)
+async def health_ready(response: Response) -> ReadinessResponse:
+    """Readiness — 200 only if every real dependency (Qdrant, both
+    Postgres databases, Redis) is actually reachable right now, 503
+    otherwise, with which one(s) failed in the body — see
+    app/health.py::check_dependencies for what "reachable" means for each.
+    """
+    checks = await health_checks.check_dependencies()
+    ready = all(checks.values())
+    response.status_code = 200 if ready else 503
+    return ReadinessResponse(status="ready" if ready else "degraded", checks=checks)
 
 
 @app.get("/metrics")
@@ -147,9 +225,15 @@ def metrics_endpoint() -> Response:
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest, ctx: SecurityCtx = Depends(get_ctx)) -> ChatResponse:
-    text, citations, error, ungrounded_claims_count = answer(
-        req.message, req.thread_id, ctx, images=req.images or None
-    )
+    # thread_id doubles as the correlation id here — this path has no
+    # separate request_id concept (that's the queued path's own thing, see
+    # app/agent_worker.py::process_request) — so every log line touched
+    # while answering THIS request, all the way down into app/graph.py and
+    # app/tools.py, carries it (app/logging_config.py's bind_request_id).
+    with bind_request_id(req.thread_id):
+        text, citations, error, ungrounded_claims_count = answer(
+            req.message, req.thread_id, ctx, images=req.images or None
+        )
     return ChatResponse(
         thread_id=req.thread_id,
         answer=text,
@@ -177,10 +261,16 @@ async def chat_stream(
     Reuse `thread_id` across calls to keep conversation memory.
     """
     async def generate():
-        async for event in astream_events_turn(
-            req.message, req.thread_id, ctx, images=req.images or None
-        ):
-            yield f"data: {json.dumps(event)}\n\n"
+        # Bound INSIDE the generator, not around this call — `generate()`
+        # runs lazily, driven by StreamingResponse iterating it after
+        # chat_stream() itself has already returned, so binding out there
+        # would cover the wrong span (see app/logging_config.py's
+        # bind_request_id).
+        with bind_request_id(req.thread_id):
+            async for event in astream_events_turn(
+                req.message, req.thread_id, ctx, images=req.images or None
+            ):
+                yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(
         generate(),
@@ -319,7 +409,7 @@ def chat_sessions(ctx: SecurityCtx = Depends(get_ctx)) -> list[SessionSummary]:
     tenant+principal, never tenant alone: a session belongs to whoever
     started it (own-conversation isolation), the same axis
     app/security.py::Policy.lower already applies to memories."""
-    return sessions.list_sessions(ctx)
+    return sessions.list_sessions(ctx)  # type: ignore[return-value]  # response_model coerces dict -> SessionSummary at the HTTP boundary; a direct Python call (see tests/test_api.py) intentionally gets the raw dicts back
 
 
 @app.get("/chat/sessions/{thread_id}/messages", response_model=list[SessionMessage])
@@ -334,7 +424,56 @@ async def chat_session_messages(
     thread_id's transcript just by guessing/enumerating ids."""
     if not sessions.session_belongs_to(ctx, thread_id):
         raise HTTPException(status_code=404, detail="session not found")
-    return await get_session_messages(thread_id)
+    return await get_session_messages(thread_id)  # type: ignore[return-value]  # same response_model coercion note as chat_sessions above
+
+
+@app.get("/usage", response_model=UsageResponse)
+def usage(ctx: SecurityCtx = Depends(get_ctx)) -> UsageResponse:
+    """This caller's own tenant usage (app/meter.py) — the read path that
+    was already there (`usage_summary`), just not reachable over HTTP
+    before now, so a caller had no way to see how close they were to
+    MAX_COST_USD_PER_TENANT_PER_DAY short of getting refused by
+    app/agent.py::_tenant_over_daily_budget first. Tenant-scoped only,
+    same as `usage_summary` itself — no way to query another tenant's
+    spend through this."""
+    all_time = meter.usage_summary(ctx["tenant"])
+    since = datetime.now(UTC) - timedelta(hours=24)
+    last_24h = meter.usage_summary(ctx["tenant"], since=since)
+    return UsageResponse(
+        total_tokens=all_time["total_tokens"],
+        total_cost_usd=all_time["total_cost_usd"],
+        last_24h_cost_usd=last_24h["total_cost_usd"],
+        daily_budget_usd=MAX_COST_USD_PER_TENANT_PER_DAY,
+    )
+
+
+_UPLOAD_READ_CHUNK_BYTES = 1024 * 1024  # 1 MB per read() call
+_MAX_UPLOAD_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+
+
+async def _read_bounded(upload: UploadFile, filename: str) -> bytes:
+    """Reads in chunks and rejects as soon as the running total crosses
+    the limit — never materializes more than roughly one chunk past
+    `_MAX_UPLOAD_BYTES` in memory, unlike a bare `await upload.read()`
+    (what this replaced), which reads the ENTIRE file into memory first
+    and only then would have anything to check the size of. An unbounded
+    upload is a memory/storage exhaustion vector, not just a slow
+    request."""
+    chunks = []
+    total = 0
+    while True:
+        chunk = await upload.read(_UPLOAD_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > _MAX_UPLOAD_BYTES:
+            metrics.agent_upload_rejected_total.labels(reason="too_large").inc()
+            raise HTTPException(
+                status_code=413,
+                detail=f"{filename!r} exceeds the {MAX_UPLOAD_SIZE_MB}MB upload limit",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @app.post("/ingest/upload", response_model=list[IngestUploadResult])
@@ -344,9 +483,9 @@ async def ingest_upload(
     ctx: SecurityCtx = Depends(get_ctx),
 ) -> list[IngestUploadResult]:
     """Upload one or more documents to build this tenant's retrievable
-    corpus (GRAPH_PATTERNS.md roadmap item #1) — PDF/DOCX only today
-    (app/extractors.py); `.txt`/`.md` already have their own path
-    (app/ingestor.py::ingest_file, the CLI/script-driven one).
+    corpus — PDF/DOCX only today (app/extractors.py); `.txt`/`.md` already
+    have their own path (app/ingestor.py::ingest_file, the CLI/script-driven
+    one).
 
     Fire-and-forget per file, not a blocking wait: this handler's only
     job is getting the bytes into MinIO and a job onto the queue — actual
@@ -367,12 +506,13 @@ async def ingest_upload(
         filename = Path(upload.filename or "").name  # strip any path component a client might send
         suffix = Path(filename).suffix.lower()
         if suffix not in EXTRACTORS_BY_SUFFIX:
+            metrics.agent_upload_rejected_total.labels(reason="bad_file_type").inc()
             raise HTTPException(
                 status_code=400,
                 detail=f"unsupported file type {suffix!r} for {filename!r} — "
                 f"only {sorted(EXTRACTORS_BY_SUFFIX)} are supported",
             )
-        data = await upload.read()
+        data = await _read_bounded(upload, filename)
         job_id = uuid.uuid4().hex
         object_key = f"{ctx['tenant']}/{job_id}-{filename}"
         # Blocking MinIO I/O off the event loop — this IS the shared

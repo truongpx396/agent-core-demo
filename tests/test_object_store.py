@@ -5,7 +5,6 @@ tests/test_sql_store.py already uses for Postgres, applied to MinIO
 instead — no live MinIO needed for these; live verification happens
 separately (`make up` + a real upload round trip).
 """
-import io
 
 import pytest
 

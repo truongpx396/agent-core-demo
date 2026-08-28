@@ -1,5 +1,5 @@
-"""Object storage for uploaded documents (production ingestion pipeline,
-GRAPH_PATTERNS.md roadmap item #1) — a thin wrapper around the official
+"""Object storage for uploaded documents (production ingestion pipeline)
+— a thin wrapper around the official
 MinIO Python SDK, not boto3: smaller, purpose-built for exactly
 put/get/bucket-exists against one self-hosted S3-compatible target,
 avoiding boto3's much larger multi-service AWS SDK dependency tree for a
@@ -24,7 +24,13 @@ import logging
 
 from minio import Minio
 
-from app.config import MINIO_ACCESS_KEY, MINIO_BUCKET, MINIO_ENDPOINT, MINIO_SECRET_KEY, MINIO_SECURE
+from app.config import (
+    MINIO_ACCESS_KEY,
+    MINIO_BUCKET,
+    MINIO_ENDPOINT,
+    MINIO_SECRET_KEY,
+    MINIO_SECURE,
+)
 
 logger = logging.getLogger(__name__)
 
