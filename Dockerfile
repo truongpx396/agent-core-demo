@@ -1,5 +1,5 @@
 # One image, three roles — the API service and both queue workers
-# (app/agent_worker.py, app/ingest_worker.py) are the same codebase and the
+# (app/turns/agent_worker.py, app/ingestion/ingest_worker.py) are the same codebase and the
 # same dependency set, just a different entrypoint command. docker-compose.yml
 # builds this once and overrides `command:` per service rather than
 # maintaining three near-identical Dockerfiles.
@@ -33,7 +33,7 @@ RUN pip install --no-cache-dir -r requirements-lock.txt
 COPY app/ ./app/
 
 # fastembed/huggingface_hub cache their downloaded BM25/rerank models under
-# $HOME on first use (app/embeddings.py) — appuser needs a real, writable
+# $HOME on first use (app/retrieval/embeddings.py) — appuser needs a real, writable
 # HOME for that, not root's.
 ENV HOME=/home/appuser
 RUN chown -R appuser:appuser /home/appuser
@@ -45,7 +45,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3)" || exit 1
 
 # The API service is the default role; agent-worker/ingest-worker override
-# this in docker-compose.yml (`command: ["python", "-m", "app.agent_worker"]`
-# / `app.ingest_worker`) — neither of those binds a port, so EXPOSE/
+# this in docker-compose.yml (`command: ["python", "-m", "app.turns.agent_worker"]`
+# / `app.ingestion.ingest_worker`) — neither of those binds a port, so EXPOSE/
 # HEALTHCHECK above are meaningful for this default role only.
-CMD ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

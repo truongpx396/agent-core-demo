@@ -15,16 +15,16 @@ pull-models:  ## Download the Ollama chat + embedding models
 	docker compose exec ollama ollama pull nomic-embed-text
 
 ingest:  ## Embed sample docs and upsert them into Qdrant
-	python -m app.ingest
+	python -m scripts.seed
 
 chat:  ## Start the interactive LangGraph agent CLI (dev streaming)
-	python -m app.chat
+	python -m app.channels.chat
 
 chat-stream:  ## Start the production streaming CLI (astream_events v2, shows tool calls)
-	python -m app.chat --stream
+	python -m app.channels.chat --stream
 
 chat-stream-hitl:  ## Production streaming CLI with human-in-the-loop tool approval
-	python -m app.chat --stream --hitl
+	python -m app.channels.chat --stream --hitl
 
 serve:  ## Start the FastAPI service (http://localhost:8000/docs)
 	# --reload-dir scopes the file watcher to app/ only. Without it, uvicorn
@@ -35,22 +35,22 @@ serve:  ## Start the FastAPI service (http://localhost:8000/docs)
 	# competing directly with Ollama's own CPU-bound inference in this
 	# docker-compose stack — on a resource-constrained machine it was
 	# measurably slowing down/timing out ordinary chat turns.
-	uvicorn app.api:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
+	uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
 
 mcp-serve:  ## Start the MCP server exposing query_employees (stdio transport; needs `make up`)
-	python -m app.mcp_server
+	python -m app.mcp.server
 
-mcp-inspect:  ## Launch the MCP Inspector against app/mcp_server.py for interactive testing
-	mcp dev app/mcp_server.py
+mcp-inspect:  ## Launch the MCP Inspector against app/mcp/server.py for interactive testing
+	mcp dev app/mcp/server.py
 
-telegram:  ## Start the Telegram bot channel (needs TELEGRAM_BOT_TOKEN in .env; see app/telegram_channel.py)
-	python -m app.telegram_channel
+telegram:  ## Start the Telegram bot channel (needs TELEGRAM_BOT_TOKEN in .env; see app/channels/telegram.py)
+	python -m app.channels.telegram
 
 agent-worker:  ## Start a Redis Streams agent worker (run several for independent scaling; see POST /chat/stream/queued)
-	python -m app.agent_worker
+	python -m app.turns.agent_worker
 
 ingest-worker:  ## Start a document-ingestion worker (PDF/DOCX uploads; run several for independent scaling; see POST /ingest/upload)
-	python -m app.ingest_worker
+	python -m app.ingestion.ingest_worker
 
 test:  ## Run the graph test suite (no live services needed — fake LLM, no Qdrant)
 	pytest -q
@@ -58,11 +58,11 @@ test:  ## Run the graph test suite (no live services needed — fake LLM, no Qdr
 lint:  ## Static checks: ruff (style/correctness) — see pyproject.toml's [tool.ruff]
 	ruff check .
 
-typecheck:  ## Static checks: mypy over app/ — see pyproject.toml's [tool.mypy]
+typecheck:  ## Static checks: mypy over app/ and scripts/ — see pyproject.toml's [tool.mypy]
 	mypy
 
 eval:  ## Run the golden-dataset evaluation against the real stack (needs `make up` + `make ingest`)
-	python -m app.eval
+	python -m scripts.eval
 
 logs:  ## Tail logs from all services
 	docker compose logs -f

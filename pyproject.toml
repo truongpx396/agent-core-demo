@@ -14,7 +14,7 @@ target-version = "py311"
 # argument default is the framework's own idiom, not a bug).
 # BLE: flake8-blind-except — this codebase already annotates every
 # deliberate `except Exception` with a justifying `# noqa: BLE001 - ...`
-# comment (see app/agent.py, app/telegram_channel.py, etc.), so enabling
+# comment (see app/agent/runtime.py, app/channels/telegram.py, etc.), so enabling
 # the rule just makes those pre-existing comments meaningful instead of
 # decorative.
 # S110: bandit's try/except/pass check, paired with BLE001 for the same
@@ -40,6 +40,6 @@ ignore_missing_imports = true
 # qdrant-client's Filter/Condition unions, RediSearch's create_index) are
 # themselves imprecise in ways this app's own code isn't — see the `cast`/
 # `# type: ignore[...]` comments at each such site in app/ for the specific
-# reason. Scoped to app/ (not tests/) — tests are exercised by actually
-# running them (`make test`), not by static typing.
-files = ["app"]
+# reason. Scoped to app/ and scripts/ (not tests/) — tests are exercised by
+# actually running them (`make test`), not by static typing.
+files = ["app", "scripts"]

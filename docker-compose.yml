@@ -4,7 +4,7 @@
 # agent-worker, ingest-worker) — every URL points at the OTHER containers'
 # in-network service names (e.g. `litellm:4000`), not `localhost` — a
 # container can't reach another container via the host's own localhost the
-# way a host process can (see app/config.py's Settings defaults, all
+# way a host process can (see app/core/config.py's Settings defaults, all
 # `localhost:*`, which assume exactly that host-process case and are
 # overridden here).
 x-app-env: &app-env
@@ -89,7 +89,7 @@ services:
     volumes:
       - qdrant:/qdrant/storage
 
-  # --- Semantic cache backing store (app/semantic_cache.py) — Redis Stack,
+  # --- Semantic cache backing store (app/retrieval/semantic_cache.py) — Redis Stack,
   # not plain redis:7, because the semantic cache needs RediSearch's vector
   # KNN query support (FT.CREATE ... VECTOR, FT.SEARCH ... KNN), which the
   # base redis image doesn't ship.
@@ -106,11 +106,11 @@ services:
       retries: 10
 
   # --- Langfuse tracing UI + its Postgres (also used by LiteLLM and, now,
-  # app/sql_store.py's structured-data tool — see postgres-init/02-appdata.sql) ---
+  # app/agent/sql_store.py's structured-data tool — see postgres-init/02-appdata.sql) ---
   postgres:
     image: postgres:16
     ports:
-      - "5432:5432"   # exposed so app/sql_store.py (host process) can connect directly
+      - "5432:5432"   # exposed so app/agent/sql_store.py (host process) can connect directly
     environment:
       POSTGRES_USER: langfuse
       POSTGRES_PASSWORD: langfuse
@@ -138,7 +138,7 @@ services:
       postgres:
         condition: service_healthy
 
-  # --- Object storage for uploaded documents (app/object_store.py) — a
+  # --- Object storage for uploaded documents (app/ingestion/object_store.py) — a
   # self-hosted, S3-compatible MinIO, consistent with this app's
   # fully-offline/self-hosted posture everywhere else (no real cloud
   # dependency for a demo). No healthcheck here, matching qdrant/litellm/
@@ -150,7 +150,7 @@ services:
     image: minio/minio:latest
     command: ["server", "/data", "--console-address", ":9001"]
     ports:
-      - "9000:9000"   # S3 API — app/object_store.py talks to this
+      - "9000:9000"   # S3 API — app/ingestion/object_store.py talks to this
       - "9001:9001"   # web console (http://localhost:9001) — browse uploads by hand
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -185,7 +185,7 @@ services:
     build: .
     profiles: ["app"]
     restart: unless-stopped
-    command: ["python", "-m", "app.agent_worker"]
+    command: ["python", "-m", "app.turns.agent_worker"]
     environment: *app-env
     depends_on:
       postgres:
@@ -199,7 +199,7 @@ services:
     build: .
     profiles: ["app"]
     restart: unless-stopped
-    command: ["python", "-m", "app.ingest_worker"]
+    command: ["python", "-m", "app.ingestion.ingest_worker"]
     environment: *app-env
     depends_on:
       postgres:
