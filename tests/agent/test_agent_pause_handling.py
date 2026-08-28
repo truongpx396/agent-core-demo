@@ -24,11 +24,7 @@ from app.agent.graph import GraphDeps, build_graph
 from app.core import metrics
 from app.core.errors import ErrorCode
 from tests.conftest import TEST_CTX
-
-
-def _count(counter, **labels):
-    target = counter.labels(**labels) if labels else counter
-    return target._value.get()
+from tests.conftest import metric_value as _count
 
 
 def _tool_call_message(name, args, call_id="call_1"):

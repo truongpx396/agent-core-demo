@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent import graph
 from app.core import metrics
-from tests.conftest import TEST_CTX
+from tests.conftest import TEST_CTX, metric_value
 
 
 def test_reject_input_returns_ai_message_not_human():
@@ -19,13 +19,13 @@ def test_reject_input_returns_ai_message_not_human():
 
 
 def test_reject_context_returns_ai_message_and_increments_metric():
-    before = metrics.agent_missing_ctx_total._value.get()
+    before = metric_value(metrics.agent_missing_ctx_total)
     result = graph.reject_context({"messages": []})
     assert len(result["messages"]) == 1
     msg = result["messages"][0]
     assert isinstance(msg, AIMessage)
     assert "verify" in msg.content.lower()
-    assert metrics.agent_missing_ctx_total._value.get() == before + 1
+    assert metric_value(metrics.agent_missing_ctx_total) == before + 1
 
 
 def test_context_window_exceeded_returns_an_ai_message():
@@ -261,7 +261,7 @@ def test_retrieve_context_degrades_to_empty_when_search_docs_raises():
         raise RuntimeError("Qdrant unreachable")
 
     retrieve_context = graph.make_retrieve_context_node(failing_search_docs)
-    before = metrics.agent_context_retrieval_degraded_total._value.get()
+    before = metric_value(metrics.agent_context_retrieval_degraded_total)
 
     state = {
         "messages": [HumanMessage(content="what is a checkpointer?")],
@@ -270,7 +270,7 @@ def test_retrieve_context_degrades_to_empty_when_search_docs_raises():
     result = retrieve_context(state)
 
     assert result == {"context": "", "citations": []}
-    assert metrics.agent_context_retrieval_degraded_total._value.get() == before + 1
+    assert metric_value(metrics.agent_context_retrieval_degraded_total) == before + 1
 
 
 class TestCheckOutput:

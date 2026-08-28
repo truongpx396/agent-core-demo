@@ -1,14 +1,14 @@
-"""Tests for Prometheus metrics wiring: the tool-call callback handler and
-the direct increments inside graph.py's nodes for events a generic
+"""Tests for OpenTelemetry metrics wiring: the tool-call callback handler
+and the direct increments inside graph.py's nodes for events a generic
 callback can't reliably distinguish (see app/core/metrics.py's module docstring
 for why the split exists).
 
-These read Counter internals directly (`._value.get()` /
-`.labels(...)._value.get()`) since prometheus_client doesn't expose a
-public getter — a common pattern for testing prometheus_client
-instrumentation. All assertions use deltas (before/after), not absolute
-values, since these are global, process-wide counters shared across the
-whole test session/process.
+`_count` (below) is `tests.conftest.metric_value` — see that function's own
+docstring for how/why the InMemoryMetricReader it reads from is installed.
+All assertions here use deltas (before/after), not absolute values, since
+these are global, process-wide counters shared across the whole test
+session/process — the exact same reasoning the old prometheus_client-based
+version of this file already relied on, just against a different registry.
 """
 import uuid
 
@@ -25,11 +25,7 @@ from app.agent.graph import (
 )
 from app.core import metrics
 from tests.conftest import TEST_CTX
-
-
-def _count(counter, **labels):
-    target = counter.labels(**labels) if labels else counter
-    return target._value.get()
+from tests.conftest import metric_value as _count
 
 
 def _config():
@@ -258,15 +254,3 @@ class TestToolCallAuditLog:
 
         for record in caplog.records:
             assert "31337" not in str(record.__dict__)
-
-
-class TestMetricsEndpoint:
-    def test_metrics_endpoint_returns_prometheus_text(self):
-        from fastapi.testclient import TestClient
-
-        from app.api.main import app
-
-        client = TestClient(app)
-        resp = client.get("/metrics")
-        assert resp.status_code == 200
-        assert "agent_requests_total" in resp.text

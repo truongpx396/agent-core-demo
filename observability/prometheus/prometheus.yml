@@ -1,0 +1,63 @@
+# Scrape config for the app's own OTel metrics (via the otel-collector's
+# aggregated Prometheus exporter — see ../otel-collector/config.yaml) plus
+# a handful of infra dependencies from the main docker-compose.yml stack.
+#
+# Cross-stack targets are reached via `host.docker.internal` (this
+# compose file is deliberately independent of docker-compose.yml — see
+# docker-compose.observability.yml's own header) — the SAME bridge
+# litellm-config.yaml already relies on to reach a host-native Ollama, just
+# applied in the other direction here. Every such target degrades to
+# harmlessly "down" in Prometheus if the main stack (`make up`) isn't
+# running; nothing in the app depends on this stack being up either.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Every OTel metric this app emits (app/core/metrics.py), aggregated
+  # across the API + every agent-worker/ingest-worker replica.
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8889"]
+
+  # Qdrant's own built-in Prometheus metrics (no config needed on its
+  # side) — verify the exact metric names it exposes with
+  # `curl host.docker.internal:6333/metrics` before building panels beyond
+  # the "is it up" one in the Infra & Logs dashboard; only `up{job="qdrant"}`
+  # is relied on here.
+  - job_name: qdrant
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:6333"]
+
+  # LiteLLM's own Prometheus callback — enabled via litellm-config.yaml's
+  # `litellm_settings.callbacks: [prometheus]`. Same caveat as Qdrant
+  # above: confirm exact metric names (`litellm_...`) against a running
+  # proxy before building panels beyond target health.
+  - job_name: litellm
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:4000"]
+
+  # postgres_exporter / redis_exporter — see docker-compose.yml (main
+  # stack), co-located with postgres/redis since they need those
+  # services' own credentials/network.
+  - job_name: postgres
+    static_configs:
+      - targets: ["host.docker.internal:9187"]
+
+  - job_name: redis
+    static_configs:
+      - targets: ["host.docker.internal:9121"]

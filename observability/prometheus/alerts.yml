@@ -1,0 +1,118 @@
+# Alert rules over app/core/metrics.py's own metrics (via the otel-collector
+# scrape target) plus basic target-health rules for the infra scrape
+# targets. Thresholds here are reasonable illustrative defaults for a demo
+# — tune them (and wire a real receiver into
+# ../alertmanager/alertmanager.yml) against real traffic before relying on
+# this for a production tenant.
+groups:
+  - name: agent-core-slo
+    rules:
+      - alert: HighTurnErrorRate
+        expr: |
+          sum(rate(agent_requests_total{outcome="error"}[5m]))
+          /
+          sum(rate(agent_requests_total[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Agent turn error rate above 5%"
+          description: >-
+            {{ $value | humanizePercentage }} of agent turns ended in
+            outcome="error" over the last 5m (agent_requests_total).
+
+      - alert: HighTurnLatencyP95
+        expr: |
+          histogram_quantile(0.95, sum(rate(agent_latency_seconds_bucket[5m])) by (le)) > 30
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent turn p95 latency above 30s"
+          description: "p95 end-to-end turn latency (agent_latency_seconds) has been over 30s for 10m."
+
+      - alert: HighToolErrorRate
+        expr: |
+          sum(rate(agent_tool_errors_total[5m]))
+          /
+          sum(rate(agent_tool_calls_total[5m]))
+          > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tool call error rate above 10%"
+          description: "agent_tool_errors_total / agent_tool_calls_total has been over 10% for 10m."
+
+      - alert: TenantDailyCostBudgetExceeded
+        expr: increase(agent_tenant_budget_exceeded_total[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A tenant hit its daily cost ceiling"
+          description: >-
+            agent_tenant_budget_exceeded_total increased in the last hour —
+            some tenant's turns are being refused for exceeding
+            MAX_COST_USD_PER_TENANT_PER_DAY.
+
+      - alert: ModerationBlockSpike
+        expr: sum(rate(agent_moderation_total{outcome=~"blocked_.*"}[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated rate of blocked (moderation) inputs"
+          description: >-
+            More than 0.5 blocked inputs/sec sustained for 5m
+            (agent_moderation_total) — could be a real attack or an
+            overly strict moderation rule.
+
+      - alert: RateLimitRejectionSpike
+        expr: sum(rate(agent_rate_limit_exceeded_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sustained per-tenant rate-limit rejections"
+          description: "agent_rate_limit_exceeded_total has been climbing over 1/sec for 5m."
+
+      - alert: RetrievalDegraded
+        expr: sum(rate(agent_retrieval_degraded_total[15m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Hybrid retrieval has been degrading"
+          description: >-
+            agent_retrieval_degraded_total{stage} is firing — the sparse
+            or rerank leg of hybrid_search has been failing and falling
+            back for 15m.
+
+      - alert: SemanticCacheErrors
+        expr: sum(rate(agent_semantic_cache_total{outcome="error"}[15m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Semantic cache lookups are erroring"
+          description: "agent_semantic_cache_total{outcome=\"error\"} — Redis Stack is likely unhealthy."
+
+      - alert: CheckpointIssues
+        expr: increase(agent_checkpoint_issue_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Resume attempts are being refused"
+          description: "agent_checkpoint_issue_total{reason} increased — a checkpoint was lost or schema-incompatible."
+
+  - name: agent-core-infra
+    rules:
+      - alert: ScrapeTargetDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus scrape target {{ $labels.job }} is down"
+          description: "{{ $labels.instance }} (job={{ $labels.job }}) has been unreachable for 5m."

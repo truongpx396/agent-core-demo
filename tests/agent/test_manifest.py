@@ -129,8 +129,9 @@ class TestSecondDomainProvesReuse:
         which would make this test pass for the wrong reason, so the
         assertion below checks the specific "mutating" label instead)."""
         from app.core import metrics
+        from tests.conftest import metric_value
 
-        before = metrics.agent_capability_gate_total.labels(capability="mutating")._value.get()
+        before = metric_value(metrics.agent_capability_gate_total, capability="mutating")
 
         llm = _fake_llm_returning(
             _tool_call("open_ticket", {"summary": "printer on fire"})
@@ -145,7 +146,7 @@ class TestSecondDomainProvesReuse:
 
         assert g.get_state(_config()).next  # paused, not finished
         assert (
-            metrics.agent_capability_gate_total.labels(capability="mutating")._value.get()
+            metric_value(metrics.agent_capability_gate_total, capability="mutating")
             == before + 1
         )
 

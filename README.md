@@ -30,7 +30,7 @@ Everything runs locally via **Ollama** — no cloud API keys needed.
 - **Multi-tenant by construction** — every retrieval and write scoped to tenant+principal at the store level, never a Python post-filter
 - **Real guardrails** — input moderation, credential/secret scrubbing, nine independent safety budgets, a golden-dataset eval gate before shipping a prompt/model change
 - **Multiple interfaces** — CLI, HTTP API, a built-in web UI, and a Telegram channel, all sharing one `answer()`/`stream_turn()` core
-- **Full observability** — Langfuse tracing, Prometheus metrics, structured JSON logs correlated by request id, a per-tenant/principal cost ledger
+- **Full observability** — Langfuse tracing, OpenTelemetry metrics pushed to a shared collector, structlog JSON logs correlated by request id, a per-tenant/principal cost ledger, and an optional Grafana + Loki + Prometheus + Alertmanager stack with provisioned dashboards and alert rules (`make obs-up`)
 - **Production-shaped ops** — a Docker image, docker-compose profiles, independently-scalable queue workers, real dependency health checks, per-tenant rate limiting
 
 ## Architecture
@@ -95,7 +95,7 @@ flowchart TB
     AgentNode --> LiteLLM["LiteLLM proxy"] --> Ollama[("Ollama<br/>chat + embeddings")]
     Runtime --> Checkpointer[("Postgres: checkpoints")]
     Runtime --> Langfuse["Langfuse tracing"]
-    Runtime --> Prometheus["Prometheus /metrics"]
+    Runtime -. OTLP push .-> OtelCollector["otel-collector<br/>(docker-compose.observability.yml)"]
     Output --> ClientResponse["Answer + citations<br/>(sync response or SSE stream)"]
 
     subgraph ingest_sg["Upload pipeline"]
@@ -104,7 +104,13 @@ flowchart TB
         IngestQueue --> IngestWorker["ingest-worker pool"]
     end
     IngestWorker --> Qdrant
+    IngestWorker -. OTLP push .-> OtelCollector
 ```
+
+`Runtime`'s OTLP edge stands in for every process that pushes metrics independently —
+the API AND each `agent-worker`/`ingest-worker` replica (GRAPH_PATTERNS.md pattern 43) —
+all aggregated behind the one otel-collector target Prometheus scrapes; see
+[Observability](#observability) below.
 
 See [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md#graph-flow) for the full node-by-node
 state diagram inside the `agent_sg` box above — safety-budget exits,
@@ -126,7 +132,7 @@ actual bug or gotcha that motivated it), grouped here by concern:
 | **Retrieval, memory & caching** | 2, 3, 13, 18–20, 22, 24, 33, 41 | Hybrid dense+BM25 search, RRF-fused, cross-encoder reranked, with inline citations; a tenant+principal-scoped semantic cache; write-gated cross-session memory with retention-at-recall; bounded history with LLM-summarized compaction; a prompt-cache-stable system prompt |
 | **Structured data & tools** | 21, 27, 28, 31 | A fixed, parameterized Postgres tool (never text-to-SQL), also reachable over MCP; clarification questions + follow-ups; consuming a remote MCP catalog with local capability overrides; a real DB connection pool |
 | **Reliability & scaling** | 16, 43 | A durable, version-stamped Postgres checkpointer (a paused approval survives a restart); a Redis Streams queue decoupling SSE-serving capacity from agent-executing capacity, scaled independently |
-| **Observability & cost** | 11, 14, 26, 37, 38 | Prometheus metrics, structured per-node/per-tool-call logs correlated by `run_id`, a real per-tenant/principal usage-cost ledger with the resolved concrete model recorded |
+| **Observability & cost** | 11, 14, 26, 37, 38 | OpenTelemetry metrics pushed via OTLP, structlog-based structured per-node/per-tool-call logs correlated by `run_id`, a real per-tenant/principal usage-cost ledger with the resolved concrete model recorded, and an optional Grafana/Loki/Prometheus/Alertmanager stack with provisioned dashboards and alert rules |
 | **Interfaces & extensibility** | 23, 29, 42, 44 | CLI, HTTP API, built-in web UI, Telegram channel, and multimodal (image) input — all sharing one `answer()`/`stream_turn()` core; a config-first multi-domain layer so a new use case is a manifest + plugin, never a fork |
 | **Quality gates** | 40 | A golden-dataset eval harness with N-repetition pass-rate and grounded-claims thresholds — a real regression gate against the actual model, not a vibe check |
 
@@ -143,12 +149,15 @@ GRAPH_PATTERNS.md's ["Extending Further"](GRAPH_PATTERNS.md#extending-further) s
 - **A production-grade vision model** — every small local Ollama vision model tried supports vision OR tool-calling, never both together; the `vision` alias in `litellm-config.yaml` is a ready slot, not a verified default
 - **Image-aware moderation, Telegram/CLI image input** — moderation (pattern 25) only screens the text portion of a multimodal message; only the HTTP API surfaces `images` end-to-end today
 - **A webhook-based Telegram deployment** — long-polling needs no public URL (right for local/demo); a real deployment would switch to `setWebhook`
-- **Grafana dashboards / alerting** — `/metrics` is exposed; wiring up a scrape config, dashboards, and alert rules is the natural next step
 - **A fallback node** for the primary LLM path itself
 
-The one item that *was* on this list and is now done: a real HTTP resume flow
+Two items that *were* on this list and are now done: a real HTTP resume flow
 (`POST /chat/resume`) — an `approval_required` SSE event is fully actionable
-end to end now, not just durably paused.
+end to end now, not just durably paused — and Grafana dashboards/alerting:
+`docker-compose.observability.yml` (`make obs-up`) is a full, separate
+Grafana + Loki + Prometheus + Alertmanager + otel-collector stack, with two
+provisioned dashboards and a starter alert rule set — see
+[Observability](#observability) below.
 
 ## Prerequisites
 
@@ -223,6 +232,10 @@ Try these in the chat:
   and cache hits
 
 Then open **http://localhost:3000** to see the traces.
+
+Optionally, `make obs-up` starts a separate Grafana + Prometheus + Loki +
+Alertmanager stack with dashboards already provisioned for everything
+above — see [Observability](#observability).
 
 ## Built-in web UI
 
@@ -312,10 +325,13 @@ and `scripts/hitl_demo.py` already could from a terminal.
 - `GET /usage` → this caller's own tenant usage/cost (`app/agent/meter.py`),
   including the rolling-24h figure checked against
   `MAX_COST_USD_PER_TENANT_PER_DAY` before every turn
-- `GET /metrics` → Prometheus text format (tool calls, retries, HITL decisions,
-  capability-gate hits, checkpoint issues, request latency/outcome, retrieval
-  degradation, semantic cache hit/miss, rate-limit rejections, tenant budget
-  warnings — see `app/core/metrics.py`)
+- Metrics (tool calls, retries, HITL decisions, capability-gate hits,
+  checkpoint issues, request latency/outcome, retrieval degradation,
+  semantic cache hit/miss, rate-limit rejections, tenant budget warnings —
+  see `app/core/metrics.py`) are **pushed**, not exposed on a `GET /metrics`
+  endpoint here — via OTLP to a shared otel-collector, so a worker
+  process's metrics are visible too, not just the API's own. See
+  [Observability](#observability) below.
 - Per-tenant HTTP rate limiting (`RATE_LIMIT_PER_MINUTE`, default 30/minute,
   Redis-backed — `app/api/rate_limit.py`) on the turn-creating endpoints; CORS is
   configurable via `CORS_ALLOWED_ORIGINS` (`app/core/config.py`)
@@ -365,6 +381,50 @@ tools, capabilities = load_remote_tools(
 human-approval gate then applies to a remote tool exactly as it would to
 an in-process one.
 
+## Observability
+
+Two independent layers, both wired up by default, plus an optional
+dashboarding/alerting stack:
+
+- **Logs** — every long-running service process (`api`, `agent-worker`,
+  `ingest-worker`) logs structured JSON via [structlog](https://www.structlog.org/)
+  (`app/core/logging_config.py`) to stdout, with `request_id`/`thread_id`
+  automatically attached to every log line touched while handling one turn
+  — zero changes needed at individual `logger.info(...)` call sites (GRAPH_PATTERNS.md pattern 14).
+- **Metrics** — 25+ counters/histograms (tool calls, retries, HITL
+  decisions, safety-budget trips, retrieval degradation, semantic cache
+  hit/miss, tenant cost budget, rate limiting, ...; `app/core/metrics.py`)
+  instrumented via the real [OpenTelemetry](https://opentelemetry.io/) Python
+  API, **pushed** via OTLP (`app/core/telemetry.py`) rather than exposed on a
+  pull-based `/metrics` endpoint — the API process AND every independently-
+  scaled `agent-worker`/`ingest-worker` replica (GRAPH_PATTERNS.md pattern 43)
+  each push their own, so a worker's metrics are visible too, not just the
+  API's. See GRAPH_PATTERNS.md pattern 11 for the full reasoning.
+
+Both flow into an **optional, separate** stack —
+[`docker-compose.observability.yml`](docker-compose.observability.yml) —
+kept apart from `make up` because nothing in the app depends on it; turn it
+off and the app runs exactly as before, just with nowhere for its
+metrics/logs to go (the same "additive, not load-bearing" relationship this
+app already has with Langfuse):
+
+```bash
+make obs-up      # Grafana, Prometheus, Loki, Promtail, Alertmanager, an OTel Collector
+```
+
+| Piece | What it does |
+|-------|---------------|
+| **otel-collector** | Receives every process's OTLP metric push, exposes one aggregated Prometheus scrape target (`:8889`) |
+| **Prometheus** | Scrapes the collector, plus Qdrant's/LiteLLM's own built-in `/metrics` and `postgres-exporter`/`redis-exporter` (all in the main `docker-compose.yml`, reached via `host.docker.internal` — no shared Docker network needed between the two compose files) |
+| **Alertmanager** | Routes alerts Prometheus fires from [`observability/prometheus/alerts.yml`](observability/prometheus/alerts.yml) — turn error rate, p95 latency, tool error rate, tenant daily budget exceeded, moderation-block spikes, rate-limit spikes, retrieval/semantic-cache degradation, checkpoint issues, and scrape-target-down. No real notification channel wired up by default (a local/demo stack) — add a `slack_configs`/`webhook_configs` block to actually page someone |
+| **Loki + Promtail** | Promtail ships this app's own containers' stdout (the structlog JSON lines above) to Loki — scoped to a service-name allowlist, not every container Docker happens to be running on the host (verified empirically against a real multi-project dev machine) |
+| **Grafana** (http://localhost:3300, `admin`/`admin`) | Two dashboards provisioned automatically under the **Agent Core Demo** folder — **Agent Core Overview** (turn rate/latency/iterations, safety-budget trips, HITL decisions, tool calls, semantic cache, retrieval degradation, ingestion, rate limiting) and **Agent Core Infra & Logs** (scrape-target health, Postgres/Redis exporter metrics, a live Loki log view) |
+
+`make obs-down` stops it (keeps data); `make obs-clean` also drops the
+volumes. Config lives under [`observability/`](observability/) — scrape
+config, alert rules, Loki/Promtail config, and Grafana's provisioned
+datasources/dashboards — edit and `make obs-up` again to pick up changes.
+
 ## Ports
 
 | Service          | URL                        |
@@ -376,6 +436,18 @@ an in-process one.
 | Ollama           | http://localhost:11434     |
 | Postgres         | localhost:5432 (`appdata` DB, `query_employees`) |
 | Redis Stack      | localhost:6379 (semantic cache) |
+| postgres-exporter | localhost:9187 (Prometheus metrics for Postgres) |
+| redis-exporter   | localhost:9121 (Prometheus metrics for Redis) |
+
+**Observability stack** (optional, `make obs-up` — [`docker-compose.observability.yml`](docker-compose.observability.yml)):
+
+| Service          | URL                        |
+|------------------|----------------------------|
+| Grafana          | http://localhost:3300 (`admin`/`admin`) |
+| Prometheus       | http://localhost:9090      |
+| Alertmanager     | http://localhost:9093      |
+| Loki             | http://localhost:3100      |
+| otel-collector   | OTLP :4317 (gRPC) / :4318 (HTTP), Prometheus exporter :8889 |
 
 ## Make targets
 
@@ -396,6 +468,10 @@ an in-process one.
 | `make logs`       | Tail service logs |
 | `make down`       | Stop services (keep data) |
 | `make clean`      | Stop services and delete volumes |
+| `make obs-up`     | Start the optional observability stack (Grafana, Prometheus, Loki, Alertmanager, otel-collector) |
+| `make obs-down`   | Stop the observability stack (keep data) |
+| `make obs-logs`   | Tail observability stack logs |
+| `make obs-clean`  | Stop the observability stack and delete its volumes |
 
 ## File tour
 
@@ -407,17 +483,20 @@ separately from the library/service code in `app/`.
 
 | File | Responsibility |
 |------|----------------|
-| `docker-compose.yml`   | All 7 infra services, plus an opt-in `app` profile (`make up-app`) containerizing the app itself — `api`/`agent-worker`/`ingest-worker`, built from `Dockerfile` |
+| `docker-compose.yml`   | Infra services (including `postgres-exporter`/`redis-exporter`, feeding the observability stack below), plus an opt-in `app` profile (`make up-app`) containerizing the app itself — `api`/`agent-worker`/`ingest-worker`, built from `Dockerfile` |
+| `docker-compose.observability.yml` | Optional, separate stack (`make obs-up`) — Grafana, Prometheus, Alertmanager, Loki, Promtail, an OTel Collector; see [Observability](#observability) |
+| `observability/`       | Config for the stack above — `prometheus/prometheus.yml` (scrape config) + `prometheus/alerts.yml` (alert rules), `alertmanager/`, `loki/`, `promtail/`, `otel-collector/config.yaml`, and `grafana/` (provisioned datasources + the two dashboards) |
 | `Dockerfile`           | The deployable image (one image, three roles via `command:` override) — non-root user, `HEALTHCHECK` against `/health/ready`, installs from `requirements-lock.txt` |
 | `.github/workflows/ci.yml` | Runs `ruff`/`mypy`/`pytest` (no live services needed) and a Docker build check on every push/PR against `main` |
 | `requirements-lock.txt`| Fully pinned freeze of `requirements.txt`'s runtime deps — what the `Dockerfile`/CI actually install from, so a build today and next year resolve identically |
-| `litellm-config.yaml`  | Model routing, retries, fallbacks, Langfuse callback |
+| `litellm-config.yaml`  | Model routing, retries, fallbacks, Langfuse callback, LiteLLM's own built-in Prometheus metrics callback |
 | `postgres-init/`       | SQL run automatically on a fresh postgres volume — `01-*.sql` (litellm/langfuse), `02-appdata.sql` (the `employees` table `query_employees` reads), `03-meter.sql` (the `usage_ledger` table `app/agent/meter.py` reads/writes) |
 | **`app/core/`** — cross-cutting, depended on by every other subpackage | |
 | `app/core/config.py`        | Typed settings (Pydantic `BaseSettings`) |
 | `app/core/security.py`      | `SecurityCtx` + `Policy` — tenant/owner isolation, enforced as a Qdrant pre-filter (GRAPH_PATTERNS.md pattern 17) |
-| `app/core/metrics.py`       | Prometheus counters/histograms + the tool-call callback handler |
-| `app/core/logging_config.py`| Structured (JSON) logging for every long-running service process, plus automatic `request_id`/`thread_id` propagation onto every log line touched while handling one turn (a contextvar + logging filter, zero changes to individual `logger.info(...)` call sites) |
+| `app/core/metrics.py`       | OpenTelemetry counters/histograms (a prometheus_client-shaped wrapper around the real OTel API) + the tool-call callback handler |
+| `app/core/telemetry.py`     | Installs the OTel `MeterProvider` — OTLP export, explicit histogram bucket Views — at real process startup only (never at import time; see its own docstring) |
+| `app/core/logging_config.py`| structlog-based structured (JSON) logging for every long-running service process, plus automatic `request_id`/`thread_id` propagation onto every log line touched while handling one turn (a contextvar + structlog processor, zero changes to individual `logger.info(...)` call sites) |
 | **`app/retrieval/`** — embedding + vector store + semantic cache | |
 | `app/retrieval/embeddings.py`    | Dense embedding client (via LiteLLM) + local BM25 sparse embedding + cross-encoder reranker (`fastembed`) |
 | `app/retrieval/qdrant_store.py`  | Qdrant collection (named dense+sparse vectors) / upsert / `hybrid_search` (RRF fusion + rerank, with degradation, `doc_ids` scoping) |
@@ -461,6 +540,12 @@ separately from the library/service code in `app/`.
   `docker compose up -d litellm` afterwards; also restart `make chat`.
 - **Model too slow** → `qwen2.5:3b` is small; swap for a bigger
   model in `litellm-config.yaml` if you have the RAM.
+- **No data in Grafana / a Prometheus target shows "down"** → `make obs-up`
+  and `make up` are independent — both need to be running (verified: a
+  scrape target that was already up before `litellm-config.yaml` gained its
+  `prometheus` callback needs a manual `docker compose up -d litellm` to
+  pick up the change, same as the Langfuse-keys restart above). Check
+  http://localhost:9090/targets for which target is actually failing and why.
 - **`/chat/stream` (or the web UI) returns `{"type":"error","content":"Request
   exceeded 60s timeout"}`** → a slow/cold local model, not a bug — a
   loaded-down machine or a model Ollama hasn't warmed up yet can genuinely

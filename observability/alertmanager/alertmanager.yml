@@ -1,0 +1,16 @@
+# No real notification channel wired up by default — this is a local/demo
+# stack, and guessing at a Slack webhook or SMTP relay the user hasn't
+# provided would just be a receiver that silently fails. Alerts still show
+# up in Prometheus's own Alerts tab and Grafana's Alerting view either way
+# (both read straight from Prometheus/Alertmanager, no receiver needed for
+# that). Add a slack_configs/webhook_configs/email_configs block under
+# `receivers` below to actually page someone.
+route:
+  receiver: default
+  group_by: ["alertname"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: default

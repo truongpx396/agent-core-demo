@@ -36,6 +36,7 @@ from app.agent.runtime import answer, get_graph
 from app.core.config import DEFAULT_TENANT, TELEGRAM_BOT_TOKEN
 from app.core.logging_config import configure_logging
 from app.core.security import SecurityCtx
+from app.core.telemetry import configure_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -187,4 +188,5 @@ async def run() -> None:
 
 if __name__ == "__main__":
     configure_logging()
+    configure_telemetry("agent-core-telegram")
     asyncio.run(run())

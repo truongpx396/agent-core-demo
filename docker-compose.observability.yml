@@ -1,0 +1,115 @@
+# A distinct project name (not just this directory's own basename, the
+# default) — keeps this stack's containers/volumes fully separate from
+# docker-compose.yml's own "agent-core-demo" project rather than sharing
+# that namespace, so `docker compose -f docker-compose.yml ...` never sees
+# these as orphans (or vice versa) and each can be torn down independently
+# without touching the other.
+name: agent-core-observability
+
+# Grafana + Loki + Prometheus + Alertmanager + an OTel Collector — the
+# monitoring/dashboarding stack, kept in its own compose file (`make
+# obs-up`, separate from `make up`) because nothing in the app itself
+# depends on it: turn off every container here and the app runs exactly
+# as before, just with nowhere for its metrics/logs to go. That's the same
+# "optional, additive" relationship this app already has with Langfuse.
+#
+# Deliberately NOT sharing a Docker network with docker-compose.yml (the
+# main stack) — no external network to pre-create in a particular order,
+# so `make up` and `make obs-up` work in either order, alone or together.
+# Instead this bridges to the main stack's containers the same way
+# litellm-config.yaml already bridges to a host-native Ollama:
+# `host.docker.internal`, resolving to the Docker host from inside a
+# container. Concretely:
+#   - the app (api/agent-worker/ingest-worker, in docker-compose.yml) push
+#     their OTel metrics OUT to this stack's otel-collector via
+#     OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318 (see
+#     that file's `x-app-env`)
+#   - Prometheus (here) scrapes qdrant/litellm/postgres-exporter/
+#     redis-exporter (there) via their HOST-published ports, e.g.
+#     host.docker.internal:6333
+#   - Promtail (here) reads every container's logs directly off the
+#     Docker daemon's own socket/log files — see its own config comment —
+#     which needs no network path to the OTHER stack's containers at all
+#
+# `host.docker.internal` needs no extra setup on Docker Desktop (Mac/
+# Windows); `extra_hosts: host-gateway` below (and in docker-compose.yml)
+# makes it resolve on native Linux Docker too.
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./observability/otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC (unused by this app today; exposed for any other client)
+      - "4318:4318"   # OTLP HTTP — what app/core/telemetry.py actually pushes to
+      - "8889:8889"   # its own Prometheus exporter — what Prometheus below scrapes
+
+  prometheus:
+    image: prom/prometheus:latest
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+    ports:
+      - "9090:9090"
+    depends_on:
+      - otel-collector
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    volumes:
+      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    ports:
+      - "9093:9093"
+
+  loki:
+    image: grafana/loki:latest
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    volumes:
+      - ./observability/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki:/loki
+    ports:
+      - "3100:3100"
+
+  promtail:
+    image: grafana/promtail:latest
+    command: ["-config.file=/etc/promtail/promtail-config.yaml"]
+    volumes:
+      - ./observability/promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3300:3000"   # 3000 is already Langfuse's port in docker-compose.yml
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"    # local-demo convenience, same posture as open-webui's WEBUI_AUTH=false
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+
+volumes:
+  prometheus:
+  alertmanager:
+  loki:
+  grafana:

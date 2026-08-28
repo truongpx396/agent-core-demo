@@ -58,9 +58,19 @@ litellm_settings:
   request_timeout: 600
   # If "chat" fails, transparently retry on "chat-backup".
   fallbacks: [{"chat": ["chat-backup"]}]
-  # Log every request/response to Langfuse from the proxy layer.
-  success_callback: ["langfuse"]
-  failure_callback: ["langfuse"]
+  # Log every request/response to Langfuse from the proxy layer, and expose
+  # LiteLLM's own built-in request/latency/token metrics for Prometheus to
+  # scrape at GET /metrics (see docker-compose.observability.yml's
+  # prometheus service — this is a separate metrics surface from this
+  # app's own OTel metrics in app/core/metrics.py, at the proxy layer
+  # rather than the agent layer).
+  success_callback: ["langfuse", "prometheus"]
+  failure_callback: ["langfuse", "prometheus"]
+  # /metrics requires a LiteLLM API key by default (v1.85.0+) — disabled
+  # here for local scraping simplicity; a real deployment would instead
+  # keep auth on and configure Prometheus's scrape config with a
+  # bearer_token pointing at a real LiteLLM key.
+  require_auth_for_metrics_endpoint: false
 
 general_settings:
   master_key: sk-anything              # matches OPENAI_API_KEY in .env

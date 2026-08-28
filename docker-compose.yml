@@ -17,6 +17,13 @@ x-app-env: &app-env
   LANGFUSE_HOST: http://langfuse-web:3000
   LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
   LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+  # The otel-collector lives in the SEPARATE, optional
+  # docker-compose.observability.yml (`make obs-up`) — reached via
+  # host.docker.internal, not an in-network service name, so this app never
+  # depends on that stack being up (a push that fails just gets dropped by
+  # the OTLP exporter; see app/core/telemetry.py and that compose file's
+  # own header for the full reasoning).
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4318
 
 services:
   # --- LLM + embeddings, fully local ---
@@ -124,6 +131,33 @@ services:
       timeout: 5s
       retries: 10
 
+  # --- Prometheus exporters for postgres/redis above — co-located here
+  # (not in docker-compose.observability.yml) since they need those
+  # services' own credentials/in-network hostnames directly. Each publishes
+  # its own metrics port to the host so the OPTIONAL observability stack
+  # (`make obs-up`) can scrape it via host.docker.internal without any
+  # shared Docker network — see docker-compose.observability.yml's header.
+  # Neither is required for the app itself to run.
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    environment:
+      DATA_SOURCE_NAME: postgresql://langfuse:langfuse@postgres:5432/postgres?sslmode=disable
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    ports:
+      - "9121:9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+
   langfuse-web:
     image: langfuse/langfuse:2
     ports:
@@ -175,6 +209,8 @@ services:
     ports:
       - "8000:8000"
     environment: *app-env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # so OTEL_EXPORTER_OTLP_ENDPOINT resolves on native Linux Docker too
     depends_on:
       postgres:
         condition: service_healthy
@@ -187,6 +223,8 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "app.turns.agent_worker"]
     environment: *app-env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -194,6 +232,9 @@ services:
         condition: service_healthy
     # Run several for independent scaling (GRAPH_PATTERNS.md pattern 43):
     #   docker compose --profile app up -d --scale agent-worker=3
+    # Each replica pushes its own metrics via OTLP (app/core/telemetry.py) —
+    # unlike a pull-based /metrics endpoint, scaling this doesn't need any
+    # scrape-config change; the otel-collector aggregates all of them.
 
   ingest-worker:
     build: .
@@ -201,6 +242,8 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "app.ingestion.ingest_worker"]
     environment: *app-env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy

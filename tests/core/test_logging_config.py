@@ -1,16 +1,12 @@
-"""Tests for app/core/logging_config.py's structured logging setup."""
+"""Tests for app/core/logging_config.py's structlog-based structured
+logging setup."""
 import io
 import json
 import logging
 
 import pytest
 
-from app.core.logging_config import (
-    JSONFormatter,
-    _RequestIdFilter,
-    bind_request_id,
-    request_id_var,
-)
+from app.core.logging_config import bind_request_id, build_formatter, request_id_var
 
 
 @pytest.fixture
@@ -21,8 +17,7 @@ def captured_logger():
     own logging capture or leak a handler into other tests."""
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
-    handler.setFormatter(JSONFormatter())
-    handler.addFilter(_RequestIdFilter())
+    handler.setFormatter(build_formatter())
     logger = logging.getLogger("test.logging_config")
     logger.setLevel(logging.INFO)
     logger.addHandler(handler)
@@ -36,12 +31,12 @@ def _last_line(stream: io.StringIO) -> dict:
     return json.loads(lines[-1])
 
 
-class TestJSONFormatter:
+class TestStructlogFormatter:
     def test_basic_fields(self, captured_logger):
         logger, stream = captured_logger
         logger.info("something_happened")
         payload = _last_line(stream)
-        assert payload["level"] == "INFO"
+        assert payload["level"] == "info"  # structlog's own convention — lowercase
         assert payload["logger"] == "test.logging_config"
         assert payload["message"] == "something_happened"
         assert "timestamp" in payload

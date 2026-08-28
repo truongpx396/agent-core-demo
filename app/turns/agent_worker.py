@@ -62,6 +62,7 @@ from app.agent.runtime import (
 )
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.logging_config import bind_request_id, configure_logging
+from app.core.telemetry import configure_telemetry
 from app.turns.queue import (
     CONSUMER_GROUP,
     REQUESTS_STREAM,
@@ -200,4 +201,5 @@ async def run() -> None:
 
 if __name__ == "__main__":
     configure_logging()
+    configure_telemetry("agent-core-agent-worker")
     asyncio.run(run())

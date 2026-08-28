@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import cast
 
 from app.core.logging_config import bind_request_id, configure_logging
+from app.core.telemetry import configure_telemetry
 from app.ingestion import ingestor, object_store
 from app.ingestion.extractors import EXTRACTORS_BY_SUFFIX, ExtractionFailed
 from app.ingestion.ingest_queue import (
@@ -133,4 +134,5 @@ async def run() -> None:
 
 if __name__ == "__main__":
     configure_logging()
+    configure_telemetry("agent-core-ingest-worker")
     asyncio.run(run())
