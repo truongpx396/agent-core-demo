@@ -1,4 +1,4 @@
-.PHONY: help up up-app pull-models ingest chat chat-stream chat-stream-hitl serve mcp-serve telegram agent-worker ingest-worker test lint typecheck eval logs down clean clear-cache obs-up obs-down obs-logs obs-clean
+.PHONY: help up up-app pull-models ingest index-skills chat chat-stream chat-stream-hitl serve mcp-serve telegram agent-worker ingest-worker test lint typecheck eval logs down clean clear-cache obs-up obs-down obs-logs obs-clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -16,6 +16,9 @@ pull-models:  ## Download the Ollama chat + embedding models
 
 ingest:  ## Embed sample docs and upsert them into Qdrant
 	python -m scripts.seed
+
+index-skills:  ## Embed the skills/ catalog (name+description) and upsert into its own Qdrant collection
+	python -m scripts.index_skills
 
 chat:  ## Start the interactive LangGraph agent CLI (dev streaming)
 	python -m app.channels.chat

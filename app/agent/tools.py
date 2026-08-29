@@ -9,6 +9,12 @@
 - `remember`: the *only* way a memory gets written — a second mutating
   tool. See the "Cross-session memory" section below for why recall is
   automatic (folded into retrieve_context) but writing never is.
+- `skill_search`/`use_skill`: progressive disclosure over a bundled catalog
+  of `SKILL.md` packages (`app/agent/skills.py`, GRAPH_PATTERNS.md pattern
+  45) — `skill_search` hybrid-searches a small Qdrant collection of skill
+  name/description metadata, `use_skill` loads one matched skill's full
+  instruction body from disk by exact name. Like `calculator`, these are
+  bundled app capabilities, not tenant data — no `SecurityCtx` involved.
 
 All tools declare an explicit **Pydantic `args_schema`**. This is the robust
 way to define tool inputs: the schema (enums, descriptions, validators) is what
@@ -53,6 +59,7 @@ an agent-facing tool — see its docstring for why).
 """
 import ast
 import concurrent.futures
+import logging
 import operator
 import uuid
 from collections.abc import Callable
@@ -64,10 +71,13 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field, field_validator
 
+from app.core.config import SKILLS_COLLECTION, SKILLS_SEARCH_TOP_K
 from app.core.scrubbing import scrub
 from app.core.security import DEFAULT_POLICY, SecurityCtx, valid_ctx
 from app.retrieval import qdrant_store
 from app.retrieval.embeddings import embed_sparse, embed_text
+
+logger = logging.getLogger(__name__)
 
 # Whitelisted operators for the safe calculator.
 _OPS: dict[type, Callable[..., float]] = {
@@ -597,7 +607,89 @@ def query_employees(
     return _run_with_timeout(_query_employees_impl, department, name_contains, ctx)
 
 
-TOOLS = [search_docs, calculator, add_note, remember, query_employees, ask_clarification]
+class SkillSearchArgs(BaseModel):
+    query: str = Field(
+        ...,
+        description="Natural-language description of the task you're trying to do "
+        "(not a skill name) — e.g. 'write an onboarding brief for a new hire'.",
+    )
+
+
+def _format_skill_hits(hits: list) -> str:
+    lines = [
+        f"- {(h.payload or {}).get('name')}: {(h.payload or {}).get('description')}"
+        for h in hits
+    ]
+    return "\n".join(lines)
+
+
+def _skill_search_impl(query: str) -> str:
+    try:
+        hits = qdrant_store.hybrid_search(
+            query, collection=SKILLS_COLLECTION, k=SKILLS_SEARCH_TOP_K
+        )
+    except Exception as exc:  # noqa: BLE001 - the skills collection may not exist
+        # yet (before `make index-skills` has ever run) — hybrid_search's own
+        # two degrade layers (app/retrieval/qdrant_store.py) only cover a missing
+        # SPARSE leg or a failed RERANK, not a wholly missing collection, so a
+        # fresh environment gets a clear, actionable message here instead of a
+        # raw Qdrant 404 bubbling up as a generic tool error.
+        logger.warning(
+            "skill search unavailable", extra={"error_class": type(exc).__name__}
+        )
+        return "No skills catalog is available right now (has `make index-skills` been run?)."
+    if not hits:
+        return "No matching skills found. Proceed using your other tools directly."
+    return _format_skill_hits(hits)
+
+
+@tool(args_schema=SkillSearchArgs)
+def skill_search(query: str) -> str:
+    """Search the catalog of available skills — packaged, multi-step
+    instructions for specific kinds of tasks (e.g. producing a particular
+    report format). Returns candidate skill names and descriptions; call
+    use_skill with the best match's exact name to load its full
+    instructions before proceeding. If nothing matches well, just proceed
+    with your other tools directly — not every task has a packaged skill."""
+    return _run_with_timeout(_skill_search_impl, query)
+
+
+class UseSkillArgs(BaseModel):
+    name: str = Field(
+        ..., description="The exact skill name, as returned by skill_search."
+    )
+
+
+def _use_skill_impl(name: str) -> str:
+    from app.agent import skills as skills_module
+
+    record = skills_module.get_skills().get(name)
+    if record is None:
+        return (
+            f"No skill named {name!r} found. Call skill_search first to find "
+            "the exact name of an available skill."
+        )
+    return record.body
+
+
+@tool(args_schema=UseSkillArgs)
+def use_skill(name: str) -> str:
+    """Load one skill's full instructions by its exact name (from
+    skill_search's results). Follow the returned instructions using your
+    other tools to complete the task."""
+    return _run_with_timeout(_use_skill_impl, name)
+
+
+TOOLS = [
+    search_docs,
+    calculator,
+    add_note,
+    remember,
+    query_employees,
+    ask_clarification,
+    skill_search,
+    use_skill,
+]
 
 # --- Tool capability declarations -------------------------------------------
 # Every tool declares which "leg" of exposure it adds: read_only (safe to run
@@ -621,6 +713,8 @@ TOOL_CAPABILITIES: dict[str, ToolCapability] = {
     "calculator": "read_only",
     "query_employees": "read_only",
     "ask_clarification": "read_only",
+    "skill_search": "read_only",
+    "use_skill": "read_only",
     "add_note": "mutating",
     "remember": "mutating",
 }

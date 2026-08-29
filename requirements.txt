@@ -108,3 +108,9 @@ minio>=7.2,<8
 pypdf>=4.0,<6
 python-docx>=1.1,<2
 python-multipart>=0.0.9,<1
+
+# Skill package frontmatter (app/agent/skills.py, GRAPH_PATTERNS.md pattern
+# 45) — already a transitive dependency (langchain/fastembed pull it in),
+# declared directly here since app/agent/skills.py now imports it as a
+# first-class dependency, not an implicit one (same reasoning as httpx above).
+pyyaml>=6.0,<7
