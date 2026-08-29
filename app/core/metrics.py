@@ -303,6 +303,20 @@ agent_upload_rejected_total = Counter(
     ["reason"],
 )  # reason: bad_file_type | too_large
 
+agent_subagent_run_total = Counter(
+    "agent_subagent_run_total",
+    "run_subagent calls (app/agent/tools.py, GRAPH_PATTERNS.md pattern 46) by "
+    "subagent and outcome",
+    ["subagent", "outcome"],
+)  # outcome: completed | budget_exceeded | timeout | error
+
+agent_subagent_duration_seconds = Histogram(
+    "agent_subagent_duration_seconds",
+    "Wall-clock duration of one nested subagent run, in seconds",
+    unit="s",
+    labelnames=["subagent"],
+)
+
 
 class MetricsCallbackHandler(BaseCallbackHandler):
     """Records tool-call/tool-error counts AND a structured per-call audit

@@ -75,6 +75,7 @@ from langgraph.types import Command
 
 from app.agent.graph import (
     CANCEL_SENTINEL,
+    MAX_ITERATIONS,
     build_graph,
     resumability_error,
     resumability_error_async,
@@ -104,10 +105,27 @@ _checkpointer_cm = None  # keeps AsyncPostgresSaver's context manager alive —
 # for AsyncPostgresSaver).
 _seeded: set[str] = set()
 
+# LangGraph's OWN graph-step cap — a coarser, different unit than
+# MAX_ITERATIONS (an agent-node-invocation count): every turn also runs
+# several fixed pre-loop nodes (validate_input, compact_history,
+# moderate_input, check_semantic_cache, retrieve_context) plus a couple more
+# post-loop (check_output, write_semantic_cache), and each agent<->tools
+# round trip is 2 steps on top of that. A flat "12" here (this constant's
+# value before this derivation existed) undercounts for a real model making
+# several genuine tool-call round trips in one turn — verified empirically
+# against a live Ollama-backed run hitting GraphRecursionError on an
+# ordinary multi-tool-call question well before MAX_ITERATIONS (10) was
+# reached — the same class of bug independently caught and fixed for the
+# nested subagent graph, see GRAPH_PATTERNS.md pattern 46. Derived from
+# MAX_ITERATIONS, with real margin, instead of a bare literal, so all five
+# call sites below share one source of truth that can't drift out of sync
+# with each other or with MAX_ITERATIONS if that ever changes.
+RECURSION_LIMIT = MAX_ITERATIONS * 2 + 15
+
 # Safety budget: bound total wall-clock time per turn, beneath which
-# MAX_ITERATIONS (LLM loop cap) and recursion_limit (graph step cap, in
-# _config() below) already apply. This is the outermost layer — a turn
-# stuck inside a single slow LLM/tool call never reaches those.
+# MAX_ITERATIONS (LLM loop cap) and RECURSION_LIMIT (graph step cap)
+# already apply. This is the outermost layer — a turn stuck inside a
+# single slow LLM/tool call never reaches those.
 REQUEST_TIMEOUT_SECONDS = 60
 # Soft-timeout executor for the sync `answer()` path (used by POST /chat):
 # Python can't forcibly kill a running thread, so this bounds how long the
@@ -413,7 +431,7 @@ def _config(thread_id: str, ctx: SecurityCtx) -> dict:
     return {
         "configurable": {"thread_id": thread_id, "ctx": ctx},
         "callbacks": _callbacks(thread_id),
-        "recursion_limit": 12,  # safety net so a weak model can't loop forever
+        "recursion_limit": RECURSION_LIMIT,  # safety net so a weak model can't loop forever
     }
 
 
@@ -897,7 +915,7 @@ async def astream_events_turn(
     cfg = {
         "configurable": {"thread_id": thread_id, "ctx": ctx},
         "callbacks": callbacks,
-        "recursion_limit": 12,
+        "recursion_limit": RECURSION_LIMIT,
     }
     graph_input = {
         "messages": [HumanMessage(content=_build_human_content(text, images))],
@@ -980,7 +998,7 @@ async def astream_events_resume(thread_id: str, approved: bool, ctx: SecurityCtx
     cfg = {
         "configurable": {"thread_id": thread_id, "ctx": ctx},
         "callbacks": callbacks,
-        "recursion_limit": 12,
+        "recursion_limit": RECURSION_LIMIT,
     }
     async for event in _run_graph_stream(graph, Command(resume=approved), cfg, trace):
         yield event
@@ -1004,7 +1022,7 @@ async def cancel_run(thread_id: str, ctx: SecurityCtx) -> bool:
     error = await resumability_error_async(graph, {"configurable": {"thread_id": thread_id}})
     if error:
         return False
-    cfg = {"configurable": {"thread_id": thread_id, "ctx": ctx}, "recursion_limit": 12}
+    cfg = {"configurable": {"thread_id": thread_id, "ctx": ctx}, "recursion_limit": RECURSION_LIMIT}
     await graph.ainvoke(Command(resume=CANCEL_SENTINEL), config=cfg)
     metrics.agent_cancellation_total.inc()
     return True
@@ -1138,7 +1156,7 @@ async def astream_events_turn_ctx(text: str, thread_id: str, ctx: SecurityCtx):
         cfg = {
             "configurable": {"thread_id": thread_id, "ctx": ctx},
             "callbacks": callbacks,
-            "recursion_limit": 12,
+            "recursion_limit": RECURSION_LIMIT,
         }
 
         start = time.monotonic()

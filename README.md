@@ -27,6 +27,7 @@ Everything runs locally via **Ollama** — no cloud API keys needed.
 - **Semantic cache** — a repeated question skips retrieval and the LLM entirely, served from cache instead
 - **Tools, including MCP** — calculator, hybrid search, a fixed (never text-to-SQL) structured Postgres query, clarification questions, follow-up suggestions — reachable over MCP too, as both a server and a client
 - **Skills with progressive disclosure** — a bundled `SKILL.md` catalog, searched by meaning (`skill_search`) and loaded in full only on match (`use_skill`), so the model's tool surface stays small no matter how many skills the catalog grows to
+- **Subagents** — `run_subagent` delegates a task to a fresh, isolated nested agent run (its own system prompt, its own scoped read_only tool subset, its own budget) instead of loading more instructions into the same context — inherits tenant/principal `SecurityCtx` but never the conversation history, and never needs human approval, since every subagent is restricted to read_only tools
 - **Human-in-the-loop** — mandatory approval for any mutating tool call, over HTTP or CLI, with a real cancel path for a paused run
 - **Multi-tenant by construction** — every retrieval and write scoped to tenant+principal at the store level, never a Python post-filter
 - **Real guardrails** — input moderation, credential/secret scrubbing, nine independent safety budgets, a golden-dataset eval gate before shipping a prompt/model change
@@ -122,7 +123,7 @@ diagram legible.
 
 This isn't a toy agent loop — it's built the way a real deployment needs to
 work. Every pattern below is documented in depth in
-[GRAPH_PATTERNS.md](GRAPH_PATTERNS.md) (44 patterns, numbered, each with the
+[GRAPH_PATTERNS.md](GRAPH_PATTERNS.md) (46 patterns, numbered, each with the
 actual bug or gotcha that motivated it), grouped here by concern:
 
 | Concern | Patterns | What it buys you |
@@ -131,7 +132,7 @@ actual bug or gotcha that motivated it), grouped here by concern:
 | **Human-in-the-loop & governance** | 8, 15, 36 | Every mutating tool call (writes, sends, spends) is gated by *mandatory* approval — not opt-in — with a real cancel path for a paused run |
 | **Multi-tenant security** | 12, 17, 25, 30, 32 | Every read/write scoped to tenant+owner via a store-level pre-filter (never a Python post-filter); real pattern-based input moderation; secrets scrubbed from tool output before they reach a prompt or trace; a canonical error envelope |
 | **Retrieval, memory & caching** | 2, 3, 13, 18–20, 22, 24, 33, 41 | Hybrid dense+BM25 search, RRF-fused, cross-encoder reranked, with inline citations; a tenant+principal-scoped semantic cache; write-gated cross-session memory with retention-at-recall; bounded history with LLM-summarized compaction; a prompt-cache-stable system prompt |
-| **Structured data & tools** | 21, 27, 28, 31, 45 | A fixed, parameterized Postgres tool (never text-to-SQL), also reachable over MCP; clarification questions + follow-ups; consuming a remote MCP catalog with local capability overrides; a real DB connection pool; a searchable skill catalog loaded progressively (`skill_search`/`use_skill`) |
+| **Structured data & tools** | 21, 27, 28, 31, 45, 46 | A fixed, parameterized Postgres tool (never text-to-SQL), also reachable over MCP; clarification questions + follow-ups; consuming a remote MCP catalog with local capability overrides; a real DB connection pool; a searchable skill catalog loaded progressively (`skill_search`/`use_skill`); scoped, isolated subagent delegation (`run_subagent`) restricted to read_only tools so it needs no new approval gate |
 | **Reliability & scaling** | 16, 43 | A durable, version-stamped Postgres checkpointer (a paused approval survives a restart); a Redis Streams queue decoupling SSE-serving capacity from agent-executing capacity, scaled independently |
 | **Observability & cost** | 11, 14, 26, 37, 38 | OpenTelemetry metrics pushed via OTLP, structlog-based structured per-node/per-tool-call logs correlated by `run_id`, a real per-tenant/principal usage-cost ledger with the resolved concrete model recorded, and an optional Grafana/Loki/Prometheus/Alertmanager stack with provisioned dashboards and alert rules |
 | **Interfaces & extensibility** | 23, 29, 42, 44 | CLI, HTTP API, built-in web UI, Telegram channel, and multimodal (image) input — all sharing one `answer()`/`stream_turn()` core; a config-first multi-domain layer so a new use case is a manifest + plugin, never a fork |
@@ -234,6 +235,13 @@ Try these in the chat:
   `query_employees`/`search_docs` (pattern 45). Requires `make
   index-skills` to have been run once; try `make chat-stream` to see the
   tool calls
+- `who's the most senior person in Engineering, and what's their start date?`
+  → the agent may call **run_subagent**, delegating to the bundled
+  `researcher` subagent — a fresh, isolated nested agent run with its own
+  system prompt and its own scoped tool subset (`search_docs`/`calculator`/
+  `query_employees`), never the main conversation's history. Restricted to
+  read_only tools by design, so unlike `add_note`/`remember` above it never
+  pauses for approval (GRAPH_PATTERNS.md pattern 46)
 - A grounded, cited answer is followed by 2-3 **follow-up suggestions**
   derived from that answer (pattern 27) — suppressed for uncited answers
   and cache hits

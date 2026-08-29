@@ -107,6 +107,12 @@ SYSTEM_PROMPT = (
     "first; if it returns a good match, call use_skill with that exact "
     "name and follow its instructions before answering. If nothing "
     "matches, proceed with your other tools directly. "
+    "If a run_subagent tool is available and a matching subagent's "
+    "description fits the task, you may delegate a self-contained "
+    "sub-task to it instead of doing every step yourself — give it a "
+    "clear, complete task description, since it has no access to this "
+    "conversation. Only use it when a listed subagent's focus genuinely "
+    "matches; otherwise just use your other tools directly. "
     "If no documents are relevant, answer from general knowledge. "
     "Be concise and direct. End your answer once the question is fully "
     "answered — do not add your own suggested follow-up questions or ask "
@@ -157,6 +163,19 @@ MAX_HISTORY_SUMMARY_CHARS = 4000  # safety budget: the CUMULATIVE history_summar
 MAX_REPEATED_ACTIONS = 3  # safety budget: consecutive IDENTICAL tool-call batches within one
 # turn before ending as no_progress — bounds convergence, not just repetition count, and
 # fires independently of (typically well before) MAX_ITERATIONS — see should_continue.
+
+# Budgets for a NESTED subagent run (app/agent/tools.py::run_subagent,
+# GRAPH_PATTERNS.md pattern 46) — deliberately separate constants, not a
+# fraction of the values above: a subagent's own should_continue is bound to
+# THESE via functools.partial (see build_graph's max_iterations/
+# max_tokens_per_turn params), independently of whatever budget the parent
+# turn that spawned it has already spent or has left. Hardcoded here (not
+# Settings-backed) for the same reason MAX_ITERATIONS/MAX_TOOL_CALLS_PER_TURN
+# are: a loop-count safety net, not a per-deployment dollar policy knob (see
+# MAX_SUBAGENT_COST_USD_PER_RUN in app/core/config.py, which IS Settings-backed,
+# for that distinction).
+MAX_SUBAGENT_ITERATIONS = 6
+MAX_SUBAGENT_TOKENS_PER_RUN = 4000
 
 # Reliability policy for the `agent` node (see build_graph): retry a
 # transient LLM-endpoint failure (connection error, 5xx) a few times before
@@ -1067,6 +1086,9 @@ def should_continue(
     state: State,
     tool_capabilities: Mapping[str, str] = TOOL_CAPABILITIES,
     valid_tool_names: frozenset[str] = _DEFAULT_VALID_TOOL_NAMES,
+    max_iterations: int = MAX_ITERATIONS,
+    max_tokens: int = MAX_TOKENS_PER_TURN,
+    max_cost_usd: float = MAX_COST_USD_PER_TURN,
 ) -> Literal[
     "tools",
     "human_approval",
@@ -1110,19 +1132,25 @@ def should_continue(
     `should_continue(state)` directly is unaffected; `build_graph` binds a
     domain's own values for both via `functools.partial` before registering
     this as the `agent` node's conditional edge — see its docstring and
-    GRAPH_PATTERNS.md pattern 23.
+    GRAPH_PATTERNS.md pattern 23. `max_iterations`/`max_tokens`/`max_cost_usd`
+    default to the same module constants the bare-global checks used before
+    this signature grew these params — added so a NESTED subagent run
+    (GRAPH_PATTERNS.md pattern 46) can be bound to its own, smaller
+    MAX_SUBAGENT_ITERATIONS/MAX_SUBAGENT_TOKENS_PER_RUN/
+    MAX_SUBAGENT_COST_USD_PER_RUN ceiling via the identical `functools.partial`
+    mechanism, independent of the parent turn's own remaining budget.
     This stays a plain module-level function (not a factory, unlike
     `agent`/`retrieve_context`/the semantic-cache nodes) specifically so it
     remains directly importable and callable with just `state`, matching
     every other routing function in this file (see this module's own
     docstring on why routing functions live at module level).
     """
-    if state.get("iterations", 0) >= MAX_ITERATIONS:
+    if state.get("iterations", 0) >= max_iterations:
         return "__end__"
-    if state.get("total_tokens", 0) >= MAX_TOKENS_PER_TURN:
+    if state.get("total_tokens", 0) >= max_tokens:
         metrics.agent_token_budget_exceeded_total.inc()
         return "__end__"
-    if state.get("total_cost_usd", 0.0) >= MAX_COST_USD_PER_TURN:
+    if state.get("total_cost_usd", 0.0) >= max_cost_usd:
         # A HARD stop (GRAPH_PATTERNS.md pattern 35) — independent of the
         # token cap above: the same token count costs differently on
         # different model tiers, so a $ ceiling is not a derived quantity
@@ -1447,6 +1475,9 @@ def build_graph(
     checkpointer=None,
     manifest: "AgentManifest | None" = None,
     domain: "DomainPlugin | None" = None,
+    max_iterations: int | None = None,
+    max_tokens_per_turn: int | None = None,
+    max_cost_usd_per_turn: float | None = None,
 ):
     """Compile the graph.
 
@@ -1477,6 +1508,16 @@ def build_graph(
     retrieval/caching (pattern 20/22) — a domain plugin whose tools need a
     different corpus or cache is expected to supply its own `GraphDeps`
     alongside its manifest/domain, the same way a test already does today.
+
+    `max_iterations`/`max_tokens_per_turn`/`max_cost_usd_per_turn` default to
+    `None`, which falls back to this module's own MAX_ITERATIONS/
+    MAX_TOKENS_PER_TURN/MAX_COST_USD_PER_TURN exactly as before these params
+    existed — every existing caller passing none of them is unaffected.
+    `app/agent/tools.py::run_subagent` is the one caller that sets them, to
+    MAX_SUBAGENT_ITERATIONS/MAX_SUBAGENT_TOKENS_PER_RUN/
+    MAX_SUBAGENT_COST_USD_PER_RUN (GRAPH_PATTERNS.md pattern 46), so a nested
+    subagent run is bounded by its own ceiling rather than inheriting
+    whichever budget the top-level runtime happens to use.
     """
     from app.agent.manifest import DEFAULT_DOMAIN_PLUGIN, DEFAULT_MANIFEST
 
@@ -1513,6 +1554,9 @@ def build_graph(
         should_continue,
         tool_capabilities=domain_tool_capabilities,
         valid_tool_names=domain_valid_tool_names,
+        max_iterations=max_iterations if max_iterations is not None else MAX_ITERATIONS,
+        max_tokens=max_tokens_per_turn if max_tokens_per_turn is not None else MAX_TOKENS_PER_TURN,
+        max_cost_usd=max_cost_usd_per_turn if max_cost_usd_per_turn is not None else MAX_COST_USD_PER_TURN,
     )
 
     builder = StateGraph(State)
