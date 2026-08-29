@@ -1,11 +1,28 @@
-"""Prometheus metrics for the agent runtime.
+"""OpenTelemetry metrics for the agent runtime.
 
-Exposed at `GET /metrics` (see app/api/main.py) for Prometheus to scrape. These
-are process-local counters/histograms — the standard Prometheus pull model
-aggregates across instances at the scraper/Grafana layer, not here. Rates
-(human-approval rate, retry rate, p50/p95/p99 latency, etc.) are *derived*
-from these at query time via PromQL (`rate()`, `histogram_quantile()`), not
+Pushed via OTLP to a shared otel-collector (docker-compose.observability.yml
+— see app/core/telemetry.py::configure_telemetry, called once at real
+process startup), which exposes one aggregated Prometheus scrape target
+covering the API AND every independently-scaled app/turns/agent_worker.py /
+app/ingestion/ingest_worker.py replica (GRAPH_PATTERNS.md pattern 43) — a
+pull-based `GET /metrics` on the API process alone (this module's previous,
+prometheus_client-backed design) could never see a worker's metrics at all,
+since nothing scrapes a worker process directly. Rates (human-approval
+rate, retry rate, p50/p95/p99 latency, etc.) are still *derived* from these
+at query time via PromQL (`rate()`, `histogram_quantile()`) in Grafana, not
 stored directly.
+
+`Counter`/`Histogram` below are a small prometheus_client-shaped wrapper
+around the real OTel API (`meter.create_counter`/`create_histogram`,
+`.add`/`.record`) — every call site elsewhere in this app already uses
+`some_counter.labels(k=v).inc()` / `some_histogram.observe(v)`
+(prometheus_client's own surface), and keeping that shape here means this
+was a genuine library swap under the hood, not a rewrite of every call
+site across app/agent/, app/retrieval/, app/ingestion/, app/api/. Explicit
+histogram bucket boundaries for agent_latency_seconds/agent_iterations
+aren't set here — an OTel Histogram instrument has no per-call bucket
+parameter — they're configured as Views on the MeterProvider in
+app/core/telemetry.py, matched by instrument name.
 
 Two ways these get incremented:
   - Tool calls/errors: via `MetricsCallbackHandler`, wired into
@@ -23,11 +40,19 @@ Two ways these get incremented:
 """
 import hashlib
 import logging
+from collections.abc import Mapping
 
 from langchain_core.callbacks import BaseCallbackHandler
-from prometheus_client import Counter, Histogram
+from opentelemetry import metrics as metrics_api
 
 logger = logging.getLogger(__name__)
+
+# A proxy meter (verified empirically — see app/core/telemetry.py's module
+# docstring): every create_counter/create_histogram call below is safe
+# regardless of whether configure_telemetry() has run yet in this process,
+# and gets transparently replayed against the real MeterProvider once it
+# does.
+_meter = metrics_api.get_meter("app.core.metrics")
 
 
 def _fingerprint(text: str) -> str:
@@ -39,27 +64,76 @@ def _fingerprint(text: str) -> str:
     unscrubbed copy of prompt/document text sitting outside Langfuse."""
     return hashlib.sha256((text or "").encode()).hexdigest()[:16]
 
+
+class _BoundCounter:
+    __slots__ = ("_instrument", "_attributes")
+
+    def __init__(self, instrument: metrics_api.Counter, attributes: Mapping[str, str]):
+        self._instrument = instrument
+        self._attributes = attributes
+
+    def inc(self, amount: float = 1) -> None:
+        self._instrument.add(amount, attributes=self._attributes)
+
+
+class Counter:
+    """prometheus_client.Counter-shaped wrapper around an OTel Counter."""
+
+    def __init__(self, name: str, description: str = "", labelnames=()):
+        self.name = name  # read by tests/core/test_metrics.py to look up this
+        # instrument's recorded data points via an InMemoryMetricReader —
+        # OTel instruments don't expose their own name back once created.
+        self._instrument = _meter.create_counter(name, description=description)
+        self._labelnames = tuple(labelnames)
+
+    def labels(self, **kwargs: str) -> _BoundCounter:
+        return _BoundCounter(self._instrument, kwargs)
+
+    def inc(self, amount: float = 1) -> None:
+        self._instrument.add(amount)
+
+
+class _BoundHistogram:
+    __slots__ = ("_instrument", "_attributes")
+
+    def __init__(self, instrument: metrics_api.Histogram, attributes: Mapping[str, str]):
+        self._instrument = instrument
+        self._attributes = attributes
+
+    def observe(self, value: float) -> None:
+        self._instrument.record(value, attributes=self._attributes)
+
+
+class Histogram:
+    """prometheus_client.Histogram-shaped wrapper around an OTel Histogram.
+    Bucket boundaries live in app/core/telemetry.py's Views, not here."""
+
+    def __init__(self, name: str, description: str = "", unit: str = "", labelnames=()):
+        self._instrument = _meter.create_histogram(
+            name, description=description, unit=unit
+        )
+        self._labelnames = tuple(labelnames)
+
+    def labels(self, **kwargs: str) -> _BoundHistogram:
+        return _BoundHistogram(self._instrument, kwargs)
+
+    def observe(self, value: float) -> None:
+        self._instrument.record(value)
+
+
 agent_requests_total = Counter(
     "agent_requests_total", "Total agent turns by outcome", ["outcome"]
 )  # outcome: success | rejected | error | timeout
 
 agent_latency_seconds = Histogram(
-    "agent_latency_seconds", "End-to-end latency per agent turn, in seconds"
+    "agent_latency_seconds",
+    "End-to-end latency per agent turn, in seconds",
+    unit="s",
 )
-
-# (.005, .01, .025, .05, .075, .1, .25, .5, .75, 1.0, 2.5, 5.0, 7.5, 10.0)
-
-# agent_latency_seconds = Histogram(
-#     "agent_latency_seconds", 
-#     "End-to-end latency per agent turn, in seconds",
-#     # Captures fast tool calls all the way up to a 2-minute timeout limit
-#     buckets=(0.5, 1.0, 2.5, 5.0, 10.0, 15.0, 30.0, 60.0, 90.0, 120.0) 
-# )
 
 agent_iterations = Histogram(
     "agent_iterations",
     "LLM loop iterations per turn",
-    buckets=(1, 2, 3, 4, 5, 7, 10, 15),
 )
 
 agent_tokens_total = Counter(

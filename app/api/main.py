@@ -5,6 +5,9 @@ Endpoints:
 - GET  /health            -> liveness check (always 200 if the process is up)
 - GET  /health/ready      -> readiness check (200 only if Qdrant/Postgres/
                               Redis are actually reachable, see app/api/health.py)
+                              (metrics are pushed via OTLP, not pulled from an
+                              endpoint here — see app/core/telemetry.py and
+                              docker-compose.observability.yml)
 - POST /chat              -> non-streaming, returns full answer (Pydantic in/out)
 - POST /chat/stream       -> production SSE streaming via astream_events v2,
                               running the graph in-process, in this request —
@@ -78,7 +81,6 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.agent import meter, sessions, sql_store
 from app.agent.runtime import (
@@ -111,6 +113,7 @@ from app.core.config import (
 )
 from app.core.logging_config import bind_request_id, configure_logging
 from app.core.security import SecurityCtx
+from app.core.telemetry import configure_telemetry
 from app.ingestion import ingest_queue, object_store
 from app.ingestion.extractors import EXTRACTORS_BY_SUFFIX
 from app.turns import queue
@@ -146,6 +149,17 @@ async def lifespan(app: FastAPI):
     # checkpointer bound to THIS loop, or the async path hits "bound to a
     # different event loop" — see app/agent/runtime.py's module docstring for the
     # full reasoning (verified empirically before writing that doc).
+    #
+    # configure_telemetry() belongs here, not at module level like
+    # configure_logging() above: it installs a real, network-bound OTLP
+    # MeterProvider, and OTel's set_meter_provider is call-once — the FIRST
+    # caller in the process wins, permanently. Module level would make that
+    # first caller whichever test module happens to import this file first
+    # under pytest (see app/core/telemetry.py's own docstring). Lifespan
+    # never runs under this app's test suite (no test drives this app
+    # through TestClient as a context manager — see tests/api/test_api.py's
+    # docstring), so this is safe here.
+    configure_telemetry("agent-core-api")
     await init_graph_async()
     yield
     # Closes the Postgres connection pool's background worker threads
@@ -218,12 +232,6 @@ async def health_ready(response: Response) -> ReadinessResponse:
     ready = all(checks.values())
     response.status_code = 200 if ready else 503
     return ReadinessResponse(status="ready" if ready else "degraded", checks=checks)
-
-
-@app.get("/metrics")
-def metrics_endpoint() -> Response:
-    """Prometheus scrape target — see app/core/metrics.py for what's recorded."""
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/chat", response_model=ChatResponse)

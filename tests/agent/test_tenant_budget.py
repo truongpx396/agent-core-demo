@@ -14,7 +14,7 @@ import asyncio
 
 from app.agent import runtime as agent
 from app.core import errors, metrics
-from tests.conftest import TEST_CTX
+from tests.conftest import TEST_CTX, metric_value
 
 
 class TestTenantOverDailyBudget:
@@ -74,11 +74,11 @@ class TestTenantOverDailyBudget:
         monkeypatch.setattr(
             meter, "usage_summary", lambda *a, **kw: {"total_cost_usd": 8.5, "total_tokens": 100}
         )
-        before = metrics.agent_tenant_budget_warning_total._value.get()
+        before = metric_value(metrics.agent_tenant_budget_warning_total)
 
         assert agent._tenant_over_daily_budget(TEST_CTX) is False
 
-        assert metrics.agent_tenant_budget_warning_total._value.get() == before + 1
+        assert metric_value(metrics.agent_tenant_budget_warning_total) == before + 1
 
     def test_queries_a_rolling_24h_window_scoped_to_this_tenant(self, monkeypatch):
         from app.agent import meter

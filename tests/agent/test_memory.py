@@ -92,22 +92,24 @@ class TestReturnValueAndAudit:
 
     def test_records_a_deleted_outcome_metric(self, monkeypatch):
         from app.core import metrics
+        from tests.conftest import metric_value
 
         _mock_qdrant(monkeypatch)
-        before = metrics.agent_memory_deletion_total.labels(outcome="deleted")._value.get()
+        before = metric_value(metrics.agent_memory_deletion_total, outcome="deleted")
 
         memory.delete_memories(TEST_CTX, memory_id="abc")
 
-        after = metrics.agent_memory_deletion_total.labels(outcome="deleted")._value.get()
+        after = metric_value(metrics.agent_memory_deletion_total, outcome="deleted")
         assert after == before + 1
 
     def test_records_a_refused_outcome_metric_on_ambiguous_selector(self):
         from app.core import metrics
+        from tests.conftest import metric_value
 
-        before = metrics.agent_memory_deletion_total.labels(outcome="refused")._value.get()
+        before = metric_value(metrics.agent_memory_deletion_total, outcome="refused")
 
         with pytest.raises(ValueError):
             memory.delete_memories(TEST_CTX)
 
-        after = metrics.agent_memory_deletion_total.labels(outcome="refused")._value.get()
+        after = metric_value(metrics.agent_memory_deletion_total, outcome="refused")
         assert after == before + 1

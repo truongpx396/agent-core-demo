@@ -1,4 +1,4 @@
-.PHONY: help up up-app pull-models ingest chat chat-stream chat-stream-hitl serve mcp-serve telegram agent-worker ingest-worker test lint typecheck eval logs down clean clear-cache
+.PHONY: help up up-app pull-models ingest chat chat-stream chat-stream-hitl serve mcp-serve telegram agent-worker ingest-worker test lint typecheck eval logs down clean clear-cache obs-up obs-down obs-logs obs-clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -75,3 +75,15 @@ clear-cache:  ## Flush the semantic cache (Redis) only — leaves the agent-work
 
 clean:  ## Stop services and delete volumes (models, vectors, traces)
 	docker compose down -v
+
+obs-up:  ## Start the observability stack (Grafana :3300, Prometheus :9090, Loki, Alertmanager, otel-collector) — independent of `make up`
+	docker compose -f docker-compose.observability.yml up -d
+
+obs-down:  ## Stop the observability stack (keep its volumes)
+	docker compose -f docker-compose.observability.yml down
+
+obs-logs:  ## Tail logs from the observability stack
+	docker compose -f docker-compose.observability.yml logs -f
+
+obs-clean:  ## Stop the observability stack and delete its volumes (Prometheus/Loki/Grafana data)
+	docker compose -f docker-compose.observability.yml down -v

@@ -51,8 +51,13 @@ uvicorn>=0.29,<1
 # Dev/test — graph unit + integration tests (fake LLM, no live services)
 pytest>=8.0,<9
 
-# Observability — Prometheus metrics exposed at GET /metrics (see app/metrics.py)
-prometheus-client>=0.20,<1
+# Observability — structured JSON logging (app/core/logging_config.py) and
+# OpenTelemetry metrics pushed via OTLP/HTTP to a shared otel-collector
+# (app/core/telemetry.py, app/core/metrics.py, docker-compose.observability.yml).
+structlog>=24.1,<26
+opentelemetry-api>=1.27,<2
+opentelemetry-sdk>=1.27,<2
+opentelemetry-exporter-otlp-proto-http>=1.27,<2
 
 # Hybrid retrieval (app/embeddings.py) — local/ONNX BM25 sparse embedding +
 # cross-encoder reranker, no torch/sentence-transformers dependency.

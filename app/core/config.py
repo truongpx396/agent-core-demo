@@ -148,6 +148,15 @@ class Settings(BaseSettings):
     # vector, not just a slow request.
     max_upload_size_mb: int = 25
 
+    # OTel metrics export (app/core/telemetry.py) — the OTLP/HTTP base URL
+    # (no /v1/metrics suffix; configure_telemetry appends it) every
+    # long-running process pushes its metrics to. Points at the shared
+    # otel-collector (docker-compose.observability.yml) in a real
+    # deployment; localhost:4318 here matches the "host process talks to a
+    # docker-compose service via its published port" pattern this file
+    # already uses for every other dependency (QDRANT_URL, REDIS_URL, ...).
+    otel_exporter_otlp_endpoint: str = "http://localhost:4318"
+
 
 settings = Settings()
 
@@ -183,3 +192,4 @@ MINIO_SECURE = settings.minio_secure
 RATE_LIMIT_PER_MINUTE = settings.rate_limit_per_minute
 CORS_ALLOWED_ORIGINS = settings.cors_allowed_origins
 MAX_UPLOAD_SIZE_MB = settings.max_upload_size_mb
+OTEL_EXPORTER_OTLP_ENDPOINT = settings.otel_exporter_otlp_endpoint

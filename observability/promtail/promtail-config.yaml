@@ -1,0 +1,53 @@
+# Ships this app's own containers' stdout (docker-compose.yml's structlog
+# JSON lines — app/core/logging_config.py — included) to Loki. Discovers
+# containers via the Docker daemon socket (docker_sd_configs), which by
+# default sees EVERY container on the host, not just this project's —
+# verified empirically against a real multi-project dev machine: without
+# the service-name `keep` filter below, Promtail also picked up an
+# unrelated docker-compose project's months-old container logs and Loki
+# rejected the whole batch as "timestamp too old" (limits_config's
+# reject_old_samples_max_age), which would otherwise silently swallow
+# THIS app's own log lines batched alongside them. The filter is a
+# service-name allowlist, not a project-name match, so it keeps working
+# regardless of what directory this repo is cloned into (a docker-compose
+# project's default name is its directory's basename).
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+        regex: "^(api|agent-worker|ingest-worker|litellm|postgres|redis|qdrant|minio|ollama|langfuse-web|open-webui|postgres-exporter|redis-exporter)$"
+        action: keep
+      - source_labels: [__meta_docker_container_name]
+        regex: "/(.*)"
+        target_label: container
+      - source_labels: [__meta_docker_container_label_com_docker_compose_project]
+        target_label: compose_project
+      - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+        target_label: compose_service
+    pipeline_stages:
+      # app/core/logging_config.py's structlog output is one JSON object per
+      # line for every service this app runs as a container (api,
+      # agent-worker, ingest-worker) — parse it so `level`/`logger` are real
+      # Loki labels a dashboard/alert can filter on, not just buried text.
+      # A container that logs plain text (ollama, qdrant, postgres, ...)
+      # just skips these stages harmlessly (json stage no-ops on non-JSON).
+      - json:
+          expressions:
+            level: level
+            logger: logger
+      - labels:
+          level:
+          logger:

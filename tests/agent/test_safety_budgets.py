@@ -31,7 +31,7 @@ from app.agent.graph import (
     validate_input,
 )
 from app.core import metrics
-from tests.conftest import TEST_CTX
+from tests.conftest import TEST_CTX, metric_value
 
 
 def _tool_call_message(name, args, call_id="call_1"):
@@ -148,7 +148,7 @@ class TestCompactHistoryNode:
         return messages
 
     def test_applies_the_trim_and_increments_metric(self):
-        before = metrics.agent_history_compacted_total._value.get()
+        before = metric_value(metrics.agent_history_compacted_total)
         compact_history = make_compact_history_node(
             GenericFakeChatModel(messages=iter([AIMessage(content="a summary")]))
         )
@@ -158,7 +158,7 @@ class TestCompactHistoryNode:
         assert "messages" in result
         assert all(isinstance(m, RemoveMessage) for m in result["messages"])
         assert result["history_summary"] == "a summary"
-        assert metrics.agent_history_compacted_total._value.get() == before + 1
+        assert metric_value(metrics.agent_history_compacted_total) == before + 1
 
     def test_returns_nothing_when_within_budget(self):
         compact_history = make_compact_history_node(GenericFakeChatModel(messages=iter([])))

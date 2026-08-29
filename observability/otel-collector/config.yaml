@@ -1,0 +1,42 @@
+# OTel Collector — the aggregation point every instrumented process
+# (app-core-api, agent-worker, ingest-worker; each replica of the latter
+# two included, GRAPH_PATTERNS.md pattern 43) pushes its metrics to over
+# OTLP, so Prometheus below has exactly ONE scrape target
+# (otel-collector:8889) that covers the whole app regardless of how many
+# worker replicas are running — a pull-based per-process /metrics endpoint
+# (this app's old design) could never see a worker's metrics at all, since
+# a worker process binds no HTTP port for anything to scrape directly. See
+# app/core/telemetry.py's module docstring for the full reasoning.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch:
+    timeout: 5s
+
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # Counter/Histogram names emitted by app/core/metrics.py already carry
+    # their own _total suffix / are Prometheus-idiomatic — verified
+    # empirically (a throwaway collector + push script) that this exporter
+    # does NOT double that suffix, and that explicit histogram bucket
+    # boundaries set via app/core/telemetry.py's Views survive translation
+    # unchanged (le="0.5", "1", ... rather than the SDK's own
+    # millisecond-scale defaults).
+
+service:
+  telemetry:
+    logs:
+      level: warn
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]

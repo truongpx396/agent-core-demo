@@ -5,12 +5,21 @@ scripts/hitl_demo.py) or one-shot operator scripts (scripts/seed.py, scripts/eva
 which print directly to the terminal for a human watching it and would just
 get JSON noise interleaved with that.
 
-This doesn't change any log CALL site. Every module in this app already
-logs through the stdlib `logging` module, many with a per-call
+Built on structlog, not a hand-rolled `logging.Formatter` — but every log
+CALL site in this app already logs through the stdlib `logging` module
+(`logger = logging.getLogger(__name__)`), many with a per-call
 `extra={...}` dict carrying real correlation data (request_id, tool name,
 error_class, tenant — see e.g. app/turns/agent_worker.py::process_request,
-app/core/metrics.py::MetricsCallbackHandler). Two problems, both fixed by
-wiring THIS UP, neither by changing what's logged:
+app/core/metrics.py::MetricsCallbackHandler). `configure_logging()` below
+wires structlog's `ProcessorFormatter` onto the ROOT logger's handler
+instead — the standard "structlog processes stdlib logging" recipe — so
+every one of those call sites gets structlog's processor pipeline (JSON
+rendering, request_id injection, exception formatting) with ZERO changes to
+any individual `logger.info(...)`/`logger.warning(...)` call, exactly as
+before this swap.
+
+This doesn't change any log CALL site. Two problems this fixes, neither by
+changing what's logged:
 
 1. `logging.basicConfig(level=logging.INFO)` (what every service process
    used before this module existed) renders only the plain message string
@@ -37,40 +46,26 @@ correlation id at all, making "show me every log line for turn X" not
 actually answerable from the logs alone. `bind_request_id`/`request_id_var`
 below fix this the standard way: a contextvar set once at the entry point
 (propagates through every `await` in that same task automatically) plus a
-logging.Filter that stamps it onto every record — with ZERO changes to any
-individual `logger.info(...)`/`logger.warning(...)` call site.
+structlog processor that reads it onto every event dict — with ZERO changes
+to any individual `logger.info(...)`/`logger.warning(...)` call site.
+
+Output shape is unchanged from the pre-structlog formatter (same JSON keys:
+`timestamp`, `level`, `logger`, `message`, `request_id` when bound, plus
+every `extra=` field verbatim, plus `exc_info` as a formatted traceback
+string) — the one deliberate difference is `level`, now lowercase
+(`"info"`, not `"INFO"`) per structlog's own convention, which the
+Promtail/Loki pipeline this feeds (docker-compose.observability.yml) also
+expects.
 """
-import json
 import logging
 import sys
+import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-# Every attribute a bare LogRecord carries by default — anything else on a
-# given record was added via that call's own `extra={...}`, and is what
-# actually gets serialized into the JSON line below.
-_STANDARD_ATTRS = frozenset(vars(logging.makeLogRecord({})).keys())
-
-
-class JSONFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        payload: dict = {
-            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
-        for key, value in vars(record).items():
-            if key not in _STANDARD_ATTRS and key not in payload:
-                payload[key] = value
-        if record.exc_info:
-            payload["exc_info"] = self.formatException(record.exc_info)
-        # default=str: an extra field is sometimes a non-JSON-native value
-        # (an Enum, a UUID, ...) at real call sites in this app — stringify
-        # rather than let one such field crash the whole log line.
-        return json.dumps(payload, default=str)
-
+import structlog
+from structlog.typing import EventDict, Processor, WrappedLogger
 
 request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 
@@ -83,7 +78,7 @@ def bind_request_id(request_id: str) -> Iterator[None]:
     separate request_id concept for a non-queued turn). Every log line
     emitted anywhere during the wrapped block — including deep inside
     app/agent/graph.py/app/agent/tools.py, which have no idea this id exists — carries
-    it, via `_RequestIdFilter` below. Reset on exit (not left dangling) so
+    it, via `_add_request_id` below. Reset on exit (not left dangling) so
     a worker's NEXT turn on the same asyncio task doesn't inherit a stale id
     if something logs outside any `bind_request_id` block.
     """
@@ -94,12 +89,78 @@ def bind_request_id(request_id: str) -> Iterator[None]:
         request_id_var.reset(token)
 
 
-class _RequestIdFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        request_id = request_id_var.get()
-        if request_id is not None and not hasattr(record, "request_id"):
-            record.request_id = request_id
-        return True
+def _add_request_id(
+    logger: WrappedLogger, method_name: str, event_dict: EventDict
+) -> EventDict:
+    """structlog processor: stamps the ambient `bind_request_id` value onto
+    every event, unless a call site already supplied one explicitly via
+    `extra={"request_id": ...}` — mirrors the old `_RequestIdFilter`'s
+    `not hasattr(record, "request_id")` check. Must run AFTER
+    `structlog.stdlib.ExtraAdder` in the processor chain so an explicit
+    `extra` value is already in `event_dict` by the time this checks it."""
+    request_id = request_id_var.get()
+    if request_id is not None and "request_id" not in event_dict:
+        event_dict["request_id"] = request_id
+    return event_dict
+
+
+def _rename_event_to_message(
+    logger: WrappedLogger, method_name: str, event_dict: EventDict
+) -> EventDict:
+    """structlog's own convention is an `event` key; this app's log
+    consumers (this module's own tests, any existing dashboard/alert query
+    over these JSON lines) expect `message`, matching the previous
+    hand-rolled formatter."""
+    event_dict["message"] = event_dict.pop("event")
+    return event_dict
+
+
+def _format_exc_info(
+    logger: WrappedLogger, method_name: str, event_dict: EventDict
+) -> EventDict:
+    """Renders the exc_info 3-tuple ProcessorFormatter attaches for a
+    stdlib `logger.exception(...)`/`logger.error(..., exc_info=True)` call
+    into a formatted traceback string under the same `exc_info` key the
+    previous formatter used (`Formatter.formatException`) — never the raw,
+    non-JSON-serializable tuple."""
+    exc_info = event_dict.pop("exc_info", None)
+    if exc_info:
+        if exc_info is True:
+            exc_info = sys.exc_info()
+        event_dict["exc_info"] = "".join(traceback.format_exception(*exc_info))
+    return event_dict
+
+
+# Shared by both real log records (via ProcessorFormatter's foreign_pre_chain,
+# for every plain stdlib `logger.info(...)` call site in this app) and any
+# native structlog call (none today, but `wrap_for_formatter` needs this
+# same chain configured via structlog.configure() below regardless).
+_SHARED_PROCESSORS: list[Processor] = [
+    structlog.stdlib.add_logger_name,
+    structlog.stdlib.add_log_level,
+    structlog.processors.TimeStamper(fmt="iso", key="timestamp"),
+    structlog.stdlib.ExtraAdder(),
+    _add_request_id,
+    _rename_event_to_message,
+]
+
+
+def build_formatter() -> structlog.stdlib.ProcessorFormatter:
+    """Exposed (not just used internally by `configure_logging`) so tests
+    can attach it to an isolated, non-propagating logger instead of going
+    through the real root logger — the same isolation the old
+    JSONFormatter-based fixture used, see tests/core/test_logging_config.py."""
+    return structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=_SHARED_PROCESSORS,
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            _format_exc_info,
+            # default=str: an extra field is sometimes a non-JSON-native
+            # value (an Enum, a UUID, ...) at real call sites in this app —
+            # stringify rather than let one such field crash the whole log line.
+            structlog.processors.JSONRenderer(default=str),
+        ],
+    )
 
 
 class _DynamicStreamHandler(logging.StreamHandler):
@@ -127,9 +188,18 @@ def configure_logging(level: int = logging.INFO) -> None:
     attached to the root logger (e.g. a third-party library that calls
     its own `basicConfig`) — this app's own JSON formatting should win
     regardless of import order, not silently lose a race for the root
-    logger's configuration.
+    logger's configuration. Freely re-callable (unlike
+    app/core/telemetry.py::configure_telemetry) — each call just replaces
+    the root handlers again.
     """
+    structlog.configure(
+        processors=_SHARED_PROCESSORS
+        + [structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+
     handler = _DynamicStreamHandler()
-    handler.setFormatter(JSONFormatter())
-    handler.addFilter(_RequestIdFilter())
+    handler.setFormatter(build_formatter())
     logging.basicConfig(level=level, handlers=[handler], force=True)

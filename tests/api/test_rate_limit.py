@@ -17,6 +17,7 @@ from starlette.responses import Response
 
 from app.api import rate_limit
 from app.core import metrics
+from tests.conftest import metric_value
 
 
 def _make_request(path: str, *, tenant: str | None = "acme", client_host="10.0.0.1") -> Request:
@@ -106,10 +107,10 @@ class TestTenantRateLimitMiddleware:
     def test_rejection_increments_the_metric(self, monkeypatch):
         middleware = _fresh_middleware(monkeypatch, limit_per_minute=1)
         request = _make_request("/chat/stream")
-        before = metrics.agent_rate_limit_exceeded_total._value.get()
+        before = metric_value(metrics.agent_rate_limit_exceeded_total)
 
         asyncio.run(middleware.dispatch(request, _call_next))  # consumes the budget
         asyncio.run(middleware.dispatch(request, _call_next))  # rejected
 
-        after = metrics.agent_rate_limit_exceeded_total._value.get()
+        after = metric_value(metrics.agent_rate_limit_exceeded_total)
         assert after == before + 1

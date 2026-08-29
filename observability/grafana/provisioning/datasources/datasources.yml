@@ -1,0 +1,23 @@
+# Fixed `uid`s (not Grafana's auto-generated ones) so the dashboard JSON in
+# ../dashboards/*.json can reference these datasources by a stable id
+# regardless of provisioning order or how many times this stack has been
+# torn down and recreated.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: 15s
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: true
