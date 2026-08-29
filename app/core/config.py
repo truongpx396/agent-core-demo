@@ -64,6 +64,18 @@ class Settings(BaseSettings):
     hybrid_prefetch_limit: int = 20  # candidates pulled per leg (dense, sparse) before fusion
     rerank_top_k: int = 5            # final results returned after rerank
 
+    # Skill packages (app/agent/skills.py, GRAPH_PATTERNS.md pattern 45) — a
+    # bundled catalog of SKILL.md files (name/description frontmatter + a
+    # markdown instruction body), each a *procedural capability* shipped with
+    # the app, not tenant data (no SecurityCtx involved, same as calculator).
+    # `skills_dir` is disk truth for a skill's full body (loaded by
+    # use_skill); `skills_collection` is a SEPARATE Qdrant collection —
+    # never `collection` above — holding just {name, description} for
+    # skill_search's hybrid search, rebuilt via `make index-skills`.
+    skills_dir: str = "skills"
+    skills_collection: str = "skills"
+    skills_search_top_k: int = 3
+
     # Structured-data tool (app/agent/sql_store.py) — a SEPARATE database in the
     # same Postgres the stack already runs for LiteLLM/Langfuse (see
     # postgres-init/02-appdata.sql), not sharing their schema.
@@ -176,6 +188,9 @@ SPARSE_MODEL = settings.sparse_model
 RERANK_MODEL = settings.rerank_model
 HYBRID_PREFETCH_LIMIT = settings.hybrid_prefetch_limit
 RERANK_TOP_K = settings.rerank_top_k
+SKILLS_DIR = settings.skills_dir
+SKILLS_COLLECTION = settings.skills_collection
+SKILLS_SEARCH_TOP_K = settings.skills_search_top_k
 APPDATA_DATABASE_URL = settings.appdata_database_url
 REDIS_URL = settings.redis_url
 SEMANTIC_CACHE_SIMILARITY_THRESHOLD = settings.semantic_cache_similarity_threshold

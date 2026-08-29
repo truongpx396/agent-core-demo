@@ -9,9 +9,13 @@ nothing else calls them (add_note/remember are gated behind human_approval
 in every graph scenario, so a graph-level test would need to drive a full
 pause/resume cycle just to reach the implementation).
 """
+from pathlib import Path
+
 import pytest
 
+from app.agent import skills as skills_module
 from app.agent import sql_store, tools
+from app.agent.skills import SkillRecord
 from app.agent.tools import (
     TOOL_CAPABILITIES,
     TOOLS,
@@ -25,7 +29,10 @@ from app.agent.tools import (
     recall_memories,
     remember,
     search_docs,
+    skill_search,
+    use_skill,
 )
+from app.core.config import SKILLS_COLLECTION
 from app.retrieval import qdrant_store
 from tests.conftest import TEST_CTX
 
@@ -470,6 +477,8 @@ class TestToolCapabilities:
         assert TOOL_CAPABILITIES["calculator"] == "read_only"
         assert TOOL_CAPABILITIES["query_employees"] == "read_only"
         assert TOOL_CAPABILITIES["ask_clarification"] == "read_only"
+        assert TOOL_CAPABILITIES["skill_search"] == "read_only"
+        assert TOOL_CAPABILITIES["use_skill"] == "read_only"
 
     def test_mutating_tools_declared_correctly(self):
         assert TOOL_CAPABILITIES["add_note"] == "mutating"
@@ -486,3 +495,89 @@ class TestToolCapabilities:
         names = {t.name for t in TOOLS}
         assert "add_note" in names
         assert "remember" in names
+
+    def test_skill_search_and_use_skill_are_registered_in_TOOLS(self):
+        names = {t.name for t in TOOLS}
+        assert "skill_search" in names
+        assert "use_skill" in names
+
+
+class _FakeHit:
+    def __init__(self, payload):
+        self.payload = payload
+
+
+class TestSkillSearch:
+    def test_needs_no_ctx_it_is_a_bundled_capability_not_tenant_data(self, monkeypatch):
+        # Same posture as calculator: no SecurityCtx at all, no config arg.
+        monkeypatch.setattr(qdrant_store, "hybrid_search", lambda *a, **k: [])
+        result = skill_search.invoke({"query": "anything"})
+        assert "Refused" not in result
+
+    def test_searches_the_dedicated_skills_collection(self, monkeypatch):
+        captured = {}
+
+        def fake_hybrid_search(query_text, **kwargs):
+            captured["query_text"] = query_text
+            captured["collection"] = kwargs.get("collection")
+            return []
+
+        monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
+
+        skill_search.invoke({"query": "onboard a new hire"})
+
+        assert captured["query_text"] == "onboard a new hire"
+        assert captured["collection"] == SKILLS_COLLECTION
+
+    def test_formats_hits_as_name_and_description(self, monkeypatch):
+        hits = [
+            _FakeHit({"name": "onboarding-brief", "description": "Compose a new-hire brief."}),
+            _FakeHit({"name": "expense-summary", "description": "Summarize expense line items."}),
+        ]
+        monkeypatch.setattr(qdrant_store, "hybrid_search", lambda *a, **k: hits)
+
+        result = skill_search.invoke({"query": "onboard a new hire"})
+
+        assert "- onboarding-brief: Compose a new-hire brief." in result
+        assert "- expense-summary: Summarize expense line items." in result
+
+    def test_no_hits_tells_the_model_to_proceed_without_a_skill(self, monkeypatch):
+        monkeypatch.setattr(qdrant_store, "hybrid_search", lambda *a, **k: [])
+        result = skill_search.invoke({"query": "something with no matching skill"})
+        assert "No matching skills" in result
+
+    def test_missing_collection_degrades_to_a_clear_message_not_a_crash(self, monkeypatch):
+        def raises(*args, **kwargs):
+            raise RuntimeError("collection 'skills' doesn't exist")
+
+        monkeypatch.setattr(qdrant_store, "hybrid_search", raises)
+
+        result = skill_search.invoke({"query": "anything"})
+
+        assert "index-skills" in result
+
+
+class TestUseSkill:
+    def test_needs_no_ctx_it_is_a_bundled_capability_not_tenant_data(self, monkeypatch):
+        monkeypatch.setattr(skills_module, "get_skills", lambda: {})
+        result = use_skill.invoke({"name": "whatever"})
+        assert "Refused" not in result
+
+    def test_returns_the_matched_skills_full_body_from_disk_not_qdrant(self, monkeypatch):
+        record = SkillRecord(
+            name="onboarding-brief",
+            description="Compose a new-hire brief.",
+            body="# Onboarding Brief\n1. Call query_employees...",
+            path=Path("skills/onboarding-brief/SKILL.md"),
+        )
+        monkeypatch.setattr(skills_module, "get_skills", lambda: {"onboarding-brief": record})
+
+        result = use_skill.invoke({"name": "onboarding-brief"})
+
+        assert result == record.body
+
+    def test_unknown_name_returns_a_clear_message_not_an_exception(self, monkeypatch):
+        monkeypatch.setattr(skills_module, "get_skills", lambda: {})
+        result = use_skill.invoke({"name": "does-not-exist"})
+        assert "No skill named" in result
+        assert "skill_search" in result

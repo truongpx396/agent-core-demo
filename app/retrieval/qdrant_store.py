@@ -27,6 +27,15 @@ policy (GRAPH_PATTERNS.md pattern 10):
 
 Both are recorded via `agent_retrieval_degraded_total{stage=...}`
 (`app/core/metrics.py`), never silently absorbed.
+
+## Multiple collections, one schema (GRAPH_PATTERNS.md pattern 45)
+
+`ensure_collection`/`upsert`/`hybrid_search` all take an optional
+`collection` (defaulting to `COLLECTION`, the main docs collection) so a
+second collection built with this same dense+sparse schema — e.g.
+`SKILLS_COLLECTION` (app/agent/skills.py's search index) — gets the exact
+same fusion/rerank/degrade pipeline with zero duplicated logic. Every
+existing call site keeps working unchanged by simply omitting it.
 """
 import logging
 from typing import cast
@@ -63,14 +72,19 @@ def get_client() -> QdrantClient:
     return QdrantClient(url=QDRANT_URL)
 
 
-def ensure_collection(dim: int) -> None:
+def ensure_collection(dim: int, collection: str | None = None) -> None:
     """(Re)create the collection with a named dense vector (cosine) and a
     named sparse vector (BM25). Recreating changes the schema — a
     collection built before hybrid search (a single unnamed dense vector)
-    is incompatible and must be re-ingested (`make ingest`)."""
+    is incompatible and must be re-ingested (`make ingest`).
+
+    `collection` defaults to the main `COLLECTION` (docs) — pass e.g.
+    `SKILLS_COLLECTION` (app/core/config.py) to (re)create a SEPARATE
+    collection with the same dense+sparse schema, as scripts/index_skills.py
+    does. Every call site keeps working unchanged by omitting it."""
     client = get_client()
     client.recreate_collection(
-        collection_name=COLLECTION,
+        collection_name=collection or COLLECTION,
         vectors_config={DENSE_VECTOR_NAME: VectorParams(size=dim, distance=Distance.COSINE)},
         sparse_vectors_config={SPARSE_VECTOR_NAME: SparseVectorParams()},
     )
@@ -96,8 +110,8 @@ def build_point(
     return PointStruct(id=point_id, vector=vector, payload=payload)
 
 
-def upsert(points: list[PointStruct]) -> None:
-    get_client().upsert(collection_name=COLLECTION, points=points)
+def upsert(points: list[PointStruct], collection: str | None = None) -> None:
+    get_client().upsert(collection_name=collection or COLLECTION, points=points)
 
 
 def _build_filter(
@@ -127,6 +141,7 @@ def hybrid_search(
     tenant_filter: Filter | None = None,
     rerank_results: bool = True,
     doc_ids: list[str] | None = None,
+    collection: str | None = None,
 ):
     """Dense+sparse hybrid search, RRF-fused, cross-encoder reranked —
     degrading gracefully at each stage (see module docstring). Returns a
@@ -136,18 +151,25 @@ def hybrid_search(
 
     `doc_ids`, when given, narrows results to those specific Qdrant point
     ids — ANDed onto the tenant/topic filter, never a replacement for it.
+
+    `collection` defaults to the main `COLLECTION` (docs) — pass e.g.
+    `SKILLS_COLLECTION` to search a different collection built with this
+    same dense+sparse schema (see `ensure_collection`); the fusion/rerank/
+    degrade pipeline below is otherwise identical regardless of which
+    collection it's pointed at.
     """
     # deferred: avoids importing fastembed at module load
     from app.retrieval import embeddings
 
     k = k or RERANK_TOP_K
+    coll = collection or COLLECTION
     query_filter = _build_filter(topic, tenant_filter, doc_ids)
     dense_vector = embeddings.embed_text(query_text)
 
     try:
         sparse_indices, sparse_values = embeddings.embed_sparse(query_text)
         response = get_client().query_points(
-            collection_name=COLLECTION,
+            collection_name=coll,
             prefetch=[
                 Prefetch(
                     query=dense_vector,
@@ -173,7 +195,7 @@ def hybrid_search(
         )
         metrics.agent_retrieval_degraded_total.labels(stage="sparse").inc()
         response = get_client().query_points(
-            collection_name=COLLECTION,
+            collection_name=coll,
             query=dense_vector,
             using=DENSE_VECTOR_NAME,
             query_filter=query_filter,

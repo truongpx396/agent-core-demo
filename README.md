@@ -26,6 +26,7 @@ Everything runs locally via **Ollama** — no cloud API keys needed.
 - **Memory** — per-thread conversation memory via the checkpointer, and write-gated cross-session personal memory, both tenant/owner isolated
 - **Semantic cache** — a repeated question skips retrieval and the LLM entirely, served from cache instead
 - **Tools, including MCP** — calculator, hybrid search, a fixed (never text-to-SQL) structured Postgres query, clarification questions, follow-up suggestions — reachable over MCP too, as both a server and a client
+- **Skills with progressive disclosure** — a bundled `SKILL.md` catalog, searched by meaning (`skill_search`) and loaded in full only on match (`use_skill`), so the model's tool surface stays small no matter how many skills the catalog grows to
 - **Human-in-the-loop** — mandatory approval for any mutating tool call, over HTTP or CLI, with a real cancel path for a paused run
 - **Multi-tenant by construction** — every retrieval and write scoped to tenant+principal at the store level, never a Python post-filter
 - **Real guardrails** — input moderation, credential/secret scrubbing, nine independent safety budgets, a golden-dataset eval gate before shipping a prompt/model change
@@ -130,7 +131,7 @@ actual bug or gotcha that motivated it), grouped here by concern:
 | **Human-in-the-loop & governance** | 8, 15, 36 | Every mutating tool call (writes, sends, spends) is gated by *mandatory* approval — not opt-in — with a real cancel path for a paused run |
 | **Multi-tenant security** | 12, 17, 25, 30, 32 | Every read/write scoped to tenant+owner via a store-level pre-filter (never a Python post-filter); real pattern-based input moderation; secrets scrubbed from tool output before they reach a prompt or trace; a canonical error envelope |
 | **Retrieval, memory & caching** | 2, 3, 13, 18–20, 22, 24, 33, 41 | Hybrid dense+BM25 search, RRF-fused, cross-encoder reranked, with inline citations; a tenant+principal-scoped semantic cache; write-gated cross-session memory with retention-at-recall; bounded history with LLM-summarized compaction; a prompt-cache-stable system prompt |
-| **Structured data & tools** | 21, 27, 28, 31 | A fixed, parameterized Postgres tool (never text-to-SQL), also reachable over MCP; clarification questions + follow-ups; consuming a remote MCP catalog with local capability overrides; a real DB connection pool |
+| **Structured data & tools** | 21, 27, 28, 31, 45 | A fixed, parameterized Postgres tool (never text-to-SQL), also reachable over MCP; clarification questions + follow-ups; consuming a remote MCP catalog with local capability overrides; a real DB connection pool; a searchable skill catalog loaded progressively (`skill_search`/`use_skill`) |
 | **Reliability & scaling** | 16, 43 | A durable, version-stamped Postgres checkpointer (a paused approval survives a restart); a Redis Streams queue decoupling SSE-serving capacity from agent-executing capacity, scaled independently |
 | **Observability & cost** | 11, 14, 26, 37, 38 | OpenTelemetry metrics pushed via OTLP, structlog-based structured per-node/per-tool-call logs correlated by `run_id`, a real per-tenant/principal usage-cost ledger with the resolved concrete model recorded, and an optional Grafana/Loki/Prometheus/Alertmanager stack with provisioned dashboards and alert rules |
 | **Interfaces & extensibility** | 23, 29, 42, 44 | CLI, HTTP API, built-in web UI, Telegram channel, and multimodal (image) input — all sharing one `answer()`/`stream_turn()` core; a config-first multi-domain layer so a new use case is a manifest + plugin, never a fork |
@@ -227,6 +228,12 @@ Try these in the chat:
   both a LangGraph one and a generic database one are plausible) → the
   agent may call **ask_clarification** and offer 2-4 concrete options
   instead of guessing (pattern 27)
+- `put together an onboarding brief for a new hire in Engineering` → the
+  agent calls **skill_search**, matches the bundled `onboarding-brief`
+  skill, then **use_skill** to load its instructions before answering with
+  `query_employees`/`search_docs` (pattern 45). Requires `make
+  index-skills` to have been run once; try `make chat-stream` to see the
+  tool calls
 - A grounded, cited answer is followed by 2-3 **follow-up suggestions**
   derived from that answer (pattern 27) — suppressed for uncited answers
   and cache hits
