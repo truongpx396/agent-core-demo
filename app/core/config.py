@@ -152,6 +152,36 @@ class Settings(BaseSettings):
     # of the stack (fully local via docker-compose).
     telegram_bot_token: str = ""
 
+    # Which domain (app/domains/registry.py) a process boots its shared
+    # graph singleton against — read by app/channels/telegram.py, which is
+    # now a generalized gateway rather than an Acme-only one (GRAPH_PATTERNS.md
+    # pattern 23/42). "acme" is this app's own existing default; the demo
+    # example domains this app ships alongside it are "support" and "sales"
+    # (see app/domains/support/, app/domains/sales/) — "ops" is registered
+    # too, mostly so it CAN be chatted with, though its own use case
+    # (scripts/ops_digest.py, scripts/ops_investigate.py) doesn't need a
+    # channel at all. An unknown name fails loud at process start
+    # (app/domains/registry.py::resolve_domain), same discipline as
+    # TELEGRAM_BOT_TOKEN's missing-config check above.
+    agent_domain: str = "acme"
+
+    # Ops bot (app/domains/ops/) — queries the Prometheus this repo already
+    # runs (docker-compose.observability.yml, `make obs-up`) for its
+    # "pull metrics dashboards" tool, over Prometheus's own HTTP query API.
+    # Not the otel-collector's OTLP port — that's a push target, not
+    # queryable; Prometheus is what actually stores/serves these numbers.
+    prometheus_url: str = "http://localhost:9090"
+
+    # Team-channel notifications (app/domains/notify.py) — used by the ops
+    # bot's post_to_team_channel tool and the support/sales domains'
+    # escalate_to_human/handoff_to_human. Empty by default: the notifier
+    # degrades to a local file+log sink rather than refusing to start (the
+    # OPPOSITE posture from TELEGRAM_BOT_TOKEN above) — same "additive,
+    # never load-bearing" relationship this app already has with Langfuse/
+    # observability, appropriate for a demo notification sink nobody's
+    # on-call rotation actually depends on.
+    slack_webhook_url: str = ""
+
     # API-layer protections (app/api/main.py) — a single client (or one
     # misbehaving/compromised tenant) must not be able to flood the shared
     # Redis Streams queue (app/turns/queue.py) or starve every other tenant's
@@ -221,6 +251,9 @@ MAX_COST_USD_PER_TURN = settings.max_cost_usd_per_turn
 MAX_SUBAGENT_COST_USD_PER_RUN = settings.max_subagent_cost_usd_per_run
 MAX_COST_USD_PER_TENANT_PER_DAY = settings.max_cost_usd_per_tenant_per_day
 TELEGRAM_BOT_TOKEN = settings.telegram_bot_token
+AGENT_DOMAIN = settings.agent_domain
+PROMETHEUS_URL = settings.prometheus_url
+SLACK_WEBHOOK_URL = settings.slack_webhook_url
 MINIO_ENDPOINT = settings.minio_endpoint
 MINIO_ACCESS_KEY = settings.minio_access_key
 MINIO_SECRET_KEY = settings.minio_secret_key

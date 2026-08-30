@@ -175,3 +175,51 @@ class TestRun:
         monkeypatch.setattr(telegram_channel, "TELEGRAM_BOT_TOKEN", "")
         with pytest.raises(RuntimeError, match="TELEGRAM_BOT_TOKEN"):
             asyncio.run(telegram_channel.run())
+
+    def test_resolves_agent_domain_and_primes_the_singleton_before_polling(self, monkeypatch):
+        """AGENT_DOMAIN (app/core/config.py) must be resolved and passed
+        into init_graph_sync BEFORE the poll loop starts — this generalized
+        gateway is what app/domains/support|sales/ run behind (see
+        README.md's "Example domains" section). Stops the run() coroutine
+        right after that point (a fake httpx.AsyncClient whose __aenter__
+        raises a marker exception) rather than actually driving the
+        long-poll loop, which is out of scope for this test."""
+
+        class _StopHere(Exception):
+            pass
+
+        class _RaisingAsyncClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                raise _StopHere()
+
+            async def __aexit__(self, *exc):
+                return False
+
+        resolved_with = {}
+
+        fake_manifest = type("FakeManifest", (), {"name": "support"})()
+
+        def _fake_resolve_domain(name):
+            resolved_with["name"] = name
+            return (fake_manifest, "fake-domain")
+
+        primed_with = {}
+
+        def _fake_init_graph_sync(manifest=None, domain=None):
+            primed_with["manifest"] = manifest
+            primed_with["domain"] = domain
+
+        monkeypatch.setattr(telegram_channel, "TELEGRAM_BOT_TOKEN", "fake-token")
+        monkeypatch.setattr(telegram_channel, "AGENT_DOMAIN", "support")
+        monkeypatch.setattr(telegram_channel, "resolve_domain", _fake_resolve_domain)
+        monkeypatch.setattr(telegram_channel, "init_graph_sync", _fake_init_graph_sync)
+        monkeypatch.setattr(telegram_channel.httpx, "AsyncClient", _RaisingAsyncClient)
+
+        with pytest.raises(_StopHere):
+            asyncio.run(telegram_channel.run())
+
+        assert resolved_with["name"] == "support"
+        assert primed_with == {"manifest": fake_manifest, "domain": "fake-domain"}

@@ -13,6 +13,30 @@ elsewhere (SecurityCtx, moderation). This is also the ONE surface in this
 app that necessarily reaches the public internet (Telegram's own servers)
 — unlike the rest of the stack, which runs fully local via docker-compose.
 
+## A generalized gateway, not an Acme-only one
+
+`AGENT_DOMAIN` (app/core/config.py, default `"acme"`) picks which domain
+(app/domains/registry.py) this process's shared graph singleton boots
+against — `AGENT_DOMAIN=support python -m app.channels.telegram` runs the
+Tier-1 support copilot (app/domains/support/), `AGENT_DOMAIN=sales` the
+sales concierge (app/domains/sales/) behind this exact same gateway,
+unmodified. Each is still its own OS process (its own bot token, in
+practice) — see app/agent/runtime.py's init_graph_sync/init_graph_async
+docstrings for why this is "which one domain a process boots as," not the
+"several domains from one running process" registry GRAPH_PATTERNS.md's
+Roadmap still lists as unbuilt.
+
+A WhatsApp gateway for the same domains would reuse the identical
+`handle_message`/`answer()` core below unchanged — only the transport
+differs: WhatsApp's Business Cloud API is push/webhook-based (Meta POSTs
+to a public HTTPS endpoint you expose and verify), not long-poll-based
+like Telegram, so it would be a small FastAPI route (app/api/main.py) with
+signature verification and a Graph API send call, not a poller. Not built
+here: this repo doesn't ship integration code it can't verify against a
+live service (the same reasoning "Extending Further" already gives for
+not building a real webhook-based Telegram deployment), and there's no
+WhatsApp Business account/credentials to verify one against.
+
 HITL tool-call approval: this channel has no interactive approve/reject UX
 (no inline keyboard handling) — `answer()` already auto-declines a
 mandatory-capability-gate pause for exactly this kind of single-shot,
@@ -21,9 +45,10 @@ on `answer`/`stream_turn`), so a Telegram user asking for a mutating action
 gets a real reply explaining it wasn't approved, never a silently-run
 write or a message that never arrives.
 
-Run with: `python -m app.channels.telegram` (see Makefile's `telegram`
-target). Runs as its own process — not started by `make up`/`make serve` —
-since it's opt-in and needs a real bot token to do anything at all.
+Run with: `python -m app.channels.telegram` (see Makefile's `telegram`/
+`telegram-support`/`telegram-sales` targets). Runs as its own process —
+not started by `make up`/`make serve` — since it's opt-in and needs a real
+bot token to do anything at all.
 """
 import asyncio
 import logging
@@ -32,11 +57,12 @@ import signal
 import httpx
 
 from app.agent import sql_store
-from app.agent.runtime import answer, get_graph
-from app.core.config import DEFAULT_TENANT, TELEGRAM_BOT_TOKEN
+from app.agent.runtime import answer, init_graph_sync
+from app.core.config import AGENT_DOMAIN, DEFAULT_TENANT, TELEGRAM_BOT_TOKEN
 from app.core.logging_config import configure_logging
 from app.core.security import SecurityCtx
 from app.core.telemetry import configure_telemetry
+from app.domains.registry import resolve_domain
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +166,12 @@ async def run() -> None:
             "TELEGRAM_BOT_TOKEN is not set — see app/channels/telegram.py's module docstring"
         )
 
-    get_graph()  # prime the durable checkpointer on its own background thread up front
+    manifest, domain = resolve_domain(AGENT_DOMAIN)
+    logger.info("telegram_channel_domain", extra={"domain": manifest.name})
+    # Prime the durable checkpointer on its own background thread up front,
+    # against WHICHEVER domain AGENT_DOMAIN resolved to — see this module's
+    # docstring and app/agent/runtime.py::init_graph_sync's own docstring.
+    init_graph_sync(manifest=manifest, domain=domain)
     offset = 0
 
     # Graceful shutdown: a SIGTERM/SIGINT stops this loop from starting a
