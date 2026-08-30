@@ -19,9 +19,11 @@ from langchain_core.messages import (
     SystemMessage,
 )
 
+from app.agent import runtime as agent_module
 from app.agent import tools
 from app.agent.graph import (
     MAX_HISTORY_TURNS,
+    MAX_ITERATIONS,
     MAX_TOKENS_PER_TURN,
     MAX_TOOL_CALLS_PER_TURN,
     _trim_history,
@@ -270,3 +272,32 @@ class TestToolTimeout:
 
         with pytest.raises(TimeoutError):
             tools._run_with_timeout(slow)
+
+
+class TestRecursionLimit:
+    """app/agent/runtime.py::RECURSION_LIMIT — LangGraph's own graph-step
+    cap, a coarser unit than MAX_ITERATIONS. Regression coverage for a real
+    bug found while smoke-testing GRAPH_PATTERNS.md pattern 46 against the
+    live stack: a flat "12" (this constant's value before the derivation
+    below existed) undercounts the real step cost of a full-length agent
+    loop — ~5 fixed pre-loop nodes, ~2 more post-loop, plus 2 steps per
+    agent<->tools round trip — and trips GraphRecursionError before
+    MAX_ITERATIONS ever does, for a real model making several genuine
+    tool-call round trips in one turn."""
+
+    def test_comfortably_covers_a_full_length_agent_loop(self):
+        # Fixed pre/post-loop nodes (~7) + 2 steps per iteration, with
+        # margin — the exact shape a genuinely converging MAX_ITERATIONS-
+        # length run costs in real LangGraph steps.
+        minimum_needed = 7 + MAX_ITERATIONS * 2
+        assert agent_module.RECURSION_LIMIT >= minimum_needed
+
+    def test_derived_from_max_iterations_not_a_bare_literal(self):
+        """A future change to MAX_ITERATIONS must move this WITH it —
+        the original bug was exactly this staying a hardcoded "12" while
+        nothing kept it in sync with the actual loop length."""
+        assert agent_module.RECURSION_LIMIT == MAX_ITERATIONS * 2 + 15
+
+    def test_every_built_config_uses_the_shared_constant(self):
+        cfg = agent_module._config("thread-1", TEST_CTX)
+        assert cfg["recursion_limit"] == agent_module.RECURSION_LIMIT

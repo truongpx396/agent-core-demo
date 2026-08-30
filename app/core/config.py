@@ -76,6 +76,16 @@ class Settings(BaseSettings):
     skills_collection: str = "skills"
     skills_search_top_k: int = 3
 
+    # Subagents (app/agent/subagents.py, GRAPH_PATTERNS.md pattern 46) — a
+    # bundled catalog of AGENT.md files (name/description/tools/model
+    # frontmatter + a markdown system-prompt body), each a scoped, isolated
+    # nested agent run the `run_subagent` tool can delegate a task to.
+    # `subagents_dir` is disk truth, same "on disk, not a search index"
+    # shape as `skills_dir` — but unlike skills there is no separate Qdrant
+    # collection for discovery, since a subagent's short description is
+    # embedded directly in run_subagent's own tool schema.
+    subagents_dir: str = "subagents"
+
     # Structured-data tool (app/agent/sql_store.py) — a SEPARATE database in the
     # same Postgres the stack already runs for LiteLLM/Langfuse (see
     # postgres-init/02-appdata.sql), not sharing their schema.
@@ -103,6 +113,16 @@ class Settings(BaseSettings):
     # ships, so this never trips in the default local setup — it starts
     # mattering the moment OPENAI_API_BASE points at a real paid provider.
     max_cost_usd_per_turn: float = 0.50
+
+    # Per-run cost ceiling for a NESTED subagent run (app/agent/tools.py::
+    # run_subagent, GRAPH_PATTERNS.md pattern 46) — deliberately separate
+    # from, and smaller than, max_cost_usd_per_turn above: a subagent's own
+    # spend is recorded to the usage ledger for audit but is NOT folded back
+    # into the live total_cost_usd the parent turn's should_continue
+    # enforces in real time (a disclosed gap, see pattern 46), so this is
+    # the one enforcement point actually bounding what one subagent call can
+    # spend.
+    max_subagent_cost_usd_per_run: float = 0.15
 
     # Per-tenant ceiling across MANY turns (app/agent/runtime.py's
     # _tenant_over_daily_budget), a rolling 24-hour window against
@@ -191,12 +211,14 @@ RERANK_TOP_K = settings.rerank_top_k
 SKILLS_DIR = settings.skills_dir
 SKILLS_COLLECTION = settings.skills_collection
 SKILLS_SEARCH_TOP_K = settings.skills_search_top_k
+SUBAGENTS_DIR = settings.subagents_dir
 APPDATA_DATABASE_URL = settings.appdata_database_url
 REDIS_URL = settings.redis_url
 SEMANTIC_CACHE_SIMILARITY_THRESHOLD = settings.semantic_cache_similarity_threshold
 SEMANTIC_CACHE_TTL_SECONDS = settings.semantic_cache_ttl_seconds
 MEMORY_RETENTION_DAYS = settings.memory_retention_days
 MAX_COST_USD_PER_TURN = settings.max_cost_usd_per_turn
+MAX_SUBAGENT_COST_USD_PER_RUN = settings.max_subagent_cost_usd_per_run
 MAX_COST_USD_PER_TENANT_PER_DAY = settings.max_cost_usd_per_tenant_per_day
 TELEGRAM_BOT_TOKEN = settings.telegram_bot_token
 MINIO_ENDPOINT = settings.minio_endpoint

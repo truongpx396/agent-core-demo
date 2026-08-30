@@ -275,6 +275,51 @@ class TestShouldContinue:
         assert should_continue(state) == "check_output"
 
 
+class TestShouldContinueSubagent:
+    def test_run_subagent_call_never_needs_approval(self):
+        """The core security property GRAPH_PATTERNS.md pattern 46 rests on:
+        run_subagent is declared read_only (every subagent it can ever reach
+        is validated read_only-only at catalog-build time, app/agent/tools.py
+        ::_resolve_subagent_tools), so a call to it must route exactly like
+        search_docs — never through human_approval."""
+        state = {"iterations": 1, "messages": [_tool_call("run_subagent")]}
+        assert should_continue(state) == "tools"
+
+    def test_run_subagent_call_with_require_approval_unset_still_routes_to_tools(self):
+        """Confirms it's not merely an unset require_approval hiding the
+        gate — run_subagent genuinely carries no mandatory-gate reason."""
+        state = {
+            "iterations": 1,
+            "require_approval": False,
+            "messages": [_tool_call("run_subagent")],
+        }
+        assert should_continue(state) == "tools"
+
+
+class TestShouldContinueBudgetOverrides:
+    """should_continue's max_iterations/max_tokens/max_cost_usd params
+    (GRAPH_PATTERNS.md pattern 46) — the mechanism
+    app/agent/tools.py::run_subagent relies on, via
+    build_graph(max_iterations=..., ...), to bind a nested subagent run to
+    its own, smaller MAX_SUBAGENT_* ceiling independent of the parent turn's
+    own MAX_ITERATIONS/MAX_TOKENS_PER_TURN/MAX_COST_USD_PER_TURN."""
+
+    def test_custom_max_iterations_ends_a_run_the_default_would_still_allow(self):
+        state = {"iterations": 3, "messages": [AIMessage(content="still going")]}
+        assert should_continue(state) == "check_output"  # module default: not yet capped
+        assert should_continue(state, max_iterations=3) == "__end__"
+
+    def test_custom_max_tokens_ends_a_run_the_default_would_still_allow(self):
+        state = {"iterations": 1, "total_tokens": 500, "messages": [AIMessage(content="still going")]}
+        assert should_continue(state) == "check_output"
+        assert should_continue(state, max_tokens=500) == "__end__"
+
+    def test_custom_max_cost_ends_a_run_the_default_would_still_allow(self):
+        state = {"iterations": 1, "total_cost_usd": 0.05, "messages": [AIMessage(content="still going")]}
+        assert should_continue(state) == "check_output"
+        assert should_continue(state, max_cost_usd=0.05) == "__end__"
+
+
 class TestToolCapability:
     def test_known_read_only_tools(self):
         assert _tool_capability("search_docs") == "read_only"

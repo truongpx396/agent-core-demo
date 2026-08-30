@@ -15,6 +15,14 @@
   name/description metadata, `use_skill` loads one matched skill's full
   instruction body from disk by exact name. Like `calculator`, these are
   bundled app capabilities, not tenant data — no `SecurityCtx` involved.
+- `run_subagent`: delegates a self-contained task to a fresh, ISOLATED
+  nested agent run — a genuinely separate `graph.invoke()`, unlike
+  `use_skill`, which loads more instructions into THIS agent's own context.
+  Backed by a bundled catalog of `AGENT.md` packages
+  (`app/agent/subagents.py`, GRAPH_PATTERNS.md pattern 46). Every subagent is
+  restricted to `read_only` tools (enforced at catalog-build time below, see
+  `_resolve_subagent_tools`), so `run_subagent` itself needs no mandatory
+  `human_approval` gating — it's exactly as safe as `search_docs`.
 
 All tools declare an explicit **Pydantic `args_schema`**. This is the robust
 way to define tool inputs: the schema (enums, descriptions, validators) is what
@@ -61,17 +69,30 @@ import ast
 import concurrent.futures
 import logging
 import operator
+import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field, field_validator
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
-from app.core.config import SKILLS_COLLECTION, SKILLS_SEARCH_TOP_K
+from app.agent import subagents as subagents_module
+from app.core import metrics
+from app.core.config import (
+    CHAT_MODEL,
+    MAX_SUBAGENT_COST_USD_PER_RUN,
+    OPENAI_API_BASE,
+    OPENAI_API_KEY,
+    SKILLS_COLLECTION,
+    SKILLS_SEARCH_TOP_K,
+)
 from app.core.scrubbing import scrub
 from app.core.security import DEFAULT_POLICY, SecurityCtx, valid_ctx
 from app.retrieval import qdrant_store
@@ -99,12 +120,26 @@ _TOOL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 )
 
 
-def _run_with_timeout(func, *args, **kwargs):
+def _run_with_timeout(func, *args, _timeout_seconds: float | None = None, **kwargs):
     """Run `func` in a worker thread and stop waiting after
-    TOOL_TIMEOUT_SECONDS. The raised TimeoutError is caught by ToolNode's
-    `handle_tool_errors=_friendly_tool_error` in app/agent/graph.py and turned
-    into a message the agent sees on its next turn, same as any other tool
-    exception.
+    `_timeout_seconds` (TOOL_TIMEOUT_SECONDS by default). The raised
+    TimeoutError is caught by ToolNode's `handle_tool_errors=_friendly_tool_error`
+    in app/agent/graph.py and turned into a message the agent sees on its next
+    turn, same as any other tool exception.
+
+    `_timeout_seconds` is keyword-only with a leading underscore so it can
+    never collide with a wrapped function's own keyword argument — every
+    existing call site omits it (`None`) and gets TOOL_TIMEOUT_SECONDS,
+    resolved fresh on every call rather than baked in as an ordinary default
+    value: a plain `= TOOL_TIMEOUT_SECONDS` default is evaluated exactly
+    once, at function-DEFINITION time, so it would silently stop honoring
+    `monkeypatch.setattr(tools, "TOOL_TIMEOUT_SECONDS", ...)` — a real
+    regression this caught against tests/agent/test_safety_budgets.py's
+    existing TestToolTimeout, which relies on that global being re-read
+    per call. `run_subagent` (GRAPH_PATTERNS.md pattern 46) is the one
+    caller that overrides it, to SUBAGENT_TIMEOUT_SECONDS: a nested
+    multi-step agent run legitimately needs more wall-clock time than a
+    single Qdrant query or arithmetic eval.
 
     Soft timeout: Python can't forcibly kill the worker thread, so this
     bounds how long the *graph* waits, not how long the call actually runs
@@ -115,14 +150,16 @@ def _run_with_timeout(func, *args, **kwargs):
     tool impl in this module funnels through, so a credential-shaped or
     actually-bound-secret value in a tool's raw result (a database row, a
     fetched document) never reaches the model's next prompt or a trace.
+    `run_subagent` returns a state dict here (scrubbing skips non-str
+    results, same as always) and applies its own explicit scrub() to the
+    extracted answer text afterward instead — see its own docstring.
     """
+    timeout = _timeout_seconds if _timeout_seconds is not None else TOOL_TIMEOUT_SECONDS
     future = _TOOL_EXECUTOR.submit(func, *args, **kwargs)
     try:
-        result = future.result(timeout=TOOL_TIMEOUT_SECONDS)
+        result = future.result(timeout=timeout)
     except concurrent.futures.TimeoutError as exc:
-        raise TimeoutError(
-            f"Tool call exceeded the {TOOL_TIMEOUT_SECONDS}s timeout."
-        ) from exc
+        raise TimeoutError(f"Tool call exceeded the {timeout}s timeout.") from exc
     return scrub(result) if isinstance(result, str) else result
 
 
@@ -717,6 +754,14 @@ TOOL_CAPABILITIES: dict[str, ToolCapability] = {
     "use_skill": "read_only",
     "add_note": "mutating",
     "remember": "mutating",
+    # A plain, static, honest declaration — NOT a fallback subject to some
+    # dynamic per-call override. run_subagent (GRAPH_PATTERNS.md pattern 46)
+    # can only ever delegate to a subagent whose OWN tool subset is entirely
+    # read_only — enforced structurally at catalog-build time, below, not
+    # computed per call — so should_continue's mandatory human_approval gate
+    # needs zero special-casing for it: a run_subagent call really is exactly
+    # as safe as calling search_docs directly.
+    "run_subagent": "read_only",
 }
 
 # --- Tool result-size declarations -------------------------------------------
@@ -732,3 +777,383 @@ TOOL_CAPABILITIES: dict[str, ToolCapability] = {
 TOOL_RESULT_CAPS: dict[str, int] = {
     "query_employees": 20,
 }
+
+# --- Subagents (app/agent/subagents.py, GRAPH_PATTERNS.md pattern 46) -------
+# run_subagent delegates a bounded, self-contained task to a fresh, ISOLATED
+# nested agent run (a genuinely separate graph.invoke(), reusing the exact
+# same build_graph() topology this app's own top-level agent runs on) — not
+# more instructions loaded into THIS agent's own context, which is what
+# skill_search/use_skill do instead. Every piece of domain-specific
+# validation below (which declared tools are safe to hand a subagent, the
+# recursion block) lives HERE, in the module that already owns
+# TOOL_CAPABILITIES — app/agent/subagents.py stays a pure, domain-agnostic
+# disk parser, same scope as app/agent/skills.py, so there's no import-order
+# coupling between the two modules.
+SUBAGENT_TIMEOUT_SECONDS = 45  # safety budget: wall-clock cap on one nested
+# subagent run — same shared-worker-pool "soft timeout" mechanism as
+# TOOL_TIMEOUT_SECONDS (_run_with_timeout's `_timeout_seconds` override),
+# just longer, since a nested multi-step agent loop legitimately needs more
+# time than a single Qdrant query or arithmetic eval.
+
+
+def _resolve_subagent_tools(
+    subagent_name: str,
+    declared_tools: tuple[str, ...] | None,
+    all_tool_names: frozenset[str],
+    tool_capabilities: Mapping[str, str],
+) -> tuple[str, ...]:
+    """A subagent's effective, SAFE tool subset — a pure function, unit-tested
+    directly (see tests/agent/test_tools.py).
+
+    `declared_tools` is `None` when an AGENT.md omits `tools:` entirely,
+    meaning "every read_only tool the domain exposes" — mirrors
+    `AgentManifest.allowed_tools`'s existing "empty means everything"
+    convention (app/agent/manifest.py), narrowed here to read_only-only
+    (see GRAPH_PATTERNS.md pattern 46 for why v1 subagents are read_only-only
+    at all). Any declared name that doesn't exist, or exists but isn't
+    read_only, is DROPPED with a warning — never silently trusted or
+    upgraded, the same fail-toward-caution posture `_tool_capability`'s
+    "undeclared defaults to outward" already takes, applied at a different
+    point. A subagent left with an empty resolved set is still valid — it
+    can reason/answer from general knowledge, same as the main agent can
+    with zero relevant tools for a given question.
+
+    `run_subagent` itself is ALWAYS stripped, unconditionally, regardless of
+    what an AGENT.md's frontmatter says — the actual, structural recursion
+    block. Read_only-ness alone would NOT exclude it (it's declared
+    read_only itself, by design: a subagent invocation carries no more
+    exposure than any other read_only tool call), so this has to be an
+    explicit, separate check.
+    """
+    if declared_tools is not None:
+        candidates = declared_tools
+    else:
+        candidates = tuple(
+            name for name in all_tool_names if tool_capabilities.get(name, "outward") == "read_only"
+        )
+    resolved: list[str] = []
+    for name in candidates:
+        if name == "run_subagent":
+            continue
+        if name not in all_tool_names:
+            logger.warning(
+                "subagent declares an unknown tool; dropping it",
+                extra={"subagent_name": subagent_name, "tool_name": name},
+            )
+            continue
+        if tool_capabilities.get(name, "outward") != "read_only":
+            logger.warning(
+                "subagent declares a non-read_only tool; dropping it",
+                extra={"subagent_name": subagent_name, "tool_name": name},
+            )
+            continue
+        resolved.append(name)
+    return tuple(resolved)
+
+
+_ALL_TOOL_NAMES = frozenset(t.name for t in TOOLS)  # computed before run_subagent
+# itself might be appended below — deliberately: run_subagent is never a
+# candidate tool for another subagent regardless (see the explicit strip
+# above), so this ordering doesn't matter for correctness, just clarity.
+
+
+def _build_subagent_registry() -> dict[str, tuple["subagents_module.SubagentRecord", tuple[str, ...]]]:
+    registry = {}
+    for record in subagents_module.get_subagents().values():
+        resolved = _resolve_subagent_tools(record.name, record.tools, _ALL_TOOL_NAMES, TOOL_CAPABILITIES)
+        registry[record.name] = (record, resolved)
+    return registry
+
+
+_SUBAGENT_REGISTRY = _build_subagent_registry()
+
+_CITATION_MARKER_WARNING = (
+    "Do not use '[n]'-style bracket citation markers in your final answer — "
+    "that citation convention is reserved for the orchestrating agent's own "
+    "retrieved context, not yours."
+)
+# ^ Necessary, not decorative: the PARENT's check_output/_ungrounded_claims_count
+# (GRAPH_PATTERNS.md pattern 39) cross-checks [n] markers in the final answer
+# against state["citations"], which a subagent's own internal retrieval never
+# populates on the parent. Without this instruction, a subagent's own
+# genuinely-grounded answer could get flagged as an "ungrounded claim" once
+# folded into the parent's reply.
+
+
+@dataclass
+class _SubagentDomainPlugin:
+    """A throwaway DomainPlugin scoping a nested subagent run to EXACTLY its
+    pre-resolved, pre-validated (read_only-only) tool subset.
+
+    Used instead of `AgentManifest.allowed_tools` specifically because that
+    field treats an EMPTY tuple as "no filter — expose everything the domain
+    offers" (see app/agent/manifest.py's `AgentManifest`/`build_graph`
+    docstrings: `if manifest.allowed_tools:` is falsy-skipped for an empty
+    tuple). A subagent legitimately left with zero usable tools (e.g. every
+    declared tool got dropped by `_resolve_subagent_tools`) must actually
+    run with zero tools, not silently fall back to the full Acme tool set —
+    including `add_note`/`remember` — which would be exactly the kind of
+    privilege-escalation-by-omission bug pattern 17's fail-closed discipline
+    exists to rule out. Passing the already-narrowed tool list as this
+    plugin's `tools()` sidesteps the empty-tuple ambiguity entirely: an
+    empty `domain.tools()` is unambiguous, no special-casing anywhere in
+    `build_graph()` interprets it as "everything."
+    """
+
+    _tools: list
+
+    def tools(self) -> list:
+        return list(self._tools)
+
+    def tool_capabilities(self) -> dict[str, str]:
+        return dict(TOOL_CAPABILITIES)
+
+    def policy(self):
+        return DEFAULT_POLICY
+
+
+def _run_subagent_impl(
+    subagent_name: str,
+    task: str,
+    config: RunnableConfig,
+    registry: dict[str, tuple] | None = None,
+    llm: Any = None,
+) -> str:
+    """Build and run one nested, isolated agent turn, then return its final
+    answer text. See GRAPH_PATTERNS.md pattern 46 for the full design;
+    `registry`/`llm` are DI for tests (mirror `build_graph(deps=...)`'s own
+    override shape) — `registry` defaults to the real, process-wide
+    `_SUBAGENT_REGISTRY`, `llm` defaults to `None`, meaning "construct a real
+    ChatOpenAI client for this subagent's own model alias." A test passing a
+    fake chat model here bypasses that construction entirely, the same way
+    `GraphDeps(llm=fake)` already bypasses `_make_llm` at the top level —
+    real tools.py tools have no other network-touching construction to fake.
+
+    Isolation, in one place: a FRESH `messages` list (the subagent's own
+    system prompt + exactly the delegated `task` as its sole HumanMessage —
+    NOT this conversation's history); the subagent's OWN tool subset and
+    model alias; SecurityCtx INHERITED unconditionally from `config`, never
+    re-derived; its own, smaller, fixed budget ceiling
+    (MAX_SUBAGENT_ITERATIONS/MAX_SUBAGENT_TOKENS_PER_RUN/
+    MAX_SUBAGENT_COST_USD_PER_RUN); a throwaway MemorySaver, never the
+    durable checkpointer — this run is bounded to complete within this one
+    tool call, never independently resumable later.
+
+    Reuses build_graph()'s full, unmodified topology rather than a stripped-
+    down bespoke pipeline — "one pipeline, not two that can drift" (same
+    reasoning GRAPH_PATTERNS.md pattern 24 already applies to ingestion). One
+    disclosed side effect: the nested run also pays for a suggest_followups
+    call (its result is discarded here) and checks/writes the same semantic
+    cache the top-level conversation uses, keyed by tenant+principal (shared
+    with the parent's own ctx) — a subagent's cached answer could in theory
+    be served back for a top-level query with near-identical phrasing, or
+    vice versa. Narrow and non-security-relevant (still scoped to the same
+    tenant+principal), not fixed here — a real gap, named rather than hidden.
+    """
+    ctx = _ctx_from_config(config)
+    if not valid_ctx(ctx):
+        return _NO_CTX_REFUSAL
+
+    reg = registry if registry is not None else _SUBAGENT_REGISTRY
+    entry = reg.get(subagent_name)
+    if entry is None:
+        return f"No subagent named {subagent_name!r} is registered."
+    record, resolved_tool_names = entry
+    all_tools_by_name = {t.name: t for t in TOOLS}
+    nested_tools = [all_tools_by_name[name] for name in resolved_tool_names if name in all_tools_by_name]
+
+    # Deferred imports: app/agent/graph.py imports THIS module
+    # (app/agent/tools.py) at its own module level for TOOL_CAPABILITIES/
+    # TOOLS, and app/agent/manifest.py imports app/agent/graph.py at ITS
+    # module level too — importing either back at tools.py's own module
+    # level would close a real import cycle. Both are only ever needed here,
+    # at call time, long after every module has finished loading — same
+    # deferred-import fix app/agent/manifest.py's own docstring documents
+    # for its reverse-direction version of this problem.
+    from app.agent.graph import (
+        MAX_SUBAGENT_ITERATIONS,
+        MAX_SUBAGENT_TOKENS_PER_RUN,
+        GraphDeps,
+        build_graph,
+    )
+    from app.agent.manifest import AgentManifest
+    from app.agent.meter import record_usage
+
+    nested_llm = llm if llm is not None else ChatOpenAI(
+        model=record.model or CHAT_MODEL,
+        base_url=OPENAI_API_BASE,
+        api_key=SecretStr(OPENAI_API_KEY),
+        temperature=0,
+        stream_usage=True,
+    ).bind_tools(nested_tools)
+
+    nested_system_prompt = f"{record.system_prompt}\n\n{_CITATION_MARKER_WARNING}"
+    nested_manifest = AgentManifest(name=record.name, system_prompt=nested_system_prompt)
+    nested_domain = _SubagentDomainPlugin(nested_tools)
+
+    nested_graph = build_graph(
+        deps=GraphDeps(llm=nested_llm),
+        manifest=nested_manifest,
+        domain=nested_domain,
+        max_iterations=MAX_SUBAGENT_ITERATIONS,
+        max_tokens_per_turn=MAX_SUBAGENT_TOKENS_PER_RUN,
+        max_cost_usd_per_turn=MAX_SUBAGENT_COST_USD_PER_RUN,
+    )
+
+    parent_thread_id = (config or {}).get("configurable", {}).get("thread_id", "unknown")
+    nested_thread_id = f"{parent_thread_id}:subagent:{record.name}:{uuid.uuid4().hex[:8]}"
+    nested_config = {
+        "configurable": {"thread_id": nested_thread_id, "ctx": ctx},
+        # LangGraph's OWN graph-step cap — a different, coarser unit than
+        # MAX_SUBAGENT_ITERATIONS (an agent-node-invocation count): every
+        # turn also runs ~5 fixed pre-loop nodes (validate_input,
+        # compact_history, moderate_input, check_semantic_cache,
+        # retrieve_context) plus ~2 more post-loop (check_output,
+        # write_semantic_cache), and each agent<->tools round trip is 2
+        # steps — so naively reusing app/agent/runtime.py's own flat "12"
+        # (sized for ITS context) undercounts here and trips
+        # GraphRecursionError before MAX_SUBAGENT_ITERATIONS ever does,
+        # verified empirically via tests/agent/test_tools.py's
+        # test_respects_its_own_smaller_iteration_ceiling_not_the_parents.
+        # Derived from MAX_SUBAGENT_ITERATIONS, with real margin, so it can
+        # never silently fall out of sync if that constant changes later.
+        "recursion_limit": MAX_SUBAGENT_ITERATIONS * 2 + 15,
+    }
+
+    def _invoke():
+        # The base system prompt isn't auto-seeded the way
+        # app/agent/runtime.py::_ensure_seeded seeds it for a durable,
+        # multi-turn thread — that machinery exists to avoid RE-seeding on
+        # every subsequent turn, which doesn't apply here: this graph is
+        # invoked exactly once, so the system prompt is just the first
+        # message in this one-shot call.
+        return nested_graph.invoke(
+            {
+                "messages": [
+                    SystemMessage(content=nested_system_prompt),
+                    HumanMessage(content=task),
+                ],
+                "require_approval": False,
+            },
+            config=nested_config,
+        )
+
+    started = time.monotonic()
+    try:
+        result_state = _run_with_timeout(_invoke, _timeout_seconds=SUBAGENT_TIMEOUT_SECONDS)
+    except TimeoutError:
+        metrics.agent_subagent_run_total.labels(subagent=record.name, outcome="timeout").inc()
+        metrics.agent_subagent_duration_seconds.labels(subagent=record.name).observe(
+            time.monotonic() - started
+        )
+        raise
+    except Exception:
+        metrics.agent_subagent_run_total.labels(subagent=record.name, outcome="error").inc()
+        metrics.agent_subagent_duration_seconds.labels(subagent=record.name).observe(
+            time.monotonic() - started
+        )
+        raise
+    duration = time.monotonic() - started
+
+    total_tokens = result_state.get("total_tokens", 0)
+    messages = result_state.get("messages", [])
+    final_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
+    content = final_ai.content if final_ai is not None else ""
+    if not isinstance(content, str):
+        content = str(content)
+    content = content.strip()
+    # A missing/empty final answer means should_continue's "__end__" fired
+    # from one of its OWN several safety-net checks (max iterations, max
+    # tokens, max cost, or no-progress/repeated-action detection — pattern
+    # 10's "layered budgets," several distinct routes, all ending the same
+    # way) before the nested run ever reached check_output. Rather than
+    # re-deriving WHICH specific budget tripped (fragile — should_continue
+    # already has four such paths and could grow more), treat "no answer" as
+    # the one robust, catch-all signal: this run got safety-net-terminated.
+    if content:
+        answer = scrub(content)
+        outcome = "completed"
+    else:
+        answer = (
+            f"Subagent {record.name!r} did not produce a final answer before "
+            "hitting one of its own safety budgets."
+        )
+        outcome = "budget_exceeded"
+
+    record_usage(ctx, nested_thread_id, record.model or CHAT_MODEL, total_tokens)
+
+    metrics.agent_subagent_run_total.labels(subagent=record.name, outcome=outcome).inc()
+    metrics.agent_subagent_duration_seconds.labels(subagent=record.name).observe(duration)
+    logger.info(
+        "subagent_completed",
+        extra={
+            "subagent_name": record.name,
+            "thread_id": nested_thread_id,
+            "outcome": outcome,
+            "iterations": result_state.get("iterations", 0),
+            "total_tokens": total_tokens,
+            "duration_ms": round(duration * 1000, 1),
+        },
+    )
+    return answer
+
+
+if _SUBAGENT_REGISTRY:
+    # A closed, dynamically-built enum — same closed-vocabulary idiom as
+    # Topic/Department above — so the LLM sees the full menu of available
+    # subagents (name + description) directly in run_subagent's own JSON
+    # schema, with zero extra discovery round trip. Unlike skill_search/
+    # use_skill, no separate "list" tool or Qdrant index is needed: a
+    # subagent's one-line description is small enough to embed directly,
+    # where a skill's full instruction BODY is not (that's what
+    # progressive disclosure via search buys for skills specifically).
+    #
+    # Built once, here, at THIS module's import time — not lazily on first
+    # call, unlike app/agent/skills.py's get_skills(). A compile-time Pydantic
+    # enum has to exist before any tool call can be validated against it, so
+    # eager resolution is required, not just a style choice; a subagent
+    # added to disk after the process starts needs a restart to appear —
+    # same limitation adding a new entry to TOOLS already has today.
+    SubagentName = Enum(  # type: ignore[misc]  # mypy can't infer members from a
+        # dict comprehension (needs a literal dict/list) — genuinely dynamic
+        # by design here, built from whatever's on disk, so there's no
+        # literal to give it; see this block's own docstring above.
+        "SubagentName", {name: name for name in sorted(_SUBAGENT_REGISTRY)}, type=str
+    )
+
+    _SUBAGENT_MENU = "\n".join(
+        f"- {name}: {record.description}"
+        for name, (record, _tools) in sorted(_SUBAGENT_REGISTRY.items())
+    )
+
+    class RunSubagentArgs(BaseModel):
+        subagent_name: SubagentName = Field(
+            ..., description=f"Which subagent to delegate to. Options:\n{_SUBAGENT_MENU}"
+        )
+        task: str = Field(
+            ...,
+            description="The self-contained task to delegate. The subagent has NO "
+            "access to this conversation's history, so include everything it needs "
+            "to know in this one description.",
+        )
+
+        @field_validator("task")
+        @classmethod
+        def _not_blank(cls, v: str) -> str:
+            if not v.strip():
+                raise ValueError("task must not be empty")
+            return v
+
+    @tool(args_schema=RunSubagentArgs)
+    def run_subagent(subagent_name: SubagentName, task: str, config: RunnableConfig) -> str:
+        """Delegate a self-contained task to a specialized subagent running in
+        its own isolated context — it does NOT see this conversation's
+        history, only the `task` description you give it, so describe
+        everything it needs to know. Use this to keep a multi-step lookup's
+        intermediate steps out of the main conversation, or when a task
+        matches a subagent's specific focus better than doing it yourself.
+        Every subagent is restricted to read_only tools, so calling this
+        never needs human approval."""
+        return _run_subagent_impl(subagent_name.value, task, config)
+
+    TOOLS.append(run_subagent)

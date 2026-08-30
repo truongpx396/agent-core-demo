@@ -9,32 +9,42 @@ nothing else calls them (add_note/remember are gated behind human_approval
 in every graph scenario, so a graph-level test would need to drive a full
 pause/resume cycle just to reach the implementation).
 """
+import time
 from pathlib import Path
 
 import pytest
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, SystemMessage
 
 from app.agent import skills as skills_module
 from app.agent import sql_store, tools
 from app.agent.skills import SkillRecord
+from app.agent.subagents import SubagentRecord
 from app.agent.tools import (
+    _ALL_TOOL_NAMES,
     TOOL_CAPABILITIES,
     TOOLS,
     AddNoteArgs,
     AskClarificationArgs,
     RememberArgs,
+    SubagentName,
     Topic,
+    _resolve_subagent_tools,
+    _run_subagent_impl,
     add_note,
     ask_clarification,
     query_employees,
     recall_memories,
     remember,
+    run_subagent,
     search_docs,
     skill_search,
     use_skill,
 )
+from app.core import metrics
 from app.core.config import SKILLS_COLLECTION
 from app.retrieval import qdrant_store
-from tests.conftest import TEST_CTX
+from tests.conftest import TEST_CTX, metric_value
 
 _OTHER_TENANT_CTX = {"tenant": "other-co", "principal": "test-user", "claims": {}}
 
@@ -581,3 +591,251 @@ class TestUseSkill:
         result = use_skill.invoke({"name": "does-not-exist"})
         assert "No skill named" in result
         assert "skill_search" in result
+
+
+class _RecordingFakeLLM:
+    """A fake chat model that records every `messages` list it's invoked
+    with, so a test can assert on what the NESTED agent's own system prompt
+    actually contained. Composition over subclassing GenericFakeChatModel:
+    that class is a pydantic BaseModel, and a subclass adding a plain `calls`
+    attribute would be misread as a new pydantic field."""
+
+    def __init__(self, *responses):
+        self._inner = GenericFakeChatModel(messages=iter(responses))
+        self.calls: list = []
+
+    def invoke(self, messages, *args, **kwargs):
+        self.calls.append(list(messages))
+        return self._inner.invoke(messages, *args, **kwargs)
+
+
+def _fake_subagent_record(name="researcher", tools_=("search_docs", "calculator"), model=None):
+    return SubagentRecord(
+        name=name,
+        description="A test subagent.",
+        system_prompt="You are a test subagent.",
+        tools=tools_,
+        model=model,
+        path=Path(f"subagents/{name}/AGENT.md"),
+    )
+
+
+def _subagent_cfg(ctx=TEST_CTX, thread_id="parent-thread"):
+    return {"configurable": {"thread_id": thread_id, "ctx": ctx}}
+
+
+class TestResolveSubagentTools:
+    def test_keeps_declared_read_only_tools(self):
+        resolved = _resolve_subagent_tools(
+            "x", ("search_docs", "calculator"), _ALL_TOOL_NAMES, TOOL_CAPABILITIES
+        )
+        assert resolved == ("search_docs", "calculator")
+
+    def test_drops_a_declared_mutating_tool(self):
+        resolved = _resolve_subagent_tools(
+            "x", ("search_docs", "add_note"), _ALL_TOOL_NAMES, TOOL_CAPABILITIES
+        )
+        assert resolved == ("search_docs",)
+
+    def test_drops_a_declared_unknown_tool(self):
+        resolved = _resolve_subagent_tools(
+            "x", ("search_docs", "not_a_real_tool"), _ALL_TOOL_NAMES, TOOL_CAPABILITIES
+        )
+        assert resolved == ("search_docs",)
+
+    def test_strips_run_subagent_even_if_explicitly_declared(self):
+        """The actual recursion block: read_only-ness alone would not
+        exclude run_subagent, since it's declared read_only itself."""
+        resolved = _resolve_subagent_tools(
+            "x", ("search_docs", "run_subagent"), _ALL_TOOL_NAMES, TOOL_CAPABILITIES
+        )
+        assert resolved == ("search_docs",)
+
+    def test_omitted_tools_falls_back_to_every_read_only_tool(self):
+        resolved = _resolve_subagent_tools("x", None, _ALL_TOOL_NAMES, TOOL_CAPABILITIES)
+        assert "add_note" not in resolved
+        assert "remember" not in resolved
+        assert "run_subagent" not in resolved
+        assert "search_docs" in resolved
+        assert "calculator" in resolved
+
+    def test_empty_declared_list_resolves_to_empty_not_everything(self):
+        """An explicit `tools: []` must mean zero tools, not fall back to
+        the "omitted means everything" default — only a genuinely absent
+        `tools:` key (None) gets that fallback."""
+        resolved = _resolve_subagent_tools("x", (), _ALL_TOOL_NAMES, TOOL_CAPABILITIES)
+        assert resolved == ()
+
+
+class TestRunSubagentImpl:
+    def test_refuses_without_ctx(self):
+        result = _run_subagent_impl("researcher", "do something", {"configurable": {}})
+        assert "Refused" in result
+
+    def test_unknown_subagent_name_is_a_clear_message_not_an_exception(self):
+        result = _run_subagent_impl("does-not-exist", "task", _subagent_cfg(), registry={})
+        assert "No subagent named" in result
+
+    def test_delegates_and_returns_the_final_answer(self):
+        fake_llm = _RecordingFakeLLM(
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "calculator", "args": {"expression": "6*7"}, "id": "c1"}],
+            ),
+            AIMessage(content="The answer is 42."),
+        )
+        registry = {"researcher": (_fake_subagent_record(), ("search_docs", "calculator"))}
+
+        result = _run_subagent_impl(
+            "researcher", "what is 6*7?", _subagent_cfg(), registry=registry, llm=fake_llm
+        )
+
+        assert result == "The answer is 42."
+
+    def test_nested_system_prompt_has_its_own_prompt_and_the_citation_warning(self):
+        fake_llm = _RecordingFakeLLM(AIMessage(content="A plain answer, long enough."))
+        record = _fake_subagent_record()
+        registry = {"researcher": (record, ("calculator",))}
+
+        _run_subagent_impl("researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm)
+
+        first_call_messages = fake_llm.calls[0]
+        system_text = "\n".join(
+            m.content for m in first_call_messages if isinstance(m, SystemMessage)
+        )
+        assert record.system_prompt in system_text
+        assert "[n]" in system_text  # the citation-marker warning text
+
+    def test_task_is_the_subagents_sole_human_message_not_parent_history(self):
+        from langchain_core.messages import HumanMessage
+
+        fake_llm = _RecordingFakeLLM(AIMessage(content="A plain answer, long enough."))
+        registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
+
+        _run_subagent_impl(
+            "researcher", "the delegated task", _subagent_cfg(), registry=registry, llm=fake_llm
+        )
+
+        human_messages = [m for m in fake_llm.calls[0] if isinstance(m, HumanMessage)]
+        assert len(human_messages) == 1
+        assert human_messages[0].content == "the delegated task"
+
+    def test_respects_its_own_smaller_iteration_ceiling_not_the_parents(self):
+        """Distinct expressions each turn — never repeating identical args —
+        so MAX_REPEATED_ACTIONS' no-progress detector never trips first;
+        this isolates MAX_SUBAGENT_ITERATIONS specifically, proving
+        build_graph(max_iterations=MAX_SUBAGENT_ITERATIONS) genuinely binds
+        the nested run to its OWN, smaller ceiling rather than the parent's
+        MAX_ITERATIONS (10 > MAX_SUBAGENT_ITERATIONS's 6)."""
+        from app.agent.graph import MAX_SUBAGENT_ITERATIONS
+
+        responses = [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "calculator", "args": {"expression": f"{i}+1"}, "id": f"c{i}"}],
+            )
+            for i in range(MAX_SUBAGENT_ITERATIONS + 5)
+        ]
+        fake_llm = _RecordingFakeLLM(*responses)
+        registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
+
+        result = _run_subagent_impl(
+            "researcher", "never converge", _subagent_cfg(), registry=registry, llm=fake_llm
+        )
+
+        # Ended via a safety budget (no final AIMessage text), and never
+        # consumed every one of the fake LLM's queued responses — proof it
+        # stopped at ITS OWN ceiling rather than running until the parent's
+        # larger MAX_ITERATIONS or exhausting the fake's whole queue.
+        assert "did not produce a final answer" in result
+        assert len(fake_llm.calls) <= MAX_SUBAGENT_ITERATIONS
+
+    def test_hitting_its_own_no_progress_budget_reports_a_clear_message_not_empty(self):
+        """Same identical-tool-call-batch loop MAX_REPEATED_ACTIONS already
+        catches for the top-level agent (GRAPH_PATTERNS.md pattern 34) — this
+        is one of should_continue's several "__end__" routes, not the
+        iteration/token/cost caps specifically, which is exactly why the
+        impl treats "no final answer" as one catch-all signal rather than
+        re-deriving which specific budget tripped."""
+        responses = [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "calculator", "args": {"expression": "1+1"}, "id": f"c{i}"}],
+            )
+            for i in range(20)
+        ]
+        fake_llm = _RecordingFakeLLM(*responses)
+        registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
+
+        before = metric_value(
+            metrics.agent_subagent_run_total, subagent="researcher", outcome="budget_exceeded"
+        )
+        result = _run_subagent_impl(
+            "researcher", "loop forever", _subagent_cfg(), registry=registry, llm=fake_llm
+        )
+        after = metric_value(
+            metrics.agent_subagent_run_total, subagent="researcher", outcome="budget_exceeded"
+        )
+
+        assert "did not produce a final answer" in result
+        assert after == before + 1
+
+    def test_timeout_raises_and_is_recorded(self, monkeypatch):
+        class _SlowLLM:
+            def invoke(self, messages, *a, **kw):
+                time.sleep(0.5)
+                return AIMessage(content="too slow")
+
+        monkeypatch.setattr(tools, "SUBAGENT_TIMEOUT_SECONDS", 0.05)
+        registry = {"researcher": (_fake_subagent_record(), ())}
+
+        before = metric_value(
+            metrics.agent_subagent_run_total, subagent="researcher", outcome="timeout"
+        )
+        with pytest.raises(TimeoutError):
+            _run_subagent_impl(
+                "researcher", "task", _subagent_cfg(), registry=registry, llm=_SlowLLM()
+            )
+        after = metric_value(
+            metrics.agent_subagent_run_total, subagent="researcher", outcome="timeout"
+        )
+
+        assert after == before + 1
+
+    def test_records_usage_to_the_ledger_with_a_derived_thread_id(self, monkeypatch):
+        from app.agent import meter
+
+        captured = {}
+
+        def fake_record_usage(ctx, thread_id, model_alias, total_tokens):
+            captured["ctx"] = ctx
+            captured["thread_id"] = thread_id
+
+        monkeypatch.setattr(meter, "record_usage", fake_record_usage)
+        fake_llm = _RecordingFakeLLM(AIMessage(content="An answer, long enough to pass."))
+        registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
+
+        _run_subagent_impl(
+            "researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm
+        )
+
+        assert captured["ctx"] == TEST_CTX
+        assert captured["thread_id"].startswith("parent-thread:subagent:researcher:")
+
+
+class TestRunSubagentTool:
+    def test_registered_in_TOOLS_as_read_only(self):
+        names = {t.name for t in TOOLS}
+        assert "run_subagent" in names
+        assert TOOL_CAPABILITIES["run_subagent"] == "read_only"
+
+    def test_schema_lists_available_subagents_by_name_and_description(self):
+        schema = run_subagent.args_schema.model_json_schema()
+        assert "researcher" in schema["$defs"]["SubagentName"]["enum"]
+        assert "Look up Acme Corp facts" in schema["properties"]["subagent_name"]["description"]
+
+    def test_blank_task_rejected(self):
+        from app.agent.tools import RunSubagentArgs
+
+        with pytest.raises(ValueError):
+            RunSubagentArgs(subagent_name=SubagentName.researcher, task="   ")
