@@ -67,6 +67,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langfuse.decorators import langfuse_context, observe
@@ -88,6 +89,9 @@ from app.core.config import (
 )
 from app.core.errors import ErrorCode, ErrorEnvelope, TurnCancelled
 from app.core.security import SecurityCtx, valid_ctx
+
+if TYPE_CHECKING:
+    from app.agent.manifest import AgentManifest, DomainPlugin
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +305,7 @@ async def _open_checkpointer():
     return saver
 
 
-async def init_graph_async():
+async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "DomainPlugin | None" = None):
     """Initialize (or reuse) the shared graph for a process with its own
     persistent event loop (FastAPI's lifespan; the CLI's --stream mode) —
     see this module's docstring. Returns the graph. A no-op if the
@@ -309,22 +313,46 @@ async def init_graph_async():
     directly (not get_graph()) precisely so the checkpointer ends up bound
     to whichever loop is *actually* driving them, self-healing even if a
     process's startup path forgot to prime it via lifespan; when startup
-    DID prime it already, this is just a cheap existence check."""
+    DID prime it already, this is just a cheap existence check (`manifest`/
+    `domain` are then ignored — the singleton, once built, doesn't change
+    domain mid-process; see `manifest`/`domain`'s note on init_graph_sync
+    below).
+
+    `manifest`/`domain` (GRAPH_PATTERNS.md pattern 23, app/agent/manifest.py)
+    are threaded straight into `build_graph()`, which already accepts
+    them — both default to `None`, meaning "build_graph()'s own default,
+    the Acme domain," so every EXISTING caller (app/api/main.py's lifespan,
+    app/channels/chat.py's --stream mode) is completely unaffected. This is
+    what lets a NEW process boot the exact same durable-checkpointer
+    machinery against a DIFFERENT domain instead — see
+    app/channels/telegram.py, which reads AGENT_DOMAIN and resolves it via
+    app/domains/registry.py before priming the singleton. Each such
+    process still serves exactly one domain for its whole lifetime — this
+    is not the "several domains from one running process" registry the
+    Roadmap describes as still unbuilt (GRAPH_PATTERNS.md's "Extending
+    Further"), just "which one domain" becoming a boot-time parameter
+    instead of a hardcoded default.
+    """
     global _graph
     if _graph is None:
         saver = await _open_checkpointer()
-        _graph = build_graph(checkpointer=saver)
+        _graph = build_graph(checkpointer=saver, manifest=manifest, domain=domain)
     return _graph
 
 
-def init_graph_sync() -> None:
+def init_graph_sync(manifest: "AgentManifest | None" = None, domain: "DomainPlugin | None" = None) -> None:
     """Initialize the shared graph for a process with no event loop of its
-    own (the CLI's plain mode; scripts/hitl_demo.py) — see this module's
-    docstring. Starts one small daemon thread hosting a persistent loop
-    purely so AsyncPostgresSaver has somewhere to live; that thread is
-    never explicitly stopped (a daemon thread dies with the process, and
-    Postgres's own WAL makes an abrupt disconnect safe — same as a real
-    deployment being SIGKILLed)."""
+    own (the CLI's plain mode; scripts/hitl_demo.py; app/channels/telegram.py) —
+    see this module's docstring. Starts one small daemon thread hosting a
+    persistent loop purely so AsyncPostgresSaver has somewhere to live;
+    that thread is never explicitly stopped (a daemon thread dies with the
+    process, and Postgres's own WAL makes an abrupt disconnect safe — same
+    as a real deployment being SIGKILLed).
+
+    `manifest`/`domain` — see init_graph_async's docstring above; same
+    "None means build_graph()'s own Acme default, ignored once the
+    singleton already exists" contract.
+    """
     global _graph
     if _graph is not None:
         return
@@ -352,16 +380,23 @@ def init_graph_sync() -> None:
     if "error" in holder:
         raise holder["error"]
 
-    _graph = build_graph(checkpointer=holder["saver"])
+    _graph = build_graph(checkpointer=holder["saver"], manifest=manifest, domain=domain)
 
 
-def get_graph():
+def get_graph(manifest: "AgentManifest | None" = None, domain: "DomainPlugin | None" = None):
     """Return the shared graph, initializing it via init_graph_sync() if no
     entry point has primed it yet — a safe drop-in for any purely-sync
     caller. An async entry point must call `await init_graph_async()`
-    itself first (see this module's docstring for why the order matters)."""
+    itself first (see this module's docstring for why the order matters).
+
+    `manifest`/`domain` are only consulted on the FIRST call that actually
+    builds the singleton (init_graph_sync's own `if _graph is not None:
+    return` guard) — passing them here after some other call site already
+    primed the singleton for a different domain has no effect, same as
+    calling init_graph_sync/init_graph_async twice never rebuilds it.
+    """
     if _graph is None:
-        init_graph_sync()
+        init_graph_sync(manifest=manifest, domain=domain)
     return _graph
 
 

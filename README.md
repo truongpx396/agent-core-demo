@@ -123,7 +123,7 @@ diagram legible.
 
 This isn't a toy agent loop — it's built the way a real deployment needs to
 work. Every pattern below is documented in depth in
-[GRAPH_PATTERNS.md](GRAPH_PATTERNS.md) (46 patterns, numbered, each with the
+[GRAPH_PATTERNS.md](GRAPH_PATTERNS.md) (47 patterns, numbered, each with the
 actual bug or gotcha that motivated it), grouped here by concern:
 
 | Concern | Patterns | What it buys you |
@@ -135,8 +135,63 @@ actual bug or gotcha that motivated it), grouped here by concern:
 | **Structured data & tools** | 21, 27, 28, 31, 45, 46 | A fixed, parameterized Postgres tool (never text-to-SQL), also reachable over MCP; clarification questions + follow-ups; consuming a remote MCP catalog with local capability overrides; a real DB connection pool; a searchable skill catalog loaded progressively (`skill_search`/`use_skill`); scoped, isolated subagent delegation (`run_subagent`) restricted to read_only tools so it needs no new approval gate |
 | **Reliability & scaling** | 16, 43 | A durable, version-stamped Postgres checkpointer (a paused approval survives a restart); a Redis Streams queue decoupling SSE-serving capacity from agent-executing capacity, scaled independently |
 | **Observability & cost** | 11, 14, 26, 37, 38 | OpenTelemetry metrics pushed via OTLP, structlog-based structured per-node/per-tool-call logs correlated by `run_id`, a real per-tenant/principal usage-cost ledger with the resolved concrete model recorded, and an optional Grafana/Loki/Prometheus/Alertmanager stack with provisioned dashboards and alert rules |
-| **Interfaces & extensibility** | 23, 29, 42, 44 | CLI, HTTP API, built-in web UI, Telegram channel, and multimodal (image) input — all sharing one `answer()`/`stream_turn()` core; a config-first multi-domain layer so a new use case is a manifest + plugin, never a fork |
+| **Interfaces & extensibility** | 23, 29, 42, 44, 47 | CLI, HTTP API, built-in web UI, Telegram channel, and multimodal (image) input — all sharing one `answer()`/`stream_turn()` core; a config-first multi-domain layer so a new use case is a manifest + plugin, never a fork — proved out by three real example domains (support/ops/sales) sharing that one graph |
 | **Quality gates** | 40 | A golden-dataset eval harness with N-repetition pass-rate and grounded-claims thresholds — a real regression gate against the actual model, not a vibe check |
+
+## Example domains: three real use cases, one graph
+
+`app/agent/manifest.py`'s `AgentManifest`/`DomainPlugin` seam (pattern 23)
+means a new use case is a manifest + plugin, never a fork of
+`app/agent/graph.py`'s `build_graph()`. `app/domains/` turns that seam into
+three concrete, runnable products, each following this app's own
+conventions end to end (fixed/parameterized tools, capability
+declarations, tenant scoping, tests) — not a prompt-only reskin:
+
+| Domain | What it is | Sandbox | Run it |
+|---|---|---|---|
+| **Support copilot** (`app/domains/support/`) | Tier-1 customer support behind a chat gateway — searches the knowledge base, opens/checks/escalates tickets (`support_tickets`, a new Postgres table) | Its `AgentManifest.allowed_tools` is exactly `search_docs`/`skill_search`/`use_skill`/`ask_clarification` + its own 3 ticket tools — no `calculator`, `add_note`, `remember`, `query_employees`, or `run_subagent`. That omission, not a Policy check, is what "sandboxed" means (`build_graph()`'s `ToolNode` only ever knows the tools this list names) | `make telegram-support` (needs `TELEGRAM_BOT_TOKEN`) |
+| **Internal ops bot** (`app/domains/ops/`) | Pulls this app's own operational metrics from the Prometheus this repo already ships (`make obs-up`), flags anything past an alert-matching threshold, and either posts a digest or answers an ad-hoc question | `post_to_team_channel` is this repo's first real use of the `outward` tool capability | `make ops-digest` (cron-callable) / `python -m scripts.ops_investigate "why is latency high?"` (ad hoc) |
+| **Sales/CRM concierge** (`app/domains/sales/`) | Logs inbound lead interactions, drafts replies in a configured voice, schedules follow-ups (`crm_leads`/`crm_followups`, two new Postgres tables), packages a brief and hands a hot lead to a human rep | No tool ever sends anything to a lead — every reply is a draft; `handoff_to_human`/`schedule_followup` only ever run through the interactive agent loop, never from cron (see below) | `make telegram-sales` / `make followup-sweep` (cron-callable) |
+
+A fresh Postgres volume picks up their tables automatically
+(`postgres-init/07-support-tickets.sql`, `08-crm.sql`); against an
+existing volume, apply them by hand once.
+
+**How one process picks a domain.** `app/channels/telegram.py` — already a
+real, working gateway (long-polling, no public webhook needed) — reads
+`AGENT_DOMAIN` (`app/core/config.py`, default `acme`) and resolves it via
+`app/domains/registry.py` before priming `app/agent/runtime.py`'s durable
+graph singleton, which now takes an optional `manifest`/`domain` override
+threaded straight into `build_graph()`. Each domain still runs as its own
+process (its own bot token in practice) — this is "which one domain a
+process boots as" becoming a boot-time choice, not the "several domains
+from one running process" registry the Roadmap below still lists as
+unbuilt. A WhatsApp gateway would reuse the exact same `handle_message`/
+`answer()` core behind a push webhook instead of long-polling — not built
+here (see `app/channels/telegram.py`'s module docstring for why: this repo
+doesn't ship integration code it can't verify against a live service, and
+there's no WhatsApp Business account to verify one against).
+
+**Why the cron scripts (`scripts/ops_digest.py`, `scripts/followup_sweep.py`)
+never call the agent loop.** `should_continue`'s mandatory `human_approval`
+gate (pattern 15) routes *any* `mutating`/`outward` tool call through a
+pause, unconditionally — there's no human present to approve an
+unattended cron run. Both scripts are fixed pipelines instead: they call
+the domain's own implementation functions directly (fetch → a plain,
+non-tool-calling LLM completion for the prose → post/draft), the same
+"fixed tool, not generated" philosophy this app applies everywhere else,
+just at the job level. The *interactive* domains (via the Telegram
+gateway, a human actually present) are what call `create_ticket`/
+`escalate_to_human`/`schedule_followup`/`handoff_to_human` through the
+real, gated agent loop.
+
+**Ad-hoc investigation and subagents.** `scripts/ops_investigate.py` asks
+the ops domain's own agent a one-off question via a direct, one-shot
+`build_graph(manifest=OPS_MANIFEST, domain=OPS_DOMAIN_PLUGIN)` call —
+deliberately not `run_subagent` (pattern 46), whose registry is hardwired
+to the Acme tool universe (`app/agent/tools.py::TOOLS`/`TOOL_CAPABILITIES`)
+and would silently drop any ops-domain tool a new `AGENT.md` declared.
+Disclosed here rather than papered over: subagents remain Acme-only today.
 
 ## Roadmap — what's deliberately not here yet
 
@@ -147,7 +202,7 @@ GRAPH_PATTERNS.md's ["Extending Further"](GRAPH_PATTERNS.md#extending-further) s
 - **Orchestrated crash-restart / auto-scaling** — `docker-compose --profile app` containerizes workers and shuts them down gracefully, but nothing restarts a *crashed* one or scales replicas on real queue depth; that's a Kubernetes/ECS-shaped concern this app doesn't own an opinion about yet
 - **Real authentication** — `X-Tenant-Id`/`X-Principal-Id` are a trusted-header seam for a gateway to fill in, not authentication themselves; nothing today verifies who's actually behind a request
 - **Per-action authorization within a tenant** — every principal in a tenant currently shares the same write capability; a finer-grained `Policy` reading `ctx["claims"]` would express "this principal may write, that one may only read"
-- **A real multi-domain runtime** — `build_graph(manifest=..., domain=...)` proves the graph is domain-agnostic (pattern 23), but the CLI/API singleton still only ever serves one domain per process
+- **A real multi-domain runtime** — `app/agent/runtime.py`'s `init_graph_sync`/`init_graph_async`/`get_graph` now take an optional `manifest`/`domain` a process can boot its singleton against (see "Example domains" above — `app/channels/telegram.py`'s `AGENT_DOMAIN` uses exactly this), so "which one domain" is a boot-time choice instead of hardcoded to Acme. Still not built: SEVERAL domains served concurrently from one running process (a per-domain graph registry, `_ensure_seeded`'s cache keyed by `(domain, thread_id)`, `app/api/main.py` reading which domain a request is for) — every domain above still runs as its own process
 - **A production-grade vision model** — every small local Ollama vision model tried supports vision OR tool-calling, never both together; the `vision` alias in `litellm-config.yaml` is a ready slot, not a verified default
 - **Image-aware moderation, Telegram/CLI image input** — moderation (pattern 25) only screens the text portion of a multimodal message; only the HTTP API surfaces `images` end-to-end today
 - **A webhook-based Telegram deployment** — long-polling needs no public URL (right for local/demo); a real deployment would switch to `setWebhook`
@@ -476,6 +531,10 @@ datasources/dashboards — edit and `make obs-up` again to pick up changes.
 | `make serve`      | Start the FastAPI service (http://localhost:8000/docs) |
 | `make mcp-serve`  | Start the MCP server exposing `query_employees` (stdio transport) |
 | `make mcp-inspect`| Launch the MCP Inspector against `app/mcp/server.py` |
+| `make telegram-support` | Telegram gateway as the Tier-1 support copilot (`AGENT_DOMAIN=support`) |
+| `make telegram-sales`   | Telegram gateway as the sales/CRM concierge (`AGENT_DOMAIN=sales`) |
+| `make ops-digest`       | One-shot ops metrics digest → team channel (meant for real cron; see "Example domains") |
+| `make followup-sweep`   | One-shot CRM due-follow-up sweep → drafted nudges (meant for real cron) |
 | `make test`       | Run the pytest suite (fake LLM, no live services needed) |
 | `make lint`       | `ruff check .` — see `pyproject.toml`'s `[tool.ruff]` |
 | `make typecheck`  | `mypy` over `app/` and `scripts/` — see `pyproject.toml`'s `[tool.mypy]` |
@@ -541,11 +600,22 @@ separately from the library/service code in `app/`.
 | `app/api/static/index.html`| The built-in web UI — self-contained, no build step, no CDN dependency (pattern 29) |
 | **`app/channels/`** — ways to talk to the agent outside HTTP | |
 | `app/channels/chat.py`          | Streaming CLI + Langfuse tracing |
+| `app/channels/telegram.py`      | Telegram gateway (pattern 42) — generalized via `AGENT_DOMAIN`/`app/domains/registry.py` to front any of the domains below, not just Acme |
+| **`app/domains/`** — example domains built on the manifest/plugin seam (pattern 23); see "Example domains" above | |
+| `app/domains/registry.py`       | `AGENT_DOMAIN` name → `(AgentManifest, DomainPlugin)`, used by `app/channels/telegram.py` |
+| `app/domains/policy.py`         | `ActionAllowlistPolicy` — the one small `Policy` shared by all three example domains |
+| `app/domains/notify.py`         | `post_to_team_channel` — shared team-channel sink (local file + log by default, optional Slack webhook) |
+| `app/domains/support/`          | Tier-1 support copilot: `store.py` (`support_tickets`), `tools.py` (create/check/escalate a ticket), `domain.py` (manifest + sandboxed tool set) |
+| `app/domains/ops/`              | Internal ops bot: `metrics_client.py` (Prometheus queries + anomaly thresholds mirroring `observability/prometheus/alerts.yml`), `tools.py`, `domain.py` |
+| `app/domains/sales/`            | Sales/CRM concierge: `store.py` (`crm_leads`/`crm_followups`), `tools.py` (log/schedule/brief/handoff), `domain.py` |
 | **`scripts/`** — runnable operator/demo tools, not imported by `app/` | |
 | `scripts/sample_docs.py`   | Sample knowledge base |
 | `scripts/seed.py`        | Seeds the sample docs via `app/ingestion/ingestor.py`'s pipeline |
 | `scripts/eval.py`          | Golden-dataset evaluation harness (`make eval`) |
 | `scripts/hitl_demo.py`     | Runnable HITL pause/resume demo against the shared durable graph (`python -m scripts.hitl_demo "..."`) |
+| `scripts/ops_digest.py`    | Cron-callable ops metrics digest (`make ops-digest`) — a fixed pipeline, not an agent turn (see "Example domains" above) |
+| `scripts/ops_investigate.py` | Ad-hoc ops question via a one-shot ops-domain agent run (`python -m scripts.ops_investigate "..."`) |
+| `scripts/followup_sweep.py` | Cron-callable CRM follow-up sweep, drafting nudges for human review (`make followup-sweep`) |
 | `tests/`               | pytest suite, mirroring `app/`'s subpackages one-for-one (`tests/agent/`, `tests/api/`, ...) — routing/node/graph/tool/checkpointer/sql_store/mcp_server/mcp_client/ingestor/chunking/moderation/api tests against a fake LLM and mocked stores (`make test`, no live services) |
 
 ## Troubleshooting
