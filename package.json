@@ -1,0 +1,8 @@
+{
+  "name": "agent-core-demo",
+  "private": true,
+  "description": "Node tooling for this repo — promptfoo only (see promptfoo/). Every runtime dependency stays Python; this exists purely because promptfoo has no Python distribution.",
+  "devDependencies": {
+    "promptfoo": "0.122.2"
+  }
+}

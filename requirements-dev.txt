@@ -4,3 +4,28 @@
 
 ruff==0.16.4
 mypy==2.3.1
+
+# Parallel test execution (pytest -n auto — see Makefile's `test` target and
+# tests/containers.py's own docstring for why this is safe against a suite
+# that's otherwise 100% hermetic/mocked).
+pytest-xdist==3.8.0
+
+# Real, ephemeral Docker-backed services for tests/agent/test_durable_checkpoint.py,
+# tests/integration/, and tests/live/ — see tests/containers.py. `[postgres,redis]`
+# are dedicated testcontainers-python modules; Qdrant has no dedicated module as
+# of this writing, so tests/containers.py drives it via the generic DockerContainer
+# API instead (still part of the base `testcontainers` package). `ollama` is its
+# own extra (testcontainers.ollama.OllamaContainer), used only by tests/live/.
+testcontainers[postgres,redis,ollama]==4.9.0
+# testcontainers' own cross-worker container reuse (pytest-xdist recipe in
+# tests/containers.py) needs a real file lock, not a threading.Lock (workers
+# are separate PROCESSES).
+filelock==3.16.1
+
+# Browser E2E against app/api/static/index.html (tests/live/test_chat_ui.py).
+# Python bindings, not the Node @playwright/test runner: this suite's E2E
+# test shares one pytest session (and its testcontainers-backed services)
+# with tests/live/'s Python-level Ollama tests — see GRAPH_PATTERNS.md
+# pattern 48. Needs a one-time `playwright install --with-deps chromium`
+# (see Makefile's `test-live` target), not installable via pip alone.
+pytest-playwright==0.7.1

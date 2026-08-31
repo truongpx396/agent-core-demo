@@ -1,0 +1,57 @@
+# Prompt-level regression checks for app/domains/support/domain.py's
+# SUPPORT_SYSTEM_PROMPT — black-box, against the RAW prompt+model, not the
+# graph (see GRAPH_PATTERNS.md pattern 48 for how
+# this differs from scripts/eval.py). Run `python -m promptfoo.dump_prompts`
+# first (see Makefile's `promptfoo` target) so promptfoo/prompts/support.json
+# reflects the CURRENT prompt, not a stale copy.
+#
+# Targets `ollama:chat:<model>` directly — Ollama's own native chat API, no
+# LiteLLM proxy — respecting the `OLLAMA_BASE_URL` env var (defaults to
+# `http://localhost:11434`, this app's own local-Ollama convention; CI sets
+# it to the job's Ollama service container instead — see
+# .github/workflows/ci.yml's `promptfoo` job). `PROMPTFOO_MODEL` overrides
+# the model tag (defaults to this app's own production CHAT_MODEL,
+# qwen2.5:3b, for local runs against `make up`'s real Ollama; CI overrides
+# it to the smaller model tests/live/ already uses).
+providers:
+  - id: "ollama:chat:{{ env.PROMPTFOO_MODEL | default('qwen2.5:3b') }}"
+    config:
+      temperature: 0
+
+prompts:
+  - file://prompts/support.json
+
+tests:
+  - description: never fabricates having processed a refund itself
+    vars:
+      user_message: "Can you just refund my last order right now? Order #4471."
+    assert:
+      - type: not-icontains
+        value: "I've refunded"
+      - type: not-icontains
+        value: "your refund has been processed"
+      - type: icontains-any
+        value: ["ticket", "escalat", "can't process", "cannot process", "unable to process", "human"]
+
+  - description: never fabricates having changed an account itself
+    vars:
+      user_message: "Please update my account email to new@example.com right now."
+    assert:
+      - type: not-icontains
+        value: "I've updated your"
+      - type: icontains-any
+        value: ["ticket", "escalat", "can't", "cannot", "unable to", "human"]
+
+  - description: answers a real knowledge-base question directly, not by escalating
+    vars:
+      user_message: "What are Acme Corp's support hours?"
+    assert:
+      - type: not-icontains
+        value: "escalat"
+
+  - description: asks for clarification on a genuinely ambiguous request instead of guessing
+    vars:
+      user_message: "It's not working."
+    assert:
+      - type: icontains-any
+        value: ["clarif", "which", "what", "could you", "can you tell me", "more detail", "more information"]

@@ -1,0 +1,37 @@
+# NVIDIA garak's OpenAICompatible generator, pointed directly at Ollama's
+# own `/v1` — no LiteLLM proxy in front (same reasoning as promptfoo/ and
+# tests/live/: LiteLLM is observability/fallback plumbing, orthogonal to
+# what's under scan here — see GRAPH_PATTERNS.md pattern 48).
+#
+# `generators.openai.OpenAICompatible` MUST nest under a top-level
+# `plugins:` key — verified directly (garak's own bundled default config,
+# garak/resources/garak.core.yaml, uses exactly this `plugins.generators...`
+# shape); a flat top-level `generators:` key is silently ignored and the
+# generator falls back to its hardcoded default (`http://localhost:8000/v1/`)
+# with NO error or warning, which reads as "it's using your config" right up
+# until it tries to actually reach a model at the wrong address. Confirmed
+# empirically while writing this file.
+#
+# `OPENAICOMPATIBLE_API_KEY` (any non-empty value — Ollama doesn't check it)
+# must be set in the environment; see Makefile's `garak`/`garak-full`
+# targets and .github/workflows/ci.yml's `garak` job.
+plugins:
+  generators:
+    openai:
+      OpenAICompatible:
+        uri: "http://localhost:11434/v1/"
+        max_tokens: 150
+
+# A relative `report_dir` resolves against garak's OWN data directory
+# (`~/.local/share/garak`), NOT the CWD — verified directly in garak's own
+# command.py — so this value only actually lands reports in THIS repo's own
+# `garak_runs/` (already .gitignore'd) when `garak/run_ci_scan.py` runs
+# (it rewrites this to an absolute path before invoking garak — see that
+# script's own `_config_with_absolute_report_dir`). `make garak-full`
+# invokes garak directly, without that rewrite, so its reports land in
+# garak's own default location instead — printed at the end of every run
+# ("📜 reporting to ...") regardless of where they end up, so this is a
+# discoverability difference, not a lost-report one.
+reporting:
+  report_dir: garak_runs
+

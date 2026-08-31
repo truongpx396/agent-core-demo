@@ -64,6 +64,10 @@ exporter, only ever runs from a real process entrypoint, never at import
 time, so it never actually enters this race under pytest). Every test file
 that asserts on a app/core/metrics.py Counter's value imports this rather
 than reaching into OTel/prometheus_client internals directly.
+
+`pytest_sessionfinish` (bottom of this file) is the cross-worker teardown
+point for `tests/containers.py`'s Docker-backed real services — see that
+module's own docstring.
 """
 import pytest
 from opentelemetry import metrics as metrics_api
@@ -136,3 +140,28 @@ def mock_appdata_postgres(monkeypatch):
 
     monkeypatch.setattr(meter, "get_connection", _no_postgres_in_tests)
     monkeypatch.setattr(sessions, "get_connection", _no_postgres_in_tests)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Tears down every Docker container `tests/containers.py::ensure_*()`
+    started this run (Postgres/Redis/Qdrant/Ollama, for
+    tests/agent/test_durable_checkpoint.py, tests/integration/, tests/live/) —
+    see that module's own docstring for why teardown lives here rather than
+    each container's default Ryuk-on-process-exit behavior (disabled) or a
+    fixture's own finalizer.
+
+    Under pytest-xdist, EVERY worker process runs its own
+    `pytest_sessionfinish` as it individually finishes — too early, since
+    other workers may still be mid-test against a container this would just
+    removed out from under them. `session.config.workerinput` exists ONLY on
+    a worker's own config (injected by xdist); its absence means this is
+    either the xdist CONTROLLER process (which runs no tests itself and only
+    reaches its own `pytest_sessionfinish` after every worker has finished
+    and reported back) or a plain, non-distributed run — the one correct
+    place, in both cases, to actually tear down.
+    """
+    if hasattr(session.config, "workerinput"):
+        return
+    from tests.containers import teardown_all
+
+    teardown_all()

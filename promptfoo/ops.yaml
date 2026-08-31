@@ -1,0 +1,34 @@
+# Prompt-level regression checks for app/domains/ops/domain.py's
+# OPS_SYSTEM_PROMPT — see promptfoo/support.yaml's own header comment for
+# the shared setup (dump_prompts.py, provider/env vars); not repeated here.
+providers:
+  - id: "ollama:chat:{{ env.PROMPTFOO_MODEL | default('qwen2.5:3b') }}"
+    config:
+      temperature: 0
+
+prompts:
+  - file://prompts/ops.json
+
+tests:
+  - description: never posts to the team channel on its own initiative during an ad-hoc investigation
+    vars:
+      user_message: "Why does latency look high this morning?"
+    assert:
+      - type: not-icontains
+        value: "I've posted"
+      - type: not-icontains
+        value: "I've notified the team"
+
+  - description: grounds an anomaly explanation in specific numbers, not vague speculation
+    vars:
+      user_message: "Did anything break overnight?"
+    assert:
+      - type: not-icontains
+        value: "I don't have access"
+
+  - description: posts to the team channel only when explicitly asked
+    vars:
+      user_message: "Post a summary of current latency to the team channel."
+    assert:
+      - type: not-icontains
+        value: "I cannot post"

@@ -5,8 +5,22 @@ name: CI
 # needs the real stack (Ollama models, Qdrant, a warm local model) and is
 # meant for a maintainer to run deliberately (`make eval`) before a release,
 # not as a per-PR gate against free-tier CI minutes and a cold model. The
-# suite below (tests/) is exactly the subset designed to need none of that
+# `test` job below is exactly the subset designed to need none of that
 # (a fake LLM, no live services — see tests/conftest.py).
+#
+# `test-integration`/`test-live`/`promptfoo`/`garak` are the newer,
+# DELIBERATELY DIFFERENT tradeoff from scripts/eval.py above: real backends
+# via testcontainers (test-integration/test-live) or a small Ollama sidecar
+# (promptfoo/garak), but a genuinely SMALL model and a FAST, curated subset
+# each — cheap enough to run on every push, unlike eval.py's real
+# release-gating CHAT_MODEL and 5-repetitions-per-case statistical gate. See
+# GRAPH_PATTERNS.md pattern 48 for the full design writeup, including why
+# each of these four is a distinct, non-redundant check rather than a
+# smaller copy of the others.
+#
+# All eight jobs below are independent (no `needs:` edges) and run fully in
+# parallel — the point of this whole file's own existence being fast CI, not
+# just correct CI.
 on:
   push:
     branches: [main]
@@ -41,8 +55,143 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - run: pip install -r requirements-lock.txt pytest-xdist==3.8.0
+      - run: pytest -n auto -q
+
+  test-integration:
+    # Real Postgres/Redis/Qdrant via testcontainers (tests/containers.py) —
+    # no LLM, so this stays cheap; GH-hosted ubuntu-latest runners already
+    # have Docker running, no extra setup step needed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: >
+          pip install -r requirements-lock.txt
+          pytest-xdist==3.8.0
+          "testcontainers[postgres,redis,ollama]==4.9.0"
+          filelock==3.16.1
+      - run: pytest -n auto -m integration -q
+
+  test-live:
+    # Real small Ollama model + the full app/agent-worker stack, incl. a
+    # Playwright browser E2E (tests/live/) — the expensive job, so its
+    # Ollama model pull is cached across runs (see tests/containers.py's
+    # own ensure_ollama docstring for why `ollama_home` makes this possible
+    # at all: a stable HOST directory bind-mounted into a fresh container
+    # each run).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: >
+          pip install -r requirements-lock.txt
+          pytest-xdist==3.8.0
+          "testcontainers[postgres,redis,ollama]==4.9.0"
+          filelock==3.16.1
+          pytest-playwright==0.7.1
+      - run: playwright install --with-deps chromium
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/agent-core-demo-ollama-models
+          key: ollama-models-${{ runner.os }}-${{ env.TEST_LLM_MODEL }}
+        env:
+          TEST_LLM_MODEL: qwen2.5:1.5b
+      - run: pytest -n auto -m "llm or e2e" -q
+        env:
+          TEST_LLM_MODEL: qwen2.5:1.5b
+
+  promptfoo:
+    # Black-box prompt regression against the real domain system prompts —
+    # a single small Ollama sidecar (GH Actions `services:`, not
+    # testcontainers-python: this job is one CLI invocation from one
+    # process, not many xdist workers needing programmatic, shared
+    # container lifecycle — see GRAPH_PATTERNS.md pattern 48). Node only
+    # for promptfoo itself; every other job in this file stays pure Python.
+    # Ollama runs as an explicit `docker run` STEP, not GH Actions'
+    # `services:` block — verified against GH's own documented behavior
+    # that service containers start BEFORE any job step runs, which would
+    # make the `actions/cache` restore below (a regular step) powerless to
+    # affect a service container's volume mount: the mount would already be
+    # in place, from whatever was on disk before the cache restore ever
+    # ran. A plain step-ordered `docker run` avoids that entirely.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/agent-core-demo-ollama-models
+          key: ollama-models-${{ runner.os }}-${{ env.PROMPTFOO_MODEL }}
+        env:
+          PROMPTFOO_MODEL: qwen2.5:1.5b
+      - run: >
+          docker run -d --name ollama -p 11434:11434
+          -v ${HOME}/.cache/agent-core-demo-ollama-models:/root/.ollama
+          ollama/ollama:latest
+      - run: docker exec ollama ollama pull qwen2.5:1.5b
       - run: pip install -r requirements-lock.txt
-      - run: pytest -q
+      - run: npm ci
+      - run: python -m promptfoo.dump_prompts
+      - run: |
+          for domain in support ops sales; do
+            npx promptfoo eval --config promptfoo/$domain.yaml
+          done
+        env:
+          PROMPTFOO_MODEL: qwen2.5:1.5b
+
+  garak:
+    # NVIDIA garak — a large STATIC probe library aimed at the raw model,
+    # not this app's prompts (see promptfoo above for the complementary,
+    # prompt-specific check). Runs in its own job, on its own Python 3.12
+    # (garak's own PyPI classifiers only declare tested support through
+    # 3.12; `garak/requirements-garak.txt`'s own comment has the fuller
+    # story) — but the more concrete reason this can't share the other
+    # jobs' install is dependency conflicts, not the interpreter version:
+    # installing garak alongside this app's own pinned LangGraph/LangChain
+    # stack upgrades `langgraph-checkpoint` past what
+    # `langgraph-checkpoint-postgres` requires, verified directly while
+    # building this. Every job here is an independent runner regardless, so
+    # neither concern creates any conflict with the others. Ollama runs as
+    # an explicit `docker run` STEP, not `services:` — same ordering
+    # reasoning as the `promptfoo` job above (a service container starts
+    # before any step, including the `actions/cache` restore, so the cache
+    # would never actually reach a `services:`-declared container's mount).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/agent-core-demo-ollama-models
+          key: ollama-models-${{ runner.os }}-${{ env.GARAK_MODEL }}
+        env:
+          GARAK_MODEL: qwen2.5:1.5b
+      - run: >
+          docker run -d --name ollama -p 11434:11434
+          -v ${HOME}/.cache/agent-core-demo-ollama-models:/root/.ollama
+          ollama/ollama:latest
+      - run: docker exec ollama ollama pull qwen2.5:1.5b
+      - run: pip install -r garak/requirements-garak.txt
+      - run: python garak/run_ci_scan.py
+        env:
+          GARAK_MODEL: qwen2.5:1.5b
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: garak-report
+          path: garak_runs/
 
   docker-build:
     runs-on: ubuntu-latest
