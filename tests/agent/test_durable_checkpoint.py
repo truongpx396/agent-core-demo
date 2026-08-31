@@ -56,6 +56,17 @@ from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
 from tests.containers import ensure_postgres
 
+# Real Postgres, no LLM — exactly `test-integration`'s scope
+# (.github/workflows/ci.yml). A genuine gap this closes, not a stylistic
+# nicety: without this marker, these tests are correctly EXCLUDED from the
+# fast `test` job's default `-m "not integration and not llm and not e2e"`
+# addopts (pyproject.toml) but were never SELECTED by `test-integration`'s
+# `-m integration` either (wrong/missing marker) — meaning they ran ONLY
+# when a developer happened to run a bare `pytest -q` locally with Docker
+# already up, and silently skipped in the `test` job (no `docker` package
+# installed there) with no CI job ever actually exercising them for real.
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture(autouse=True)
 def reset_agent_singleton(monkeypatch):
