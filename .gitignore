@@ -12,6 +12,10 @@ var/
 node_modules/
 .promptfoo/
 promptfoo/prompts/
+# `make promptfoo-redteam`'s working copy — `redteam run` rewrites its
+# --config file in place, so this is a throwaway copy of redteam.yaml, never
+# the source of truth.
+promptfoo/.redteam-run-scratch.yaml
 
 # garak (see garak/) scan reports/state — regenerated per run, not source
 garak/.garak/

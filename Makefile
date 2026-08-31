@@ -93,10 +93,17 @@ promptfoo:  ## Prompt-level regression checks for the domain system prompts agai
 		npx promptfoo eval --config promptfoo/$$domain.yaml || exit 1; \
 	done
 
-promptfoo-redteam:  ## Adversarial variants of the support prompt (prompt injection, policy violations) — see promptfoo/redteam.yaml; needs a configured cloud provider for generation
+promptfoo-redteam:  ## Adversarial variants of the support prompt (prompt injection, policy violations), generated+graded locally by Ollama — see promptfoo/redteam.yaml's own comments for real, disclosed limits on how far that local generation/grading can be trusted
 	npm install --include=optional
 	python -m promptfoo.dump_prompts
-	npx promptfoo redteam run --config promptfoo/redteam.yaml
+	# `redteam run` REWRITES its --config file in place with the generated+
+	# graded test suite baked in (confirmed directly: it clobbered the
+	# checked-in redteam.yaml twice during development) — copying to a
+	# scratch file first (same directory, so redteam.yaml's own
+	# `file://prompts/support.json` still resolves) keeps the hand-authored
+	# source under version control intact across repeated runs.
+	cp promptfoo/redteam.yaml promptfoo/.redteam-run-scratch.yaml
+	PROMPTFOO_DISABLE_REMOTE_GENERATION=true npx promptfoo redteam run --config promptfoo/.redteam-run-scratch.yaml
 
 garak:  ## Fast, curated probe subset scanning the real model for known jailbreak/injection patterns — needs `make up`/a native Ollama AND a SEPARATE Python environment, never this repo's own .venv (installing garak here upgrades langgraph-checkpoint past what this app's own pin allows — see garak/requirements-garak.txt)
 	python -m pip install -q -r garak/requirements-garak.txt

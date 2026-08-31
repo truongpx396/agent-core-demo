@@ -524,7 +524,7 @@ datasources/dashboards — edit and `make obs-up` again to pick up changes.
 
 ## Testing
 
-Four tiers, each a deliberate step up in cost and what it actually proves
+Five tiers, each a deliberate step up in cost and what it actually proves
 (GRAPH_PATTERNS.md pattern 48 has the full design writeup — cross-worker
 container sharing under `pytest -n auto`, why LiteLLM is bypassed, why
 promptfoo/garak/`scripts/eval.py` are complementary rather than redundant):
@@ -539,16 +539,23 @@ promptfoo/garak/`scripts/eval.py` are complementary rather than redundant):
    via testcontainers — Docker required, `make up` is NOT — and skips
    cleanly (not fails) when Docker isn't reachable. Both run on every push
    in CI.
-3. **`make promptfoo`** / **`make garak`** — black-box checks against the
-   raw domain system prompts (promptfoo: does the support/ops/sales prompt
-   still refuse to fabricate a refund/account change/sent message?) and the
-   raw model (garak: does it still resist a curated set of known jailbreak/
-   prompt-injection phrasings — the same ones `app/agent/moderation.py`'s
-   own pattern list claims to catch?). Both run on every push in CI, fast
-   subsets only; `make promptfoo-redteam` (needs a configured cloud
-   provider) and `make garak-full` are deliberately manual, like `make eval`
-   below.
-4. **`make eval`** — the real-model, real-Qdrant, full-graph release gate
+3. **`make promptfoo`** — black-box checks against the raw domain system
+   prompts: does the support/ops/sales prompt still refuse to fabricate a
+   refund/account change/sent message? Runs on every push in CI, a fast
+   subset only; `make promptfoo-redteam` (locally-generated adversarial
+   variants, graded by the same local model — no cloud provider needed, but
+   a real, disclosed reliability caveat on that grading, see
+   GRAPH_PATTERNS.md pattern 48) is deliberately manual, like `make eval`
+   below — its output needs a human reading the graded transcripts, not
+   just an exit code.
+4. **`make garak`** — the raw model (not this app's prompts): does it still
+   resist a curated set of known jailbreak/prompt-injection phrasings — the
+   same ones `app/agent/moderation.py`'s own pattern list claims to catch?
+   Deliberately manual only (never a CI job) — it's report-only even when
+   it does run (a small local model has near-zero jailbreak resistance on
+   its own, a real and disclosed finding, not something a per-push gate
+   should punish); `make garak-full` is the fuller, slower probe suite.
+5. **`make eval`** — the real-model, real-Qdrant, full-graph release gate
    (5 repetitions per case, a grounded-claims threshold over the whole
    golden set — see `scripts/eval.py`). Needs `make up` + `make pull-models`
    + `make ingest`; deliberately NOT run in CI (real CI minutes, a cold
