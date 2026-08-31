@@ -115,14 +115,23 @@ def real_stack() -> Iterator[str]:
         # docstring) — so this was never load-bearing for
         # test_chat_ui.py's calculator/remember prompts, which don't need
         # retrieval to pass. Tried making it real anyway for full-path
-        # coverage; reverted after a real CI run timed out — a genuine
-        # embedding call against Ollama's single-worker server
-        # (OLLAMA_NUM_PARALLEL=1) adds real, serial latency on EVERY turn,
-        # on top of the chat model's own inference, and pushed total turn
-        # time past `app/agent/runtime.py`'s hardcoded (not env-overridable)
-        # REQUEST_TIMEOUT_SECONDS=60 on CI's more CPU-constrained hardware.
-        # tests/live/test_qdrant_real.py still gets a real embedding model —
-        # via its own fixture, independent of this subprocess entirely.
+        # coverage; reverted after a real CI run timed out — turned out
+        # NOT to be the (sole) cause, see REQUEST_TIMEOUT_SECONDS below,
+        # but it's still needless added latency for what these two tests
+        # actually need. tests/live/test_qdrant_real.py still gets a real
+        # embedding model — via its own fixture, independent of this
+        # subprocess entirely.
+        #
+        # REQUEST_TIMEOUT_SECONDS: widened from the 60s default (already
+        # made a real, deliberately configurable `app/core/config.py`
+        # setting for exactly this reason, not a test-only hack) — a real
+        # CI run measured a single real `qwen2.5:1.5b` tool-calling turn
+        # taking 67.7s end to end, past the 60s default that's comfortably
+        # enough headroom on this demo's own local, GPU-backed dev setup.
+        # 180s leaves real margin without masking a GENUINE hang (a turn
+        # that's actually stuck, not just slow) — this suite would still
+        # want to know about that.
+        "REQUEST_TIMEOUT_SECONDS": "180",
     }
 
     api_proc = subprocess.Popen(

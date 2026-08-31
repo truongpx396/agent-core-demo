@@ -86,6 +86,7 @@ from app.core.config import (
     CHAT_MODEL,
     CHECKPOINTER_DATABASE_URL,
     MAX_COST_USD_PER_TENANT_PER_DAY,
+    REQUEST_TIMEOUT_SECONDS,
 )
 from app.core.errors import ErrorCode, ErrorEnvelope, TurnCancelled
 from app.core.security import SecurityCtx, valid_ctx
@@ -126,11 +127,6 @@ _seeded: set[str] = set()
 # with each other or with MAX_ITERATIONS if that ever changes.
 RECURSION_LIMIT = MAX_ITERATIONS * 2 + 15
 
-# Safety budget: bound total wall-clock time per turn, beneath which
-# MAX_ITERATIONS (LLM loop cap) and RECURSION_LIMIT (graph step cap)
-# already apply. This is the outermost layer — a turn stuck inside a
-# single slow LLM/tool call never reaches those.
-REQUEST_TIMEOUT_SECONDS = 60
 # Soft-timeout executor for the sync `answer()` path (used by POST /chat):
 # Python can't forcibly kill a running thread, so this bounds how long the
 # *caller* waits, not how long graph.invoke() keeps running in the

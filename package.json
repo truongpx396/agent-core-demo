@@ -4,5 +4,8 @@
   "description": "Node tooling for this repo — promptfoo only (see promptfoo/). Every runtime dependency stays Python; this exists purely because promptfoo has no Python distribution.",
   "devDependencies": {
     "promptfoo": "0.122.2"
+  },
+  "optionalDependencies": {
+    "@libsql/linux-x64-gnu": "0.5.29"
   }
 }

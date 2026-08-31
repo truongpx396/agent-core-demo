@@ -134,6 +134,23 @@ class Settings(BaseSettings):
     # OPENAI_API_BASE points at a real paid provider.
     max_cost_usd_per_tenant_per_day: float = 20.0
 
+    # Outermost per-turn wall-clock bound (app/agent/runtime.py) — beneath
+    # this, MAX_ITERATIONS (LLM loop cap) and RECURSION_LIMIT (graph step
+    # cap) already apply; this is what catches a turn stuck inside a
+    # single slow LLM/tool call those two never see. Deliberately
+    # configurable, unlike its sibling safety budgets above (cost/token
+    # ceilings, which bound runaway SPEND and stay code-level constants on
+    # purpose) — this one is a pure operational timeout, no different in
+    # kind from `rate_limit_per_minute` below: a real deployment against a
+    # genuinely slow backend (a small local model on modest hardware, real
+    # network latency to a hosted provider) has a legitimate reason to
+    # widen it, and widening it carries no safety/cost implication either
+    # way. `tests/live/conftest.py` overrides this for exactly that reason
+    # — a small model's real inference time on a shared CI runner
+    # sometimes exceeds the 60s default that's comfortably enough headroom
+    # for this demo's own local, GPU-backed development setup.
+    request_timeout_seconds: int = 60
+
     # Object storage for uploaded documents (app/ingestion/object_store.py) — MinIO,
     # a self-hosted S3-compatible store (docker-compose's `minio` service),
     # consistent with this app's fully-offline posture everywhere else.
@@ -250,6 +267,7 @@ MEMORY_RETENTION_DAYS = settings.memory_retention_days
 MAX_COST_USD_PER_TURN = settings.max_cost_usd_per_turn
 MAX_SUBAGENT_COST_USD_PER_RUN = settings.max_subagent_cost_usd_per_run
 MAX_COST_USD_PER_TENANT_PER_DAY = settings.max_cost_usd_per_tenant_per_day
+REQUEST_TIMEOUT_SECONDS = settings.request_timeout_seconds
 TELEGRAM_BOT_TOKEN = settings.telegram_bot_token
 AGENT_DOMAIN = settings.agent_domain
 PROMETHEUS_URL = settings.prometheus_url

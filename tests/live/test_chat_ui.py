@@ -13,6 +13,13 @@ CPU-bound model genuinely takes longer per turn than this suite's usual
 sub-second fake-LLM tests, and a mutating-tool turn below waits through TWO
 full model round trips (the initial tool-call decision, then the
 post-approval synthesis of the tool result into a final answer).
+`RESPONSE_TIMEOUT_MS` must stay comfortably ABOVE
+`tests/live/conftest.py::real_stack`'s own `REQUEST_TIMEOUT_SECONDS`
+override, or this suite's own assertion times out first and reports a
+misleading "element never appeared" instead of the real app-level
+`[error: Request exceeded Ns timeout]` text that actually explains a slow
+turn — verified directly: a real CI run measured a single real
+`qwen2.5:1.5b` tool-calling turn taking 67.7s end to end.
 """
 import pytest
 
@@ -33,7 +40,7 @@ expect = playwright_sync_api.expect
 
 pytestmark = pytest.mark.e2e
 
-RESPONSE_TIMEOUT_MS = 90_000
+RESPONSE_TIMEOUT_MS = 210_000
 
 
 def _send(page: Page, text: str) -> None:
