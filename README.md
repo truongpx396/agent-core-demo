@@ -555,20 +555,28 @@ promptfoo/garak/`scripts/eval.py` are complementary rather than redundant):
    it does run (a small local model has near-zero jailbreak resistance on
    its own, a real and disclosed finding, not something a per-push gate
    should punish); `make garak-full` is the fuller, slower probe suite.
-5. **`make deepeval`** — LLM-judged RAG faithfulness/relevancy against the
-   real graph (`tests/live/test_rag_quality_deepeval.py`, via
-   [deepeval](https://github.com/confident-ai/deepeval)): does an answer's
-   own claims actually follow from its cited context, does it actually
-   address the question — a semantic judgment call none of the tiers above
-   make (promptfoo's assertions are keyword presence; `make eval`'s own
-   grounded-claims check below is a structural citation-marker count).
-   Deliberately manual only, never CI — a real, disclosed finding from
-   actually running it (GRAPH_PATTERNS.md pattern 48) is that a small local
-   judge model produces internally-inconsistent scores (a verified-good
-   answer scored a flat 0 with a reason that itself says "no
-   contradictions"), the same reliability wall `make promptfoo-redteam`
-   independently hit — so this needs a human reading the printed reasons,
-   not a pass/fail gate.
+5. **`make deepeval`** — LLM-judged conversation quality against the real
+   graph, via [deepeval](https://github.com/confident-ai/deepeval): does an
+   answer's own claims actually follow from its cited context
+   (`test_rag_quality_deepeval.py`'s `FaithfulnessMetric`/
+   `AnswerRelevancyMetric`), and — the one check in this whole suite that
+   spans more than one turn — does a simulated multi-turn conversation
+   (deepeval's own `ConversationSimulator`, driving the REAL checkpointed
+   graph across several turns on one `thread_id`) stay in character and
+   consistent with itself (`test_conversation_simulator_deepeval.py`'s
+   `RoleAdherenceMetric`/`KnowledgeRetentionMetric`)? A semantic judgment
+   call none of the tiers above make (promptfoo's assertions are keyword
+   presence; `make eval`'s own grounded-claims check below is a structural
+   citation-marker count). Deliberately manual only, never CI — a real,
+   disclosed finding from actually running it (GRAPH_PATTERNS.md pattern
+   48) is that a small local judge model produces internally-inconsistent
+   scores (a verified-good answer scored a flat 0 with a reason that itself
+   says "no contradictions"), the same reliability wall `make
+   promptfoo-redteam` independently hit — so this needs a human reading the
+   printed reasons, not a pass/fail gate. The multi-turn run also surfaced a
+   real, disclosed target-model finding along the way: the assistant
+   affirmed a customer's fabricated schedule detail instead of correcting
+   it against its own retrieved context (pattern 48 again).
 6. **`make eval`** — the real-model, real-Qdrant, full-graph release gate
    (5 repetitions per case, a grounded-claims threshold over the whole
    golden set — see `scripts/eval.py`). Needs `make up` + `make pull-models`
@@ -602,7 +610,7 @@ promptfoo/garak/`scripts/eval.py` are complementary rather than redundant):
 | `make promptfoo-redteam` | Adversarial variants of the same prompts, generated+graded locally by Ollama (manual — no cloud provider needed, but read the output by hand, see GRAPH_PATTERNS.md pattern 48) |
 | `make garak`      | Fast, curated jailbreak/injection probe subset against the real model — run from a SEPARATE Python env, never this repo's own `.venv` (see `garak/requirements-garak.txt`) |
 | `make garak-full` | The full, slow garak probe suite (manual, pre-release — like `make eval`); same separate-env requirement |
-| `make deepeval`   | LLM-judged RAG faithfulness/relevancy against the real graph (manual — read the reasons by hand, see GRAPH_PATTERNS.md pattern 48) |
+| `make deepeval`   | LLM-judged RAG quality + a multi-turn conversation simulation against the real graph (manual — read the reasons by hand, see GRAPH_PATTERNS.md pattern 48) |
 | `make logs`       | Tail service logs |
 | `make down`       | Stop services (keep data) |
 | `make clean`      | Stop services and delete volumes |

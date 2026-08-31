@@ -41,7 +41,6 @@ actually available here to make the signal more trustworthy; still read
 the `reason` fields by hand rather than trusting `assert_test`'s pass/fail
 alone.
 """
-import os
 import uuid
 
 import pytest
@@ -50,11 +49,8 @@ from langchain_core.messages import HumanMessage
 from app.agent import graph as graph_module
 from app.agent.graph import GraphDeps, build_graph
 from tests.conftest import TEST_CTX
-from tests.containers import ensure_ollama
 
 pytestmark = pytest.mark.deepeval
-
-DEEPEVAL_MODEL = os.environ.get("DEEPEVAL_MODEL", "qwen2.5:3b")
 
 _CONTEXT = (
     "[1] Acme Corp support hours are 9am to 5pm Monday through Friday, "
@@ -82,11 +78,6 @@ _CITATIONS = [
 
 def _real_search(query: str, ctx=None) -> tuple[str, list[dict]]:
     return _CONTEXT, _CITATIONS
-
-
-@pytest.fixture(scope="session")
-def deepeval_ollama() -> dict[str, str]:
-    return ensure_ollama(DEEPEVAL_MODEL)
 
 
 @pytest.fixture(autouse=True)

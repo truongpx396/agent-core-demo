@@ -105,7 +105,7 @@ promptfoo-redteam:  ## Adversarial variants of the support prompt (prompt inject
 	cp promptfoo/redteam.yaml promptfoo/.redteam-run-scratch.yaml
 	PROMPTFOO_DISABLE_REMOTE_GENERATION=true npx promptfoo redteam run --config promptfoo/.redteam-run-scratch.yaml
 
-deepeval:  ## LLM-judged RAG faithfulness/relevancy against the real graph (tests/live/test_rag_quality_deepeval.py) — needs Docker; read the printed reasons by hand, don't trust pass/fail alone (see that file's own disclosed judge-reliability finding, GRAPH_PATTERNS.md pattern 48)
+deepeval:  ## LLM-judged RAG quality (tests/live/test_rag_quality_deepeval.py) + a multi-turn conversation simulation (test_conversation_simulator_deepeval.py) against the real graph — needs Docker; read the printed reasons by hand, don't trust pass/fail alone (see those files' own disclosed judge-reliability findings, GRAPH_PATTERNS.md pattern 48)
 	DEEPEVAL_TELEMETRY_OPT_OUT=1 pytest -m deepeval -q -s
 
 garak:  ## Fast, curated probe subset scanning the real model for known jailbreak/injection patterns — needs `make up`/a native Ollama AND a SEPARATE Python environment, never this repo's own .venv (installing garak here upgrades langgraph-checkpoint past what this app's own pin allows — see garak/requirements-garak.txt)

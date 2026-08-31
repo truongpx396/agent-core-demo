@@ -73,6 +73,13 @@ import pytest
 from tests.containers import ensure_ollama, ensure_postgres, ensure_qdrant, ensure_redis
 
 TEST_LLM_MODEL = os.environ.get("TEST_LLM_MODEL", "qwen2.5:1.5b")
+# Separate from TEST_LLM_MODEL, deliberately: the `deepeval`-marked tests
+# (test_rag_quality_deepeval.py, test_conversation_simulator_deepeval.py)
+# are manual-only, unlike this file's CI-speed 1.5b — a larger local judge
+# is the one lever actually available to make an LLM-judged score more
+# trustworthy without reintroducing a cloud dependency (see GRAPH_PATTERNS.md
+# pattern 48's own disclosed small-judge-reliability finding).
+DEEPEVAL_MODEL = os.environ.get("DEEPEVAL_MODEL", "qwen2.5:3b")
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -85,6 +92,11 @@ def _free_port() -> int:
 @pytest.fixture(scope="session")
 def ollama_endpoint() -> dict[str, str]:
     return ensure_ollama(TEST_LLM_MODEL)
+
+
+@pytest.fixture(scope="session")
+def deepeval_ollama() -> dict[str, str]:
+    return ensure_ollama(DEEPEVAL_MODEL)
 
 
 @pytest.fixture(scope="session")
