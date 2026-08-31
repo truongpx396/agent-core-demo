@@ -3,15 +3,22 @@ Ollama model (`@pytest.mark.llm`, `@pytest.mark.e2e`; see GRAPH_PATTERNS.md
 pattern 48 for the full design writeup). Two session fixtures, deliberately
 different weights for deliberately different needs:
 
-`ollama_endpoint` — just `tests/containers.py::ensure_ollama()`. Used by
-test_agent_tool_calling.py, which drives `app.agent.graph.build_graph()`
+`ollama_endpoint` — just `tests/containers.py::ensure_ollama()`, which pulls
+both a real CHAT model and a real embedding model (`nomic-embed-text`,
+this app's own `EMBED_MODEL` default) into the same shared container. Used
+by test_agent_tool_calling.py, which drives `app.agent.graph.build_graph()`
 directly, in-process, with a real `ChatOpenAI` pointed at this endpoint and
 every OTHER dependency mocked exactly the way tests/conftest.py's autouse
 fixtures already mock them for the rest of this suite (no retrieval/cache/
 checkpoint-durability claim is being tested here — only "does the real
 model's real native tool-calling integrate with this app's real graph
 code," the one thing a fake `GenericFakeChatModel` can't prove because its
-responses are scripted, not actually reasoned).
+responses are scripted, not actually reasoned) — and by test_qdrant_real.py,
+which needs the real embedding model specifically (`embed_text` is a real
+network call, not local fastembed — see that file's own docstring for how
+this was caught: it started out in tests/integration/, which provisions no
+LLM at all, and a real CI run surfaced the `openai.APIConnectionError` that
+proved it belonged here instead).
 
 `real_stack` — the full backing stack (Postgres + Redis + Qdrant + Ollama)
 PLUS a real `uvicorn app.api.main:app` and one real `python -m
@@ -98,6 +105,20 @@ def real_stack() -> Iterator[str]:
         "OPENAI_API_BASE": ollama["openai_api_base"],
         "OPENAI_API_KEY": "sk-not-checked-by-ollama",
         "CHAT_MODEL": ollama["model"],
+        # Every real turn calls retrieve_context -> search_docs ->
+        # hybrid_search -> embed_text unconditionally (GRAPH_PATTERNS.md
+        # pattern 20). retrieve_context's own try/except means a failure
+        # here degrades to empty context rather than failing the turn
+        # (verified: app/agent/tools.py::gather_context's own docstring) —
+        # so this isn't load-bearing for tests/live/test_chat_ui.py's
+        # existing calculator/remember prompts, which don't need retrieval
+        # to pass. Still real, not just tolerated: without this, every
+        # turn's retrieval silently no-ops against the subprocess's default
+        # EMBED_MODEL ("embed"), which resolves to nothing on this Ollama
+        # container — this makes the real path actually work, which
+        # tests/live/test_qdrant_real.py's own real-embedding assertions
+        # now depend on.
+        "EMBED_MODEL": ollama["embed_model"],
     }
 
     api_proc = subprocess.Popen(

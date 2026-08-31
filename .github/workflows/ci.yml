@@ -132,6 +132,18 @@ jobs:
           key: ollama-models-${{ runner.os }}-${{ env.PROMPTFOO_MODEL }}
         env:
           PROMPTFOO_MODEL: qwen2.5:1.5b
+      # Pre-creates the bind-mount SOURCE as the normal `runner` user before
+      # `docker run` ever touches it — verified directly this matters: when
+      # a bind-mount source doesn't exist yet, `docker run` (root-run
+      # daemon, on a real Linux runner — unlike macOS Docker Desktop's VM,
+      # where this was never reproducible locally) creates it, along with
+      # any missing parent (~/.cache itself, on a cache-miss run), owned by
+      # root. That broke `garak`'s own `~/.cache/garak` creation later in
+      # THAT job with a plain `PermissionError` — unrelated to this cache
+      # path, but the same shared parent directory. Pre-creating this one
+      # path is enough: `mkdir -p` makes every ancestor, `~/.cache`
+      # included, as `runner`.
+      - run: mkdir -p ~/.cache/agent-core-demo-ollama-models
       - run: >
           docker run -d --name ollama -p 11434:11434
           -v ${HOME}/.cache/agent-core-demo-ollama-models:/root/.ollama
@@ -140,7 +152,19 @@ jobs:
           timeout 60 bash -c 'until docker exec ollama ollama list >/dev/null 2>&1; do sleep 1; done'
       - run: docker exec ollama ollama pull qwen2.5:1.5b
       - run: pip install -r requirements-lock.txt
-      - run: npm ci
+      # `npm install`, not `npm ci`: package-lock.json's optional-dependency
+      # entries (native platform bindings — promptfoo transitively depends
+      # on @libsql, which ships one binding package per OS/arch) are a
+      # snapshot of whatever platform last ran a full `npm install`, which
+      # won't always be this runner's — caught directly in CI as a
+      # "libsql binding for linux-x64-gnu is missing" failure from `npm
+      # ci`'s strict lockfile-only install (the lockfile here was generated
+      # on macOS). `npm install` re-resolves optional deps for the CURRENT
+      # platform at install time regardless of what's in the lockfile,
+      # trading strict reproducibility (acceptable for a dev-only tool with
+      # no runtime footprint in the shipped app) for robustness against
+      # exactly this cross-platform mismatch.
+      - run: npm install
       - run: python -m promptfoo.dump_prompts
       - run: |
           for domain in support ops sales; do
@@ -178,6 +202,18 @@ jobs:
           key: ollama-models-${{ runner.os }}-${{ env.GARAK_MODEL }}
         env:
           GARAK_MODEL: qwen2.5:1.5b
+      # Pre-creates the bind-mount SOURCE as the normal `runner` user before
+      # `docker run` ever touches it — verified directly this matters: when
+      # a bind-mount source doesn't exist yet, `docker run` (root-run
+      # daemon, on a real Linux runner — unlike macOS Docker Desktop's VM,
+      # where this was never reproducible locally) creates it, along with
+      # any missing parent (~/.cache itself, on a cache-miss run), owned by
+      # root. That broke `garak`'s own `~/.cache/garak` creation later in
+      # THAT job with a plain `PermissionError` — unrelated to this cache
+      # path, but the same shared parent directory. Pre-creating this one
+      # path is enough: `mkdir -p` makes every ancestor, `~/.cache`
+      # included, as `runner`.
+      - run: mkdir -p ~/.cache/agent-core-demo-ollama-models
       - run: >
           docker run -d --name ollama -p 11434:11434
           -v ${HOME}/.cache/agent-core-demo-ollama-models:/root/.ollama

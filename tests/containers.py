@@ -344,30 +344,44 @@ def ensure_qdrant() -> dict[str, str]:
 _OLLAMA_HOME = Path.home() / ".cache" / "agent-core-demo-ollama-models"
 
 
-def ensure_ollama(model: str) -> dict[str, str]:
-    """Real Ollama serving a real, small model — the expensive one, used
-    only by `tests/live/`. Deliberately overrides testcontainers-python's own
+def ensure_ollama(model: str, embed_model: str = "nomic-embed-text") -> dict[str, str]:
+    """Real Ollama serving a real, small CHAT model plus a real embedding
+    model, in the SAME shared container — the expensive fixture, used only
+    by `tests/live/`. Deliberately overrides testcontainers-python's own
     default image pin (`ollama/ollama:0.1.44`, from before Qwen2.5 existed)
     with `latest`: verified empirically (see tests/live/conftest.py's own
     docstring) that a current Ollama's OpenAI-compatible endpoint emits real
     native tool calls, which is the entire point of these tests — an old
     pinned Ollama predating native tool-calling support would silently
     defeat that. Returns `openai_api_base` (Ollama's own `/v1`, no LiteLLM
-    proxy in front — see GRAPH_PATTERNS.md pattern 48) and the model tag
-    actually pulled.
+    proxy in front — see GRAPH_PATTERNS.md pattern 48), `model` (the chat
+    model tag), and `embed_model` (the embedding model tag).
+
+    `embed_model` defaults to `nomic-embed-text` — this app's own production
+    `EMBED_MODEL` default (`app/core/config.py`, `docker-compose.yml`'s
+    `pull-models` target) — added after `tests/integration/test_qdrant_real.py`
+    (real `app.retrieval.qdrant_store.hybrid_search`, which calls
+    `app.retrieval.embeddings.embed_text` — a REAL dense-embedding API call,
+    not something `ensure_qdrant()` alone can satisfy) turned out to need a
+    real embedding backend too, not just a real Qdrant: caught directly in
+    CI as `openai.APIConnectionError` (`test-integration` deliberately
+    provisions no LLM at all), moving that test to `tests/live/` alongside
+    this fixture rather than trying to add a second, `test-integration`-only
+    Ollama just for embeddings.
 
     `ollama_home=_OLLAMA_HOME` bind-mounts a stable HOST directory as the
     container's own `/root/.ollama` (verified in `OllamaContainer.start()`'s
     own source: `with_volume_mapping(self.ollama_home, "/root/.ollama",
-    "rw")`) — a fresh container still gets the model instantly if a PRIOR
+    "rw")`) — a fresh container still gets both models instantly if a PRIOR
     run (this session's, an earlier local run, or — see .github/workflows/
     ci.yml's `test-live`/`promptfoo`/`garak` jobs, each restoring this same
     path via `actions/cache` keyed on the model tag — an earlier CI run)
-    already pulled it into this same directory. Purely a speed optimization,
-    not a correctness dependency: an empty/missing directory just means
-    `pull_model` downloads fresh, exactly as it did before this existed.
+    already pulled them into this same directory. Purely a speed
+    optimization, not a correctness dependency: an empty/missing directory
+    just means `pull_model` downloads fresh, exactly as it did before this
+    existed.
     """
-    _require_docker(f"a real Ollama serving {model}")
+    _require_docker(f"a real Ollama serving {model}/{embed_model}")
 
     def _start() -> dict[str, Any]:
         from testcontainers.ollama import OllamaContainer
@@ -376,12 +390,15 @@ def ensure_ollama(model: str) -> dict[str, str]:
         container = OllamaContainer(image="ollama/ollama:latest", ollama_home=str(_OLLAMA_HOME))
         container.start()
         container.pull_model(model)  # instant if _OLLAMA_HOME already has this model — see above
+        container.pull_model(embed_model)
         return {
             "container_id": container.get_wrapped_container().id,
             "openai_api_base": f"{container.get_endpoint()}/v1",
             "model": model,
+            "embed_model": embed_model,
         }
 
-    # Keyed by model, not just "ollama": two suites requesting different
-    # models must not silently hand each other the wrong one back.
-    return _acquire(f"ollama-{model.replace(':', '_')}", _start)
+    # Keyed by both models, not just "ollama": two suites requesting
+    # different models must not silently hand each other the wrong ones back.
+    key = f"ollama-{model}-{embed_model}".replace(":", "_")
+    return _acquire(key, _start)
