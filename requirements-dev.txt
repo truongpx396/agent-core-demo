@@ -37,3 +37,20 @@ testcontainers[postgres,redis,ollama]==4.9.0
 # pattern 48. Needs a one-time `playwright install --with-deps chromium`
 # (see Makefile's `test-live` target), not installable via pip alone.
 pytest-playwright==0.7.1
+
+# LLM-judged RAG quality metrics (tests/live/test_rag_quality_deepeval.py,
+# `@pytest.mark.deepeval`, `make deepeval` — manual only, never CI, see
+# GRAPH_PATTERNS.md pattern 48). `ollama` is deepeval's own OllamaModel
+# provider's runtime dependency (a plain `pip install deepeval` doesn't
+# pull it — confirmed directly: OllamaModel.load_model() raises its own
+# DeepEvalError telling you to install it, rather than failing at import
+# time). Unlike garak (see garak/requirements-garak.txt), this does NOT
+# need an isolated environment — pip's resolver DOES flag a conflict
+# (deepeval pins `click<8.4.0`, huggingface_hub 1.29.0 here wants
+# `>=8.4.2`) but verified directly this is a false alarm, not a real
+# break like garak's langgraph-checkpoint one: huggingface_hub's own click
+# usage is its unused `huggingface-cli` entry point, and `import
+# huggingface_hub`/`fastembed`/this app's own `app.agent.graph` all work
+# fine with the resulting click 8.3.x pip actually installs.
+deepeval==4.2.0
+ollama==0.6.2

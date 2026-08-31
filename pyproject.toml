@@ -13,11 +13,12 @@ testpaths = ["tests"]
 # Makefile's `test-integration`/`test-live` targets and
 # .github/workflows/ci.yml, both of which rely on exactly that override
 # (GRAPH_PATTERNS.md pattern 48).
-addopts = '-m "not integration and not llm and not e2e"'
+addopts = '-m "not integration and not llm and not e2e and not deepeval"'
 markers = [
     "integration: needs a real Postgres/Redis/Qdrant container (tests/containers.py), no LLM",
     "llm: needs a real, small Ollama model container (tests/live/conftest.py)",
     "e2e: drives a real browser (pytest-playwright) against the real app + a real Ollama model",
+    "deepeval: LLM-judged RAG quality metrics (tests/live/test_rag_quality_deepeval.py) — manual only, never CI (GRAPH_PATTERNS.md pattern 48); a separate marker from `llm`, not swept into test-live's `-m \"llm or e2e\"`",
 ]
 
 [tool.ruff]

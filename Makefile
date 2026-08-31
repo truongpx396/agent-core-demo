@@ -1,4 +1,4 @@
-.PHONY: help up up-app pull-models ingest index-skills chat chat-stream chat-stream-hitl serve mcp-serve telegram telegram-support telegram-sales agent-worker ingest-worker ops-digest followup-sweep test test-integration test-live lint typecheck eval promptfoo promptfoo-redteam garak garak-full logs down clean clear-cache obs-up obs-down obs-logs obs-clean
+.PHONY: help up up-app pull-models ingest index-skills chat chat-stream chat-stream-hitl serve mcp-serve telegram telegram-support telegram-sales agent-worker ingest-worker ops-digest followup-sweep test test-integration test-live lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full logs down clean clear-cache obs-up obs-down obs-logs obs-clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -104,6 +104,9 @@ promptfoo-redteam:  ## Adversarial variants of the support prompt (prompt inject
 	# source under version control intact across repeated runs.
 	cp promptfoo/redteam.yaml promptfoo/.redteam-run-scratch.yaml
 	PROMPTFOO_DISABLE_REMOTE_GENERATION=true npx promptfoo redteam run --config promptfoo/.redteam-run-scratch.yaml
+
+deepeval:  ## LLM-judged RAG faithfulness/relevancy against the real graph (tests/live/test_rag_quality_deepeval.py) — needs Docker; read the printed reasons by hand, don't trust pass/fail alone (see that file's own disclosed judge-reliability finding, GRAPH_PATTERNS.md pattern 48)
+	DEEPEVAL_TELEMETRY_OPT_OUT=1 pytest -m deepeval -q -s
 
 garak:  ## Fast, curated probe subset scanning the real model for known jailbreak/injection patterns — needs `make up`/a native Ollama AND a SEPARATE Python environment, never this repo's own .venv (installing garak here upgrades langgraph-checkpoint past what this app's own pin allows — see garak/requirements-garak.txt)
 	python -m pip install -q -r garak/requirements-garak.txt
