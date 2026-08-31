@@ -87,14 +87,14 @@ eval:  ## Run the golden-dataset evaluation against the real stack (needs `make 
 	python -m scripts.eval
 
 promptfoo:  ## Prompt-level regression checks for the domain system prompts against a real Ollama (needs `make up` or a native Ollama with CHAT_MODEL pulled)
-	npm install
+	npm install --include=optional
 	python -m promptfoo.dump_prompts
 	for domain in support ops sales; do \
 		npx promptfoo eval --config promptfoo/$$domain.yaml || exit 1; \
 	done
 
 promptfoo-redteam:  ## Adversarial variants of the support prompt (prompt injection, policy violations) — see promptfoo/redteam.yaml; needs a configured cloud provider for generation
-	npm install
+	npm install --include=optional
 	python -m promptfoo.dump_prompts
 	npx promptfoo redteam run --config promptfoo/redteam.yaml
 

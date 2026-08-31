@@ -163,8 +163,13 @@ jobs:
       # platform at install time regardless of what's in the lockfile,
       # trading strict reproducibility (acceptable for a dev-only tool with
       # no runtime footprint in the shipped app) for robustness against
-      # exactly this cross-platform mismatch.
-      - run: npm install
+      # exactly this cross-platform mismatch. `--include=optional` is
+      # promptfoo's own documented fix for this exact error (still needed
+      # even with `npm install`, not just `npm ci` — confirmed directly:
+      # plain `npm install` alone still failed the same way on this repo's
+      # dependency tree) — see
+      # https://www.promptfoo.dev/docs/usage/troubleshooting/#libsql-binding-not-found.
+      - run: npm install --include=optional
       - run: python -m promptfoo.dump_prompts
       - run: |
           for domain in support ops sales; do

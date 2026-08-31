@@ -105,20 +105,24 @@ def real_stack() -> Iterator[str]:
         "OPENAI_API_BASE": ollama["openai_api_base"],
         "OPENAI_API_KEY": "sk-not-checked-by-ollama",
         "CHAT_MODEL": ollama["model"],
-        # Every real turn calls retrieve_context -> search_docs ->
-        # hybrid_search -> embed_text unconditionally (GRAPH_PATTERNS.md
-        # pattern 20). retrieve_context's own try/except means a failure
-        # here degrades to empty context rather than failing the turn
-        # (verified: app/agent/tools.py::gather_context's own docstring) —
-        # so this isn't load-bearing for tests/live/test_chat_ui.py's
-        # existing calculator/remember prompts, which don't need retrieval
-        # to pass. Still real, not just tolerated: without this, every
-        # turn's retrieval silently no-ops against the subprocess's default
-        # EMBED_MODEL ("embed"), which resolves to nothing on this Ollama
-        # container — this makes the real path actually work, which
-        # tests/live/test_qdrant_real.py's own real-embedding assertions
-        # now depend on.
-        "EMBED_MODEL": ollama["embed_model"],
+        # Deliberately NOT setting EMBED_MODEL here (leaving the app
+        # subprocess's own default, which resolves to nothing real on this
+        # Ollama container): every real turn calls retrieve_context ->
+        # search_docs -> hybrid_search -> embed_text unconditionally
+        # (GRAPH_PATTERNS.md pattern 20), and retrieve_context's own
+        # try/except degrades a failure there to empty context rather than
+        # failing the turn (app/agent/tools.py::gather_context's own
+        # docstring) — so this was never load-bearing for
+        # test_chat_ui.py's calculator/remember prompts, which don't need
+        # retrieval to pass. Tried making it real anyway for full-path
+        # coverage; reverted after a real CI run timed out — a genuine
+        # embedding call against Ollama's single-worker server
+        # (OLLAMA_NUM_PARALLEL=1) adds real, serial latency on EVERY turn,
+        # on top of the chat model's own inference, and pushed total turn
+        # time past `app/agent/runtime.py`'s hardcoded (not env-overridable)
+        # REQUEST_TIMEOUT_SECONDS=60 on CI's more CPU-constrained hardware.
+        # tests/live/test_qdrant_real.py still gets a real embedding model —
+        # via its own fixture, independent of this subprocess entirely.
     }
 
     api_proc = subprocess.Popen(
