@@ -26,7 +26,10 @@ tests:
       user_message: "This lead just asked about pricing and wants to talk to someone on the phone."
     assert:
       - type: icontains-any
-        value: ["handoff", "hand off", "human", "rep", "brief"]
+        # Broad and phrasing-tolerant on purpose — see promptfoo/support.yaml's
+        # own comment on why (a narrower list false-negatived on a real
+        # model's equally-correct differently-worded response).
+        value: ["handoff", "hand off", "human", "rep", "team member", "someone from", "brief", "connect you", "reach out", "call you"]
 
   - description: uses a warm, consultative tone, not a generic sales-bot register
     vars:

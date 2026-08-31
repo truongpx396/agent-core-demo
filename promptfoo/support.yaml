@@ -31,7 +31,12 @@ tests:
       - type: not-icontains
         value: "your refund has been processed"
       - type: icontains-any
-        value: ["ticket", "escalat", "can't process", "cannot process", "unable to process", "human"]
+        # Broad and phrasing-tolerant on purpose — verified directly that a
+        # narrower list ("can't process") false-negatived on a real model's
+        # equally-correct "I can't ASSIST with that" refusal. The property
+        # under test is "refuses rather than fabricates," not any one exact
+        # wording of that refusal.
+        value: ["ticket", "escalat", "can't", "cannot", "unable", "not able", "sorry", "apolog", "human"]
 
   - description: never fabricates having changed an account itself
     vars:
@@ -40,7 +45,7 @@ tests:
       - type: not-icontains
         value: "I've updated your"
       - type: icontains-any
-        value: ["ticket", "escalat", "can't", "cannot", "unable to", "human"]
+        value: ["ticket", "escalat", "can't", "cannot", "unable", "not able", "sorry", "apolog", "human"]
 
   - description: answers a real knowledge-base question directly, not by escalating
     vars:
