@@ -15,7 +15,21 @@ full model round trips (the initial tool-call decision, then the
 post-approval synthesis of the tool result into a final answer).
 """
 import pytest
-from playwright.sync_api import Page, expect
+
+# `pytest.importorskip`, not a plain top-level import: `playwright` is only
+# installed for `test-live`'s own CI job/`make test-live` (see
+# requirements-dev.txt) — the fast `test` job never installs it, correctly,
+# since it never runs anything e2e-marked. But pytest still IMPORTS every
+# test module during COLLECTION regardless of which markers end up
+# selected/deselected, so a plain `from playwright.sync_api import ...`
+# would break collection (not just this file's own tests) the moment this
+# module is even discovered in an environment without playwright — caught
+# directly in CI. `importorskip` here instead marks the whole module
+# skipped, exactly the "self-skip, don't fail" contract this module's own
+# tests already extend to a missing Docker daemon (see tests/containers.py).
+playwright_sync_api = pytest.importorskip("playwright.sync_api")
+Page = playwright_sync_api.Page
+expect = playwright_sync_api.expect
 
 pytestmark = pytest.mark.e2e
 

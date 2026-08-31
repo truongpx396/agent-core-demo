@@ -64,10 +64,22 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import docker
 import psycopg
 import pytest
 from filelock import FileLock
+
+# `docker` (the PyPI package `testcontainers` itself depends on) is
+# deliberately NOT imported at module level, unlike `psycopg`/`pytest`/
+# `filelock` above (all three are installed in EVERY test job, including
+# the fast `test` job, which never runs anything from this module beyond
+# `tests/conftest.py::pytest_sessionfinish`'s own `teardown_all()` call —
+# see that function's own docstring). A module-level `import docker` would
+# make importing THIS MODULE AT ALL fail with `ModuleNotFoundError` in that
+# job, which doesn't install `docker`/`testcontainers` (correctly — it
+# never starts a container) — caught directly in CI: every real test
+# passed, then the whole session still exited non-zero because
+# `pytest_sessionfinish` crashed importing this module. Each function that
+# actually touches Docker imports it locally instead.
 
 # Must be set before testcontainers' first container start (every
 # testcontainers.* submodule is imported lazily, inside each ensure_*()'s own
@@ -100,6 +112,8 @@ def _shared_root() -> Path:
 
 def _container_is_running(container_id: str) -> bool:
     try:
+        import docker
+
         return docker.from_env().containers.get(container_id).status == "running"
     except Exception:  # noqa: BLE001 - not found / daemon gone / anything else all mean "not usable"
         return False
@@ -107,6 +121,8 @@ def _container_is_running(container_id: str) -> bool:
 
 def _require_docker(what: str) -> None:
     try:
+        import docker
+
         docker.from_env().ping()
     except Exception as exc:  # noqa: BLE001 - any failure here means "skip", not "fail"
         pytest.skip(
@@ -159,8 +175,10 @@ def teardown_all() -> None:
     if not cache_files:
         return
     try:
+        import docker
+
         client = docker.from_env()
-    except Exception:  # noqa: BLE001 - nothing to tear down without Docker
+    except Exception:  # noqa: BLE001 - nothing to tear down without Docker (including `docker` itself not being installed — see module docstring)
         return
     for cache_file in cache_files:
         try:

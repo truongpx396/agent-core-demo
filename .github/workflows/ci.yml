@@ -72,7 +72,6 @@ jobs:
           pip install -r requirements-lock.txt
           pytest-xdist==3.8.0
           "testcontainers[postgres,redis,ollama]==4.9.0"
-          filelock==3.16.1
       - run: pytest -n auto -m integration -q
 
   test-live:
@@ -92,7 +91,6 @@ jobs:
           pip install -r requirements-lock.txt
           pytest-xdist==3.8.0
           "testcontainers[postgres,redis,ollama]==4.9.0"
-          filelock==3.16.1
           pytest-playwright==0.7.1
       - run: playwright install --with-deps chromium
       - uses: actions/cache@v4
@@ -138,6 +136,8 @@ jobs:
           docker run -d --name ollama -p 11434:11434
           -v ${HOME}/.cache/agent-core-demo-ollama-models:/root/.ollama
           ollama/ollama:latest
+      - run: >
+          timeout 60 bash -c 'until docker exec ollama ollama list >/dev/null 2>&1; do sleep 1; done'
       - run: docker exec ollama ollama pull qwen2.5:1.5b
       - run: pip install -r requirements-lock.txt
       - run: npm ci
@@ -182,6 +182,8 @@ jobs:
           docker run -d --name ollama -p 11434:11434
           -v ${HOME}/.cache/agent-core-demo-ollama-models:/root/.ollama
           ollama/ollama:latest
+      - run: >
+          timeout 60 bash -c 'until docker exec ollama ollama list >/dev/null 2>&1; do sleep 1; done'
       - run: docker exec ollama ollama pull qwen2.5:1.5b
       - run: pip install -r garak/requirements-garak.txt
       - run: python garak/run_ci_scan.py

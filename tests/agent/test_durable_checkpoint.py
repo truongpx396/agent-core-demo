@@ -506,7 +506,17 @@ class TestResumabilityErrorRejectsAnActivelyRunningThread:
         async def _astream(self, *args, **kwargs):
             async for chunk in super()._astream(*args, **kwargs):
                 yield chunk
-                await asyncio.sleep(0.05)
+                # Widened from 0.05s (and the two racing sleeps below from
+                # 0.02s) after real `pytest -n auto` runs on a loaded
+                # multi-core machine showed the ORIGINAL margins are too
+                # tight under genuine CPU contention from other xdist
+                # workers — not a hijack (the assertion these tests exist
+                # to catch), but the "mid-run" snoop/cancel firing so late
+                # (an event-loop scheduling delay, not a logic bug) that
+                # `drive_turn`'s own token stream came back empty. A wider
+                # margin keeps the same race intact while tolerating
+                # realistic scheduling jitter under parallel CI load.
+                await asyncio.sleep(0.2)
 
     def _install_slow_fake_graph(self, monkeypatch):
         # Same pattern TestAsyncSeeding above uses: monkeypatch
@@ -546,7 +556,7 @@ class TestResumabilityErrorRejectsAnActivelyRunningThread:
                     pass
 
             async def snoop_mid_flight():
-                await asyncio.sleep(0.02)  # land squarely mid-run, before any pause
+                await asyncio.sleep(0.1)  # land squarely mid-run, before any pause — see _SlowFakeLLM's own comment on the widened margins
                 graph = await agent_module.init_graph_async()
                 return await resumability_error_async(
                     graph, {"configurable": {"thread_id": thread_id}}
@@ -584,7 +594,7 @@ class TestResumabilityErrorRejectsAnActivelyRunningThread:
                         tokens.append(event["content"])
 
             async def race_cancel():
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0.1)  # see _SlowFakeLLM's own comment on the widened margins
                 return await agent_module.cancel_run(thread_id, TEST_CTX)
 
             _, cancelled = await asyncio.gather(drive_turn(), race_cancel())
