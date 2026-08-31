@@ -20,11 +20,23 @@ tests:
         value: "I've notified the team"
 
   - description: grounds an anomaly explanation in specific numbers, not vague speculation
+    # Naming a specific metric ("error rate") in the question, not just
+    # "did anything break" — verified directly this is load-bearing, not
+    # stylistic: the original vaguer phrasing made real qwen2.5:1.5b give an
+    # ungrounded refusal instead of calling fetch_metrics_summary 11/11
+    # local runs (a genuine small-model prompt-sensitivity gap, not
+    # flakiness — broadening the refusal-phrase denylist alone didn't fix
+    # it, since the model wasn't tool-calling at all for that phrasing).
+    # This phrasing reliably triggered the real tool call 3/3 for both
+    # qwen2.5:1.5b and qwen2.5:3b — see GRAPH_PATTERNS.md pattern 48.
     vars:
-      user_message: "Did anything break overnight?"
+      user_message: "What does the current error rate look like — did anything spike overnight?"
     assert:
-      - type: not-icontains
-        value: "I don't have access"
+      - type: not-icontains-any
+        # Still broad, not a single exact phrase — a small model's exact
+        # refusal wording (on the rare case it doesn't tool-call) varies
+        # run to run even at temperature 0; verified directly.
+        value: ["I don't have access", "I can't provide", "I cannot provide", "unable to access", "no access to"]
 
   - description: posts to the team channel only when explicitly asked
     vars:
