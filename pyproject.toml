@@ -1,6 +1,25 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+# `addopts`'s own `-m` default is what actually keeps a bare `pytest -q`
+# fast — every marked test ALSO self-skips (not fails) when Docker/the
+# model it needs isn't reachable (tests/containers.py), but relying on
+# that alone would mean a bare `pytest -q` on a dev machine that HAPPENS to
+# have Docker running silently tries to pull a real Ollama model the
+# instant this file existed, not just when someone actually asks for it.
+# An explicit `-m` on the command line overrides this default rather than
+# ANDing with it (verified directly: `pytest -m integration` runs ONLY the
+# `integration`-marked tests, not "integration AND NOT integration") — see
+# Makefile's `test-integration`/`test-live` targets and
+# .github/workflows/ci.yml, both of which rely on exactly that override
+# (GRAPH_PATTERNS.md pattern 48).
+addopts = '-m "not integration and not llm and not e2e and not deepeval"'
+markers = [
+    "integration: needs a real Postgres/Redis/Qdrant container (tests/containers.py), no LLM",
+    "llm: needs a real, small Ollama model container (tests/live/conftest.py)",
+    "e2e: drives a real browser (pytest-playwright) against the real app + a real Ollama model",
+    "deepeval: LLM-judged RAG quality metrics (tests/live/test_rag_quality_deepeval.py) — manual only, never CI (GRAPH_PATTERNS.md pattern 48); a separate marker from `llm`, not swept into test-live's `-m \"llm or e2e\"`",
+]
 
 [tool.ruff]
 target-version = "py311"

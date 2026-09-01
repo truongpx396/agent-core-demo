@@ -1,0 +1,14 @@
+# garak needs its own venv/CI job — NOT this repo's main one. Two real,
+# separately-verified reasons: (1) garak's own PyPI classifiers only
+# declare tested support through Python 3.12 (`Requires-Python: >=3.10`
+# has no upper bound, so `pip install` doesn't actually refuse 3.13 — this
+# repo's own CI still pins 3.12 for the `garak` job since that's what was
+# actually run end-to-end while building this). (2) Far more concretely:
+# installing garak into THIS repo's own venv upgrades `langgraph-checkpoint`
+# to a version `langgraph-checkpoint-postgres==2.0.25` (requirements.txt)
+# explicitly conflicts with (`<3.0.0`) — verified directly, and had to be
+# fixed by rebuilding that venv from requirements-lock.txt after finding
+# it. `garak/run_ci_scan.py`/`make garak`/`make garak-full` must run from a
+# SEPARATE environment, never `pip install`ed alongside this app's own
+# pinned LangGraph/LangChain stack.
+garak==0.16.0

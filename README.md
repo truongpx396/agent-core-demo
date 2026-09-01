@@ -316,11 +316,14 @@ step, no CDN dependency (GRAPH_PATTERNS.md pattern 29):
 make serve            # then open http://localhost:8000/
 ```
 
-It talks only to `POST /chat/stream` and renders only that endpoint's
-published SSE event vocabulary (tokens, tool calls, citations, errors) —
-the same contract `make chat-stream` renders from. It doesn't drive the
-HITL approve/reject flow (there's no `POST /chat/resume` endpoint yet); a
-paused turn shows as an explanatory message instead of hanging silently.
+It sends every turn through `POST /chat/stream/queued` (the Redis-queued
+path, pattern 43 — needs `make agent-worker` running alongside `make up`)
+and renders the same published SSE event vocabulary every streaming
+endpoint shares (tokens, tool calls, citations, errors). It DOES drive the
+real HITL approve/reject flow: a paused turn renders Approve/Reject
+buttons and continues via `POST /chat/resume` on click — covered end to
+end by a real-browser test, `tests/live/test_chat_ui.py` (GRAPH_PATTERNS.md
+pattern 48).
 
 ## General-purpose ingestion (`app/ingestion/ingestor.py`)
 
@@ -519,6 +522,68 @@ datasources/dashboards — edit and `make obs-up` again to pick up changes.
 | Loki             | http://localhost:3100      |
 | otel-collector   | OTLP :4317 (gRPC) / :4318 (HTTP), Prometheus exporter :8889 |
 
+## Testing
+
+Six tiers, each a deliberate step up in cost and what it actually proves
+(GRAPH_PATTERNS.md pattern 48 has the full design writeup — cross-worker
+container sharing under `pytest -n auto`, why LiteLLM is bypassed, why
+promptfoo/garak/`scripts/eval.py` are complementary rather than redundant):
+
+1. **`make test`** — the original suite (fake LLM, mocked Qdrant/Redis/
+   Postgres), now parallelized (`pytest -n auto`). No services needed; runs
+   on every push.
+2. **`make test-integration`** / **`make test-live`** — real Postgres/Redis/
+   Qdrant (`test-integration`) and a real, small Ollama model plus the full
+   app+agent-worker stack, including a Playwright browser E2E against the
+   built-in web UI (`test-live`). Each starts its own ephemeral containers
+   via testcontainers — Docker required, `make up` is NOT — and skips
+   cleanly (not fails) when Docker isn't reachable. Both run on every push
+   in CI.
+3. **`make promptfoo`** — black-box checks against the raw domain system
+   prompts: does the support/ops/sales prompt still refuse to fabricate a
+   refund/account change/sent message? Runs on every push in CI, a fast
+   subset only; `make promptfoo-redteam` (locally-generated adversarial
+   variants, graded by the same local model — no cloud provider needed, but
+   a real, disclosed reliability caveat on that grading, see
+   GRAPH_PATTERNS.md pattern 48) is deliberately manual, like `make eval`
+   below — its output needs a human reading the graded transcripts, not
+   just an exit code.
+4. **`make garak`** — the raw model (not this app's prompts): does it still
+   resist a curated set of known jailbreak/prompt-injection phrasings — the
+   same ones `app/agent/moderation.py`'s own pattern list claims to catch?
+   Deliberately manual only (never a CI job) — it's report-only even when
+   it does run (a small local model has near-zero jailbreak resistance on
+   its own, a real and disclosed finding, not something a per-push gate
+   should punish); `make garak-full` is the fuller, slower probe suite.
+5. **`make deepeval`** — LLM-judged conversation quality against the real
+   graph, via [deepeval](https://github.com/confident-ai/deepeval): does an
+   answer's own claims actually follow from its cited context
+   (`test_rag_quality_deepeval.py`'s `FaithfulnessMetric`/
+   `AnswerRelevancyMetric`), and — the one check in this whole suite that
+   spans more than one turn — does a simulated multi-turn conversation
+   (deepeval's own `ConversationSimulator`, driving the REAL checkpointed
+   graph across several turns on one `thread_id`) stay in character and
+   consistent with itself (`test_conversation_simulator_deepeval.py`'s
+   `RoleAdherenceMetric`/`KnowledgeRetentionMetric`)? A semantic judgment
+   call none of the tiers above make (promptfoo's assertions are keyword
+   presence; `make eval`'s own grounded-claims check below is a structural
+   citation-marker count). Deliberately manual only, never CI — a real,
+   disclosed finding from actually running it (GRAPH_PATTERNS.md pattern
+   48) is that a small local judge model produces internally-inconsistent
+   scores (a verified-good answer scored a flat 0 with a reason that itself
+   says "no contradictions"), the same reliability wall `make
+   promptfoo-redteam` independently hit — so this needs a human reading the
+   printed reasons, not a pass/fail gate. The multi-turn run also surfaced a
+   real, disclosed target-model finding along the way: the assistant
+   affirmed a customer's fabricated schedule detail instead of correcting
+   it against its own retrieved context (pattern 48 again).
+6. **`make eval`** — the real-model, real-Qdrant, full-graph release gate
+   (5 repetitions per case, a grounded-claims threshold over the whole
+   golden set — see `scripts/eval.py`). Needs `make up` + `make pull-models`
+   + `make ingest`; deliberately NOT run in CI (real CI minutes, a cold
+   model, and a maintainer's own judgment call before a release — not a
+   per-PR gate).
+
 ## Make targets
 
 | Target            | Description |
@@ -535,10 +600,17 @@ datasources/dashboards — edit and `make obs-up` again to pick up changes.
 | `make telegram-sales`   | Telegram gateway as the sales/CRM concierge (`AGENT_DOMAIN=sales`) |
 | `make ops-digest`       | One-shot ops metrics digest → team channel (meant for real cron; see "Example domains") |
 | `make followup-sweep`   | One-shot CRM due-follow-up sweep → drafted nudges (meant for real cron) |
-| `make test`       | Run the pytest suite (fake LLM, no live services needed) |
+| `make test`       | Run the pytest suite in parallel (fake LLM, no live services needed) |
+| `make test-integration` | Real Postgres/Redis/Qdrant via testcontainers, no LLM (needs Docker, not `make up`) |
+| `make test-live`  | Real small Ollama model + full app/agent-worker stack, incl. a Playwright browser E2E (needs Docker) |
 | `make lint`       | `ruff check .` — see `pyproject.toml`'s `[tool.ruff]` |
 | `make typecheck`  | `mypy` over `app/` and `scripts/` — see `pyproject.toml`'s `[tool.mypy]` |
 | `make eval`       | Run the golden-dataset evaluation against the real stack |
+| `make promptfoo`  | Prompt-level regression checks for the domain system prompts against a real Ollama |
+| `make promptfoo-redteam` | Adversarial variants of the same prompts, generated+graded locally by Ollama (manual — no cloud provider needed, but read the output by hand, see GRAPH_PATTERNS.md pattern 48) |
+| `make garak`      | Fast, curated jailbreak/injection probe subset against the real model — run from a SEPARATE Python env, never this repo's own `.venv` (see `garak/requirements-garak.txt`) |
+| `make garak-full` | The full, slow garak probe suite (manual, pre-release — like `make eval`); same separate-env requirement |
+| `make deepeval`   | LLM-judged RAG quality + a multi-turn conversation simulation against the real graph (manual — read the reasons by hand, see GRAPH_PATTERNS.md pattern 48) |
 | `make logs`       | Tail service logs |
 | `make down`       | Stop services (keep data) |
 | `make clean`      | Stop services and delete volumes |
@@ -617,6 +689,11 @@ separately from the library/service code in `app/`.
 | `scripts/ops_investigate.py` | Ad-hoc ops question via a one-shot ops-domain agent run (`python -m scripts.ops_investigate "..."`) |
 | `scripts/followup_sweep.py` | Cron-callable CRM follow-up sweep, drafting nudges for human review (`make followup-sweep`) |
 | `tests/`               | pytest suite, mirroring `app/`'s subpackages one-for-one (`tests/agent/`, `tests/api/`, ...) — routing/node/graph/tool/checkpointer/sql_store/mcp_server/mcp_client/ingestor/chunking/moderation/api tests against a fake LLM and mocked stores (`make test`, no live services) |
+| `tests/containers.py`  | Shared testcontainers helpers (real Postgres/Redis/Qdrant/Ollama, cross-`pytest -n auto`-worker-shared — pattern 48) |
+| `tests/integration/`   | Real Postgres/Redis/Qdrant tests, no LLM (`make test-integration`) |
+| `tests/live/`          | Real small-Ollama-model tests + a Playwright browser E2E against the built-in web UI (`make test-live`) |
+| `promptfoo/`           | Prompt-level regression + adversarial checks for the domain system prompts against a real Ollama (`make promptfoo`/`make promptfoo-redteam` — pattern 48) |
+| `garak/`               | NVIDIA garak jailbreak/prompt-injection scan against the real model (`make garak`/`make garak-full` — pattern 48) |
 
 ## Troubleshooting
 

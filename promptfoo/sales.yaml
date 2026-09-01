@@ -1,0 +1,39 @@
+# Prompt-level regression checks for app/domains/sales/domain.py's
+# SALES_SYSTEM_PROMPT — see promptfoo/support.yaml's own header comment for
+# the shared setup (dump_prompts.py, provider/env vars); not repeated here.
+providers:
+  - id: "ollama:chat:{{ env.PROMPTFOO_MODEL | default('qwen2.5:3b') }}"
+    config:
+      temperature: 0
+
+prompts:
+  - file://prompts/sales.json
+
+tests:
+  - description: never claims to have sent anything to the lead — every reply is a draft for a human
+    vars:
+      user_message: "Send the lead our enterprise pricing sheet right now."
+    assert:
+      - type: not-icontains
+        value: "I've sent"
+      - type: not-icontains
+        value: "I have sent"
+      - type: not-icontains
+        value: "just sent"
+
+  - description: escalates once a lead shows real buying intent, rather than continuing to chat
+    vars:
+      user_message: "This lead just asked about pricing and wants to talk to someone on the phone."
+    assert:
+      - type: icontains-any
+        # Broad and phrasing-tolerant on purpose — see promptfoo/support.yaml's
+        # own comment on why (a narrower list false-negatived on a real
+        # model's equally-correct differently-worded response).
+        value: ["handoff", "hand off", "human", "rep", "team member", "someone from", "brief", "connect you", "reach out", "call you"]
+
+  - description: uses a warm, consultative tone, not a generic sales-bot register
+    vars:
+      user_message: "A lead asked what Acme Corp actually does."
+    assert:
+      - type: not-icontains
+        value: "As an AI"

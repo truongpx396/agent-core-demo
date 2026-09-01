@@ -1,34 +1,43 @@
 """Tests for the durable checkpointer machinery in app/agent/runtime.py
 (init_graph_sync/init_graph_async) and app/agent/graph.py's resumability_error.
 
-Everything here uses a real AsyncPostgresSaver against docker-compose's
-`checkpointer` database (see postgres-init/05-checkpointer-db.sql) — no
-Qdrant/LiteLLM — so it stays as close as possible to this suite's "no live
-services" contract while actually exercising the real dependency (the
+Everything here uses a real AsyncPostgresSaver — no Qdrant/LiteLLM — so it
+stays as close as possible to this suite's "no live services" contract
+while actually exercising the real dependency (the
 langgraph-checkpoint-postgres/psycopg version pairing is exactly the kind
 of thing that breaks silently without a real test, the same reasoning the
 original SQLite-backed version of this file used). Unlike a SQLite file
 (a bare tmp_path, no service required), a real Postgres server IS an
-external dependency this suite otherwise avoids — so every test here is
-gated by `_require_postgres`, which skips cleanly (not fails) when it's
-unreachable, keeping `pytest -q` green with zero services running while
-`make up && pytest -q` gets full real-backend coverage. Test isolation
-doesn't need a fresh database per test (unlike the old tmp_path-per-test
-SQLite file): every test already scopes its checkpoint rows by a unique
-`uuid.uuid4()` thread_id, and AsyncPostgresSaver's tables are keyed by
-thread_id — sharing one database across test runs just means old rows
-accumulate harmlessly in a throwaway dev database, not a correctness issue.
+external dependency this suite otherwise avoids — so every test here goes
+through `tests/containers.py::ensure_postgres()`, which starts its own
+ephemeral, pre-seeded Postgres container (no `make up` required) and skips
+cleanly (not fails) when Docker itself isn't reachable, keeping `pytest -q`
+green with zero services running. See that module's own docstring for the
+cross-worker container-sharing mechanics under `pytest -n auto` (this file
+used to instead probe docker-compose's own already-running `checkpointer`
+database — `ensure_postgres()` is a drop-in replacement for that probe, not
+a change to what's actually being tested). Test isolation doesn't need a
+fresh database per test (unlike the old tmp_path-per-test SQLite file):
+every test already scopes its checkpoint rows by a unique `uuid.uuid4()`
+thread_id, and AsyncPostgresSaver's tables are keyed by thread_id — sharing
+one database across test runs just means old rows accumulate harmlessly in
+a throwaway container, not a correctness issue.
 
 `app.agent.runtime._graph`/`_checkpointer_cm` are module-level singletons; the
 `reset_agent_singleton` fixture below resets them before and after every
 test in this file so tests don't leak state into each other (or into other
 test modules, which never touch app.agent.runtime and would otherwise be affected
-by whichever checkpointer happened to win the singleton race).
+by whichever checkpointer happened to win the singleton race). The same
+fixture also points `agent_module.CHECKPOINTER_DATABASE_URL` at the
+ephemeral container for the run — `app/agent/runtime.py`'s own `from
+app.core.config import CHECKPOINTER_DATABASE_URL` binding, specifically,
+not `app.core.config.CHECKPOINTER_DATABASE_URL` itself (same "a `from X
+import Y` binding is a separate reference" reasoning tests/conftest.py's
+own docstring already spells out for `get_connection`).
 """
 import asyncio
 import uuid
 
-import psycopg
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
@@ -43,28 +52,27 @@ from app.agent.graph import (
     resumability_error_async,
 )
 from app.core import metrics
-from app.core.config import CHECKPOINTER_DATABASE_URL
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
+from tests.containers import ensure_postgres
 
-
-def _require_postgres() -> None:
-    """Skip (not fail) the calling test if the checkpointer database isn't
-    reachable — a real connection attempt, not just a TCP probe, so this
-    also catches "server's up but the `checkpointer` database itself
-    doesn't exist yet" (e.g. an existing docker volume that predates
-    postgres-init/05-checkpointer-db.sql, which only runs on a fresh
-    volume — see that file's own comment)."""
-    try:
-        with psycopg.connect(CHECKPOINTER_DATABASE_URL, connect_timeout=2):
-            pass
-    except Exception as exc:  # noqa: BLE001 - any failure means "skip", not "fail"
-        pytest.skip(f"checkpointer Postgres database not reachable ({exc}) — run `make up`")
+# Real Postgres, no LLM — exactly `test-integration`'s scope
+# (.github/workflows/ci.yml). A genuine gap this closes, not a stylistic
+# nicety: without this marker, these tests are correctly EXCLUDED from the
+# fast `test` job's default `-m "not integration and not llm and not e2e"`
+# addopts (pyproject.toml) but were never SELECTED by `test-integration`'s
+# `-m integration` either (wrong/missing marker) — meaning they ran ONLY
+# when a developer happened to run a bare `pytest -q` locally with Docker
+# already up, and silently skipped in the `test` job (no `docker` package
+# installed there) with no CI job ever actually exercising them for real.
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(autouse=True)
-def reset_agent_singleton():
-    _require_postgres()
+def reset_agent_singleton(monkeypatch):
+    monkeypatch.setattr(
+        agent_module, "CHECKPOINTER_DATABASE_URL", ensure_postgres()["checkpointer_database_url"]
+    )
     agent_module._graph = None
     agent_module._checkpointer_cm = None
     yield
@@ -161,10 +169,11 @@ class TestDurabilityAcrossRestart:
 
     def test_checkpoint_survives_a_fresh_instance_at_the_same_database(self):
         thread_id = str(uuid.uuid4())
+        checkpointer_url = ensure_postgres()["checkpointer_database_url"]
 
         async def _write():
             async with AsyncPostgresSaver.from_conn_string(
-                CHECKPOINTER_DATABASE_URL
+                checkpointer_url
             ) as saver:
                 await saver.setup()
                 graph = build_graph(GraphDeps(llm=_fake_llm()), checkpointer=saver)
@@ -175,7 +184,7 @@ class TestDurabilityAcrossRestart:
 
         async def _read():
             async with AsyncPostgresSaver.from_conn_string(
-                CHECKPOINTER_DATABASE_URL
+                checkpointer_url
             ) as saver:
                 graph = build_graph(GraphDeps(llm=_fake_llm()), checkpointer=saver)
                 state = await graph.aget_state(
@@ -508,7 +517,17 @@ class TestResumabilityErrorRejectsAnActivelyRunningThread:
         async def _astream(self, *args, **kwargs):
             async for chunk in super()._astream(*args, **kwargs):
                 yield chunk
-                await asyncio.sleep(0.05)
+                # Widened from 0.05s (and the two racing sleeps below from
+                # 0.02s) after real `pytest -n auto` runs on a loaded
+                # multi-core machine showed the ORIGINAL margins are too
+                # tight under genuine CPU contention from other xdist
+                # workers — not a hijack (the assertion these tests exist
+                # to catch), but the "mid-run" snoop/cancel firing so late
+                # (an event-loop scheduling delay, not a logic bug) that
+                # `drive_turn`'s own token stream came back empty. A wider
+                # margin keeps the same race intact while tolerating
+                # realistic scheduling jitter under parallel CI load.
+                await asyncio.sleep(0.2)
 
     def _install_slow_fake_graph(self, monkeypatch):
         # Same pattern TestAsyncSeeding above uses: monkeypatch
@@ -548,7 +567,7 @@ class TestResumabilityErrorRejectsAnActivelyRunningThread:
                     pass
 
             async def snoop_mid_flight():
-                await asyncio.sleep(0.02)  # land squarely mid-run, before any pause
+                await asyncio.sleep(0.1)  # land squarely mid-run, before any pause — see _SlowFakeLLM's own comment on the widened margins
                 graph = await agent_module.init_graph_async()
                 return await resumability_error_async(
                     graph, {"configurable": {"thread_id": thread_id}}
@@ -586,7 +605,7 @@ class TestResumabilityErrorRejectsAnActivelyRunningThread:
                         tokens.append(event["content"])
 
             async def race_cancel():
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0.1)  # see _SlowFakeLLM's own comment on the widened margins
                 return await agent_module.cancel_run(thread_id, TEST_CTX)
 
             _, cancelled = await asyncio.gather(drive_turn(), race_cancel())
