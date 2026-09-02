@@ -1,4 +1,4 @@
-.PHONY: help up up-app pull-models ingest index-skills chat chat-stream chat-stream-hitl serve mcp-serve telegram telegram-support telegram-sales agent-worker ingest-worker ops-digest followup-sweep test test-integration test-live lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full logs down clean clear-cache obs-up obs-down obs-logs obs-clean
+.PHONY: help up up-app pull-models ingest index-skills chat chat-stream chat-stream-hitl serve mcp-serve telegram telegram-support telegram-sales agent-worker ingest-worker ops-digest followup-sweep test test-integration test-live lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image loadtest loadtest-headless strix strix-app strix-view logs down clean clear-cache obs-up obs-down obs-logs obs-clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -115,6 +115,45 @@ garak:  ## Fast, curated probe subset scanning the real model for known jailbrea
 garak-full:  ## The full, slow garak probe suite — deliberate, pre-release scanning, not a per-PR gate (same framing as `make eval`); same separate-environment requirement as `make garak`
 	python -m pip install -q -r garak/requirements-garak.txt
 	OPENAICOMPATIBLE_API_KEY="sk-not-checked-by-ollama" python -m garak --config garak/config.yaml --target_type openai.OpenAICompatible --target_name "$${GARAK_MODEL:-qwen2.5:3b}"
+
+trivy:  ## Scan dependencies/Dockerfile+compose/secrets for known vulns (aquasec/trivy via Docker — no local trivy install needed; same policy as CI's `trivy` job)
+	# --file-patterns points trivy's pip analyzer at requirements-lock.txt,
+	# not requirements.txt (trivy's own default match) — verified directly
+	# this matters: requirements.txt's version RANGES (`langgraph>=0.2.20,<0.3`)
+	# don't resolve to one installed version to check against the CVE
+	# database, so scanning it alone silently finds nothing. Scanning the
+	# exact-pinned lock file — what the Dockerfile/CI actually install,
+	# per requirements-lock.txt's own header — surfaced 5 real HIGH-severity
+	# fixable CVEs on first run here, including an RCE in langgraph-checkpoint
+	# (CVE-2025-64439); see this repo's own disclosed pin-compatibility
+	# constraints (garak/requirements-garak.txt) before bumping it.
+	docker run --rm -v $(PWD):/repo aquasec/trivy:0.74.0 fs \
+		--scanners vuln,secret,misconfig --severity HIGH,CRITICAL --ignore-unfixed \
+		--file-patterns 'pip:requirements-lock\.txt$$' \
+		--skip-dirs .venv,node_modules,.git,.mypy_cache,.ruff_cache,.pytest_cache /repo
+
+trivy-image:  ## Build the app image (see Dockerfile) and scan it for OS/library vulnerabilities
+	docker build -t agent-core-demo:trivy .
+	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.74.0 image \
+		--severity HIGH,CRITICAL --ignore-unfixed agent-core-demo:trivy
+
+loadtest:  ## Interactive Locust UI (http://localhost:8089) against the running API — needs `make up` + `make serve`/`make up-app`; see loadtest/locustfile.py for why it spreads across synthetic tenants
+	locust -f loadtest/locustfile.py --host http://localhost:8000
+
+loadtest-headless:  ## Fixed 20-user, 2-minute headless Locust run → CSV + HTML report under loadtest/results/ (a local smoke run, not a CI job — same live-stack requirement as `loadtest` above)
+	mkdir -p loadtest/results
+	locust -f loadtest/locustfile.py --host http://localhost:8000 \
+		--headless --users 20 --spawn-rate 5 --run-time 2m \
+		--csv loadtest/results/loadtest --html loadtest/results/report.html
+
+strix:  ## Autonomous AI pentest of this repo's SOURCE (static) — needs Docker, `pipx install strix-agent` once (pipx isolates it from this repo's own .venv, the pip-conflict concern `make garak` solves with a second venv instead), and a CLOUD LLM key (STRIX_LLM/LLM_API_KEY — NOT the local Ollama the rest of this app runs on). Only ever point it at a target you own or have written authorization to test.
+	strix --target . --scan-mode quick
+
+strix-app:  ## Same tool, but black-box against the RUNNING app + its OpenAPI spec (needs `make up` + `make serve`/`make up-app`, and `make ingest` for real data to probe) — dynamic testing, not just a source read
+	strix --target http://localhost:8000/openapi.json --target http://localhost:8000 --scan-mode quick
+
+strix-view:  ## Open the local dashboard (findings, repro steps, agent graph) for the most recent `make strix`/`make strix-app` run
+	strix view
 
 logs:  ## Tail logs from all services
 	docker compose logs -f
