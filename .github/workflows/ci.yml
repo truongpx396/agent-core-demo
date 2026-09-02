@@ -26,6 +26,31 @@ name: CI
 # even when it did run here — moved to fully manual instead of keeping a
 # CI job that was always report-only.
 #
+# `trivy` (dependency/secret/IaC-misconfig scanning) IS a per-push job below,
+# unlike garak — it's fast (no live services, no model) and its findings are
+# mostly deterministic given this repo's own lock files. The one thing that
+# ISN'T deterministic: Trivy's CVE database updates independently of any
+# code change here, so the same commit can start failing this job weeks
+# later purely because a new CVE got published against an already-pinned
+# dependency — a different, external-state kind of flakiness than garak's
+# own reasons for staying manual. Split the difference instead of picking
+# one extreme: hard-gate only CRITICAL severity WITH a known fix
+# (`ignore-unfixed` drops the ones a version bump can't solve today anyway),
+# report everything else (HIGH severity, and Dockerfile/compose
+# misconfigurations) to the Security tab instead of failing the build. See
+# the `trivy` job's own comments below for the exact policy per step.
+#
+# `strix` (an autonomous AI pentest agent, https://github.com/usestrix/strix)
+# is NOT in this file at all — see .github/workflows/strix.yml, a separate
+# workflow_dispatch-only file. It actively attacks whatever target it's
+# pointed at using a paid cloud LLM (not this app's local-only Ollama), so
+# unlike everything else here it costs real money per run and needs a human
+# to deliberately trigger it — the same "maintainer runs this deliberately"
+# framing as `make eval`/`make garak-full`/`make deepeval` above, just
+# enforced by the trigger type itself rather than by convention/Makefile-only
+# placement, since a workflow_dispatch job can't accidentally run on
+# somebody else's PR the way a `push`/`pull_request` trigger could.
+#
 # All jobs below are independent (no `needs:` edges) and run fully in
 # parallel — the point of this whole file's own existence being fast CI, not
 # just correct CI.
@@ -191,3 +216,112 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t agent-core-demo:ci .
+
+  trivy:
+    # See this file's own header comment for the hard-gate-CRITICAL-only,
+    # report-the-rest policy this job implements. `scan-type: fs` over `.`
+    # already covers dependency vulns, leaked secrets, AND Dockerfile/
+    # docker-compose*.yml misconfiguration in one pass (Trivy's `misconfig`
+    # scanner walks the whole tree for IaC files, not just a named target)
+    # — a separate `scan-type: config` step would just repeat that same
+    # file walk.
+    #
+    # TRIVY_FILE_PATTERNS below points Trivy's pip analyzer at
+    # requirements-lock.txt specifically, overriding its own default
+    # (requirements.txt) — verified directly this matters:
+    # requirements.txt's version RANGES (`langgraph>=0.2.20,<0.3`) don't
+    # resolve to one installed version to check against the CVE database,
+    # so scanning it alone silently finds nothing. Scanning the
+    # exact-pinned lock file — what the Dockerfile/this repo's own CI jobs
+    # above actually install, per requirements-lock.txt's own header —
+    # surfaced 5 real HIGH-severity fixable CVEs the first time this job
+    # was run locally, including an RCE in langgraph-checkpoint
+    # (CVE-2025-64439). None hit CRITICAL, so this job's own hard gate
+    # (below) doesn't fail the build on them, but they DO land in the
+    # Security tab via the report step — see this repo's own disclosed
+    # pin-compatibility constraints (garak/requirements-garak.txt) before
+    # bumping any of these.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy fs — hard gate (fixable CRITICAL vulns + secrets + IaC misconfig)
+        uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          TRIVY_FILE_PATTERNS: 'pip:requirements-lock\.txt$'
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          skip-dirs: .venv,node_modules,.mypy_cache,.ruff_cache,.pytest_cache
+
+      - name: Trivy fs — full report (HIGH+CRITICAL, incl. unfixed) → SARIF
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          TRIVY_FILE_PATTERNS: 'pip:requirements-lock\.txt$'
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-fs-results.sarif
+          exit-code: "0"
+          skip-dirs: .venv,node_modules,.mypy_cache,.ruff_cache,.pytest_cache
+          skip-setup-trivy: true
+
+      - name: Upload fs report to the Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-fs-results.sarif
+          category: trivy-fs
+        continue-on-error: true # code scanning may not be enabled on this repo/plan
+
+      # A separate image scan (not just fs above) because it's the only way
+      # to see vulnerabilities in the built image's actual OS layer
+      # (python:3.13-slim's own packages, libgomp1 — see Dockerfile) on top
+      # of the same Python dependencies fs already covers. `if: always()`
+      # from here down: the fs hard-gate step above can fail this job
+      # already, but the image scan/report should still run and get
+      # reported rather than being silently skipped (GitHub Actions' own
+      # default) just because an earlier, unrelated step failed.
+      - name: Build image
+        if: always()
+        run: docker build -t agent-core-demo:trivy .
+
+      - name: Trivy image — hard gate (fixable CRITICAL vulns)
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: agent-core-demo:trivy
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          skip-setup-trivy: true
+
+      - name: Trivy image — full report (HIGH+CRITICAL, incl. unfixed) → SARIF
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: agent-core-demo:trivy
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-image-results.sarif
+          exit-code: "0"
+          skip-setup-trivy: true
+
+      - name: Upload image report to the Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-image-results.sarif
+          category: trivy-image
+        continue-on-error: true

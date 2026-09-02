@@ -1,0 +1,49 @@
+name: Strix AI Pentest
+
+# Deliberately workflow_dispatch ONLY — never push/pull_request. Strix
+# (https://github.com/usestrix/strix) actively attacks whatever target it's
+# pointed at, using a paid cloud LLM (STRIX_LLM/LLM_API_KEY below — not this
+# app's usual local-only Ollama), so running it on every push would both
+# spend real money on every commit and run an active security tool without a
+# human deliberately choosing to. See ci.yml's own header comment for the
+# fuller "why this lives in its own file" reasoning — same "maintainer runs
+# this deliberately" framing as `make eval`/`make garak-full`/`make deepeval`,
+# just enforced by the trigger type here instead of by convention.
+#
+# Needs two repo secrets before this can do anything: STRIX_LLM (e.g.
+# "anthropic/claude-sonnet-4-6") and LLM_API_KEY. Without them configured,
+# this workflow is inert — visible in the Actions tab, but nothing calls it,
+# and the run below fails fast with a clear auth error rather than silently
+# no-opping.
+#
+# Authorized use only: only ever run this against a target you own or have
+# explicit, written permission to test. Scanning this repo's own source/app
+# (the default `target` below) is exactly that case.
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Scan target: '.' for the full source tree, or a live URL (e.g. a deployed app's base URL)"
+        default: "."
+        required: false
+      scan_mode:
+        description: "'quick' (fast, CI-shaped) or 'standard' (deeper, slower)"
+        default: "quick"
+        required: false
+
+jobs:
+  strix-pentest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Strix
+        run: curl -sSL https://strix.ai/install | bash
+
+      - name: Run Strix
+        env:
+          STRIX_LLM: ${{ secrets.STRIX_LLM }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: strix -n -t "${{ inputs.target }}" --scan-mode "${{ inputs.scan_mode }}"

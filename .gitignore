@@ -24,3 +24,12 @@ garak_runs/
 *.report.html
 *.hitlog.jsonl
 
+# locust (see loadtest/) — CSV/HTML reports from `make loadtest-headless`
+loadtest/results/
+
+# strix (see `make strix`/`make strix-app`, .github/workflows/strix.yml) —
+# per-run findings/agent-trace state written to the repo root it's invoked
+# from; `~/.strix/cli-config.json` (the LLM auth config) lives outside the
+# repo entirely, nothing to ignore for that part
+strix_runs/
+

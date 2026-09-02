@@ -584,6 +584,96 @@ promptfoo/garak/`scripts/eval.py` are complementary rather than redundant):
    model, and a maintainer's own judgment call before a release — not a
    per-PR gate).
 
+## Security scanning & load testing
+
+Three more tools, each answering a question the six testing tiers above
+don't: are the pinned dependencies/Dockerfile/compose files themselves
+carrying known CVEs or secrets (Trivy), does the running app hold up as an
+autonomous attacker actively pokes at it rather than a fixed probe list
+(Strix), and does it hold up under concurrent load rather than one turn at a
+time (Locust)?
+
+**[Trivy](https://github.com/aquasecurity/trivy)** — dependency/secret/IaC
+misconfiguration scanning, via `aquasecurity/trivy-action` in CI and plain
+`docker run aquasec/trivy` locally (no local trivy install needed either
+way):
+- `make trivy` — deps (`requirements-lock.txt`/`package-lock.json`) +
+  secrets + Dockerfile/docker-compose*.yml misconfig, HIGH/CRITICAL.
+  Deliberately scans `requirements-lock.txt`, not Trivy's own default
+  `requirements.txt` match — `requirements.txt`'s version RANGES
+  (`langgraph>=0.2.20,<0.3`) don't resolve to one installed version to check
+  against the CVE database, so scanning it alone silently finds nothing;
+  see `make trivy`'s own comment in the Makefile.
+- `make trivy-image` — builds the app image (`Dockerfile`) and scans its
+  actual OS + installed-package layer, catching things fs-mode can't see
+  (e.g. transitive packages without a top-level requirements-file entry).
+- CI runs both as one `trivy` job on every push — see `ci.yml`'s own header
+  comment for the exact policy: hard-gates the build only on **fixable
+  CRITICAL** findings (Trivy's own CVE database updates independently of any
+  code change here, so a looser gate would make CI fail on an unrelated
+  push weeks after the fact); everything HIGH-or-above is still uploaded to
+  the repo's Security tab as a SARIF report, not silently dropped.
+- **Disclosed finding, not hypothetical**: running this against the repo's
+  current `requirements-lock.txt` surfaces 5 real HIGH-severity, fixable
+  CVEs — including an RCE in `langgraph-checkpoint`'s JSON deserialization
+  mode (CVE-2025-64439) — plus 2 more (in `msgpack`/`setuptools`) visible
+  only from the built image's installed-package metadata, not the lock file
+  itself. None reach CRITICAL, so CI's hard gate doesn't fail on them today,
+  but they're real and worth a look — see `garak/requirements-garak.txt`'s
+  own disclosed pin-compatibility notes before bumping `langgraph-checkpoint`
+  specifically, since this app pins around its exact version elsewhere.
+
+**[Strix](https://github.com/usestrix/strix)** — an autonomous, multi-agent
+AI pentester: it runs the code dynamically, tries to find and actually
+exploit vulnerabilities (not just pattern-match known CVEs like Trivy
+above), and reports real proof-of-concept reproductions.
+- `make strix` — static pass over this repo's own source.
+- `make strix-app` — black-box, dynamic pass against the *running* app +
+  its auto-generated OpenAPI spec (needs `make up` + `make serve`/`make
+  up-app`, and ideally `make ingest` so there's real data to probe) — this
+  is the one that can actually attack the live HTTP surface (`/chat`'s
+  input handling, the moderation screen, tenant isolation, HITL approval),
+  not just read the code.
+- `make strix-view` — opens the local dashboard for the most recent run
+  (findings, repro steps, a live agent-graph view).
+- **A genuine divergence from this repo's "fully offline" framing**: Strix
+  needs `pipx install strix-agent` once (kept out of `requirements-dev.txt`
+  deliberately — pipx isolates it the same way `make garak` uses a second
+  venv, see `garak/requirements-garak.txt`) plus a **paid cloud LLM**
+  (`STRIX_LLM`/`LLM_API_KEY` — OpenAI/Anthropic/Google, not the local Ollama
+  everything else in this app runs on) and Docker (pulls its own sandbox
+  image on first run).
+- `.github/workflows/strix.yml` runs this in CI too, but **`workflow_dispatch`
+  only** — never on push/PR. It costs real money per run and actively
+  attacks its target, so unlike every job in `ci.yml` it needs a human to
+  deliberately trigger it (from the Actions tab) and two repo secrets
+  (`STRIX_LLM`, `LLM_API_KEY`) configured before it does anything at all.
+- **Only ever point Strix at a target you own or have explicit, written
+  permission to test** — scanning this repo's own source/app (the default)
+  is exactly that case; nothing here is set up to point it at anyone else's
+  system.
+
+**[Locust](https://locust.io/)** — load testing against the running FastAPI
+service (`loadtest/locustfile.py`); needs `make up` + `make serve`/`make
+up-app` first, and ideally `make ingest` for real retrieval hits:
+- `make loadtest` — interactive UI at http://localhost:8089 (pick users/
+  spawn rate live, watch response-time/RPS charts).
+- `make loadtest-headless` — a fixed 20-user, 2-minute run, CSV + HTML
+  report under `loadtest/results/` (gitignored) — a local smoke run, not a
+  CI job (needs the full live stack, the same reason `make eval`/`make
+  deepeval` above stay manual).
+- Two distinct simulated-user classes on purpose, not one — this app's rate
+  limiter (`app/api/rate_limit.py`) is keyed per `X-Tenant-Id`, not per IP
+  and not globally (`RATE_LIMIT_PER_MINUTE`, default 30/min). `ManyTenantsUser`
+  mints its own synthetic tenant id per simulated user so it actually
+  load-tests the agent loop (moderation, semantic cache, the LLM call, the
+  Postgres checkpointer) rather than just hitting the rate limiter;
+  `SingleTenantUser` deliberately shares the real `acme` tenant so its
+  questions get real hybrid-search hits against the seeded docs — and WILL
+  start seeing 429s past a modest combined rate, which is the limiter
+  working as designed, not a bug. See the locustfile's own module docstring
+  for the full reasoning.
+
 ## Make targets
 
 | Target            | Description |
@@ -611,6 +701,13 @@ promptfoo/garak/`scripts/eval.py` are complementary rather than redundant):
 | `make garak`      | Fast, curated jailbreak/injection probe subset against the real model — run from a SEPARATE Python env, never this repo's own `.venv` (see `garak/requirements-garak.txt`) |
 | `make garak-full` | The full, slow garak probe suite (manual, pre-release — like `make eval`); same separate-env requirement |
 | `make deepeval`   | LLM-judged RAG quality + a multi-turn conversation simulation against the real graph (manual — read the reasons by hand, see GRAPH_PATTERNS.md pattern 48) |
+| `make trivy`      | Scan dependencies/Dockerfile+compose/secrets for known vulns (Docker, no local trivy install needed) |
+| `make trivy-image`| Build the app image and scan it for OS/library vulnerabilities |
+| `make strix`      | Autonomous AI pentest of this repo's source (static) — needs `pipx install strix-agent` + a cloud LLM key (see "Security scanning & load testing") |
+| `make strix-app`  | Same, but black-box against the running app + its OpenAPI spec (needs `make up` + `make serve`/`make up-app`) |
+| `make strix-view` | Open the local dashboard for the most recent `make strix`/`make strix-app` run |
+| `make loadtest`   | Interactive Locust UI (http://localhost:8089) against the running API |
+| `make loadtest-headless` | Fixed 20-user, 2-minute headless Locust run → CSV + HTML report |
 | `make logs`       | Tail service logs |
 | `make down`       | Stop services (keep data) |
 | `make clean`      | Stop services and delete volumes |
@@ -694,6 +791,7 @@ separately from the library/service code in `app/`.
 | `tests/live/`          | Real small-Ollama-model tests + a Playwright browser E2E against the built-in web UI (`make test-live`) |
 | `promptfoo/`           | Prompt-level regression + adversarial checks for the domain system prompts against a real Ollama (`make promptfoo`/`make promptfoo-redteam` — pattern 48) |
 | `garak/`               | NVIDIA garak jailbreak/prompt-injection scan against the real model (`make garak`/`make garak-full` — pattern 48) |
+| `loadtest/`            | Locust load test against the running FastAPI service (`loadtest/locustfile.py`, `make loadtest`/`make loadtest-headless` — see "Security scanning & load testing") |
 
 ## Troubleshooting
 
