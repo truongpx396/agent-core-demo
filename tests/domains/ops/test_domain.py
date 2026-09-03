@@ -37,6 +37,11 @@ def test_tool_node_only_knows_the_ops_domains_tools():
         "fetch_metrics_summary",
         "post_to_team_channel",
         "ask_clarification",
+        "skill_search",
+        "use_skill",
+        "log_incident",
+        "list_recent_incidents",
+        "resolve_incident",
     }
 
 
@@ -65,6 +70,64 @@ def test_post_to_team_channel_pauses_for_approval_as_an_outward_tool():
         {"messages": [HumanMessage(content="post an update to the team")]}, config=_config()
     )
     assert g.get_state(_config()).next  # paused, not finished
+
+
+def test_list_recent_incidents_is_read_only_and_never_pauses(monkeypatch):
+    from app.domains.ops import store
+
+    monkeypatch.setattr(store, "list_recent_incidents", lambda limit=10, status=None: [])
+    llm = _fake_llm_returning(
+        _tool_call("list_recent_incidents", {}),
+        AIMessage(content="No incidents on record."),
+    )
+    g = _build(llm)
+    result = g.invoke(
+        {"messages": [HumanMessage(content="has this happened before?")]}, config=_config()
+    )
+    assert not g.get_state(_config()).next  # never paused
+    assert result["messages"][-1].content == "No incidents on record."
+
+
+def test_log_incident_pauses_for_approval_and_runs_once_approved(monkeypatch):
+    from app.domains.ops import store
+
+    monkeypatch.setattr(store, "log_incident", lambda opened_by, summary, detail: 3)
+
+    llm = _fake_llm_returning(
+        _tool_call("log_incident", {"summary": "latency spike", "detail": "p95 at 45s"}),
+        AIMessage(content="Logged incident #3."),
+    )
+    g = _build(llm)
+    g.invoke(
+        {"messages": [HumanMessage(content="latency looks bad, log it")]}, config=_config()
+    )
+    assert g.get_state(_config()).next  # paused, not finished
+
+    result = g.invoke(Command(resume=True), config=_config())
+    assert not g.get_state(_config()).next  # finished, not paused
+    tool_messages = [m for m in result["messages"] if m.type == "tool"]
+    assert any("Incident #3 logged" in m.content for m in tool_messages)
+
+
+def test_resolve_incident_pauses_for_approval_and_runs_once_approved(monkeypatch):
+    from app.domains.ops import store
+
+    monkeypatch.setattr(store, "resolve_incident", lambda incident_id, resolution: True)
+
+    llm = _fake_llm_returning(
+        _tool_call("resolve_incident", {"incident_id": 3, "resolution": "restarted the worker"}),
+        AIMessage(content="Resolved incident #3."),
+    )
+    g = _build(llm)
+    g.invoke(
+        {"messages": [HumanMessage(content="incident 3 is fixed now")]}, config=_config()
+    )
+    assert g.get_state(_config()).next  # paused, not finished
+
+    result = g.invoke(Command(resume=True), config=_config())
+    assert not g.get_state(_config()).next  # finished, not paused
+    tool_messages = [m for m in result["messages"] if m.type == "tool"]
+    assert any("Incident #3 resolved" in m.content for m in tool_messages)
 
 
 def test_approving_post_to_team_channel_runs_it_and_finishes(monkeypatch):

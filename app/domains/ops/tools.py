@@ -4,7 +4,10 @@
 alert-matching threshold; `post_to_team_channel` is this repo's first REAL
 use of the `outward` tool capability (app/agent/tools.py::TOOL_CAPABILITIES
 has always documented it as a possible value — every existing tool is
-either read_only or mutating).
+either read_only or mutating); `log_incident`/`list_recent_incidents`/
+`resolve_incident` give an investigation a durable place to record what it
+found (app/domains/ops/store.py, `ops_incidents`) rather than only ever a
+one-off channel post that scrolls away.
 
 Ctx is still required here (fail-closed, same as every other tool in this
 app) even though the underlying data isn't tenant-scoped — there's no
@@ -14,7 +17,10 @@ not a filter over rows a caller isn't supposed to see; see
 app/domains/policy.py's own docstring for why `ActionAllowlistPolicy` is
 the right (if slightly informational, for this one domain) fit anyway —
 consistency with the rest of this app's tools matters more than skipping
-a check that happens to have nothing to scope here.
+a check that happens to have nothing to scope here. `log_incident`/
+`resolve_incident` stamp `opened_by`/attribution from `ctx["principal"]`
+even though the incident row itself carries no tenant column — see
+app/domains/ops/store.py's own docstring.
 """
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
@@ -23,7 +29,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.agent.tools import _run_with_timeout
 from app.core.security import SecurityCtx, valid_ctx
 from app.domains import notify
-from app.domains.ops import metrics_client
+from app.domains.ops import metrics_client, store
 from app.domains.policy import ActionAllowlistPolicy
 
 _NO_CTX_REFUSAL = (
@@ -32,7 +38,17 @@ _NO_CTX_REFUSAL = (
     "never got a security context stamped on it upstream."
 )
 
-OPS_POLICY = ActionAllowlistPolicy(frozenset({"fetch_metrics", "post_to_channel"}))
+OPS_POLICY = ActionAllowlistPolicy(
+    frozenset(
+        {
+            "fetch_metrics",
+            "post_to_channel",
+            "log_incident",
+            "list_recent_incidents",
+            "resolve_incident",
+        }
+    )
+)
 
 
 def _ctx_from_config(config: RunnableConfig | None) -> SecurityCtx | None:
@@ -107,9 +123,105 @@ def post_to_team_channel(channel: str, message: str, config: RunnableConfig) -> 
     return _run_with_timeout(_post_to_team_channel_impl, channel, message)
 
 
-TOOLS = [fetch_metrics_summary, post_to_team_channel]
+class LogIncidentArgs(BaseModel):
+    summary: str = Field(..., description="Short summary of what's wrong.")
+    detail: str | None = Field(
+        default=None, description="Optional: the specific numbers/evidence behind this incident."
+    )
+
+    @field_validator("summary")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("summary must not be empty")
+        return v
+
+
+def _log_incident_impl(summary: str, detail: str | None, ctx: SecurityCtx) -> str:
+    incident_id = store.log_incident(ctx["principal"], summary, detail)
+    return f"Incident #{incident_id} logged: {summary}"
+
+
+@tool(args_schema=LogIncidentArgs)
+def log_incident(summary: str, config: RunnableConfig, detail: str | None = None) -> str:
+    """Record a real anomaly found during an investigation as a durable
+    incident — use this once you've confirmed something is actually wrong
+    (past its alert-matching threshold), not for every routine check."""
+    ctx = _ctx_or_refuse(config, "log_incident")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(_log_incident_impl, summary, detail, ctx)
+
+
+class ListRecentIncidentsArgs(BaseModel):
+    status: str | None = Field(
+        default=None, description="Optional filter: 'open' or 'resolved'. Omit for both."
+    )
+
+
+def _list_recent_incidents_impl(status: str | None) -> str:
+    incidents = store.list_recent_incidents(status=status)
+    if not incidents:
+        return "No incidents on record."
+    lines = [
+        f"- #{i['id']} [{i['status']}] {i['summary']} (opened by {i['opened_by']}, {i['created_at']})"
+        for i in incidents
+    ]
+    return "\n".join(lines)
+
+
+@tool(args_schema=ListRecentIncidentsArgs)
+def list_recent_incidents(config: RunnableConfig, status: str | None = None) -> str:
+    """List recently logged incidents, most recent first — use this to
+    check whether something happening now has happened before. Read-only —
+    changes nothing."""
+    ctx = _ctx_or_refuse(config, "list_recent_incidents")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(_list_recent_incidents_impl, status)
+
+
+class ResolveIncidentArgs(BaseModel):
+    incident_id: int = Field(..., description="The incident number to resolve.")
+    resolution: str = Field(..., description="What fixed it, or why it's no longer a concern.")
+
+    @field_validator("resolution")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("resolution must not be empty")
+        return v
+
+
+def _resolve_incident_impl(incident_id: int, resolution: str, ctx: SecurityCtx) -> str:
+    updated = store.resolve_incident(incident_id, resolution)
+    if not updated:
+        return f"No incident #{incident_id} found to resolve."
+    return f"Incident #{incident_id} resolved: {resolution}"
+
+
+@tool(args_schema=ResolveIncidentArgs)
+def resolve_incident(incident_id: int, resolution: str, config: RunnableConfig) -> str:
+    """Mark a previously logged incident resolved, with what fixed it or
+    why it's no longer a concern."""
+    ctx = _ctx_or_refuse(config, "resolve_incident")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(_resolve_incident_impl, incident_id, resolution, ctx)
+
+
+TOOLS = [
+    fetch_metrics_summary,
+    post_to_team_channel,
+    log_incident,
+    list_recent_incidents,
+    resolve_incident,
+]
 
 TOOL_CAPABILITIES = {
     "fetch_metrics_summary": "read_only",
     "post_to_team_channel": "outward",
+    "log_incident": "mutating",
+    "list_recent_incidents": "read_only",
+    "resolve_incident": "mutating",
 }

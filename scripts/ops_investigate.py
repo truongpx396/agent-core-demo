@@ -1,7 +1,17 @@
 """Ad-hoc ops investigation: ask the ops domain's own agent a one-off
 question ("why is latency high right now?", "did anything break this
-morning?") using its full toolset (fetch_metrics_summary, read_only —
-see app/domains/ops/tools.py).
+morning?") using its full toolset (see app/domains/ops/tools.py). Most of
+an investigation stays read_only (fetch_metrics_summary,
+list_recent_incidents) and never pauses — but if the model decides to
+call a mutating tool (log_incident, resolve_incident, post_to_team_channel)
+it WILL hit should_continue's mandatory human_approval gate same as any
+other caller, and this one-shot invocation has no resume loop to answer
+it: `investigate()` just returns whatever's in the last AIMessage at that
+point (typically empty, since the pending tool call itself carries no
+text). Disclosed rather than papered over — an interactive Telegram
+session handles the same gate by actually presenting the pause to a human;
+this CLI is for read-only questions, and a mutating one surfacing an empty
+answer is the honest signal something needs a human in the loop instead.
 
 A one-shot `build_graph(manifest=OPS_MANIFEST, domain=OPS_DOMAIN_PLUGIN)`
 call, NOT `run_subagent`: today's subagent registry

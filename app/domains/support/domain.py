@@ -44,7 +44,12 @@ or does anything beyond search/ticket the knowledge base and ticket
 system — that's intentional, not an oversight: escalate rather than
 improvise.
 
-Use check_ticket_status when a customer asks about an existing ticket.
+Use check_ticket_status when a customer asks about an existing ticket, and
+list_my_tickets when they ask about "my tickets" generally without a
+number. If a customer follows up on a ticket they already opened with more
+detail, use add_ticket_comment rather than opening a duplicate ticket for
+the same issue.
+
 Use ask_clarification when the request is genuinely ambiguous rather than
 guessing what they meant."""
 

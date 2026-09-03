@@ -35,11 +35,15 @@ class TestSandboxing:
         g = _build()
         assert set(g.nodes["tools"].bound.tools_by_name) == {
             "search_docs",
+            "skill_search",
+            "use_skill",
             "ask_clarification",
             "log_lead_interaction",
             "schedule_followup",
             "package_lead_brief",
             "handoff_to_human",
+            "list_pending_followups",
+            "mark_lead_lost",
         }
 
     def test_acme_only_tools_are_absent(self):
@@ -82,6 +86,44 @@ class TestMandatoryApprovalGate:
         assert not g.get_state(_config()).next  # finished, not paused
         tool_messages = [m for m in result["messages"] if m.type == "tool"]
         assert any("Logged interaction for lead #3" in m.content for m in tool_messages)
+
+
+class TestListPendingFollowupsAndMarkLeadLost:
+    def test_list_pending_followups_is_read_only_and_never_pauses(self, monkeypatch):
+        monkeypatch.setattr(store, "list_pending_followups", lambda tenant, contact=None: [])
+        llm = _fake_llm_returning(
+            _tool_call("list_pending_followups", {}),
+            AIMessage(content="No pending follow-ups."),
+        )
+        g = _build(llm)
+        result = g.invoke(
+            {"messages": [HumanMessage(content="what follow-ups are coming up?")]},
+            config=_config(),
+        )
+        assert not g.get_state(_config()).next  # never paused
+        assert result["messages"][-1].content == "No pending follow-ups."
+
+    def test_mark_lead_lost_pauses_for_approval_and_runs_once_approved(self, monkeypatch):
+        monkeypatch.setattr(store, "mark_lead_lost", lambda tenant, contact, reason: True)
+
+        llm = _fake_llm_returning(
+            _tool_call(
+                "mark_lead_lost",
+                {"contact": "jordan@example.com", "reason": "went with a competitor"},
+            ),
+            AIMessage(content="Marked that lead lost."),
+        )
+        g = _build(llm)
+        g.invoke(
+            {"messages": [HumanMessage(content="jordan went with a competitor")]},
+            config=_config(),
+        )
+        assert g.get_state(_config()).next  # paused, not finished
+
+        result = g.invoke(Command(resume=True), config=_config())
+        assert not g.get_state(_config()).next  # finished, not paused
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert any("marked lost" in m.content.lower() for m in tool_messages)
 
 
 def test_handoff_to_human_notifies_the_team_channel(monkeypatch):

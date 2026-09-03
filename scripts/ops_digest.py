@@ -16,8 +16,9 @@ which defeats the whole job. So this script calls the ops domain's own
 for the one thing it's actually needed for: turning raw numbers into
 readable prose. scripts/ops_investigate.py, by contrast, is a human asking
 an ad-hoc question — there the full agent loop is exactly the right tool
-(and never hits the gate anyway, since fetch_metrics_summary is
-read_only).
+for the read-only questions it's meant for (see that script's own
+docstring for the disclosed caveat once log_incident/resolve_incident
+gave the ops domain mutating tools too).
 
 Meant to be wired to real cron/systemd-timer/a Kubernetes CronJob — e.g.:
 

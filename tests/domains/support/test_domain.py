@@ -72,6 +72,8 @@ class TestSandboxing:
             "create_ticket",
             "check_ticket_status",
             "escalate_to_human",
+            "list_my_tickets",
+            "add_ticket_comment",
         }
 
     def test_acme_only_tools_are_absent(self):
@@ -135,6 +137,41 @@ class TestMandatoryApprovalGate:
         )
         assert not g.get_state(_config()).next  # never paused
         assert result["messages"][-1].content == "Ticket #7 is still open."
+
+    def test_list_my_tickets_is_read_only_and_never_pauses(self, monkeypatch):
+        monkeypatch.setattr(
+            store, "list_tickets_for_requester", lambda tenant, requester, limit=10: []
+        )
+        llm = _fake_llm_returning(
+            _tool_call("list_my_tickets", {}),
+            AIMessage(content="You have no open tickets."),
+        )
+        g = build_graph(GraphDeps(llm=llm), manifest=SUPPORT_MANIFEST, domain=SUPPORT_DOMAIN_PLUGIN)
+        result = g.invoke(
+            {"messages": [HumanMessage(content="what tickets have I opened?")]},
+            config=_config(),
+        )
+        assert not g.get_state(_config()).next  # never paused
+        assert result["messages"][-1].content == "You have no open tickets."
+
+    def test_add_ticket_comment_pauses_for_approval_and_runs_once_approved(self, monkeypatch):
+        monkeypatch.setattr(store, "add_comment", lambda tenant, ticket_id, comment: True)
+
+        llm = _fake_llm_returning(
+            _tool_call("add_ticket_comment", {"ticket_id": 7, "comment": "still happening"}),
+            AIMessage(content="Added that to ticket #7."),
+        )
+        g = build_graph(GraphDeps(llm=llm), manifest=SUPPORT_MANIFEST, domain=SUPPORT_DOMAIN_PLUGIN)
+        g.invoke(
+            {"messages": [HumanMessage(content="it's still happening on ticket 7")]},
+            config=_config(),
+        )
+        assert g.get_state(_config()).next  # paused, not finished
+
+        result = g.invoke(Command(resume=True), config=_config())
+        assert not g.get_state(_config()).next  # finished, not paused
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert any("Added your follow-up to ticket #7" in m.content for m in tool_messages)
 
 
 def test_escalate_to_human_notifies_the_team_channel(monkeypatch):

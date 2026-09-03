@@ -66,6 +66,55 @@ def add_followup(tenant: str, contact: str, due_at: datetime, note: str, created
         return int(followup_id)
 
 
+def list_pending_followups(tenant: str, contact: str | None = None) -> list[dict]:
+    """Pending follow-ups, most-imminent first, joined with their lead's
+    name — like `due_followups` but not bounded to "due by now": this is
+    what `list_pending_followups` shows a rep the whole upcoming queue
+    (optionally narrowed to one lead's contact) rather than only what a
+    cron sweep would act on right now."""
+    sql = """
+        SELECT f.id, f.due_at, f.note, l.contact, l.name AS lead_name
+        FROM crm_followups f
+        JOIN crm_leads l ON l.id = f.lead_id
+        WHERE f.tenant = %s AND f.status = 'pending'
+    """
+    params: list = [tenant]
+    if contact is not None:
+        sql += " AND l.contact = %s"
+        params.append(contact)
+    sql += " ORDER BY f.due_at"
+    with get_connection() as conn:
+        cur = conn.execute(sql, params)
+        columns = [desc.name for desc in cur.description]
+        return [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
+
+
+def mark_lead_lost(tenant: str, contact: str, reason: str) -> bool:
+    """Closes out a lead that isn't going to convert: sets `status='lost'`,
+    appends `reason` to `notes` (same running-log append `find_or_create_lead`
+    already uses), and cancels any of its still-pending follow-ups so
+    scripts/followup_sweep.py's cron sweep never nudges a rep about a dead
+    lead. Returns False (nothing updated) if no lead with that contact
+    exists for this tenant, same "tell the model, don't silently no-op"
+    contract as `set_lead_status`."""
+    lead = get_lead(tenant, contact)
+    if lead is None:
+        return False
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE crm_leads SET status = 'lost', "
+            "notes = COALESCE(notes || E'\\n', '') || %s, updated_at = now() "
+            "WHERE tenant = %s AND contact = %s",
+            [reason, tenant, contact],
+        )
+        conn.execute(
+            "UPDATE crm_followups SET status = 'cancelled' "
+            "WHERE tenant = %s AND lead_id = %s AND status = 'pending'",
+            [tenant, lead["id"]],
+        )
+    return True
+
+
 def due_followups(tenant: str, as_of: datetime) -> list[dict]:
     """Pending follow-ups due by `as_of`, joined with their lead's name/
     contact — what scripts/followup_sweep.py sweeps. Scoped to `tenant`
