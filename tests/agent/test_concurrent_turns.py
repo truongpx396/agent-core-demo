@@ -38,6 +38,7 @@ Three angles, one per test class below:
   every individual turn would still complete "correctly."
 """
 import asyncio
+import hashlib
 import itertools
 import time
 import uuid
@@ -131,6 +132,32 @@ def run_with_checkpointer_cleanup(coro_fn):
     return asyncio.run(_wrapped())
 
 
+def _fake_embed_text(text: str) -> list[float]:
+    """Deterministic, network-free stand-in for the REAL embed_text
+    (app/retrieval/embeddings.py), which needs a reachable OpenAI-compatible
+    endpoint (OPENAI_API_BASE) — fine on a dev machine with `make up`
+    running, but NOT available in the `test-integration` CI job, which
+    deliberately provisions no LLM at all (see tests/integration/'s own
+    "no LLM" scope). Verified directly: a real CI run hit exactly this gap
+    — every embed_text() call failed, semantic_cache.get/set's own
+    degrade-to-miss `except Exception` swallowed it silently, so
+    TestSemanticCacheIsolationUnderConcurrency's "must hit" assertion
+    failed for a completely different reason than the isolation bug it
+    exists to catch. tests/live/conftest.py's own module docstring
+    documents hitting this identical class of gap before (test_qdrant_real.py
+    started in tests/integration/ too, moved once a real CI run surfaced
+    `openai.APIConnectionError`).
+
+    What THIS file's tests actually exercise is semantic_cache.py's
+    TAG-scoped RediSearch KNN query — same text -> same vector (so a
+    same-tenant repeat can hit) and isolation enforced by the tenant/
+    principal TAG filter regardless of the vector's actual values — a real
+    embedding model was never load-bearing for that, so a deterministic
+    hash-based vector is a correct, not just convenient, substitute here."""
+    digest = hashlib.sha256(text.encode()).digest()
+    return [b / 255.0 for b in digest]
+
+
 @pytest.fixture(autouse=True)
 def real_semantic_cache_redis(monkeypatch):
     """Points the REAL app/retrieval/semantic_cache.py module (not stubbed
@@ -138,7 +165,10 @@ def real_semantic_cache_redis(monkeypatch):
     exactly what TestSemanticCacheIsolationUnderConcurrency exists to
     check) at a real, ephemeral Redis Stack container. `_client`/
     `_index_ready` reset the same way tests/integration/test_queue_real_redis.py
-    resets its own module-level lazy-singleton client.
+    resets its own module-level lazy-singleton client. `embed_text` is
+    replaced with `_fake_embed_text` — see that function's own docstring
+    for why a real embedding model was never actually needed here, and is
+    unavailable in CI anyway.
 
     `flushall()` matters here specifically (that file's own fixture doesn't
     need it — it scopes REQUESTS_STREAM/CONSUMER_GROUP to a fresh uuid per
@@ -157,6 +187,7 @@ def real_semantic_cache_redis(monkeypatch):
     monkeypatch.setattr(semantic_cache, "REDIS_URL", info["redis_url"])
     monkeypatch.setattr(semantic_cache, "_client", None)
     monkeypatch.setattr(semantic_cache, "_index_ready", False)
+    monkeypatch.setattr(semantic_cache, "embed_text", _fake_embed_text)
     semantic_cache._get_client().flushall()
     yield
 

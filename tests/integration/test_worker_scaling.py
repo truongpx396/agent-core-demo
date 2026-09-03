@@ -50,7 +50,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from tests.containers import ensure_postgres, ensure_redis
+from tests.containers import ensure_postgres, ensure_qdrant, ensure_redis
 
 pytestmark = pytest.mark.integration
 
@@ -99,6 +99,7 @@ def scaled_stack() -> Iterator[str]:
     before this test was written (see this module's own docstring)."""
     postgres = ensure_postgres()
     redis = ensure_redis()
+    qdrant = ensure_qdrant()
 
     fake_llm_port = _free_port()
     api_port = _free_port()
@@ -109,24 +110,31 @@ def scaled_stack() -> Iterator[str]:
         "CHECKPOINTER_DATABASE_URL": postgres["checkpointer_database_url"],
         "APPDATA_DATABASE_URL": postgres["appdata_database_url"],
         "REDIS_URL": redis["redis_url"],
+        # A real Qdrant IS needed here, even though this test's own
+        # assertions never depend on retrieval quality — verified directly:
+        # GET /health/ready (app/api/health.py) reports "degraded" (a
+        # non-200 status) whenever ANY checked dependency, Qdrant included,
+        # is unreachable, so _wait_until_ready below would time out without
+        # this — same reason tests/live/conftest.py's own real_stack always
+        # provisions Qdrant too, even for its own two tests that don't need
+        # real retrieval either. retrieve_context's own try/except still
+        # degrades a search miss to empty context rather than failing a
+        # turn (app/agent/tools.py::gather_context) — this is purely about
+        # satisfying the readiness check, not about what a turn needs to
+        # succeed.
+        "QDRANT_URL": qdrant["qdrant_url"],
         "OPENAI_API_BASE": f"http://127.0.0.1:{fake_llm_port}/v1",
         "OPENAI_API_KEY": "sk-not-checked-by-the-fake-server",
         "CHAT_MODEL": "fake-llm",
         "AGENT_WORKER_MAX_CONCURRENCY": str(_PER_WORKER_CONCURRENCY),
-        # Deliberately NOT setting QDRANT_URL to anything real, the same
-        # choice tests/live/conftest.py's own real_stack makes for
-        # EMBED_MODEL: every real turn calls retrieve_context -> search_docs
-        # -> hybrid_search -> embed_text unconditionally, but retrieve_context's
-        # own try/except degrades a failure there to empty context rather
-        # than failing the turn (app/agent/tools.py::gather_context) — never
-        # load-bearing for what THIS test checks (a calculator tool call +
-        # its real result), so provisioning a real Qdrant here would just be
-        # needless setup cost. Same reasoning covers the semantic cache
-        # (app/retrieval/semantic_cache.py) going to real, ephemeral Redis
-        # but never actually hitting: loadtest/fake_llm_server.py has no
-        # /v1/embeddings route, so embed_text 404s and the cache degrades to
-        # a permanent miss — graceful by design, not a failure this test
-        # needs to route around.
+        # The semantic cache (app/retrieval/semantic_cache.py) still goes to
+        # real, ephemeral Redis but never actually hits:
+        # loadtest/fake_llm_server.py has no /v1/embeddings route, so
+        # embed_text 404s and the cache degrades to a permanent miss —
+        # graceful by design (semantic_cache.get/set's own broad except),
+        # not a failure this test needs to route around; unlike
+        # /health/ready's Qdrant check, nothing here depends on the cache
+        # actually working.
     }
 
     fake_llm_proc = subprocess.Popen(
