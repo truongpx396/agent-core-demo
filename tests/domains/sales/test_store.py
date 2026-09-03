@@ -129,3 +129,61 @@ def test_lead_history_includes_followups(monkeypatch):
     assert history["name"] == "Jordan"
     assert len(history["followups"]) == 1
     assert fake.captured["params"] == ["acme", 5]
+
+
+_PENDING_FOLLOWUP_COLUMNS = ("id", "due_at", "note", "contact", "lead_name")
+
+
+def test_list_pending_followups_scopes_to_tenant_and_pending_status(monkeypatch):
+    fake = _FakeConnection(
+        rows=[(1, "2099-01-01", "nudge", "jordan@example.com", "Jordan")],
+        columns=_PENDING_FOLLOWUP_COLUMNS,
+    )
+    monkeypatch.setattr(store, "get_connection", lambda: fake)
+
+    followups = store.list_pending_followups("acme")
+
+    assert followups[0]["lead_name"] == "Jordan"
+    assert fake.captured["params"] == ["acme"]
+    assert "status = 'pending'" in fake.captured["sql"]
+
+
+def test_list_pending_followups_filters_by_contact_when_given(monkeypatch):
+    fake = _FakeConnection(rows=[], columns=_PENDING_FOLLOWUP_COLUMNS)
+    monkeypatch.setattr(store, "get_connection", lambda: fake)
+
+    store.list_pending_followups("acme", "jordan@example.com")
+
+    assert fake.captured["params"] == ["acme", "jordan@example.com"]
+    assert "l.contact = %s" in fake.captured["sql"]
+
+
+def test_mark_lead_lost_returns_false_when_no_lead_exists(monkeypatch):
+    monkeypatch.setattr(store, "get_lead", lambda tenant, contact: None)
+
+    assert store.mark_lead_lost("acme", "nobody@example.com", "unresponsive") is False
+
+
+def test_mark_lead_lost_updates_status_and_cancels_pending_followups(monkeypatch):
+    monkeypatch.setattr(store, "get_lead", lambda tenant, contact: {"id": 5})
+    fake = _FakeConnection()
+    executed = []
+    original_execute = fake.execute
+
+    def _record_execute(sql, params):
+        executed.append((sql, list(params)))
+        return original_execute(sql, params)
+
+    fake.execute = _record_execute
+    monkeypatch.setattr(store, "get_connection", lambda: fake)
+
+    result = store.mark_lead_lost("acme", "jordan@example.com", "went with a competitor")
+
+    assert result is True
+    assert len(executed) == 2
+    lead_sql, lead_params = executed[0]
+    assert "status = 'lost'" in lead_sql
+    assert lead_params == ["went with a competitor", "acme", "jordan@example.com"]
+    followup_sql, followup_params = executed[1]
+    assert "crm_followups" in followup_sql
+    assert followup_params == ["acme", 5]

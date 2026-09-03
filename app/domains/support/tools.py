@@ -1,7 +1,8 @@
 """Tools for the support-copilot domain (app/domains/support/domain.py) —
 Tier-1 customer support: look things up in the knowledge base (reused
 as-is from app/agent/tools.py, see domain.py), open/check/escalate a
-support ticket. Sandboxed by design: this domain's AgentManifest never
+support ticket, list a customer's own tickets, and add a follow-up comment
+to one already open. Sandboxed by design: this domain's AgentManifest never
 exposes calculator/add_note/remember/query_employees/run_subagent — see
 domain.py's own docstring for why that's the literal meaning of
 "sandboxed... knowledge base + ticket system" access.
@@ -31,7 +32,15 @@ _NO_CTX_REFUSAL = (
 )
 
 SUPPORT_POLICY = ActionAllowlistPolicy(
-    frozenset({"create_ticket", "check_ticket_status", "escalate_to_human"})
+    frozenset(
+        {
+            "create_ticket",
+            "check_ticket_status",
+            "escalate_to_human",
+            "list_my_tickets",
+            "add_ticket_comment",
+        }
+    )
 )
 
 
@@ -105,6 +114,8 @@ def _check_ticket_status_impl(ticket_id: int, ctx: SecurityCtx) -> str:
     line = f"Ticket #{ticket['id']} — {ticket['status']} ({ticket['priority']} priority): {ticket['subject']}"
     if ticket.get("escalation_reason"):
         line += f"\nEscalated: {ticket['escalation_reason']}"
+    if ticket.get("notes"):
+        line += f"\nFollow-up notes:\n{ticket['notes']}"
     return line
 
 
@@ -153,10 +164,74 @@ def escalate_to_human(ticket_id: int, reason: str, config: RunnableConfig) -> st
     return _run_with_timeout(_escalate_to_human_impl, ticket_id, reason, ctx)
 
 
-TOOLS = [create_ticket, check_ticket_status, escalate_to_human]
+class ListMyTicketsArgs(BaseModel):
+    pass
+
+
+def _list_my_tickets_impl(ctx: SecurityCtx) -> str:
+    tickets = store.list_tickets_for_requester(ctx["tenant"], ctx["principal"])
+    if not tickets:
+        return "You have no support tickets on file."
+    lines = [
+        f"- #{t['id']} — {t['status']} ({t['priority']} priority): {t['subject']}"
+        for t in tickets
+    ]
+    return "\n".join(lines)
+
+
+@tool(args_schema=ListMyTicketsArgs)
+def list_my_tickets(config: RunnableConfig) -> str:
+    """List the current customer's own support tickets, most recent first.
+    Use this when a customer asks about "my tickets" or "what have I
+    reported" without naming a specific ticket number."""
+    ctx = _ctx_or_refuse(config, "list_my_tickets")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(_list_my_tickets_impl, ctx)
+
+
+class AddTicketCommentArgs(BaseModel):
+    ticket_id: int = Field(..., description="The ticket number to add a follow-up comment to.")
+    comment: str = Field(..., description="Additional detail the customer just provided.")
+
+    @field_validator("comment")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("comment must not be empty")
+        return v
+
+
+def _add_ticket_comment_impl(ticket_id: int, comment: str, ctx: SecurityCtx) -> str:
+    updated = store.add_comment(ctx["tenant"], ticket_id, comment)
+    if not updated:
+        return f"No ticket #{ticket_id} found to add a comment to."
+    return f"Added your follow-up to ticket #{ticket_id}."
+
+
+@tool(args_schema=AddTicketCommentArgs)
+def add_ticket_comment(ticket_id: int, comment: str, config: RunnableConfig) -> str:
+    """Add more detail to an existing ticket the customer already opened —
+    use this when they follow up with extra information rather than
+    opening a duplicate ticket for the same issue."""
+    ctx = _ctx_or_refuse(config, "add_ticket_comment")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(_add_ticket_comment_impl, ticket_id, comment, ctx)
+
+
+TOOLS = [
+    create_ticket,
+    check_ticket_status,
+    escalate_to_human,
+    list_my_tickets,
+    add_ticket_comment,
+]
 
 TOOL_CAPABILITIES = {
     "create_ticket": "mutating",
     "check_ticket_status": "read_only",
     "escalate_to_human": "mutating",
+    "list_my_tickets": "read_only",
+    "add_ticket_comment": "mutating",
 }

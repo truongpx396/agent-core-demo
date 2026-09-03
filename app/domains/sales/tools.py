@@ -1,7 +1,8 @@
 """Tools for the sales/CRM-concierge domain (app/domains/sales/domain.py):
 log an inbound lead interaction, schedule a follow-up, package a brief on
-a lead, and hand a hot lead off to a human rep. Same conventions as
-app/agent/tools.py / app/domains/support/tools.py throughout (Pydantic
+a lead, hand a hot lead off to a human rep, check the pending follow-up
+queue, and close out a lead that isn't going to convert. Same conventions
+as app/agent/tools.py / app/domains/support/tools.py throughout (Pydantic
 args_schema, RunnableConfig ctx, _run_with_timeout reuse, fail-closed ctx
 check).
 
@@ -32,7 +33,16 @@ _NO_CTX_REFUSAL = (
 )
 
 SALES_POLICY = ActionAllowlistPolicy(
-    frozenset({"log_lead_interaction", "schedule_followup", "package_lead_brief", "handoff_to_human"})
+    frozenset(
+        {
+            "log_lead_interaction",
+            "schedule_followup",
+            "package_lead_brief",
+            "handoff_to_human",
+            "list_pending_followups",
+            "mark_lead_lost",
+        }
+    )
 )
 
 
@@ -177,11 +187,79 @@ def handoff_to_human(contact: str, brief_summary: str, reason: str, config: Runn
     return _run_with_timeout(_handoff_to_human_impl, contact, brief_summary, reason, ctx)
 
 
-TOOLS = [log_lead_interaction, schedule_followup, package_lead_brief, handoff_to_human]
+class ListPendingFollowupsArgs(BaseModel):
+    contact: str | None = Field(
+        default=None,
+        description="Optional: narrow to one lead's follow-ups. Omit to see the whole pending queue.",
+    )
+
+
+def _list_pending_followups_impl(contact: str | None, ctx: SecurityCtx) -> str:
+    followups = store.list_pending_followups(ctx["tenant"], contact)
+    if not followups:
+        return "No pending follow-ups." if contact is None else f"No pending follow-ups for {contact!r}."
+    lines = [
+        f"- due {f['due_at']}: {f['lead_name']} ({f['contact']}) — {f['note']}" for f in followups
+    ]
+    return "\n".join(lines)
+
+
+@tool(args_schema=ListPendingFollowupsArgs)
+def list_pending_followups(config: RunnableConfig, contact: str | None = None) -> str:
+    """List pending follow-ups, most-imminent first — the whole queue, or
+    just one lead's if `contact` is given. Use this to see what's coming
+    up rather than guessing whether a lead already has one scheduled."""
+    ctx = _ctx_or_refuse(config, "list_pending_followups")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(_list_pending_followups_impl, contact, ctx)
+
+
+class MarkLeadLostArgs(BaseModel):
+    contact: str = Field(..., description="The lead's contact to mark lost.")
+    reason: str = Field(..., description="Why this lead isn't converting — be specific.")
+
+    @field_validator("reason")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("reason must not be empty")
+        return v
+
+
+def _mark_lead_lost_impl(contact: str, reason: str, ctx: SecurityCtx) -> str:
+    updated = store.mark_lead_lost(ctx["tenant"], contact, reason)
+    if not updated:
+        return f"No lead found for contact {contact!r} — nothing to mark lost."
+    return f"Lead {contact} marked lost ({reason}); its pending follow-ups were cancelled."
+
+
+@tool(args_schema=MarkLeadLostArgs)
+def mark_lead_lost(contact: str, reason: str, config: RunnableConfig) -> str:
+    """Close out a lead that has clearly decided not to buy or gone
+    unresponsive — cancels its pending follow-ups so it stops surfacing in
+    the sweep. Use this instead of leaving a dead lead's follow-ups
+    dangling; never use it just because a lead hasn't replied yet."""
+    ctx = _ctx_or_refuse(config, "mark_lead_lost")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(_mark_lead_lost_impl, contact, reason, ctx)
+
+
+TOOLS = [
+    log_lead_interaction,
+    schedule_followup,
+    package_lead_brief,
+    handoff_to_human,
+    list_pending_followups,
+    mark_lead_lost,
+]
 
 TOOL_CAPABILITIES = {
     "log_lead_interaction": "mutating",
     "schedule_followup": "mutating",
     "package_lead_brief": "read_only",
     "handoff_to_human": "mutating",
+    "list_pending_followups": "read_only",
+    "mark_lead_lost": "mutating",
 }

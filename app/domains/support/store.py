@@ -1,9 +1,10 @@
 """Fixed, parameterized queries against `support_tickets`
-(postgres-init/07-support-tickets.sql) — the support copilot's own system
-of record. Same discipline as `app/agent/sql_store.py::query_employees`: no
-generated SQL, every query explicitly `WHERE tenant = %s`, reusing that
-module's own pooled `appdata` connection (`get_connection()`) rather than
-opening a second pool to the same database.
+(postgres-init/07-support-tickets.sql, postgres-init/09-support-ticket-notes.sql)
+— the support copilot's own system of record. Same discipline as
+`app/agent/sql_store.py::query_employees`: no generated SQL, every query
+explicitly `WHERE tenant = %s`, reusing that module's own pooled `appdata`
+connection (`get_connection()`) rather than opening a second pool to the
+same database.
 """
 from app.agent.sql_store import get_connection
 
@@ -32,7 +33,7 @@ def get_ticket(tenant: str, ticket_id: int) -> dict | None:
     establishes for Qdrant)."""
     sql = (
         "SELECT id, tenant, requester, subject, description, priority, status, "
-        "escalation_reason, created_at, updated_at FROM support_tickets "
+        "escalation_reason, notes, created_at, updated_at FROM support_tickets "
         "WHERE tenant = %s AND id = %s"
     )
     with get_connection() as conn:
@@ -40,6 +41,22 @@ def get_ticket(tenant: str, ticket_id: int) -> dict | None:
         columns = [desc.name for desc in cur.description]
         row = cur.fetchone()
         return dict(zip(columns, row, strict=True)) if row else None
+
+
+def list_tickets_for_requester(tenant: str, requester: str, limit: int = 10) -> list[dict]:
+    """A customer's own tickets, most recent first — what `list_my_tickets`
+    shows so a customer doesn't have to already know a ticket number to ask
+    "what's the status of my stuff." Scoped to `tenant` AND `requester`:
+    narrower than `get_ticket`'s tenant-only scoping, since here there's no
+    caller-supplied ticket id to trust in the first place."""
+    sql = (
+        "SELECT id, subject, priority, status, created_at FROM support_tickets "
+        "WHERE tenant = %s AND requester = %s ORDER BY created_at DESC LIMIT %s"
+    )
+    with get_connection() as conn:
+        cur = conn.execute(sql, [tenant, requester, limit])
+        columns = [desc.name for desc in cur.description]
+        return [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
 
 
 def escalate_ticket(tenant: str, ticket_id: int, reason: str) -> bool:
@@ -52,4 +69,19 @@ def escalate_ticket(tenant: str, ticket_id: int, reason: str) -> bool:
     )
     with get_connection() as conn:
         cur = conn.execute(sql, [reason, tenant, ticket_id])
+        return cur.rowcount > 0
+
+
+def add_comment(tenant: str, ticket_id: int, comment: str) -> bool:
+    """Appends a customer follow-up to `notes` — a running log, newest
+    last, same `COALESCE(notes, '') || E'\\n' || ...` append shape
+    `crm_leads.notes` uses (postgres-init/08-crm.sql). Returns False (no
+    update applied) if no ticket with that id exists for this tenant, same
+    "tell the model, don't silently no-op" contract as `escalate_ticket`."""
+    sql = (
+        "UPDATE support_tickets SET notes = COALESCE(notes || E'\\n', '') || %s, "
+        "updated_at = now() WHERE tenant = %s AND id = %s"
+    )
+    with get_connection() as conn:
+        cur = conn.execute(sql, [comment, tenant, ticket_id])
         return cur.rowcount > 0
