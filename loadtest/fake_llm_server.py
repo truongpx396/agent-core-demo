@@ -37,8 +37,22 @@ is needed to compare them:
   concurrent backend; set it to 1 to reproduce today's Ollama-shaped
   ceiling as an A/B baseline, or any N to simulate a rate-limited real
   provider.
+
+Also implements `POST /v1/embeddings` — every real turn calls
+app/retrieval/embeddings.py::embed_text unconditionally (retrieve_context's
+own automatic pre-fetch, plus `remember`/`add_note`'s writes), and without
+this route every one of those calls 404s against a server that only ever
+implemented chat completions, silently degrading EVERY semantic-cache
+lookup and EVERY Qdrant read/write to a permanent miss/no-op — never
+exercising the real code on the other side of those calls at all. Same
+deterministic, dependency-free technique
+tests/agent/test_concurrent_turns.py's own `_fake_embed_text` already uses
+in-process (same text -> same vector, needed for a cache/Qdrant "hit" to
+work at all) — a real embedding model was never load-bearing for THIS
+server's job of exercising concurrency, only a consistent one.
 """
 import asyncio
+import hashlib
 import json
 import os
 import random
@@ -107,6 +121,48 @@ def _calculator(last_user_text: str, requested_tool_names: set[str]) -> ToolCall
     return ToolCall(name="calculator", arguments={"expression": f"{a}{op}{b}"})
 
 
+@tool_simulator
+def _remember(last_user_text: str, requested_tool_names: set[str]) -> ToolCall | None:
+    """Matches a "please remember <fact>"-shaped message (see
+    loadtest/locustfile_queued.py's own HITL task) — app/agent/tools.py's
+    real `remember(content: str)` tool then actually writes it to Qdrant.
+    `remember` is declared "mutating" (TOOL_CAPABILITIES), so this ALWAYS
+    pauses at human_approval regardless of this server's own decision —
+    that gate is enforced by the real graph, not simulated here; this
+    file only fakes the LLM's decision to call the tool in the first
+    place, both before AND after a real approval round trip (the calling
+    conversation looks identical to this server either way)."""
+    if "remember" not in requested_tool_names:
+        return None
+    match = re.search(r"remember (.+)", last_user_text, re.IGNORECASE)
+    if not match:
+        return None
+    return ToolCall(name="remember", arguments={"content": match.group(1).strip()})
+
+
+@tool_simulator
+def _run_subagent(last_user_text: str, requested_tool_names: set[str]) -> ToolCall | None:
+    """Matches a "please delegate <task>"-shaped message (see
+    loadtest/locustfile_queued.py's own subagent task) —
+    app/agent/tools.py's real `run_subagent` tool then actually runs a
+    genuinely separate, nested graph turn — including its OWN nested LLM
+    call back to THIS SAME server (its `ChatOpenAI` construction also
+    reads `OPENAI_API_BASE`), which `_final_answer_text` below handles
+    generically (no subagent-specific branch needed there): with no tool
+    result yet and no further tool call matched, it just echoes the
+    nested run's own delegated task back, the same as any other
+    plain-answer turn would."""
+    if "run_subagent" not in requested_tool_names:
+        return None
+    match = re.search(r"delegate (.+)", last_user_text, re.IGNORECASE)
+    if not match:
+        return None
+    return ToolCall(
+        name="run_subagent",
+        arguments={"subagent_name": "researcher", "task": match.group(1).strip()},
+    )
+
+
 # add more @tool_simulator functions here to simulate more tools
 
 
@@ -139,8 +195,28 @@ def _pick_tool_call(messages: list[dict], tools: list[dict] | None) -> ToolCall 
 
 
 def _final_answer_text(messages: list[dict]) -> str:
+    """Echoes something DERIVED from this specific turn's own input rather
+    than a fixed generic string, so a caller running many of these
+    concurrently can verify a given turn's answer actually reflects ITS
+    OWN input and never a concurrent sibling's — the same no-cross-wiring
+    property tests/agent/test_concurrent_turns.py's `_echoing_llm` proves
+    in-process, proven here instead over the real wire.
+
+    The tool-result branch includes the ORIGINAL user text too, not just
+    the tool's own return value — verified directly that this matters:
+    `remember`'s real return value is the fixed string "Remembered."
+    (app/agent/tools.py::_remember_impl), not an echo of what was
+    remembered, so echoing ONLY the tool result would make every
+    concurrent `remember` call's final answer identical and useless for
+    telling them apart. `run_subagent`'s own tool result IS already
+    distinguishing (the nested run's own answer, see `_run_subagent`'s
+    docstring) — including the user text alongside it there too is
+    redundant, not wrong."""
+    last_user_text = _last_user_text(messages)
     if messages and messages[-1].get("role") == "tool":
-        return f"The result is {messages[-1].get('content')}."
+        return f"The result is {messages[-1].get('content')}, regarding: {last_user_text}"
+    if last_user_text:
+        return f"Simulated answer regarding: {last_user_text}"
     return "This is a simulated response from the fake load-test LLM."
 
 
@@ -271,6 +347,38 @@ async def chat_completions(request: Request):
         )
     await _think()
     return JSONResponse(_completion_response(model, tool_call, messages))
+
+
+FAKE_EMBED_DIM = 32  # len(hashlib.sha256(...).digest()) — callers that
+# create a Qdrant collection against this server (tests/integration/
+# test_worker_scaling.py's own qdrant_store.ensure_collection(dim=...))
+# must use this same value.
+
+
+def _fake_embedding(text: str) -> list[float]:
+    digest = hashlib.sha256(text.encode()).digest()
+    return [b / 255.0 for b in digest]
+
+
+@app.post("/v1/embeddings")
+async def embeddings(request: Request):
+    body = await request.json()
+    raw_input = body.get("input", "")
+    texts = raw_input if isinstance(raw_input, list) else [raw_input]
+    model = body.get("model", "fake-embed")
+    data = [
+        {"object": "embedding", "index": i, "embedding": _fake_embedding(text)}
+        for i, text in enumerate(texts)
+    ]
+    tokens = sum(len(t.split()) for t in texts)
+    return JSONResponse(
+        {
+            "object": "list",
+            "data": data,
+            "model": model,
+            "usage": {"prompt_tokens": tokens, "total_tokens": tokens},
+        }
+    )
 
 
 @app.get("/health")

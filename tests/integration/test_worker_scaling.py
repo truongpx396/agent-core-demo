@@ -21,20 +21,28 @@ job as the rest of tests/integration/ — same reasoning tests/live/conftest.py'
 own module docstring gives for why THAT file's `real_stack` needs the
 `llm`/`e2e` markers and this one doesn't.
 
-This test is a regression guard for a real capacity bug found while
-manually verifying this exact scenario before writing it: 250 concurrent
-requests against 5 agent_worker.py processes at AGENT_WORKER_MAX_CONCURRENCY=50
-each initially failed ~83% of the time with redis.exceptions.MaxConnectionsError
-— app/turns/queue.py::get_client()'s Redis pool silently inherited redis-py's
-own 100-connection default, a ceiling with nothing to do with how many
-workers or how much per-worker concurrency was configured (every
-POST /chat/stream/queued SSE connection holds a pooled connection for the
-FULL blocking-read duration of its turn, so concurrent SSE connections map
-~1:1 onto pool connections held). Fixed via REDIS_MAX_CONNECTIONS
-(app/core/config.py). Correctness alone wouldn't have caught this — every
-individual turn that DID get a connection still completed correctly; only
-running at a concurrency level past the old silent default surfaces it,
-which is exactly what this test does on every run.
+TestScaledWorkersAbsorbConcurrentLoad is a regression guard for a real
+capacity bug found while manually verifying this exact scenario before
+writing it: 250 concurrent requests against 5 agent_worker.py processes at
+AGENT_WORKER_MAX_CONCURRENCY=50 each initially failed ~83% of the time with
+redis.exceptions.MaxConnectionsError — app/turns/queue.py::get_client()'s
+Redis pool silently inherited redis-py's own 100-connection default, a
+ceiling with nothing to do with how many workers or how much per-worker
+concurrency was configured (every POST /chat/stream/queued SSE connection
+holds a pooled connection for the FULL blocking-read duration of its turn,
+so concurrent SSE connections map ~1:1 onto pool connections held). Fixed
+via REDIS_MAX_CONNECTIONS (app/core/config.py). Correctness alone wouldn't
+have caught this — every individual turn that DID get a connection still
+completed correctly; only running at a concurrency level past the old
+silent default surfaces it, which is exactly what that class does on every
+run.
+
+TestScaledWorkersHandleHITLAndSubagentDelegation extends the same real
+stack to the two other real-production paths a queued turn can take: a
+paused human_approval gate resumed via POST /chat/resume, and a
+run_subagent delegation whose OWN nested LLM call goes back over the wire
+to loadtest/fake_llm_server.py — both real, at real concurrency, across
+the same 5 real worker processes.
 """
 import asyncio
 import json
@@ -49,7 +57,11 @@ from pathlib import Path
 
 import httpx
 import pytest
+from qdrant_client import QdrantClient
+from qdrant_client.models import FieldCondition, Filter, MatchValue
 
+from app.core.config import COLLECTION
+from app.retrieval import qdrant_store
 from tests.containers import ensure_postgres, ensure_qdrant, ensure_redis
 
 pytestmark = pytest.mark.integration
@@ -100,6 +112,24 @@ def scaled_stack() -> Iterator[str]:
     postgres = ensure_postgres()
     redis = ensure_redis()
     qdrant = ensure_qdrant()
+
+    # The collection must exist before any subprocess turn tries to read
+    # or write it — Qdrant does NOT auto-create one on first use (verified
+    # directly: TestScaledWorkersHandleHITLAndSubagentDelegation's own
+    # `remember` writes raised until this was added). Created from THIS
+    # process, not a subprocess, via the same app/retrieval/qdrant_store.py
+    # function production ingestion (`make ingest`) uses — dimension must
+    # match loadtest/fake_llm_server.py's own `FAKE_EMBED_DIM`, the only
+    # embedding backend any subprocess here can reach. `scaled_stack` is
+    # module-scoped, so this uses a plain attribute save/restore (not the
+    # function-scoped `monkeypatch` fixture, which can't be requested from
+    # a module-scoped one) — restored in the `finally` below alongside the
+    # subprocess cleanup.
+    from loadtest.fake_llm_server import FAKE_EMBED_DIM
+
+    previous_qdrant_url = qdrant_store.QDRANT_URL
+    qdrant_store.QDRANT_URL = qdrant["qdrant_url"]
+    qdrant_store.ensure_collection(dim=FAKE_EMBED_DIM)
 
     fake_llm_port = _free_port()
     api_port = _free_port()
@@ -184,6 +214,21 @@ def scaled_stack() -> Iterator[str]:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=10)
+        qdrant_store.QDRANT_URL = previous_qdrant_url
+
+
+@pytest.fixture(scope="module")
+def qdrant_url(scaled_stack) -> str:
+    """The same Qdrant container `scaled_stack` already provisioned for
+    `GET /health/ready` — `ensure_qdrant()` is idempotent/cached (see
+    tests/containers.py), so calling it again here just exposes that same
+    container's URL to THIS test process too, letting a test verify a
+    real write (e.g. a HITL-approved `remember` call) actually landed,
+    without needing `scaled_stack` itself to change its own return shape.
+    Depends on `scaled_stack` only to document the ordering intent, not
+    because it's strictly required — `ensure_qdrant()` would work fine
+    called first too."""
+    return ensure_qdrant()["qdrant_url"]
 
 
 def _parse_final_answer(sse_text: str) -> str:
@@ -256,4 +301,150 @@ class TestScaledWorkersAbsorbConcurrentLoad:
         assert not mismatches, (
             f"{len(mismatches)}/{n} turns had a wrong or missing answer "
             f"(expected, got) — first few: {mismatches[:5]}"
+        )
+
+
+class TestScaledWorkersHandleHITLAndSubagentDelegation:
+    """Same real 5-process/`AGENT_WORKER_MAX_CONCURRENCY=50` stack as
+    TestScaledWorkersAbsorbConcurrentLoad above, proving the two other
+    things this queued path needs to get right at real concurrency: a
+    real HITL pause/resume round trip through `POST /chat/resume` (not
+    just `POST /chat/stream/queued`), and a real `run_subagent`
+    delegation whose nested LLM call goes back over the wire to the same
+    fake server — both via loadtest/fake_llm_server.py's own
+    `_remember`/`_run_subagent` simulators, added specifically to support
+    this. `n` is smaller than `_TOTAL_REQUESTS` here (HITL is two real
+    HTTP round trips per turn, not one) to keep this class's own runtime
+    reasonable while still exercising genuine concurrency across all 5
+    workers — tests/agent/test_concurrent_turns.py's own
+    TestHITLApprovalUnderConcurrency/TestSubagentCallUnderConcurrency
+    already prove exhaustive cross-wiring isolation in-process; this
+    class's job is proving the same mechanisms hold at real
+    process/network scale, not re-deriving that proof a second time."""
+
+    def test_concurrent_hitl_pauses_and_resumes_all_succeed_and_write_to_qdrant(
+        self, scaled_stack, qdrant_url
+    ):
+        base_url = scaled_stack
+        n = 40
+
+        async def _one_turn(i: int) -> tuple[int, str, int]:
+            # Own synthetic tenant per request too, not just principal — same
+            # reasoning TestScaledWorkersAbsorbConcurrentLoad's own headers
+            # comment gives: bypasses the per-tenant rate limiter
+            # (app/api/rate_limit.py, default 30/min) so this measures HITL
+            # concurrency itself. Verified directly: a first attempt sharing
+            # one tenant across all n got every request past the first ~30
+            # rejected with 429 — not a HITL bug, the rate limiter correctly
+            # doing its job against traffic shaped like one real tenant.
+            headers = {"X-Tenant-Id": f"loadtest-hitl-{i}", "X-Principal-Id": f"user-{i}"}
+            thread_id = f"thread-hitl-{i}"
+            async with httpx.AsyncClient(timeout=60) as client:
+                pause_response = await client.post(
+                    f"{base_url}/chat/stream/queued",
+                    json={
+                        "message": f"please remember distinguishing fact {i}",
+                        "thread_id": thread_id,
+                        "images": [],
+                    },
+                    headers=headers,
+                )
+                if pause_response.status_code != 200:
+                    return pause_response.status_code, pause_response.text, i
+                resume_response = await client.post(
+                    f"{base_url}/chat/resume",
+                    json={"thread_id": thread_id, "approved": True},
+                    headers=headers,
+                )
+            return resume_response.status_code, resume_response.text, i
+
+        async def _run_all():
+            return await asyncio.gather(*(_one_turn(i) for i in range(n)))
+
+        results = asyncio.run(_run_all())
+
+        statuses = [status for status, _, _ in results]
+        succeeded = statuses.count(200)
+        assert succeeded == n, (
+            f"only {succeeded}/{n} HITL round trips succeeded — status codes seen: "
+            f"{sorted(set(statuses))}"
+        )
+
+        mismatches = [
+            (i, _parse_final_answer(body))
+            for _, body, i in results
+            if f"distinguishing fact {i}" not in _parse_final_answer(body)
+        ]
+        assert not mismatches, (
+            f"{len(mismatches)}/{n} resumes had an answer not reflecting their own "
+            f"approved memory — first few (thread, got): {mismatches[:5]}"
+        )
+
+        # The real write underneath every approval: real Qdrant (not the
+        # HTTP response text) — same "read the real store back" check
+        # tests/agent/test_concurrent_turns.py's own HITL test already
+        # does in-process, proven here instead at real 5-process
+        # concurrency, over the real network.
+        client = QdrantClient(url=qdrant_url)
+        for i in range(n):
+            principal = f"user-{i}"
+            points, _ = client.scroll(
+                collection_name=COLLECTION,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(key="kind", match=MatchValue(value="memory")),
+                        FieldCondition(key="owner", match=MatchValue(value=principal)),
+                    ]
+                ),
+                limit=10,
+            )
+            assert len(points) == 1, f"expected exactly 1 memory for {principal}, got {len(points)}"
+            memory_text = points[0].payload["text"]
+            assert f"distinguishing fact {i}" in memory_text, memory_text
+
+    def test_concurrent_subagent_delegations_all_succeed(self, scaled_stack):
+        base_url = scaled_stack
+        n = 40
+
+        async def _one_turn(i: int) -> tuple[int, str, int]:
+            headers = {"X-Tenant-Id": f"loadtest-subagent-{i}", "X-Principal-Id": f"user-{i}"}
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.post(
+                    f"{base_url}/chat/stream/queued",
+                    json={
+                        "message": f"please delegate task {i} to a subagent",
+                        "thread_id": f"thread-subagent-{i}",
+                        "images": [],
+                    },
+                    headers=headers,
+                )
+            return response.status_code, response.text, i
+
+        async def _run_all():
+            return await asyncio.gather(*(_one_turn(i) for i in range(n)))
+
+        results = asyncio.run(_run_all())
+
+        statuses = [status for status, _, _ in results]
+        succeeded = statuses.count(200)
+        assert succeeded == n, (
+            f"only {succeeded}/{n} subagent delegations succeeded — status codes seen: "
+            f"{sorted(set(statuses))}"
+        )
+
+        # The nested run's own LLM call went back over the wire to the
+        # SAME fake server (its ChatOpenAI construction also reads
+        # OPENAI_API_BASE) — the final answer being traceable back to its
+        # own delegated task proves that whole real, two-hop round trip
+        # (top-level tool_call -> real run_subagent execution -> nested
+        # HTTP call -> nested answer -> back into the top-level synthesis)
+        # stayed correctly matched to ITS OWN turn at real concurrency.
+        mismatches = [
+            (i, _parse_final_answer(body))
+            for _, body, i in results
+            if f"task {i} to a subagent" not in _parse_final_answer(body)
+        ]
+        assert not mismatches, (
+            f"{len(mismatches)}/{n} subagent delegations had an answer not reflecting "
+            f"their own delegated task — first few (thread, got): {mismatches[:5]}"
         )

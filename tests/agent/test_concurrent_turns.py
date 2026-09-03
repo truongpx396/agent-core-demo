@@ -20,7 +20,7 @@ GenericFakeChatModel, same technique test_durable_checkpoint.py already
 uses) — no live Ollama/LiteLLM dependency, so this runs in ordinary CI, not
 just by hand against `make up`.
 
-Three angles, one per test class below:
+Six angles, one per test class below:
 - TestNoCrossContaminationUnderConcurrency: N turns on N different THREADS,
   run truly concurrently against the real pooled checkpointer — does each
   thread's checkpointed history end up containing ONLY its own message?
@@ -36,24 +36,57 @@ Three angles, one per test class below:
   them? This is the regression guard: if a future change reintroduces
   serial processing, this test's timing assertion catches it even though
   every individual turn would still complete "correctly."
+- TestHITLApprovalUnderConcurrency: N turns all pause at the mandatory
+  human_approval gate (a `remember` call, GRAPH_PATTERNS.md pattern 15) at
+  the same real moment, then all N resume concurrently — does each
+  thread's resume correctly unblock ITS OWN paused tool call (not a
+  concurrent sibling's), and does the real memory write it approves land
+  in Qdrant correctly scoped to the right owner?
+- TestSubagentCallUnderConcurrency: N turns all delegate to the real
+  `run_subagent` tool (GRAPH_PATTERNS.md pattern 46) at the same real
+  moment — a genuinely separate nested `build_graph()` run per call, on
+  the same shared graph singleton everything else here uses — does each
+  turn's own nested run answer ITS OWN delegated task, never a sibling's?
+- TestQdrantReadWriteUnderConcurrency: N different TENANTS concurrently
+  searching a real, pre-seeded Qdrant collection — does each tenant's
+  real hybrid-search hit ONLY ITS OWN documents, the same tenant-isolation
+  question TestSemanticCacheIsolationUnderConcurrency asks of Redis, asked
+  here of Qdrant's own tenant-scoped filter instead?
+
+A real, reachable embedding backend is deliberately never required for any
+of this (`_fake_embed_text` below) — every real embedding call in this app
+(app/retrieval/embeddings.py::embed_text) needs a reachable
+OPENAI_API_BASE, which `test-integration` CI deliberately doesn't
+provision (see tests/integration/'s own "no LLM" scope) — a real CI run
+surfaced exactly this gap once already (see this file's own git history);
+what these tests actually check — RediSearch/Qdrant's own tenant-scoped
+filtering, HITL pause/resume routing, subagent delegation — was never
+about embedding QUALITY, so a deterministic, network-free stand-in is the
+more correct choice here, not just a CI-safety workaround.
 """
 import asyncio
 import hashlib
 import itertools
 import time
 import uuid
+from collections.abc import Callable
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from app.agent import runtime as agent_module
+from app.agent import tools as tools_module
 from app.agent.graph import GraphDeps, build_graph
 from app.core import metrics
-from app.retrieval import semantic_cache
+from app.core.config import COLLECTION
+from app.retrieval import embeddings as embeddings_module
+from app.retrieval import qdrant_store, semantic_cache
 from app.turns import agent_worker, queue
 from tests.conftest import metric_value as _count
-from tests.containers import ensure_postgres, ensure_redis
+from tests.containers import ensure_postgres, ensure_qdrant, ensure_redis
 
 pytestmark = pytest.mark.integration
 
@@ -88,6 +121,59 @@ def _fixed_llm(text: str = "A sufficiently long final answer.", delay: float = 0
                     await asyncio.sleep(delay)
 
     return _Model(messages=itertools.repeat(AIMessage(content=text)))
+
+
+def _last_human_text(messages: list[BaseMessage]) -> str:
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage):
+            content = message.content
+            return content if isinstance(content, str) else str(content)
+    return ""
+
+
+def _echoing_llm(respond: Callable[[list[BaseMessage]], AIMessage]):
+    """A GenericFakeChatModel whose response is DERIVED from the incoming
+    messages (via `respond`) instead of played back from a fixed queue.
+
+    `_fixed_llm` above is enough when every concurrent turn should behave
+    IDENTICALLY (proving state isolation despite identical LLM behavior).
+    HITL and subagent-delegation correctness need the opposite: THIS
+    process's whole graph is one shared singleton, built once — every
+    concurrent turn's LLM calls land on the SAME model instance, so
+    proving turn A's own tool call/final answer never gets crossed with
+    concurrent turn B's requires a response that's actually a function of
+    turn A's own input, not a canned reply every turn would get alike.
+
+    Overrides `_generate` only (not `_astream` directly) — GenericFakeChatModel's
+    own inherited `_stream`/async-streaming machinery already turns
+    whatever `AIMessage` `_generate` returns (including `tool_calls`) into
+    correctly-shaped streaming chunks, the same machinery the existing
+    fixed-queue tests already rely on; overriding only the RESPONSE
+    SELECTION here, not that plumbing, keeps this consistent with them.
+
+    Also overrides `bind_tools` to a no-op returning `self` —
+    `BaseChatModel`'s own default raises `NotImplementedError` (verified
+    directly), which `GraphDeps(llm=...)`'s own top-level use of a fake
+    model never trips (`build_graph()` uses `deps.llm` raw, never calling
+    `.bind_tools()` on it — only its OWN `_make_llm()` production
+    construction path does that), but
+    app/agent/tools.py::_run_subagent_impl's fallback DOES call
+    `ChatOpenAI(...).bind_tools(nested_tools)` on whatever `ChatOpenAI`
+    constructs — needed for TestSubagentCallUnderConcurrency, which
+    monkeypatches `ChatOpenAI` itself to return one of these. Same
+    reasoning `_fixed_llm`/every fake model in this file already
+    embodies: a scripted response doesn't actually depend on which tools
+    were "offered," so a real bind implementation was never load-bearing
+    here."""
+
+    class _Model(GenericFakeChatModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            return ChatResult(generations=[ChatGeneration(message=respond(messages))])
+
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+    return _Model(messages=iter([]))  # unused — _generate is fully overridden above
 
 
 @pytest.fixture(autouse=True)
@@ -192,7 +278,19 @@ def real_semantic_cache_redis(monkeypatch):
     yield
 
 
-def _install_fake_graph(monkeypatch, llm) -> None:
+def _real_search_docs(query: str, ctx) -> tuple[str, list[dict]]:
+    """The REAL retrieval path (app/agent/graph.py::_default_search's own
+    wrapper over app/agent/tools.py::gather_context, reproduced here since
+    that real default is exactly what tests/conftest.py's session-wide
+    `mock_search_docs` fixture overrides — see `_install_fake_graph`'s own
+    docstring for the identical reasoning applied to the semantic cache).
+    Parameter order matches `_default_search`'s own adaptation:
+    `gather_context` takes `(ctx, query)`, reversed from what
+    `retrieve_context`/`GraphDeps.search_docs` call with."""
+    return tools_module.gather_context(ctx, query)
+
+
+def _install_fake_graph(monkeypatch, llm, *, search_docs=_no_op_search) -> None:
     """`cache_get`/`cache_set` are wired explicitly to the REAL
     app/retrieval/semantic_cache.py module functions — GraphDeps's own
     documented test-injection seam (see its docstring: "tests set
@@ -208,20 +306,56 @@ def _install_fake_graph(monkeypatch, llm) -> None:
     the real cache — verified directly: that's exactly what produced this
     file's first failed run of
     TestSemanticCacheIsolationUnderConcurrency (every lookup came back a
-    hardcoded miss, not a real Redis round trip)."""
+    hardcoded miss, not a real Redis round trip).
+
+    `search_docs` defaults to `_no_op_search` (matching every OTHER class
+    in this file, which isn't testing retrieval) — pass `_real_search_docs`
+    for TestQdrantReadWriteUnderConcurrency specifically, for the exact
+    same "the global mock would otherwise silently win" reason above,
+    applied to app/agent/graph.py's `_default_search` instead of its cache
+    counterpart."""
     monkeypatch.setattr(
         agent_module,
         "build_graph",
         lambda checkpointer=None, manifest=None, domain=None: build_graph(
             GraphDeps(
                 llm=llm,
-                search_docs=_no_op_search,
+                search_docs=search_docs,
                 cache_get=semantic_cache.get,
                 cache_set=semantic_cache.set,
             ),
             checkpointer=checkpointer,
         ),
     )
+
+
+_FAKE_EMBED_DIM = 32  # len(hashlib.sha256(...).digest()) — see _fake_embed_text
+
+
+@pytest.fixture
+def real_qdrant(monkeypatch):
+    """Points every real Qdrant read/write path this app has
+    (app/agent/tools.py's remember/add_note/search_docs, all the way down
+    through app/retrieval/qdrant_store.py) at a real, ephemeral Qdrant
+    container — for TestHITLApprovalUnderConcurrency and
+    TestQdrantReadWriteUnderConcurrency specifically, not autouse, since
+    the other classes in this file never touch Qdrant at all.
+
+    `embed_text` is patched in BOTH places that hold their own separate
+    binding of it (app/agent/tools.py's `from ... import embed_text`, and
+    app/retrieval/embeddings.py itself — read via a late `from
+    app.retrieval import embeddings; embeddings.embed_text(...)` inside
+    qdrant_store.hybrid_search, so patching the ORIGIN module is what that
+    one particular call site actually needs) — same "a `from X import Y`
+    binding is a separate reference" reasoning this file's own
+    `real_semantic_cache_redis` fixture already applies to
+    app/retrieval/semantic_cache.py's own copy of the same name."""
+    qdrant = ensure_qdrant()
+    monkeypatch.setattr(qdrant_store, "QDRANT_URL", qdrant["qdrant_url"])
+    monkeypatch.setattr(tools_module, "embed_text", _fake_embed_text)
+    monkeypatch.setattr(embeddings_module, "embed_text", _fake_embed_text)
+    qdrant_store.ensure_collection(dim=_FAKE_EMBED_DIM)
+    yield
 
 
 class TestNoCrossContaminationUnderConcurrency:
@@ -436,3 +570,262 @@ class TestWorkerConcurrencyAgainstTheRealQueue:
             f"concurrent (a single turn alone takes ~{single_turn_estimate:.2f}s, so "
             f"{n} run serially would take ~{serial_estimate:.2f}s)"
         )
+
+
+class TestHITLApprovalUnderConcurrency:
+    """`remember` is declared "mutating" (app/agent/tools.py::TOOL_CAPABILITIES),
+    so it ALWAYS pauses at the human_approval gate regardless of whether
+    the caller opted into require_approval (GRAPH_PATTERNS.md pattern
+    15's MANDATORY gate, not the opt-in one). Proves the pause/resume
+    round trip stays correctly matched to its own thread under real
+    concurrency: N turns all pause at the same real moment, then all N
+    resume at the same real moment — a resume that raced onto the wrong
+    thread's paused checkpoint would either hijack a sibling's approval or
+    corrupt its memory write. Checks both the routing (each resume's own
+    final answer echoes its own remembered text, never a sibling's) and
+    the real Qdrant write underneath it (each thread's memory point
+    exists, correctly owned, with the right text).
+
+    The PAUSE half drives via `graph.ainvoke()`, not `astream_events_turn`
+    — verified directly (the same limitation
+    tests/agent/test_durable_checkpoint.py's own `TestAsyncSeeding`/
+    `TestResumabilityErrorRejectsAnActivelyRunningThread` classes already
+    document and work around the identical way): `astream_events()`
+    raises "No generations found in stream" for a `.bind_tools()`-wrapped
+    `GenericFakeChatModel`'s tool-calling response — a pre-existing
+    fake-LLM/streaming fixture limitation, unrelated to what's under test
+    here. The RESUME half stays on the real `astream_events_resume`
+    streaming path (the same one `POST /chat/resume` actually uses) since
+    its own generation, synthesizing after the tool result, is plain text
+    and streams fine — the same reason every OTHER test in this file
+    streams without issue."""
+
+    def test_n_concurrent_pauses_and_resumes_stay_matched_to_their_own_thread(
+        self, monkeypatch, real_qdrant
+    ):
+        n = 6
+        tenant = "tenant-hitl"
+
+        def _respond(messages: list[BaseMessage]) -> AIMessage:
+            last = messages[-1]
+            if isinstance(last, ToolMessage):
+                # `remember`'s real return value is the fixed string
+                # "Remembered." (app/agent/tools.py::_remember_impl), not an
+                # echo of what was remembered — the ORIGINAL human text is
+                # what actually distinguishes this thread from a sibling's,
+                # and it's still the only HumanMessage in this short
+                # conversation on this second call too.
+                return AIMessage(content=f"Noted: {_last_human_text(messages)}")
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "remember",
+                        "args": {"content": _last_human_text(messages)},
+                        "id": f"call-{uuid.uuid4().hex[:8]}",
+                    }
+                ],
+            )
+
+        _install_fake_graph(monkeypatch, _echoing_llm(_respond))
+
+        async def pause(i: int, graph) -> tuple[str, str]:
+            thread_id = str(uuid.uuid4())
+            principal = f"user-{i}"
+            cfg = {"configurable": {"thread_id": thread_id, "ctx": _ctx(tenant, principal)}}
+            await graph.ainvoke(
+                {"messages": [HumanMessage(content=f"please remember distinguishing fact {i}")]},
+                config=cfg,
+            )
+            return thread_id, principal
+
+        async def resume(thread_id: str, principal: str) -> list:
+            events = []
+            async for event in agent_module.astream_events_resume(
+                thread_id, True, _ctx(tenant, principal)
+            ):
+                events.append(event)
+            return events
+
+        async def _run():
+            graph = await agent_module.init_graph_async()
+            paused = await asyncio.gather(*(pause(i, graph) for i in range(n)))
+            for i, (thread_id, _) in enumerate(paused):
+                state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+                assert state.next, f"thread {i} should be paused at human_approval, but wasn't"
+            resumed = await asyncio.gather(
+                *(resume(thread_id, principal) for thread_id, principal in paused)
+            )
+            return resumed
+
+        resumed = run_with_checkpointer_cleanup(_run)
+
+        for i, events in enumerate(resumed):
+            assert events[-1]["type"] == "done", events
+            answer = "".join(e["content"] for e in events if e["type"] == "token")
+            assert f"distinguishing fact {i}" in answer, (
+                f"thread {i}'s resume answer didn't reflect its own approved "
+                f"memory — got {answer!r}"
+            )
+            for j in range(n):
+                if j != i:
+                    assert f"distinguishing fact {j}" not in answer, (
+                        f"thread {i}'s resume answer leaked thread {j}'s memory: {answer!r}"
+                    )
+
+        # The real write underneath the approval, per thread: exactly one
+        # memory, owned by the right principal, with the right text.
+        for i in range(n):
+            principal = f"user-{i}"
+            points, _ = qdrant_store.get_client().scroll(
+                collection_name=COLLECTION,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(key="kind", match=MatchValue(value="memory")),
+                        FieldCondition(key="owner", match=MatchValue(value=principal)),
+                    ]
+                ),
+                limit=10,
+            )
+            assert len(points) == 1, f"expected exactly 1 memory for {principal}, got {len(points)}"
+            memory_text = points[0].payload["text"]
+            assert f"distinguishing fact {i}" in memory_text, memory_text
+            for j in range(n):
+                if j != i:
+                    assert f"distinguishing fact {j}" not in memory_text, (
+                        f"{principal}'s memory leaked thread {j}'s fact: {memory_text!r}"
+                    )
+            assert points[0].payload["tenant"] == tenant
+
+
+class TestSubagentCallUnderConcurrency:
+    """The real `run_subagent` tool (read_only — no HITL pause,
+    GRAPH_PATTERNS.md pattern 46) delegates to a genuinely separate,
+    nested `build_graph()` run per call (app/agent/tools.py::_run_subagent_impl)
+    — its own fresh messages (the delegated task, NOT this conversation's
+    history), its own LLM client construction. Proves N concurrent
+    top-level turns' own nested subagent runs never cross-wire: each
+    turn's final answer must reflect ONLY its own delegated task.
+
+    Drives via `graph.ainvoke()`, not `astream_events_turn` — same
+    "GenericFakeChatModel can't stream a tool-calling response through
+    astream_events()" limitation TestHITLApprovalUnderConcurrency's own
+    docstring documents (this test's top-level fake LLM ALSO emits a
+    tool_call, for `run_subagent`), just with no pause to split around
+    here — the whole turn (tool call, nested run, final synthesis) goes
+    through `ainvoke()` in one shot."""
+
+    def test_n_concurrent_subagent_delegations_never_cross_wire(self, monkeypatch):
+        n = 6
+
+        def _nested_respond(messages: list[BaseMessage]) -> AIMessage:
+            # _run_subagent_impl's own docstring: the nested run's ONLY
+            # human message is the delegated task itself, never the
+            # parent's conversation history.
+            return AIMessage(content=f"Nested result for: {_last_human_text(messages)}")
+
+        monkeypatch.setattr(
+            tools_module, "ChatOpenAI", lambda *args, **kwargs: _echoing_llm(_nested_respond)
+        )
+
+        def _top_respond(messages: list[BaseMessage]) -> AIMessage:
+            last = messages[-1]
+            if isinstance(last, ToolMessage):
+                return AIMessage(content=f"Subagent said: {last.content}")
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "run_subagent",
+                        "args": {
+                            "subagent_name": "researcher",
+                            "task": _last_human_text(messages),
+                        },
+                        "id": f"call-{uuid.uuid4().hex[:8]}",
+                    }
+                ],
+            )
+
+        _install_fake_graph(monkeypatch, _echoing_llm(_top_respond))
+
+        async def drive(i: int, graph) -> str:
+            cfg = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": _ctx(f"tenant-{i}")}}
+            result = await graph.ainvoke(
+                {"messages": [HumanMessage(content=f"delegate task {i}")]}, config=cfg
+            )
+            return result["messages"][-1].content
+
+        async def _run():
+            graph = await agent_module.init_graph_async()
+            return await asyncio.gather(*(drive(i, graph) for i in range(n)))
+
+        answers = run_with_checkpointer_cleanup(_run)
+
+        for i, answer in enumerate(answers):
+            assert f"delegate task {i}" in answer, (
+                f"thread {i}'s final answer didn't reflect its own delegated "
+                f"task's nested result — got {answer!r}"
+            )
+            for j in range(n):
+                if j != i:
+                    assert f"delegate task {j}" not in answer, (
+                        f"thread {i}'s answer leaked thread {j}'s delegated task: {answer!r}"
+                    )
+
+
+class TestQdrantReadWriteUnderConcurrency:
+    """app/retrieval/qdrant_store.py's hybrid_search scopes every read to
+    ctx['tenant'] as a server-side Filter predicate
+    (app/core/security.py::Policy.lower), ANDed onto both the dense AND
+    sparse prefetch legs — the same tenant pre-filter discipline
+    TestSemanticCacheIsolationUnderConcurrency already proves for Redis's
+    own TAG filter, asked here of Qdrant's instead: N different tenants
+    concurrently searching the SAME real, shared collection must each
+    surface ONLY their own seeded document, regardless of embedding/rerank
+    specifics — the filter narrows the CANDIDATE SET itself, at the query
+    level, not just the final ranking."""
+
+    def test_n_tenants_concurrent_search_never_crosses_into_a_siblings_documents(
+        self, monkeypatch, real_qdrant
+    ):
+        n = 6
+        for i in range(n):
+            text = f"distinguishing content {i}"
+            point = qdrant_store.build_point(
+                point_id=str(uuid.uuid4()),
+                dense_vector=_fake_embed_text(text),
+                payload={
+                    "text": text,
+                    "topic": "company",
+                    "title": f"doc-{i}",
+                    "kind": "document",
+                    "tenant": f"tenant-{i}",
+                },
+            )
+            qdrant_store.upsert([point])
+
+        _install_fake_graph(monkeypatch, _fixed_llm(), search_docs=_real_search_docs)
+
+        async def drive(i: int, graph) -> list[dict]:
+            thread_id = str(uuid.uuid4())
+            async for _ in agent_module.astream_events_turn(
+                f"distinguishing content {i}", thread_id, _ctx(f"tenant-{i}")
+            ):
+                pass
+            state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+            return state.values.get("citations") or []
+
+        async def _run():
+            graph = await agent_module.init_graph_async()
+            return await asyncio.gather(*(drive(i, graph) for i in range(n)))
+
+        all_citations = run_with_checkpointer_cleanup(_run)
+
+        for i, citations in enumerate(all_citations):
+            assert citations, f"tenant-{i} got no citations at all from its own real Qdrant search"
+            for citation in citations:
+                assert citation["title"] == f"doc-{i}", (
+                    f"tenant-{i}'s search surfaced a citation that isn't its own "
+                    f"document: {citation}"
+                )
+                assert citation["text"] == f"distinguishing content {i}"
