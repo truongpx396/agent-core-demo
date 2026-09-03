@@ -35,6 +35,21 @@ class TestParseSkillFile:
         assert "Use the calculator tool" in record.body
         assert record.path == path
 
+    def test_omitted_domains_defaults_to_none(self, tmp_path):
+        path = _write_skill(tmp_path, "expense-summary", _VALID)
+        assert _parse_skill_file(path).domains is None
+
+    def test_parses_domains_list(self, tmp_path):
+        content = _VALID.replace("---\n\n# Expense", "domains: [support, sales]\n---\n\n# Expense")
+        path = _write_skill(tmp_path, "expense-summary", content)
+        assert _parse_skill_file(path).domains == ("support", "sales")
+
+    def test_non_list_domains_raises(self, tmp_path):
+        content = _VALID.replace("---\n\n# Expense", "domains: support\n---\n\n# Expense")
+        path = _write_skill(tmp_path, "bad", content)
+        with pytest.raises(SkillLoadError):
+            _parse_skill_file(path)
+
     def test_missing_frontmatter_raises(self, tmp_path):
         path = _write_skill(tmp_path, "bad", "# Just a body, no frontmatter at all.")
         with pytest.raises(SkillLoadError):

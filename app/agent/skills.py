@@ -2,9 +2,9 @@
 discover and load progressively (GRAPH_PATTERNS.md pattern 45).
 
 A skill is one directory under `SKILLS_DIR` (app/core/config.py) containing
-a `SKILL.md` — YAML frontmatter (`name`, `description`) followed by a
-markdown instruction body, the same shape Anthropic's Agent Skills /
-OpenClaw's `SKILL.md` use:
+a `SKILL.md` — YAML frontmatter (`name`, `description`, optionally
+`domains`) followed by a markdown instruction body, the same shape
+Anthropic's Agent Skills / OpenClaw's `SKILL.md` use:
 
     ---
     name: onboarding-brief
@@ -13,6 +13,15 @@ OpenClaw's `SKILL.md` use:
 
     # Onboarding Brief
     1. Look up the new hire with query_employees...
+
+`domains`, if set, is a list of domain names (`app/domains/registry.py`'s
+keys, e.g. `[support]`) this skill is relevant to; omitted means "every
+domain" — the default every skill had before this field existed, so an
+un-tagged `SKILL.md` keeps working unchanged. `app/agent/tools.py::make_skill_tools`
+is what actually ENFORCES this (both in `skill_search`'s results and
+`use_skill`'s exact-name lookup) — this module only carries the fact,
+same "parse and carry, don't enforce" split its `tools`/`model` fields
+already establish for app/agent/subagents.py's `SubagentRecord`.
 
 This module is the DISK side only — the source of truth for a skill's full
 body. `app/agent/tools.py::use_skill` reads a skill's `body` from here by
@@ -59,6 +68,8 @@ class SkillRecord:
     name: str
     description: str
     body: str
+    domains: tuple[str, ...] | None  # None = visible to every domain
+    # (including Acme) — see this module's docstring.
     path: Path
 
 
@@ -83,11 +94,28 @@ def _parse_skill_file(path: Path) -> SkillRecord:
     if not isinstance(description, str) or not description.strip():
         raise SkillLoadError(f"{path}: frontmatter must set a non-empty 'description'.")
 
+    raw_domains = frontmatter.get("domains")
+    domains: tuple[str, ...] | None
+    if raw_domains is None:
+        domains = None
+    elif isinstance(raw_domains, list) and all(
+        isinstance(d, str) and d.strip() for d in raw_domains
+    ):
+        domains = tuple(raw_domains)
+    else:
+        raise SkillLoadError(f"{path}: 'domains', if set, must be a list of non-empty strings.")
+
     body = text[match.end() :].strip()
     if not body:
         raise SkillLoadError(f"{path}: skill body (markdown after frontmatter) must not be empty.")
 
-    return SkillRecord(name=name.strip(), description=description.strip(), body=body, path=path)
+    return SkillRecord(
+        name=name.strip(),
+        description=description.strip(),
+        body=body,
+        domains=domains,
+        path=path,
+    )
 
 
 def load_skills(skills_dir: str | Path | None = None) -> dict[str, SkillRecord]:

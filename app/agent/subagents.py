@@ -4,8 +4,8 @@ pattern 46).
 
 A subagent is one directory under `SUBAGENTS_DIR` (app/core/config.py)
 containing an `AGENT.md` — YAML frontmatter (`name`, `description`, and
-optionally `tools`, `model`) followed by a markdown system-prompt body, the
-same shape `app/agent/skills.py`'s `SKILL.md` uses:
+optionally `tools`, `model`, `domains`) followed by a markdown system-prompt
+body, the same shape `app/agent/skills.py`'s `SKILL.md` uses:
 
     ---
     name: researcher
@@ -22,7 +22,16 @@ or which domain's tools exist. All of that validation (which declared tools
 are actually safe to hand a subagent, the run_subagent recursion block) lives
 in `app/agent/tools.py`, the module that already owns `TOOL_CAPABILITIES` —
 keeping this module a pure, reusable disk parser avoids any import-order
-coupling between the two.
+coupling between the two. That split applies to `domains` too: this module
+only parses and carries the raw list (or `None`); app/agent/tools.py decides
+what an absent `domains` DEFAULTS to (unlike app/agent/skills.py's SkillRecord,
+where `None` means "every domain," an untagged subagent here stays exactly
+where it's always been — visible only when `app/agent/tools.py` builds
+Acme's own registry — precisely BECAUSE a subagent's declared `tools:` are
+only ever meaningful against one specific tool universe: a nested run
+resolves each declared name against the CALLING domain's own tools, so an
+untagged subagent silently exposed to every domain would mostly just resolve
+to nothing useful in a domain its tools were never written for).
 """
 import logging
 import re
@@ -41,11 +50,11 @@ _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?\n)---\s*\n?", re.DOTALL)
 class SubagentLoadError(ValueError):
     """An AGENT.md file doesn't match the required shape (frontmatter with
     non-empty `name`/`description`, an optional `tools` list of strings, an
-    optional `model` string, plus a non-empty body). Raised by
-    `_parse_subagent_file`; `load_subagents` catches this per-file and skips
-    the offending file rather than letting one bad subagent take down the
-    whole catalog (GRAPH_PATTERNS.md pattern 10's degrade-gracefully
-    posture, same as `app/agent/skills.py::SkillLoadError`)."""
+    optional `model` string, an optional `domains` list of strings, plus a
+    non-empty body). Raised by `_parse_subagent_file`; `load_subagents`
+    catches this per-file and skips the offending file rather than letting
+    one bad subagent take down the whole catalog (GRAPH_PATTERNS.md pattern
+    10's degrade-gracefully posture, same as `app/agent/skills.py::SkillLoadError`)."""
 
 
 @dataclass(frozen=True)
@@ -56,6 +65,8 @@ class SubagentRecord:
     tools: tuple[str, ...] | None  # None = "inherit the domain's read_only
     # tools" (resolved by app/agent/tools.py, not here — see module docstring).
     model: str | None  # None = use the parent's own CHAT_MODEL alias.
+    domains: tuple[str, ...] | None  # None = defaults applied by
+    # app/agent/tools.py, not here — see module docstring.
     path: Path
 
 
@@ -93,6 +104,17 @@ def _parse_subagent_file(path: Path) -> SubagentRecord:
     if model is not None and (not isinstance(model, str) or not model.strip()):
         raise SubagentLoadError(f"{path}: 'model', if set, must be a non-empty string.")
 
+    raw_domains = frontmatter.get("domains")
+    domains: tuple[str, ...] | None
+    if raw_domains is None:
+        domains = None
+    elif isinstance(raw_domains, list) and all(
+        isinstance(d, str) and d.strip() for d in raw_domains
+    ):
+        domains = tuple(raw_domains)
+    else:
+        raise SubagentLoadError(f"{path}: 'domains', if set, must be a list of non-empty strings.")
+
     body = text[match.end() :].strip()
     if not body:
         raise SubagentLoadError(f"{path}: subagent body (markdown after frontmatter) must not be empty.")
@@ -103,6 +125,7 @@ def _parse_subagent_file(path: Path) -> SubagentRecord:
         system_prompt=body,
         tools=tools,
         model=model.strip() if model else None,
+        domains=domains,
         path=path,
     )
 

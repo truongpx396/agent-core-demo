@@ -42,7 +42,46 @@ def test_tool_node_only_knows_the_ops_domains_tools():
         "log_incident",
         "list_recent_incidents",
         "resolve_incident",
+        "run_subagent",
     }
+
+
+class TestDomainScopedSubagent:
+    """Same proof as tests/domains/support/test_domain.py's own
+    TestDomainScopedSubagent: run_subagent is this domain's OWN
+    closure-built tool, and its menu offers only the bundled subagent(s)
+    declared `domains: [ops]` (subagents/metrics-researcher/AGENT.md)."""
+
+    def test_is_not_the_acme_level_run_subagent_object(self):
+        from app.agent.tools import run_subagent as acme_run_subagent
+
+        g = _build()
+        domain_run_subagent = g.nodes["tools"].bound.tools_by_name["run_subagent"]
+        assert domain_run_subagent is not acme_run_subagent
+
+    def test_menu_offers_only_the_ops_domains_own_subagent(self):
+        g = _build()
+        domain_run_subagent = g.nodes["tools"].bound.tools_by_name["run_subagent"]
+        schema = domain_run_subagent.args_schema.model_json_schema()
+        enum_def = next(iter(schema["$defs"].values()))
+        assert enum_def["enum"] == ["metrics-researcher"]
+
+    def test_never_pauses_it_is_read_only(self, monkeypatch):
+        from app.agent import tools as agent_tools_module
+
+        monkeypatch.setattr(agent_tools_module, "_run_subagent_impl", lambda *a, **k: "found it")
+        llm = _fake_llm_returning(
+            _tool_call(
+                "run_subagent",
+                {"subagent_name": "metrics-researcher", "task": "has latency spiked before?"},
+            ),
+            AIMessage(content="Here's what the subagent found out for you."),
+        )
+        g = _build(llm)
+        g.invoke(
+            {"messages": [HumanMessage(content="has this happened before?")]}, config=_config()
+        )
+        assert not g.get_state(_config()).next  # never paused
 
 
 def test_fetch_metrics_summary_is_read_only_and_never_pauses(monkeypatch):

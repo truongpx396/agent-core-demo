@@ -149,13 +149,30 @@ declarations, tenant scoping, tests) — not a prompt-only reskin:
 
 | Domain | What it is | Sandbox | Run it |
 |---|---|---|---|
-| **Support copilot** (`app/domains/support/`) | Tier-1 customer support behind a chat gateway — searches the knowledge base, opens/checks/escalates a ticket, lists a customer's own tickets, and adds a follow-up comment to one already open (`support_tickets`, a new Postgres table) | Its `AgentManifest.allowed_tools` is exactly `search_docs`/`skill_search`/`use_skill`/`ask_clarification` + its own 5 ticket tools (`create_ticket`/`check_ticket_status`/`escalate_to_human`/`list_my_tickets`/`add_ticket_comment`) — no `calculator`, `add_note`, `remember`, `query_employees`, or `run_subagent`. That omission, not a Policy check, is what "sandboxed" means (`build_graph()`'s `ToolNode` only ever knows the tools this list names) | `make telegram-support` (needs `TELEGRAM_BOT_TOKEN`) |
+| **Support copilot** (`app/domains/support/`) | Tier-1 customer support behind a chat gateway — searches the knowledge base, opens/checks/escalates a ticket, lists a customer's own tickets, and adds a follow-up comment to one already open (`support_tickets`, a new Postgres table) | Its `AgentManifest.allowed_tools` is exactly `search_docs`/`skill_search`/`use_skill`/`ask_clarification` + its own 5 ticket tools (`create_ticket`/`check_ticket_status`/`escalate_to_human`/`list_my_tickets`/`add_ticket_comment`) + its own `run_subagent` — no `calculator`, `add_note`, `remember`, or `query_employees`. That omission, not a Policy check, is what "sandboxed" means (`build_graph()`'s `ToolNode` only ever knows the tools this list names) | `make telegram-support` (needs `TELEGRAM_BOT_TOKEN`) |
 | **Internal ops bot** (`app/domains/ops/`) | Pulls this app's own operational metrics from the Prometheus this repo already ships (`make obs-up`), flags anything past an alert-matching threshold, and either posts a digest or answers an ad-hoc question — a real anomaly can be logged, listed, and resolved as a durable incident (`ops_incidents`, a new Postgres table) instead of only ever a channel post that scrolls away | `post_to_team_channel` is this repo's first real use of the `outward` tool capability; `log_incident`/`resolve_incident` are `mutating`, `list_recent_incidents` is `read_only` | `make ops-digest` (cron-callable) / `python -m scripts.ops_investigate "why is latency high?"` (ad hoc) |
 | **Sales/CRM concierge** (`app/domains/sales/`) | Logs inbound lead interactions, drafts replies in a configured voice, schedules follow-ups and lists the pending queue, packages a brief and hands a hot lead to a human rep, or marks a dead lead lost (cancelling its pending follow-ups) (`crm_leads`/`crm_followups`, two new Postgres tables) | No tool ever sends anything to a lead — every reply is a draft; `handoff_to_human`/`schedule_followup`/`mark_lead_lost` only ever run through the interactive agent loop, never from cron (see below) | `make telegram-sales` / `make followup-sweep` (cron-callable) |
 
 A fresh Postgres volume picks up their tables automatically
 (`postgres-init/07-support-tickets.sql`, `08-crm.sql`, `09-support-ticket-notes.sql`,
 `10-ops-incidents.sql`); against an existing volume, apply them by hand once.
+
+**Skills and subagents are domain-scoped, not just Acme-level.** Both
+catalogs support an optional `domains: [...]` frontmatter field
+(`app/agent/skills.py::SkillRecord`, `app/agent/subagents.py::SubagentRecord`)
+— each of the three example domains gets its OWN `skill_search`/`use_skill`
+pair and its OWN `run_subagent` tool (`app/agent/tools.py::make_skill_tools`/
+`make_domain_subagent_tool`), never Acme's literal objects, so a
+domain-tagged package never leaks into a domain it wasn't written for (a
+support-domain `skill_search` call can't surface the `sales-lead-qualification`
+skill, and support's `run_subagent` menu only ever offers
+`ticket-researcher`, never Acme's own `researcher`). An untagged `SKILL.md`
+stays visible everywhere (the default every skill had before this field
+existed); an untagged `AGENT.md`, by contrast, stays exactly where it's
+always lived — visible only to Acme — since a subagent's declared `tools:`
+are only ever meaningful against ONE specific tool universe. Each domain
+now ships its own bundled subagent too: `subagents/ticket-researcher/`,
+`subagents/lead-researcher/`, `subagents/metrics-researcher/`.
 
 **How one process picks a domain.** `app/channels/telegram.py` — already a
 real, working gateway (long-polling, no public webhook needed) — reads
@@ -187,11 +204,19 @@ real, gated agent loop.
 
 **Ad-hoc investigation and subagents.** `scripts/ops_investigate.py` asks
 the ops domain's own agent a one-off question via a direct, one-shot
-`build_graph(manifest=OPS_MANIFEST, domain=OPS_DOMAIN_PLUGIN)` call —
-deliberately not `run_subagent` (pattern 46), whose registry is hardwired
-to the Acme tool universe (`app/agent/tools.py::TOOLS`/`TOOL_CAPABILITIES`)
-and would silently drop any ops-domain tool a new `AGENT.md` declared.
-Disclosed here rather than papered over: subagents remain Acme-only today.
+`build_graph(manifest=OPS_MANIFEST, domain=OPS_DOMAIN_PLUGIN)` call, not
+`run_subagent` — even though the ops domain has its own `run_subagent`
+today (see above), a one-shot CLI script asking an OPEN-ENDED question
+wants the domain's FULL toolset, which is arguably a better fit than a
+subagent restricted to `fetch_metrics_summary`/`list_recent_incidents`
+would be regardless. One real, disclosed caveat this now creates: because
+mutating tools (`log_incident`/`resolve_incident`/`post_to_team_channel`)
+are in that full toolset too, and the system prompt actively encourages
+calling them, a model that decides to during an ad-hoc run WILL hit
+`should_continue`'s mandatory `human_approval` gate — which this one-shot
+invocation has no resume path for. See `scripts/ops_investigate.py`'s own
+docstring for how that surfaces (an empty answer, not a crash) and why
+that's an honest signal rather than a bug to paper over.
 
 ## Roadmap — what's deliberately not here yet
 

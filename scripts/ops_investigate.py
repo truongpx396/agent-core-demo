@@ -14,15 +14,15 @@ this CLI is for read-only questions, and a mutating one surfacing an empty
 answer is the honest signal something needs a human in the loop instead.
 
 A one-shot `build_graph(manifest=OPS_MANIFEST, domain=OPS_DOMAIN_PLUGIN)`
-call, NOT `run_subagent`: today's subagent registry
-(app/agent/tools.py::_SUBAGENT_REGISTRY) is hardwired to
-`app.agent.tools.TOOLS`/`TOOL_CAPABILITIES` — the Acme tool universe — so a
-subagent declaring an ops-domain tool would have it silently dropped at
-catalog-build time (app/agent/tools.py::_resolve_subagent_tools). Making
-that registry domain-aware is a real, disclosed limitation this script
-works around rather than papers over: an operator asking an open-ended
-question wants the ops domain's FULL toolset anyway, which is arguably a
-better fit than a read-only-restricted subagent would be regardless.
+call, NOT `run_subagent` — even though the ops domain has its own
+`run_subagent` today, resolved against its own tools
+(app/agent/tools.py::make_domain_subagent_tool, not hardwired to Acme's
+tool universe the way an earlier version of this domain was). The reason
+to skip it here isn't a limitation, just a fit: `run_subagent` would
+delegate to `metrics-researcher`, restricted to
+`fetch_metrics_summary`/`list_recent_incidents` — narrower than this
+script's own caller, which wants the ops domain's FULL toolset for an
+open-ended question, this module's own docstring above included.
 
 No durable checkpointer — each invocation is independent (a bare
 build_graph() call defaults to an in-memory MemorySaver), matching how a

@@ -4,23 +4,45 @@ support copilot uses), logs interactions, drafts replies in the voice set
 by SALES_SYSTEM_PROMPT below, schedules follow-ups a cron sweep
 (scripts/followup_sweep.py) later nudges on, checks the pending follow-up
 queue, hands a qualified lead to a human rep with a packaged brief, and
-closes out a lead that isn't converting. Reuses search_docs/skill_search/
-use_skill/ask_clarification from app/agent/tools.py as-is, same pattern
-app/domains/support/domain.py already establishes (including the bundled
-`sales-lead-qualification` skill under skills/ this domain's skill_search
-can now find).
+closes out a lead that isn't converting. Reuses search_docs/ask_clarification
+from app/agent/tools.py as-is, same pattern app/domains/support/domain.py
+already establishes. skill_search/use_skill, by contrast, are this
+domain's OWN pair (`app.agent.tools.make_skill_tools("sales")`), so the
+bundled `sales-lead-qualification` skill (`domains: [sales]`) — and any
+other domain's own skill — stays properly scoped rather than leaking
+across domains; see that factory's own docstring.
 """
 from dataclasses import dataclass
 
 from app.agent.manifest import AgentManifest, DomainPlugin
 from app.agent.tools import TOOL_CAPABILITIES as _ACME_TOOL_CAPABILITIES
-from app.agent.tools import ask_clarification, search_docs, skill_search, use_skill
+from app.agent.tools import (
+    ask_clarification,
+    make_domain_subagent_tool,
+    make_skill_tools,
+    search_docs,
+)
 from app.core.security import Policy
 from app.domains.sales.tools import SALES_POLICY
 from app.domains.sales.tools import TOOL_CAPABILITIES as _SALES_TOOL_CAPABILITIES
 from app.domains.sales.tools import TOOLS as _SALES_TOOLS
 
-_REUSED_READ_ONLY_TOOLS = [search_docs, skill_search, use_skill, ask_clarification]
+_SKILL_SEARCH, _USE_SKILL = make_skill_tools("sales")
+
+_REUSED_READ_ONLY_TOOLS = [search_docs, _SKILL_SEARCH, _USE_SKILL, ask_clarification]
+
+_RUN_SUBAGENT = make_domain_subagent_tool(
+    domain="sales",
+    all_tools=list(_SALES_TOOLS) + _REUSED_READ_ONLY_TOOLS,
+    tool_capabilities={
+        **_SALES_TOOL_CAPABILITIES,
+        "search_docs": _ACME_TOOL_CAPABILITIES["search_docs"],
+        "skill_search": _ACME_TOOL_CAPABILITIES["skill_search"],
+        "use_skill": _ACME_TOOL_CAPABILITIES["use_skill"],
+        "ask_clarification": _ACME_TOOL_CAPABILITIES["ask_clarification"],
+    },
+)
+# None unless at least one bundled AGENT.md declares `domains: [sales]`.
 
 SALES_SYSTEM_PROMPT = """You are Acme Corp's sales concierge.
 
@@ -44,18 +66,27 @@ surfacing in the follow-up queue.
 Use search_docs for product/company facts you're unsure of rather than
 guessing, skill_search/use_skill for a bundled playbook on handling a
 lead's full lifecycle, and ask_clarification when the lead's intent is
-genuinely ambiguous."""
+genuinely ambiguous.
+
+If a bundled subagent's focus matches a self-contained lookup better than
+doing it yourself, use run_subagent to delegate it — it does not see this
+conversation's history, so describe everything it needs to know."""
 
 
 @dataclass
 class _SalesDomainPlugin:
     def tools(self) -> list:
-        return list(_SALES_TOOLS) + list(_REUSED_READ_ONLY_TOOLS)
+        tools = list(_SALES_TOOLS) + list(_REUSED_READ_ONLY_TOOLS)
+        if _RUN_SUBAGENT is not None:
+            tools.append(_RUN_SUBAGENT)
+        return tools
 
     def tool_capabilities(self) -> dict[str, str]:
         merged = dict(_SALES_TOOL_CAPABILITIES)
         for name in ("search_docs", "skill_search", "use_skill", "ask_clarification"):
             merged[name] = _ACME_TOOL_CAPABILITIES[name]
+        if _RUN_SUBAGENT is not None:
+            merged["run_subagent"] = _ACME_TOOL_CAPABILITIES["run_subagent"]
         return merged
 
     def policy(self) -> Policy:

@@ -47,6 +47,18 @@ class TestParseSubagentFile:
 
         assert record.tools is None
         assert record.model is None
+        assert record.domains is None
+
+    def test_parses_domains_list(self, tmp_path):
+        content = _VALID.replace("model: chat\n---", "model: chat\ndomains: [support]\n---")
+        path = _write_subagent(tmp_path, "researcher", content)
+        assert _parse_subagent_file(path).domains == ("support",)
+
+    def test_non_list_domains_raises(self, tmp_path):
+        content = _VALID.replace("model: chat\n---", "model: chat\ndomains: support\n---")
+        path = _write_subagent(tmp_path, "bad", content)
+        with pytest.raises(SubagentLoadError):
+            _parse_subagent_file(path)
 
     def test_missing_frontmatter_raises(self, tmp_path):
         path = _write_subagent(tmp_path, "bad", "# Just a body, no frontmatter at all.")

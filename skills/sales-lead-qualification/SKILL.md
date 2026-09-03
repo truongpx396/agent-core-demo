@@ -1,6 +1,7 @@
 ---
 name: sales-lead-qualification
 description: Work an inbound lead from first contact through qualification to a clean outcome — scheduled follow-up, handoff to a human rep, or marked lost. Use for any inbound sales/CRM message, not just ones that already show obvious buying intent.
+domains: [sales]
 ---
 
 # Sales Lead Qualification

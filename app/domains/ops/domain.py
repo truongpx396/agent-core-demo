@@ -6,22 +6,42 @@ using the same tools directly. See scripts/ops_digest.py's own docstring
 for why the CRON digest itself bypasses this domain's agent loop entirely
 (a fixed, deterministic pipeline, not a tool-calling turn — an unattended
 cron job can never satisfy should_continue's mandatory human_approval gate
-that post_to_team_channel's "outward" capability requires). Reuses
-skill_search/use_skill from app/agent/tools.py as-is, same pattern
-app/domains/support/domain.py establishes, including the bundled
-`ops-incident-response` skill under skills/.
+that post_to_team_channel's "outward" capability requires). skill_search/
+use_skill are this domain's OWN pair
+(`app.agent.tools.make_skill_tools("ops")`), not Acme's literal objects,
+so the bundled `ops-incident-response` skill (`domains: [ops]`) stays
+scoped to this domain rather than leaking into support/sales/Acme's own
+catalogs; see that factory's own docstring.
 """
 from dataclasses import dataclass
 
 from app.agent.manifest import AgentManifest, DomainPlugin
 from app.agent.tools import TOOL_CAPABILITIES as _ACME_TOOL_CAPABILITIES
-from app.agent.tools import ask_clarification, skill_search, use_skill
+from app.agent.tools import (
+    ask_clarification,
+    make_domain_subagent_tool,
+    make_skill_tools,
+)
 from app.core.security import Policy
 from app.domains.ops.tools import OPS_POLICY
 from app.domains.ops.tools import TOOL_CAPABILITIES as _OPS_TOOL_CAPABILITIES
 from app.domains.ops.tools import TOOLS as _OPS_TOOLS
 
-_REUSED_READ_ONLY_TOOLS = [ask_clarification, skill_search, use_skill]
+_SKILL_SEARCH, _USE_SKILL = make_skill_tools("ops")
+
+_REUSED_READ_ONLY_TOOLS = [ask_clarification, _SKILL_SEARCH, _USE_SKILL]
+
+_RUN_SUBAGENT = make_domain_subagent_tool(
+    domain="ops",
+    all_tools=list(_OPS_TOOLS) + _REUSED_READ_ONLY_TOOLS,
+    tool_capabilities={
+        **_OPS_TOOL_CAPABILITIES,
+        "ask_clarification": _ACME_TOOL_CAPABILITIES["ask_clarification"],
+        "skill_search": _ACME_TOOL_CAPABILITIES["skill_search"],
+        "use_skill": _ACME_TOOL_CAPABILITIES["use_skill"],
+    },
+)
+# None unless at least one bundled AGENT.md declares `domains: [ops]`.
 
 OPS_SYSTEM_PROMPT = """You are Acme Corp's internal ops assistant.
 
@@ -43,18 +63,27 @@ when explicitly asked to notify the team; don't post on your own
 initiative during an ad-hoc investigation.
 
 Use skill_search/use_skill for a bundled playbook on running a full
-incident investigation."""
+incident investigation.
+
+If a bundled subagent's focus matches a self-contained lookup better than
+doing it yourself, use run_subagent to delegate it — it does not see this
+conversation's history, so describe everything it needs to know."""
 
 
 @dataclass
 class _OpsDomainPlugin:
     def tools(self) -> list:
-        return list(_OPS_TOOLS) + list(_REUSED_READ_ONLY_TOOLS)
+        tools = list(_OPS_TOOLS) + list(_REUSED_READ_ONLY_TOOLS)
+        if _RUN_SUBAGENT is not None:
+            tools.append(_RUN_SUBAGENT)
+        return tools
 
     def tool_capabilities(self) -> dict[str, str]:
         merged = dict(_OPS_TOOL_CAPABILITIES)
         for name in ("ask_clarification", "skill_search", "use_skill"):
             merged[name] = _ACME_TOOL_CAPABILITIES[name]
+        if _RUN_SUBAGENT is not None:
+            merged["run_subagent"] = _ACME_TOOL_CAPABILITIES["run_subagent"]
         return merged
 
     def policy(self) -> Policy:

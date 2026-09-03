@@ -79,10 +79,11 @@ from typing import Any, Literal
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
+from app.agent import skills as skills_module
 from app.agent import subagents as subagents_module
 from app.core import metrics
 from app.core.config import (
@@ -652,6 +653,12 @@ class SkillSearchArgs(BaseModel):
     )
 
 
+class UseSkillArgs(BaseModel):
+    name: str = Field(
+        ..., description="The exact skill name, as returned by skill_search."
+    )
+
+
 def _format_skill_hits(hits: list) -> str:
     lines = [
         f"- {(h.payload or {}).get('name')}: {(h.payload or {}).get('description')}"
@@ -660,61 +667,110 @@ def _format_skill_hits(hits: list) -> str:
     return "\n".join(lines)
 
 
-def _skill_search_impl(query: str) -> str:
-    try:
-        hits = qdrant_store.hybrid_search(
-            query, collection=SKILLS_COLLECTION, k=SKILLS_SEARCH_TOP_K
-        )
-    except Exception as exc:  # noqa: BLE001 - the skills collection may not exist
-        # yet (before `make index-skills` has ever run) — hybrid_search's own
-        # two degrade layers (app/retrieval/qdrant_store.py) only cover a missing
-        # SPARSE leg or a failed RERANK, not a wholly missing collection, so a
-        # fresh environment gets a clear, actionable message here instead of a
-        # raw Qdrant 404 bubbling up as a generic tool error.
-        logger.warning(
-            "skill search unavailable", extra={"error_class": type(exc).__name__}
-        )
-        return "No skills catalog is available right now (has `make index-skills` been run?)."
-    if not hits:
-        return "No matching skills found. Proceed using your other tools directly."
-    return _format_skill_hits(hits)
+def _skill_visible_to_domain(record: "skills_module.SkillRecord", domain: str) -> bool:
+    """A skill with no `domains:` frontmatter (`record.domains is None`) is
+    visible everywhere — the default every SKILL.md had before this field
+    existed. A tagged one is visible only to the domains it names, INCLUDING
+    Acme: `domains: [support]` hides a skill from Acme's own catalog too,
+    not just from the other two example domains."""
+    return record.domains is None or domain in record.domains
 
 
-@tool(args_schema=SkillSearchArgs)
-def skill_search(query: str) -> str:
-    """Search the catalog of available skills — packaged, multi-step
-    instructions for specific kinds of tasks (e.g. producing a particular
-    report format). Returns candidate skill names and descriptions; call
-    use_skill with the best match's exact name to load its full
-    instructions before proceeding. If nothing matches well, just proceed
-    with your other tools directly — not every task has a packaged skill."""
-    return _run_with_timeout(_skill_search_impl, query)
+_SKILL_SEARCH_FETCH_K = max(SKILLS_SEARCH_TOP_K * 4, 10)  # over-fetch before
+# filtering by domain, then truncate back to SKILLS_SEARCH_TOP_K — see
+# make_skill_tools's own docstring for why.
 
 
-class UseSkillArgs(BaseModel):
-    name: str = Field(
-        ..., description="The exact skill name, as returned by skill_search."
-    )
+def _filter_skill_hits_by_domain(hits: list, domain: str, catalog: dict) -> list:
+    """Keeps only hits visible to `domain`. A hit whose `name` isn't in
+    `catalog` at all (a stale Qdrant entry for a SKILL.md since removed or
+    renamed on disk) is dropped too — disk stays authoritative, same
+    posture app/agent/skills.py's own docstring already establishes for a
+    skill's body."""
+    kept = []
+    for h in hits:
+        name = (h.payload or {}).get("name")
+        record = catalog.get(name)
+        if record is not None and _skill_visible_to_domain(record, domain):
+            kept.append(h)
+    return kept
 
 
-def _use_skill_impl(name: str) -> str:
-    from app.agent import skills as skills_module
+def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
+    """Builds a `(skill_search, use_skill)` pair scoped to `domain`. Acme's
+    own module-level pair below is `make_skill_tools("acme")`; each of
+    app/domains/support|sales|ops/domain.py builds its own via this same
+    factory instead of reusing Acme's literal tool objects, so a
+    domain-tagged skill (`domains: [...]` in its SKILL.md frontmatter,
+    app/agent/skills.py) never leaks into a domain it wasn't written for —
+    enforced in BOTH tools here, not just skill_search's results: use_skill
+    loads by exact name with no search step, so it has to apply the same
+    filter itself or a model that somehow guessed/hallucinated a
+    foreign-domain skill's name could load it anyway.
 
-    record = skills_module.get_skills().get(name)
-    if record is None:
-        return (
-            f"No skill named {name!r} found. Call skill_search first to find "
-            "the exact name of an available skill."
-        )
-    return record.body
+    The filter runs in PYTHON, over app/agent/skills.py::get_skills()'s own
+    disk-backed catalog — not as a Qdrant payload filter — for the same
+    reason that module keeps a skill's full body off Qdrant entirely:
+    domain eligibility is a fact about the SKILL.md on disk, and duplicating
+    it into the Qdrant payload just to filter there would be a second place
+    it could drift out of sync with what's actually on disk. To keep
+    results correct even when several of Qdrant's top semantic matches fall
+    outside `domain`, this over-fetches (`_SKILL_SEARCH_FETCH_K`) before
+    filtering, then truncates back to `SKILLS_SEARCH_TOP_K` — cheap, since
+    this app's own bundled catalog is demo-scale, never more than a
+    handful of skills.
+    """
+
+    def _skill_search_impl(query: str) -> str:
+        try:
+            hits = qdrant_store.hybrid_search(
+                query, collection=SKILLS_COLLECTION, k=_SKILL_SEARCH_FETCH_K
+            )
+        except Exception as exc:  # noqa: BLE001 - the skills collection may not exist
+            # yet (before `make index-skills` has ever run) — hybrid_search's own
+            # two degrade layers (app/retrieval/qdrant_store.py) only cover a missing
+            # SPARSE leg or a failed RERANK, not a wholly missing collection, so a
+            # fresh environment gets a clear, actionable message here instead of a
+            # raw Qdrant 404 bubbling up as a generic tool error.
+            logger.warning(
+                "skill search unavailable", extra={"error_class": type(exc).__name__}
+            )
+            return "No skills catalog is available right now (has `make index-skills` been run?)."
+        visible = _filter_skill_hits_by_domain(hits, domain, skills_module.get_skills())
+        if not visible:
+            return "No matching skills found. Proceed using your other tools directly."
+        return _format_skill_hits(visible[:SKILLS_SEARCH_TOP_K])
+
+    @tool(args_schema=SkillSearchArgs)
+    def skill_search(query: str) -> str:
+        """Search the catalog of available skills — packaged, multi-step
+        instructions for specific kinds of tasks (e.g. producing a particular
+        report format). Returns candidate skill names and descriptions; call
+        use_skill with the best match's exact name to load its full
+        instructions before proceeding. If nothing matches well, just proceed
+        with your other tools directly — not every task has a packaged skill."""
+        return _run_with_timeout(_skill_search_impl, query)
+
+    def _use_skill_impl(name: str) -> str:
+        record = skills_module.get_skills().get(name)
+        if record is None or not _skill_visible_to_domain(record, domain):
+            return (
+                f"No skill named {name!r} found. Call skill_search first to find "
+                "the exact name of an available skill."
+            )
+        return record.body
+
+    @tool(args_schema=UseSkillArgs)
+    def use_skill(name: str) -> str:
+        """Load one skill's full instructions by its exact name (from
+        skill_search's results). Follow the returned instructions using your
+        other tools to complete the task."""
+        return _run_with_timeout(_use_skill_impl, name)
+
+    return skill_search, use_skill
 
 
-@tool(args_schema=UseSkillArgs)
-def use_skill(name: str) -> str:
-    """Load one skill's full instructions by its exact name (from
-    skill_search's results). Follow the returned instructions using your
-    other tools to complete the task."""
-    return _run_with_timeout(_use_skill_impl, name)
+skill_search, use_skill = make_skill_tools("acme")
 
 
 TOOLS = [
@@ -857,15 +913,40 @@ _ALL_TOOL_NAMES = frozenset(t.name for t in TOOLS)  # computed before run_subage
 # above), so this ordering doesn't matter for correctness, just clarity.
 
 
-def _build_subagent_registry() -> dict[str, tuple["subagents_module.SubagentRecord", tuple[str, ...]]]:
+def _subagent_declared_for_domain(record: "subagents_module.SubagentRecord", domain: str) -> bool:
+    """An AGENT.md with no `domains:` frontmatter (`record.domains is None`)
+    stays exactly where every subagent has always lived — visible only to
+    `domain="acme"` — rather than silently becoming available to every new
+    domain this app ever grows. See app/agent/subagents.py's own docstring
+    for why that default differs from app/agent/skills.py's SkillRecord
+    (there, `None` means "every domain"): a subagent's declared `tools:`
+    are only ever meaningful against ONE specific tool universe, so an
+    untagged subagent handed to a domain its tools were never written for
+    would typically just resolve to nothing useful anyway."""
+    if record.domains is None:
+        return domain == "acme"
+    return domain in record.domains
+
+
+def _build_subagent_registry(
+    all_tool_names: frozenset[str], tool_capabilities: Mapping[str, str], *, domain: str
+) -> dict[str, tuple["subagents_module.SubagentRecord", tuple[str, ...]]]:
+    """Every bundled AGENT.md declared for `domain` (see
+    `_subagent_declared_for_domain`), each resolved to its safe, read_only
+    tool subset within `all_tool_names`/`tool_capabilities` — that pair is
+    itself domain-specific (a nested subagent run can only ever call tools
+    that exist, and are read_only, WITHIN the calling domain's own tool
+    universe, not Acme's)."""
     registry = {}
     for record in subagents_module.get_subagents().values():
-        resolved = _resolve_subagent_tools(record.name, record.tools, _ALL_TOOL_NAMES, TOOL_CAPABILITIES)
+        if not _subagent_declared_for_domain(record, domain):
+            continue
+        resolved = _resolve_subagent_tools(record.name, record.tools, all_tool_names, tool_capabilities)
         registry[record.name] = (record, resolved)
     return registry
 
 
-_SUBAGENT_REGISTRY = _build_subagent_registry()
+_SUBAGENT_REGISTRY = _build_subagent_registry(_ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="acme")
 
 _CITATION_MARKER_WARNING = (
     "Do not use '[n]'-style bracket citation markers in your final answer — "
@@ -898,6 +979,19 @@ class _SubagentDomainPlugin:
     plugin's `tools()` sidesteps the empty-tuple ambiguity entirely: an
     empty `domain.tools()` is unambiguous, no special-casing anywhere in
     `build_graph()` interprets it as "everything."
+
+    `tool_capabilities()` reports every one of `_tools` as `read_only` —
+    NOT a lookup into the caller's own `TOOL_CAPABILITIES` dict, which for
+    a domain-specific subagent (e.g. one resolved from a support-domain
+    registry) may not even contain that tool's name at all. That gap
+    matters: `_tool_capability()` (app/agent/graph.py) defaults an
+    UNDECLARED name to `"outward"` — fail-closed and correct for the
+    top-level graph, where a human is present to approve a pause, but
+    silently wrong here, where a nested one-shot `graph.invoke()` has no
+    resume path and would just look like the subagent "failed" for no
+    visible reason. Restating read_only-ness locally is correct BY
+    CONSTRUCTION, not a guess: every name in `_tools` already passed
+    `_resolve_subagent_tools`'s own read_only-only filter to get here.
     """
 
     _tools: list
@@ -906,7 +1000,7 @@ class _SubagentDomainPlugin:
         return list(self._tools)
 
     def tool_capabilities(self) -> dict[str, str]:
-        return dict(TOOL_CAPABILITIES)
+        return {t.name: "read_only" for t in self._tools}
 
     def policy(self):
         return DEFAULT_POLICY
@@ -917,17 +1011,28 @@ def _run_subagent_impl(
     task: str,
     config: RunnableConfig,
     registry: dict[str, tuple] | None = None,
+    tools_by_name: Mapping[str, Any] | None = None,
     llm: Any = None,
 ) -> str:
     """Build and run one nested, isolated agent turn, then return its final
     answer text. See GRAPH_PATTERNS.md pattern 46 for the full design;
-    `registry`/`llm` are DI for tests (mirror `build_graph(deps=...)`'s own
-    override shape) — `registry` defaults to the real, process-wide
-    `_SUBAGENT_REGISTRY`, `llm` defaults to `None`, meaning "construct a real
-    ChatOpenAI client for this subagent's own model alias." A test passing a
-    fake chat model here bypasses that construction entirely, the same way
-    `GraphDeps(llm=fake)` already bypasses `_make_llm` at the top level —
-    real tools.py tools have no other network-touching construction to fake.
+    `registry`/`tools_by_name`/`llm` are DI for tests (mirror
+    `build_graph(deps=...)`'s own override shape) — `registry` defaults to
+    the real, process-wide `_SUBAGENT_REGISTRY`, `tools_by_name` defaults to
+    every Acme tool by name (`{t.name: t for t in TOOLS}`), `llm` defaults
+    to `None`, meaning "construct a real ChatOpenAI client for this
+    subagent's own model alias." A test passing a fake chat model here
+    bypasses that construction entirely, the same way `GraphDeps(llm=fake)`
+    already bypasses `_make_llm` at the top level — real tools.py tools
+    have no other network-touching construction to fake.
+
+    `tools_by_name` matters for the same reason `registry` itself does: a
+    domain-scoped subagent's `registry` entry can resolve to a tool name
+    like `check_ticket_status` that simply isn't IN Acme's own `TOOLS` —
+    looking it up there would silently drop it. `make_domain_subagent_tool`
+    passes the calling domain's own tool objects here; the Acme-level
+    construction below relies on the default, since Acme's own registry
+    only ever resolves to names already in Acme's own `TOOLS`.
 
     Isolation, in one place: a FRESH `messages` list (the subagent's own
     system prompt + exactly the delegated `task` as its sole HumanMessage —
@@ -959,7 +1064,7 @@ def _run_subagent_impl(
     if entry is None:
         return f"No subagent named {subagent_name!r} is registered."
     record, resolved_tool_names = entry
-    all_tools_by_name = {t.name: t for t in TOOLS}
+    all_tools_by_name = tools_by_name if tools_by_name is not None else {t.name: t for t in TOOLS}
     nested_tools = [all_tools_by_name[name] for name in resolved_tool_names if name in all_tools_by_name]
 
     # Deferred imports: app/agent/graph.py imports THIS module
@@ -1157,3 +1262,87 @@ if _SUBAGENT_REGISTRY:
         return _run_subagent_impl(subagent_name.value, task, config)
 
     TOOLS.append(run_subagent)
+
+
+def make_domain_subagent_tool(
+    domain: str, all_tools: list, tool_capabilities: Mapping[str, str]
+) -> BaseTool | None:
+    """Builds a `run_subagent` tool scoped to `domain` — the domain
+    equivalent of the Acme-level construction above (same closed-enum
+    menu, same `RunSubagentArgs` shape, same mandatory read_only-only
+    resolution via `_resolve_subagent_tools`), but resolved against
+    `all_tools`/`tool_capabilities` — the CALLING domain's own tool
+    universe, e.g. app/domains/support/domain.py passes its own ticket
+    tools plus its own `search_docs`/`skill_search`/`use_skill`/
+    `ask_clarification`, not Acme's `TOOLS`/`TOOL_CAPABILITIES` — and
+    filtered to only the subagents actually declared for `domain`
+    (`domains: [...]` frontmatter, see app/agent/subagents.py's docstring
+    for the "untagged means Acme-only" default this applies).
+
+    Returns `None` if that filtered registry ends up empty — a domain with
+    no bundled subagent gets no `run_subagent` tool at all, never one
+    offering an empty menu: a `SubagentName`-style enum needs at least one
+    real member to be a meaningful closed vocabulary, and a tool a caller
+    can never usefully invoke is worse than no tool (same "that omission is
+    what sandboxed means" posture app/domains/support/domain.py's own
+    docstring already takes for tools this app deliberately doesn't expose).
+
+    Each call builds a genuinely NEW, distinct closure (its own Enum class,
+    `Args` schema, and `run_subagent` tool object) — never the Acme-level
+    `run_subagent` above. Meant to be called ONCE, at each domain module's
+    own import time (same "built once, not lazily" reasoning the
+    Acme-level block's own comment gives — a subagent added to disk after
+    the process starts needs a restart to appear here either way).
+    """
+    all_tool_names = frozenset(t.name for t in all_tools)
+    registry = _build_subagent_registry(all_tool_names, tool_capabilities, domain=domain)
+    if not registry:
+        return None
+
+    tools_by_name = {t.name: t for t in all_tools}
+
+    # A per-domain Enum TYPE (not just distinct member values) — reusing
+    # SubagentName here would mix this domain's menu with Acme's, and two
+    # domains both calling this factory would silently share one Enum
+    # class between them, wrong the moment their registries diverge.
+    domain_subagent_name = Enum(  # type: ignore[misc]
+        f"SubagentName_{domain}", {name: name for name in sorted(registry)}, type=str
+    )
+
+    menu = "\n".join(
+        f"- {name}: {record.description}" for name, (record, _tools) in sorted(registry.items())
+    )
+
+    class _RunSubagentArgs(BaseModel):
+        subagent_name: domain_subagent_name = Field(  # type: ignore[valid-type]
+            ..., description=f"Which subagent to delegate to. Options:\n{menu}"
+        )
+        task: str = Field(
+            ...,
+            description="The self-contained task to delegate. The subagent has NO "
+            "access to this conversation's history, so include everything it needs "
+            "to know in this one description.",
+        )
+
+        @field_validator("task")
+        @classmethod
+        def _not_blank(cls, v: str) -> str:
+            if not v.strip():
+                raise ValueError("task must not be empty")
+            return v
+
+    @tool(args_schema=_RunSubagentArgs)
+    def run_subagent(subagent_name: domain_subagent_name, task: str, config: RunnableConfig) -> str:
+        """Delegate a self-contained task to a specialized subagent running in
+        its own isolated context — it does NOT see this conversation's
+        history, only the `task` description you give it, so describe
+        everything it needs to know. Use this to keep a multi-step lookup's
+        intermediate steps out of the main conversation, or when a task
+        matches a subagent's specific focus better than doing it yourself.
+        Every subagent is restricted to read_only tools, so calling this
+        never needs human approval."""
+        return _run_subagent_impl(
+            subagent_name.value, task, config, registry=registry, tools_by_name=tools_by_name
+        )
+
+    return run_subagent
