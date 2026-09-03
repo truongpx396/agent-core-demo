@@ -18,6 +18,7 @@ from langchain_core.messages import AIMessage, SystemMessage
 
 from app.agent import skills as skills_module
 from app.agent import sql_store, tools
+from app.agent import subagents as subagents_module
 from app.agent.skills import SkillRecord
 from app.agent.subagents import SubagentRecord
 from app.agent.tools import (
@@ -29,10 +30,17 @@ from app.agent.tools import (
     RememberArgs,
     SubagentName,
     Topic,
+    _build_subagent_registry,
+    _filter_skill_hits_by_domain,
     _resolve_subagent_tools,
     _run_subagent_impl,
+    _skill_visible_to_domain,
+    _subagent_declared_for_domain,
+    _SubagentDomainPlugin,
     add_note,
     ask_clarification,
+    make_domain_subagent_tool,
+    make_skill_tools,
     query_employees,
     recall_memories,
     remember,
@@ -545,6 +553,20 @@ class TestSkillSearch:
             _FakeHit({"name": "expense-summary", "description": "Summarize expense line items."}),
         ]
         monkeypatch.setattr(qdrant_store, "hybrid_search", lambda *a, **k: hits)
+        monkeypatch.setattr(
+            skills_module,
+            "get_skills",
+            lambda: {
+                "onboarding-brief": SkillRecord(
+                    name="onboarding-brief", description="d", body="b", domains=None,
+                    path=Path("skills/onboarding-brief/SKILL.md"),
+                ),
+                "expense-summary": SkillRecord(
+                    name="expense-summary", description="d", body="b", domains=None,
+                    path=Path("skills/expense-summary/SKILL.md"),
+                ),
+            },
+        )
 
         result = skill_search.invoke({"query": "onboard a new hire"})
 
@@ -578,6 +600,7 @@ class TestUseSkill:
             name="onboarding-brief",
             description="Compose a new-hire brief.",
             body="# Onboarding Brief\n1. Call query_employees...",
+            domains=None,
             path=Path("skills/onboarding-brief/SKILL.md"),
         )
         monkeypatch.setattr(skills_module, "get_skills", lambda: {"onboarding-brief": record})
@@ -591,6 +614,107 @@ class TestUseSkill:
         result = use_skill.invoke({"name": "does-not-exist"})
         assert "No skill named" in result
         assert "skill_search" in result
+
+
+class TestSkillVisibleToDomain:
+    def test_untagged_skill_is_visible_everywhere(self):
+        record = SkillRecord(name="x", description="d", body="b", domains=None, path=Path("x"))
+        assert _skill_visible_to_domain(record, "acme") is True
+        assert _skill_visible_to_domain(record, "support") is True
+
+    def test_tagged_skill_is_visible_only_to_its_domains(self):
+        record = SkillRecord(
+            name="x", description="d", body="b", domains=("support",), path=Path("x")
+        )
+        assert _skill_visible_to_domain(record, "support") is True
+        assert _skill_visible_to_domain(record, "acme") is False
+        assert _skill_visible_to_domain(record, "sales") is False
+
+
+class TestFilterSkillHitsByDomain:
+    def test_drops_a_hit_for_a_skill_tagged_to_a_different_domain(self):
+        catalog = {
+            "sales-only": SkillRecord(
+                name="sales-only", description="d", body="b", domains=("sales",), path=Path("x")
+            )
+        }
+        hits = [_FakeHit({"name": "sales-only", "description": "d"})]
+        assert _filter_skill_hits_by_domain(hits, "support", catalog) == []
+
+    def test_keeps_a_hit_for_an_untagged_skill(self):
+        catalog = {
+            "global": SkillRecord(name="global", description="d", body="b", domains=None, path=Path("x"))
+        }
+        hits = [_FakeHit({"name": "global", "description": "d"})]
+        assert _filter_skill_hits_by_domain(hits, "support", catalog) == hits
+
+    def test_drops_a_hit_for_a_skill_no_longer_on_disk(self):
+        hits = [_FakeHit({"name": "removed", "description": "d"})]
+        assert _filter_skill_hits_by_domain(hits, "acme", {}) == []
+
+
+class TestMakeSkillTools:
+    def test_returns_a_distinct_tool_pair_each_call(self):
+        s1, u1 = make_skill_tools("support")
+        s2, u2 = make_skill_tools("sales")
+        assert s1 is not s2
+        assert u1 is not u2
+        assert s1.name == "skill_search" == s2.name
+        assert u1.name == "use_skill" == u2.name
+
+    def test_skill_search_hides_a_skill_tagged_to_another_domain(self, monkeypatch):
+        hits = [_FakeHit({"name": "sales-only", "description": "a sales playbook"})]
+        monkeypatch.setattr(qdrant_store, "hybrid_search", lambda *a, **k: hits)
+        monkeypatch.setattr(
+            skills_module,
+            "get_skills",
+            lambda: {
+                "sales-only": SkillRecord(
+                    name="sales-only", description="a sales playbook", body="b",
+                    domains=("sales",), path=Path("x"),
+                )
+            },
+        )
+
+        support_search, _ = make_skill_tools("support")
+        sales_search, _ = make_skill_tools("sales")
+
+        assert "No matching skills" in support_search.invoke({"query": "help a lead"})
+        assert "sales-only" in sales_search.invoke({"query": "help a lead"})
+
+    def test_use_skill_refuses_a_skill_tagged_to_another_domain_even_by_exact_name(self, monkeypatch):
+        monkeypatch.setattr(
+            skills_module,
+            "get_skills",
+            lambda: {
+                "sales-only": SkillRecord(
+                    name="sales-only", description="d", body="the sales playbook body",
+                    domains=("sales",), path=Path("x"),
+                )
+            },
+        )
+
+        support_search, support_use = make_skill_tools("support")
+        sales_search, sales_use = make_skill_tools("sales")
+
+        assert "No skill named" in support_use.invoke({"name": "sales-only"})
+        assert sales_use.invoke({"name": "sales-only"}) == "the sales playbook body"
+
+    def test_untagged_skill_is_reachable_from_every_domain(self, monkeypatch):
+        monkeypatch.setattr(
+            skills_module,
+            "get_skills",
+            lambda: {
+                "global": SkillRecord(
+                    name="global", description="d", body="global body", domains=None, path=Path("x"),
+                )
+            },
+        )
+        _, support_use = make_skill_tools("support")
+        _, ops_use = make_skill_tools("ops")
+
+        assert support_use.invoke({"name": "global"}) == "global body"
+        assert ops_use.invoke({"name": "global"}) == "global body"
 
 
 class _RecordingFakeLLM:
@@ -609,13 +733,14 @@ class _RecordingFakeLLM:
         return self._inner.invoke(messages, *args, **kwargs)
 
 
-def _fake_subagent_record(name="researcher", tools_=("search_docs", "calculator"), model=None):
+def _fake_subagent_record(name="researcher", tools_=("search_docs", "calculator"), model=None, domains_=None):
     return SubagentRecord(
         name=name,
         description="A test subagent.",
         system_prompt="You are a test subagent.",
         tools=tools_,
         model=model,
+        domains=domains_,
         path=Path(f"subagents/{name}/AGENT.md"),
     )
 
@@ -839,3 +964,143 @@ class TestRunSubagentTool:
 
         with pytest.raises(ValueError):
             RunSubagentArgs(subagent_name=SubagentName.researcher, task="   ")
+
+
+class TestSubagentDeclaredForDomain:
+    def test_untagged_subagent_is_declared_only_for_acme(self):
+        record = _fake_subagent_record(domains_=None)
+        assert _subagent_declared_for_domain(record, "acme") is True
+        assert _subagent_declared_for_domain(record, "support") is False
+
+    def test_tagged_subagent_is_declared_only_for_its_domains(self):
+        record = _fake_subagent_record(domains_=("support",))
+        assert _subagent_declared_for_domain(record, "support") is True
+        assert _subagent_declared_for_domain(record, "acme") is False
+        assert _subagent_declared_for_domain(record, "sales") is False
+
+
+class TestBuildSubagentRegistryDomainFilter:
+    def test_domain_filter_ONLY_admits_subagents_declared_for_it(self, monkeypatch):
+        acme_record = _fake_subagent_record(name="acme-only", tools_=("search_docs",), domains_=None)
+        support_record = _fake_subagent_record(
+            name="support-only", tools_=("search_docs",), domains_=("support",)
+        )
+        monkeypatch.setattr(
+            subagents_module,
+            "get_subagents",
+            lambda: {"acme-only": acme_record, "support-only": support_record},
+        )
+
+        acme_registry = _build_subagent_registry(_ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="acme")
+        support_registry = _build_subagent_registry(
+            _ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="support"
+        )
+
+        assert set(acme_registry) == {"acme-only"}
+        assert set(support_registry) == {"support-only"}
+
+    def test_resolves_against_the_passed_in_tool_universe_not_acmes(self, monkeypatch):
+        """A domain-specific tool name (not in Acme's own TOOL_CAPABILITIES
+        at all) resolves correctly when the CALLER's own tool_capabilities
+        dict is passed — proving the registry isn't secretly still reading
+        the global TOOL_CAPABILITIES."""
+        record = _fake_subagent_record(
+            name="ticket-researcher", tools_=("check_ticket_status",), domains_=("support",)
+        )
+        monkeypatch.setattr(subagents_module, "get_subagents", lambda: {"ticket-researcher": record})
+
+        registry = _build_subagent_registry(
+            frozenset({"check_ticket_status"}),
+            {"check_ticket_status": "read_only"},
+            domain="support",
+        )
+
+        assert registry["ticket-researcher"] == (record, ("check_ticket_status",))
+
+
+class TestSubagentDomainPluginCapabilityFix:
+    """The bug make_domain_subagent_tool's docstring names directly: a
+    nested run's own tool capabilities must come from the ALREADY-resolved
+    (guaranteed read_only) tool set, never a lookup into Acme's global
+    TOOL_CAPABILITIES — which may not even contain a domain-specific tool's
+    name, defaulting it to "outward" and wrongly pausing a run with no
+    resume path."""
+
+    def test_reports_every_resolved_tool_as_read_only_even_when_absent_from_acmes_dict(self):
+        fake_tool = type("FakeTool", (), {"name": "check_ticket_status"})()
+        plugin = _SubagentDomainPlugin([fake_tool])
+
+        assert plugin.tool_capabilities() == {"check_ticket_status": "read_only"}
+        assert "check_ticket_status" not in TOOL_CAPABILITIES  # proves it's not from the global dict
+
+
+class TestMakeDomainSubagentTool:
+    def test_returns_none_when_no_subagent_is_declared_for_the_domain(self, monkeypatch):
+        monkeypatch.setattr(subagents_module, "get_subagents", lambda: {})
+        assert make_domain_subagent_tool("support", list(TOOLS), TOOL_CAPABILITIES) is None
+
+    def test_builds_a_working_tool_scoped_to_the_domains_own_universe(self, monkeypatch):
+        record = _fake_subagent_record(
+            name="ticket-researcher", tools_=("check_ticket_status",), domains_=("support",)
+        )
+        monkeypatch.setattr(subagents_module, "get_subagents", lambda: {"ticket-researcher": record})
+
+        fake_check_ticket_status = type("FakeTool", (), {"name": "check_ticket_status"})()
+        domain_tool = make_domain_subagent_tool(
+            "support", [fake_check_ticket_status], {"check_ticket_status": "read_only"}
+        )
+
+        assert domain_tool is not None
+        assert domain_tool.name == "run_subagent"
+        schema = domain_tool.args_schema.model_json_schema()
+        enum_def = next(iter(schema["$defs"].values()))
+        assert enum_def["enum"] == ["ticket-researcher"]
+
+    def test_two_domains_get_two_independent_enum_types(self, monkeypatch):
+        support_record = _fake_subagent_record(
+            name="support-agent", tools_=(), domains_=("support",)
+        )
+        sales_record = _fake_subagent_record(name="sales-agent", tools_=(), domains_=("sales",))
+        monkeypatch.setattr(
+            subagents_module,
+            "get_subagents",
+            lambda: {"support-agent": support_record, "sales-agent": sales_record},
+        )
+
+        support_tool = make_domain_subagent_tool("support", [], {})
+        sales_tool = make_domain_subagent_tool("sales", [], {})
+
+        support_schema = support_tool.args_schema.model_json_schema()
+        sales_schema = sales_tool.args_schema.model_json_schema()
+        assert next(iter(support_schema["$defs"].values()))["enum"] == ["support-agent"]
+        assert next(iter(sales_schema["$defs"].values()))["enum"] == ["sales-agent"]
+
+    def test_delegates_using_the_domains_own_tools_not_acmes(self, monkeypatch):
+        """The actual bug this whole mechanism exists to fix: a
+        domain-specific tool name must be resolvable as a real nested tool
+        object, not silently dropped because it isn't in Acme's TOOLS."""
+        record = _fake_subagent_record(
+            name="ticket-researcher", tools_=("a_support_only_tool",), domains_=("support",)
+        )
+        monkeypatch.setattr(subagents_module, "get_subagents", lambda: {"ticket-researcher": record})
+
+        captured = {}
+
+        def fake_run_subagent_impl(name, task, config, registry=None, tools_by_name=None, llm=None):
+            captured["tools_by_name"] = tools_by_name
+            captured["registry"] = registry
+            return "ok"
+
+        monkeypatch.setattr(tools, "_run_subagent_impl", fake_run_subagent_impl)
+
+        fake_support_tool = type("FakeTool", (), {"name": "a_support_only_tool"})()
+        domain_tool = make_domain_subagent_tool(
+            "support", [fake_support_tool], {"a_support_only_tool": "read_only"}
+        )
+        domain_tool.invoke(
+            {"subagent_name": "ticket-researcher", "task": "look something up"},
+            config=_subagent_cfg(),
+        )
+
+        assert captured["tools_by_name"] == {"a_support_only_tool": fake_support_tool}
+        assert "ticket-researcher" in captured["registry"]
