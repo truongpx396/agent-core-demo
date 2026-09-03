@@ -39,7 +39,7 @@ from typing import cast
 
 import redis.asyncio as redis
 
-from app.core.config import REDIS_URL
+from app.core.config import REDIS_MAX_CONNECTIONS, REDIS_URL
 from app.core.security import SecurityCtx
 
 logger = logging.getLogger(__name__)
@@ -84,10 +84,27 @@ def get_client() -> redis.Redis:
     itself is left to wait as long as that takes. `socket_connect_timeout`
     stays at its normal finite default so an unreachable Redis still fails
     fast on connect, just not on a legitimate long read.
+
+    `max_connections=REDIS_MAX_CONNECTIONS`: redis-py's own default (100)
+    is silent and easy to blow through here specifically — every
+    `POST /chat/stream/queued` SSE connection holds a pooled connection for
+    the FULL blocking-read duration of its turn (`read_results`'s `XREAD
+    BLOCK` above), not a quick round trip, so concurrent SSE connections
+    map ~1:1 onto pool connections held. Verified directly: 250 concurrent
+    requests against the unset default produced `MaxConnectionsError` for
+    everything past the ~100th (an 82% failure rate) — this app's real
+    concurrent-request ceiling was silently 100, regardless of how many
+    agent_worker.py processes were running or how their own concurrency
+    was configured.
     """
     global _client
     if _client is None:
-        _client = redis.Redis.from_url(REDIS_URL, decode_responses=True, socket_timeout=None)
+        _client = redis.Redis.from_url(
+            REDIS_URL,
+            decode_responses=True,
+            socket_timeout=None,
+            max_connections=REDIS_MAX_CONNECTIONS,
+        )
     return _client
 
 

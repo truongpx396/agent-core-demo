@@ -77,6 +77,7 @@ from app.agent.runtime import (
     close_checkpointer_pool,
     init_graph_async,
 )
+from app.core.config import AGENT_WORKER_MAX_CONCURRENCY
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.logging_config import bind_request_id, configure_logging
 from app.core.telemetry import configure_telemetry
@@ -94,12 +95,14 @@ from app.turns.queue import (
 logger = logging.getLogger(__name__)
 
 CONSUMER_NAME = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
-_MAX_CONCURRENCY = 10  # concurrent turns ONE worker process will run at once —
-# bounds both the asyncio.Semaphore in run() below and how many entries a
-# single xreadgroup call pulls off the stream, so this process never claims
-# more work than it's currently willing to start (an unclaimed entry just
-# stays pending for the group — another worker, or this one on its next
-# read, can still pick it up).
+_MAX_CONCURRENCY = AGENT_WORKER_MAX_CONCURRENCY  # concurrent turns ONE worker
+# process will run at once (app/core/config.py's own docstring on why this
+# is env-configurable, not a bare constant) — bounds both the
+# asyncio.Semaphore in run() below and how many entries a single
+# xreadgroup call pulls off the stream, so this process never claims more
+# work than it's currently willing to start (an unclaimed entry just stays
+# pending for the group — another worker, or this one on its next read,
+# can still pick it up).
 _READ_COUNT = _MAX_CONCURRENCY
 _BLOCK_MS = 5000
 

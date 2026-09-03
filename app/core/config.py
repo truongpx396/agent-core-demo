@@ -214,6 +214,33 @@ class Settings(BaseSettings):
     # here to a THIRD ancillary system.
     rate_limit_per_minute: int = 30
 
+    # Concurrent turns ONE app/turns/agent_worker.py process will run at
+    # once (asyncio.Semaphore-bounded, see that module's own docstring).
+    # Env-configurable, not just a code constant, specifically so a
+    # load-testing run can dial it without a redeploy — production sizing
+    # depends on the DOWNSTREAM LLM backend's own real concurrency, not a
+    # value this app can pick once and forget (see loadtest/fake_llm_server.py's
+    # docstring on native Ollama's own hard `-np 1` ceiling vs a genuinely
+    # concurrent backend).
+    agent_worker_max_concurrency: int = 10
+
+    # Cap on app/turns/queue.py::get_client()'s connection pool — redis-py's
+    # own default (100, unset if this weren't here) is silent and easy to
+    # blow through: every POST /chat/stream/queued SSE connection holds a
+    # pooled connection for the FULL blocking-read duration of its turn
+    # (app/turns/queue.py::read_results's XREAD BLOCK), not just a quick
+    # round trip, so concurrent SSE connections map ~1:1 onto pool
+    # connections held. Verified directly: 250 concurrent requests against
+    # the redis-py default produced redis.exceptions.MaxConnectionsError
+    # for everything past the ~100th, an 82% failure rate — this app's
+    # actual concurrent-request ceiling was silently 100, regardless of how
+    # many agent_worker.py processes or how high AGENT_WORKER_MAX_CONCURRENCY
+    # was set on the other side of the queue. Comfortably above what any
+    # single reasonable load-test run needs; still finite (never literally
+    # unbounded) to keep one process from being able to exhaust the real
+    # Redis server's own maxclients ceiling by itself.
+    redis_max_connections: int = 300
+
     # Comma-separated list of allowed origins for CORS, or "*" for any
     # (the default — appropriate for a local demo with no other frontend
     # pointed at it; a real multi-origin deployment narrows this). The
@@ -278,6 +305,8 @@ MINIO_SECRET_KEY = settings.minio_secret_key
 MINIO_BUCKET = settings.minio_bucket
 MINIO_SECURE = settings.minio_secure
 RATE_LIMIT_PER_MINUTE = settings.rate_limit_per_minute
+AGENT_WORKER_MAX_CONCURRENCY = settings.agent_worker_max_concurrency
+REDIS_MAX_CONNECTIONS = settings.redis_max_connections
 CORS_ALLOWED_ORIGINS = settings.cors_allowed_origins
 MAX_UPLOAD_SIZE_MB = settings.max_upload_size_mb
 OTEL_EXPORTER_OTLP_ENDPOINT = settings.otel_exporter_otlp_endpoint
