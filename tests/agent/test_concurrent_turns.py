@@ -81,7 +81,6 @@ from app.agent import runtime as agent_module
 from app.agent import tools as tools_module
 from app.agent.graph import GraphDeps, build_graph
 from app.core import metrics
-from app.core.config import COLLECTION
 from app.retrieval import embeddings as embeddings_module
 from app.retrieval import qdrant_store, semantic_cache
 from app.turns import agent_worker, queue
@@ -349,9 +348,26 @@ def real_qdrant(monkeypatch):
     one particular call site actually needs) — same "a `from X import Y`
     binding is a separate reference" reasoning this file's own
     `real_semantic_cache_redis` fixture already applies to
-    app/retrieval/semantic_cache.py's own copy of the same name."""
+    app/retrieval/semantic_cache.py's own copy of the same name.
+
+    `COLLECTION` is also patched to a fresh, unique name per test — NOT
+    optional hygiene: `ensure_qdrant()`'s container is shared across the
+    whole pytest session (and, under `pytest -n auto`, across every xdist
+    worker — this is exactly what CI runs). A real CI run surfaced this
+    directly: this file's own `ensure_collection()` call (a DESTRUCTIVE
+    `recreate_collection`) and tests/integration/test_worker_scaling.py's
+    own identical call, racing on different xdist workers against the SAME
+    shared default `COLLECTION` ("docs"), wiped out each other's seeded
+    documents/memories mid-test — one run saw "no citations at all" from
+    its own just-seeded document, another saw a stray memory belonging to
+    a DIFFERENT file's same-named test principal. A unique collection name
+    per test is the same isolation idiom
+    tests/integration/test_queue_real_redis.py's own `real_redis` fixture
+    already applies to REQUESTS_STREAM/CONSUMER_GROUP, applied here to
+    Qdrant's collection name instead."""
     qdrant = ensure_qdrant()
     monkeypatch.setattr(qdrant_store, "QDRANT_URL", qdrant["qdrant_url"])
+    monkeypatch.setattr(qdrant_store, "COLLECTION", f"test-concurrent-turns-{uuid.uuid4().hex}")
     monkeypatch.setattr(tools_module, "embed_text", _fake_embed_text)
     monkeypatch.setattr(embeddings_module, "embed_text", _fake_embed_text)
     qdrant_store.ensure_collection(dim=_FAKE_EMBED_DIM)
@@ -678,7 +694,7 @@ class TestHITLApprovalUnderConcurrency:
         for i in range(n):
             principal = f"user-{i}"
             points, _ = qdrant_store.get_client().scroll(
-                collection_name=COLLECTION,
+                collection_name=qdrant_store.COLLECTION,
                 scroll_filter=Filter(
                     must=[
                         FieldCondition(key="kind", match=MatchValue(value="memory")),

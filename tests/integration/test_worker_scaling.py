@@ -52,6 +52,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -60,7 +61,6 @@ import pytest
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from app.core.config import COLLECTION
 from app.retrieval import qdrant_store
 from tests.containers import ensure_postgres, ensure_qdrant, ensure_redis
 
@@ -70,6 +70,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _NUM_WORKERS = 5
 _PER_WORKER_CONCURRENCY = 50
 _TOTAL_REQUESTS = _NUM_WORKERS * _PER_WORKER_CONCURRENCY  # 250
+# Matches REQUEST_TIMEOUT_SECONDS below (the app's own internal per-turn
+# budget, set in `scaled_stack`'s subprocess env) — real (if fake)
+# embedding/Qdrant work on every turn's automatic retrieve_context
+# pre-fetch adds real latency beyond a plain chat completion, and CI's
+# more contended, likely fewer-core runners need more headroom than this
+# dev machine did. Verified directly: a real CI run hit httpx.ReadTimeout
+# on a 60s client timeout under exactly this load.
+_CLIENT_TIMEOUT_SECONDS = 120
 
 
 def _free_port() -> int:
@@ -103,7 +111,27 @@ def _wait_until_ready(url: str, proc: subprocess.Popen, timeout: float = 60.0) -
 
 
 @pytest.fixture(scope="module")
-def scaled_stack() -> Iterator[str]:
+def qdrant_collection() -> str:
+    """A collection name unique to this test module's run —
+    app/retrieval/qdrant_store.py's default `COLLECTION` ("docs") is a
+    single, production-shaped name, and `ensure_qdrant()`'s container is
+    shared across the WHOLE pytest session (and, under `pytest -n auto`,
+    across every xdist worker — exactly what CI runs). Verified directly
+    on a real CI run: this fixture's own `ensure_collection()` call (a
+    DESTRUCTIVE `recreate_collection`) and tests/agent/test_concurrent_turns.py's
+    own identical call, racing on different xdist workers against the SAME
+    shared default collection, wiped out each other's seeded documents/
+    memories mid-test. `collection: str` (app/core/config.py) is a real,
+    already env-configurable setting — no app code change needed, just
+    threading this same unique name into the subprocess env below. Same
+    isolation idiom tests/integration/test_queue_real_redis.py's own
+    `real_redis` fixture already applies to REQUESTS_STREAM/CONSUMER_GROUP,
+    applied here to Qdrant's collection name instead."""
+    return f"test-worker-scaling-{uuid.uuid4().hex}"
+
+
+@pytest.fixture(scope="module")
+def scaled_stack(qdrant_collection: str) -> Iterator[str]:
     """`_NUM_WORKERS` real app/turns/agent_worker.py OS processes, each at
     `AGENT_WORKER_MAX_CONCURRENCY=_PER_WORKER_CONCURRENCY` (`_TOTAL_REQUESTS`
     system-wide capacity), plus a real `uvicorn app.api.main` and a real
@@ -118,8 +146,10 @@ def scaled_stack() -> Iterator[str]:
     # directly: TestScaledWorkersHandleHITLAndSubagentDelegation's own
     # `remember` writes raised until this was added). Created from THIS
     # process, not a subprocess, via the same app/retrieval/qdrant_store.py
-    # function production ingestion (`make ingest`) uses — dimension must
-    # match loadtest/fake_llm_server.py's own `FAKE_EMBED_DIM`, the only
+    # function production ingestion (`make ingest`) uses, against
+    # `qdrant_collection` (see that fixture's own docstring for why a
+    # unique name matters here) — dimension must match
+    # loadtest/fake_llm_server.py's own `FAKE_EMBED_DIM`, the only
     # embedding backend any subprocess here can reach. `scaled_stack` is
     # module-scoped, so this uses a plain attribute save/restore (not the
     # function-scoped `monkeypatch` fixture, which can't be requested from
@@ -128,7 +158,9 @@ def scaled_stack() -> Iterator[str]:
     from loadtest.fake_llm_server import FAKE_EMBED_DIM
 
     previous_qdrant_url = qdrant_store.QDRANT_URL
+    previous_collection = qdrant_store.COLLECTION
     qdrant_store.QDRANT_URL = qdrant["qdrant_url"]
+    qdrant_store.COLLECTION = qdrant_collection
     qdrant_store.ensure_collection(dim=FAKE_EMBED_DIM)
 
     fake_llm_port = _free_port()
@@ -153,18 +185,27 @@ def scaled_stack() -> Iterator[str]:
         # satisfying the readiness check, not about what a turn needs to
         # succeed.
         "QDRANT_URL": qdrant["qdrant_url"],
+        "COLLECTION": qdrant_collection,
         "OPENAI_API_BASE": f"http://127.0.0.1:{fake_llm_port}/v1",
         "OPENAI_API_KEY": "sk-not-checked-by-the-fake-server",
         "CHAT_MODEL": "fake-llm",
         "AGENT_WORKER_MAX_CONCURRENCY": str(_PER_WORKER_CONCURRENCY),
-        # The semantic cache (app/retrieval/semantic_cache.py) still goes to
-        # real, ephemeral Redis but never actually hits:
-        # loadtest/fake_llm_server.py has no /v1/embeddings route, so
-        # embed_text 404s and the cache degrades to a permanent miss —
-        # graceful by design (semantic_cache.get/set's own broad except),
-        # not a failure this test needs to route around; unlike
-        # /health/ready's Qdrant check, nothing here depends on the cache
-        # actually working.
+        # The APP's OWN internal per-turn budget (app/core/config.py) needs
+        # the same headroom _CLIENT_TIMEOUT_SECONDS does above, or the app
+        # itself would cut a slow turn off before this test's own HTTP
+        # client ever times out waiting for it — widened the same way
+        # tests/live/conftest.py's own real_stack widens it for real
+        # (Ollama) latency.
+        "REQUEST_TIMEOUT_SECONDS": str(_CLIENT_TIMEOUT_SECONDS),
+        # The semantic cache (app/retrieval/semantic_cache.py) goes to real,
+        # ephemeral Redis and CAN now genuinely hit (loadtest/fake_llm_server.py's
+        # own POST /v1/embeddings route makes embed_text work for real) —
+        # not something any test here depends on, since
+        # TestScaledWorkersAbsorbConcurrentLoad's own questions are
+        # randomized per turn (rarely repeat) and the HITL/subagent tests
+        # never ask the same question twice either; a stray hit or miss
+        # either way degrades gracefully (semantic_cache.get/set's own
+        # broad except) and doesn't change what any assertion here checks.
     }
 
     fake_llm_proc = subprocess.Popen(
@@ -215,6 +256,7 @@ def scaled_stack() -> Iterator[str]:
                 proc.kill()
                 proc.wait(timeout=10)
         qdrant_store.QDRANT_URL = previous_qdrant_url
+        qdrant_store.COLLECTION = previous_collection
 
 
 @pytest.fixture(scope="module")
@@ -263,7 +305,7 @@ class TestScaledWorkersAbsorbConcurrentLoad:
                 "X-Tenant-Id": f"loadtest-{i}",
                 "X-Principal-Id": f"user-{i}",
             }
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=_CLIENT_TIMEOUT_SECONDS) as client:
                 response = await client.post(
                     f"{base_url}/chat/stream/queued",
                     json={"message": f"what is {a} * {b}?", "thread_id": f"thread-{i}", "images": []},
@@ -323,7 +365,7 @@ class TestScaledWorkersHandleHITLAndSubagentDelegation:
     process/network scale, not re-deriving that proof a second time."""
 
     def test_concurrent_hitl_pauses_and_resumes_all_succeed_and_write_to_qdrant(
-        self, scaled_stack, qdrant_url
+        self, scaled_stack, qdrant_url, qdrant_collection
     ):
         base_url = scaled_stack
         n = 40
@@ -339,7 +381,7 @@ class TestScaledWorkersHandleHITLAndSubagentDelegation:
             # doing its job against traffic shaped like one real tenant.
             headers = {"X-Tenant-Id": f"loadtest-hitl-{i}", "X-Principal-Id": f"user-{i}"}
             thread_id = f"thread-hitl-{i}"
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=_CLIENT_TIMEOUT_SECONDS) as client:
                 pause_response = await client.post(
                     f"{base_url}/chat/stream/queued",
                     json={
@@ -389,7 +431,7 @@ class TestScaledWorkersHandleHITLAndSubagentDelegation:
         for i in range(n):
             principal = f"user-{i}"
             points, _ = client.scroll(
-                collection_name=COLLECTION,
+                collection_name=qdrant_collection,
                 scroll_filter=Filter(
                     must=[
                         FieldCondition(key="kind", match=MatchValue(value="memory")),
@@ -408,7 +450,7 @@ class TestScaledWorkersHandleHITLAndSubagentDelegation:
 
         async def _one_turn(i: int) -> tuple[int, str, int]:
             headers = {"X-Tenant-Id": f"loadtest-subagent-{i}", "X-Principal-Id": f"user-{i}"}
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=_CLIENT_TIMEOUT_SECONDS) as client:
                 response = await client.post(
                     f"{base_url}/chat/stream/queued",
                     json={
