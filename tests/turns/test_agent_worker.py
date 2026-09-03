@@ -349,5 +349,60 @@ class TestRunLoop:
         assert events == [{"type": "done"}]
 
 
+class TestConcurrentDispatch:
+    """run() no longer awaits process_request one job at a time — it
+    acquires a semaphore slot, then asyncio.create_tasks _process_with_limit
+    per entry (see run()'s own comments for why the semaphore is acquired
+    BEFORE task creation, not inside it). This replicates that exact
+    acquire-then-dispatch pattern against several jobs at once — same
+    "thin proof of the real wiring" spirit as TestRunLoop above, extended to
+    the concurrency behavior specifically."""
+
+    def test_bounds_concurrency_and_actually_overlaps(self, monkeypatch):
+        max_concurrency = 2
+        num_jobs = 5
+        current = 0
+        peak = 0
+        count_lock = asyncio.Lock()
+
+        async def fake_turn(text, thread_id, ctx, require_approval=False, images=None, cancel_check=None):
+            nonlocal current, peak
+            async with count_lock:
+                current += 1
+                peak = max(peak, current)
+            await asyncio.sleep(0.05)  # long enough for siblings to overlap, short enough for a fast test
+            async with count_lock:
+                current -= 1
+            yield {"type": "done"}
+
+        monkeypatch.setattr(agent_worker, "astream_events_turn", fake_turn)
+        client = FakeRedis()
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        async def _dispatch_all():
+            tasks = []
+            for i in range(num_jobs):
+                entry_id, fields = _entry(request_id=f"r{i}")
+                await semaphore.acquire()
+                task = asyncio.create_task(
+                    agent_worker._process_with_limit(client, entry_id, fields, semaphore)
+                )
+                tasks.append(task)
+            await asyncio.gather(*tasks)
+
+        asyncio.run(_dispatch_all())
+
+        # Never exceeded the cap...
+        assert peak <= max_concurrency
+        # ...but genuinely reached it — proves siblings actually overlapped
+        # in wall-clock time rather than running strictly one at a time
+        # (which would leave peak == 1 no matter how many jobs ran).
+        assert peak == max_concurrency
+        assert len(client.acked) == num_jobs
+        for i in range(num_jobs):
+            events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key(f"r{i}")]]
+            assert events == [{"type": "done"}]
+
+
 async def _noop_async(*args, **kwargs):
     return None

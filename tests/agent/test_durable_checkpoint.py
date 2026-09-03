@@ -23,7 +23,7 @@ thread_id, and AsyncPostgresSaver's tables are keyed by thread_id — sharing
 one database across test runs just means old rows accumulate harmlessly in
 a throwaway container, not a correctness issue.
 
-`app.agent.runtime._graph`/`_checkpointer_cm` are module-level singletons; the
+`app.agent.runtime._graph`/`_checkpointer_pool` are module-level singletons; the
 `reset_agent_singleton` fixture below resets them before and after every
 test in this file so tests don't leak state into each other (or into other
 test modules, which never touch app.agent.runtime and would otherwise be affected
@@ -74,10 +74,10 @@ def reset_agent_singleton(monkeypatch):
         agent_module, "CHECKPOINTER_DATABASE_URL", ensure_postgres()["checkpointer_database_url"]
     )
     agent_module._graph = None
-    agent_module._checkpointer_cm = None
+    agent_module._checkpointer_pool = None
     yield
     agent_module._graph = None
-    agent_module._checkpointer_cm = None
+    agent_module._checkpointer_pool = None
 
 
 def _fake_llm():

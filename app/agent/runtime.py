@@ -73,6 +73,8 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langfuse.decorators import langfuse_context, observe
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
+from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
 
 from app.agent.graph import (
     CANCEL_SENTINEL,
@@ -102,12 +104,13 @@ except Exception:  # noqa: BLE001 - Langfuse optional if keys unset
     CallbackHandler = None
 
 _graph = None
-_checkpointer_cm = None  # keeps AsyncPostgresSaver's context manager alive —
-# from_conn_string is an @asynccontextmanager; letting the returned object
-# get garbage-collected closes the connection out from under the saver
-# (verified empirically against AsyncSqliteSaver's identical shape: the
-# very next call fails "no active connection" — the same contract holds
-# for AsyncPostgresSaver).
+_checkpointer_pool = None  # keeps AsyncPostgresSaver's AsyncConnectionPool
+# alive for the process's lifetime — letting it get garbage-collected would
+# close every pooled connection out from under the saver (verified
+# empirically against the old single-AsyncConnection shape: the very next
+# call failed "no active connection" — the same contract holds for a pool).
+# Also lets close_checkpointer_pool() below shut it down explicitly on
+# graceful shutdown instead of leaving it dangling at process exit.
 _seeded: set[str] = set()
 
 # LangGraph's OWN graph-step cap — a coarser, different unit than
@@ -288,17 +291,63 @@ async def _iterate_with_timeout(aiter, timeout_seconds: float, cancel_check=None
 async def _open_checkpointer():
     """Open the AsyncPostgresSaver on whichever loop calls this — see this
     module's docstring for why the calling loop matters. Returns the saver;
-    stashes the context manager in the module global so it isn't
-    garbage-collected out from under the connection. `saver.setup()` is
-    idempotent (creates its checkpoints/checkpoint_blobs/checkpoint_writes
-    tables on first run only) — safe to call on every process start,
-    including every independently-scaled agent_worker.py instance."""
-    global _checkpointer_cm
-    cm = AsyncPostgresSaver.from_conn_string(CHECKPOINTER_DATABASE_URL)
-    saver = await cm.__aenter__()
+    stashes the pool in the module global so it isn't garbage-collected out
+    from under the connection (see `_checkpointer_pool`'s own comment) and
+    so `close_checkpointer_pool()` can shut it down explicitly later.
+
+    Backed by an `AsyncConnectionPool`, not a single `AsyncConnection` (what
+    the old `AsyncPostgresSaver.from_conn_string` call opened and held for
+    the whole process lifetime) — `AsyncPostgresSaver` accepts either
+    (`langgraph.checkpoint.postgres._ainternal.get_connection` branches on
+    `isinstance(conn, AsyncConnectionPool)`), and a pool is what actually
+    lets concurrent turns overlap instead of every checkpoint read/write
+    funneling through one shared connection (psycopg wraps every operation
+    on a connection in its own internal lock — verified directly in
+    psycopg/connection_async.py — so a single connection serializes
+    concurrent callers regardless of how the caller above is written).
+
+    This still isn't full parallelism at the checkpoint layer:
+    `AsyncPostgresSaver` wraps its own cursor access in one `asyncio.Lock`
+    per saver instance regardless of `conn`'s type
+    (`langgraph/checkpoint/postgres/aio.py`'s `_cursor`), so two concurrent
+    turns' checkpoint reads/writes still serialize against each other. But
+    that lock is only held for one row read/write at a time, not for a
+    turn's whole duration — so the actually slow part of a turn (the LLM
+    call, tool execution) still runs fully concurrently; only the brief
+    "save/load this checkpoint row" moments queue, same as any single write
+    path into one Postgres row would. `min_size`/`max_size` mirror
+    app/agent/sql_store.py's own pool sizing for the appdata database.
+
+    `saver.setup()` is idempotent (creates its checkpoints/checkpoint_blobs/
+    checkpoint_writes tables on first run only) — safe to call on every
+    process start, including every independently-scaled agent_worker.py
+    instance."""
+    global _checkpointer_pool
+    pool = AsyncConnectionPool(
+        CHECKPOINTER_DATABASE_URL,
+        min_size=1,
+        max_size=10,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        open=False,
+    )
+    await pool.open(wait=True)
+    saver = AsyncPostgresSaver(conn=pool)
     await saver.setup()
-    _checkpointer_cm = cm
+    _checkpointer_pool = pool
     return saver
+
+
+async def close_checkpointer_pool() -> None:
+    """Shuts the checkpointer's connection pool down cleanly — same
+    reasoning as app/agent/sql_store.py::close_pool for the appdata pool
+    (skipping this leaves the pool's background worker tasks/connections
+    still open at process exit). Called from graceful-shutdown paths only
+    (app/api/main.py's lifespan, app/turns/agent_worker.py::run); a no-op if
+    the checkpointer was never opened."""
+    global _checkpointer_pool
+    if _checkpointer_pool is not None:
+        await _checkpointer_pool.close()
+        _checkpointer_pool = None
 
 
 async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "DomainPlugin | None" = None):
