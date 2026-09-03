@@ -24,8 +24,9 @@ garak_runs/
 *.report.html
 *.hitlog.jsonl
 
-# locust (see loadtest/) — CSV/HTML reports from `make loadtest-headless`
+# locust (see loadtest/) — CSV/HTML reports from `make loadtest-headless`/`make loadtest-queued-headless`
 loadtest/results/
+loadtest/results-queued/
 
 # strix (see `make strix`/`make strix-app`, .github/workflows/strix.yml) —
 # per-run findings/agent-trace state written to the repo root it's invoked
