@@ -1,6 +1,7 @@
 ---
 name: ops-incident-response
 description: Run a full ops investigation end to end — pull current metrics, check whether it's happened before, log a real anomaly as an incident, and resolve it once it's fixed. Use for "why is X happening", "did anything break", or any request to investigate this app's own operational health.
+domains: [ops]
 ---
 
 # Ops Incident Response
