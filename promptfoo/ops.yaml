@@ -33,6 +33,19 @@ tests:
     # it, since the model wasn't tool-calling at all for that phrasing).
     # This phrasing reliably triggered the real tool call 3/3 for both
     # qwen2.5:1.5b and qwen2.5:3b — see GRAPH_PATTERNS.md pattern 48.
+    #
+    # A real CI run hit exactly the "rare refusal" case the assertion
+    # below already anticipates (2026-09-04: "I'm sorry, but I can't
+    # provide the current error rate...") — the assertion correctly failed
+    # the build on it, working as designed, not a test bug. Deliberately
+    # NOT rephrased in response: unlike the fix above (a REPRODUCIBLE
+    # gap — the vaguer phrasing failed to tool-call 11/11), this exact
+    # phrasing stayed clean across 42 real-Ollama replay attempts
+    # afterward (sequential and concurrent, matching promptfoo's own
+    # access pattern) — no reproducible counterfactual to rewrite
+    # against, so a different phrasing would be a guess, not a verified
+    # fix, and risks silently weakening a test that just caught a real
+    # (if rare) small-model grounding failure exactly as intended.
     vars:
       user_message: "What does the current error rate look like — did anything spike overnight?"
     assert:
