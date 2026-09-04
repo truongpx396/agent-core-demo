@@ -54,11 +54,21 @@ class TestUpsertSession:
 
         assert "INSERT INTO chat_sessions" in fake.captured["sql"]
         assert "ON CONFLICT (thread_id)" in fake.captured["sql"]
-        assert fake.captured["params"] == ["t1", "acme", "p1", "What is the refund policy?"]
+        assert fake.captured["params"] == ["t1", "acme", "p1", "What is the refund policy?", "acme"]
 
-    def test_on_conflict_never_touches_title_only_last_active_at(self, monkeypatch):
-        """The whole point: a session's displayed title stays whatever its
-        FIRST message was, later turns only refresh last_active_at."""
+    def test_writes_a_non_default_domain_too(self, monkeypatch):
+        fake = _FakeConnection()
+        monkeypatch.setattr(sessions, "get_connection", lambda: fake)
+
+        sessions.upsert_session(TEST_CTX, "t1", "where is my order?", domain="support")
+
+        assert fake.captured["params"][-1] == "support"
+
+    def test_on_conflict_never_touches_title_or_domain_only_last_active_at(self, monkeypatch):
+        """The whole point: a session's displayed title AND domain stay
+        whatever its FIRST turn actually was, later turns only refresh
+        last_active_at (see this module's own docstring on why a domain
+        can't be silently reassigned by a later turn)."""
         fake = _FakeConnection()
         monkeypatch.setattr(sessions, "get_connection", lambda: fake)
 
@@ -67,6 +77,7 @@ class TestUpsertSession:
         sql = fake.captured["sql"]
         conflict_clause = sql.split("ON CONFLICT (thread_id)")[1]
         assert "title" not in conflict_clause
+        assert "domain" not in conflict_clause
         assert "last_active_at" in conflict_clause
 
     def test_long_title_is_truncated_with_an_ellipsis(self, monkeypatch):
@@ -119,14 +130,22 @@ class TestUpsertSession:
 
 
 class TestListSessions:
-    def test_scopes_to_tenant_and_principal(self, monkeypatch):
+    def test_scopes_to_tenant_principal_and_domain(self, monkeypatch):
         fake = _FakeConnection(rows=[])
         monkeypatch.setattr(sessions, "get_connection", lambda: fake)
 
         sessions.list_sessions(TEST_CTX)
 
-        assert "WHERE tenant = %s AND principal = %s" in fake.captured["sql"]
-        assert fake.captured["params"] == ["acme", "p1"]
+        assert "WHERE tenant = %s AND principal = %s AND domain = %s" in fake.captured["sql"]
+        assert fake.captured["params"] == ["acme", "p1", "acme"]
+
+    def test_a_different_domain_is_a_different_scope(self, monkeypatch):
+        fake = _FakeConnection(rows=[])
+        monkeypatch.setattr(sessions, "get_connection", lambda: fake)
+
+        sessions.list_sessions(TEST_CTX, domain="support")
+
+        assert fake.captured["params"] == ["acme", "p1", "support"]
 
     def test_orders_most_recently_active_first(self, monkeypatch):
         fake = _FakeConnection(rows=[])
@@ -167,7 +186,24 @@ class TestSessionBelongsTo:
         monkeypatch.setattr(sessions, "get_connection", lambda: fake)
 
         assert sessions.session_belongs_to(TEST_CTX, "t1") is True
-        assert fake.captured["params"] == ["t1", "acme", "p1"]
+        assert fake.captured["params"] == ["t1", "acme", "p1", "acme"]
+
+    def test_domain_is_always_passed_as_a_query_param_not_checked_after_the_fact(self, monkeypatch):
+        """Same "prove the query is ALWAYS parameterized" spirit as
+        test_a_different_tenant_or_principal_cannot_claim_ownership below —
+        a live-DB integration concern, not provable against this fake
+        (which returns its canned `one` regardless of params). The real
+        enforcement is Postgres actually filtering `AND domain = %s`; what
+        this proves is that a caller can't get a "sales" thread checked
+        against "support" by any means this function's interface allows —
+        exactly the same gap this pattern closed for tenant/principal
+        already."""
+        fake = _FakeConnection(one=(1,))
+        monkeypatch.setattr(sessions, "get_connection", lambda: fake)
+
+        sessions.session_belongs_to(TEST_CTX, "t1", domain="sales")
+
+        assert fake.captured["params"] == ["t1", "acme", "p1", "sales"]
 
     def test_false_when_no_matching_row(self, monkeypatch):
         fake = _FakeConnection(one=None)
@@ -194,4 +230,4 @@ class TestSessionBelongsTo:
         other_ctx = {"tenant": "other-co", "principal": "p9", "claims": {}}
         sessions.session_belongs_to(other_ctx, "t1")
 
-        assert fake.captured["params"] == ["t1", "other-co", "p9"]
+        assert fake.captured["params"] == ["t1", "other-co", "p9", "acme"]

@@ -483,18 +483,22 @@ class TestWorkerConcurrencyAgainstTheRealQueue:
         """Same isolation technique as
         tests/integration/test_queue_real_redis.py's own `real_redis`
         fixture, applied to BOTH `queue`'s and `agent_worker`'s own
-        `REQUESTS_STREAM`/`CONSUMER_GROUP` bindings — `agent_worker.py`
-        imports those via `from app.turns.queue import (...)`, a separate
-        reference `queue`'s own rebinding doesn't reach (see
-        tests/conftest.py's docstring on this exact gotcha), and
-        `process_request`'s `finally: client.xack(...)` reads them off
-        `agent_worker`'s own module globals, not a parameter."""
+        requests-stream/`CONSUMER_GROUP` bindings — `agent_worker.py` binds
+        its own `REQUESTS_STREAM` module global once at import time (see
+        that module's own docstring on why: domain is a per-PROCESS
+        property), a separate reference `queue.requests_stream_key`'s own
+        rebinding below doesn't reach, so it needs its own direct patch;
+        `process_request`'s `finally: client.xack(...)` reads that global,
+        not a parameter. `queue.requests_stream_key` is patched (not a
+        fixed constant, now that it's domain-parameterized) to always
+        return this same `stream` regardless of domain — this test only
+        ever exercises the default ("acme") one anyway."""
         info = ensure_redis()
         stream = f"agent:requests:test:{uuid.uuid4()}"
         group = f"agent-workers:test:{uuid.uuid4()}"
         monkeypatch.setattr(queue, "REDIS_URL", info["redis_url"])
         monkeypatch.setattr(queue, "_client", None)
-        monkeypatch.setattr(queue, "REQUESTS_STREAM", stream)
+        monkeypatch.setattr(queue, "requests_stream_key", lambda domain="acme": stream)
         monkeypatch.setattr(queue, "CONSUMER_GROUP", group)
         monkeypatch.setattr(agent_worker, "REQUESTS_STREAM", stream)
         monkeypatch.setattr(agent_worker, "CONSUMER_GROUP", group)

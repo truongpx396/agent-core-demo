@@ -172,10 +172,15 @@ class Settings(BaseSettings):
     # Which domain (app/domains/registry.py) a process boots its shared
     # graph singleton against — read by app/channels/telegram.py, which is
     # now a generalized gateway rather than an Acme-only one (GRAPH_PATTERNS.md
-    # pattern 23/42). "acme" is this app's own existing default; the demo
-    # example domains this app ships alongside it are "support" and "sales"
-    # (see app/domains/support/, app/domains/sales/) — "ops" is registered
-    # too, mostly so it CAN be chatted with, though its own use case
+    # pattern 23/42), and by app/turns/agent_worker.py, where it also picks
+    # which domain's requests stream this worker POOL reads (see that
+    # module's own docstring — `POST /chat/stream/queued` picks the domain
+    # per REQUEST instead, via an X-Domain header, since that endpoint's
+    # process itself isn't domain-bound the way these two are). "acme" is
+    # this app's own existing default; the demo example domains this app
+    # ships alongside it are "support" and "sales" (see
+    # app/domains/support/, app/domains/sales/) — "ops" is registered too,
+    # mostly so it CAN be chatted with, though its own use case
     # (scripts/ops_digest.py, scripts/ops_investigate.py) doesn't need a
     # channel at all. An unknown name fails loud at process start
     # (app/domains/registry.py::resolve_domain), same discipline as

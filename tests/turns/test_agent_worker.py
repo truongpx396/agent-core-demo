@@ -9,8 +9,13 @@ import asyncio
 import json
 
 from app.turns import agent_worker
-from app.turns.queue import CONSUMER_GROUP, REQUESTS_STREAM, results_stream_key
+from app.turns.queue import CONSUMER_GROUP, results_stream_key
 from tests.turns.test_queue import FakeRedis
+
+REQUESTS_STREAM = agent_worker.REQUESTS_STREAM  # this test module's worker
+# runs as the default AGENT_DOMAIN ("acme"); see app/turns/agent_worker.py's
+# own docstring on why the requests stream is a per-process, not per-message,
+# property.
 
 
 def _entry(

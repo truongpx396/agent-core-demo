@@ -34,20 +34,27 @@ def real_redis(monkeypatch):
     """Points `queue` at a real, shared Redis container (see
     tests/containers.py) — and, since it's SHARED (across tests in this
     file, and across xdist workers running them concurrently), also gives
-    each test its OWN `REQUESTS_STREAM`/`CONSUMER_GROUP` name rather than
-    the fixed production constants. `REQUESTS_STREAM` is a single stream
-    every "turn"/"resume"/"cancel" job (and, here, every test) shares by
+    each test its OWN requests-stream/`CONSUMER_GROUP` name rather than the
+    fixed production ones. A domain's requests stream is shared by every
+    "turn"/"resume"/"cancel" job for that domain (and, here, every test) by
     design in production — `XREADGROUP ... ">"` hands out whichever message
     is next in GROUP delivery order, not "whichever message this specific
-    test just published," so two tests racing against the fixed constants
-    under real parallelism could cross-deliver each other's message. Unique
+    test just published," so two tests racing against the fixed names under
+    real parallelism could cross-deliver each other's message. Unique
     per-test names are the same isolation idiom
     tests/agent/test_durable_checkpoint.py already uses via a unique
-    thread_id, applied to the two constants that stand in for it here."""
+    thread_id, applied to the two names that stand in for it here.
+
+    Patches `requests_stream_key` itself (not a fixed module constant, now
+    that it's domain-parameterized) to ALWAYS return this one unique
+    stream regardless of which domain a call passes in — this file only
+    ever exercises the default ("acme") domain, so collapsing every domain
+    onto the same unique test stream changes nothing it actually asserts."""
     info = ensure_redis()
     monkeypatch.setattr(queue, "REDIS_URL", info["redis_url"])
     monkeypatch.setattr(queue, "_client", None)  # get_client() is a lazy singleton — see its own docstring
-    monkeypatch.setattr(queue, "REQUESTS_STREAM", f"agent:requests:test:{uuid.uuid4()}")
+    test_stream = f"agent:requests:test:{uuid.uuid4()}"
+    monkeypatch.setattr(queue, "requests_stream_key", lambda domain="acme": test_stream)
     monkeypatch.setattr(queue, "CONSUMER_GROUP", f"agent-workers:test:{uuid.uuid4()}")
     yield
     queue._client = None
@@ -71,7 +78,7 @@ def test_a_turn_request_round_trips_from_producer_through_a_real_consumer_group(
         # Consumer side: the same XREADGROUP shape app/turns/agent_worker.py's
         # own dispatch loop reads (see that module's `run()`).
         response = await client.xreadgroup(
-            queue.CONSUMER_GROUP, "test-consumer", {queue.REQUESTS_STREAM: ">"}, count=1
+            queue.CONSUMER_GROUP, "test-consumer", {queue.requests_stream_key(): ">"}, count=1
         )
         [(_, entries)] = response
         [(entry_id, fields)] = entries
@@ -85,7 +92,7 @@ def test_a_turn_request_round_trips_from_producer_through_a_real_consumer_group(
             "require_approval": False,
             "images": [],
         }
-        await client.xack(queue.REQUESTS_STREAM, queue.CONSUMER_GROUP, entry_id)
+        await client.xack(queue.requests_stream_key(), queue.CONSUMER_GROUP, entry_id)
 
         # Results leg: the worker publishes events, the producer drains them
         # via read_results until a terminal one.
@@ -116,10 +123,10 @@ def test_a_second_worker_in_the_same_group_never_gets_a_message_already_delivere
         )
 
         first = await client.xreadgroup(
-            queue.CONSUMER_GROUP, "worker-a", {queue.REQUESTS_STREAM: ">"}, count=1
+            queue.CONSUMER_GROUP, "worker-a", {queue.requests_stream_key(): ">"}, count=1
         )
         second = await client.xreadgroup(
-            queue.CONSUMER_GROUP, "worker-b", {queue.REQUESTS_STREAM: ">"}, count=1, block=100
+            queue.CONSUMER_GROUP, "worker-b", {queue.requests_stream_key(): ">"}, count=1, block=100
         )
         return first, second
 

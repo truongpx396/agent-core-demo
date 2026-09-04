@@ -127,7 +127,14 @@ class TestEnsureConsumerGroup:
     def test_creates_the_group_on_first_call(self):
         client = FakeRedis()
         asyncio.run(queue.ensure_consumer_group(client))
-        assert queue.CONSUMER_GROUP in client.groups[queue.REQUESTS_STREAM]
+        assert queue.CONSUMER_GROUP in client.groups[queue.requests_stream_key("acme")]
+
+    def test_a_different_domain_gets_its_own_group_on_its_own_stream(self):
+        client = FakeRedis()
+        asyncio.run(queue.ensure_consumer_group(client, "support"))
+        assert queue.CONSUMER_GROUP in client.groups[queue.requests_stream_key("support")]
+        # Never touched Acme's own stream/group at all.
+        assert queue.requests_stream_key("acme") not in client.groups
 
     def test_is_idempotent_a_second_call_does_not_raise(self):
         client = FakeRedis()
@@ -148,7 +155,7 @@ class TestPublishRequest:
                 require_approval=True,
             )
         )
-        entries = client.streams[queue.REQUESTS_STREAM]
+        entries = client.streams[queue.requests_stream_key("acme")]
         assert len(entries) == 1
         payload = json.loads(entries[0][1]["payload"])
         assert payload == {
@@ -173,14 +180,32 @@ class TestPublishRequest:
                 images=["data:image/png;base64,abc123"],
             )
         )
-        payload = json.loads(client.streams[queue.REQUESTS_STREAM][0][1]["payload"])
+        payload = json.loads(client.streams[queue.requests_stream_key("acme")][0][1]["payload"])
         assert payload["images"] == ["data:image/png;base64,abc123"]
+
+    def test_a_non_default_domain_lands_on_its_own_stream_not_acmes(self):
+        client = FakeRedis()
+        asyncio.run(
+            queue.publish_request(
+                client,
+                request_id="r3",
+                text="my order hasn't shipped",
+                thread_id="t1",
+                ctx={"tenant": "acme", "principal": "p1", "claims": {}},
+                domain="support",
+            )
+        )
+        assert queue.requests_stream_key("acme") not in client.streams
+        entries = client.streams[queue.requests_stream_key("support")]
+        assert len(entries) == 1
+        assert json.loads(entries[0][1]["payload"])["request_id"] == "r3"
 
 
 class TestPublishResumeRequest:
     def test_enqueues_a_resume_job_onto_the_same_stream(self):
-        """Same REQUESTS_STREAM as a new turn — one consumer group, one
-        dispatch-by-kind in app/turns/agent_worker.py, not a second queue."""
+        """Same domain's requests stream as a new turn — one consumer
+        group, one dispatch-by-kind in app/turns/agent_worker.py, not a
+        second queue."""
         client = FakeRedis()
         asyncio.run(
             queue.publish_resume_request(
@@ -191,7 +216,7 @@ class TestPublishResumeRequest:
                 ctx={"tenant": "acme", "principal": "p1", "claims": {}},
             )
         )
-        entries = client.streams[queue.REQUESTS_STREAM]
+        entries = client.streams[queue.requests_stream_key("acme")]
         assert len(entries) == 1
         payload = json.loads(entries[0][1]["payload"])
         assert payload == {
@@ -214,7 +239,7 @@ class TestPublishCancelRequest:
                 ctx={"tenant": "acme", "principal": "p1", "claims": {}},
             )
         )
-        entries = client.streams[queue.REQUESTS_STREAM]
+        entries = client.streams[queue.requests_stream_key("acme")]
         assert len(entries) == 1
         payload = json.loads(entries[0][1]["payload"])
         assert payload == {

@@ -4,28 +4,193 @@
 <meta charset="utf-8">
 <title>agent-core-demo</title>
 <style>
-  :root { color-scheme: light dark; }
+  /* ---- Design tokens ---------------------------------------------------
+     Light palette lives on bare :root; a system-dark override applies
+     unless the user has explicitly picked "light" (data-theme="light"),
+     and an explicit data-theme="dark" always wins regardless of system
+     setting — the three-way toggle #themeToggle below cycles between
+     them. Every component further down reads these variables rather than
+     hardcoding a color, so both themes stay a single source of truth. */
+  :root {
+    color-scheme: light dark;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    --accent: #2563eb;
+    --accent-hover: #1d4ed8;
+    --accent-2: #7c3aed;
+    --accent-soft: rgba(37, 99, 235, .12);
+    --accent-contrast: #ffffff;
+    --accent-gradient: linear-gradient(135deg, var(--accent), var(--accent-2));
+    --danger: #dc2626;
+    --danger-soft: rgba(220, 38, 38, .1);
+    --success: #16a34a;
+
+    --bg: #ffffff;
+    --bg-elevated: #ffffff;
+    --sidebar-bg: #f7f8fa;
+    --surface: #f1f2f5;
+    --surface-hover: #e6e8ec;
+    --border: #e3e5ea;
+    --border-strong: #cdd0d7;
+    --text: #14161a;
+    --text-secondary: #565a63;
+    --text-muted: #8a8e97;
+
+    --shadow-sm: 0 1px 2px rgba(20, 22, 26, .05), 0 1px 1px rgba(20, 22, 26, .04);
+    --shadow-md: 0 6px 16px rgba(20, 22, 26, .08), 0 2px 4px rgba(20, 22, 26, .05);
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-pill: 999px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --accent: #3b82f6; --accent-hover: #60a5fa; --accent-2: #a78bfa; --accent-soft: rgba(59, 130, 246, .2); --accent-contrast: #ffffff;
+      --danger: #f16565; --danger-soft: rgba(241, 101, 101, .14); --success: #3ecf7e;
+      --bg: #121317; --bg-elevated: #1a1c21; --sidebar-bg: #17181c;
+      --surface: #23252b; --surface-hover: #2b2e35;
+      --border: #2b2d34; --border-strong: #3c3f48;
+      --text: #f1f2f4; --text-secondary: #aeb2bb; --text-muted: #767a84;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, .35); --shadow-md: 0 8px 24px rgba(0, 0, 0, .45);
+    }
+  }
+  :root[data-theme="dark"] {
+    --accent: #3b82f6; --accent-hover: #60a5fa; --accent-2: #a78bfa; --accent-soft: rgba(59, 130, 246, .2); --accent-contrast: #ffffff;
+    --danger: #f16565; --danger-soft: rgba(241, 101, 101, .14); --success: #3ecf7e;
+    --bg: #121317; --bg-elevated: #1a1c21; --sidebar-bg: #17181c;
+    --surface: #23252b; --surface-hover: #2b2e35;
+    --border: #2b2d34; --border-strong: #3c3f48;
+    --text: #f1f2f4; --text-secondary: #aeb2bb; --text-muted: #767a84;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, .35); --shadow-md: 0 8px 24px rgba(0, 0, 0, .45);
+  }
+
+  * { box-sizing: border-box; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    max-width: 720px; margin: 0 auto; padding: 1rem;
-    display: flex; flex-direction: column; height: 100vh; box-sizing: border-box;
+    font-family: var(--font-sans);
+    margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    display: flex; flex-direction: row; height: 100vh;
+    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
   }
-  header { display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; }
-  header h1 { font-size: 1rem; margin: 0; flex: 1; }
-  header input {
-    font-size: .85rem; padding: .3rem .5rem; border-radius: 6px;
-    border: 1px solid #8888; width: 8rem;
+  ::selection { background: var(--accent-soft); }
+  #messages::-webkit-scrollbar, #domainSidebar::-webkit-scrollbar { width: 8px; }
+  #messages::-webkit-scrollbar-thumb, #domainSidebar::-webkit-scrollbar-thumb {
+    background: var(--border-strong); border-radius: var(--radius-pill);
   }
-  header select#sessionSelect {
-    font-size: .85rem; padding: .3rem .5rem; border-radius: 6px;
-    border: 1px solid #8888; max-width: 12rem; background: transparent; color: inherit;
+
+  /* Domain sidebar: the "where am I" navigation (which domain, which
+     conversation — see the body's own comment on why identity lives in
+     the header instead), what the selected agent is/can do, plus its
+     one-click example questions — pulled out of the chat column entirely
+     (rather than stacked above #messages) specifically so none of it ever
+     eats into vertical space the conversation itself needs. Its own
+     `overflow-y: auto` against an explicit `height: 100vh` (not a
+     flex-computed one) is what makes it scroll independently of the chat
+     column once its content — two fields, the domain brief, up to seven
+     suggested questions — runs taller than the viewport, rather than
+     clipping or pushing the page itself into a second scrollbar. */
+  #domainSidebar {
+    flex: 0 0 272px; width: 272px;
+    padding: 1.25rem 1.1rem; overflow-y: auto; height: 100vh;
+    background: var(--sidebar-bg); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: .9rem;
   }
-  header select#sessionSelect:disabled { opacity: .5; }
-  #messages { flex: 1; overflow-y: auto; padding: .5rem 0; }
-  .msg { margin: .5rem 0; padding: .6rem .8rem; border-radius: 10px; max-width: 85%; }
-  .msg.user { background: #2563eb; color: white; margin-left: auto; white-space: pre-wrap; }
-  .msg.assistant { background: #8883; }
-  .msg.system { background: transparent; color: #888; font-size: .85rem; font-style: italic; text-align: center; max-width: 100%; }
+  #domainSidebar h2 {
+    font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em;
+    color: var(--text-muted); margin: 0 0 .5rem;
+  }
+  /* Grouped widest-scope-first: domain (which agent) → conversation
+     (which thread within it). */
+  .sidebar-field { display: flex; flex-direction: column; gap: .3rem; }
+  .sidebar-field label {
+    font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--text-muted);
+  }
+  .sidebar-field input, .sidebar-field select {
+    width: 100%; font: inherit; font-size: .85rem; padding: .5rem .65rem;
+    border-radius: var(--radius-sm); border: 1px solid var(--border);
+    background: var(--bg-elevated); color: var(--text);
+    transition: border-color .15s ease, box-shadow .15s ease;
+  }
+  .sidebar-field input:hover, .sidebar-field select:hover { border-color: var(--border-strong); }
+  .sidebar-field input:focus, .sidebar-field select:focus {
+    outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .sidebar-field select#sessionSelect:disabled { opacity: .5; }
+  .main-panel {
+    flex: 1; min-width: 0; max-width: 760px; margin: 0 auto; padding: 1.1rem 1.25rem;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  /* Narrow viewport: stack the sidebar above the chat instead of beside
+     it, rather than squeezing both into less width than either needs. */
+  @media (max-width: 700px) {
+    body { flex-direction: column; height: auto; min-height: 100vh; }
+    #domainSidebar { width: auto; flex: 0 0 auto; height: auto; max-height: 40vh;
+      border-right: none; border-bottom: 1px solid var(--border); }
+    .main-panel { height: auto; min-height: 60vh; }
+  }
+
+  header { display: flex; align-items: center; gap: .55rem; margin-bottom: 1rem;
+    padding-bottom: 1rem; border-bottom: 1px solid var(--border); }
+  header h1 {
+    font-size: 1.05rem; font-weight: 650; letter-spacing: -.01em; margin: 0; flex: 1;
+    color: var(--text); display: flex; align-items: center; gap: .5rem;
+  }
+  header h1 .brand-dot {
+    width: .6rem; height: .6rem; border-radius: 50%; flex-shrink: 0;
+    background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  /* Top-right identity switcher (Tenant/Principal) — compact "caption
+     above a small select" pairs, the same account-switcher corner most
+     real apps put this in. Each select's own trailing "+ Add new…" option
+     (setupIdentitySelect(), in the page's own script below) is the
+     discoverable way to type one that isn't in this browser's history yet. */
+  .identity-field { display: flex; flex-direction: column; gap: .15rem; flex-shrink: 0; }
+  .identity-field label {
+    font-size: .62rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--text-muted);
+  }
+  .identity-field select {
+    font: inherit; font-size: .8rem; padding: .38rem .55rem; max-width: 9rem;
+    border-radius: var(--radius-sm); border: 1px solid var(--border);
+    background: var(--bg-elevated); color: var(--text); cursor: pointer;
+    transition: border-color .15s ease, box-shadow .15s ease;
+  }
+  .identity-field select:hover { border-color: var(--border-strong); }
+  .identity-field select:focus {
+    outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  #themeToggle {
+    width: 2.1rem; height: 2.1rem; flex-shrink: 0; padding: 0; font-size: 1.05rem;
+    border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-secondary);
+    border-radius: var(--radius-sm); cursor: pointer; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+    transition: background-color .15s ease, border-color .15s ease, color .15s ease;
+    /* header's own align-items:center would otherwise center this against
+       the FULL height of an .identity-field (label + select stacked),
+       leaving it visibly higher than the selects themselves — bottom-align
+       it instead so its bottom edge lines up with theirs. */
+    align-self: flex-end;
+  }
+  #themeToggle:hover { background: var(--surface-hover); color: var(--text); border-color: var(--border-strong); }
+
+  #messages { flex: 1; overflow-y: auto; padding: .5rem .1rem; }
+  .msg { margin: .55rem 0; padding: .65rem .85rem; border-radius: var(--radius-md); max-width: 85%;
+    font-size: .92rem; line-height: 1.55;
+    /* A tool-call's rendered JSON args (.approval-question/
+       .clarification-question below) or a long URL can be one long run
+       with no natural break point — without this, that single "word"
+       overflows the bubble's own width instead of wrapping, which is what
+       reads as text "escaping" the bubble/page rather than staying inside
+       it. Inherited by every descendant (answer text, citations, the
+       approval/clarification boxes) rather than patched per element. */
+    overflow-wrap: anywhere;
+  }
+  .msg.user { background: var(--accent-gradient); color: var(--accent-contrast); margin-left: auto;
+    white-space: pre-wrap; box-shadow: var(--shadow-sm); }
+  .msg.assistant { background: var(--bg-elevated); border: 1px solid var(--border); box-shadow: var(--shadow-sm); }
+  .msg.system { background: transparent; color: var(--text-muted); font-size: .84rem; font-style: italic;
+    text-align: center; max-width: 100%; }
 
   /* Live turn status ("Thinking…" / "Using X…") — lives INSIDE the
      assistant bubble, above the tool-activity log and answer text, so it
@@ -34,7 +199,7 @@
      does, for a genuine tool call — see index.html's send()). Hidden
      (display:none) once real output/no-more-activity makes it stale,
      never removed, so re-showing it later needs no re-creation. */
-  .status { font-size: .85rem; color: #888; margin-bottom: .3rem; }
+  .status { font-size: .85rem; color: var(--text-muted); margin-bottom: .3rem; }
   .status::after { content: ""; animation: ellipsis 1.2s steps(4, end) infinite; }
   @keyframes ellipsis { 0%, 100% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
 
@@ -43,7 +208,7 @@
      #messages the way earlier versions of this page did, which is what
      made tool activity visually land below an already-streaming answer
      regardless of the real event order). */
-  .tool-activity { font-size: .8rem; color: #888; }
+  .tool-activity { font-size: .8rem; color: var(--text-muted); }
   .tool-activity-line { margin: .2rem 0; }
   .tool-activity-line.done { opacity: .75; }
 
@@ -55,93 +220,194 @@
   .answer-text li { margin: .15em 0; }
   .answer-text h1, .answer-text h2, .answer-text h3 { font-size: 1em; margin: .6em 0 .3em; }
   .answer-text code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    background: #8882; padding: .1em .3em; border-radius: 4px; font-size: .9em;
+    font-family: var(--font-mono);
+    background: var(--surface); padding: .15em .35em; border-radius: 4px; font-size: .88em;
   }
   .answer-text pre {
-    background: #8882; padding: .6em .7em; border-radius: 8px; overflow-x: auto; margin: .4em 0;
+    background: var(--surface); padding: .7em .8em; border-radius: var(--radius-sm); overflow-x: auto; margin: .4em 0;
   }
   .answer-text pre code { background: none; padding: 0; }
-  .answer-text a { color: inherit; }
+  .answer-text a { color: var(--accent); }
 
   .clarification, .approval {
-    margin: .5rem 0; padding: .5rem .6rem; border-radius: 8px; background: #8882;
+    margin: .5rem 0; padding: .6rem .7rem; border-radius: var(--radius-sm);
+    background: var(--surface); border: 1px solid var(--border);
   }
   .clarification-question, .approval-question { font-size: .85rem; margin-bottom: .4rem; }
 
   .citations {
-    font-size: .78rem; color: #888; margin-top: .6rem; padding-top: .5rem;
-    border-top: 1px solid #8884; display: flex; flex-direction: column; gap: .15rem;
+    font-size: .78rem; color: var(--text-muted); margin-top: .6rem; padding-top: .5rem;
+    border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: .15rem;
   }
-  .citations .citations-label { font-weight: 600; text-transform: uppercase; letter-spacing: .03em; font-size: .7rem; margin-bottom: .1rem; }
+  .citations .citations-label { font-weight: 700; text-transform: uppercase; letter-spacing: .04em; font-size: .7rem; margin-bottom: .1rem; }
   .citations .citation-item { display: flex; gap: .4rem; }
   .citations .citation-marker { opacity: .7; flex-shrink: 0; }
   .followups { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .6rem; }
   .followups button {
-    font-size: .8rem; padding: .35rem .7rem; border-radius: 999px;
-    border: 1px solid #8888; background: transparent; cursor: pointer;
-    color: inherit; font-family: inherit;
+    font: inherit; font-size: .8rem; padding: .38rem .75rem; border-radius: var(--radius-pill);
+    border: 1px solid var(--border); background: var(--bg-elevated); cursor: pointer;
+    color: var(--text); transition: background-color .15s ease, border-color .15s ease;
   }
-  .followups button:hover { background: #8882; }
-  form { display: flex; gap: .5rem; padding-top: .5rem; border-top: 1px solid #8884; flex-wrap: wrap; }
-  input[type=text]#input { flex: 1; padding: .6rem; border-radius: 8px; border: 1px solid #8888; font-size: 1rem; }
+  .followups button:hover { background: var(--surface-hover); border-color: var(--border-strong); }
+
+  form { display: flex; gap: .5rem; padding-top: .9rem; margin-top: .25rem;
+    border-top: 1px solid var(--border); flex-wrap: wrap; }
+  input[type=text]#input {
+    flex: 1; padding: .65rem .8rem; border-radius: var(--radius-md); border: 1px solid var(--border);
+    background: var(--bg-elevated); color: var(--text); font: inherit; font-size: .95rem;
+    transition: border-color .15s ease, box-shadow .15s ease;
+  }
+  input[type=text]#input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
   .image-attach { flex-basis: 100%; display: flex; gap: .5rem; align-items: center; }
   input[type=text]#imageUrl {
-    flex: 1; padding: .4rem .6rem; border-radius: 8px; border: 1px solid #8888;
-    font-size: .85rem; color: #888;
+    flex: 1; padding: .45rem .65rem; border-radius: var(--radius-sm); border: 1px solid var(--border);
+    background: var(--bg-elevated); font-size: .85rem; color: var(--text);
   }
   label.drop-zone {
-    font-size: .8rem; color: #888; padding: .4rem .7rem; border-radius: 8px;
-    border: 1px dashed #8888; cursor: pointer; white-space: nowrap;
+    font-size: .8rem; color: var(--text-muted); padding: .45rem .75rem; border-radius: var(--radius-sm);
+    border: 1px dashed var(--border-strong); cursor: pointer; white-space: nowrap;
+    transition: border-color .15s ease, color .15s ease, background-color .15s ease;
   }
-  label.drop-zone.drag-over { border-color: #2563eb; color: #2563eb; background: #2563eb14; }
+  label.drop-zone:hover { color: var(--text-secondary); background: var(--surface); }
+  label.drop-zone.drag-over { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
   .image-preview {
     flex-basis: 100%; display: flex; align-items: center; gap: .5rem;
-    font-size: .8rem; color: #888; padding: .3rem .5rem; border-radius: 8px; background: #8882;
+    font-size: .8rem; color: var(--text-secondary); padding: .35rem .55rem;
+    border-radius: var(--radius-sm); background: var(--surface);
   }
+  /* The `hidden` attribute's own UA-stylesheet `display: none` has the
+     SAME specificity as the plain-class rule above, so source order alone
+     decided the winner — which meant this `display: flex` was quietly
+     beating `hidden` and showing an empty preview box with no image
+     attached. A same-specificity class+attribute selector settles it
+     explicitly in `hidden`'s favor, regardless of source order. */
+  .image-preview[hidden] { display: none; }
   .image-preview img { width: 2rem; height: 2rem; object-fit: cover; border-radius: 4px; }
   .image-preview span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .image-preview button {
     border: none; background: transparent; color: inherit; cursor: pointer; font-size: .9rem;
     padding: 0 .3rem;
   }
-  .vision-note { flex-basis: 100%; font-size: .72rem; color: #888; opacity: .8; }
-  button[type=submit] { padding: .6rem 1rem; border-radius: 8px; border: none; background: #2563eb; color: white; cursor: pointer; }
-  button[type=submit]:disabled { opacity: .5; cursor: default; }
-  button#stop {
-    padding: .6rem 1rem; border-radius: 8px; border: 1px solid #8888;
-    background: transparent; color: inherit; font-family: inherit; cursor: pointer;
+  .vision-note { flex-basis: 100%; font-size: .72rem; color: var(--text-muted); }
+  /* The primary action on the whole page — a distinct pill shape, a
+     two-hue gradient (--accent-gradient, shared with .msg.user so a sent
+     message visually "becomes" its own bubble), and a recognizable
+     paper-plane icon alongside the label rather than relying on color or
+     position alone to say "this sends." */
+  button#send {
+    display: inline-flex; align-items: center; gap: .45rem;
+    font: inherit; font-weight: 600; padding: .65rem 1.25rem; border-radius: var(--radius-pill);
+    border: none; background: var(--accent-gradient); color: var(--accent-contrast); cursor: pointer;
+    box-shadow: var(--shadow-sm); transition: transform .12s ease, box-shadow .15s ease, filter .15s ease;
   }
-  button#stop:hover { background: #8882; }
-  .approval button:last-child { border-color: #dc262699; color: #dc2626; }
+  button#send svg { width: 1rem; height: 1rem; flex-shrink: 0; }
+  button#send:hover:not(:disabled) { filter: brightness(1.08); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+  button#send:active:not(:disabled) { transform: translateY(0) scale(.96); filter: brightness(.96); }
+  button#send:disabled { opacity: .5; cursor: default; filter: none; transform: none; box-shadow: none; }
+  button#stop {
+    font: inherit; padding: .65rem 1.1rem; border-radius: var(--radius-md); border: 1px solid var(--border);
+    background: var(--bg-elevated); color: var(--text); cursor: pointer;
+    transition: background-color .15s ease, border-color .15s ease;
+  }
+  button#stop:hover { background: var(--surface-hover); border-color: var(--border-strong); }
+  .approval button:last-child { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
 
   details#uploadPanel {
-    border: 1px solid #8884; border-radius: 8px; padding: .5rem .7rem; margin-bottom: .5rem;
-    font-size: .85rem;
+    border: 1px solid var(--border); border-radius: var(--radius-md); padding: .6rem .8rem; margin-bottom: .8rem;
+    font-size: .85rem; background: var(--bg-elevated);
   }
-  details#uploadPanel summary { cursor: pointer; color: #888; }
-  details#uploadPanel summary:hover { color: inherit; }
-  #uploadForm { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .5rem; }
+  details#uploadPanel summary { cursor: pointer; color: var(--text-secondary); }
+  details#uploadPanel summary:hover { color: var(--text); }
+  #uploadForm { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .6rem; }
   #uploadForm input[type=text] {
-    flex: 1; min-width: 8rem; padding: .4rem .6rem; border-radius: 8px; border: 1px solid #8888;
-    font-size: .85rem; background: transparent; color: inherit;
+    flex: 1; min-width: 8rem; padding: .45rem .65rem; border-radius: var(--radius-sm); border: 1px solid var(--border);
+    font-size: .85rem; background: var(--bg); color: var(--text);
   }
   #uploadForm button {
-    padding: .4rem .8rem; border-radius: 8px; border: none; background: #2563eb; color: white; cursor: pointer;
+    font: inherit; padding: .45rem .85rem; border-radius: var(--radius-sm); border: none;
+    background: var(--accent); color: var(--accent-contrast); cursor: pointer; font-weight: 600;
   }
+  #uploadForm button:hover:not(:disabled) { background: var(--accent-hover); }
   #uploadForm button:disabled { opacity: .5; cursor: default; }
-  #uploadStatus { margin-top: .5rem; display: flex; flex-direction: column; gap: .3rem; }
-  .upload-status-line { display: flex; align-items: center; gap: .4rem; font-size: .8rem; color: #888; }
+  #uploadStatus { margin-top: .6rem; display: flex; flex-direction: column; gap: .3rem; }
+  .upload-status-line { display: flex; align-items: center; gap: .4rem; font-size: .8rem; color: var(--text-muted); }
   .upload-status-line .upload-filename { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .upload-status-line.upload-done { color: #16a34a; }
-  .upload-status-line.upload-error { color: #dc2626; }
+  .upload-status-line.upload-done { color: var(--success); }
+  .upload-status-line.upload-error { color: var(--danger); }
+
+  #domainInfo {
+    font-size: .82rem; line-height: 1.55; color: var(--text-secondary);
+    padding: .9rem .95rem; border-radius: var(--radius-md);
+    background: var(--bg-elevated); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    box-shadow: var(--shadow-sm);
+  }
+  #domainInfo strong { color: var(--text); display: block; margin-bottom: .3rem; font-size: .9rem; font-weight: 650; }
+  /* A vertical list of full-width rows, not wrapping pills — a 272px-wide
+     sidebar column fits a short question per row far better than trying
+     to flow several short-but-variable-length pills side by side. */
+  #suggestedQuestions { display: flex; flex-direction: column; gap: .45rem; }
+  #suggestedQuestions button {
+    font: inherit; font-size: .82rem; padding: .6rem .75rem; border-radius: var(--radius-sm); text-align: left;
+    border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text); cursor: pointer;
+    box-shadow: var(--shadow-sm); transition: background-color .15s ease, border-color .15s ease, transform .1s ease;
+  }
+  #suggestedQuestions button:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--border-strong); }
+  #suggestedQuestions button:active:not(:disabled) { transform: scale(.98); }
+  #suggestedQuestions button:disabled { opacity: .5; cursor: default; }
 </style>
 </head>
 <body>
+<!-- Domain + conversation — the "where am I" navigation — live in the left
+     nav sidebar; see #domainSidebar's own CSS comment for why (keeping
+     the chat column's vertical space free of them). Identity (tenant/
+     principal) is a DIFFERENT kind of scope — "who am I," not "where am
+     I" — so it lives top-right in the header instead, alongside the
+     theme toggle, the same corner an account/workspace switcher sits in
+     most real apps. -->
+<aside id="domainSidebar">
+  <div class="sidebar-field">
+    <label for="domainSelect">Domain</label>
+    <!-- Only the queued endpoints (POST /chat/stream/queued, /chat/resume,
+         /chat/cancel) read X-Domain — see app/api/main.py's get_domain. A
+         new domain registered in app/domains/registry.py needs one more
+         <option> here (and an `AGENT_DOMAIN=<name> make agent-worker`
+         process actually running) before it's reachable from this page. -->
+    <select id="domainSelect" title="Which domain this turn runs against (X-Domain) — needs a matching AGENT_DOMAIN agent-worker running">
+      <option value="acme">acme</option>
+      <option value="support">support</option>
+      <option value="ops">ops</option>
+      <option value="sales">sales</option>
+    </select>
+  </div>
+  <div class="sidebar-field">
+    <label for="sessionSelect">Conversation</label>
+    <select id="sessionSelect" title="Switch conversation"></select>
+  </div>
+  <div id="domainInfo"></div>
+  <div id="suggestedQuestionsSection" hidden>
+    <h2>Try asking</h2>
+    <div id="suggestedQuestions"></div>
+  </div>
+</aside>
+<div class="main-panel">
 <header>
-  <h1>agent-core-demo</h1>
-  <select id="sessionSelect" title="Switch conversation"></select>
-  <input id="principal" type="text" value="web-user" title="Your principal id (X-Principal-Id)">
+  <h1><span class="brand-dot"></span>agent-core-demo</h1>
+  <div class="identity-field">
+    <label for="tenant">Tenant</label>
+    <!-- A <select>, not a plain text input: its own trailing "+ Add new…"
+         option (populated/handled by setupIdentitySelect() below) is what
+         makes "type a tenant nobody's used on this browser yet" a
+         discoverable action rather than something only apparent by
+         guessing you can overwrite the field. See get_ctx's own docstring
+         (app/api/main.py) — this is a demo convenience standing in for a
+         real deployment's auth gateway, never real authentication. -->
+    <select id="tenant" title="Trusted-layer tenant id (X-Tenant-Id) — see app/api/main.py's get_ctx. A real deployment sets this from an auth gateway, never a client-editable field like this demo does."></select>
+  </div>
+  <div class="identity-field">
+    <label for="principal">Principal</label>
+    <select id="principal" title="Your principal id (X-Principal-Id) — scopes which sessions/memories are yours within the tenant above."></select>
+  </div>
+  <button type="button" id="themeToggle" title="Toggle light/dark theme" aria-label="Toggle light/dark theme">🌙</button>
 </header>
 <details id="uploadPanel">
   <summary>📄 Upload documents (PDF/DOCX) to the knowledge base</summary>
@@ -154,18 +420,25 @@
 </details>
 <div id="messages"></div>
 <form id="form">
+  <!-- Sits ABOVE the text input, not down by the URL/drop-zone controls
+     that attached it — the whole point of a preview is confirming what's
+     about to send right where you're about to type/hit send, not
+     wherever in the form it happened to be picked. -->
+  <div id="imagePreview" class="image-preview" hidden>
+    <img id="imagePreviewThumb" alt="">
+    <span id="imagePreviewName"></span>
+    <button type="button" id="imageRemove" title="Remove attached image">✕</button>
+  </div>
   <input id="input" type="text" autocomplete="off" placeholder="Ask something..." autofocus>
-  <button type="submit" id="send">Send</button>
+  <button type="submit" id="send">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+    <span>Send</span>
+  </button>
   <button type="button" id="stop" hidden>Stop</button>
   <div class="image-attach">
     <input id="imageUrl" type="text" autocomplete="off" placeholder="Image URL (optional)">
     <label id="dropZone" for="imageFile" class="drop-zone">📎 or drop/choose an image</label>
     <input id="imageFile" type="file" accept="image/*" hidden>
-  </div>
-  <div id="imagePreview" class="image-preview" hidden>
-    <img id="imagePreviewThumb" alt="">
-    <span id="imagePreviewName"></span>
-    <button type="button" id="imageRemove" title="Remove attached image">✕</button>
   </div>
   <div class="vision-note">
     Note: the default local model can't actually see attached images yet (no small local
@@ -173,6 +446,7 @@
     GRAPH_PATTERNS.md pattern 44 for enabling real vision support.
   </div>
 </form>
+</div> <!-- /.main-panel -->
 <script>
 // Everything this page does talks ONLY to app/api.py's published endpoints
 // (POST /chat/stream) and renders ONLY the documented SSE event vocabulary
@@ -181,6 +455,63 @@
 // endpoints" note. EventSource can't send custom headers or do POST, so
 // this uses fetch()'s streaming response body directly and parses SSE
 // framing by hand.
+
+// Light/dark theme toggle — purely a `data-theme` attribute on <html>,
+// which the CSS custom-property blocks in <style> key off of (see their
+// own comment). Persisted per-BROWSER via localStorage, not per-account —
+// there's no server-side identity this page trusts enough to store a
+// preference against (see app/api/main.py's own docstring on X-Tenant-Id/
+// X-Principal-Id being trusted-header, not real auth). Wrapped in
+// try/catch the same defensive way randomId() below guards
+// crypto.randomUUID() — a locked-down browser context (private
+// browsing's storage restrictions vary) must not break page load over a
+// cosmetic preference.
+const THEME_STORAGE_KEY = "agent-core-demo:theme";
+const themeToggleEl = document.getElementById("themeToggle");
+const prefersDarkQuery = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+
+function storedTheme() {
+  try {
+    return localStorage.getItem(THEME_STORAGE_KEY);
+  } catch (_err) {
+    return null;
+  }
+}
+
+function effectiveTheme() {
+  const stored = storedTheme();
+  if (stored === "light" || stored === "dark") return stored;
+  return prefersDarkQuery && prefersDarkQuery.matches ? "dark" : "light";
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  themeToggleEl.textContent = theme === "dark" ? "☀️" : "🌙";
+  themeToggleEl.title = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
+}
+
+applyTheme(effectiveTheme());
+
+themeToggleEl.addEventListener("click", () => {
+  const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, next);
+  } catch (_err) {
+    // Best-effort — the toggle still visibly works for the rest of this
+    // page load, it just won't be remembered on the next one.
+  }
+  applyTheme(next);
+});
+
+// Follow the OS-level setting live if the user never explicitly chose a
+// side — but stop listening the instant they do (an explicit choice
+// should stick, not get silently overridden the next time the OS theme
+// changes).
+if (prefersDarkQuery) {
+  prefersDarkQuery.addEventListener("change", () => {
+    if (storedTheme() === null) applyTheme(effectiveTheme());
+  });
+}
 
 function randomId() {
   // crypto.randomUUID() only exists in a "secure context" (HTTPS, or
@@ -211,6 +542,8 @@ const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
 const stopBtn = document.getElementById("stop");
 const sessionSelect = document.getElementById("sessionSelect");
+const domainSelect = document.getElementById("domainSelect");
+const tenantEl = document.getElementById("tenant");
 const principalEl = document.getElementById("principal");
 const imageUrlEl = document.getElementById("imageUrl");
 const dropZone = document.getElementById("dropZone");
@@ -235,8 +568,21 @@ let attachedImageDataUri = null;
 function headers() {
   return {
     "Content-Type": "application/json",
-    "X-Tenant-Id": "acme",
+    // Both trusted-header values are now caller-editable fields (the
+    // sidebar's Tenant/Principal inputs) rather than one hardcoded
+    // constant — exactly what app/api/main.py's own module docstring
+    // already calls out as this endpoint's real security boundary: NOT
+    // authentication, just the correct SHAPE at the boundary. A real
+    // deployment's auth gateway sets these itself and strips any
+    // client-supplied copies first; this page choosing to expose them as
+    // plain editable fields is what makes multi-tenant/multi-principal
+    // testing possible from one browser tab without that gateway.
+    "X-Tenant-Id": tenantEl.value || "acme",
     "X-Principal-Id": principalEl.value || "web-user",
+    // Only /chat/stream/queued, /chat/resume, and /chat/cancel actually
+    // read this (app/api/main.py's get_domain) — every other endpoint
+    // this page calls just ignores the extra header.
+    "X-Domain": domainSelect.value,
   };
 }
 
@@ -953,12 +1299,222 @@ sessionSelect.addEventListener("change", () => {
   }
 });
 
-// Re-scope the switcher the moment the caller's identity changes — these
-// sessions belong to tenant+principal (app/sessions.py), so a different
-// principal has a completely different list. "change" (fires on blur),
-// not "input" (fires per keystroke) — no reason to refetch mid-typing.
-principalEl.addEventListener("change", loadSessions);
+// Remembers recently-used Tenant/Principal values per BROWSER
+// (localStorage, never sent anywhere — same per-viewer-convenience,
+// never-shared use of storage the theme toggle above already makes), and
+// turns tenantEl/principalEl into proper switchers: a <select> listing
+// every value tried so far on this browser, plus a trailing "+ Add new…"
+// option that prompts for one and adds it — the same "switch account /
+// + create new" pattern most real multi-tenant apps use, rather than a
+// plain text field where "you can just type a different one" is only
+// discoverable by already knowing to try it. Best-effort storage access,
+// same try/catch shape as the theme toggle above — a locked-down storage
+// context just means no history offered, never a broken field.
+const RECENT_VALUES_MAX = 8;
+const ADD_NEW_VALUE = "__add_new__";
 
+function recentValues(storageKey) {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    return raw ? JSON.parse(raw) : [];
+  } catch (_err) {
+    return [];
+  }
+}
+
+function rememberRecentValue(storageKey, value) {
+  if (!value) return;
+  try {
+    const values = [value, ...recentValues(storageKey).filter((v) => v !== value)];
+    localStorage.setItem(storageKey, JSON.stringify(values.slice(0, RECENT_VALUES_MAX)));
+  } catch (_err) {
+    // Best-effort — see this section's own comment above.
+  }
+}
+
+// Wires ONE identity <select> (tenant or principal) up to its own
+// localStorage history — rendering it, handling a pick, and handling
+// "+ Add new…" (prompt for a value; cancelling or leaving it blank just
+// reverts to whatever was selected before, no side effects). `onChange`
+// runs after EVERY real selection (a history pick or a freshly-added
+// value alike), never after a cancelled add.
+function setupIdentitySelect(selectEl, storageKey, defaultValue, label, onChange) {
+  let lastRealValue = defaultValue;
+
+  function render(selected) {
+    selectEl.innerHTML = "";
+    for (const value of recentValues(storageKey)) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      selectEl.appendChild(option);
+    }
+    const addNew = document.createElement("option");
+    addNew.value = ADD_NEW_VALUE;
+    addNew.textContent = "+ Add new…";
+    selectEl.appendChild(addNew);
+    selectEl.value = selected;
+  }
+
+  rememberRecentValue(storageKey, defaultValue);
+  render(defaultValue);
+
+  selectEl.addEventListener("change", () => {
+    if (selectEl.value === ADD_NEW_VALUE) {
+      const entered = (window.prompt(`New ${label}:`) || "").trim();
+      if (!entered) {
+        render(lastRealValue); // cancelled or blank — revert, no side effects
+        return;
+      }
+      rememberRecentValue(storageKey, entered);
+      lastRealValue = entered;
+      render(entered);
+    } else {
+      lastRealValue = selectEl.value;
+      rememberRecentValue(storageKey, selectEl.value);
+    }
+    onChange();
+  });
+}
+
+// Re-scope the switcher the moment the caller's identity changes — these
+// sessions belong to tenant+principal (app/agent/sessions.py), so a
+// different tenant OR principal has a completely different list.
+setupIdentitySelect(tenantEl, "agent-core-demo:tenants", "acme", "tenant", loadSessions);
+setupIdentitySelect(principalEl, "agent-core-demo:principals", "web-user", "principal", loadSessions);
+
+// A different domain runs a different manifest/tool set/graph
+// (app/domains/registry.py) — continuing an EXISTING thread_id under it
+// would resume a checkpoint built for a different domain entirely (see
+// app/turns/queue.py::publish_request's own docstring on why domain must
+// stay consistent for one conversation), so switching domain always
+// starts a fresh conversation, same as picking "+ New conversation" above.
+domainSelect.addEventListener("change", () => {
+  threadId = randomId();
+  messagesEl.innerHTML = "";
+  sessionSelect.value = "";
+  renderDomainInfo();
+  renderSuggestedQuestions();
+  // Sessions are now domain-scoped server-side too (app/agent/sessions.py,
+  // GRAPH_PATTERNS.md pattern 49) — the switcher must re-fetch under the
+  // new X-Domain header, same reason setupIdentitySelect() above re-fetches
+  // when tenant/principal (the OTHER scoping axes) change.
+  loadSessions();
+});
+
+// What this domain's agent actually is/can do, straight from its own
+// AgentManifest.system_prompt and allowed tool list
+// (app/domains/*/domain.py, app/domains/*/tools.py) — not marketing copy.
+// "Can't" claims here are literal: they're tools that domain's
+// AgentManifest.allowed_tools never names, not just discouraged by the
+// prompt (see e.g. app/domains/support/domain.py's own docstring on
+// "sandboxed"). A newly added domain falls back to no info box at all
+// (see SUGGESTED_QUESTIONS's own comment below on why that's fine).
+const DOMAIN_INFO = {
+  acme: {
+    title: "General Assistant",
+    description:
+      "Answers from Acme Corp's knowledge base and general knowledge (with citations), does math, and looks up Acme Corp staff. Can search for and follow a bundled skill's playbook, delegate a self-contained lookup to a subagent, and remember facts across conversations (memory writes need your approval first).",
+  },
+  support: {
+    title: "Tier-1 Support Copilot",
+    description:
+      "Answers from the knowledge base and manages support tickets — opens one, checks status, adds a follow-up comment, lists yours. Can't process a refund or change your account itself (no tool for that, by design) — escalates those to a human agent instead of guessing.",
+  },
+  ops: {
+    title: "Internal Ops Assistant",
+    description:
+      "Reads this app's own live operational metrics (turn error rate, latency, tool errors, moderation blocks, rate limiting) and flags anything past its alert threshold. Can log/list/resolve durable incidents. Posting to the team channel needs your explicit approval every time — it never notifies on its own initiative.",
+  },
+  sales: {
+    title: "Sales / CRM Concierge",
+    description:
+      "Logs lead interactions, schedules and tracks follow-ups, packages a brief on a lead's history, and hands a hot lead to a human rep — or marks one lost. Has no tool that sends anything to a lead: every reply it drafts is for a human to review and send.",
+  },
+};
+
+const domainInfoEl = document.getElementById("domainInfo");
+
+function renderDomainInfo() {
+  const info = DOMAIN_INFO[domainSelect.value];
+  domainInfoEl.innerHTML = info
+    ? `<strong>${info.title}:</strong> ${info.description}`
+    : "";
+}
+
+// One-click example questions per domain — purely a UI convenience, not a
+// new endpoint: clicking one just calls the same send() a typed message
+// does. Picked to actually exercise each domain's real tools (see each
+// app/domains/*/domain.py's own SYSTEM_PROMPT and app/domains/*/tools.py's
+// own TOOLS list) rather than being generic filler; "What are Acme Corp's
+// support hours?" is the exact realistic case promptfoo/support.yaml
+// already regression-tests. A newly added domain (see domainSelect's own
+// comment above) falls back to no suggestions at all rather than an
+// error — this list is a convenience layer on top of that selector, not a
+// requirement for a domain to work.
+const SUGGESTED_QUESTIONS = {
+  acme: [
+    "What is a LangGraph checkpointer?",
+    "What's 15% of 2,450?",
+    "Who works on Acme Corp's engineering team?",
+    "How does Qdrant's hybrid search work?",
+    "What's (48 * 7) + 132?",
+    "Is there a bundled skill for writing a report?",
+  ],
+  support: [
+    "What are Acme Corp's support hours?",
+    "How do I reset my password?",
+    "What's the status of ticket #4471?",
+    "My dashboard won't load — can you open a ticket?",
+    "What are all of my open tickets?",
+    "Can you just refund my last order right now?",
+    "The same issue happened again this morning — I already have a ticket open for it.",
+  ],
+  ops: [
+    "Did anything break overnight?",
+    "What does the current error rate look like?",
+    "Show me recent incidents.",
+    "Is latency higher than usual right now?",
+    "Are there any open incidents right now?",
+    "Post a summary of current latency to the team channel.",
+    "Has moderation blocked more requests than usual today?",
+  ],
+  sales: [
+    "A lead asked what Acme Corp actually does.",
+    "This lead wants pricing and to talk to someone directly.",
+    "What follow-ups are pending right now?",
+    "Draft a reply for a lead asking about our enterprise plan.",
+    "This lead hasn't responded after three follow-ups — what should we do?",
+    "Schedule a follow-up with this lead in 3 days.",
+    "Give me a brief on this lead's history.",
+  ],
+};
+
+const suggestedQuestionsEl = document.getElementById("suggestedQuestions");
+const suggestedQuestionsSectionEl = document.getElementById("suggestedQuestionsSection");
+
+function renderSuggestedQuestions() {
+  suggestedQuestionsEl.innerHTML = "";
+  const questions = SUGGESTED_QUESTIONS[domainSelect.value] || [];
+  // A newly registered domain with no entry here yet (see this const's
+  // own comment above) hides the whole "Try asking" section rather than
+  // showing an empty heading over nothing.
+  suggestedQuestionsSectionEl.hidden = questions.length === 0;
+  for (const question of questions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = question;
+    // Same "don't stack a second turn on top of one already running" guard
+    // form's own submit handler applies to a typed message.
+    button.addEventListener("click", () => {
+      if (!activeTurn) send(question, null);
+    });
+    suggestedQuestionsEl.appendChild(button);
+  }
+}
+
+renderDomainInfo();
+renderSuggestedQuestions();
 loadSessions();
 
 // Two independent mechanisms, matching POST /chat/cancel's own design
