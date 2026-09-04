@@ -86,6 +86,7 @@ from app.agent import meter, sessions, sql_store
 from app.agent.runtime import (
     answer,
     astream_events_turn,
+    close_checkpointer_pool,
     get_session_messages,
     init_graph_async,
 )
@@ -169,6 +170,9 @@ async def lifespan(app: FastAPI):
     # A no-op if nothing in this process ever queried query_employees or
     # wrote to the usage ledger (the pool was never opened).
     sql_store.close_pool()
+    # Same reasoning for the checkpointer's own pool (app/agent/runtime.py) —
+    # init_graph_async() above always opens it, so this is never a no-op here.
+    await close_checkpointer_pool()
 
 
 app = FastAPI(title="Core AI Stack Demo", version="1.0.0", lifespan=lifespan)

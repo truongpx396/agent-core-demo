@@ -105,7 +105,15 @@ jobs:
           pip install -r requirements-lock.txt
           pytest-xdist==3.8.0
           "testcontainers[postgres,redis,ollama]==4.9.0"
-      - run: pytest -n auto -m integration -q
+      # --dist=loadgroup: tests/integration/test_worker_scaling.py's own
+      # xdist_group marker needs this to actually take effect (plain `load`
+      # ignores it) — forces its 3 heavy real-subprocess tests onto ONE
+      # worker so its module-scoped `scaled_stack` fixture (5 real
+      # agent_worker.py + uvicorn + fake_llm_server processes) only ever
+      # builds once per run, not once per xdist worker that happens to pick
+      # up one of its tests. See that module's own comment for the real,
+      # reproduced intermittent failure this fixes, not a theoretical one.
+      - run: pytest -n auto -m integration -q --dist=loadgroup
 
   test-live:
     # Real small Ollama model + the full app/agent-worker stack, incl. a

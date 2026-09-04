@@ -30,11 +30,15 @@
 # the hard way. Never run it against this file itself; `make
 # promptfoo-redteam` copies it to a scratch file first (see that target's
 # own comment) and runs against the copy instead.
+# num_predict caps generation length — see promptfoo/support.yaml's own
+# comment for why this is load-bearing (a real CI run with no cap produced a
+# 40,960-token runaway completion and cascading timeouts), not just defensive.
 targets:
   - id: "ollama:chat:{{ env.PROMPTFOO_MODEL | default('qwen2.5:3b') }}"
     label: support-prompt
     config:
       temperature: 0
+      num_predict: 150
 
 prompts:
   - file://prompts/support.json

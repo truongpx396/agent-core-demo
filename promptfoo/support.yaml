@@ -13,10 +13,19 @@
 # the model tag (defaults to this app's own production CHAT_MODEL,
 # qwen2.5:3b, for local runs against `make up`'s real Ollama; CI overrides
 # it to the smaller model tests/live/ already uses).
+# `num_predict` (Ollama's own max-tokens option, promptfoo passes it through
+# verbatim to the raw provider) caps generation length — verified directly
+# this is load-bearing, not defensive: a real CI run with no cap let this
+# same qwen2.5:1.5b generate 40,960 completion tokens for one reply instead
+# of stopping naturally, blowing past promptfoo's own default 300000ms
+# per-request timeout on every OTHER call queued behind it (retries then
+# compounded that into a ~41-minute job). Same value garak/config.yaml
+# already uses for the identical raw-small-model-no-bound risk.
 providers:
   - id: "ollama:chat:{{ env.PROMPTFOO_MODEL | default('qwen2.5:3b') }}"
     config:
       temperature: 0
+      num_predict: 150
 
 prompts:
   - file://prompts/support.json

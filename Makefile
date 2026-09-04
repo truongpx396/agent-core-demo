@@ -1,4 +1,4 @@
-.PHONY: help up up-app pull-models ingest index-skills chat chat-stream chat-stream-hitl serve mcp-serve telegram telegram-support telegram-sales agent-worker ingest-worker ops-digest followup-sweep test test-integration test-live lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image loadtest loadtest-headless strix strix-app strix-view logs down clean clear-cache obs-up obs-down obs-logs obs-clean
+.PHONY: help up up-app pull-models ingest index-skills chat chat-stream chat-stream-hitl serve mcp-serve telegram telegram-support telegram-sales agent-worker fake-llm ingest-worker ops-digest followup-sweep test test-integration test-live lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image loadtest loadtest-headless loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache obs-up obs-down obs-logs obs-clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -58,6 +58,9 @@ telegram-sales:  ## Start the Telegram channel as the sales/CRM concierge (see a
 agent-worker:  ## Start a Redis Streams agent worker (run several for independent scaling; see POST /chat/stream/queued)
 	python -m app.turns.agent_worker
 
+fake-llm:  ## Start the fake concurrent-LLM double (loadtest/fake_llm_server.py, :9009) for load-testing agent_worker.py's own concurrency in isolation from native Ollama's hard `-np 1` ceiling — see that file's docstring for how to point a run at it
+	uvicorn loadtest.fake_llm_server:app --host 0.0.0.0 --port 9009
+
 ingest-worker:  ## Start a document-ingestion worker (PDF/DOCX uploads; run several for independent scaling; see POST /ingest/upload)
 	python -m app.ingestion.ingest_worker
 
@@ -71,7 +74,10 @@ test:  ## Run the graph test suite in parallel (no live services needed — fake
 	pytest -n auto -q
 
 test-integration:  ## Real Postgres/Redis/Qdrant via testcontainers (no LLM) — needs Docker, no `make up` required (GRAPH_PATTERNS.md pattern 48)
-	pytest -n auto -m integration -q
+	# --dist=loadgroup: tests/integration/test_worker_scaling.py's own
+	# xdist_group marker needs this to actually take effect (plain `load`
+	# ignores it) — see that module's own comment for why.
+	pytest -n auto -m integration -q --dist=loadgroup
 
 test-live:  ## Real small Ollama model + full app/agent-worker stack via testcontainers, incl. Playwright browser E2E — needs Docker (pattern 48)
 	playwright install --with-deps chromium
@@ -145,6 +151,15 @@ loadtest-headless:  ## Fixed 20-user, 2-minute headless Locust run → CSV + HTM
 	locust -f loadtest/locustfile.py --host http://localhost:8000 \
 		--headless --users 20 --spawn-rate 5 --run-time 2m \
 		--csv loadtest/results/loadtest --html loadtest/results/report.html
+
+loadtest-queued:  ## Interactive Locust UI against ONLY the queued path (loadtest/locustfile_queued.py) — needs `make fake-llm` plus `make serve`/`make agent-worker` run with OPENAI_API_BASE pointed at it (see that file's docstring); measures app/turns/agent_worker.py's own concurrency, not native Ollama's
+	locust -f loadtest/locustfile_queued.py --host http://localhost:8000
+
+loadtest-queued-headless:  ## Fixed 20-user, 2-minute headless run of the queued-path scenario above → CSV + HTML report under loadtest/results-queued/
+	mkdir -p loadtest/results-queued
+	locust -f loadtest/locustfile_queued.py --host http://localhost:8000 \
+		--headless --users 20 --spawn-rate 5 --run-time 2m \
+		--csv loadtest/results-queued/loadtest --html loadtest/results-queued/report.html
 
 strix:  ## Autonomous AI pentest of this repo's SOURCE (static) — needs Docker, `pipx install strix-agent` once (pipx isolates it from this repo's own .venv, the pip-conflict concern `make garak` solves with a second venv instead), and a CLOUD LLM key (STRIX_LLM/LLM_API_KEY — NOT the local Ollama the rest of this app runs on). Only ever point it at a target you own or have written authorization to test.
 	strix --target . --scan-mode quick
