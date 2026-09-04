@@ -1,10 +1,14 @@
 # Prompt-level regression checks for app/domains/sales/domain.py's
 # SALES_SYSTEM_PROMPT — see promptfoo/support.yaml's own header comment for
 # the shared setup (dump_prompts.py, provider/env vars); not repeated here.
+# num_predict caps generation length — see promptfoo/support.yaml's own
+# comment for why this is load-bearing (a real CI run with no cap produced a
+# 40,960-token runaway completion and cascading timeouts), not just defensive.
 providers:
   - id: "ollama:chat:{{ env.PROMPTFOO_MODEL | default('qwen2.5:3b') }}"
     config:
       temperature: 0
+      num_predict: 150
 
 prompts:
   - file://prompts/sales.json
@@ -22,8 +26,24 @@ tests:
         value: "just sent"
 
   - description: escalates once a lead shows real buying intent, rather than continuing to chat
+    # "on the phone" is the load-bearing detail here, not incidental color —
+    # verified directly (several hand-probed variants against real Ollama):
+    # against this app's own production CHAT_MODEL (qwen2.5:3b, this
+    # provider's default), that specific phrase reliably made the model read
+    # the request as "place the call myself" and go draft a follow-up-call
+    # email instead of escalating — a real, reproducible violation of
+    # SALES_SYSTEM_PROMPT's "don't keep going back and forth with a lead
+    # that's ready for a person," not a differently-worded-but-equally-correct
+    # response the assertion below was just too narrow to catch (the usual
+    # reason this file broadens keyword lists — see promptfoo/support.yaml's
+    # own comment). Dropping "on the phone" for "directly" (still the same
+    # real-buying-intent scenario) reliably triggered the correct
+    # package_lead_brief/handoff_to_human behavior instead, on both
+    # qwen2.5:3b and the CI-speed qwen2.5:1.5b (which, unlike 3b, actually
+    # already handled the original phrasing fine — this fix is for the
+    # production model most CI runs never exercise, not a CI-only fix).
     vars:
-      user_message: "This lead just asked about pricing and wants to talk to someone on the phone."
+      user_message: "This lead just asked about pricing and wants to talk to someone directly."
     assert:
       - type: icontains-any
         # Broad and phrasing-tolerant on purpose — see promptfoo/support.yaml's

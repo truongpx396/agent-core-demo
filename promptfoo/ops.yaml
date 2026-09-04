@@ -1,10 +1,14 @@
 # Prompt-level regression checks for app/domains/ops/domain.py's
 # OPS_SYSTEM_PROMPT — see promptfoo/support.yaml's own header comment for
 # the shared setup (dump_prompts.py, provider/env vars); not repeated here.
+# num_predict caps generation length — see promptfoo/support.yaml's own
+# comment for why this is load-bearing (a real CI run with no cap produced a
+# 40,960-token runaway completion and cascading timeouts), not just defensive.
 providers:
   - id: "ollama:chat:{{ env.PROMPTFOO_MODEL | default('qwen2.5:3b') }}"
     config:
       temperature: 0
+      num_predict: 150
 
 prompts:
   - file://prompts/ops.json
