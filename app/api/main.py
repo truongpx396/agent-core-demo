@@ -19,16 +19,28 @@ Endpoints:
                               Streams queue (GRAPH_PATTERNS.md pattern 43)
                               — needs `make agent-worker` running, and now
                               a real approve/reject UI can act on a pause
-                              it emits (see POST /chat/resume)
+                              it emits (see POST /chat/resume). Routes by
+                              an `X-Domain` header (default "acme", see
+                              get_domain) to that domain's own worker pool
+                              — this endpoint (and /chat/resume,
+                              /chat/cancel below) is the ONE place this
+                              service serves every domain
+                              app/domains/registry.py knows about from a
+                              single unified process; POST /chat and
+                              POST /chat/stream above stay Acme-only
 - POST /chat/resume       -> continues a turn paused at human_approval —
                               the HTTP counterpart to
                               app/agent/runtime.py::astream_events_resume, always
-                              routed through the same queue as new turns
+                              routed through the same per-domain queue as
+                              new turns (same X-Domain header)
 - POST /chat/cancel       -> stops a turn, whether it's actively streaming
-                              or paused at human_approval
-- GET  /chat/sessions     -> this caller's past conversation threads, most
-                              recently active first (the session switcher)
+                              or paused at human_approval (same X-Domain
+                              header for the paused-job case)
+- GET  /chat/sessions     -> this caller's past conversation threads for
+                              the given X-Domain, most recently active
+                              first (the session switcher)
 - GET  /chat/sessions/{thread_id}/messages -> that thread's transcript
+                              (404 if it belongs to a different domain)
 - GET  /usage             -> this caller's own tenant usage/cost (app/agent/meter.py),
                               including the rolling-24h number
                               app/agent/runtime.py::_tenant_over_daily_budget checks
@@ -115,6 +127,7 @@ from app.core.config import (
 from app.core.logging_config import bind_request_id, configure_logging
 from app.core.security import SecurityCtx
 from app.core.telemetry import configure_telemetry
+from app.domains.registry import DOMAINS
 from app.ingestion import ingest_queue, object_store
 from app.ingestion.extractors import EXTRACTORS_BY_SUFFIX
 from app.turns import queue
@@ -138,6 +151,34 @@ async def get_ctx(
     handler runs) — the fail-closed behavior lives in the *shape* of the
     dependency, not in a runtime check here."""
     return {"tenant": x_tenant_id, "principal": x_principal_id, "claims": {}}
+
+
+async def get_domain(
+    x_domain: str = Header(
+        "acme",
+        description=(
+            "Which domain (app/domains/registry.py) this turn runs against. "
+            "Only the QUEUED chat endpoints read this — POST /chat and "
+            "POST /chat/stream stay hardcoded to Acme, unaffected by it."
+        ),
+    ),
+) -> str:
+    """Unlike `get_ctx`'s two headers, this one defaults rather than fails
+    closed — an absent `X-Domain` is a normal, common case (every existing
+    caller before this dependency existed), not a misconfiguration, so it
+    should behave exactly as before: Acme. An UNKNOWN domain name is still
+    fail-loud, though — same discipline as
+    app/domains/registry.py::resolve_domain itself, just surfaced as a 422
+    here instead of a process-startup crash, since this is a per-request
+    value rather than a per-process one. Without this check, a typo'd
+    domain would publish onto a requests stream no running
+    app/turns/agent_worker.py pool ever reads, hanging silently until the
+    caller gives up — a much worse failure mode than an immediate 422."""
+    if x_domain not in DOMAINS:
+        raise HTTPException(
+            422, f"Unknown X-Domain {x_domain!r} — must be one of: {', '.join(sorted(DOMAINS))}"
+        )
+    return x_domain
 
 
 @asynccontextmanager
@@ -323,7 +364,7 @@ def _queued_sse_response(client, request_id: str) -> StreamingResponse:
 
 @app.post("/chat/stream/queued")
 async def chat_stream_queued(
-    req: ChatRequest, ctx: SecurityCtx = Depends(get_ctx)
+    req: ChatRequest, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> StreamingResponse:
     """Same published SSE event vocabulary as `POST /chat/stream` (see its
     docstring) — but this process never runs the graph itself. It publishes
@@ -344,6 +385,12 @@ async def chat_stream_queued(
     — the worker no longer auto-declines it (see app/turns/agent_worker.py's
     module docstring), so it reaches the caller exactly like
     `POST /chat/stream`'s does, resumed via `POST /chat/resume` below.
+
+    `domain` (an `X-Domain` header, see `get_domain`) picks which domain's
+    requests stream this turn is published onto — only an
+    `app/turns/agent_worker.py` pool booted with a matching `AGENT_DOMAIN`
+    ever reads it, so this is what lets ONE unified API process serve every
+    domain a worker pool is currently running for.
     """
     client = queue.get_client()
     request_id = uuid.uuid4().hex
@@ -353,6 +400,7 @@ async def chat_stream_queued(
         text=req.message,
         thread_id=req.thread_id,
         ctx=ctx,
+        domain=domain,
         images=req.images or None,
     )
     return _queued_sse_response(client, request_id)
@@ -360,7 +408,7 @@ async def chat_stream_queued(
 
 @app.post("/chat/resume")
 async def chat_resume(
-    req: ResumeRequest, ctx: SecurityCtx = Depends(get_ctx)
+    req: ResumeRequest, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> StreamingResponse:
     """Continue a turn paused at human_approval — the HTTP counterpart to
     `app/agent/runtime.py::astream_events_resume`. Always routed through the same
@@ -368,10 +416,13 @@ async def chat_resume(
     in-process: a resume can still execute a real tool call and run many
     more LLM turns, so handling it directly in the SSE-serving tier would
     quietly reintroduce the real graph work `POST /chat/stream/queued`
-    exists to move off of it. Any worker can pick this up regardless of
-    which one ran (or is even still running) the original turn — the
-    checkpoint they all share lives in Postgres, not in a worker's own
-    process memory.
+    exists to move off of it. Any worker IN `domain`'s OWN pool can pick
+    this up regardless of which one ran (or is even still running) the
+    original turn — the checkpoint they all share lives in Postgres, not in
+    a worker's own process memory. `domain` must match the ORIGINAL turn's
+    (see `queue.publish_request`'s docstring for why) — the caller (the web
+    UI) is expected to keep sending the same `X-Domain` for a given
+    thread_id throughout its conversation.
 
     `ctx` is re-supplied here, not reused from the original pause — see
     `astream_events_resume`'s own docstring for why.
@@ -379,14 +430,19 @@ async def chat_resume(
     client = queue.get_client()
     request_id = uuid.uuid4().hex
     await queue.publish_resume_request(
-        client, request_id=request_id, thread_id=req.thread_id, approved=req.approved, ctx=ctx
+        client,
+        request_id=request_id,
+        thread_id=req.thread_id,
+        approved=req.approved,
+        ctx=ctx,
+        domain=domain,
     )
     return _queued_sse_response(client, request_id)
 
 
 @app.post("/chat/cancel")
 async def chat_cancel(
-    req: CancelRequest, ctx: SecurityCtx = Depends(get_ctx)
+    req: CancelRequest, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> StreamingResponse:
     """Stop a turn — whichever of two states it's actually in, handled by
     two independent mechanisms that both fire unconditionally (each is a
@@ -398,10 +454,14 @@ async def chat_cancel(
        stops on — its own already-open results stream (the one
        `POST /chat/stream/queued` is reading) gets the terminal
        "cancelled" event directly; nothing more to do here for that case.
+       Keyed by thread_id alone, not by domain — whichever worker is
+       actually running the turn polls this flag directly, so which
+       domain it belongs to is irrelevant here.
     2. Paused at human_approval: publishes a `"cancel"` job
-       (GRAPH_PATTERNS.md pattern 36's `cancel_run`, over the queue like
-       every other job kind) — picked up by any available worker, since
-       nothing is actively running for this thread to signal via the flag.
+       (GRAPH_PATTERNS.md pattern 36's `cancel_run`, over `domain`'s own
+       queue like every other job kind) — picked up by any available
+       worker IN THAT DOMAIN's pool, since nothing is actively running for
+       this thread to signal via the flag.
 
     This endpoint's OWN SSE response is the job-2 outcome specifically
     (cancelled a real pause, or confirmed nothing was paused here) — not
@@ -412,32 +472,41 @@ async def chat_cancel(
     await queue.set_cancel_flag(client, req.thread_id)
     request_id = uuid.uuid4().hex
     await queue.publish_cancel_request(
-        client, request_id=request_id, thread_id=req.thread_id, ctx=ctx
+        client, request_id=request_id, thread_id=req.thread_id, ctx=ctx, domain=domain
     )
     return _queued_sse_response(client, request_id)
 
 
 @app.get("/chat/sessions", response_model=list[SessionSummary])
-def chat_sessions(ctx: SecurityCtx = Depends(get_ctx)) -> list[SessionSummary]:
+def chat_sessions(
+    ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
+) -> list[SessionSummary]:
     """This caller's own past conversation threads (app/agent/sessions.py),
     most recently active first — the session switcher's list. Scoped to
-    tenant+principal, never tenant alone: a session belongs to whoever
-    started it (own-conversation isolation), the same axis
-    app/core/security.py::Policy.lower already applies to memories."""
-    return sessions.list_sessions(ctx)  # type: ignore[return-value]  # response_model coerces dict -> SessionSummary at the HTTP boundary; a direct Python call (see tests/api/test_api.py) intentionally gets the raw dicts back
+    tenant+principal+domain, never tenant alone: a session belongs to
+    whoever started it (own-conversation isolation), the same axis
+    app/core/security.py::Policy.lower already applies to memories — and,
+    since GRAPH_PATTERNS.md pattern 49, to whichever domain actually ran it
+    too, via the same `X-Domain` header the queued chat endpoints read
+    (`get_domain`), so switching domains in the web UI also switches which
+    sessions the switcher lists."""
+    return sessions.list_sessions(ctx, domain)  # type: ignore[return-value]  # response_model coerces dict -> SessionSummary at the HTTP boundary; a direct Python call (see tests/api/test_api.py) intentionally gets the raw dicts back
 
 
 @app.get("/chat/sessions/{thread_id}/messages", response_model=list[SessionMessage])
 async def chat_session_messages(
-    thread_id: str, ctx: SecurityCtx = Depends(get_ctx)
+    thread_id: str, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> list[SessionMessage]:
     """One session's transcript, for the switcher to replay when a user
     picks it. `session_belongs_to` is checked FIRST and is the entire
     authorization boundary here — the shared Postgres checkpointer
-    `get_session_messages` reads has no tenant/principal of its own to
-    scope by, so skipping this check would let any caller read any
-    thread_id's transcript just by guessing/enumerating ids."""
-    if not sessions.session_belongs_to(ctx, thread_id):
+    `get_session_messages` reads has no tenant/principal (or domain) of its
+    own to scope by, so skipping this check would let any caller read any
+    thread_id's transcript just by guessing/enumerating ids. Requiring
+    `domain` to match too means a thread opened under a different domain
+    404s here exactly like a different tenant's/principal's thread already
+    did — not a new failure mode, the same one extended to a third axis."""
+    if not sessions.session_belongs_to(ctx, thread_id, domain):
         raise HTTPException(status_code=404, detail="session not found")
     return await get_session_messages(thread_id)  # type: ignore[return-value]  # same response_model coercion note as chat_sessions above
 

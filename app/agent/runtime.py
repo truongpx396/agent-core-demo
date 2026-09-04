@@ -104,6 +104,11 @@ except Exception:  # noqa: BLE001 - Langfuse optional if keys unset
     CallbackHandler = None
 
 _graph = None
+_domain_name = "acme"  # this process's own domain (app/domains/registry.py),
+# set alongside _graph below — used only to stamp app/agent/sessions.py's
+# chat_sessions.domain column (GRAPH_PATTERNS.md pattern 49), since the
+# graph itself doesn't otherwise need to know its own domain's NAME (only
+# its manifest/tools, already baked into `_graph` by build_graph()).
 _checkpointer_pool = None  # keeps AsyncPostgresSaver's AsyncConnectionPool
 # alive for the process's lifetime — letting it get garbage-collected would
 # close every pooled connection out from under the saver (verified
@@ -242,10 +247,19 @@ def _upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> None:
     conversation the user started on this thread_id and should still show
     up in "switch conversation," even though it has nothing to meter.
     upsert_session degrades to a no-op on its own failure (see its
-    docstring) — this can't fail the turn."""
+    docstring) — this can't fail the turn.
+
+    `_domain_name` is THIS PROCESS's own domain (set once, in
+    init_graph_async/init_graph_sync, alongside `_graph` itself) — correct
+    regardless of which of the three call sites reached here: a direct
+    `POST /chat`/`POST /chat/stream` call always runs in the API process
+    (Acme-only, per its own module docstring), while a queued `"turn"` job
+    runs inside whichever app/turns/agent_worker.py POOL picked it up,
+    already bound to one AGENT_DOMAIN for its whole life — so the session
+    row this stamps always matches the domain that actually ran the turn."""
     from app.agent import sessions
 
-    sessions.upsert_session(ctx, thread_id, text)
+    sessions.upsert_session(ctx, thread_id, text, domain=_domain_name)
 
 
 def _turn_outcome(state: dict) -> str:
@@ -337,6 +351,21 @@ async def _open_checkpointer():
     return saver
 
 
+def _resolve_domain_name(manifest: "AgentManifest | None") -> str:
+    """`manifest.name` if given, else whatever build_graph() itself would
+    fall back to (DEFAULT_MANIFEST, "acme") — mirrors build_graph()'s own
+    `manifest = manifest or DEFAULT_MANIFEST` substitution (app/agent/graph.py)
+    exactly, so `_domain_name` always names whichever manifest the graph
+    was ACTUALLY built with, never guessed independently of it. Lazy
+    import, same reason build_graph() itself imports DEFAULT_MANIFEST
+    lazily rather than at module level (see that function's own docstring)."""
+    if manifest is not None:
+        return manifest.name
+    from app.agent.manifest import DEFAULT_MANIFEST
+
+    return DEFAULT_MANIFEST.name
+
+
 async def close_checkpointer_pool() -> None:
     """Shuts the checkpointer's connection pool down cleanly — same
     reasoning as app/agent/sql_store.py::close_pool for the appdata pool
@@ -378,8 +407,9 @@ async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "Dom
     Further"), just "which one domain" becoming a boot-time parameter
     instead of a hardcoded default.
     """
-    global _graph
+    global _graph, _domain_name
     if _graph is None:
+        _domain_name = _resolve_domain_name(manifest)
         saver = await _open_checkpointer()
         _graph = build_graph(checkpointer=saver, manifest=manifest, domain=domain)
     return _graph
@@ -398,9 +428,10 @@ def init_graph_sync(manifest: "AgentManifest | None" = None, domain: "DomainPlug
     "None means build_graph()'s own Acme default, ignored once the
     singleton already exists" contract.
     """
-    global _graph
+    global _graph, _domain_name
     if _graph is not None:
         return
+    _domain_name = _resolve_domain_name(manifest)
 
     ready = threading.Event()
     holder: dict = {}

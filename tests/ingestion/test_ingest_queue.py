@@ -28,7 +28,7 @@ class TestEnsureConsumerGroup:
         directly, not just asserted by convention."""
         from app.turns import queue
 
-        assert ingest_queue.INGEST_REQUESTS_STREAM != queue.REQUESTS_STREAM
+        assert ingest_queue.INGEST_REQUESTS_STREAM != queue.requests_stream_key()
         assert ingest_queue.INGEST_CONSUMER_GROUP != queue.CONSUMER_GROUP
 
 

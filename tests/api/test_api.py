@@ -103,6 +103,35 @@ class TestUi:
         assert "X-Tenant-Id" in html
         assert "X-Principal-Id" in html
 
+    def test_sends_a_domain_selector_for_the_queued_endpoints(self):
+        """The page must send X-Domain on the queued path — see
+        app/api/main.py's get_domain, which the three queued endpoints
+        (chat_stream_queued/chat_resume/chat_cancel) depend on."""
+        html = ui()
+        assert "X-Domain" in html
+        assert 'id="domainSelect"' in html
+
+
+class TestGetDomain:
+    """app/api/main.py::get_domain's own runtime branch: an unknown domain
+    name must fail loud, the same discipline
+    app/domains/registry.py::resolve_domain already applies at process
+    start, just surfaced as a 422 here since this is a per-request value
+    rather than a per-process one. `Header("acme")`'s default-when-absent
+    behavior is FastAPI's own wiring, not this function's logic, so — like
+    get_ctx's required-header behavior above — it's out of scope for this
+    suite's "call the handler directly" style (see this module's own
+    docstring)."""
+
+    def test_passes_through_a_known_domain(self):
+        assert asyncio.run(api.get_domain(x_domain="support")) == "support"
+
+    def test_rejects_an_unknown_domain_with_422(self):
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(api.get_domain(x_domain="not-a-real-domain"))
+        assert exc_info.value.status_code == 422
+        assert "not-a-real-domain" in exc_info.value.detail
+
 
 class TestChatStreamQueued:
     """POST /chat/stream/queued (GRAPH_PATTERNS.md pattern 43) — the
@@ -120,13 +149,13 @@ class TestChatStreamQueued:
 
         async def _run():
             req = ChatRequest(message="hello", thread_id="t1")
-            response = await api.chat_stream_queued(req, ctx=TEST_CTX)
+            response = await api.chat_stream_queued(req, ctx=TEST_CTX, domain="acme")
 
             # The request was published immediately (before the response's
             # own generator has even started) — StreamingResponse's async
             # generator is lazy, so nothing has been read from the results
             # stream yet at this point.
-            published = client.streams[queue.REQUESTS_STREAM]
+            published = client.streams[queue.requests_stream_key("acme")]
             assert len(published) == 1
             payload = json.loads(published[0][1]["payload"])
             assert payload["text"] == "hello"
@@ -152,8 +181,8 @@ class TestChatStreamQueued:
 
         async def _run():
             req = ChatRequest(message="hi", thread_id="t2")
-            response = await api.chat_stream_queued(req, ctx=TEST_CTX)
-            request_id = json.loads(client.streams[queue.REQUESTS_STREAM][0][1]["payload"])[
+            response = await api.chat_stream_queued(req, ctx=TEST_CTX, domain="acme")
+            request_id = json.loads(client.streams[queue.requests_stream_key("acme")][0][1]["payload"])[
                 "request_id"
             ]
             await queue.publish_result(client, request_id, {"type": "done"})
@@ -174,8 +203,8 @@ class TestChatStreamQueued:
             req = ChatRequest(
                 message="what is this?", thread_id="t3", images=["https://example.com/cat.png"]
             )
-            response = await api.chat_stream_queued(req, ctx=TEST_CTX)
-            payload = json.loads(client.streams[queue.REQUESTS_STREAM][0][1]["payload"])
+            response = await api.chat_stream_queued(req, ctx=TEST_CTX, domain="acme")
+            payload = json.loads(client.streams[queue.requests_stream_key("acme")][0][1]["payload"])
             request_id = payload["request_id"]
             await queue.publish_result(client, request_id, {"type": "done"})
             async for _ in response.body_iterator:
@@ -184,6 +213,23 @@ class TestChatStreamQueued:
 
         payload = asyncio.run(_run())
         assert payload["images"] == ["https://example.com/cat.png"]
+
+    def test_a_non_acme_domain_publishes_onto_its_own_stream(self, monkeypatch):
+        """The whole point of threading `domain` through — an X-Domain:
+        support turn must land where ONLY an `AGENT_DOMAIN=support`
+        app/turns/agent_worker.py pool is listening, never on Acme's own
+        stream (see app/turns/queue.py::publish_request's own docstring)."""
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        async def _run():
+            req = ChatRequest(message="where is my order?", thread_id="t4")
+            await api.chat_stream_queued(req, ctx=TEST_CTX, domain="support")
+
+        asyncio.run(_run())
+        assert queue.requests_stream_key("acme") not in client.streams
+        published = client.streams[queue.requests_stream_key("support")]
+        assert len(published) == 1
 
 
 class TestChatResume:
@@ -198,9 +244,9 @@ class TestChatResume:
 
         async def _run():
             req = ResumeRequest(thread_id="t1", approved=True)
-            response = await api.chat_resume(req, ctx=TEST_CTX)
+            response = await api.chat_resume(req, ctx=TEST_CTX, domain="acme")
 
-            published = client.streams[queue.REQUESTS_STREAM]
+            published = client.streams[queue.requests_stream_key("acme")]
             assert len(published) == 1
             payload = json.loads(published[0][1]["payload"])
             assert payload["kind"] == "resume"
@@ -221,8 +267,8 @@ class TestChatResume:
 
         async def _run():
             req = ResumeRequest(thread_id="t2", approved=False)
-            await api.chat_resume(req, ctx=TEST_CTX)
-            return json.loads(client.streams[queue.REQUESTS_STREAM][0][1]["payload"])
+            await api.chat_resume(req, ctx=TEST_CTX, domain="acme")
+            return json.loads(client.streams[queue.requests_stream_key("acme")][0][1]["payload"])
 
         payload = asyncio.run(_run())
         assert payload["approved"] is False
@@ -239,11 +285,11 @@ class TestChatCancel:
 
         async def _run():
             req = CancelRequest(thread_id="t1")
-            response = await api.chat_cancel(req, ctx=TEST_CTX)
+            response = await api.chat_cancel(req, ctx=TEST_CTX, domain="acme")
 
             assert await queue.is_cancelled(client, "t1") is True
 
-            published = client.streams[queue.REQUESTS_STREAM]
+            published = client.streams[queue.requests_stream_key("acme")]
             assert len(published) == 1
             payload = json.loads(published[0][1]["payload"])
             assert payload["kind"] == "cancel"
@@ -260,7 +306,8 @@ class TestChatCancel:
 
 class TestChatSessions:
     """GET /chat/sessions — a thin pass-through to app/agent/sessions.py::list_sessions,
-    scoped by whatever ctx get_ctx resolved (not a caller-supplied field)."""
+    scoped by whatever ctx get_ctx resolved (not a caller-supplied field)
+    AND by the X-Domain-derived `domain` (GRAPH_PATTERNS.md pattern 49)."""
 
     def test_returns_whatever_list_sessions_reports(self, monkeypatch):
         rows = [
@@ -273,30 +320,42 @@ class TestChatSessions:
         ]
         captured = {}
 
-        def fake_list_sessions(ctx):
+        def fake_list_sessions(ctx, domain):
             captured["ctx"] = ctx
+            captured["domain"] = domain
             return rows
 
         monkeypatch.setattr(sessions, "list_sessions", fake_list_sessions)
 
-        result = api.chat_sessions(ctx=TEST_CTX)
+        result = api.chat_sessions(ctx=TEST_CTX, domain="acme")
 
         # Calling the handler directly (this file's established
         # convention) bypasses FastAPI's response_model coercion — that
         # only happens through the real ASGI request/response cycle, so
         # this is the raw list[dict] list_sessions itself returned.
         assert captured["ctx"] == TEST_CTX
+        assert captured["domain"] == "acme"
         assert [r["thread_id"] for r in result] == ["t1"]
         assert result[0]["title"] == "Refund question"
+
+    def test_a_different_domain_is_passed_through_too(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            sessions, "list_sessions", lambda ctx, domain: captured.setdefault("domain", domain) or []
+        )
+
+        api.chat_sessions(ctx=TEST_CTX, domain="support")
+
+        assert captured["domain"] == "support"
 
 
 class TestChatSessionMessages:
     """GET /chat/sessions/{thread_id}/messages — session_belongs_to is the
     ENTIRE authorization boundary (the shared checkpointer
-    get_session_messages reads has no tenant/principal of its own)."""
+    get_session_messages reads has no tenant/principal/domain of its own)."""
 
     def test_returns_the_transcript_when_owned(self, monkeypatch):
-        monkeypatch.setattr(sessions, "session_belongs_to", lambda ctx, thread_id: True)
+        monkeypatch.setattr(sessions, "session_belongs_to", lambda ctx, thread_id, domain: True)
 
         async def fake_get_session_messages(thread_id):
             assert thread_id == "t1"
@@ -304,7 +363,7 @@ class TestChatSessionMessages:
 
         monkeypatch.setattr(api, "get_session_messages", fake_get_session_messages)
 
-        result = asyncio.run(api.chat_session_messages("t1", ctx=TEST_CTX))
+        result = asyncio.run(api.chat_session_messages("t1", ctx=TEST_CTX, domain="acme"))
 
         # Same note as TestChatSessions above — raw dicts, not
         # response_model-coerced Pydantic objects, when called directly.
@@ -315,7 +374,7 @@ class TestChatSessionMessages:
         import pytest
         from fastapi import HTTPException
 
-        monkeypatch.setattr(sessions, "session_belongs_to", lambda ctx, thread_id: False)
+        monkeypatch.setattr(sessions, "session_belongs_to", lambda ctx, thread_id, domain: False)
 
         async def fail_if_called(thread_id):
             raise AssertionError("get_session_messages should not be called")
@@ -323,9 +382,35 @@ class TestChatSessionMessages:
         monkeypatch.setattr(api, "get_session_messages", fail_if_called)
 
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(api.chat_session_messages("someone-elses-thread", ctx=TEST_CTX))
+            asyncio.run(api.chat_session_messages("someone-elses-thread", ctx=TEST_CTX, domain="acme"))
 
         assert exc_info.value.status_code == 404
+
+    def test_404s_when_owned_by_a_different_domain(self, monkeypatch):
+        """The exact scenario this pattern exists to prevent: a thread
+        opened under "support" must not be readable while "sales" is the
+        selected domain, even for its own owner."""
+        import pytest
+        from fastapi import HTTPException
+
+        captured = {}
+
+        def fake_session_belongs_to(ctx, thread_id, domain):
+            captured["domain"] = domain
+            return False
+
+        monkeypatch.setattr(sessions, "session_belongs_to", fake_session_belongs_to)
+
+        async def fail_if_called(thread_id):
+            raise AssertionError("get_session_messages should not be called")
+
+        monkeypatch.setattr(api, "get_session_messages", fail_if_called)
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(api.chat_session_messages("t1", ctx=TEST_CTX, domain="sales"))
+
+        assert exc_info.value.status_code == 404
+        assert captured["domain"] == "sales"
 
 
 def _upload_file(filename, data, content_type):

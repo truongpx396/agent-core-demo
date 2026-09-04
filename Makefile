@@ -1,4 +1,4 @@
-.PHONY: help up up-app pull-models ingest index-skills chat chat-stream chat-stream-hitl serve mcp-serve telegram telegram-support telegram-sales agent-worker fake-llm ingest-worker ops-digest followup-sweep test test-integration test-live lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image loadtest loadtest-headless loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache obs-up obs-down obs-logs obs-clean
+.PHONY: help up up-app pull-models ingest index-skills chat chat-stream chat-stream-hitl serve mcp-serve telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales fake-llm ingest-worker ops-digest followup-sweep test test-integration test-live lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image loadtest loadtest-headless loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache obs-up obs-down obs-logs obs-clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -55,8 +55,17 @@ telegram-support:  ## Start the Telegram channel as the Tier-1 support copilot (
 telegram-sales:  ## Start the Telegram channel as the sales/CRM concierge (see app/domains/sales/)
 	AGENT_DOMAIN=sales python -m app.channels.telegram
 
-agent-worker:  ## Start a Redis Streams agent worker (run several for independent scaling; see POST /chat/stream/queued)
+agent-worker:  ## Start a Redis Streams agent worker for the Acme domain (run several for independent scaling; see POST /chat/stream/queued)
 	python -m app.turns.agent_worker
+
+agent-worker-support:  ## Start an agent worker pool for the Tier-1 support domain (see app/domains/support/); the web UI's X-Domain: support turns route here
+	AGENT_DOMAIN=support python -m app.turns.agent_worker
+
+agent-worker-ops:  ## Start an agent worker pool for the ops domain (see app/domains/ops/); the web UI's X-Domain: ops turns route here
+	AGENT_DOMAIN=ops python -m app.turns.agent_worker
+
+agent-worker-sales:  ## Start an agent worker pool for the sales/CRM domain (see app/domains/sales/); the web UI's X-Domain: sales turns route here
+	AGENT_DOMAIN=sales python -m app.turns.agent_worker
 
 fake-llm:  ## Start the fake concurrent-LLM double (loadtest/fake_llm_server.py, :9009) for load-testing agent_worker.py's own concurrency in isolation from native Ollama's hard `-np 1` ceiling — see that file's docstring for how to point a run at it
 	uvicorn loadtest.fake_llm_server:app --host 0.0.0.0 --port 9009

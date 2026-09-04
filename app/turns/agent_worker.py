@@ -1,9 +1,23 @@
 """Redis Streams consumer — the "agent worker" half of the SSE-service/
 agent-worker split (GRAPH_PATTERNS.md pattern 43). Run one or more of these
 processes; Redis's own consumer-group delivery guarantees each request on
-`app/turns/queue.py::REQUESTS_STREAM` is handed to exactly one of them, so running
-more workers is still the primary way to add capacity — no coordination code
-needed here beyond what `app/turns/queue.py` already wraps.
+this process's own domain stream (`app/turns/queue.py::requests_stream_key`)
+is handed to exactly one of them, so running more workers is still the
+primary way to add capacity — no coordination code needed here beyond what
+`app/turns/queue.py` already wraps.
+
+Like app/channels/telegram.py, ONE process still serves exactly ONE domain
+for its whole life — `AGENT_DOMAIN` (app/core/config.py, default `"acme"`)
+picks which domain's manifest/tools this process's graph is built from, and
+which domain's requests stream it reads (`AGENT_DOMAIN=support python -m
+app.turns.agent_worker` runs a support-only worker pool). The domain is a
+property of the PROCESS, not of any individual message, so running several
+domains at once means running several worker POOLS, one per `AGENT_DOMAIN`
+— app/api/main.py stays a single unified process throughout, routing each
+incoming request to the right domain's stream by its `X-Domain` header
+(see that module's `get_domain`), same way app/turns/queue.py's own
+docstring frames this as pattern 43's SSE-tier/worker-tier split applied
+one level deeper.
 
 Within ONE process, `run()` also runs up to `_MAX_CONCURRENCY` turns at once
 (an `asyncio.Semaphore`-bounded `asyncio.create_task` per job, not a serial
@@ -56,10 +70,12 @@ the other end of the SAME call — none in this codebase route through
 THIS queue today, but the function stays available for one that might.
 
 Run with: `python -m app.turns.agent_worker` (see Makefile's `agent-worker`
-target). Needs `make up`'s Redis running; NOT started by `make up` itself
-or `make serve` — it's an alternate, opt-in path alongside the existing
-direct in-process `POST /chat/stream`, not a replacement for it (see
-app/api/main.py's `POST /chat/stream/queued` for the producer half).
+target, or `agent-worker-support`/`agent-worker-ops`/`agent-worker-sales`
+for the other example domains). Needs `make up`'s Redis running; NOT
+started by `make up` itself or `make serve` — it's an alternate, opt-in
+path alongside the existing direct in-process `POST /chat/stream`, not a
+replacement for it (see app/api/main.py's `POST /chat/stream/queued` for
+the producer half).
 """
 import asyncio
 import json
@@ -77,24 +93,31 @@ from app.agent.runtime import (
     close_checkpointer_pool,
     init_graph_async,
 )
-from app.core.config import AGENT_WORKER_MAX_CONCURRENCY
+from app.core.config import AGENT_DOMAIN, AGENT_WORKER_MAX_CONCURRENCY
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.logging_config import bind_request_id, configure_logging
 from app.core.telemetry import configure_telemetry
+from app.domains.registry import resolve_domain
 from app.turns.queue import (
     CONSUMER_GROUP,
-    REQUESTS_STREAM,
     StreamReadResponse,
     clear_cancel_flag,
     ensure_consumer_group,
     get_client,
     is_cancelled,
     publish_result,
+    requests_stream_key,
 )
 
 logger = logging.getLogger(__name__)
 
 CONSUMER_NAME = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
+# This process's own domain's requests stream, fixed for its whole life —
+# see this module's docstring on why domain is a per-PROCESS property, not
+# a per-message one. A plain module global (not re-resolved per read/ack
+# below), same reason CONSUMER_NAME above is: both name a facet of THIS
+# process that never changes after startup.
+REQUESTS_STREAM = requests_stream_key(AGENT_DOMAIN)
 _MAX_CONCURRENCY = AGENT_WORKER_MAX_CONCURRENCY  # concurrent turns ONE worker
 # process will run at once (app/core/config.py's own docstring on why this
 # is env-configurable, not a bare constant) — bounds both the
@@ -191,12 +214,15 @@ async def _process_with_limit(
 
 
 async def run() -> None:
-    await init_graph_async()  # opens the durable checkpointer on THIS process's own loop
+    manifest, domain = resolve_domain(AGENT_DOMAIN)  # fails loud on a typo'd AGENT_DOMAIN,
+    # same discipline as app/channels/telegram.py's own call to this
+    await init_graph_async(manifest=manifest, domain=domain)  # opens the durable checkpointer
+    # on THIS process's own loop, against AGENT_DOMAIN's manifest/tools
     client = get_client()
-    await ensure_consumer_group(client)
+    await ensure_consumer_group(client, AGENT_DOMAIN)
     logger.info(
         "agent_worker_started",
-        extra={"consumer": CONSUMER_NAME, "max_concurrency": _MAX_CONCURRENCY},
+        extra={"consumer": CONSUMER_NAME, "domain": manifest.name, "max_concurrency": _MAX_CONCURRENCY},
     )
 
     # Graceful shutdown: a SIGTERM/SIGINT (docker stop, a process supervisor
