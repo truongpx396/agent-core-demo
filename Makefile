@@ -74,7 +74,10 @@ test:  ## Run the graph test suite in parallel (no live services needed — fake
 	pytest -n auto -q
 
 test-integration:  ## Real Postgres/Redis/Qdrant via testcontainers (no LLM) — needs Docker, no `make up` required (GRAPH_PATTERNS.md pattern 48)
-	pytest -n auto -m integration -q
+	# --dist=loadgroup: tests/integration/test_worker_scaling.py's own
+	# xdist_group marker needs this to actually take effect (plain `load`
+	# ignores it) — see that module's own comment for why.
+	pytest -n auto -m integration -q --dist=loadgroup
 
 test-live:  ## Real small Ollama model + full app/agent-worker stack via testcontainers, incl. Playwright browser E2E — needs Docker (pattern 48)
 	playwright install --with-deps chromium
