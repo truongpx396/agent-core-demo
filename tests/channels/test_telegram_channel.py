@@ -1,8 +1,9 @@
 """Tests for app/channels/telegram.py — a fake async httpx client stands in
 for a live Telegram API (see tests/agent/test_model_resolver.py's _FakeResponse
-for the sync-httpx equivalent), and app.channels.telegram.answer is
-monkeypatched so these never touch a real graph/LLM, matching the rest of
-the suite's hermetic discipline.
+for the sync-httpx equivalent), and
+app.channels.telegram.astream_events_turn_unattended is monkeypatched (as a
+fake async generator) so these never touch a real graph/LLM, matching the
+rest of the suite's hermetic discipline.
 
 No pytest-asyncio plugin is installed in this project (see
 tests/agent/test_durable_checkpoint.py) — async behavior here is driven the same
@@ -108,15 +109,26 @@ class TestSendMessage:
         asyncio.run(telegram_channel._send_message(_RaisingClient(), 1, "hi"))
 
 
+def _fake_astream(events):
+    """Builds a fake `astream_events_turn_unattended` replacement that
+    yields `events` and records the (text, thread_id, ctx) it was called
+    with onto `captured["args"]`."""
+    captured = {}
+
+    async def _fake(text, thread_id, ctx):
+        captured["args"] = (text, thread_id, ctx)
+        for event in events:
+            yield event
+
+    return _fake, captured
+
+
 class TestHandleMessage:
-    def test_calls_answer_with_the_scoped_thread_and_ctx_and_replies(self, monkeypatch):
-        captured = {}
-
-        def fake_answer(text, thread_id, ctx):
-            captured["args"] = (text, thread_id, ctx)
-            return ("the answer", [], None, 0)
-
-        monkeypatch.setattr(telegram_channel, "answer", fake_answer)
+    def test_calls_astream_events_turn_unattended_with_the_scoped_thread_and_ctx_and_replies(
+        self, monkeypatch
+    ):
+        fake, captured = _fake_astream([{"type": "token", "content": "the answer"}])
+        monkeypatch.setattr(telegram_channel, "astream_events_turn_unattended", fake)
         client = _FakeAsyncClient()
 
         asyncio.run(
@@ -132,9 +144,13 @@ class TestHandleMessage:
 
     def test_reply_includes_citations_footer(self, monkeypatch):
         cited = [{"marker": "[1]", "title": "Refund Policy", "doc_id": "d1"}]
-        monkeypatch.setattr(
-            telegram_channel, "answer", lambda text, thread_id, ctx: ("grounded answer [1]", cited, None, 0)
+        fake, _ = _fake_astream(
+            [
+                {"type": "token", "content": "grounded answer [1]"},
+                {"type": "citations", "items": cited},
+            ]
         )
+        monkeypatch.setattr(telegram_channel, "astream_events_turn_unattended", fake)
         client = _FakeAsyncClient()
 
         asyncio.run(telegram_channel.handle_message(client, _message()))
@@ -142,9 +158,14 @@ class TestHandleMessage:
         sent = next(body["text"] for url, body in client.posts if "sendMessage" in url)
         assert "Sources:" in sent
 
-    def test_non_text_message_is_skipped_without_calling_answer(self, monkeypatch):
+    def test_non_text_message_is_skipped_without_calling_astream_events_turn_unattended(self, monkeypatch):
         called = []
-        monkeypatch.setattr(telegram_channel, "answer", lambda *a, **kw: called.append(1))
+
+        def fake(*a, **kw):
+            called.append(1)
+            raise AssertionError("should not be called")
+
+        monkeypatch.setattr(telegram_channel, "astream_events_turn_unattended", fake)
         client = _FakeAsyncClient()
 
         asyncio.run(
@@ -155,13 +176,13 @@ class TestHandleMessage:
         assert client.posts == []
 
     def test_an_error_envelope_still_produces_a_reply_not_a_crash(self, monkeypatch):
-        """answer() already turns a timeout/checkpoint issue into a real
-        message text (see its docstring) — this just proves the channel
-        doesn't need any special-casing for that; it just forwards it."""
+        """astream_events_turn_unattended's `error` event already carries a
+        real message text (see _run_graph_stream's docstring) — this just
+        proves the channel doesn't need any special-casing for that; it
+        just forwards it."""
         envelope = ErrorEnvelope(code=ErrorCode.TIMEOUT, message="Sorry, that took too long.")
-        monkeypatch.setattr(
-            telegram_channel, "answer", lambda *a, **kw: (envelope.message, [], envelope, 0)
-        )
+        fake, _ = _fake_astream([{"type": "error", "content": envelope.message}])
+        monkeypatch.setattr(telegram_channel, "astream_events_turn_unattended", fake)
         client = _FakeAsyncClient()
 
         asyncio.run(telegram_channel.handle_message(client, _message()))
@@ -178,7 +199,7 @@ class TestRun:
 
     def test_resolves_agent_domain_and_primes_the_singleton_before_polling(self, monkeypatch):
         """AGENT_DOMAIN (app/core/config.py) must be resolved and passed
-        into init_graph_sync BEFORE the poll loop starts — this generalized
+        into init_graph_async BEFORE the poll loop starts — this generalized
         gateway is what app/domains/support|sales/ run behind (see
         README.md's "Example domains" section). Stops the run() coroutine
         right after that point (a fake httpx.AsyncClient whose __aenter__
@@ -208,14 +229,14 @@ class TestRun:
 
         primed_with = {}
 
-        def _fake_init_graph_sync(manifest=None, domain=None):
+        async def _fake_init_graph_async(manifest=None, domain=None):
             primed_with["manifest"] = manifest
             primed_with["domain"] = domain
 
         monkeypatch.setattr(telegram_channel, "TELEGRAM_BOT_TOKEN", "fake-token")
         monkeypatch.setattr(telegram_channel, "AGENT_DOMAIN", "support")
         monkeypatch.setattr(telegram_channel, "resolve_domain", _fake_resolve_domain)
-        monkeypatch.setattr(telegram_channel, "init_graph_sync", _fake_init_graph_sync)
+        monkeypatch.setattr(telegram_channel, "init_graph_async", _fake_init_graph_async)
         monkeypatch.setattr(telegram_channel.httpx, "AsyncClient", _RaisingAsyncClient)
 
         with pytest.raises(_StopHere):

@@ -297,7 +297,3 @@ class TestRecursionLimit:
         the original bug was exactly this staying a hardcoded "12" while
         nothing kept it in sync with the actual loop length."""
         assert agent_module.RECURSION_LIMIT == MAX_ITERATIONS * 2 + 15
-
-    def test_every_built_config_uses_the_shared_constant(self):
-        cfg = agent_module._config("thread-1", TEST_CTX)
-        assert cfg["recursion_limit"] == agent_module.RECURSION_LIMIT

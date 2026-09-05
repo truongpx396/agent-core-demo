@@ -44,7 +44,7 @@ def upsert_session(
     ctx: SecurityCtx | None, thread_id: str, title: str | None = None, domain: str = "acme"
 ) -> None:
     """Best-effort write-through at the start of every turn (app/agent/runtime.py's
-    stream_turn/answer/astream_events_turn, right after seeding) — NOT
+    astream_events_turn, right after seeding) — NOT
     gated on the turn actually completing or producing any tokens, unlike
     app/agent/meter.py::record_usage, specifically so a rejected/moderated/
     short-circuited turn still shows up in the session list (the user did

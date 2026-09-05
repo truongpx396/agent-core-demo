@@ -59,7 +59,7 @@ class TestTenantRateLimitMiddleware:
 
     def test_allows_up_to_the_limit_then_rejects_with_429(self, monkeypatch):
         middleware = _fresh_middleware(monkeypatch, limit_per_minute=2)
-        request = _make_request("/chat")
+        request = _make_request("/chat/stream/queued")
 
         first = asyncio.run(middleware.dispatch(request, _call_next))
         second = asyncio.run(middleware.dispatch(request, _call_next))
@@ -71,8 +71,8 @@ class TestTenantRateLimitMiddleware:
 
     def test_different_tenants_get_independent_budgets(self, monkeypatch):
         middleware = _fresh_middleware(monkeypatch, limit_per_minute=1)
-        acme_request = _make_request("/chat", tenant="acme")
-        other_request = _make_request("/chat", tenant="other-tenant")
+        acme_request = _make_request("/chat/stream/queued", tenant="acme")
+        other_request = _make_request("/chat/stream/queued", tenant="other-tenant")
 
         assert asyncio.run(middleware.dispatch(acme_request, _call_next)).status_code == 200
         # acme is now over budget — a DIFFERENT tenant hitting the same
@@ -85,7 +85,7 @@ class TestTenantRateLimitMiddleware:
         with 422 by get_ctx's own dependency anyway once it actually
         reaches a real endpoint."""
         middleware = _fresh_middleware(monkeypatch, limit_per_minute=1)
-        request = _make_request("/chat", tenant=None, client_host="10.0.0.9")
+        request = _make_request("/chat/stream/queued", tenant=None, client_host="10.0.0.9")
         response = asyncio.run(middleware.dispatch(request, _call_next))
         assert response.status_code == 200
 
@@ -99,14 +99,14 @@ class TestTenantRateLimitMiddleware:
             raise ConnectionError("storage unreachable")
 
         monkeypatch.setattr(rate_limit._strategy, "hit", _broken_hit)
-        request = _make_request("/chat")
+        request = _make_request("/chat/stream/queued")
 
         response = asyncio.run(middleware.dispatch(request, _call_next))
         assert response.status_code == 200
 
     def test_rejection_increments_the_metric(self, monkeypatch):
         middleware = _fresh_middleware(monkeypatch, limit_per_minute=1)
-        request = _make_request("/chat/stream")
+        request = _make_request("/chat/stream/queued")
         before = metric_value(metrics.agent_rate_limit_exceeded_total)
 
         asyncio.run(middleware.dispatch(request, _call_next))  # consumes the budget

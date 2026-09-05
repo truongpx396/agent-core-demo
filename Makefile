@@ -1,4 +1,4 @@
-.PHONY: help up up-app pull-models ingest index-skills chat chat-stream chat-stream-hitl serve mcp-serve telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales fake-llm ingest-worker ops-digest followup-sweep test test-integration test-live lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image loadtest loadtest-headless loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache obs-up obs-down obs-logs obs-clean
+.PHONY: help up up-app pull-models ingest index-skills chat chat-hitl serve mcp-serve telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales fake-llm ingest-worker ops-digest followup-sweep test test-integration test-live lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache obs-up obs-down obs-logs obs-clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -20,14 +20,11 @@ ingest:  ## Embed sample docs and upsert them into Qdrant
 index-skills:  ## Embed the skills/ catalog (name+description) and upsert into its own Qdrant collection
 	python -m scripts.index_skills
 
-chat:  ## Start the interactive LangGraph agent CLI (dev streaming)
+chat:  ## Start the interactive LangGraph agent CLI (astream_events v2, shows tool calls)
 	python -m app.channels.chat
 
-chat-stream:  ## Start the production streaming CLI (astream_events v2, shows tool calls)
-	python -m app.channels.chat --stream
-
-chat-stream-hitl:  ## Production streaming CLI with human-in-the-loop tool approval
-	python -m app.channels.chat --stream --hitl
+chat-hitl:  ## Interactive CLI with human-in-the-loop tool approval
+	python -m app.channels.chat --hitl
 
 serve:  ## Start the FastAPI service (http://localhost:8000/docs)
 	# --reload-dir scopes the file watcher to app/ only. Without it, uvicorn
@@ -152,16 +149,7 @@ trivy-image:  ## Build the app image (see Dockerfile) and scan it for OS/library
 	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.74.0 image \
 		--severity HIGH,CRITICAL --ignore-unfixed agent-core-demo:trivy
 
-loadtest:  ## Interactive Locust UI (http://localhost:8089) against the running API — needs `make up` + `make serve`/`make up-app`; see loadtest/locustfile.py for why it spreads across synthetic tenants
-	locust -f loadtest/locustfile.py --host http://localhost:8000
-
-loadtest-headless:  ## Fixed 20-user, 2-minute headless Locust run → CSV + HTML report under loadtest/results/ (a local smoke run, not a CI job — same live-stack requirement as `loadtest` above)
-	mkdir -p loadtest/results
-	locust -f loadtest/locustfile.py --host http://localhost:8000 \
-		--headless --users 20 --spawn-rate 5 --run-time 2m \
-		--csv loadtest/results/loadtest --html loadtest/results/report.html
-
-loadtest-queued:  ## Interactive Locust UI against ONLY the queued path (loadtest/locustfile_queued.py) — needs `make fake-llm` plus `make serve`/`make agent-worker` run with OPENAI_API_BASE pointed at it (see that file's docstring); measures app/turns/agent_worker.py's own concurrency, not native Ollama's
+loadtest-queued:  ## Interactive Locust UI against the queued path (loadtest/locustfile_queued.py, the only HTTP chat path this app serves) — needs `make fake-llm` plus `make serve`/`make agent-worker` run with OPENAI_API_BASE pointed at it (see that file's docstring); measures app/turns/agent_worker.py's own concurrency, not native Ollama's
 	locust -f loadtest/locustfile_queued.py --host http://localhost:8000
 
 loadtest-queued-headless:  ## Fixed 20-user, 2-minute headless run of the queued-path scenario above → CSV + HTML report under loadtest/results-queued/

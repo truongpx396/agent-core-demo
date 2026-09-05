@@ -320,7 +320,7 @@ class TestScaledWorkersAbsorbConcurrentLoad:
             expected = a * b
             headers = {
                 # Own synthetic tenant per request, same reasoning
-                # loadtest/locustfile.py's ManyTenantsUser gives: bypasses
+                # loadtest/locustfile_queued.py's QueuedTurnUser gives: bypasses
                 # the per-tenant rate limiter (app/api/rate_limit.py) so
                 # this test measures the worker/queue's own concurrency
                 # ceiling, not the rate limiter doing its job.

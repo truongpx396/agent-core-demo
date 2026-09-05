@@ -11,7 +11,7 @@ pattern 22) left the streaming caller with nothing but a bare
 Reproduced against a real cached "hi" response before fixing it by
 falling back to `state.values["messages"][-1].content` — sent as a
 synthetic "token" event, not a new event type, so every existing client
-(the web UI, `make chat-stream`, `POST /chat/stream/queued`) already
+(the web UI, `make chat`, `POST /chat/stream/queued`) already
 renders it correctly with no changes of its own.
 
 Each test drives `astream_events_turn` against a hermetic fake graph via

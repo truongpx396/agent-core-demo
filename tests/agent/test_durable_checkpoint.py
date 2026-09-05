@@ -208,10 +208,12 @@ class TestAsyncSeeding:
     `thread_id` (the checkpointer refuses a sync call from its own loop;
     only a DIFFERENT thread's sync
     call is the supported cross-thread path — see app/agent/runtime.py's module
-    docstring). Fixed by splitting into `_ensure_seeded` (sync callers:
-    `stream_turn`/`answer`) and `_ensure_seeded_async` (async callers:
+    docstring). Fixed by adding `_ensure_seeded_async` (async callers:
     `astream_events_turn`/`astream_events_turn_ctx`, using
-    `graph.aupdate_state`)."""
+    `graph.aupdate_state`) as a separate async-safe seeding path, instead of
+    reusing the sync `graph.update_state`-based helper the old `stream_turn`/
+    `answer` entry points used (both since removed — see GRAPH_PATTERNS.md
+    pattern 8's note)."""
 
     def test_astream_events_turn_seeds_a_brand_new_thread_without_raising(
         self, monkeypatch
@@ -245,7 +247,7 @@ class TestAsyncSeeding:
         used the SYNC `resumability_error` (app/agent/graph.py), which also
         raises InvalidStateError from the checkpointer's own loop. Fixed
         by resumability_error_async (aget_state) — this is the real
-        production resume path (`make chat-stream`'s HITL round trip),
+        production resume path (`make chat-hitl`'s HITL round trip),
         so it gets its own regression test rather than relying on
         coverage from the seeding test above.
 

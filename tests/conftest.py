@@ -12,8 +12,8 @@ bypasses these defaults.
 
 `mock_appdata_postgres` is the equivalent guarantee for the third live
 service (`appdata` Postgres, app/agent/sql_store.py) — a gap this suite
-had until it was found the hard way: `app/agent/runtime.py::stream_turn`/
-`answer` call `_tenant_over_daily_budget`/`_upsert_session` UNCONDITIONALLY
+had until it was found the hard way: `app/agent/runtime.py::astream_events_turn`
+calls `_tenant_over_daily_budget`/`_upsert_session` UNCONDITIONALLY
 on every turn (`meter.usage_summary`/`sessions.upsert_session` underneath),
 and `_record_turn_metrics` calls `meter.record_usage` on every COMPLETED
 one — all three already degrade gracefully on a connection FAILURE (each
@@ -22,7 +22,7 @@ tests/agent/test_tenant_budget.py/test_sessions.py), but none of them were
 ever meant to degrade gracefully from a slow, real TCP connection attempt
 with no Postgres listening (CI has never run one for this job — see
 .github/workflows/ci.yml's own comment). Without this fixture, every test
-that drives a real `stream_turn`/`answer` call pays a real psycopg
+that drives a real `astream_events_turn` call pays a real psycopg
 connection-pool timeout on each of those calls — individually survivable,
 but stacked across a turn (and across the whole suite) it was pushing
 individual turns past their own REQUEST_TIMEOUT_SECONDS and the whole
