@@ -55,9 +55,10 @@ pytest-playwright==0.7.1
 deepeval==4.2.0
 ollama==0.6.2
 
-# Load testing against the running FastAPI service (loadtest/locustfile.py,
-# `make loadtest`/`make loadtest-headless` — manual only, needs the real
-# stack up, never CI). Pure-Python HTTP client fanout, no relation to
+# Load testing against the running FastAPI service's queued chat path
+# (loadtest/locustfile_queued.py, `make loadtest-queued`/`make
+# loadtest-queued-headless` — manual only, needs the real stack up, never
+# CI). Pure-Python HTTP client fanout, no relation to
 # garak's langgraph-checkpoint conflict or deepeval's click one above —
 # verified directly: installing it alongside this file's existing pins
 # introduces no NEW resolver conflict beyond the pre-existing deepeval/

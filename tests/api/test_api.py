@@ -87,18 +87,18 @@ class TestUsage:
 class TestUi:
     def test_returns_html_referencing_the_documented_sse_vocabulary(self):
         """The page must talk to the one published endpoint/event
-        vocabulary (POST /chat/stream) — never a special-cased endpoint
-        of its own (see ui()'s own docstring)."""
+        vocabulary (POST /chat/stream/queued) — never a special-cased
+        endpoint of its own (see ui()'s own docstring)."""
         html = ui()
         assert "<title>" in html
-        assert "/chat/stream" in html
+        assert "/chat/stream/queued" in html
         for event_type in ("token", "tool_start", "tool_end", "citations", "approval_required", "error"):
             assert event_type in html
 
     def test_sends_the_trusted_identity_headers(self):
         """The UI must send X-Tenant-Id/X-Principal-Id itself — POST
-        /chat/stream fails closed (422) without both (see app/api/main.py's
-        get_ctx)."""
+        /chat/stream/queued fails closed (422) without both (see
+        app/api/main.py's get_ctx)."""
         html = ui()
         assert "X-Tenant-Id" in html
         assert "X-Principal-Id" in html

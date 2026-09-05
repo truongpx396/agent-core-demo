@@ -249,7 +249,7 @@ class State(TypedDict):
     # the final answer actually used it. See app/agent/tools.py::gather_context.
     used_citations: list[dict]  # Set by check_output — `citations` filtered
     # down to the markers that actually appear in the final answer text
-    # (GRAPH_PATTERNS.md pattern 20). What app/api/main.py's ChatResponse returns.
+    # (GRAPH_PATTERNS.md pattern 20). What the streamed `citations` SSE event carries.
     ungrounded_claims_count: int  # Set by check_output — [n] markers the
     # answer used that don't match any real citation (GRAPH_PATTERNS.md pattern 39).
     cache_hit: bool  # Set by check_semantic_cache — read by
@@ -324,7 +324,7 @@ def _messages_to_trim(messages: list[BaseMessage]) -> list[BaseMessage]:
     split — an orphaned tool_call fails the next LLM call's validation
     exactly like the HITL-rejection gotcha `_reject_tool_calls` exists to
     avoid on the *current* turn, just triggered by trimming instead of a
-    disapproval. The seeded system prompt (app/agent/runtime.py::_ensure_seeded)
+    disapproval. The seeded system prompt (app/agent/runtime.py::_ensure_seeded_async)
     is never dropped. A message with no id (only possible outside a
     compiled graph, e.g. a hand-built dict in a test) is left alone
     rather than guessed at, since RemoveMessage deletes by id.
@@ -546,7 +546,7 @@ def validate_input(state: State, config: RunnableConfig) -> dict:
         "ctx": (config.get("configurable") or {}).get("ctx"),
         # Reset every turn — a rejected/short-circuited turn (reject_input,
         # reject_context) must never leak a PRIOR turn's citations into
-        # app/api/main.py's ChatResponse.
+        # the streamed `citations` SSE event.
         "citations": [],
         "used_citations": [],
         "ungrounded_claims_count": 0,
@@ -615,8 +615,8 @@ def resumability_error(graph, config: dict) -> str | None:
     metrics rather than only to whichever caller happened to check).
 
     SYNC ONLY — for callers on a different thread than the checkpointer's
-    own event loop (`app/agent/runtime.py`'s `stream_turn`/`answer`,
-    `scripts/hitl_demo.py`). An async caller running ON that loop
+    own event loop (`scripts/hitl_demo.py`, the one remaining caller
+    driving the graph via plain sync `graph.invoke`). An async caller running ON that loop
     (`astream_events_resume`) MUST use `resumability_error_async` instead
     — calling this one there raises `asyncio.InvalidStateError` (the
     checkpointer refuses a sync call from its own loop; verified
@@ -905,7 +905,7 @@ def make_agent_node(llm):
         """Call the LLM, injecting retrieved context as an extra SystemMessage.
 
         The *base* SYSTEM_PROMPT is seeded once per thread by
-        app/agent/runtime.py::_ensure_seeded before the graph ever runs, so we don't
+        app/agent/runtime.py::_ensure_seeded_async before the graph ever runs, so we don't
         repeat it here — we only add the per-turn retrieved context, which
         actually needs to reach the model on every agent step.
         """
@@ -1656,7 +1656,7 @@ def build_graph(
 
     compiled = builder.compile(checkpointer=checkpointer or MemorySaver())
     # Not LangGraph API — a plain attribute stash so a caller holding the
-    # compiled graph (chiefly app/agent/runtime.py's _ensure_seeded) can recover
+    # compiled graph (chiefly app/agent/runtime.py's _ensure_seeded_async) can recover
     # which domain built it, and seed the CORRECT system prompt, without
     # this function's return type changing for every existing call site.
     compiled.manifest = manifest  # type: ignore[attr-defined]  # deliberate stash, see comment above

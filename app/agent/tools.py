@@ -1127,7 +1127,7 @@ def _run_subagent_impl(
 
     def _invoke():
         # The base system prompt isn't auto-seeded the way
-        # app/agent/runtime.py::_ensure_seeded seeds it for a durable,
+        # app/agent/runtime.py::_ensure_seeded_async seeds it for a durable,
         # multi-turn thread — that machinery exists to avoid RE-seeding on
         # every subsequent turn, which doesn't apply here: this graph is
         # invoked exactly once, so the system prompt is just the first

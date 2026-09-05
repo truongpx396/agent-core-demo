@@ -1,8 +1,6 @@
-"""Locust load test against the QUEUED chat path specifically (POST
-/chat/stream/queued -> Redis -> app/turns/agent_worker.py), kept separate
-from loadtest/locustfile.py (which only exercises the plain, non-queued
-POST /chat — see that file's own module docstring) precisely because this
-one is meant to run against loadtest/fake_llm_server.py, not native Ollama.
+"""Locust load test against the queued chat path (POST /chat/stream/queued
+-> Redis -> app/turns/agent_worker.py) — the only HTTP chat path this app
+serves. Meant to run against loadtest/fake_llm_server.py, not native Ollama.
 
 Why a separate LLM double at all: native Ollama on this project's own dev
 stack serializes to exactly one in-flight generation (`-np 1`, verified
@@ -16,12 +14,11 @@ own ceiling. Point the app at the fake server instead to isolate that:
     make fake-llm            # in a third terminal
     make loadtest-queued     # this file, interactive UI at :8089
 
-One user class, not two like locustfile.py's ManyTenantsUser/SingleTenantUser
-split — this file exists purely to push concurrency through the queued path,
-so it only needs the "own synthetic tenant per user" shape (past the
-per-tenant rate limiter, see app/api/rate_limit.py) that actually stresses
-agent_worker.py's own concurrency; the rate-limiter-focused scenario
-locustfile.py's SingleTenantUser covers is a different concern entirely.
+One user class: this file exists purely to push concurrency through the
+queued path, so it only needs the "own synthetic tenant per user" shape
+(past the per-tenant rate limiter, see app/api/rate_limit.py) that actually
+stresses agent_worker.py's own concurrency, not a rate-limiter-focused
+scenario (a different concern entirely).
 """
 import random
 import uuid

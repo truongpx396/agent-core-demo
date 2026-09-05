@@ -8,26 +8,22 @@ Endpoints:
                               (metrics are pushed via OTLP, not pulled from an
                               endpoint here — see app/core/telemetry.py and
                               docker-compose.observability.yml)
-- POST /chat              -> non-streaming, returns full answer (Pydantic in/out)
-- POST /chat/stream       -> production SSE streaming via astream_events v2,
-                              running the graph in-process, in this request —
-                              kept as a documented dev/debug fallback; the
-                              web UI's default is /chat/stream/queued below
-- POST /chat/stream/queued -> the DEFAULT path: same SSE event vocabulary,
-                              but the turn runs on a separate
+- POST /chat/stream/queued -> the ONLY way to run a turn over HTTP: same
+                              published SSE event vocabulary an in-process
+                              `astream_events_turn` call would produce, but
+                              the turn actually runs on a separate
                               app/turns/agent_worker.py process via a Redis
                               Streams queue (GRAPH_PATTERNS.md pattern 43)
-                              — needs `make agent-worker` running, and now
-                              a real approve/reject UI can act on a pause
-                              it emits (see POST /chat/resume). Routes by
-                              an `X-Domain` header (default "acme", see
+                              — needs `make agent-worker` running, and a
+                              real approve/reject UI can act on a pause it
+                              emits (see POST /chat/resume). Routes by an
+                              `X-Domain` header (default "acme", see
                               get_domain) to that domain's own worker pool
                               — this endpoint (and /chat/resume,
                               /chat/cancel below) is the ONE place this
                               service serves every domain
                               app/domains/registry.py knows about from a
-                              single unified process; POST /chat and
-                              POST /chat/stream above stay Acme-only
+                              single unified process
 - POST /chat/resume       -> continues a turn paused at human_approval —
                               the HTTP counterpart to
                               app/agent/runtime.py::astream_events_resume, always
@@ -96,8 +92,6 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 
 from app.agent import meter, sessions, sql_store
 from app.agent.runtime import (
-    answer,
-    astream_events_turn,
     close_checkpointer_pool,
     get_session_messages,
     init_graph_async,
@@ -109,7 +103,6 @@ from app.api.rate_limit import TenantRateLimitMiddleware
 from app.api.schemas import (
     CancelRequest,
     ChatRequest,
-    ChatResponse,
     HealthResponse,
     IngestUploadResult,
     ReadinessResponse,
@@ -124,7 +117,7 @@ from app.core.config import (
     MAX_COST_USD_PER_TENANT_PER_DAY,
     MAX_UPLOAD_SIZE_MB,
 )
-from app.core.logging_config import bind_request_id, configure_logging
+from app.core.logging_config import configure_logging
 from app.core.security import SecurityCtx
 from app.core.telemetry import configure_telemetry
 from app.domains.registry import DOMAINS
@@ -158,8 +151,7 @@ async def get_domain(
         "acme",
         description=(
             "Which domain (app/domains/registry.py) this turn runs against. "
-            "Only the QUEUED chat endpoints read this — POST /chat and "
-            "POST /chat/stream stay hardcoded to Acme, unaffected by it."
+            "Read by every chat endpoint below (all of them queued)."
         ),
     ),
 ) -> str:
@@ -185,12 +177,12 @@ async def get_domain(
 async def lifespan(app: FastAPI):
     # Opens the durable checkpointer on uvicorn's own event loop, once, at
     # startup — not lazily on first request. This matters beyond warming
-    # the connection: /chat (a plain `def`, so FastAPI runs it in its own
-    # threadpool — a different thread than uvicorn's loop) and /chat/stream
-    # (`async def`, runs directly on uvicorn's loop) must share ONE
-    # checkpointer bound to THIS loop, or the async path hits "bound to a
-    # different event loop" — see app/agent/runtime.py's module docstring for the
-    # full reasoning (verified empirically before writing that doc).
+    # the connection: GET /chat/sessions/{thread_id}/messages (`async def`,
+    # so it runs directly on uvicorn's loop) reads this same checkpointer
+    # via get_session_messages, and it must be bound to THIS loop or that
+    # call hits "bound to a different event loop" — see app/agent/runtime.py's
+    # module docstring for the full reasoning (verified empirically before
+    # writing that doc).
     #
     # configure_telemetry() belongs here, not at module level like
     # configure_logging() above: it installs a real, network-bound OTLP
@@ -245,10 +237,10 @@ def ui() -> str:
     """The built-in standalone-product web UI (GRAPH_PATTERNS.md pattern
     29) — a single self-contained page, no build step, no CDN dependency
     (consistent with this app's fully-offline commitment). Talks ONLY to
-    `POST /chat/stream`'s published SSE event vocabulary (see that
+    `POST /chat/stream/queued`'s published SSE event vocabulary (see that
     endpoint's own docstring) — never a special-cased endpoint of its
     own, so the vocabulary stays the one true contract every client
-    (this page, `make chat-stream`, a future one) renders from. Read from
+    (this page, `make chat`, a future one) renders from. Read from
     disk per request (not cached at import time) so editing
     app/api/static/index.html and refreshing the browser is enough during
     development — this file is tiny and this isn't a hot path.
@@ -279,65 +271,6 @@ async def health_ready(response: Response) -> ReadinessResponse:
     return ReadinessResponse(status="ready" if ready else "degraded", checks=checks)
 
 
-@app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest, ctx: SecurityCtx = Depends(get_ctx)) -> ChatResponse:
-    # thread_id doubles as the correlation id here — this path has no
-    # separate request_id concept (that's the queued path's own thing, see
-    # app/turns/agent_worker.py::process_request) — so every log line touched
-    # while answering THIS request, all the way down into app/agent/graph.py and
-    # app/agent/tools.py, carries it (app/core/logging_config.py's bind_request_id).
-    with bind_request_id(req.thread_id):
-        text, citations, error, ungrounded_claims_count = answer(
-            req.message, req.thread_id, ctx, images=req.images or None
-        )
-    return ChatResponse(
-        thread_id=req.thread_id,
-        answer=text,
-        citations=citations,
-        error=error.to_dict() if error else None,
-        ungrounded_claims_count=ungrounded_claims_count,
-    )
-
-
-@app.post("/chat/stream")
-async def chat_stream(
-    req: ChatRequest, ctx: SecurityCtx = Depends(get_ctx)
-) -> StreamingResponse:
-    """Production SSE endpoint — streams typed events as they happen.
-
-    Each line is a standard Server-Sent Event:
-      data: {"type": "token",      "content": "Hello"}
-      data: {"type": "tool_start", "tool": "search_docs", "args": {...}}
-      data: {"type": "tool_end",   "tool": "search_docs"}
-      data: {"type": "citations",  "items": [{"marker": "[1]", ...}]}
-      data: {"type": "followups",  "items": ["...", ...]}
-      data: {"type": "done"}
-
-    The client can consume this with EventSource or any SSE library.
-    Reuse `thread_id` across calls to keep conversation memory.
-    """
-    async def generate():
-        # Bound INSIDE the generator, not around this call — `generate()`
-        # runs lazily, driven by StreamingResponse iterating it after
-        # chat_stream() itself has already returned, so binding out there
-        # would cover the wrong span (see app/core/logging_config.py's
-        # bind_request_id).
-        with bind_request_id(req.thread_id):
-            async for event in astream_events_turn(
-                req.message, req.thread_id, ctx, images=req.images or None
-            ):
-                yield f"data: {json.dumps(event)}\n\n"
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",   # disable nginx buffering if behind a proxy
-        },
-    )
-
-
 def _queued_sse_response(client, request_id: str) -> StreamingResponse:
     """Shared by every queue-backed endpoint below (new turn, resume,
     cancel): relay one job's results stream as SSE frames, cleaning up the
@@ -366,11 +299,13 @@ def _queued_sse_response(client, request_id: str) -> StreamingResponse:
 async def chat_stream_queued(
     req: ChatRequest, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> StreamingResponse:
-    """Same published SSE event vocabulary as `POST /chat/stream` (see its
-    docstring) — but this process never runs the graph itself. It publishes
-    the turn as a request onto a shared Redis Stream and streams back
-    whatever a separate `app/turns/agent_worker.py` process publishes to this
-    turn's own results stream (GRAPH_PATTERNS.md pattern 43, app/turns/queue.py).
+    """The published SSE event vocabulary an in-process `astream_events_turn`
+    call would produce (token, tool_start, tool_end, citations, followups,
+    approval_required, error, done) — but this process never runs the graph
+    itself. It publishes the turn as a request onto a shared Redis Stream and
+    streams back whatever a separate `app/turns/agent_worker.py` process
+    publishes to this turn's own results stream (GRAPH_PATTERNS.md pattern 43,
+    app/turns/queue.py).
 
     This is what makes the SSE-serving tier and the agent-executing tier
     independently scalable: this endpoint does no LLM/tool work of its own,
@@ -381,10 +316,10 @@ async def chat_stream_queued(
     produce a reply; with none running, a request just waits on the queue
     until one is (or the client gives up and disconnects).
 
-    Now a real `approval_required` pause from this endpoint IS actionable
+    A real `approval_required` pause from this endpoint IS actionable
     — the worker no longer auto-declines it (see app/turns/agent_worker.py's
-    module docstring), so it reaches the caller exactly like
-    `POST /chat/stream`'s does, resumed via `POST /chat/resume` below.
+    module docstring), so it reaches the caller as-is, resumed via
+    `POST /chat/resume` below.
 
     `domain` (an `X-Domain` header, see `get_domain`) picks which domain's
     requests stream this turn is published onto — only an

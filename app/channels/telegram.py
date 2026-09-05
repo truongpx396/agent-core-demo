@@ -2,9 +2,11 @@
 first-party interface alongside the CLI (app/channels/chat.py), the HTTP API
 (app/api/main.py), and the built-in web UI (pattern 29). Long-polls Telegram's
 `getUpdates` (no public webhook URL needed — appropriate for a local/demo
-deployment with no inbound port to expose) and calls the SAME
-`app/agent/runtime.py::answer()` every other synchronous interface already calls —
-no bespoke graph-driving logic here, just a new front door onto it.
+deployment with no inbound port to expose) and drives the SAME
+`app/agent/runtime.py::astream_events_turn_unattended()` every queued worker
+turn already runs through — no bespoke graph-driving logic here, just a new
+front door onto it, collecting the streamed events into one final reply
+since Telegram has no incremental-message UX to stream tokens into.
 
 Requires `TELEGRAM_BOT_TOKEN` (create a bot via @BotFather, then set it in
 .env) — refuses to start (raises, loud) rather than silently no-op when
@@ -21,29 +23,29 @@ against — `AGENT_DOMAIN=support python -m app.channels.telegram` runs the
 Tier-1 support copilot (app/domains/support/), `AGENT_DOMAIN=sales` the
 sales concierge (app/domains/sales/) behind this exact same gateway,
 unmodified. Each is still its own OS process (its own bot token, in
-practice) — see app/agent/runtime.py's init_graph_sync/init_graph_async
-docstrings for why this is "which one domain a process boots as," not the
+practice) — see app/agent/runtime.py's init_graph_async docstring for why
+this is "which one domain a process boots as," not the
 "several domains from one running process" registry GRAPH_PATTERNS.md's
 Roadmap still lists as unbuilt.
 
 A WhatsApp gateway for the same domains would reuse the identical
-`handle_message`/`answer()` core below unchanged — only the transport
-differs: WhatsApp's Business Cloud API is push/webhook-based (Meta POSTs
-to a public HTTPS endpoint you expose and verify), not long-poll-based
-like Telegram, so it would be a small FastAPI route (app/api/main.py) with
-signature verification and a Graph API send call, not a poller. Not built
-here: this repo doesn't ship integration code it can't verify against a
-live service (the same reasoning "Extending Further" already gives for
-not building a real webhook-based Telegram deployment), and there's no
-WhatsApp Business account/credentials to verify one against.
+`handle_message`/`astream_events_turn_unattended()` core below unchanged —
+only the transport differs: WhatsApp's Business Cloud API is push/webhook-based
+(Meta POSTs to a public HTTPS endpoint you expose and verify), not
+long-poll-based like Telegram, so it would be a small FastAPI route
+(app/api/main.py) with signature verification and a Graph API send call, not
+a poller. Not built here: this repo doesn't ship integration code it can't
+verify against a live service (the same reasoning "Extending Further"
+already gives for not building a real webhook-based Telegram deployment),
+and there's no WhatsApp Business account/credentials to verify one against.
 
 HITL tool-call approval: this channel has no interactive approve/reject UX
-(no inline keyboard handling) — `answer()` already auto-declines a
-mandatory-capability-gate pause for exactly this kind of single-shot,
-one-way caller (see its docstring and GRAPH_PATTERNS.md pattern 8's note
-on `answer`/`stream_turn`), so a Telegram user asking for a mutating action
-gets a real reply explaining it wasn't approved, never a silently-run
-write or a message that never arrives.
+(no inline keyboard handling) — `astream_events_turn_unattended()` already
+auto-declines a mandatory-capability-gate pause for exactly this kind of
+caller with no interactive human on the other end (see its docstring and
+GRAPH_PATTERNS.md pattern 8's note), so a Telegram user asking for a
+mutating action gets a real reply explaining it wasn't approved, never a
+silently-run write or a message that never arrives.
 
 Run with: `python -m app.channels.telegram` (see Makefile's `telegram`/
 `telegram-support`/`telegram-sales` targets). Runs as its own process —
@@ -57,7 +59,11 @@ import signal
 import httpx
 
 from app.agent import sql_store
-from app.agent.runtime import answer, init_graph_sync
+from app.agent.runtime import (
+    astream_events_turn_unattended,
+    close_checkpointer_pool,
+    init_graph_async,
+)
 from app.core.config import AGENT_DOMAIN, DEFAULT_TENANT, TELEGRAM_BOT_TOKEN
 from app.core.logging_config import configure_logging
 from app.core.security import SecurityCtx
@@ -118,10 +124,28 @@ async def _send_message(client: httpx.AsyncClient, chat_id: int, text: str) -> N
             )
 
 
+async def _run_turn(text: str, thread_id: str, ctx: SecurityCtx) -> tuple[str, list[dict]]:
+    """Drive astream_events_turn_unattended to completion and collect the
+    one final reply + its citations this channel actually sends — the same
+    single-shot shape the old, now-removed `answer()` gave callers, built
+    locally here since this channel needs one full reply per message, not
+    the raw per-token event stream."""
+    parts: list[str] = []
+    citations: list[dict] = []
+    async for event in astream_events_turn_unattended(text, thread_id, ctx):
+        kind = event["type"]
+        if kind == "token":
+            parts.append(event["content"])
+        elif kind == "citations":
+            citations = event["items"]
+        elif kind == "error":
+            return event["content"], []
+    return "".join(parts), citations
+
+
 async def handle_message(client: httpx.AsyncClient, message: dict) -> None:
     """Process one Telegram `message` update end to end: resolve thread/ctx,
-    run the turn (via answer() in a worker thread so the poll loop's own
-    event loop is never blocked by a slow local model), and reply.
+    run the turn, and reply.
 
     Non-text messages (photos, stickers, voice, ...) are silently skipped —
     out of scope for this channel; see GRAPH_PATTERNS.md's "Extending
@@ -144,9 +168,7 @@ async def handle_message(client: httpx.AsyncClient, message: dict) -> None:
     except Exception:  # noqa: BLE001, S110 - a typing indicator is cosmetic, never worth failing over
         pass
 
-    reply_text, citations, _error, _ungrounded = await asyncio.to_thread(
-        answer, text, thread_id, ctx
-    )
+    reply_text, citations = await _run_turn(text, thread_id, ctx)
     await _send_message(client, chat_id, _format_reply(reply_text, citations))
 
 
@@ -168,10 +190,11 @@ async def run() -> None:
 
     manifest, domain = resolve_domain(AGENT_DOMAIN)
     logger.info("telegram_channel_domain", extra={"domain": manifest.name})
-    # Prime the durable checkpointer on its own background thread up front,
-    # against WHICHEVER domain AGENT_DOMAIN resolved to — see this module's
-    # docstring and app/agent/runtime.py::init_graph_sync's own docstring.
-    init_graph_sync(manifest=manifest, domain=domain)
+    # Opens the durable checkpointer on THIS asyncio.run() loop, against
+    # WHICHEVER domain AGENT_DOMAIN resolved to — astream_events_turn_unattended
+    # (via astream_events_turn) needs the checkpointer bound to the same loop
+    # that's driving it, see app/agent/runtime.py's module docstring.
+    await init_graph_async(manifest=manifest, domain=domain)
     offset = 0
 
     # Graceful shutdown: a SIGTERM/SIGINT stops this loop from starting a
@@ -211,10 +234,13 @@ async def run() -> None:
 
     logger.info("telegram_channel_stopping")
     # Same reasoning as app/api/main.py's lifespan shutdown: handle_message ->
-    # answer() runs the full graph, which may have opened
-    # app/agent/sql_store.py's connection pool (query_employees,
+    # astream_events_turn_unattended runs the full graph, which may have
+    # opened app/agent/sql_store.py's connection pool (query_employees,
     # app/agent/meter.py::record_usage). A no-op if this process never touched it.
     sql_store.close_pool()
+    # Same reasoning for the checkpointer's own pool (app/agent/runtime.py) —
+    # init_graph_async() above always opens it, so this is never a no-op here.
+    await close_checkpointer_pool()
 
 
 if __name__ == "__main__":

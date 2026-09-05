@@ -3,12 +3,11 @@
 MAX_COST_USD_PER_TURN, which only ever sees one turn at a time.
 
 `_tenant_over_daily_budget` itself is tested directly against a
-monkeypatched app.agent.meter.usage_summary (no live Postgres). The three entry
-points (answer/stream_turn/astream_events_turn) are tested by stubbing
-`_tenant_over_daily_budget` itself to True/False and asserting they never
-even call get_graph()/init_graph_async() when over budget — proving the
-short-circuit happens BEFORE any real graph work, not just that it
-returns the right shape.
+monkeypatched app.agent.meter.usage_summary (no live Postgres). The entry
+point (astream_events_turn) is tested by stubbing `_tenant_over_daily_budget`
+itself to True/False and asserting it never even calls
+get_graph()/init_graph_async() when over budget — proving the short-circuit
+happens BEFORE any real graph work, not just that it returns the right shape.
 """
 import asyncio
 
@@ -117,25 +116,6 @@ def _forbid_graph_access(monkeypatch):
 
 
 class TestEntryPointsRefuseBeforeTouchingTheGraph:
-    def test_answer_short_circuits(self, monkeypatch):
-        monkeypatch.setattr(agent, "_tenant_over_daily_budget", lambda ctx: True)
-        _forbid_graph_access(monkeypatch)
-
-        text, citations, error, ungrounded = agent.answer("hi", "t1", TEST_CTX)
-
-        assert error is not None
-        assert error.code == errors.ErrorCode.TENANT_BUDGET_EXCEEDED
-        assert citations == []
-        assert ungrounded == 0
-
-    def test_stream_turn_short_circuits(self, monkeypatch):
-        monkeypatch.setattr(agent, "_tenant_over_daily_budget", lambda ctx: True)
-        _forbid_graph_access(monkeypatch)
-
-        chunks = list(agent.stream_turn("hi", "t1", TEST_CTX))
-
-        assert any("budget" in c.lower() for c in chunks)
-
     def test_astream_events_turn_short_circuits(self, monkeypatch):
         monkeypatch.setattr(agent, "_tenant_over_daily_budget", lambda ctx: True)
         _forbid_graph_access(monkeypatch)
@@ -155,9 +135,12 @@ class TestEntryPointsRefuseBeforeTouchingTheGraph:
         monkeypatch.setattr(agent, "_tenant_over_daily_budget", lambda ctx: False)
         _forbid_graph_access(monkeypatch)
 
+        async def _collect():
+            return [event async for event in agent.astream_events_turn("hi", "t1", TEST_CTX)]
+
         try:
-            agent.answer("hi", "t1", TEST_CTX)
+            asyncio.run(_collect())
         except _GraphTouchedError:
-            pass  # expected — proves get_graph() WAS reached this time
+            pass  # expected — proves init_graph_async() WAS reached this time
         else:
-            raise AssertionError("expected get_graph() to be reached and raise")
+            raise AssertionError("expected init_graph_async() to be reached and raise")

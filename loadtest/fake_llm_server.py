@@ -17,8 +17,9 @@ notes `astream_events` (what the queued path always runs through) forces
 every LLM call through the streaming HTTP path even when the calling node
 code does `.invoke()` — so a load-test run exercising `/chat/stream/queued`
 always hits the streaming branch below; the non-streaming branch exists so
-this server also works against the plain (non-queued) `POST /chat` path,
-which does issue a genuine non-streaming request.
+this server also works against a genuinely sync caller, e.g.
+scripts/hitl_demo.py's plain `graph.invoke()`, which does issue a real
+non-streaming request.
 
 Run: `make fake-llm` (defaults to :9009). Point a load-test run at it
 (bypassing LiteLLM/Ollama/Langfuse tracing entirely — this exists to
@@ -108,8 +109,8 @@ def tool_simulator(fn: ToolSimulator) -> ToolSimulator:
 
 @tool_simulator
 def _calculator(last_user_text: str, requested_tool_names: set[str]) -> ToolCall | None:
-    """Matches loadtest/locustfile_queued.py's (and locustfile.py's)
-    `calculator` task, e.g. "what is 12 * 7?" — app/agent/tools.py's real
+    """Matches loadtest/locustfile_queued.py's `calculator` task, e.g.
+    "what is 12 * 7?" — app/agent/tools.py's real
     `calculator(expression: str)` tool then actually evaluates it, exactly
     as production would."""
     if "calculator" not in requested_tool_names:

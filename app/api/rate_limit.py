@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # session-listing reads, or POST /chat/cancel (a client trying to STOP a
 # runaway turn must never itself be throttled).
 RATE_LIMITED_PATHS = frozenset(
-    {"/chat", "/chat/stream", "/chat/stream/queued", "/chat/resume", "/ingest/upload"}
+    {"/chat/stream/queued", "/chat/resume", "/ingest/upload"}
 )
 
 _storage = storage.storage_from_string(REDIS_URL)

@@ -159,9 +159,9 @@ class TestAstreamEventsTurnCancellation:
         assert not any(e["type"] == "error" for e in events)
 
     def test_no_cancel_check_streams_normally_to_completion(self, monkeypatch):
-        """Regression guard: every existing caller (POST /chat/stream,
-        app/channels/chat.py) passes no cancel_check at all — must behave exactly
-        as before this feature existed."""
+        """Regression guard: every existing caller (app/channels/chat.py,
+        app/channels/telegram.py) passes no cancel_check at all — must
+        behave exactly as before this feature existed."""
         graph = build_graph(GraphDeps(llm=_fake_llm_multi_token_answer()))
 
         async def fake_init_graph_async():

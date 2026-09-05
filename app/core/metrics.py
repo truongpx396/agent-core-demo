@@ -206,9 +206,10 @@ agent_missing_ctx_total = Counter(
 
 agent_unattended_pause_total = Counter(
     "agent_unattended_pause_total",
-    "Turns auto-declined by answer()/stream_turn() after pausing at a "
-    "mandatory capability gate — these entry points are single-shot/one-way "
-    "and have no way to solicit a real human decision (unlike "
+    "Turns auto-declined by astream_events_turn_unattended after pausing at "
+    "a mandatory capability gate — its callers (app/turns/agent_worker.py's "
+    "queue consumer, app/channels/telegram.py) have no interactive human on "
+    "the other end of the call to solicit a real decision from (unlike "
     "astream_events_turn's approval_required/astream_events_resume flow)",
 )
 

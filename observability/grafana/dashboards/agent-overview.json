@@ -1378,7 +1378,7 @@
     {
       "type": "timeseries",
       "title": "Unattended-pause auto-declines",
-      "description": "answer()/stream_turn() auto-declining a mandatory-gate pause (single-shot callers).",
+      "description": "astream_events_turn_unattended auto-declining a mandatory-gate pause (callers with no interactive human on the other end).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

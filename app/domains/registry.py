@@ -15,11 +15,10 @@ property of a whole PROCESS or of a single REQUEST:
   unified API process serve every domain a worker pool is currently
   running for.
 
-Deliberately NOT consulted by `POST /chat`/`POST /chat/stream` (the
-non-queued, in-process paths) or app/channels/chat.py, which keep
-defaulting to Acme exactly as before this module existed — see
-app/agent/runtime.py's init_graph_sync/init_graph_async docstrings for why
-that default needed no code change here.
+Deliberately NOT consulted by app/channels/chat.py, which keeps defaulting
+to Acme exactly as before this module existed — see app/agent/runtime.py's
+init_graph_sync/init_graph_async docstrings for why that default needed no
+code change here.
 """
 from app.agent.manifest import (
     DEFAULT_DOMAIN_PLUGIN,

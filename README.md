@@ -9,7 +9,7 @@ features of four popular AI-infra tools in one place:
 | **LiteLLM**   | An OpenAI-compatible **proxy** routing chat + embeddings to Ollama, with **retries**, **fallbacks**, and **Langfuse logging at the proxy** |
 | **Qdrant**    | Collection creation, **batch upsert with payloads**, vector search, and **metadata filtering** |
 | **Langfuse**  | `@observe` tracing, the LangGraph **callback handler**, nested spans, and **session grouping** by `thread_id` |
-| **FastAPI + Pydantic** | An HTTP `/chat` API over the same agent, with typed request/response models and auto-generated OpenAPI docs |
+| **FastAPI + Pydantic** | An HTTP `/chat/stream/queued` API over the same agent, with typed request/response models and auto-generated OpenAPI docs |
 
 Beyond those four tools, this demo builds a genuinely production-shaped agent
 on top of them — not a toy loop. See **Features at a glance** and
@@ -31,7 +31,7 @@ Everything runs locally via **Ollama** — no cloud API keys needed.
 - **Human-in-the-loop** — mandatory approval for any mutating tool call, over HTTP or CLI, with a real cancel path for a paused run
 - **Multi-tenant by construction** — every retrieval and write scoped to tenant+principal at the store level, never a Python post-filter
 - **Real guardrails** — input moderation, credential/secret scrubbing, nine independent safety budgets, a golden-dataset eval gate before shipping a prompt/model change
-- **Multiple interfaces** — CLI, HTTP API, a built-in web UI, and a Telegram channel, all sharing one `answer()`/`stream_turn()` core
+- **Multiple interfaces** — CLI, HTTP API, a built-in web UI, and a Telegram channel, all sharing one `astream_events_turn()` streaming core
 - **Full observability** — Langfuse tracing, OpenTelemetry metrics pushed to a shared collector, structlog JSON logs correlated by request id, a per-tenant/principal cost ledger, and an optional Grafana + Loki + Prometheus + Alertmanager stack with provisioned dashboards and alert rules (`make obs-up`)
 - **Production-shaped ops** — a Docker image, docker-compose profiles, independently-scalable queue workers, real dependency health checks, per-tenant rate limiting
 
@@ -40,11 +40,11 @@ Everything runs locally via **Ollama** — no cloud API keys needed.
 The app is a **RAG agent**: it retrieves from ingested docs (Qdrant, hybrid
 search + rerank) and can call tools (ReAct-style, including a fixed
 structured-data query against Postgres) via a LangGraph agent, all traced in
-Langfuse — with a semantic cache in front to skip repeat work. A turn can run
-**in-process** (`POST /chat`, `/chat/stream` — simplest, fewest moving parts)
-or **queued** (`POST /chat/stream/queued` — a Redis Streams queue decouples
-the SSE-serving tier from the agent-executing tier so each scales
-independently; the web UI's default path).
+Langfuse — with a semantic cache in front to skip repeat work. Every HTTP
+turn is **queued** (`POST /chat/stream/queued` — a Redis Streams queue
+decouples the SSE-serving tier from the agent-executing tier so each scales
+independently); the CLI and the Telegram channel instead call the shared
+streaming runtime directly, in-process.
 
 ```mermaid
 flowchart TB
@@ -56,16 +56,14 @@ flowchart TB
     end
 
     subgraph api_sg["FastAPI service"]
-        Sync["POST /chat, /chat/stream"]
         Queued["POST /chat/stream/queued<br/>/resume, /cancel"]
     end
 
-    CLI --> Sync
+    CLI --> Runtime["Shared runtime<br/>(app/agent/runtime.py)"]
     WebUI --> Queued
     Telegram --> Runtime
     ExtMCP -. MCP stdio .-> MCPServer["app/mcp/server.py"]
 
-    Sync --> Runtime["Shared runtime<br/>(app/agent/runtime.py)"]
     Queued --> TurnQueue[("Redis: turn queue")]
     TurnQueue --> AgentWorker["agent-worker pool"]
     AgentWorker --> Runtime
@@ -98,7 +96,7 @@ flowchart TB
     Runtime --> Checkpointer[("Postgres: checkpoints")]
     Runtime --> Langfuse["Langfuse tracing"]
     Runtime -. OTLP push .-> OtelCollector["otel-collector<br/>(docker-compose.observability.yml)"]
-    Output --> ClientResponse["Answer + citations<br/>(sync response or SSE stream)"]
+    Output --> ClientResponse["Answer + citations<br/>(SSE stream)"]
 
     subgraph ingest_sg["Upload pipeline"]
         UploadEP["POST /ingest/upload"] --> MinIO[("MinIO")]
@@ -135,7 +133,7 @@ actual bug or gotcha that motivated it), grouped here by concern:
 | **Structured data & tools** | 21, 27, 28, 31, 45, 46 | A fixed, parameterized Postgres tool (never text-to-SQL), also reachable over MCP; clarification questions + follow-ups; consuming a remote MCP catalog with local capability overrides; a real DB connection pool; a searchable skill catalog loaded progressively (`skill_search`/`use_skill`); scoped, isolated subagent delegation (`run_subagent`) restricted to read_only tools so it needs no new approval gate |
 | **Reliability & scaling** | 16, 43 | A durable, version-stamped Postgres checkpointer (a paused approval survives a restart); a Redis Streams queue decoupling SSE-serving capacity from agent-executing capacity, scaled independently |
 | **Observability & cost** | 11, 14, 26, 37, 38 | OpenTelemetry metrics pushed via OTLP, structlog-based structured per-node/per-tool-call logs correlated by `run_id`, a real per-tenant/principal usage-cost ledger with the resolved concrete model recorded, and an optional Grafana/Loki/Prometheus/Alertmanager stack with provisioned dashboards and alert rules |
-| **Interfaces & extensibility** | 23, 29, 42, 44, 47 | CLI, HTTP API, built-in web UI, Telegram channel, and multimodal (image) input — all sharing one `answer()`/`stream_turn()` core; a config-first multi-domain layer so a new use case is a manifest + plugin, never a fork — proved out by three real example domains (support/ops/sales) sharing that one graph |
+| **Interfaces & extensibility** | 23, 29, 42, 44, 47 | CLI, HTTP API, built-in web UI, Telegram channel, and multimodal (image) input — all sharing one `astream_events_turn()` streaming core; a config-first multi-domain layer so a new use case is a manifest + plugin, never a fork — proved out by three real example domains (support/ops/sales) sharing that one graph |
 | **Quality gates** | 40 | A golden-dataset eval harness with N-repetition pass-rate and grounded-claims thresholds — a real regression gate against the actual model, not a vibe check |
 
 ## Example domains: three real use cases, one graph
@@ -184,7 +182,8 @@ process (its own bot token in practice) — this is "which one domain a
 process boots as" becoming a boot-time choice, not the "several domains
 from one running process" registry the Roadmap below still lists as
 unbuilt. A WhatsApp gateway would reuse the exact same `handle_message`/
-`answer()` core behind a push webhook instead of long-polling — not built
+`astream_events_turn_unattended()` core behind a push webhook instead of
+long-polling — not built
 here (see `app/channels/telegram.py`'s module docstring for why: this repo
 doesn't ship integration code it can't verify against a live service, and
 there's no WhatsApp Business account to verify one against).
@@ -227,7 +226,7 @@ GRAPH_PATTERNS.md's ["Extending Further"](GRAPH_PATTERNS.md#extending-further) s
 - **Orchestrated crash-restart / auto-scaling** — `docker-compose --profile app` containerizes workers and shuts them down gracefully, but nothing restarts a *crashed* one or scales replicas on real queue depth; that's a Kubernetes/ECS-shaped concern this app doesn't own an opinion about yet
 - **Real authentication** — `X-Tenant-Id`/`X-Principal-Id` are a trusted-header seam for a gateway to fill in, not authentication themselves; nothing today verifies who's actually behind a request
 - **Per-action authorization within a tenant** — every principal in a tenant currently shares the same write capability; a finer-grained `Policy` reading `ctx["claims"]` would express "this principal may write, that one may only read"
-- **A real multi-domain runtime** — `app/agent/runtime.py`'s `init_graph_sync`/`init_graph_async`/`get_graph` now take an optional `manifest`/`domain` a process can boot its singleton against (see "Example domains" above — `app/channels/telegram.py`'s `AGENT_DOMAIN` uses exactly this), so "which one domain" is a boot-time choice instead of hardcoded to Acme. Still not built: SEVERAL domains served concurrently from one running process (a per-domain graph registry, `_ensure_seeded`'s cache keyed by `(domain, thread_id)`, `app/api/main.py` reading which domain a request is for) — every domain above still runs as its own process
+- **A real multi-domain runtime** — `app/agent/runtime.py`'s `init_graph_sync`/`init_graph_async`/`get_graph` now take an optional `manifest`/`domain` a process can boot its singleton against (see "Example domains" above — `app/channels/telegram.py`'s `AGENT_DOMAIN` uses exactly this), so "which one domain" is a boot-time choice instead of hardcoded to Acme. Still not built: SEVERAL domains served concurrently from one running process (a per-domain graph registry, `_ensure_seeded_async`'s cache keyed by `(domain, thread_id)`, `app/api/main.py` reading which domain a request is for) — every domain above still runs as its own process
 - **A production-grade vision model** — every small local Ollama vision model tried supports vision OR tool-calling, never both together; the `vision` alias in `litellm-config.yaml` is a ready slot, not a verified default
 - **Image-aware moderation, Telegram/CLI image input** — moderation (pattern 25) only screens the text portion of a multimodal message; only the HTTP API surfaces `images` end-to-end today
 - **A webhook-based Telegram deployment** — long-polling needs no public URL (right for local/demo); a real deployment would switch to `setWebhook`
@@ -292,9 +291,8 @@ Try these in the chat:
 - `remember that our refund window is 30 days, under the company topic` →
   uses **add_note**, a *mutating* tool — it always pauses for human
   approval first, regardless of any flag, since it writes to the knowledge
-  base (see GRAPH_PATTERNS.md pattern 15). Plain `make chat` has no way to
-  answer that prompt, so it auto-declines and the agent explains why; run
-  `make chat-stream` instead to actually see and approve/reject it (`y`/`N`)
+  base (see GRAPH_PATTERNS.md pattern 15). `make chat` shows the pending
+  approval and prompts you to approve/reject it (`y`/`N`)
 - `remember that I prefer dark roast coffee` → uses **remember**, the other
   mutating tool — a personal, cross-session memory scoped to *you*
   specifically (by OS user, in the CLI), not the shared knowledge base
@@ -313,8 +311,7 @@ Try these in the chat:
   agent calls **skill_search**, matches the bundled `onboarding-brief`
   skill, then **use_skill** to load its instructions before answering with
   `query_employees`/`search_docs` (pattern 45). Requires `make
-  index-skills` to have been run once; try `make chat-stream` to see the
-  tool calls
+  index-skills` to have been run once; `make chat` shows the tool calls
 - `who's the most senior person in Engineering, and what's their start date?`
   → the agent may call **run_subagent**, delegating to the bundled
   `researcher` subagent — a fresh, isolated nested agent run with its own
@@ -385,21 +382,27 @@ make serve          # starts uvicorn on http://localhost:8000
 - `GET /health/ready` → 200 only if Qdrant/both Postgres databases/Redis
   are actually reachable right now, 503 otherwise, with which one(s)
   failed in the body (`app/api/health.py`)
-- `POST /chat` with a Pydantic-validated body — and two **required** headers,
-  `X-Tenant-Id`/`X-Principal-Id`, stamped into a `SecurityCtx`
-  (`app/core/security.py`) that scopes every retrieval/write this request can see
-  or touch (GRAPH_PATTERNS.md pattern 17). Omit either one and FastAPI
-  rejects the request (422) before it reaches the graph at all — this is
-  not authentication (nothing verifies the header values), it's the seam a
-  real auth gateway plugs into; see `app/api/main.py`'s module docstring.
+- `POST /chat/stream/queued` with a Pydantic-validated body — and two
+  **required** headers, `X-Tenant-Id`/`X-Principal-Id`, stamped into a
+  `SecurityCtx` (`app/core/security.py`) that scopes every retrieval/write
+  this request can see or touch (GRAPH_PATTERNS.md pattern 17). Omit either
+  one and FastAPI rejects the request (422) before it reaches the graph at
+  all — this is not authentication (nothing verifies the header values),
+  it's the seam a real auth gateway plugs into; see `app/api/main.py`'s
+  module docstring. Needs `make agent-worker` running alongside `make up`
+  (GRAPH_PATTERNS.md pattern 43) — the turn runs on that separate process,
+  not inside `uvicorn` itself.
 
 ```bash
-curl -s -X POST http://localhost:8000/chat \
+curl -s -N -X POST http://localhost:8000/chat/stream/queued \
   -H "Content-Type: application/json" \
   -H "X-Tenant-Id: acme" \
   -H "X-Principal-Id: demo-user" \
   -d '{"message":"what is 21 * 2?","thread_id":"demo"}'
-# -> {"thread_id":"demo","answer":"The result of 21 * 2 is 42."}
+# -> data: {"type": "token", "content": "The"}
+#    data: {"type": "token", "content": " result..."}
+#    ...
+#    data: {"type": "done"}
 ```
 
 Use `X-Tenant-Id: acme` to see the docs `make ingest` seeded (`acme` is
@@ -409,16 +412,13 @@ them, by design.
 Reuse the same `thread_id` across calls to keep conversation **memory**; each
 call is also traced in Langfuse under that id as the session.
 
-`POST /chat` is single-shot — if the agent calls `add_note` (the one
-mutating tool, always gated — see GRAPH_PATTERNS.md pattern 15), there's no
-way for this endpoint to show an approval prompt, so it auto-declines and
-returns the agent's response to that. `POST /chat/stream/queued` (the web
-UI's default path) surfaces the pause as a real, actionable
-`approval_required` SSE event instead — `POST /chat/resume` accepts the
+If the agent calls `add_note` (the one mutating tool, always gated — see
+GRAPH_PATTERNS.md pattern 15), this endpoint surfaces the pause as a real,
+actionable `approval_required` SSE event — `POST /chat/resume` accepts the
 approve/reject decision over HTTP, queue-first like every other turn (see
 "MCP"'s neighboring section and GRAPH_PATTERNS.md pattern 43), so a
-browser client can drive the same approve/reject flow `make chat-stream`
-and `scripts/hitl_demo.py` already could from a terminal.
+browser client (or `curl`) can drive the same approve/reject flow `make
+chat` and `scripts/hitl_demo.py` already could from a terminal.
 
 - `GET /usage` → this caller's own tenant usage/cost (`app/agent/meter.py`),
   including the rolling-24h figure checked against
@@ -434,11 +434,10 @@ and `scripts/hitl_demo.py` already could from a terminal.
   Redis-backed — `app/api/rate_limit.py`) on the turn-creating endpoints; CORS is
   configurable via `CORS_ALLOWED_ORIGINS` (`app/core/config.py`)
 
-`POST /chat`'s response also carries `citations`: the sources the answer
-actually referenced (by bracket marker), not everything retrieved — see
-`app/api/schemas.py::ChatResponse` and GRAPH_PATTERNS.md pattern 20. The
-streaming endpoint emits the same data as a `{"type": "citations", ...}` SSE
-event right before `done`.
+The stream also carries citations: a `{"type": "citations", "items": [...]}`
+SSE event right before `done`, listing the sources the answer actually
+referenced (by bracket marker), not everything retrieved — see
+GRAPH_PATTERNS.md pattern 20.
 
 ## MCP: both a server and a client
 
@@ -656,9 +655,9 @@ above), and reports real proof-of-concept reproductions.
 - `make strix-app` — black-box, dynamic pass against the *running* app +
   its auto-generated OpenAPI spec (needs `make up` + `make serve`/`make
   up-app`, and ideally `make ingest` so there's real data to probe) — this
-  is the one that can actually attack the live HTTP surface (`/chat`'s
-  input handling, the moderation screen, tenant isolation, HITL approval),
-  not just read the code.
+  is the one that can actually attack the live HTTP surface
+  (`/chat/stream/queued`'s input handling, the moderation screen, tenant
+  isolation, HITL approval), not just read the code.
 - `make strix-view` — opens the local dashboard for the most recent run
   (findings, repro steps, a live agent-graph view).
 - **A genuine divergence from this repo's "fully offline" framing**: Strix
@@ -679,25 +678,24 @@ above), and reports real proof-of-concept reproductions.
   system.
 
 **[Locust](https://locust.io/)** — load testing against the running FastAPI
-service (`loadtest/locustfile.py`); needs `make up` + `make serve`/`make
-up-app` first, and ideally `make ingest` for real retrieval hits:
-- `make loadtest` — interactive UI at http://localhost:8089 (pick users/
-  spawn rate live, watch response-time/RPS charts).
-- `make loadtest-headless` — a fixed 20-user, 2-minute run, CSV + HTML
-  report under `loadtest/results/` (gitignored) — a local smoke run, not a
-  CI job (needs the full live stack, the same reason `make eval`/`make
+service's queued chat path (`loadtest/locustfile_queued.py`, the only HTTP
+chat path this app serves); needs `make up` + `make serve` + `make
+agent-worker` first, and ideally `make ingest` for real retrieval hits:
+- `make loadtest-queued` — interactive UI at http://localhost:8089 (pick
+  users/spawn rate live, watch response-time/RPS charts).
+- `make loadtest-queued-headless` — a fixed 20-user, 2-minute run, CSV + HTML
+  report under `loadtest/results-queued/` (gitignored) — a local smoke run,
+  not a CI job (needs the full live stack, the same reason `make eval`/`make
   deepeval` above stay manual).
-- Two distinct simulated-user classes on purpose, not one — this app's rate
-  limiter (`app/api/rate_limit.py`) is keyed per `X-Tenant-Id`, not per IP
-  and not globally (`RATE_LIMIT_PER_MINUTE`, default 30/min). `ManyTenantsUser`
-  mints its own synthetic tenant id per simulated user so it actually
-  load-tests the agent loop (moderation, semantic cache, the LLM call, the
-  Postgres checkpointer) rather than just hitting the rate limiter;
-  `SingleTenantUser` deliberately shares the real `acme` tenant so its
-  questions get real hybrid-search hits against the seeded docs — and WILL
-  start seeing 429s past a modest combined rate, which is the limiter
-  working as designed, not a bug. See the locustfile's own module docstring
-  for the full reasoning.
+- One simulated-user class (`QueuedTurnUser`) mints its own synthetic tenant
+  id per simulated user (past `app/api/rate_limit.py`'s per-`X-Tenant-Id`
+  ceiling, `RATE_LIMIT_PER_MINUTE`, default 30/min) so it actually
+  load-tests `app/turns/agent_worker.py`'s own concurrency (moderation, the
+  semantic cache, the LLM call, the Postgres checkpointer) rather than just
+  hitting the rate limiter. Point it at `loadtest/fake_llm_server.py`
+  instead of native Ollama to isolate that concurrency from Ollama's own
+  `-np 1` serialization — see the locustfile's own module docstring for the
+  full reasoning.
 
 ## Make targets
 
@@ -731,8 +729,8 @@ up-app` first, and ideally `make ingest` for real retrieval hits:
 | `make strix`      | Autonomous AI pentest of this repo's source (static) — needs `pipx install strix-agent` + a cloud LLM key (see "Security scanning & load testing") |
 | `make strix-app`  | Same, but black-box against the running app + its OpenAPI spec (needs `make up` + `make serve`/`make up-app`) |
 | `make strix-view` | Open the local dashboard for the most recent `make strix`/`make strix-app` run |
-| `make loadtest`   | Interactive Locust UI (http://localhost:8089) against the running API |
-| `make loadtest-headless` | Fixed 20-user, 2-minute headless Locust run → CSV + HTML report |
+| `make loadtest-queued` | Interactive Locust UI (http://localhost:8089) against the running API's queued chat path |
+| `make loadtest-queued-headless` | Fixed 20-user, 2-minute headless Locust run → CSV + HTML report |
 | `make logs`       | Tail service logs |
 | `make down`       | Stop services (keep data) |
 | `make clean`      | Stop services and delete volumes |
@@ -789,8 +787,8 @@ separately from the library/service code in `app/`.
 | **`app/api/`** — the HTTP layer | |
 | `app/api/health.py`        | Real dependency checks for `GET /health/ready` (Qdrant, both Postgres databases, Redis) — bounded per-check timeouts, run concurrently |
 | `app/api/rate_limit.py`    | Per-tenant, Redis-backed HTTP rate limiting (`RATE_LIMIT_PER_MINUTE`) on the turn-creating endpoints — fails open if Redis itself is down |
-| `app/api/schemas.py`       | Pydantic request/response models, including `ChatResponse.citations` |
-| `app/api/main.py`           | FastAPI service (`/`, `/health`, `/health/ready`, `/chat`, `/chat/stream`, `/chat/stream/queued`, `/chat/resume`, `/chat/cancel`, `/chat/sessions`, `/usage`, `/ingest/upload`, `/metrics`) — per-tenant rate limiting, CORS, and a bounded per-file upload size cap all wired in as middleware/checks, not just documented |
+| `app/api/schemas.py`       | Pydantic request/response models (`ChatRequest`, `ResumeRequest`, `SessionSummary`, ...) — citations ride the streamed `{"type": "citations", ...}` SSE event, not a JSON response field |
+| `app/api/main.py`           | FastAPI service (`/`, `/health`, `/health/ready`, `/chat/stream/queued`, `/chat/resume`, `/chat/cancel`, `/chat/sessions`, `/usage`, `/ingest/upload`, `/metrics`) — per-tenant rate limiting, CORS, and a bounded per-file upload size cap all wired in as middleware/checks, not just documented |
 | `app/api/static/index.html`| The built-in web UI — self-contained, no build step, no CDN dependency (pattern 29) |
 | **`app/channels/`** — ways to talk to the agent outside HTTP | |
 | `app/channels/chat.py`          | Streaming CLI + Langfuse tracing |
@@ -816,7 +814,7 @@ separately from the library/service code in `app/`.
 | `tests/live/`          | Real small-Ollama-model tests + a Playwright browser E2E against the built-in web UI (`make test-live`) |
 | `promptfoo/`           | Prompt-level regression + adversarial checks for the domain system prompts against a real Ollama (`make promptfoo`/`make promptfoo-redteam` — pattern 48) |
 | `garak/`               | NVIDIA garak jailbreak/prompt-injection scan against the real model (`make garak`/`make garak-full` — pattern 48) |
-| `loadtest/`            | Locust load test against the running FastAPI service (`loadtest/locustfile.py`, `make loadtest`/`make loadtest-headless` — see "Security scanning & load testing") |
+| `loadtest/`            | Locust load test against the running FastAPI service's queued chat path (`loadtest/locustfile_queued.py`, `make loadtest-queued`/`make loadtest-queued-headless` — see "Security scanning & load testing") |
 
 ## Troubleshooting
 
@@ -831,7 +829,7 @@ separately from the library/service code in `app/`.
   `prometheus` callback needs a manual `docker compose up -d litellm` to
   pick up the change, same as the Langfuse-keys restart above). Check
   http://localhost:9090/targets for which target is actually failing and why.
-- **`/chat/stream` (or the web UI) returns `{"type":"error","content":"Request
+- **`/chat/stream/queued` (or the web UI) returns `{"type":"error","content":"Request
   exceeded 60s timeout"}`** → a slow/cold local model, not a bug — a
   loaded-down machine or a model Ollama hasn't warmed up yet can genuinely
   take longer than `REQUEST_TIMEOUT_SECONDS` (`app/agent/runtime.py`) for even a

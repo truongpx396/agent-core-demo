@@ -449,7 +449,7 @@
 </div> <!-- /.main-panel -->
 <script>
 // Everything this page does talks ONLY to app/api.py's published endpoints
-// (POST /chat/stream) and renders ONLY the documented SSE event vocabulary
+// (POST /chat/stream/queued) and renders ONLY the documented SSE event vocabulary
 // (token, tool_start, tool_end, citations, followups, approval_required,
 // error, done) — see GRAPH_PATTERNS.md's AR-033-style "no special-case
 // endpoints" note. EventSource can't send custom headers or do POST, so

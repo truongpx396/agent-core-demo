@@ -213,64 +213,18 @@ class _RecordingFakeLLM:
         return self._inner.invoke(messages, *args, **kwargs)
 
 
-class TestAnswerAndStreamTurnBuildMultimodalContent:
+class TestAstreamEventsTurnBuildsMultimodalContent:
     """Proves images actually reach the HumanMessage the graph sees, end
-    to end through answer()/stream_turn() — not just _build_human_content
+    to end through astream_events_turn — not just _build_human_content
     in isolation."""
-
-    def _install(self, monkeypatch, response_text="A cat sitting on a windowsill, sufficiently long."):
-        from app.agent.graph import GraphDeps, build_graph
-
-        llm = _RecordingFakeLLM(AIMessage(content=response_text))
-        graph_obj = build_graph(GraphDeps(llm=llm))
-        monkeypatch.setattr(agent_module, "get_graph", lambda: graph_obj)
-        return llm
-
-    def test_answer_sends_a_multimodal_human_message_when_images_given(self, monkeypatch):
-        import uuid
-
-        llm = self._install(monkeypatch)
-
-        agent_module.answer(
-            "what is this?", str(uuid.uuid4()), TEST_CTX, images=["https://example.com/cat.png"]
-        )
-
-        human_messages = [m for m in llm.seen_messages if isinstance(m, HumanMessage)]
-        assert any(isinstance(m.content, list) for m in human_messages)
-
-    def test_answer_sends_plain_string_content_when_no_images(self, monkeypatch):
-        import uuid
-
-        llm = self._install(monkeypatch)
-
-        agent_module.answer("what is 1+1?", str(uuid.uuid4()), TEST_CTX)
-
-        human_messages = [m for m in llm.seen_messages if isinstance(m, HumanMessage)]
-        assert all(isinstance(m.content, str) for m in human_messages)
-
-    def test_stream_turn_sends_a_multimodal_human_message_when_images_given(self, monkeypatch):
-        import uuid
-
-        llm = self._install(monkeypatch)
-
-        list(
-            agent_module.stream_turn(
-                "what is this?", str(uuid.uuid4()), TEST_CTX, images=["https://example.com/cat.png"]
-            )
-        )
-
-        human_messages = [m for m in llm.seen_messages if isinstance(m, HumanMessage)]
-        assert any(isinstance(m.content, list) for m in human_messages)
 
     def test_astream_events_turn_sends_a_multimodal_human_message_when_images_given(
         self, monkeypatch
     ):
-        """astream_events_turn builds its HumanMessage the same way
-        answer()/stream_turn() do — tested against a fake graph reached
-        via a monkeypatched init_graph_async, bypassing the real durable
-        checkpointer (already covered separately by
-        tests/agent/test_durable_checkpoint.py) since this test only cares
-        about the content SHAPE reaching the LLM."""
+        """Tested against a fake graph reached via a monkeypatched
+        init_graph_async, bypassing the real durable checkpointer (already
+        covered separately by tests/agent/test_durable_checkpoint.py) since
+        this test only cares about the content SHAPE reaching the LLM."""
         import asyncio
         import uuid
 
