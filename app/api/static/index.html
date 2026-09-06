@@ -1119,6 +1119,18 @@ async function send(text, image) {
       setStatus(statusEl, null);
       assistantText += event.content;
       scheduleRender();
+    } else if (event.type === "retry") {
+      // The graph rejected the last answer (too short, or citing without
+      // attribution — graph.py's check_output/retry_output) and is
+      // looping back for a fresh attempt. Every token appended above
+      // belongs to that rejected answer, so it must be cleared before the
+      // next round's tokens arrive — otherwise the rejected and retried
+      // answers render concatenated with no indication a retry happened
+      // (a real bug, caught live: an uncited answer got retried, and both
+      // answers showed up run together as one continuous response).
+      assistantText = "";
+      assistantTextEl.innerHTML = "";
+      setStatus(statusEl, "Revising answer");
     } else if (event.type === "tool_start") {
       setStatus(statusEl, `Using ${event.tool}`);
       addToolActivityLine(activityEl, event.tool, event.args);

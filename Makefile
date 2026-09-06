@@ -1,4 +1,4 @@
-.PHONY: help up up-app pull-models ingest index-skills chat chat-hitl serve mcp-serve telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales fake-llm ingest-worker ops-digest followup-sweep test test-integration test-live lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache obs-up obs-down obs-logs obs-clean
+.PHONY: help up up-app pull-models ingest index-skills chat chat-hitl serve mcp-serve telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep test test-integration test-live lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse obs-up obs-down obs-logs obs-clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -63,6 +63,17 @@ agent-worker-ops:  ## Start an agent worker pool for the ops domain (see app/dom
 
 agent-worker-sales:  ## Start an agent worker pool for the sales/CRM domain (see app/domains/sales/); the web UI's X-Domain: sales turns route here
 	AGENT_DOMAIN=sales python -m app.turns.agent_worker
+
+restart-all:  ## Kill and relaunch the API service (which also serves the built-in web UI) + every domain's agent-worker pool as backgrounded host processes (logs under var/*.log), then reset+re-seed ingest data (`make ingest`) — host-native dev convenience; not for the containerized `up-app` stack
+	pkill -f 'uvicorn app\.api\.main:app' 2>/dev/null || true
+	pkill -f 'app\.turns\.agent_worker' 2>/dev/null || true
+	mkdir -p var
+	nohup $(MAKE) serve > var/serve.log 2>&1 &
+	nohup $(MAKE) agent-worker > var/agent-worker.log 2>&1 &
+	nohup $(MAKE) agent-worker-support > var/agent-worker-support.log 2>&1 &
+	nohup $(MAKE) agent-worker-ops > var/agent-worker-ops.log 2>&1 &
+	nohup $(MAKE) agent-worker-sales > var/agent-worker-sales.log 2>&1 &
+	$(MAKE) ingest
 
 fake-llm:  ## Start the fake concurrent-LLM double (loadtest/fake_llm_server.py, :9009) for load-testing agent_worker.py's own concurrency in isolation from native Ollama's hard `-np 1` ceiling — see that file's docstring for how to point a run at it
 	uvicorn loadtest.fake_llm_server:app --host 0.0.0.0 --port 9009
@@ -175,6 +186,15 @@ down:  ## Stop all services (keep volumes)
 
 clear-cache:  ## Flush the semantic cache (Redis) only — leaves the agent-worker queue and other volumes intact
 	docker compose exec redis sh -c "redis-cli --scan --pattern 'cache:*' | xargs -r redis-cli del"
+
+clear-streams:  ## Delete every Redis Stream (agent:requests:*, agent:results:*, ingest:requests, ingest:results:*) — drops queued/in-flight turns and ingest jobs; leaves the semantic cache and other keys intact
+	docker compose exec redis sh -c "redis-cli --scan --pattern '*' | while read -r k; do [ \"\$$(redis-cli type \"\$$k\")\" = stream ] && redis-cli del \"\$$k\"; done"
+
+clear-checkpoints:  ## Truncate the LangGraph checkpointer's tables (checkpoints/checkpoint_blobs/checkpoint_writes) in its dedicated `checkpointer` Postgres DB — drops all saved conversation state; leaves appdata/langfuse/litellm DBs and the migrations tracking table intact
+	docker compose exec postgres psql -U langfuse -d checkpointer -c "TRUNCATE checkpoints, checkpoint_blobs, checkpoint_writes;"
+
+clear-langfuse:  ## Truncate Langfuse's own telemetry tables (traces, observations incl. generations, scores, trace_sessions, events, comments, media) in the `langfuse` Postgres DB, CASCADE (also clears dependent job_executions rows) — leaves projects/api_keys/users/models/pricing config intact so LANGFUSE_PUBLIC_KEY/SECRET_KEY keep working
+	docker compose exec postgres psql -U langfuse -d langfuse -c "TRUNCATE traces, observations, scores, trace_sessions, events, comments, media, trace_media, observation_media CASCADE;"
 
 clean:  ## Stop services and delete volumes (models, vectors, traces)
 	docker compose down -v

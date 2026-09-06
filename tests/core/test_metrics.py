@@ -89,14 +89,20 @@ class TestNodeLevelMetrics:
         assert _count(metrics.agent_context_retrieval_degraded_total) == before + 1
 
     def test_history_trim_increments_compacted_counter(self):
-        from app.agent.graph import MAX_HISTORY_TURNS
+        from app.agent.graph import _estimate_tokens
 
         messages = [
-            HumanMessage(content=f"q{i}", id=f"h{i}")
-            for i in range(MAX_HISTORY_TURNS + 1)
+            HumanMessage(content=f"question number {i} with some real words", id=f"h{i}")
+            for i in range(4)
         ]
+        # A tripped ceiling — small, LOCAL override, not the real
+        # HISTORY_TOKEN_CEILING production constant (which would need
+        # thousands of tokens of placeholder content to actually trip).
+        ceiling = _estimate_tokens(messages) - 1
         compact_history = graph.make_compact_history_node(
-            GenericFakeChatModel(messages=iter([AIMessage(content="a summary")]))
+            GenericFakeChatModel(messages=iter([AIMessage(content="a summary")])),
+            ceiling=ceiling,
+            floor=1,
         )
         before = _count(metrics.agent_history_compacted_total)
         compact_history({"messages": messages})

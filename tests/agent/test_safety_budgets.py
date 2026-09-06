@@ -22,10 +22,11 @@ from langchain_core.messages import (
 from app.agent import runtime as agent_module
 from app.agent import tools
 from app.agent.graph import (
-    MAX_HISTORY_TURNS,
     MAX_ITERATIONS,
     MAX_TOKENS_PER_TURN,
     MAX_TOOL_CALLS_PER_TURN,
+    _estimate_tokens,
+    _messages_to_trim,
     _trim_history,
     make_compact_history_node,
     should_continue,
@@ -87,23 +88,47 @@ class TestPerTurnReset:
 
 class TestHistoryBudget:
     """The only unbounded input in State (`messages`) must not grow forever
-    across a long-running thread — see MAX_HISTORY_TURNS / _trim_history in
-    app/agent/graph.py."""
+    across a long-running thread — see HISTORY_TOKEN_CEILING/FLOOR and
+    _trim_history in app/agent/graph.py.
+
+    Uses small, LOCAL ceiling/floor values throughout (never the real
+    production constants, which would need thousands of tokens of
+    placeholder content to exercise) computed via the real tiktoken-backed
+    _estimate_tokens against real, short content — these exercise the
+    actual estimation path rather than a hand-guessed token count that
+    could silently drift out of sync with the real encoding.
+    """
 
     @staticmethod
-    def _turns(n):
+    def _turn(i):
+        return [
+            HumanMessage(content=f"question number {i} with some real words in it", id=f"h{i}"),
+            AIMessage(content=f"answer number {i} with some real words in it too", id=f"a{i}"),
+        ]
+
+    @classmethod
+    def _turns(cls, n):
         messages = [SystemMessage(content="seed", id="sys")]
         for i in range(n):
-            messages.append(HumanMessage(content=f"question {i}", id=f"h{i}"))
-            messages.append(AIMessage(content=f"answer {i}", id=f"a{i}"))
+            messages.extend(cls._turn(i))
         return messages
 
+    @staticmethod
+    def _non_system(messages):
+        return [m for m in messages if not isinstance(m, SystemMessage)]
+
     def test_within_budget_trims_nothing(self):
-        assert _trim_history(self._turns(MAX_HISTORY_TURNS)) == []
+        messages = self._turns(3)
+        total = _estimate_tokens(self._non_system(messages))
+        assert _trim_history(messages, ceiling=total, floor=total) == []
 
     def test_over_budget_drops_oldest_whole_turns_only(self):
-        messages = self._turns(MAX_HISTORY_TURNS + 2)
-        removed = _trim_history(messages)
+        messages = self._turns(5)
+        # messages layout: [sys, h0,a0, h1,a1, h2,a2, h3,a3, h4,a4] — index 5 is h2.
+        kept_tail = self._non_system(messages[5:])
+        ceiling = _estimate_tokens(self._non_system(messages)) - 1  # trips immediately
+        floor = _estimate_tokens(kept_tail)  # fits exactly the last 3 turns
+        removed = _trim_history(messages, ceiling=ceiling, floor=floor)
         removed_ids = {rm.id for rm in removed}
         assert all(isinstance(rm, RemoveMessage) for rm in removed)
 
@@ -111,26 +136,53 @@ class TestHistoryBudget:
         assert removed_ids == {"h0", "a0", "h1", "a1"}
         # ... the seeded system message is never touched ...
         assert "sys" not in removed_ids
-        # ... and every remaining turn survives untouched.
-        kept_ids = {f"h{i}" for i in range(2, MAX_HISTORY_TURNS + 2)} | {
-            f"a{i}" for i in range(2, MAX_HISTORY_TURNS + 2)
-        }
-        assert removed_ids.isdisjoint(kept_ids)
 
     def test_message_without_id_is_left_alone(self):
         """RemoveMessage deletes by id — a message with none (only possible
         outside a compiled graph) can't be targeted, so it must not crash
         or be silently mismatched to the wrong message."""
-        messages = self._turns(MAX_HISTORY_TURNS + 1)
+        messages = self._turns(3)
         messages[1].id = None  # the oldest turn's HumanMessage
-        removed = _trim_history(messages)
+        ceiling = _estimate_tokens(self._non_system(messages)) - 1
+        removed = _trim_history(messages, ceiling=ceiling, floor=1)
         assert None not in {rm.id for rm in removed}
+
+    def test_never_drops_the_most_recent_turn(self):
+        """Even a floor so tight that keeping just the last turn alone
+        still exceeds it must not drop the current turn itself."""
+        messages = self._turns(3)
+        ceiling = _estimate_tokens(self._non_system(messages)) - 1
+        removed = _trim_history(messages, ceiling=ceiling, floor=1)
+        removed_ids = {rm.id for rm in removed}
+        assert "h2" not in removed_ids
+        assert "a2" not in removed_ids
+
+    def test_hysteresis_leaves_no_immediate_retrigger(self):
+        """The actual point of the ceiling/floor gap: right after one
+        compaction, the KEPT tail must already sit at/under the ceiling
+        too — otherwise the very next turn's growth would trip compaction
+        again immediately, the sliding-window-of-1 behavior this hysteresis
+        design replaces (verified empirically against the prior turn-count
+        design: it re-triggered on every single turn once past threshold)."""
+        messages = self._turns(6)
+        ceiling = _estimate_tokens(self._non_system(messages)) - 1  # trips now
+        floor = _estimate_tokens(self._non_system(messages[-4:]))  # ~last 2 turns
+
+        trimmed = _messages_to_trim(messages, ceiling=ceiling, floor=floor)
+        trimmed_ids = {m.id for m in trimmed}
+        survivors = [m for m in messages if m.id not in trimmed_ids]
+
+        assert _estimate_tokens(self._non_system(survivors)) <= ceiling
+        # Compacting again immediately, on the SAME (already-trimmed)
+        # messages, must be a no-op — real headroom exists before the next
+        # turn's own growth could retrigger it.
+        assert _messages_to_trim(survivors, ceiling=ceiling, floor=floor) == []
 
     def test_validate_input_no_longer_touches_messages(self):
         """Trimming/summarization moved to compact_history (see below) —
         validate_input stays a plain, dependency-free function of
         state/config with no LLM call of its own."""
-        state = {"messages": self._turns(MAX_HISTORY_TURNS + 1)}
+        state = {"messages": self._turns(3)}
         result = validate_input(state, _cfg())
         assert "messages" not in result
 
@@ -139,23 +191,39 @@ class TestCompactHistoryNode:
     """compact_history (app/agent/graph.py) replaced validate_input's old
     discard-only trim with a discard-AND-summarize node — see
     _messages_to_trim (the shared "what falls outside the window" helper)
-    and make_compact_history_node's docstring."""
+    and make_compact_history_node's docstring.
+
+    Every test here passes small, LOCAL ceiling/floor overrides to
+    make_compact_history_node — never the real HISTORY_TOKEN_CEILING/FLOOR
+    production constants, which would need thousands of tokens of
+    placeholder content to actually trip."""
 
     @staticmethod
     def _turns(n):
         messages = [SystemMessage(content="seed", id="sys")]
         for i in range(n):
-            messages.append(HumanMessage(content=f"question {i}", id=f"h{i}"))
-            messages.append(AIMessage(content=f"answer {i}", id=f"a{i}"))
+            messages.append(
+                HumanMessage(content=f"question number {i} with some real words", id=f"h{i}")
+            )
+            messages.append(
+                AIMessage(content=f"answer number {i} with some real words too", id=f"a{i}")
+            )
         return messages
+
+    @staticmethod
+    def _tripped_ceiling(messages):
+        """A ceiling guaranteed to already be exceeded by `messages`."""
+        return _estimate_tokens([m for m in messages if not isinstance(m, SystemMessage)]) - 1
 
     def test_applies_the_trim_and_increments_metric(self):
         before = metric_value(metrics.agent_history_compacted_total)
+        messages = self._turns(3)
         compact_history = make_compact_history_node(
-            GenericFakeChatModel(messages=iter([AIMessage(content="a summary")]))
+            GenericFakeChatModel(messages=iter([AIMessage(content="a summary")])),
+            ceiling=self._tripped_ceiling(messages),
+            floor=1,
         )
-        state = {"messages": self._turns(MAX_HISTORY_TURNS + 1)}
-        result = compact_history(state)
+        result = compact_history({"messages": messages})
 
         assert "messages" in result
         assert all(isinstance(m, RemoveMessage) for m in result["messages"])
@@ -163,18 +231,24 @@ class TestCompactHistoryNode:
         assert metric_value(metrics.agent_history_compacted_total) == before + 1
 
     def test_returns_nothing_when_within_budget(self):
-        compact_history = make_compact_history_node(GenericFakeChatModel(messages=iter([])))
-        state = {"messages": self._turns(1)}
-        assert compact_history(state) == {}
+        messages = self._turns(1)
+        compact_history = make_compact_history_node(
+            GenericFakeChatModel(messages=iter([])),
+            ceiling=_estimate_tokens(messages) + 10,  # comfortably above
+            floor=1,
+        )
+        assert compact_history({"messages": messages}) == {}
 
     def test_degrades_to_trimming_without_a_summary_on_llm_failure(self):
         class _BoomLLM:
             def invoke(self, messages):
                 raise RuntimeError("boom")
 
-        compact_history = make_compact_history_node(_BoomLLM())
-        state = {"messages": self._turns(MAX_HISTORY_TURNS + 1)}
-        result = compact_history(state)
+        messages = self._turns(3)
+        compact_history = make_compact_history_node(
+            _BoomLLM(), ceiling=self._tripped_ceiling(messages), floor=1
+        )
+        result = compact_history({"messages": messages})
 
         assert "messages" in result
         assert all(isinstance(m, RemoveMessage) for m in result["messages"])
@@ -188,11 +262,11 @@ class TestCompactHistoryNode:
                 captured["prompt"] = messages[0].content
                 return AIMessage(content="an extended summary")
 
-        compact_history = make_compact_history_node(_RecordingLLM())
-        state = {
-            "messages": self._turns(MAX_HISTORY_TURNS + 1),
-            "history_summary": "earlier summary text",
-        }
+        messages = self._turns(3)
+        compact_history = make_compact_history_node(
+            _RecordingLLM(), ceiling=self._tripped_ceiling(messages), floor=1
+        )
+        state = {"messages": messages, "history_summary": "earlier summary text"}
         result = compact_history(state)
 
         assert "earlier summary text" in captured["prompt"]
@@ -251,7 +325,7 @@ class TestTokenBudget:
             "total_tokens": MAX_TOKENS_PER_TURN,
             "messages": [_tool_call_message("calculator", {"expression": "1+1"})],
         }
-        assert should_continue(state) == "__end__"
+        assert should_continue(state) == "no_answer"
 
     def test_missing_total_tokens_defaults_to_zero(self):
         state = {"iterations": 1, "messages": [AIMessage(content="final answer here.")]}

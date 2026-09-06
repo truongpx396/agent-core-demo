@@ -18,11 +18,26 @@ model_list:
       # ("100% GPU" per `ollama ps`). The docker ollama container is still
       # up (see its service block) purely to serve open-webui's own chat UI.
       api_base: http://host.docker.internal:11434
+      # Ollama's own runtime default (verified via `ollama ps`: 4096, NOT
+      # the 32768 qwen2.5:3b actually supports per `ollama show`) — nothing
+      # here overrode it before, and it was tight enough to matter: the
+      # system prompt + tool schemas ALONE measure ~2300+ input tokens on a
+      # bare first call (real usage_metadata), leaving very little room for
+      # retrieved context, conversation history, and a multi-round
+      # tool-calling/retry loop within one turn before either silent
+      # truncation or a hard error. LiteLLM's ollama_chat provider passes
+      # `num_ctx` straight through to Ollama's own `options.num_ctx`
+      # (verified in its transformation.py) — a config change, not a code
+      # change, per this file's own model-alias architecture.
+      # app/agent/graph.py's HISTORY_TOKEN_CEILING/FLOOR are sized against
+      # this exact number — change both together.
+      num_ctx: 24000
   # A second chat entry used purely as a fallback target for "chat".
   - model_name: chat-backup
     litellm_params:
       model: ollama_chat/qwen2.5:3b
       api_base: http://host.docker.internal:11434
+      num_ctx: 24000
   # Vision-capable alias slot (GRAPH_PATTERNS.md pattern 44) — "chat" above
   # (qwen2.5:3b) has no vision capability, so an attached image is carried
   # through the pipeline correctly but the model can't actually see it.
@@ -74,3 +89,9 @@ litellm_settings:
 
 general_settings:
   master_key: sk-anything              # matches OPENAI_API_KEY in .env
+  # Without this, the Admin UI's Observability->Logs page only shows
+  # metadata (model, tokens, cost, latency, status) in LiteLLM_SpendLogs —
+  # the actual request/response bodies are omitted by default. This makes
+  # each log row expandable to the full messages array sent and the raw
+  # completion returned.
+  store_prompts_in_spend_logs: true

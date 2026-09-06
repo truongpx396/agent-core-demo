@@ -238,6 +238,7 @@ def test_retrieve_context_calls_search_docs_with_last_human_message_and_ctx():
     assert result == {
         "context": "[1] doc 1\n[2] doc 2",
         "citations": [{"marker": "[1]", "text": "doc 1"}],
+        "context_anchor_index": 0,
     }
 
 
@@ -248,7 +249,7 @@ def test_retrieve_context_no_human_message_skips_search():
     retrieve_context = graph.make_retrieve_context_node(fail_search_docs)
 
     result = retrieve_context({"messages": [AIMessage(content="hi")]})
-    assert result == {"context": "", "citations": []}
+    assert result == {"context": "", "citations": [], "context_anchor_index": 0}
 
 
 def test_retrieve_context_degrades_to_empty_when_search_docs_raises():
@@ -269,14 +270,18 @@ def test_retrieve_context_degrades_to_empty_when_search_docs_raises():
     }
     result = retrieve_context(state)
 
-    assert result == {"context": "", "citations": []}
+    assert result == {"context": "", "citations": [], "context_anchor_index": 0}
     assert metric_value(metrics.agent_context_retrieval_degraded_total) == before + 1
 
 
 class TestCheckOutput:
     def test_no_citations_returns_empty_used_citations(self):
         result = graph.check_output({"messages": [AIMessage(content="anything")]})
-        assert result == {"used_citations": [], "ungrounded_claims_count": 0}
+        assert result == {
+            "used_citations": [],
+            "ungrounded_claims_count": 0,
+            "likely_uncited_citations": [],
+        }
 
     def test_filters_citations_to_markers_actually_used(self):
         citations = [
@@ -291,6 +296,7 @@ class TestCheckOutput:
         assert result == {
             "used_citations": [citations[0]],
             "ungrounded_claims_count": 0,
+            "likely_uncited_citations": [],
         }
 
     def test_no_markers_in_answer_returns_empty_used_citations(self):
@@ -300,7 +306,11 @@ class TestCheckOutput:
             "citations": citations,
         }
         result = graph.check_output(state)
-        assert result == {"used_citations": [], "ungrounded_claims_count": 0}
+        assert result == {
+            "used_citations": [],
+            "ungrounded_claims_count": 0,
+            "likely_uncited_citations": [],
+        }
 
     def test_a_marker_with_no_matching_citation_is_counted_as_ungrounded(self):
         citations = [{"marker": "[1]", "text": "checkpointers persist state"}]
@@ -318,7 +328,143 @@ class TestCheckOutput:
             "citations": [],
         }
         result = graph.check_output(state)
-        assert result == {"used_citations": [], "ungrounded_claims_count": 1}
+        assert result == {
+            "used_citations": [],
+            "ungrounded_claims_count": 1,
+            "likely_uncited_citations": [],
+        }
+
+    def test_zero_citations_metric_fires_when_context_was_available_but_unused(self):
+        """The opposite failure mode from ungrounded_claims_count: retrieved
+        content existed (citations non-empty) and the answer isn't empty,
+        but nothing in it was cited — the SYSTEM_PROMPT's "mandatory"
+        citation rule silently dropped."""
+        citations = [{"marker": "[1]", "text": "checkpointers persist state"}]
+        state = {
+            "messages": [AIMessage(content="A general answer with no citation.")],
+            "citations": citations,
+        }
+        before = metric_value(metrics.agent_zero_citations_total)
+        graph.check_output(state)
+        assert metric_value(metrics.agent_zero_citations_total) == before + 1
+
+    def test_zero_citations_metric_does_not_fire_without_available_citations(self):
+        """No retrieved content to have skipped citing in the first place —
+        e.g. a general-knowledge or calculator-only answer, both explicitly
+        allowed uncited by the SYSTEM_PROMPT."""
+        state = {
+            "messages": [AIMessage(content="2 + 2 is 4.")],
+            "citations": [],
+        }
+        before = metric_value(metrics.agent_zero_citations_total)
+        graph.check_output(state)
+        assert metric_value(metrics.agent_zero_citations_total) == before
+
+    def test_zero_citations_metric_does_not_fire_when_a_citation_was_used(self):
+        citations = [{"marker": "[1]", "text": "checkpointers persist state"}]
+        state = {
+            "messages": [AIMessage(content="Checkpointers persist state [1].")],
+            "citations": citations,
+        }
+        before = metric_value(metrics.agent_zero_citations_total)
+        graph.check_output(state)
+        assert metric_value(metrics.agent_zero_citations_total) == before
+
+    def test_zero_citations_metric_does_not_fire_on_empty_content(self):
+        """An empty final answer is already handled (and retried) by
+        route_after_check's length check — not this metric's concern."""
+        citations = [{"marker": "[1]", "text": "checkpointers persist state"}]
+        state = {"messages": [AIMessage(content="")], "citations": citations}
+        before = metric_value(metrics.agent_zero_citations_total)
+        graph.check_output(state)
+        assert metric_value(metrics.agent_zero_citations_total) == before
+
+    def test_likely_uncited_flags_a_real_qwen_paraphrase_without_markers(self):
+        """Regression case #1: a real qwen2.5:3b answer that near-verbatim
+        merged two sources with zero citation markers (caught in a live
+        Langfuse trace for "How does Qdrant's hybrid search work?")."""
+        citations = [
+            {
+                "marker": "[1]",
+                "text": "Qdrant stores vectors with JSON payloads. You can filter "
+                "searches by payload fields, for example restricting results to a "
+                "single topic.",
+            },
+            {
+                "marker": "[2]",
+                "text": "Cosine distance is a common similarity metric for text "
+                "embeddings in Qdrant.",
+            },
+        ]
+        content = (
+            "Qdrant's hybrid search works by storing vectors with JSON payloads, "
+            "allowing you to filter searches by payload fields. Additionally, "
+            "cosine distance is a common similarity metric used for text "
+            "embeddings in Qdrant. This combination enables more targeted and "
+            "relevant search results."
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": citations}
+        result = graph.check_output(state)
+        assert {c["marker"] for c in result["likely_uncited_citations"]} == {"[1]", "[2]"}
+
+    def test_likely_uncited_flags_a_real_qwen_paraphrase_case_two(self):
+        """Regression case #2: another real qwen2.5:3b answer merging two
+        Acme Corp facts with zero markers ("what is Acme Corp?")."""
+        citations = [
+            {
+                "marker": "[1]",
+                "text": "Acme Corp's support hours are 9am to 5pm on weekdays, "
+                "and support is free for all open-source users.",
+            },
+            {
+                "marker": "[2]",
+                "text": "Acme Corp was founded in 2021 and builds offline "
+                "developer tools. Its flagship product is a local AI stack "
+                "starter kit.",
+            },
+        ]
+        content = (
+            "Acme Corp was founded in 2021 and builds offline developer tools. "
+            "Its flagship product is a local AI stack starter kit. Support is "
+            "available from 9am to 5pm on weekdays, and support is free for all "
+            "open-source users."
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": citations}
+        result = graph.check_output(state)
+        assert {c["marker"] for c in result["likely_uncited_citations"]} == {"[1]", "[2]"}
+
+    def test_likely_uncited_ignores_a_properly_cited_source(self):
+        citations = [{"marker": "[1]", "text": "Cosine distance is a common similarity metric."}]
+        content = "Cosine distance is a common similarity metric [1]."
+        state = {"messages": [AIMessage(content=content)], "citations": citations}
+        result = graph.check_output(state)
+        assert result["likely_uncited_citations"] == []
+
+    def test_likely_uncited_ignores_unrelated_general_knowledge_answer(self):
+        """A general-knowledge answer with no real overlap to the (available
+        but irrelevant) fetched citation must not be flagged — this is
+        exactly the SYSTEM_PROMPT-sanctioned "answer from general
+        knowledge" case, not a dropped citation."""
+        citations = [
+            {
+                "marker": "[1]",
+                "text": "Acme Corp's support hours are 9am to 5pm on weekdays.",
+            }
+        ]
+        content = "The capital of France is Paris."
+        state = {"messages": [AIMessage(content=content)], "citations": citations}
+        result = graph.check_output(state)
+        assert result["likely_uncited_citations"] == []
+
+    def test_likely_uncited_ignores_a_short_generic_citation(self):
+        """A citation too short to reliably judge overlap on is skipped
+        entirely, not just held to the ratio — avoids flagging a coincidental
+        match on too few words to mean anything."""
+        citations = [{"marker": "[1]", "text": "Qdrant is a vector database."}]
+        content = "Qdrant is a fast, open-source vector database built in Rust."
+        state = {"messages": [AIMessage(content=content)], "citations": citations}
+        result = graph.check_output(state)
+        assert result["likely_uncited_citations"] == []
 
 
 def test_retry_output_appends_corrective_human_message():
@@ -327,6 +473,29 @@ def test_retry_output_appends_corrective_human_message():
     msg = result["messages"][0]
     assert isinstance(msg, HumanMessage)
     assert "short" in msg.content.lower()
+
+
+def test_retry_output_names_the_missing_citation_marker():
+    state = {
+        "messages": [AIMessage(content="A sufficiently detailed but uncited answer.")],
+        "likely_uncited_citations": [{"marker": "[2]", "text": "..."}],
+    }
+    result = graph.retry_output(state)
+    msg = result["messages"][0]
+    assert isinstance(msg, HumanMessage)
+    assert "[2]" in msg.content
+    assert "cit" in msg.content.lower()
+
+
+def test_retry_output_prefers_the_length_complaint_when_both_apply():
+    """An answer that's both too short AND flagged as likely-uncited gets
+    the length feedback — the more actionable ask of the two."""
+    state = {
+        "messages": [AIMessage(content="Yes.")],
+        "likely_uncited_citations": [{"marker": "[1]", "text": "..."}],
+    }
+    result = graph.retry_output(state)
+    assert "short" in result["messages"][0].content.lower()
 
 
 class TestHumanApproval:

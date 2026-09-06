@@ -143,6 +143,45 @@ class TestFollowupsEventIsSurfaced:
         assert types_in_order.index("followups") > types_in_order.index("citations")
         assert types_in_order[-1] == "done"
 
+    def test_followups_own_llm_call_never_leaks_into_the_token_stream(self, monkeypatch):
+        """Real bug, caught live via Langfuse: astream_events emits
+        on_chat_model_stream for EVERY chat-model call in the graph, not
+        just the main answer's. suggest_followups makes its own SEPARATE
+        llm.invoke() call — without filtering by which node a given stream
+        event belongs to (metadata.langgraph_node), its generated
+        questions streamed as "token" events too, landing concatenated
+        onto the end of the real answer with no separator: a real user saw
+        their answer's last citation marker immediately followed by the
+        raw follow-up questions text, no space, no newline, before the
+        (correct, separate) "followups" event even fired."""
+        def fake_search(query, ctx):
+            cited = {
+                "marker": "[1]",
+                "doc_id": "d1",
+                "title": "Checkpointers",
+                "text": "Checkpointers persist state.",
+                "score": 0.9,
+            }
+            return "[1] Checkpointers persist state.", [cited]
+
+        llm = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="Checkpointers persist state [1]."),
+                    AIMessage(content="What is a MemorySaver?\nHow do I resume a run?"),
+                ]
+            )
+        )
+        graph_obj = build_graph(GraphDeps(llm=llm, search_docs=fake_search))
+
+        events = _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
+
+        token_events = [e for e in events if e["type"] == "token"]
+        streamed_text = "".join(e["content"] for e in token_events)
+        assert streamed_text == "Checkpointers persist state [1]."
+        assert "MemorySaver" not in streamed_text
+        assert "How do I resume a run" not in streamed_text
+
     def test_an_uncited_answer_streams_no_followups_event(self, monkeypatch):
         """suggest_followups itself skips an uncited answer (nothing to
         derive follow-ups from) — this just proves the streaming layer
@@ -155,6 +194,79 @@ class TestFollowupsEventIsSurfaced:
         events = _events_for(graph_obj, "what is the capital of France?", monkeypatch=monkeypatch)
 
         assert not any(e["type"] == "followups" for e in events)
+
+
+class TestRetryEventClearsTheStream:
+    """A rejected answer's already-streamed tokens must never render
+    concatenated with the retried answer's. Real bug, found live via
+    Langfuse: a citation-retry loop's rejected (uncited) answer and its
+    retried (cited) one streamed as "token" events back to back with no
+    separator — the web UI's handleEvent just appends every token it gets,
+    so the client rendered both answers run together as if they were one
+    continuous response, with no indication a retry ever happened. Fixed
+    by emitting a `{"type": "retry"}` event (see _run_graph_stream's own
+    docstring) whenever retry_output runs, so a client knows to clear its
+    buffer before the next round's tokens arrive."""
+
+    def test_a_too_short_answer_retry_emits_a_retry_event_between_the_two_answers(
+        self, monkeypatch
+    ):
+        llm = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="Yes."),  # too short -> retry_output
+                    AIMessage(content="Here is a sufficiently long final answer now."),
+                ]
+            )
+        )
+        graph_obj = build_graph(GraphDeps(llm=llm))
+
+        events = _events_for(graph_obj, "is this true?", monkeypatch=monkeypatch)
+
+        types_in_order = [e["type"] for e in events]
+        assert types_in_order.count("retry") == 1
+        retry_idx = types_in_order.index("retry")
+        before = [e["content"] for e in events[:retry_idx] if e["type"] == "token"]
+        after = [e["content"] for e in events[retry_idx:] if e["type"] == "token"]
+        assert "".join(before) == "Yes."
+        assert "".join(after) == "Here is a sufficiently long final answer now."
+
+    def test_a_likely_uncited_answer_retry_also_emits_a_retry_event(self, monkeypatch):
+        source_text = "Checkpointers persist state across a thread's whole lifetime reliably."
+
+        def fake_search(query, ctx):
+            cited = {
+                "marker": "[1]",
+                "doc_id": "d1",
+                "title": "Checkpointers",
+                "text": source_text,
+                "score": 0.9,
+            }
+            return f"[1] {source_text}", [cited]
+
+        llm = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content=source_text),  # paraphrased, uncited -> retry_output
+                    AIMessage(content=f"{source_text} [1]"),
+                ]
+            )
+        )
+        graph_obj = build_graph(GraphDeps(llm=llm, search_docs=fake_search))
+
+        events = _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
+
+        assert sum(1 for e in events if e["type"] == "retry") == 1
+
+    def test_normal_streaming_with_no_retry_never_emits_a_retry_event(self, monkeypatch):
+        llm = GenericFakeChatModel(
+            messages=iter([AIMessage(content="A normal, freshly generated answer.")])
+        )
+        graph_obj = build_graph(GraphDeps(llm=llm))
+
+        events = _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
+
+        assert not any(e["type"] == "retry" for e in events)
 
 
 class TestNormalStreamingIsUnaffected:
