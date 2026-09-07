@@ -7,8 +7,8 @@ Uses astream_events v2: prints raw tokens as they arrive AND shows a visible
 indicator whenever a tool is called, so you can see the agent "thinking".
 
 `--hitl` gates every tool call behind an approve/reject prompt (see graph.py's
-human_approval / scripts/hitl_demo.py) — the streaming counterpart to
-hitl_demo.py's blocking pause/resume loop.
+human_approval) — a runnable, self-contained example of driving the
+`interrupt()` pause/resume cycle through this app's real streaming path.
 
 Run with: `make chat`, `make chat-hitl`, or `python -m app.channels.chat --hitl`
 """
@@ -102,9 +102,8 @@ async def async_main(hitl: bool = False) -> None:
     """Streaming CLI: token-level latency + visible tool indicators.
 
     `hitl=True` gates every tool call behind an approve/reject prompt (see
-    graph.py's human_approval / scripts/hitl_demo.py) — same opt-in mechanism,
-    driven through the streaming event protocol instead of a blocking
-    graph.invoke() call.
+    graph.py's human_approval) — the streaming event protocol's own
+    opt-in HITL mechanism.
     """
     # Opens the durable checkpointer on THIS asyncio.run() loop, before any
     # graph call — astream_events_turn/_resume need the checkpointer bound

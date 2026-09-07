@@ -30,14 +30,16 @@ model_list:
       # (verified in its transformation.py) — a config change, not a code
       # change, per this file's own model-alias architecture.
       # app/agent/graph.py's HISTORY_TOKEN_CEILING/FLOOR are sized against
-      # this exact number — change both together.
-      num_ctx: 24000
+      # this exact number — change both together. 32000 is right up
+      # against qwen2.5:3b's own rated max (32768 per `ollama show`) —
+      # real headroom (768 tokens), not a round-number guess.
+      num_ctx: 32000
   # A second chat entry used purely as a fallback target for "chat".
   - model_name: chat-backup
     litellm_params:
       model: ollama_chat/qwen2.5:3b
       api_base: http://host.docker.internal:11434
-      num_ctx: 24000
+      num_ctx: 32000
   # Vision-capable alias slot (GRAPH_PATTERNS.md pattern 44) — "chat" above
   # (qwen2.5:3b) has no vision capability, so an attached image is carried
   # through the pipeline correctly but the model can't actually see it.

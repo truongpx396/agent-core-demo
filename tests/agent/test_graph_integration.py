@@ -364,6 +364,115 @@ class TestOutputRetryPath:
         assert result["iterations"] == 2
 
 
+class TestRetryExhaustedPath:
+    """MAX_CONSECUTIVE_SAME_RETRY_REASON (app/agent/graph.py) — real bug,
+    found live via Langfuse: a turn stuck narrating tool intent instead of
+    calling one, round after round, burned 6 full LLM calls (and ~18k
+    tokens) before should_continue's own, much blunter
+    MAX_TOKENS_PER_TURN cap finally cut it off, landing on the exact same
+    "couldn't answer" fallback it could have reached in 2 rounds."""
+
+    def test_identical_rejection_reason_twice_gives_up_not_a_third_attempt(self):
+        """Exactly 2 responses queued — the model narrating tool intent
+        instead of calling one, twice in a row (the actual live bug this
+        mechanism was built for — a stuck query_employees narration
+        loop). `deferred_instead_of_acting` is one of the two NOT
+        trust-content reasons (see _TRUST_CONTENT_RETRY_REASONS): the
+        narration text itself has zero answer value, so it must be
+        replaced, not shown. If route_after_check kept retrying instead
+        of giving up, GenericFakeChatModel would raise on its exhausted
+        iterator when the graph tried a 3rd agent call, failing this test
+        loudly rather than silently passing."""
+        narration = (
+            "I will use the query_employees tool to look up the employees. "
+            "Let's proceed with that."
+        )
+        llm = _fake_llm(AIMessage(content=narration), AIMessage(content=narration))
+        g = build_graph(GraphDeps(llm=llm))
+        result = g.invoke(
+            {"messages": [HumanMessage(content="who works in engineering?")]},
+            config=_config(),
+        )
+        assert "wasn't able to put together" in result["messages"][-1].content
+        assert result["iterations"] == 2
+        assert result["last_retry_reason"] == "deferred"
+        assert result["retry_reason_repeat_count"] == 2
+
+    def test_repeatedly_uncited_but_correct_answer_is_trusted_not_discarded(self):
+        """Real regression, found live
+        (tests/live/test_prompt_injection_via_retrieval.py): a real model
+        answered a question CORRECTLY, twice in a row, just without its
+        citation marker. "uncited" is an attribution nitpick, not a
+        correctness problem (the prose itself is fine) — discarding it in
+        favor of a generic apology would be strictly worse than the OLD
+        pre-retry_exhausted behavior, where exhausting MAX_ITERATIONS with
+        the same non-blank answer still showed it, uncited, rather than
+        nothing. retry_exhausted must trust it and show it as-is."""
+        citations = [
+            {
+                "marker": "[1]",
+                "doc_id": "d1",
+                "title": "Support",
+                "text": "Acme Corp support hours are 9am to 5pm on weekdays.",
+                "score": 0.9,
+            }
+        ]
+
+        def fake_search_docs(query, ctx):
+            return "[1] Acme Corp support hours are 9am to 5pm on weekdays.", citations
+
+        correct_but_uncited = "Acme Corp's support hours are from 9am to 5pm on weekdays."
+        llm = _fake_llm(
+            AIMessage(content=correct_but_uncited), AIMessage(content=correct_but_uncited)
+        )
+        g = build_graph(GraphDeps(llm=llm, search_docs=fake_search_docs))
+        result = g.invoke(
+            {"messages": [HumanMessage(content="what are the support hours?")]},
+            config=_config(),
+        )
+        assert result["messages"][-1].content == correct_but_uncited
+        assert result["last_retry_reason"] == "uncited"
+        assert result["retry_reason_repeat_count"] == 2
+
+    def test_different_reasons_in_a_row_keep_retrying_not_giving_up(self):
+        """Genuinely different problems across rounds (too-short, THEN
+        uncited, then a correctly-cited success) is slow convergence, not
+        a stuck loop — must NOT trip the same-reason-repeat guard, which
+        only fires on the IDENTICAL reason twice in a row."""
+        citations = [
+            {
+                "marker": "[1]",
+                "doc_id": "abc123",
+                "title": "Qdrant",
+                "text": "Qdrant stores vectors with JSON payloads. You can filter "
+                "searches by payload fields, for example restricting results to a "
+                "single topic.",
+                "score": 0.91,
+            }
+        ]
+
+        def fake_search_docs(query, ctx):
+            return "[1] Qdrant stores vectors with JSON payloads.", citations
+
+        uncited_paraphrase = (
+            "Qdrant's hybrid search works by storing vectors with JSON payloads. "
+            "You can filter searches by payload fields, for example restricting "
+            "results to a single topic."
+        )
+        llm = _fake_llm(
+            AIMessage(content="Yes."),  # too_short
+            AIMessage(content=uncited_paraphrase),  # uncited (different reason)
+            AIMessage(content=f"{uncited_paraphrase} [1]"),  # cited -> success
+        )
+        g = build_graph(GraphDeps(llm=llm, search_docs=fake_search_docs))
+        result = g.invoke(
+            {"messages": [HumanMessage(content="how does Qdrant's search work?")]},
+            config=_config(),
+        )
+        assert result["messages"][-1].content == f"{uncited_paraphrase} [1]"
+        assert result["iterations"] == 3
+
+
 class TestToolErrorRecovery:
     def test_invalid_tool_args_become_a_tool_message_not_a_crash(self):
         """calculator's args_schema rejects a blank expression (see

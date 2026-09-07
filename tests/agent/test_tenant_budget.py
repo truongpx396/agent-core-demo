@@ -5,9 +5,9 @@ MAX_COST_USD_PER_TURN, which only ever sees one turn at a time.
 `_tenant_over_daily_budget` itself is tested directly against a
 monkeypatched app.agent.meter.usage_summary (no live Postgres). The entry
 point (astream_events_turn) is tested by stubbing `_tenant_over_daily_budget`
-itself to True/False and asserting it never even calls
-get_graph()/init_graph_async() when over budget — proving the short-circuit
-happens BEFORE any real graph work, not just that it returns the right shape.
+itself to True/False and asserting it never even calls init_graph_async()
+when over budget — proving the short-circuit happens BEFORE any real graph
+work, not just that it returns the right shape.
 """
 import asyncio
 
@@ -103,11 +103,6 @@ class _GraphTouchedError(AssertionError):
 def _forbid_graph_access(monkeypatch):
     """Any of these being called proves the over-budget check did NOT
     actually short-circuit before real graph work."""
-
-    def _fail(*a, **kw):
-        raise _GraphTouchedError("graph work must not run for an over-budget tenant")
-
-    monkeypatch.setattr(agent, "get_graph", _fail)
 
     async def _fail_async(*a, **kw):
         raise _GraphTouchedError("graph work must not run for an over-budget tenant")

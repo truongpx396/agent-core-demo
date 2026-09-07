@@ -126,8 +126,8 @@ def requests_stream_key(domain: str = "acme") -> str:
     domain-scoping the stream, rather than sharing one flat stream across
     every domain, is what lets one worker pool's load stay independent of
     every other domain's. Defaults to `"acme"` — same "no domain given
-    means Acme" convention as app/agent/runtime.py's init_graph_async/
-    init_graph_sync and app/core/config.py's own `AGENT_DOMAIN` default."""
+    means Acme" convention as app/agent/runtime.py's init_graph_async
+    and app/core/config.py's own `AGENT_DOMAIN` default."""
     return f"agent:requests:{domain}"
 
 

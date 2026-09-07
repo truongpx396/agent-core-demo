@@ -23,11 +23,11 @@ import asyncio
 import uuid
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agent import moderation
 from app.agent import runtime as agent_module
-from app.agent.graph import GraphDeps, build_graph
+from app.agent.graph import GraphDeps, _estimate_tokens, build_graph
 from tests.conftest import TEST_CTX
 
 
@@ -99,6 +99,57 @@ class TestSemanticCacheHitStreamsTheCachedAnswer:
         assert len(token_events) == 1
         assert token_events[0]["content"] == "A cached answer, not freshly generated."
         assert events[-1] == {"type": "done"}
+
+
+class _FakeTrace:
+    def __init__(self):
+        self.updates: list[dict] = []
+
+    def update(self, **kwargs):
+        self.updates.append(kwargs)
+
+
+class TestTraceOutputMatchesWhatTheClientActuallySaw:
+    """Real bug, found live via Langfuse: a turn that never streamed any
+    real tokens (a semantic-cache hit, a reject_* short-circuit, or —
+    caught live — the no_answer safety net after two empty LLM attempts)
+    correctly streamed its FALLBACK text to the actual SSE client (see
+    TestSemanticCacheHitStreamsTheCachedAnswer above), but
+    `trace.update(output=...)` ran BEFORE that fallback text was computed,
+    reading an empty `final_answer` list — so Langfuse recorded the turn's
+    output as "" even though a real user saw real text. Fixed by moving
+    `trace.update` to after the fallback synthesis and appending the
+    fallback text into `final_answer` itself, so the recorded output
+    always matches the client-visible one."""
+
+    def test_a_cache_hit_records_the_cached_text_on_the_trace_not_a_blank(self, monkeypatch):
+        fake_trace = _FakeTrace()
+        monkeypatch.setattr(agent_module, "_open_trace", lambda *a, **k: (fake_trace, []))
+        llm = GenericFakeChatModel(messages=iter([]))  # would raise if ever invoked
+
+        def fake_cache_get(ctx, query):
+            return "A cached answer, not freshly generated.", [{"marker": "[1]", "text": "..."}]
+
+        graph_obj = build_graph(GraphDeps(llm=llm, cache_get=fake_cache_get))
+
+        _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
+
+        assert fake_trace.updates == [{"output": "A cached answer, not freshly generated."}]
+
+    def test_a_normally_streamed_answer_still_records_correctly(self, monkeypatch):
+        """Guards the fix against a regression in the common case: a turn
+        that DID stream real tokens must still record exactly that text,
+        not a duplicate or an empty one."""
+        fake_trace = _FakeTrace()
+        monkeypatch.setattr(agent_module, "_open_trace", lambda *a, **k: (fake_trace, []))
+        llm = GenericFakeChatModel(
+            messages=iter([AIMessage(content="A normal, freshly generated answer.")])
+        )
+        graph_obj = build_graph(GraphDeps(llm=llm))
+
+        _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
+
+        assert fake_trace.updates == [{"output": "A normal, freshly generated answer."}]
 
 
 class TestFollowupsEventIsSurfaced:
@@ -267,6 +318,174 @@ class TestRetryEventClearsTheStream:
         events = _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
 
         assert not any(e["type"] == "retry" for e in events)
+
+
+class TestRetryExhaustedReplacesAlreadyStreamedContent:
+    """Real bug, caught live immediately after shipping
+    leaks_system_prompt detection: retry_exhausted (graph.py)
+    unconditionally replaces the last message rather than trusting it
+    (it's content check_output already judged bad on repeat) — but that
+    message's own tokens already streamed live via on_chat_model_stream
+    before the graph decided to reject it a SECOND time, exactly like any
+    other answer; nothing about being "about to be replaced" stops a
+    model's tokens from reaching the client as they're generated.
+    Observed live: a leaked system prompt streamed to a real user in
+    full, TWICE (once per retry round), with the honest fallback the
+    checkpointed state correctly held never actually reaching them."""
+
+    def test_client_sees_the_honest_fallback_not_the_repeatedly_rejected_text(
+        self, monkeypatch
+    ):
+        # deferred_instead_of_acting — one of the two NOT trust-content
+        # reasons (see graph.py's _TRUST_CONTENT_RETRY_REASONS): pure
+        # narration has zero answer value, so it must be replaced. (The
+        # OTHER two — too_short, uncited — are deliberately TRUSTED and
+        # shown as-is now; see TestRetryExhaustedTrustsAttributionOnlyFailures
+        # below for that half of the behavior.)
+        narration = "I will use the query_employees tool to look that up. Let's proceed with that."
+        llm = GenericFakeChatModel(
+            messages=iter([AIMessage(content=narration), AIMessage(content=narration)])
+        )
+        graph_obj = build_graph(GraphDeps(llm=llm))
+
+        events = _events_for(graph_obj, "who works in engineering?", monkeypatch=monkeypatch)
+
+        token_events = [e for e in events if e["type"] == "token"]
+        streamed_text = "".join(e["content"] for e in token_events)
+        assert "wasn't able to put together" in streamed_text
+
+        types_in_order = [e["type"] for e in events]
+        # One retry from retry_output (round 1 rejected), one from
+        # retry_exhausted giving up on round 2's identical rejection.
+        assert types_in_order.count("retry") == 2
+        last_retry_idx = len(types_in_order) - 1 - types_in_order[::-1].index("retry")
+        # The give-up "retry" is immediately followed by the honest
+        # fallback as a fresh token event — not silence, and not the
+        # graph just ending with nothing more shown.
+        assert types_in_order[last_retry_idx + 1] == "token"
+        assert "wasn't able to put together" in events[last_retry_idx + 1]["content"]
+
+
+class TestRetryExhaustedTrustsAttributionOnlyFailures:
+    """The other half of _TRUST_CONTENT_RETRY_REASONS (graph.py): a
+    repeatedly-uncited but otherwise CORRECT answer must reach the client
+    exactly as it streamed — no spurious "retry" clearing it out from
+    under an already-good answer, and no synthesized replacement token
+    (retry_exhausted no-ops for this reason; nothing to replace). Real
+    regression, found live (tests/live/test_prompt_injection_via_retrieval.py):
+    a real model answered correctly, twice in a row, just without its
+    citation marker — the first version of the retry_exhausted streaming
+    fix (see the sibling test class above) would have fired "retry"
+    unconditionally here too, discarding that already-correct content
+    with nothing to follow it."""
+
+    def test_no_spurious_retry_when_the_trusted_content_is_shown_as_is(self, monkeypatch):
+        source_text = "Acme Corp support hours are 9am to 5pm on weekdays."
+
+        def fake_search(query, ctx):
+            cited = {
+                "marker": "[1]",
+                "doc_id": "d1",
+                "title": "Support",
+                "text": source_text,
+                "score": 0.9,
+            }
+            return f"[1] {source_text}", [cited]
+
+        # Correct, on-topic, but never adds the [1] marker — the exact
+        # live-observed failure shape.
+        correct_but_uncited = "Acme Corp's support hours are from 9am to 5pm on weekdays."
+        llm = GenericFakeChatModel(
+            messages=iter(
+                [AIMessage(content=correct_but_uncited), AIMessage(content=correct_but_uncited)]
+            )
+        )
+        graph_obj = build_graph(GraphDeps(llm=llm, search_docs=fake_search))
+
+        events = _events_for(graph_obj, "what are the support hours?", monkeypatch=monkeypatch)
+
+        types_in_order = [e["type"] for e in events]
+        # Exactly one retry — round 1's rejection by retry_output. NONE
+        # from retry_exhausted: it no-ops for "uncited," so no second
+        # "retry" event fires (a client only ever clears its draft on an
+        # actual "retry" event — round 2's real content, streamed after
+        # the one retry above, is never cleared or replaced afterward).
+        assert types_in_order.count("retry") == 1
+        retry_idx = types_in_order.index("retry")
+        after = [e["content"] for e in events[retry_idx:] if e["type"] == "token"]
+        streamed_after_retry = "".join(after)
+        # Round 2's real content streamed and was never cleared/replaced
+        # by a second retry — it's the only text after the one real retry.
+        assert streamed_after_retry == correct_but_uncited
+        assert "wasn't able to put together" not in streamed_after_retry
+
+
+class TestCompactedEventSignalsHistoryTrimming:
+    """graph.py's compact_history (GRAPH_PATTERNS.md pattern 41) runs on
+    EVERY turn but only actually trims once history crosses its ceiling —
+    with no signal for that, a client just goes quiet for however long the
+    summarization LLM call takes, indistinguishable from any other slow
+    turn. Fixed by emitting `{"type": "compacted"}` only on a turn that
+    actually trimmed something, so a UI can show a transient status
+    instead (see _run_graph_stream's own docstring)."""
+
+    def test_a_compacting_turn_emits_exactly_one_compacted_event(self, monkeypatch):
+        # Same ceiling/floor derivation tests/agent/test_graph_integration.py's
+        # TestHistorySummarization uses: real turns driven through the
+        # graph (not a hand-poked aupdate_state, which LangGraph rejects
+        # as an ambiguous update with no originating node) via 3 REAL
+        # ainvoke() calls, sized so the 4th (triggering) question — already
+        # appended to state by the time compact_history reads it — is what
+        # pushes estimated non-system history over `ceiling`.
+        pre_questions = [HumanMessage(content=f"question {i}?") for i in range(3)]
+        pre_answers = [
+            AIMessage(content=f"Answer number {i}, long enough to pass the length check.")
+            for i in range(3)
+        ]
+        triggering_question = "question 4?"
+        turns = [m for pair in zip(pre_questions, pre_answers, strict=True) for m in pair]
+        ceiling = _estimate_tokens(turns)
+        floor = _estimate_tokens(turns[2:] + [HumanMessage(content=triggering_question)])
+
+        summary_response = AIMessage(content="a summary of the earlier turns")
+        final_response = AIMessage(content="A normal, freshly generated final answer.")
+        llm = GenericFakeChatModel(
+            messages=iter([*pre_answers, summary_response, final_response])
+        )
+        graph_obj = build_graph(
+            GraphDeps(llm=llm), history_token_ceiling=ceiling, history_token_floor=floor
+        )
+
+        async def fake_init_graph_async():
+            return graph_obj
+
+        monkeypatch.setattr(agent_module, "init_graph_async", fake_init_graph_async)
+        thread_id = str(uuid.uuid4())
+        cfg = {"configurable": {"thread_id": thread_id, "ctx": TEST_CTX}}
+
+        async def _run():
+            for q in pre_questions:
+                await graph_obj.ainvoke({"messages": [q]}, config=cfg)
+            return [
+                event
+                async for event in agent_module.astream_events_turn(
+                    triggering_question, thread_id, TEST_CTX
+                )
+            ]
+
+        events = asyncio.run(_run())
+
+        assert sum(1 for e in events if e["type"] == "compacted") == 1
+
+    def test_a_turn_within_budget_never_emits_a_compacted_event(self, monkeypatch):
+        llm = GenericFakeChatModel(
+            messages=iter([AIMessage(content="A normal, freshly generated answer.")])
+        )
+        graph_obj = build_graph(GraphDeps(llm=llm))
+
+        events = _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
+
+        assert not any(e["type"] == "compacted" for e in events)
 
 
 class TestNormalStreamingIsUnaffected:

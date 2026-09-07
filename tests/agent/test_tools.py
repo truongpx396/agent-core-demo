@@ -208,7 +208,7 @@ class TestSearchDocsCtx:
     def test_applies_tenant_prefilter(self, monkeypatch):
         captured = {}
 
-        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None):
+        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
             captured["tenant_filter"] = tenant_filter
             return []
 
@@ -231,7 +231,7 @@ class TestSearchDocsCtx:
         actually buys."""
         seen_filters = []
 
-        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None):
+        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
             seen_filters.append(tenant_filter)
             return []
 
@@ -253,7 +253,8 @@ class TestSearchDocsCtx:
         captured = {}
 
         def fake_hybrid_search(
-            query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None
+            query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None,
+            min_score=None,
         ):
             captured["tenant_filter"] = tenant_filter
             captured["doc_ids"] = doc_ids
@@ -329,7 +330,7 @@ class TestRecallMemories:
     def test_scopes_to_tenant_and_owner(self, monkeypatch):
         captured = {}
 
-        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None):
+        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
             captured["tenant_filter"] = tenant_filter
             captured["rerank_results"] = rerank_results
             return []
@@ -353,7 +354,7 @@ class TestRecallMemories:
         must produce filters that scope to different owners."""
         seen_filters = []
 
-        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None):
+        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
             seen_filters.append(tenant_filter)
             return []
 
@@ -904,6 +905,68 @@ class TestRunSubagentImpl:
 
         assert "did not produce a final answer" in result
         assert after == before + 1
+
+    def test_giving_up_on_a_stuck_retry_loop_reports_a_clear_message_not_the_rejected_text(self):
+        """Different route than the two tests above: those hit
+        should_continue's OWN tool-loop safety nets (never reaching
+        check_output at all); this one goes through check_output/
+        route_after_check's SEPARATE same-reason-repeat guard
+        (MAX_CONSECUTIVE_SAME_RETRY_REASON) instead — a nested subagent
+        can get stuck in that loop too. `deferred_instead_of_acting` is
+        one of the NOT trust-content reasons (graph.py's
+        _TRUST_CONTENT_RETRY_REASONS — pure narration has no real answer
+        value), so retry_exhausted's `emit_message=False` branch must
+        BLANK the content here, not no-op like no_answer_fallback's own
+        silenced branch does — leaving the repeatedly-REJECTED narration
+        in place would make this impl's own "is the final content
+        non-empty" check wrongly treat it as a genuine completed answer."""
+        narration = "I will use the calculator tool to work that out. Let's proceed with that."
+        fake_llm = _RecordingFakeLLM(
+            AIMessage(content=narration),
+            AIMessage(content=narration),
+        )
+        registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
+
+        result = _run_subagent_impl(
+            "researcher", "is that right?", _subagent_cfg(), registry=registry, llm=fake_llm
+        )
+
+        assert "did not produce a final answer" in result
+        assert narration not in result
+
+    def test_giving_up_on_a_repeatedly_uncited_answer_still_returns_the_real_content(
+        self, monkeypatch
+    ):
+        """The TRUSTED half of the same guard: an answer that's correct
+        but keeps missing its citation marker is an attribution nitpick,
+        not a reason to discard it — retry_exhausted no-ops for
+        "uncited" (see _TRUST_CONTENT_RETRY_REASONS), so the subagent's
+        own outcome check correctly sees real, non-empty content and
+        reports outcome="completed" with the actual answer, not a
+        budget_exceeded apology the parent agent would have to work
+        around for no reason."""
+        from app.agent import graph as graph_module
+
+        source_text = "The sky is blue due to Rayleigh scattering."
+
+        def fake_default_search(query, ctx):
+            return f"[1] {source_text}", [{"marker": "[1]", "text": source_text}]
+
+        monkeypatch.setattr(graph_module, "_default_search", fake_default_search)
+
+        correct_but_uncited = "The sky is blue due to Rayleigh scattering."
+        fake_llm = _RecordingFakeLLM(
+            AIMessage(content=correct_but_uncited),
+            AIMessage(content=correct_but_uncited),
+        )
+        registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
+
+        result = _run_subagent_impl(
+            "researcher", "why is the sky blue?", _subagent_cfg(), registry=registry, llm=fake_llm
+        )
+
+        assert result == correct_but_uncited
+        assert "did not produce a final answer" not in result
 
     def test_timeout_raises_and_is_recorded(self, monkeypatch):
         class _SlowLLM:

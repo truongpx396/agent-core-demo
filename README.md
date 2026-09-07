@@ -226,7 +226,7 @@ GRAPH_PATTERNS.md's ["Extending Further"](GRAPH_PATTERNS.md#extending-further) s
 - **Orchestrated crash-restart / auto-scaling** — `docker-compose --profile app` containerizes workers and shuts them down gracefully, but nothing restarts a *crashed* one or scales replicas on real queue depth; that's a Kubernetes/ECS-shaped concern this app doesn't own an opinion about yet
 - **Real authentication** — `X-Tenant-Id`/`X-Principal-Id` are a trusted-header seam for a gateway to fill in, not authentication themselves; nothing today verifies who's actually behind a request
 - **Per-action authorization within a tenant** — every principal in a tenant currently shares the same write capability; a finer-grained `Policy` reading `ctx["claims"]` would express "this principal may write, that one may only read"
-- **A real multi-domain runtime** — `app/agent/runtime.py`'s `init_graph_sync`/`init_graph_async`/`get_graph` now take an optional `manifest`/`domain` a process can boot its singleton against (see "Example domains" above — `app/channels/telegram.py`'s `AGENT_DOMAIN` uses exactly this), so "which one domain" is a boot-time choice instead of hardcoded to Acme. Still not built: SEVERAL domains served concurrently from one running process (a per-domain graph registry, `_ensure_seeded_async`'s cache keyed by `(domain, thread_id)`, `app/api/main.py` reading which domain a request is for) — every domain above still runs as its own process
+- **A real multi-domain runtime** — `app/agent/runtime.py`'s `init_graph_async` now takes an optional `manifest`/`domain` a process can boot its singleton against (see "Example domains" above — `app/channels/telegram.py`'s `AGENT_DOMAIN` uses exactly this), so "which one domain" is a boot-time choice instead of hardcoded to Acme. Still not built: SEVERAL domains served concurrently from one running process (a per-domain graph registry, `_ensure_seeded_async`'s cache keyed by `(domain, thread_id)`, `app/api/main.py` reading which domain a request is for) — every domain above still runs as its own process
 - **A production-grade vision model** — every small local Ollama vision model tried supports vision OR tool-calling, never both together; the `vision` alias in `litellm-config.yaml` is a ready slot, not a verified default
 - **Image-aware moderation, Telegram/CLI image input** — moderation (pattern 25) only screens the text portion of a multimodal message; only the HTTP API surfaces `images` end-to-end today
 - **A webhook-based Telegram deployment** — long-polling needs no public URL (right for local/demo); a real deployment would switch to `setWebhook`
@@ -418,7 +418,7 @@ actionable `approval_required` SSE event — `POST /chat/resume` accepts the
 approve/reject decision over HTTP, queue-first like every other turn (see
 "MCP"'s neighboring section and GRAPH_PATTERNS.md pattern 43), so a
 browser client (or `curl`) can drive the same approve/reject flow `make
-chat` and `scripts/hitl_demo.py` already could from a terminal.
+chat-hitl` already could from a terminal.
 
 - `GET /usage` → this caller's own tenant usage/cost (`app/agent/meter.py`),
   including the rolling-24h figure checked against
@@ -744,8 +744,8 @@ agent-worker` first, and ideally `make ingest` for real retrieval hits:
 `app/` is organized package-by-feature — each subpackage owns one subsystem,
 with `app/core/` holding the cross-cutting pieces (config, security, logging,
 metrics) that every other subpackage depends on. `scripts/` holds the
-runnable-but-not-imported operator/demo tools (seeding, eval, the HITL demo)
-separately from the library/service code in `app/`.
+runnable-but-not-imported operator/demo tools (seeding, eval) separately
+from the library/service code in `app/`.
 
 | File | Responsibility |
 |------|----------------|
@@ -776,7 +776,7 @@ separately from the library/service code in `app/`.
 | `app/agent/meter.py`         | Real usage/cost ledger (Postgres `usage_ledger` table) — tenant+principal scoped (pattern 26) |
 | `app/agent/tools.py`         | `search_docs` + `calculator` + `query_employees` + `ask_clarification` (read-only) + `add_note` + `remember` (mutating) — each wrapped with a timeout budget, each declaring a capability in `TOOL_CAPABILITIES`; ctx-scoped via `app/core/security.py` |
 | `app/agent/graph.py`         | LangGraph agent (state, edges, memory, safety budgets, mandatory capability gate, checkpoint version stamping, SecurityCtx fail-closed guard, moderation screen, semantic cache short-circuit, citation extraction, follow-up suggestions) |
-| `app/agent/runtime.py`         | Shared runtime (used by both CLI and API); request-level timeout + metrics recording; durable-checkpointer init (`init_graph_sync`/`init_graph_async`) |
+| `app/agent/runtime.py`         | Shared runtime (used by both CLI and API); request-level timeout + metrics recording; durable-checkpointer init (`init_graph_async`) |
 | `app/agent/manifest.py`      | `AgentManifest` (config) + `DomainPlugin` (code) — the multi-domain composition layer `build_graph(manifest=..., domain=...)` reads (pattern 23); `DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN` wrap this app's own Acme setup unchanged |
 | **`app/turns/`** — async chat-turn queue + its worker | |
 | `app/turns/queue.py`   | Redis Streams queue between the SSE-serving process and agent-worker processes (GRAPH_PATTERNS.md pattern 43) |
@@ -804,7 +804,6 @@ separately from the library/service code in `app/`.
 | `scripts/sample_docs.py`   | Sample knowledge base |
 | `scripts/seed.py`        | Seeds the sample docs via `app/ingestion/ingestor.py`'s pipeline |
 | `scripts/eval.py`          | Golden-dataset evaluation harness (`make eval`) |
-| `scripts/hitl_demo.py`     | Runnable HITL pause/resume demo against the shared durable graph (`python -m scripts.hitl_demo "..."`) |
 | `scripts/ops_digest.py`    | Cron-callable ops metrics digest (`make ops-digest`) — a fixed pipeline, not an agent turn (see "Example domains" above) |
 | `scripts/ops_investigate.py` | Ad-hoc ops question via a one-shot ops-domain agent run (`python -m scripts.ops_investigate "..."`) |
 | `scripts/followup_sweep.py` | Cron-callable CRM follow-up sweep, drafting nudges for human review (`make followup-sweep`) |

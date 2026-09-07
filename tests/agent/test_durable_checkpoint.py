@@ -1,5 +1,5 @@
 """Tests for the durable checkpointer machinery in app/agent/runtime.py
-(init_graph_sync/init_graph_async) and app/agent/graph.py's resumability_error.
+(init_graph_async) and app/agent/graph.py's resumability_error_async.
 
 Everything here uses a real AsyncPostgresSaver — no Qdrant/LiteLLM — so it
 stays as close as possible to this suite's "no live services" contract
@@ -40,15 +40,15 @@ import uuid
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.agent import runtime as agent_module
 from app.agent.graph import (
     STATE_SCHEMA_VERSION,
+    SYSTEM_PROMPT,
     GraphDeps,
     build_graph,
-    resumability_error,
     resumability_error_async,
 )
 from app.core import metrics
@@ -89,48 +89,6 @@ def _fake_llm():
     )
 
 
-class TestInitGraphSync:
-    def test_builds_a_working_graph(self):
-        agent_module.init_graph_sync()
-        graph = agent_module.get_graph()
-        # The singleton graph binds the real ChatOpenAI client — just prove
-        # it's a real compiled graph with a durable (non-Memory) checkpointer
-        # wired in, rather than driving a live LLM call here.
-        from langgraph.checkpoint.memory import MemorySaver
-
-        assert not isinstance(graph.checkpointer, MemorySaver)
-
-    def test_second_call_is_a_noop_reusing_the_singleton(self):
-        agent_module.init_graph_sync()
-        first = agent_module.get_graph()
-        agent_module.init_graph_sync()
-        assert agent_module.get_graph() is first
-
-    def test_get_graph_falls_back_to_sync_init(self):
-        assert agent_module._graph is None
-        graph = agent_module.get_graph()
-        assert graph is not None
-        assert agent_module._graph is graph
-
-    def test_checkpointer_open_failure_propagates_and_leaves_singleton_unset(
-        self, monkeypatch
-    ):
-        """Regression test: the background thread must not fall through to
-        loop.run_forever() on a failed checkpointer open — that would leave
-        an orphaned thread running forever for a loop nothing will ever use
-        (a real bug caught while writing this)."""
-
-        async def failing_open():
-            raise RuntimeError("disk full")
-
-        monkeypatch.setattr(agent_module, "_open_checkpointer", failing_open)
-
-        with pytest.raises(RuntimeError, match="disk full"):
-            agent_module.init_graph_sync()
-
-        assert agent_module._graph is None
-
-
 class TestInitGraphAsync:
     def test_builds_a_working_graph(self):
         async def _check():
@@ -156,8 +114,8 @@ class TestDurabilityAcrossRestart:
     separate instance pointed at the same database — simulating a process
     restart without actually restarting a process.
 
-    Deliberately bypasses app.agent.runtime's singleton/threading machinery (that's
-    what TestInitGraphSync/TestInitGraphAsync above already prove works) and
+    Deliberately bypasses app.agent.runtime's singleton machinery (that's
+    what TestInitGraphAsync above already proves works) and
     talks to build_graph()+AsyncPostgresSaver directly with a fake LLM, each
     "instance" on its own short-lived asyncio.run() loop with its own fresh
     connection — the cleanest way to actually simulate two separate
@@ -239,6 +197,51 @@ class TestAsyncSeeding:
 
         assert not any(e["type"] == "error" for e in events)
         assert events[-1]["type"] == "done"
+
+    def test_seeding_is_idempotent_even_when_seen_by_a_different_process(self):
+        """Real bug, found live via Langfuse: a long-running thread's
+        `agent` generation showed the ~800-token system prompt TWICE.
+        Root cause: `_seeded` (app/agent/runtime.py) is a plain
+        in-process `set()` — a fast-path cache, not the source of truth.
+        It forgets everything on a worker restart, and — since
+        app/turns/agent_worker.py's own docstring says to run SEVERAL
+        `agent-worker` processes for scaling, with Redis Streams
+        distributing turns round-robin across them — a thread's turns
+        can just as easily land on a DIFFERENT process that's never seen
+        this thread_id before. Either way, `_ensure_seeded_async` used to
+        trust `_seeded` alone and append a second copy of the prompt.
+
+        Simulated here the same way TestDurabilityAcrossRestart above
+        does: two separate asyncio.run() calls, each its own
+        AsyncPostgresSaver connection — `_seeded` is a real module-level
+        global that would otherwise leak across both calls within this
+        one Python process, so it's explicitly cleared between them to
+        stand in for "a different process that's never seeded this
+        thread before"."""
+        thread_id = str(uuid.uuid4())
+        checkpointer_url = ensure_postgres()["checkpointer_database_url"]
+
+        async def _seed_once():
+            async with AsyncPostgresSaver.from_conn_string(checkpointer_url) as saver:
+                await saver.setup()
+                graph = build_graph(GraphDeps(llm=_fake_llm()), checkpointer=saver)
+                await agent_module._ensure_seeded_async(graph, thread_id)
+
+        asyncio.run(_seed_once())
+        agent_module._seeded.discard(thread_id)
+        asyncio.run(_seed_once())
+
+        async def _read():
+            async with AsyncPostgresSaver.from_conn_string(checkpointer_url) as saver:
+                graph = build_graph(GraphDeps(llm=_fake_llm()), checkpointer=saver)
+                state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+                return state.values.get("messages", [])
+
+        messages = asyncio.run(_read())
+        prompt_copies = [
+            m for m in messages if isinstance(m, SystemMessage) and m.content == SYSTEM_PROMPT
+        ]
+        assert len(prompt_copies) == 1
 
     def test_astream_events_resume_checks_resumability_without_raising(
         self, monkeypatch
@@ -411,10 +414,10 @@ class TestAsyncSeeding:
 
 
 class TestResumabilityError:
-    def _paused_graph_and_config(self, monkeypatch):
+    async def _paused_graph_and_config(self):
         """A graph paused at human_approval (require_approval=True, a
         tool call pending) — the real "waiting for a human" state
-        resumability_error is meant to guard."""
+        resumability_error_async is meant to guard."""
         from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
         from langchain_core.messages import AIMessage
 
@@ -436,19 +439,22 @@ class TestResumabilityError:
         )
         graph = build_graph(GraphDeps(llm=llm))
         config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
-        graph.invoke(
+        await graph.ainvoke(
             {"messages": [HumanMessage(content="hi")], "require_approval": True},
             config=config,
         )
         return graph, config
 
     def test_no_paused_run_is_checkpoint_lost(self):
-        graph = build_graph(GraphDeps(llm=_fake_llm()))
-        config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+        async def _run():
+            graph = build_graph(GraphDeps(llm=_fake_llm()))
+            config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+            # Never invoked — nothing paused, nothing exists for this thread.
+            return await resumability_error_async(graph, config)
+
         before = _count(metrics.agent_checkpoint_issue_total, reason="checkpoint_lost")
 
-        # Never invoked — nothing paused, nothing exists for this thread.
-        error = resumability_error(graph, config)
+        error = asyncio.run(_run())
 
         assert error is not None
         assert "checkpoint_lost" in error
@@ -457,18 +463,30 @@ class TestResumabilityError:
             == before + 1
         )
 
-    def test_matching_schema_version_is_resumable(self, monkeypatch):
-        graph, config = self._paused_graph_and_config(monkeypatch)
-        assert resumability_error(graph, config) is None
+    def test_matching_schema_version_is_resumable(self):
+        async def _run():
+            graph, config = await self._paused_graph_and_config()
+            return await resumability_error_async(graph, config)
+
+        assert asyncio.run(_run()) is None
 
     def test_mismatched_schema_version_is_checkpoint_incompatible(self, monkeypatch):
-        graph, config = self._paused_graph_and_config(monkeypatch)
-        monkeypatch.setattr("app.agent.graph.STATE_SCHEMA_VERSION", STATE_SCHEMA_VERSION + 1)
+        async def _run():
+            # Pause FIRST (stamping the real, current STATE_SCHEMA_VERSION
+            # into the checkpoint), THEN bump the constant — simulating a
+            # NEW build's code checking an OLD build's paused checkpoint,
+            # not the other way around.
+            graph, config = await self._paused_graph_and_config()
+            monkeypatch.setattr(
+                "app.agent.graph.STATE_SCHEMA_VERSION", STATE_SCHEMA_VERSION + 1
+            )
+            return await resumability_error_async(graph, config)
+
         before = _count(
             metrics.agent_checkpoint_issue_total, reason="checkpoint_incompatible"
         )
 
-        error = resumability_error(graph, config)
+        error = asyncio.run(_run())
 
         assert error is not None
         assert "checkpoint_incompatible" in error
@@ -479,14 +497,21 @@ class TestResumabilityError:
             == before + 1
         )
 
-    def test_differing_graph_version_alone_is_not_an_error(self, monkeypatch):
+    def test_differing_graph_version_alone_is_not_an_error(self):
         """graph_version (build SHA) is recorded but never compared — only
-        state_schema_version gates resumability (see resumability_error's
-        docstring: ordinary deploys change the SHA constantly)."""
-        graph, config = self._paused_graph_and_config(monkeypatch)
-        state = graph.get_state(config)
+        state_schema_version gates resumability (see
+        resumability_error_async's docstring: ordinary deploys change the
+        SHA constantly)."""
+
+        async def _run():
+            graph, config = await self._paused_graph_and_config()
+            state = await graph.aget_state(config)
+            error = await resumability_error_async(graph, config)
+            return state, error
+
+        state, error = asyncio.run(_run())
         assert state.values.get("graph_version")  # was stamped
-        assert resumability_error(graph, config) is None
+        assert error is None
 
 
 class TestResumabilityErrorRejectsAnActivelyRunningThread:
@@ -495,7 +520,7 @@ class TestResumabilityErrorRejectsAnActivelyRunningThread:
     `state.next` alone is truthy for ANY checkpoint written mid-run,
     between two ordinary supersteps of a turn that's simply still
     executing — not just for a turn genuinely suspended at
-    human_approval's interrupt(). Before this fix, `resumability_error`
+    human_approval's interrupt(). Before this fix, `resumability_error_async`
     only checked `state.next`, so a `POST /chat/cancel`/`/chat/resume`
     that raced an ACTIVELY STREAMING (not yet paused) turn for the same
     thread_id would sail through as "safe to resume" and then start a

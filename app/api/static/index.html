@@ -214,6 +214,13 @@
 
   .answer-text { display: block; }
   .answer-text.muted-restatement { font-size: .8rem; opacity: .65; margin-top: .5rem; }
+  /* An in-progress, not-yet-confirmed answer — streams live here, never
+     in .answer-text itself, so a retry only ever resets THIS, and the
+     real answer bubble is written to exactly once, when text is final
+     (see send()'s draft/promote split). Visually secondary (smaller,
+     dimmer, italic) so replacing it never reads as "the answer vanished." */
+  .draft-text { font-style: italic; opacity: .6; }
+  .draft-text:empty { display: none; }
   .answer-text p { margin: 0 0 .6em; }
   .answer-text p:last-child { margin-bottom: 0; }
   .answer-text ul, .answer-text ol { margin: .3em 0 .6em; padding-left: 1.3em; }
@@ -450,11 +457,11 @@
 <script>
 // Everything this page does talks ONLY to app/api.py's published endpoints
 // (POST /chat/stream/queued) and renders ONLY the documented SSE event vocabulary
-// (token, tool_start, tool_end, citations, followups, approval_required,
-// error, done) — see GRAPH_PATTERNS.md's AR-033-style "no special-case
-// endpoints" note. EventSource can't send custom headers or do POST, so
-// this uses fetch()'s streaming response body directly and parses SSE
-// framing by hand.
+// (token, retry, compacted, tool_start, tool_end, citations, followups,
+// approval_required, error, done) — see GRAPH_PATTERNS.md's AR-033-style
+// "no special-case endpoints" note. EventSource can't send custom headers
+// or do POST, so this uses fetch()'s streaming response body directly and
+// parses SSE framing by hand.
 
 // Light/dark theme toggle — purely a `data-theme` attribute on <html>,
 // which the CSS custom-property blocks in <style> key off of (see their
@@ -883,11 +890,17 @@ function renderMarkdown(raw) {
 }
 
 // The assistant bubble is a container, not a plain text node: a live
-// .status line, a permanent .tool-activity log, and the .answer-text
-// span are three SEPARATE elements in a fixed visual order (status, then
-// activity, then answer) — so tool calls always render in the right
-// place regardless of arrival order, and citations/followups (appended
-// after .answer-text later) can never accidentally clobber a sibling.
+// .status line, a permanent .tool-activity log, a .draft-text span, and
+// the .answer-text span are four SEPARATE elements in a fixed visual
+// order (status, then activity, then draft, then answer) — so tool calls
+// always render in the right place regardless of arrival order, and
+// citations/followups (appended after .answer-text later) can never
+// accidentally clobber a sibling. .draft-text exists so an in-progress,
+// not-yet-confirmed answer can stream live (see send()'s own draft/
+// promote split) without ever writing to .answer-text until the text is
+// final — the same "stream it somewhere real, but keep it visually
+// separate from the committed answer" shape most LLM chat UIs already
+// use for thinking/intermediate output.
 function addAssistantMessage() {
   const div = document.createElement("div");
   div.className = "msg assistant";
@@ -901,13 +914,17 @@ function addAssistantMessage() {
   activityEl.className = "tool-activity";
   div.appendChild(activityEl);
 
+  const draftEl = document.createElement("span");
+  draftEl.className = "answer-text draft-text";
+  div.appendChild(draftEl);
+
   const textSpan = document.createElement("span");
   textSpan.className = "answer-text";
   div.appendChild(textSpan);
 
   messagesEl.appendChild(div);
   messagesEl.scrollTop = messagesEl.scrollHeight;
-  return { el: div, textEl: textSpan, statusEl, activityEl };
+  return { el: div, textEl: textSpan, draftEl, statusEl, activityEl };
 }
 
 function setStatus(statusEl, text) {
@@ -1087,25 +1104,52 @@ async function send(text, image) {
   stopBtn.hidden = false;
   sessionSelect.disabled = true;
 
-  const { el: assistantEl, textEl: assistantTextEl, statusEl, activityEl } = addAssistantMessage();
+  const { el: assistantEl, textEl: assistantTextEl, draftEl, statusEl, activityEl } = addAssistantMessage();
+  // `assistantText` is the CONFIRMED final answer — assistantTextEl is
+  // written to exactly once, by promote() below, never incrementally.
+  // `draftText` is whatever the CURRENT, not-yet-confirmed attempt has
+  // streamed so far, rendered live into the separate draftEl instead —
+  // real streaming stays intact (a retry doesn't mean losing visible
+  // progress entirely), but a retry only ever resets THIS, never
+  // something already shown as the real answer. Same "stream it
+  // somewhere real, keep it visually separate from the committed
+  // answer" shape most LLM chat UIs already use for thinking/
+  // intermediate output — see addAssistantMessage's own docstring.
   let assistantText = "";
+  let draftText = "";
 
-  // Re-parsing + re-rendering markdown on every single token would be
-  // wasteful over a long streamed answer (worse than plain textContent
-  // reassignment) — throttled to one render per ~50ms of token activity,
-  // with one guaranteed final render once each stream ends so the last
-  // few tokens are never left unflushed.
-  let renderPending = false;
-  function scheduleRender() {
-    if (renderPending) return;
-    renderPending = true;
-    setTimeout(() => {
-      renderPending = false;
-      assistantTextEl.innerHTML = renderMarkdown(assistantText);
+  // Same per-~50ms throttling rationale as the answer's own final render
+  // — re-parsing markdown on every single token would be wasteful over a
+  // long streamed draft. Stores the timer HANDLE, not just a pending
+  // flag: a real bug, caught live (a cache-hit turn sends its whole
+  // cached answer as one "token" event immediately followed by
+  // "citations", with near-zero delay between them) — promote() clearing
+  // draftEl synchronously does nothing to stop an ALREADY-QUEUED render
+  // from firing a moment later and writing the stale draftText right
+  // back into the now-supposedly-empty draft area, duplicating the
+  // answer underneath the real one. Both clearDraftRenderTimer() call
+  // sites below (promote, "retry") exist to prevent exactly that.
+  let draftRenderTimer = null;
+  function scheduleDraftRender() {
+    if (draftRenderTimer) return;
+    draftRenderTimer = setTimeout(() => {
+      draftRenderTimer = null;
+      draftEl.textContent = draftText;
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }, 50);
   }
-  function finalRender() {
+  function clearDraftRenderTimer() {
+    if (draftRenderTimer) {
+      clearTimeout(draftRenderTimer);
+      draftRenderTimer = null;
+    }
+  }
+
+  function promote() {
+    if (assistantText) return; // already promoted this turn
+    clearDraftRenderTimer();
+    assistantText = draftText;
+    draftEl.textContent = "";
     if (assistantText) assistantTextEl.innerHTML = renderMarkdown(assistantText);
   }
 
@@ -1117,20 +1161,31 @@ async function send(text, image) {
   function handleEvent(event) {
     if (event.type === "token") {
       setStatus(statusEl, null);
-      assistantText += event.content;
-      scheduleRender();
+      draftText += event.content;
+      scheduleDraftRender();
     } else if (event.type === "retry") {
-      // The graph rejected the last answer (too short, or citing without
+      // The graph rejected the draft (too short, or citing without
       // attribution — graph.py's check_output/retry_output) and is
-      // looping back for a fresh attempt. Every token appended above
-      // belongs to that rejected answer, so it must be cleared before the
-      // next round's tokens arrive — otherwise the rejected and retried
-      // answers render concatenated with no indication a retry happened
-      // (a real bug, caught live: an uncited answer got retried, and both
-      // answers showed up run together as one continuous response).
-      assistantText = "";
-      assistantTextEl.innerHTML = "";
+      // looping back for a fresh attempt. Only the DRAFT area is reset —
+      // nothing has been promoted into the real answer bubble yet, so
+      // there's nothing there to visually undo. Cancels any pending
+      // throttled render too — same stale-timer race scheduleDraftRender's
+      // own docstring describes for promote(), just landing here instead:
+      // without this, an already-queued render for the REJECTED draft
+      // could fire after this reset and repopulate the draft area with
+      // text from the attempt that just got thrown away.
+      draftText = "";
+      draftEl.textContent = "";
+      clearDraftRenderTimer();
       setStatus(statusEl, "Revising answer");
+    } else if (event.type === "compacted") {
+      // graph.py's compact_history just trimmed older turns out of active
+      // context — purely informational (nothing streamed yet this turn to
+      // undo, unlike "retry"). The very next event is whatever the turn
+      // does next (a tool_start/token will overwrite this status almost
+      // immediately), so this is a best-effort "why did that pause happen"
+      // signal, not something that needs to linger.
+      setStatus(statusEl, "Summarizing older messages");
     } else if (event.type === "tool_start") {
       setStatus(statusEl, `Using ${event.tool}`);
       addToolActivityLine(activityEl, event.tool, event.args);
@@ -1142,10 +1197,13 @@ async function send(text, image) {
       markToolActivityDone(activityEl, event.tool);
       setStatus(statusEl, "Thinking");
     } else if (event.type === "citations") {
+      promote(); // the answer must be committed before citation chips are appended below it
       renderCitations(assistantEl, event.items);
     } else if (event.type === "followups") {
+      promote();
       renderFollowups(assistantEl, event.items);
     } else if (event.type === "approval_required") {
+      promote();
       setStatus(statusEl, null);
       if (activeTurn) activeTurn.phase = "paused";
       renderApprovalButtons(assistantEl, assistantTextEl, event.tool_calls, (approved) => {
@@ -1157,17 +1215,18 @@ async function send(text, image) {
     } else if (event.type === "error") {
       setStatus(statusEl, null);
       assistantTextEl.classList.remove("muted-restatement");
+      draftEl.textContent = "";
       if (event.code === "cancelled") {
         // A deliberate stop, not a failure — rendered as a quiet status
         // line, not an alarming error message (the user already knows
         // they clicked Stop).
-        assistantTextEl.textContent = assistantText || "Stopped.";
+        assistantTextEl.textContent = assistantText || draftText || "Stopped.";
       } else {
-        assistantTextEl.textContent = assistantText || `[error: ${event.content}]`;
+        assistantTextEl.textContent = assistantText || draftText || `[error: ${event.content}]`;
       }
       finishTurn();
     } else if (event.type === "done") {
-      finalRender();
+      promote();
       finishTurn();
     }
     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -1191,7 +1250,7 @@ async function send(text, image) {
       // pumpSSE returning without handleEvent having seen "done"/"error"
       // (e.g. the connection just closed) still needs the UI unstuck.
       if (activeTurn) {
-        finalRender();
+        promote();
         finishTurn();
       }
     } catch (err) {
@@ -1217,12 +1276,12 @@ async function send(text, image) {
     // approval_required, activeTurn.phase is now "paused" and MUST stay
     // active (not finished here); only tidy up if nothing is pending.
     if (activeTurn && activeTurn.phase !== "paused") {
-      finalRender();
+      promote();
       finishTurn();
     }
   } catch (err) {
     setStatus(statusEl, null);
-    assistantTextEl.textContent = assistantText || `[error: ${err}]`;
+    assistantTextEl.textContent = assistantText || draftText || `[error: ${err}]`;
     finishTurn();
   }
 }
@@ -1290,6 +1349,7 @@ async function switchToSession(newThreadId) {
     const transcript = await response.json();
     for (const m of transcript) {
       if (m.role === "user") addMessage("user", m.text);
+      else if (m.role === "system") addMessage("system", m.text);
       else addStaticAssistantMessage(m.text);
     }
     messagesEl.scrollTop = messagesEl.scrollHeight;

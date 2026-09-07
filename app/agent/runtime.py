@@ -9,7 +9,7 @@ interactive human on the other end (the CLI, `app/turns/agent_worker.py`'s
 approval prompt (`app/channels/telegram.py`). Keeping this in one place means
 memory and tracing behave identically no matter which front-end is used.
 
-## Durable checkpointing (init_graph_sync / init_graph_async)
+## Durable checkpointing (init_graph_async)
 
 The graph is built with an `AsyncPostgresSaver` (survives a process
 restart, and — unlike a single SQLite file — is safe under concurrent
@@ -23,47 +23,32 @@ more independently-scaled `app/turns/agent_worker.py` processes, all attaching
 to the same `thread_id`s) — a single SQLite file's writer-locking is
 fragile under that; Postgres is built for it.
 
-Why two init functions instead of one: `AsyncPostgresSaver`'s async
-lock/state is bound to whichever asyncio event loop it was created on.
-Its SYNC methods (used by `graph.invoke`/`graph.stream`, i.e.
-scripts/hitl_demo.py) work correctly when called from any *other*
-thread than that loop — that's the documented, supported cross-thread
-path. Its ASYNC methods (used by `graph.ainvoke`/`graph.astream_events`,
-i.e. astream_events_turn/_resume) do NOT: calling them from a different
-loop than the one they were created on raises "bound to a different event
-loop" (asyncio locks are loop-bound, verified empirically before writing
-this, originally against AsyncSqliteSaver — the same driver-level
-constraint holds for AsyncPostgresSaver). So which loop the checkpointer
-is opened on matters:
+`AsyncPostgresSaver`'s async lock/state is bound to whichever asyncio
+event loop it was *created* on — its async methods (`graph.ainvoke`/
+`graph.astream_events`, i.e. astream_events_turn/_resume, the only way
+this app ever drives the graph now) raise "bound to a different event
+loop" if awaited from a different loop than the one that created it
+(asyncio locks are loop-bound, verified empirically before writing this,
+originally against AsyncSqliteSaver — the same driver-level constraint
+holds for AsyncPostgresSaver). `init_graph_async()` opens the
+checkpointer directly on the CALLING (current) loop, so every process
+that drives the graph (FastAPI's lifespan, on uvicorn's own loop; the
+CLI, inside `asyncio.run()`; app/turns/agent_worker.py;
+app/channels/telegram.py) must await it on that SAME loop before making
+any graph call — never from a background thread or a different loop.
 
-- `init_graph_async()` — for a process with an asyncio loop it keeps
-  alive for its whole lifetime (FastAPI's lifespan, running on uvicorn's
-  loop; the CLI, running inside `asyncio.run()`; app/turns/agent_worker.py;
-  app/channels/telegram.py). Opens the checkpointer directly on the
-  CALLING (current) loop, so every async graph call in that process runs
-  natively on the same loop the checkpointer is bound to.
-- `init_graph_sync()` — for a process with NO event loop of its own
-  (scripts/hitl_demo.py, the one remaining caller driving the graph via
-  plain sync `graph.invoke`/`graph.stream`, through `get_graph()`'s
-  fallback below). Spins up one small background thread hosting a
-  persistent event loop purely to give the checkpointer somewhere to
-  live; sync graph calls reach it from any other thread exactly as
-  above. This process path never calls the async graph methods, so the
-  background loop only ever needs to service sync-dispatched calls — the
-  constraint above never bites.
-
-`get_graph()` falls back to `init_graph_sync()` if nothing has initialized
-the singleton yet, so it stays a safe drop-in for any purely-sync caller.
-An async entry point (astream_events_turn/_resume) MUST have had
-`init_graph_async()` awaited first by its own process's startup path (see
-app/api/main.py's lifespan, app/channels/chat.py's async_main) — calling it after a sync
-path already initialized the singleton would try to reuse a
-background-thread-bound checkpointer from a different loop and hit the
-same "bound to a different event loop" failure this design exists to avoid.
+A sync-checkpointer-access path (`init_graph_sync()`/`get_graph()`, a
+background thread hosting a persistent loop purely so `graph.invoke()`
+could be called synchronously) existed here for one caller —
+`scripts/hitl_demo.py`, a standalone demo of LangGraph's HITL
+`interrupt()` pattern — and was removed once that script was, since
+`make chat-hitl` (app/channels/chat.py, fully async) already demonstrates
+the identical approve/reject pause/resume cycle through this app's real,
+production streaming path. Nothing else ever called the sync graph
+methods.
 """
 import asyncio
 import logging
-import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -77,6 +62,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from app.agent.graph import (
     CANCEL_SENTINEL,
+    COMPACTION_MARKER_KEY,
     MAX_ITERATIONS,
     build_graph,
     resumability_error_async,
@@ -242,7 +228,7 @@ def _upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> None:
     docstring) — this can't fail the turn.
 
     `_domain_name` is THIS PROCESS's own domain (set once, in
-    init_graph_async/init_graph_sync, alongside `_graph` itself) — correct
+    init_graph_async, alongside `_graph` itself) — correct
     regardless of which caller reached here through astream_events_turn: the
     CLI (app/channels/chat.py) and app/channels/telegram.py both stay bound to
     whichever domain their own process booted against, while a queued
@@ -377,13 +363,12 @@ async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "Dom
     persistent event loop (FastAPI's lifespan; the CLI's --stream mode) —
     see this module's docstring. Returns the graph. A no-op if the
     singleton already exists — both astream_events_turn/_resume call this
-    directly (not get_graph()) precisely so the checkpointer ends up bound
-    to whichever loop is *actually* driving them, self-healing even if a
-    process's startup path forgot to prime it via lifespan; when startup
-    DID prime it already, this is just a cheap existence check (`manifest`/
-    `domain` are then ignored — the singleton, once built, doesn't change
-    domain mid-process; see `manifest`/`domain`'s note on init_graph_sync
-    below).
+    directly precisely so the checkpointer ends up bound to whichever loop
+    is *actually* driving them, self-healing even if a process's startup
+    path forgot to prime it via lifespan; when startup DID prime it
+    already, this is just a cheap existence check (`manifest`/`domain` are
+    then ignored — the singleton, once built, doesn't change domain
+    mid-process).
 
     `manifest`/`domain` (GRAPH_PATTERNS.md pattern 23, app/agent/manifest.py)
     are threaded straight into `build_graph()`, which already accepts
@@ -408,67 +393,6 @@ async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "Dom
     return _graph
 
 
-def init_graph_sync(manifest: "AgentManifest | None" = None, domain: "DomainPlugin | None" = None) -> None:
-    """Initialize the shared graph for a process with no event loop of its
-    own (the CLI's plain mode; scripts/hitl_demo.py; app/channels/telegram.py) —
-    see this module's docstring. Starts one small daemon thread hosting a
-    persistent loop purely so AsyncPostgresSaver has somewhere to live;
-    that thread is never explicitly stopped (a daemon thread dies with the
-    process, and Postgres's own WAL makes an abrupt disconnect safe — same
-    as a real deployment being SIGKILLed).
-
-    `manifest`/`domain` — see init_graph_async's docstring above; same
-    "None means build_graph()'s own Acme default, ignored once the
-    singleton already exists" contract.
-    """
-    global _graph, _domain_name
-    if _graph is not None:
-        return
-    _domain_name = _resolve_domain_name(manifest)
-
-    ready = threading.Event()
-    holder: dict = {}
-
-    def _run_loop():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            holder["saver"] = loop.run_until_complete(_open_checkpointer())
-        except Exception as exc:  # noqa: BLE001 - surfaced to the waiting caller below
-            holder["error"] = exc
-            ready.set()
-            return  # nothing will ever use this loop — don't run it forever
-        ready.set()
-        loop.run_forever()
-
-    threading.Thread(
-        target=_run_loop, daemon=True, name="checkpointer-loop"
-    ).start()
-    if not ready.wait(timeout=10):
-        raise TimeoutError("Timed out starting the checkpointer's background loop")
-    if "error" in holder:
-        raise holder["error"]
-
-    _graph = build_graph(checkpointer=holder["saver"], manifest=manifest, domain=domain)
-
-
-def get_graph(manifest: "AgentManifest | None" = None, domain: "DomainPlugin | None" = None):
-    """Return the shared graph, initializing it via init_graph_sync() if no
-    entry point has primed it yet — a safe drop-in for any purely-sync
-    caller. An async entry point must call `await init_graph_async()`
-    itself first (see this module's docstring for why the order matters).
-
-    `manifest`/`domain` are only consulted on the FIRST call that actually
-    builds the singleton (init_graph_sync's own `if _graph is not None:
-    return` guard) — passing them here after some other call site already
-    primed the singleton for a different domain has no effect, same as
-    calling init_graph_sync/init_graph_async twice never rebuilds it.
-    """
-    if _graph is None:
-        init_graph_sync(manifest=manifest, domain=domain)
-    return _graph
-
-
 async def _ensure_seeded_async(graph, thread_id: str) -> None:
     """Seed a new conversation thread with the system prompt exactly once.
     ASYNC only — `astream_events_turn`/`astream_events_turn_ctx` run
@@ -490,16 +414,42 @@ async def _ensure_seeded_async(graph, thread_id: str) -> None:
     graph build_graph() returns always carries a `.manifest`, defaulting
     to the Acme domain, so `graph.manifest.system_prompt` and the
     top-level `SYSTEM_PROMPT` import are identical for every caller in
-    this app today (get_graph()/init_graph_sync/init_graph_async never
-    pass a non-default manifest); this only starts to matter the day some
-    caller does.
+    this app today (init_graph_async never passes a non-default
+    manifest); this only starts to matter the day some caller does.
+
+    `_seeded` is only a same-process FAST PATH, never the source of
+    truth — real bug, found live via Langfuse: a thread's `agent`
+    generation showed the ~800-token system prompt TWICE. `_seeded` is a
+    plain in-process `set()`, so it forgets everything on a worker
+    restart, and — since `app/turns/agent_worker.py`'s own docstring
+    says to run SEVERAL `agent-worker` processes for scaling, with Redis
+    Streams distributing turns across them round-robin — a thread's
+    later turns can just as easily land on a DIFFERENT process that
+    never saw this thread_id before. Either way, the next process thinks
+    a long-running thread is brand new and appends a second copy of the
+    prompt via `aupdate_state`. That duplicate is permanent, not a
+    one-time cost: `_messages_to_trim` (graph.py) excludes every
+    SystemMessage from both its token budget AND its removal candidates,
+    so nothing ever cleans it up — every later turn on that thread pays
+    the extra ~800 tokens forever, directly eating into
+    MAX_TOKENS_PER_TURN. Fixed by checking the thread's actual persisted
+    state (the real source of truth) before seeding, and only trusting
+    `_seeded` to skip that check on a thread this SAME process already
+    confirmed — costs one extra `aget_state` per thread per process, not
+    per turn.
     """
     if thread_id in _seeded:
         return
-    await graph.aupdate_state(
-        {"configurable": {"thread_id": thread_id}},
-        {"messages": [SystemMessage(content=graph.manifest.system_prompt)]},
+    cfg = {"configurable": {"thread_id": thread_id}}
+    state = await graph.aget_state(cfg)
+    already_seeded = any(
+        isinstance(m, SystemMessage) and m.content == graph.manifest.system_prompt
+        for m in state.values.get("messages", [])
     )
+    if not already_seeded:
+        await graph.aupdate_state(
+            cfg, {"messages": [SystemMessage(content=graph.manifest.system_prompt)]}
+        )
     _seeded.add(thread_id)
 
 
@@ -584,7 +534,41 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
         answer got retried, and the client showed both answers run
         together as one). Fired from `on_chain_end` of the `retry_output`
         node itself, which also resets `final_answer` here so Langfuse's
-        own `output` field doesn't show the same concatenation.
+        own `output` field doesn't show the same concatenation. ALSO fired
+        from `on_chain_end` of `retry_exhausted` (route_after_check giving
+        up on a stuck retry loop, see MAX_CONSECUTIVE_SAME_RETRY_REASON) —
+        but ONLY when that node actually replaced the last message rather
+        than trusting it (graph.py's _TRUST_CONTENT_RETRY_REASONS — some
+        rejection reasons, like a real answer just missing its citation
+        marker, are attribution nitpicks the content stays trustworthy
+        despite, and retry_exhausted no-ops for those, leaving the
+        already-correctly-streamed content as the real final answer with
+        no "retry" needed at all). When it DOES replace: unlike a normal
+        retry_output round, there's no next `agent` call coming to supply
+        fresh tokens, so this case ALSO synthesizes one "token" event
+        carrying retry_exhausted's own replacement text right after the
+        "retry" event — two real bugs, caught live in immediate
+        succession: first, without that synthesis, a rejected answer's
+        own tokens (already streamed before the graph decided to replace
+        them — e.g. a leaked system prompt) reached the client with no
+        correction ever following, while the checkpointed state correctly
+        held the honest fallback; second, firing "retry" UNCONDITIONALLY
+        (the first fix's own initial shape) would have told the client to
+        discard a TRUSTED, already-correct answer too, with no
+        replacement message to follow it — a blank draft despite a
+        perfectly good checkpointed answer.
+      {"type": "compacted"} — NOT terminal: graph.py's compact_history
+        (GRAPH_PATTERNS.md pattern 41) just trimmed older turns out of
+        active context (folding them into state["history_summary"] and
+        leaving a permanent breadcrumb message behind — see
+        _compaction_marker_message). Purely informational for a client
+        (nothing to clear, unlike "retry" — this fires before `agent`'s
+        own call even starts, so no tokens have streamed yet this turn) —
+        lets a UI show a transient "summarizing older messages" status
+        instead of the turn just going quiet for however long that LLM
+        call takes. Fired from `on_chain_end` of the `compact_history`
+        node, but ONLY when it actually trimmed something — that node
+        runs on every single turn, and returns `{}` on most of them.
       {"type": "citations", "items": [...]} — emitted right before "done",
         only when the answer actually cited something; the same
         state["used_citations"] shape graph.py's check_output computes.
@@ -667,6 +651,74 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 final_answer.clear()
                 yield {"type": "retry"}
 
+            elif kind == "on_chain_end" and event["name"] == "retry_exhausted":
+                # graph.py's route_after_check gave up on a stuck
+                # retry_output loop (MAX_CONSECUTIVE_SAME_RETRY_REASON) —
+                # retry_exhausted is TERMINAL (no next agent round coming,
+                # unlike retry_output above) and, critically,
+                # UNCONDITIONALLY replaces the last message rather than
+                # trusting it (see that node's own docstring on why —
+                # it's specifically content check_output already judged
+                # bad on repeat, e.g. a leaked system prompt).
+                #
+                # Real bug, caught immediately after shipping
+                # leaks_system_prompt detection: the REJECTED content
+                # still streamed live via on_chat_model_stream same as any
+                # normal answer (nothing about being "about to be
+                # replaced" stops the model's own tokens from reaching the
+                # client as they're generated) — so by the time this event
+                # fires, `final_answer` already holds that full rejected
+                # text, which means the "no on_chat_model_stream fired"
+                # fallback further below (guarded on `final_answer` being
+                # EMPTY) never triggers, and retry_exhausted's own
+                # corrected replacement message silently never reached the
+                # client at all. Observed live: a system-prompt leak
+                # streamed to the user in full, TWICE (once per retry
+                # round), with no correction ever shown, while the
+                # CHECKPOINTED state correctly held the honest fallback —
+                # the exact content this whole mechanism exists to keep
+                # off the wire. Fixed the same way retry_output's own
+                # "retry" event already tells the client to discard
+                # what's rendered so far, plus synthesizing a fresh
+                # "token" event for the REAL replacement text here, since
+                # (unlike retry_output) there's no next agent round that
+                # would otherwise supply it.
+                #
+                # ONLY when the node actually replaced something, though:
+                # retry_exhausted (graph.py) no-ops (`{}`) for
+                # too_short/uncited — reasons it TRUSTS the repeatedly-
+                # rejected content and leaves it as the real final answer
+                # (see _TRUST_CONTENT_RETRY_REASONS) — and that content
+                # already streamed correctly via on_chat_model_stream on
+                # its own round. A second real bug, caught immediately
+                # while fixing the first: firing "retry" unconditionally
+                # here would tell the client to discard that ALREADY-
+                # CORRECT content anyway, and with no replacement message
+                # to follow it (empty `output`), the client would be left
+                # with a blank draft despite the checkpointed state
+                # holding a perfectly good answer.
+                output = event["data"].get("output") or {}
+                replacement_messages = output.get("messages") or []
+                if replacement_messages:
+                    final_answer.clear()
+                    yield {"type": "retry"}
+                    replacement_text = replacement_messages[-1].content
+                    if isinstance(replacement_text, str) and replacement_text:
+                        final_answer.append(replacement_text)
+                        yield {"type": "token", "content": replacement_text}
+
+            elif kind == "on_chain_end" and event["name"] == "compact_history":
+                # compact_history runs on EVERY turn but only actually does
+                # something once history_summary/token count trip its
+                # ceiling — `output` is `{}` (graph.py's own early return)
+                # on every turn it doesn't, so check for real work
+                # (a "messages" key means it built RemoveMessage stubs
+                # plus a breadcrumb, see graph.py's own docstring) rather
+                # than firing this unconditionally.
+                output = event["data"].get("output") or {}
+                if output.get("messages"):
+                    yield {"type": "compacted"}
+
     except TurnCancelled:
         # Checked BEFORE the generic except below — a deliberate stop is
         # not "an unexpected failure," it gets its own ErrorCode rather
@@ -709,9 +761,9 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
         # astream_events() simply stops yielding once the run pauses at an
         # interrupt() — there's no exception and no distinct "paused" event,
         # so the only reliable way to tell "paused" from "finished" is to
-        # check get_state().next afterwards, same as scripts/hitl_demo.py's
-        # sync loop. aget_state, not get_state: this async function runs
-        # directly on the checkpointer's own event loop (via
+        # check state.next afterwards. aget_state, not get_state: this
+        # async function runs directly on the checkpointer's own event
+        # loop (via
         # init_graph_async()), where only the async accessor is safe to
         # call — see resumability_error_async's docstring for the same
         # constraint, caught here by a real regression test.
@@ -727,6 +779,41 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 "tool_calls": pending["tool_calls"],
             }
         else:
+            used_citations = state.values.get("used_citations") or []
+            ungrounded_claims_count = state.values.get("ungrounded_claims_count") or 0
+            followups = state.values.get("followups") or []
+            if not final_answer:
+                # No on_chat_model_stream events fired this turn — every
+                # node that produces a final AIMessage WITHOUT calling the
+                # chat model (reject_input, reject_context,
+                # reject_moderation, context_window_exceeded, a
+                # semantic-cache HIT (pattern 22), or the no_answer safety
+                # net) hits this: `final_answer` only ever accumulates from
+                # token-streaming events, so a turn that never streamed
+                # anything left the caller with nothing but a bare "done"
+                # and no way to learn what the answer actually was — a
+                # real, previously-undiscovered bug, caught live against a
+                # cached "hi" response that streamed only {"type": "done"}
+                # despite a real cached answer sitting in
+                # state.values["messages"][-1]. Sent as one synthetic
+                # "token" event (not a new event type) so every existing
+                # client already renders it correctly.
+                final_message = state.values["messages"][-1]
+                skipped_text = (
+                    final_message.content if isinstance(final_message.content, str) else ""
+                )
+                if skipped_text:
+                    # Appended to `final_answer` itself, not just yielded —
+                    # a second real bug, caught live via Langfuse (a
+                    # no_answer-fallback turn recorded trace.output as ""
+                    # even though the client received the real fallback
+                    # apology text): `trace.update` below reads
+                    # `final_answer`, so without this the trace stays
+                    # blank on every turn that takes this branch, showing
+                    # a real answer to the actual caller but an empty one
+                    # to anyone inspecting the trace.
+                    final_answer.append(skipped_text)
+                    yield {"type": "token", "content": skipped_text}
             if trace:
                 trace.update(output="".join(final_answer))
             _record_turn_metrics(
@@ -736,30 +823,6 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 ctx=(cfg.get("configurable") or {}).get("ctx"),
                 thread_id=(cfg.get("configurable") or {}).get("thread_id"),
             )
-            used_citations = state.values.get("used_citations") or []
-            ungrounded_claims_count = state.values.get("ungrounded_claims_count") or 0
-            followups = state.values.get("followups") or []
-            if not final_answer:
-                # No on_chat_model_stream events fired this turn — every
-                # node that produces a final AIMessage WITHOUT calling the
-                # chat model (reject_input, reject_context,
-                # reject_moderation, context_window_exceeded, and a
-                # semantic-cache HIT, pattern 22) hits this: `final_answer`
-                # only ever accumulates from token-streaming events, so a
-                # turn that never streamed anything left the caller with
-                # nothing but a bare "done" and no way to learn what the
-                # answer actually was — a real, previously-undiscovered
-                # bug, caught live against a cached "hi" response that
-                # streamed only {"type": "done"} despite a real cached
-                # answer sitting in state.values["messages"][-1]. Sent as
-                # one synthetic "token" event (not a new event type) so
-                # every existing client already renders it correctly.
-                final_message = state.values["messages"][-1]
-                skipped_text = (
-                    final_message.content if isinstance(final_message.content, str) else ""
-                )
-                if skipped_text:
-                    yield {"type": "token", "content": skipped_text}
             terminal_event = {"type": "done"}
     finally:
         # Flush so the trace is sent even if the caller exits immediately —
@@ -805,9 +868,9 @@ async def astream_events_turn(
     `require_approval` mirrors graph.py's opt-in HITL gate (see
     should_continue): when True, a tool call pauses the run instead of
     executing immediately, and the caller must resume via
-    astream_events_resume(thread_id, approved, ctx) to continue — the
-    streaming counterpart to scripts/hitl_demo.py's blocking
-    Command(resume=...) loop. Default False keeps existing callers
+    astream_events_resume(thread_id, approved, ctx) to continue — see
+    app/channels/chat.py's `--hitl` mode for a runnable example of driving
+    this pause/resume cycle. Default False keeps existing callers
     (app/api/main.py) unchanged. `images` (GRAPH_PATTERNS.md pattern 44) is
     optional, defaulting to None — same reasoning. `cancel_check`
     (optional, `Callable[[], Awaitable[bool]]`) is forwarded straight to
@@ -878,9 +941,8 @@ async def astream_events_turn_unattended(
 
 async def astream_events_resume(thread_id: str, approved: bool, ctx: SecurityCtx):
     """Resume a turn paused by astream_events_turn(require_approval=True) —
-    the streaming counterpart to scripts/hitl_demo.py's
-    `graph.invoke(Command(resume=approved), config)`. `thread_id` must
-    match the paused turn.
+    the streaming counterpart to a plain `graph.invoke(Command(resume=approved),
+    config)` call. `thread_id` must match the paused turn.
 
     `ctx` is required and re-supplied here, not reused from the original
     pause: `config["configurable"]` does NOT persist across a resume
@@ -956,17 +1018,25 @@ async def get_session_messages(thread_id: str) -> list[dict]:
     (see app/agent/sessions.py's module docstring on why the checkpointer's own
     tables aren't tenant/principal-scoped at all).
 
-    Returns `[{"role": "user"|"assistant", "text": str}, ...]` — the same
-    two roles the web UI already renders bubbles for. Deliberately
-    narrower than the full persisted state: `SystemMessage`s (the
-    ephemeral history-summary/context injections are never actually
-    persisted back to state, but a seeded base prompt is) and
-    `ToolMessage`s (tool call/result pairs) are both omitted — this is a
-    replay of the conversational back-and-forth a user saw, not a full
+    Returns `[{"role": "user"|"assistant"|"system", "text": str}, ...]` —
+    the first two are the same roles the web UI already renders bubbles
+    for. Deliberately narrower than the full persisted state:
+    `SystemMessage`s (the ephemeral history-summary/context injections are
+    never actually persisted back to state, but a seeded base prompt is)
+    and `ToolMessage`s (tool call/result pairs) are both omitted — this is
+    a replay of the conversational back-and-forth a user saw, not a full
     forensic trace (that's what Langfuse is for); an AIMessage with no
     text of its own (a pure tool-calling turn — the model's visible
     answer came on a LATER message once the tool result came back) is
     skipped the same way the live UI never rendered an empty bubble for it.
+
+    The ONE exception to "SystemMessages are omitted": a compact_history
+    breadcrumb (graph.py's `_compaction_marker_message`, tagged via
+    `COMPACTION_MARKER_KEY`) comes back as `role: "system"` — unlike the
+    seeded base prompt (internal plumbing, never meant for a human to
+    read), this one exists specifically so a session's replay shows that
+    older turns were cut, not just silently fewer turns than actually
+    happened.
     """
     graph = await init_graph_async()
     state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
@@ -976,6 +1046,8 @@ async def get_session_messages(thread_id: str) -> list[dict]:
             role = "user"
         elif isinstance(m, AIMessage):
             role = "assistant"
+        elif isinstance(m, SystemMessage) and m.additional_kwargs.get(COMPACTION_MARKER_KEY):
+            role = "system"
         else:
             continue
         text = _text_content(m.content)

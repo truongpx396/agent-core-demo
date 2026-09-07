@@ -94,3 +94,82 @@ class TestHybridSearchCollection:
         qdrant_store.hybrid_search("query", collection="skills")
 
         assert client.query_points_calls == ["skills"]
+
+
+class _FakePoint(SimpleNamespace):
+    """Stands in for qdrant_client's real `ScoredPoint` (a Pydantic model
+    that permits attribute mutation — confirmed live) just enough to
+    exercise hybrid_search's score-threading: `.id`, `.payload`, `.score`."""
+
+
+class TestHybridSearchRerankScore:
+    """Real bug, found live via Langfuse (trace ed435567): the model cited
+    a real, in-range marker on content that source didn't actually support.
+    Root cause traced to hybrid_search returning Qdrant's RRF fusion score
+    on `.score` even when the cross-encoder reranker ran — the reranker's
+    own relevance judgment was computed, used only to reorder, then
+    discarded, so nothing downstream could ever tell "ranked highest of a
+    bad batch" apart from "actually relevant"."""
+
+    def _mock_embeddings(self, monkeypatch, scores):
+        monkeypatch.setattr(embeddings, "embed_text", lambda text: [0.1, 0.2])
+        monkeypatch.setattr(embeddings, "embed_sparse", lambda text: ([1], [0.5]))
+        monkeypatch.setattr(embeddings, "rerank", lambda query, texts: scores)
+
+    def _fake_points(self, n):
+        return [
+            _FakePoint(id=str(i), payload={"text": f"doc {i}"}, score=0.5)
+            for i in range(n)
+        ]
+
+    def test_returned_points_carry_the_reranker_score_not_the_rrf_score(self, monkeypatch):
+        client = _fake_client(monkeypatch)
+        points = self._fake_points(2)
+        client.query_points = lambda collection_name, **kw: SimpleNamespace(points=points)
+        self._mock_embeddings(monkeypatch, scores=[-2.0, 6.5])
+
+        result = qdrant_store.hybrid_search("query")
+
+        # Reordered highest-reranker-score first, and `.score` now holds
+        # that real cross-encoder value instead of the original RRF 0.5.
+        assert [p.score for p in result] == [6.5, -2.0]
+
+    def test_min_score_drops_points_below_the_floor(self, monkeypatch):
+        client = _fake_client(monkeypatch)
+        points = self._fake_points(3)
+        client.query_points = lambda collection_name, **kw: SimpleNamespace(points=points)
+        self._mock_embeddings(monkeypatch, scores=[-11.4, 6.7, -5.9])
+
+        result = qdrant_store.hybrid_search("query", min_score=-8.0)
+
+        assert [p.score for p in result] == [6.7, -5.9]
+
+    def test_min_score_is_a_noop_when_rerank_is_skipped(self, monkeypatch):
+        """`min_score` is only meaningful against the cross-encoder's raw
+        logit scale — RRF fusion scores are rank-derived, not comparable to
+        it, so a caller that skips reranking (app/agent/tools.py's
+        _memory_hits) must never have results silently dropped by it."""
+        client = _fake_client(monkeypatch)
+        points = self._fake_points(2)
+        client.query_points = lambda collection_name, **kw: SimpleNamespace(points=points)
+        self._mock_embeddings(monkeypatch, scores=[-99.0, -99.0])
+
+        result = qdrant_store.hybrid_search("query", rerank_results=False, min_score=-8.0)
+
+        assert len(result) == 2
+
+    def test_min_score_is_a_noop_when_reranker_degrades(self, monkeypatch):
+        client = _fake_client(monkeypatch)
+        points = self._fake_points(2)
+        client.query_points = lambda collection_name, **kw: SimpleNamespace(points=points)
+        monkeypatch.setattr(embeddings, "embed_text", lambda text: [0.1, 0.2])
+        monkeypatch.setattr(embeddings, "embed_sparse", lambda text: ([1], [0.5]))
+
+        def broken_rerank(query, texts):
+            raise RuntimeError("reranker model unavailable")
+
+        monkeypatch.setattr(embeddings, "rerank", broken_rerank)
+
+        result = qdrant_store.hybrid_search("query", min_score=-8.0)
+
+        assert len(result) == 2

@@ -170,6 +170,55 @@ agent_zero_citations_total = Counter(
     "relevance — not acted on by route_after_check, just observed.",
 )
 
+agent_misattributed_citations_total = Counter(
+    "agent_misattributed_citations_total",
+    "Final answers where a real, in-range citation marker was used on a "
+    "sentence whose content shares no meaningful vocabulary with that "
+    "marker's actual source text (check_output's likely_misattributed_"
+    "citations) — a real marker attached to unsupported content, as opposed "
+    "to a fabricated marker (ungrounded_claims_count) or a real source used "
+    "with no marker at all (the opposite failure, likely_uncited_citations). "
+    "Acted on by route_after_check: unlike zero_citations/ungrounded_claims, "
+    "this one triggers a retry.",
+)
+
+agent_deferred_instead_of_acting_total = Counter(
+    "agent_deferred_instead_of_acting_total",
+    "Final answers that narrate an intent to use a tool ('I will use the X "
+    "tool...') or ask the user's permission to proceed ('would you like me "
+    "to?') instead of actually calling the tool or answering directly "
+    "(check_output's _defers_instead_of_acting) — real bug, found live: a "
+    "3B model repeating this across several turns on the same thread, "
+    "each 'yes' reply just restarting the identical unresolved cycle since "
+    "no real tool_calls were ever made. Acted on by route_after_check: "
+    "triggers a retry with feedback to call the tool now, not describe it.",
+)
+
+agent_system_prompt_leak_total = Counter(
+    "agent_system_prompt_leak_total",
+    "Final answers containing a long, verbatim run of the seeded system "
+    "prompt's own text (check_output's _leaks_system_prompt) — output-side "
+    "defense-in-depth alongside app/agent/moderation.py's input-side "
+    "screening: an injection phrased in a way moderation's known-pattern "
+    "regexes don't catch can still be caught here if it actually succeeds "
+    "in getting the model to recite its instructions back. Acted on by "
+    "route_after_check: triggers a retry, same as the other "
+    "check_output-computed rejection reasons.",
+)
+
+agent_retry_exhausted_total = Counter(
+    "agent_retry_exhausted_total",
+    "Turns that gave up on retry_output's repair loop because the SAME "
+    "check_output rejection reason (too_short/deferred/uncited/"
+    "misattributed) fired on MAX_CONSECUTIVE_SAME_RETRY_REASON consecutive "
+    "rounds — the model wasn't converging, just repeating. Routes to "
+    "retry_exhausted instead of another retry_output round: real bug, "
+    "found live — a stuck deferral loop burned 6 full retry rounds and "
+    "~18k tokens before should_continue's own (much blunter) "
+    "MAX_TOKENS_PER_TURN cap finally cut it off, landing on the exact same "
+    "outcome this metric's own routing now reaches in 2 rounds.",
+)
+
 agent_tool_budget_exceeded_total = Counter(
     "agent_tool_budget_exceeded_total",
     "Turns where the LLM requested more tool calls at once than MAX_TOOL_CALLS_PER_TURN allows",

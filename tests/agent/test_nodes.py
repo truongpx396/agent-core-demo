@@ -276,11 +276,20 @@ def test_retrieve_context_degrades_to_empty_when_search_docs_raises():
 
 class TestCheckOutput:
     def test_no_citations_returns_empty_used_citations(self):
+        # "anything" (8 chars) is itself under MIN_ANSWER_LENGTH — this
+        # test predates that constant's exact value, but the reason is a
+        # real, correct part of check_output's output now, not an
+        # incidental detail to paper over.
         result = graph.check_output({"messages": [AIMessage(content="anything")]})
         assert result == {
             "used_citations": [],
             "ungrounded_claims_count": 0,
             "likely_uncited_citations": [],
+            "likely_misattributed_citations": [],
+            "deferred_instead_of_acting": False,
+            "leaks_system_prompt": False,
+            "last_retry_reason": "too_short",
+            "retry_reason_repeat_count": 1,
         }
 
     def test_filters_citations_to_markers_actually_used(self):
@@ -297,6 +306,11 @@ class TestCheckOutput:
             "used_citations": [citations[0]],
             "ungrounded_claims_count": 0,
             "likely_uncited_citations": [],
+            "likely_misattributed_citations": [],
+            "deferred_instead_of_acting": False,
+            "leaks_system_prompt": False,
+            "last_retry_reason": None,
+            "retry_reason_repeat_count": 0,
         }
 
     def test_no_markers_in_answer_returns_empty_used_citations(self):
@@ -310,6 +324,11 @@ class TestCheckOutput:
             "used_citations": [],
             "ungrounded_claims_count": 0,
             "likely_uncited_citations": [],
+            "likely_misattributed_citations": [],
+            "deferred_instead_of_acting": False,
+            "leaks_system_prompt": False,
+            "last_retry_reason": None,
+            "retry_reason_repeat_count": 0,
         }
 
     def test_a_marker_with_no_matching_citation_is_counted_as_ungrounded(self):
@@ -332,6 +351,11 @@ class TestCheckOutput:
             "used_citations": [],
             "ungrounded_claims_count": 1,
             "likely_uncited_citations": [],
+            "likely_misattributed_citations": [],
+            "deferred_instead_of_acting": False,
+            "leaks_system_prompt": False,
+            "last_retry_reason": None,
+            "retry_reason_repeat_count": 0,
         }
 
     def test_zero_citations_metric_fires_when_context_was_available_but_unused(self):
@@ -466,6 +490,252 @@ class TestCheckOutput:
         result = graph.check_output(state)
         assert result["likely_uncited_citations"] == []
 
+    def test_likely_misattributed_flags_a_real_marker_on_unrelated_content(self):
+        """Regression case: a real Langfuse trace (ed435567) where the model
+        cited [3] on every sentence of an answer about database scalability,
+        when [3]'s actual retrieved content was about something else
+        entirely — a real, in-range marker attached to unsupported content."""
+        citations = [
+            {
+                "marker": "[3]",
+                "text": "Qdrant stores vectors with JSON payloads. You can filter "
+                "searches by payload fields, for example restricting results to a "
+                "single topic.",
+            },
+        ]
+        content = (
+            "Databases address scalability concerns through horizontal "
+            "partitioning and read replicas [3]. Flexibility often comes from "
+            "schema-less designs that let applications evolve independently [3]."
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": citations}
+        result = graph.check_output(state)
+        assert {c["marker"] for c in result["likely_misattributed_citations"]} == {"[3]"}
+
+    def test_likely_misattributed_ignores_a_genuinely_supported_citation(self):
+        citations = [
+            {
+                "marker": "[1]",
+                "text": "Qdrant stores vectors with JSON payloads. You can filter "
+                "searches by payload fields, for example restricting results to a "
+                "single topic.",
+            },
+        ]
+        content = (
+            "Qdrant stores vectors alongside JSON payloads, letting you filter "
+            "searches by payload fields to restrict results to a single topic [1]."
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": citations}
+        result = graph.check_output(state)
+        assert result["likely_misattributed_citations"] == []
+
+    def test_likely_misattributed_flags_even_a_single_word_source(self):
+        """Regression case, found live via Langfuse: a one-word memory
+        ("magiclab396", saved verbatim by the `remember` tool) got recalled
+        as [1] and cited three times on an answer about bundled skills for
+        report-writing — content with zero relation to that memory. This
+        function used to reuse _likely_uncited_citations's short-source
+        skip (>=4 content words) and missed it entirely: a citation this
+        short is NOT too little evidence to judge, it's the easiest case to
+        judge, since a real match would require the sentence to contain
+        that exact distinctive word."""
+        citations = [{"marker": "[1]", "text": "magiclab396"}]
+        content = (
+            "There isn't a specific bundled skill named for writing a report [1]. "
+            "Skills are packaged for specific tasks, and writing a report might "
+            "require a combination of skills such as data analysis, "
+            "summarization, and formatting [1]."
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": citations}
+        result = graph.check_output(state)
+        assert {c["marker"] for c in result["likely_misattributed_citations"]} == {"[1]"}
+
+    def test_likely_misattributed_ignores_a_citation_with_no_content_words(self):
+        """The only legitimate skip left: a source with NOTHING to compare
+        against (empty after stripping stopwords/short tokens) — as opposed
+        to merely a short one, which is exactly the case the fix above
+        stopped skipping."""
+        citations = [{"marker": "[1]", "text": "is a the of"}]
+        content = "Totally unrelated content about baking bread at home [1]."
+        state = {"messages": [AIMessage(content=content)], "citations": citations}
+        result = graph.check_output(state)
+        assert result["likely_misattributed_citations"] == []
+
+    def test_likely_misattributed_ignores_when_only_citing_sentence_is_too_short(self):
+        """A marker whose only citing sentence is too short to score isn't
+        flagged — no evidence either way, so it stays quiet rather than
+        guessing (mirrors the analogous guard on the citation side)."""
+        citations = [
+            {
+                "marker": "[1]",
+                "text": "Qdrant stores vectors with JSON payloads for fast retrieval.",
+            }
+        ]
+        content = "Sure [1]."
+        state = {"messages": [AIMessage(content=content)], "citations": citations}
+        result = graph.check_output(state)
+        assert result["likely_misattributed_citations"] == []
+
+    def test_likely_misattributed_metric_fires(self):
+        citations = [
+            {
+                "marker": "[3]",
+                "text": "Qdrant stores vectors with JSON payloads. You can filter "
+                "searches by payload fields, for example restricting results to a "
+                "single topic.",
+            },
+        ]
+        content = (
+            "Databases address scalability concerns through horizontal "
+            "partitioning and read replicas [3]."
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": citations}
+        before = metric_value(metrics.agent_misattributed_citations_total)
+        graph.check_output(state)
+        assert metric_value(metrics.agent_misattributed_citations_total) == before + 1
+
+
+class TestDefersInsteadOfActing:
+    """Real bug, found live via Langfuse across several turns on the same
+    thread: instead of calling query_employees, qwen2.5:3b kept writing
+    prose announcing intent ("I will use the `query_employees` tool to
+    look up...") or asking permission first ("I can look that up for you.
+    Would you like to know more?"). Neither is a real tool call, so
+    should_continue's tools_condition never routes there — check_output
+    saw these as ordinary (if useless) final answers, and every "yes" the
+    user sent in reply just restarted the identical cycle."""
+
+    def test_flags_narrated_tool_intent(self):
+        content = (
+            "I will use the `query_employees` tool to look up the employees "
+            "in the engineering department of Acme Corp. \n\nLet's proceed "
+            "with that.\n"
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph.check_output(state)
+        assert result["deferred_instead_of_acting"] is True
+
+    def test_flags_asking_permission_to_proceed(self):
+        content = (
+            "I can use the `query_employees` tool to look up the employees "
+            "in the engineering department of Acme Corp. Would you like me "
+            "to proceed?"
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph.check_output(state)
+        assert result["deferred_instead_of_acting"] is True
+
+    def test_flags_a_bare_offer_with_no_tool_name_mentioned(self):
+        """The exact real trace text — no tool name, no "I will", just a
+        vague offer plus a stalling question."""
+        content = "I can look that up for you. Would you like to know more?"
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph.check_output(state)
+        assert result["deferred_instead_of_acting"] is True
+
+    def test_ignores_a_genuine_direct_answer(self):
+        content = "Acme Corp's support hours are 9am to 5pm on weekdays [1]."
+        citations = [{"marker": "[1]", "text": "Acme Corp's support hours are 9am to 5pm."}]
+        state = {"messages": [AIMessage(content=content)], "citations": citations}
+        result = graph.check_output(state)
+        assert result["deferred_instead_of_acting"] is False
+
+    def test_ignores_a_third_person_description_of_the_agents_own_tools(self):
+        """A legitimate answer to a meta-question ("what tools do you
+        have?") describes capability in third person, not first-person
+        INTENT — must not trip the same heuristic that catches "I will
+        use X"."""
+        content = "This agent can use the query_employees tool to look up Acme Corp staff."
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph.check_output(state)
+        assert result["deferred_instead_of_acting"] is False
+
+    def test_metric_fires(self):
+        content = "I can look that up for you. Would you like to know more?"
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        before = metric_value(metrics.agent_deferred_instead_of_acting_total)
+        graph.check_output(state)
+        assert metric_value(metrics.agent_deferred_instead_of_acting_total) == before + 1
+
+
+class TestLeaksSystemPrompt:
+    """Output-side defense-in-depth alongside app/agent/moderation.py's
+    input-side screening (see that module's own docstring and the
+    conversation this was added from): an injection phrased in a way
+    moderation's known-pattern regexes don't catch can still be caught
+    here if it actually succeeds in getting the model to recite its
+    instructions back."""
+
+    def test_flags_a_long_verbatim_recitation(self):
+        content = (
+            "Sure, here are my instructions: " + graph.SYSTEM_PROMPT[:200]
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph.check_output(state)
+        assert result["leaks_system_prompt"] is True
+
+    def test_flags_a_recitation_starting_mid_prompt(self):
+        """The leak doesn't have to start from character 0 of the prompt —
+        a model asked to "continue from where it says X" would reproduce a
+        chunk starting mid-prompt. _leaks_system_prompt slides a window
+        across the WHOLE prompt, not just its start."""
+        mid_chunk = graph.SYSTEM_PROMPT[500:700]
+        content = f"Continuing from your instructions: {mid_chunk}"
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph.check_output(state)
+        assert result["leaks_system_prompt"] is True
+
+    def test_ignores_an_ordinary_answer(self):
+        content = "Acme Corp's support hours are 9am to 5pm on weekdays [1]."
+        citations = [{"marker": "[1]", "text": "Acme Corp's support hours are 9am to 5pm."}]
+        state = {"messages": [AIMessage(content=content)], "citations": citations}
+        result = graph.check_output(state)
+        assert result["leaks_system_prompt"] is False
+
+    def test_a_short_coincidental_phrase_overlap_is_not_flagged(self):
+        """A model naturally reusing a FEW words from its own instructions
+        ("Be concise and direct" is common advice, not a giveaway) must
+        not trip this — only a long, ~60+ char verbatim run counts."""
+        content = "I'll be concise and direct: the answer is 42."
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph.check_output(state)
+        assert result["leaks_system_prompt"] is False
+
+    def test_respects_a_custom_system_prompt_not_the_bare_default(self):
+        """build_graph binds check_output to THIS domain's own
+        manifest.system_prompt via functools.partial (see build_graph's
+        own comment) — a non-Acme domain's answer must be checked against
+        ITS OWN seeded prompt, not the bare Acme-only SYSTEM_PROMPT
+        module default, or a real leak of a custom prompt would go
+        completely undetected (checked against the wrong text) and a
+        coincidental match against Acme's UNRELATED prompt could
+        false-positive."""
+        custom_prompt = "You are Zephyr, a specialized ops assistant with unique tone rules."
+        content = f"My instructions say: {custom_prompt}"
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+
+        default_result = graph.check_output(state)
+        custom_result = graph.check_output(state, system_prompt=custom_prompt)
+
+        assert default_result["leaks_system_prompt"] is False
+        assert custom_result["leaks_system_prompt"] is True
+
+    def test_metric_fires(self):
+        content = graph.SYSTEM_PROMPT[:200]
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        before = metric_value(metrics.agent_system_prompt_leak_total)
+        graph.check_output(state)
+        assert metric_value(metrics.agent_system_prompt_leak_total) == before + 1
+
+    def test_outranks_every_other_retry_reason(self):
+        """Checked FIRST in _retry_reason — see that function's own
+        docstring for why a leak severe enough to trip this outranks even
+        length."""
+        content = graph.SYSTEM_PROMPT[:200]
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph.check_output(state)
+        assert result["last_retry_reason"] == "leaked_prompt"
+
 
 def test_retry_output_appends_corrective_human_message():
     result = graph.retry_output({"messages": []})
@@ -473,6 +743,18 @@ def test_retry_output_appends_corrective_human_message():
     msg = result["messages"][0]
     assert isinstance(msg, HumanMessage)
     assert "short" in msg.content.lower()
+
+
+def test_retry_output_too_short_feedback_also_nudges_toward_tool_use():
+    """The "too_short" branch also covers a genuinely EMPTY response (no
+    text, no tool_calls) — the common round-1 failure that precedes a
+    round-2 narration (see _defers_instead_of_acting). Nudging toward
+    tool use directly here, not just "write more," is meant to short-
+    circuit that whole narration cycle one round earlier."""
+    result = graph.retry_output({"messages": [AIMessage(content="")]})
+    msg = result["messages"][0]
+    assert "tool" in msg.content.lower()
+    assert "empty response" in msg.content.lower()
 
 
 def test_retry_output_names_the_missing_citation_marker():
@@ -487,6 +769,20 @@ def test_retry_output_names_the_missing_citation_marker():
     assert "cit" in msg.content.lower()
 
 
+def test_retry_output_citation_feedback_tells_the_model_not_to_call_tools():
+    """Real pattern, caught live twice via Langfuse: nudged to "add
+    citations," the model called search_docs again with the exact same
+    query instead of just reformatting its existing answer — wasting a
+    round and, in one case, pushing the turn over MAX_TOKENS_PER_TURN.
+    The feedback has to say this explicitly, not just imply it."""
+    state = {
+        "messages": [AIMessage(content="A sufficiently detailed but uncited answer.")],
+        "likely_uncited_citations": [{"marker": "[1]", "text": "..."}],
+    }
+    result = graph.retry_output(state)
+    assert "do not call any tools" in result["messages"][0].content.lower()
+
+
 def test_retry_output_prefers_the_length_complaint_when_both_apply():
     """An answer that's both too short AND flagged as likely-uncited gets
     the length feedback — the more actionable ask of the two."""
@@ -496,6 +792,89 @@ def test_retry_output_prefers_the_length_complaint_when_both_apply():
     }
     result = graph.retry_output(state)
     assert "short" in result["messages"][0].content.lower()
+
+
+def test_retry_output_tells_the_model_never_to_reveal_instructions_on_a_leak():
+    state = {
+        "messages": [AIMessage(content=graph.SYSTEM_PROMPT[:200])],
+        "leaks_system_prompt": True,
+    }
+    result = graph.retry_output(state)
+    msg = result["messages"][0]
+    assert isinstance(msg, HumanMessage)
+    assert "system prompt" in msg.content.lower() or "instructions" in msg.content.lower()
+    # Deliberately does NOT quote or describe WHICH part leaked — see
+    # retry_output's own comment on this branch.
+    assert graph.SYSTEM_PROMPT[:60] not in msg.content
+
+
+def test_retry_output_leak_complaint_outranks_the_length_complaint():
+    """leaks_system_prompt is checked FIRST, ahead of even length — see
+    _retry_reason's own docstring for why."""
+    state = {
+        "messages": [AIMessage(content="Yes.")],  # also too short
+        "leaks_system_prompt": True,
+    }
+    result = graph.retry_output(state)
+    assert "short" not in result["messages"][0].content.lower()
+    assert "system prompt" in result["messages"][0].content.lower()
+
+
+def test_retry_output_names_the_misattributed_citation_marker():
+    state = {
+        "messages": [AIMessage(content="A sufficiently detailed but wrongly cited answer.")],
+        "likely_misattributed_citations": [{"marker": "[3]", "text": "..."}],
+    }
+    result = graph.retry_output(state)
+    msg = result["messages"][0]
+    assert isinstance(msg, HumanMessage)
+    assert "[3]" in msg.content
+    assert "does not actually support" in msg.content.lower()
+    assert "do not call any tools" in msg.content.lower()
+
+
+def test_retry_output_prefers_uncited_complaint_when_both_citation_issues_apply():
+    """Uncited (a source used with no marker at all) is checked before
+    misattributed (a real marker on unsupported content) — both are
+    citation problems, but a fully missing citation is the more common and
+    more actionable of the two to lead with."""
+    state = {
+        "messages": [AIMessage(content="A sufficiently detailed but confusingly cited answer.")],
+        "likely_uncited_citations": [{"marker": "[1]", "text": "..."}],
+        "likely_misattributed_citations": [{"marker": "[3]", "text": "..."}],
+    }
+    result = graph.retry_output(state)
+    assert "[1]" in result["messages"][0].content
+    assert "[3]" not in result["messages"][0].content
+
+
+def test_retry_output_tells_the_model_to_call_the_tool_when_it_deferred():
+    """The OPPOSITE instruction from the citation branches — those say
+    "do not call any tools"; this one exists specifically because the
+    model AVOIDED calling a tool it needed, so it has to say so."""
+    state = {
+        "messages": [AIMessage(content="I can look that up for you. Would you like to know more?")],
+        "deferred_instead_of_acting": True,
+    }
+    result = graph.retry_output(state)
+    msg = result["messages"][0]
+    assert isinstance(msg, HumanMessage)
+    assert "call it now" in msg.content.lower()
+    assert "do not call any tools" not in msg.content.lower()
+
+
+def test_retry_output_prefers_deferred_complaint_over_citation_complaints():
+    """deferred_instead_of_acting is checked before either citation
+    reason: a model that just narrated tool intent has nothing real to
+    cite yet, so a citation complaint on top would be meaningless noise."""
+    state = {
+        "messages": [AIMessage(content="I can look that up for you. Would you like to know more?")],
+        "deferred_instead_of_acting": True,
+        "likely_uncited_citations": [{"marker": "[1]", "text": "..."}],
+    }
+    result = graph.retry_output(state)
+    assert "call it now" in result["messages"][0].content.lower()
+    assert "[1]" not in result["messages"][0].content
 
 
 class TestHumanApproval:
@@ -566,3 +945,69 @@ class TestHumanApproval:
 
         assert seen["action"] == "approve_tool_calls"
         assert seen["tool_calls"] == [{"name": "search_docs", "args": {"query": "x"}}]
+
+
+class TestNoAnswerFallback:
+    """no_answer_fallback (app/agent/graph.py) is reached only via
+    should_continue's safety-net exits — check_output never ran on
+    whatever ends up here, so this node has to do its OWN grounding
+    computation for whatever content is actually shown to the user."""
+
+    def test_empty_content_gets_the_fallback_message_and_empty_citations(self):
+        no_answer = graph.make_no_answer_fallback_node()
+        state = {"messages": [AIMessage(content="")], "citations": [{"marker": "[1]", "text": "x"}]}
+        result = no_answer(state)
+
+        assert len(result["messages"]) == 1
+        assert "wasn't able to put together" in result["messages"][0].content
+        assert result["used_citations"] == []
+        assert result["ungrounded_claims_count"] == 0
+
+    def test_a_good_cited_answer_keeps_its_text_and_gets_real_citations(self):
+        """Real bug, caught live via Langfuse: a turn's LAST round produced
+        a perfectly good, correctly-cited answer, but cumulative tokens
+        tripped MAX_TOKENS_PER_TURN on that exact round, so should_continue
+        routed here instead of to check_output — the answer reached the
+        user untouched, but `used_citations` stayed stuck at an EARLIER,
+        rejected round's empty value, so the citations UI never appeared
+        despite a correctly-cited answer being shown."""
+        citations = [{"marker": "[1]", "text": "Checkpointers persist state."}]
+        state = {
+            "messages": [AIMessage(content="Checkpointers persist state [1].")],
+            "citations": citations,
+        }
+        no_answer = graph.make_no_answer_fallback_node()
+        result = no_answer(state)
+
+        assert "messages" not in result  # the good answer is left untouched
+        assert result["used_citations"] == citations
+        assert result["ungrounded_claims_count"] == 0
+
+    def test_an_uncited_answer_still_gets_no_used_citations(self):
+        """Not a magic fix for the underlying uncited-answer problem —
+        just an accurate reflection of it: if the last round's answer
+        genuinely didn't cite anything, used_citations correctly stays
+        empty rather than fabricating one."""
+        citations = [{"marker": "[1]", "text": "Checkpointers persist state."}]
+        state = {
+            "messages": [AIMessage(content="Checkpointers persist state, in general.")],
+            "citations": citations,
+        }
+        no_answer = graph.make_no_answer_fallback_node()
+        result = no_answer(state)
+
+        assert "messages" not in result
+        assert result["used_citations"] == []
+
+    def test_emit_message_false_skips_everything_for_the_nested_subagent_case(self):
+        """run_subagent's own nested graphs (emit_no_answer_message=False)
+        need the SAME genuine emptiness should_continue's routing already
+        produces, for their own "did not produce a final answer" +
+        outcome="budget_exceeded" reporting — this node must be a
+        complete no-op for them, not just skip the message replacement."""
+        no_answer = graph.make_no_answer_fallback_node(emit_message=False)
+        state = {
+            "messages": [AIMessage(content="Checkpointers persist state [1].")],
+            "citations": [{"marker": "[1]", "text": "Checkpointers persist state."}],
+        }
+        assert no_answer(state) == {}

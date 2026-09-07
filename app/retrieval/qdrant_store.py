@@ -142,6 +142,7 @@ def hybrid_search(
     rerank_results: bool = True,
     doc_ids: list[str] | None = None,
     collection: str | None = None,
+    min_score: float | None = None,
 ):
     """Dense+sparse hybrid search, RRF-fused, cross-encoder reranked —
     degrading gracefully at each stage (see module docstring). Returns a
@@ -157,6 +158,17 @@ def hybrid_search(
     same dense+sparse schema (see `ensure_collection`); the fusion/rerank/
     degrade pipeline below is otherwise identical regardless of which
     collection it's pointed at.
+
+    `min_score`, when given, drops points whose cross-encoder score falls
+    below it — a real relevance floor, not just a rank cutoff (RRF/dense
+    order alone says "most similar of what came back," not "actually
+    relevant"; a query with no good match in the collection can still
+    return `k` confidently-ordered but irrelevant points otherwise). Only
+    ever applied when reranking actually ran: the cross-encoder's raw
+    logit scale (unbounded, e.g. -11 for a clearly wrong match vs +6 for a
+    strong one) is the only scale `min_score` is meaningful against — RRF
+    fusion scores are rank-derived and NOT comparable to it, so this is a
+    no-op whenever `rerank_results=False` or reranking degrades.
     """
     # deferred: avoids importing fastembed at module load
     from app.retrieval import embeddings
@@ -212,7 +224,16 @@ def hybrid_search(
     try:
         texts = [(p.payload or {}).get("text", "") for p in points]
         scores = embeddings.rerank(query_text, texts)
+        # Overwrite the RRF fusion score (rank-derived, not a relevance
+        # measure) with the cross-encoder's own raw logit score, so callers
+        # that read `.score` (e.g. app/agent/tools.py's relevance floor) see
+        # an actual judgment of relevance rather than a fusion-rank artifact.
+        # `.score` is confirmed to have no other consumer in this codebase.
+        for point, score in zip(points, scores, strict=True):
+            point.score = score
         order = sorted(range(len(points)), key=lambda i: scores[i], reverse=True)
+        if min_score is not None:
+            order = [i for i in order if scores[i] >= min_score]
         return [points[i] for i in order][:k]
     except Exception as exc:  # noqa: BLE001 - degrade to the fused order, never fail the search
         logger.warning(
