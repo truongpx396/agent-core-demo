@@ -373,19 +373,65 @@ class TestRetryExhaustedPath:
     "couldn't answer" fallback it could have reached in 2 rounds."""
 
     def test_identical_rejection_reason_twice_gives_up_not_a_third_attempt(self):
-        """Exactly 2 responses queued — the SAME too-short answer, twice.
-        If route_after_check kept retrying instead of giving up,
-        GenericFakeChatModel would raise on its exhausted iterator when
-        the graph tried a 3rd agent call, failing this test loudly rather
-        than silently passing."""
-        llm = _fake_llm(AIMessage(content="Yes."), AIMessage(content="Yes."))
+        """Exactly 2 responses queued — the model narrating tool intent
+        instead of calling one, twice in a row (the actual live bug this
+        mechanism was built for — a stuck query_employees narration
+        loop). `deferred_instead_of_acting` is one of the two NOT
+        trust-content reasons (see _TRUST_CONTENT_RETRY_REASONS): the
+        narration text itself has zero answer value, so it must be
+        replaced, not shown. If route_after_check kept retrying instead
+        of giving up, GenericFakeChatModel would raise on its exhausted
+        iterator when the graph tried a 3rd agent call, failing this test
+        loudly rather than silently passing."""
+        narration = (
+            "I will use the query_employees tool to look up the employees. "
+            "Let's proceed with that."
+        )
+        llm = _fake_llm(AIMessage(content=narration), AIMessage(content=narration))
         g = build_graph(GraphDeps(llm=llm))
         result = g.invoke(
-            {"messages": [HumanMessage(content="is that right?")]}, config=_config()
+            {"messages": [HumanMessage(content="who works in engineering?")]},
+            config=_config(),
         )
         assert "wasn't able to put together" in result["messages"][-1].content
         assert result["iterations"] == 2
-        assert result["last_retry_reason"] == "too_short"
+        assert result["last_retry_reason"] == "deferred"
+        assert result["retry_reason_repeat_count"] == 2
+
+    def test_repeatedly_uncited_but_correct_answer_is_trusted_not_discarded(self):
+        """Real regression, found live
+        (tests/live/test_prompt_injection_via_retrieval.py): a real model
+        answered a question CORRECTLY, twice in a row, just without its
+        citation marker. "uncited" is an attribution nitpick, not a
+        correctness problem (the prose itself is fine) — discarding it in
+        favor of a generic apology would be strictly worse than the OLD
+        pre-retry_exhausted behavior, where exhausting MAX_ITERATIONS with
+        the same non-blank answer still showed it, uncited, rather than
+        nothing. retry_exhausted must trust it and show it as-is."""
+        citations = [
+            {
+                "marker": "[1]",
+                "doc_id": "d1",
+                "title": "Support",
+                "text": "Acme Corp support hours are 9am to 5pm on weekdays.",
+                "score": 0.9,
+            }
+        ]
+
+        def fake_search_docs(query, ctx):
+            return "[1] Acme Corp support hours are 9am to 5pm on weekdays.", citations
+
+        correct_but_uncited = "Acme Corp's support hours are from 9am to 5pm on weekdays."
+        llm = _fake_llm(
+            AIMessage(content=correct_but_uncited), AIMessage(content=correct_but_uncited)
+        )
+        g = build_graph(GraphDeps(llm=llm, search_docs=fake_search_docs))
+        result = g.invoke(
+            {"messages": [HumanMessage(content="what are the support hours?")]},
+            config=_config(),
+        )
+        assert result["messages"][-1].content == correct_but_uncited
+        assert result["last_retry_reason"] == "uncited"
         assert result["retry_reason_repeat_count"] == 2
 
     def test_different_reasons_in_a_row_keep_retrying_not_giving_up(self):

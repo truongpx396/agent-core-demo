@@ -537,17 +537,26 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
         own `output` field doesn't show the same concatenation. ALSO fired
         from `on_chain_end` of `retry_exhausted` (route_after_check giving
         up on a stuck retry loop, see MAX_CONSECUTIVE_SAME_RETRY_REASON) —
-        that node unconditionally replaces the last message rather than
-        trusting it (it's content check_output already judged bad on
-        repeat), so the SAME "discard what's rendered so far" signal
-        applies; unlike a normal retry_output round though, there's no
-        next `agent` call coming to supply fresh tokens, so this case ALSO
-        synthesizes one "token" event carrying retry_exhausted's own
-        replacement text right after the "retry" event — real bug, caught
-        live: without it, a rejected answer's own tokens (already streamed
-        before the graph decided to replace them — e.g. a leaked system
-        prompt) reached the client with no correction ever following,
-        while the checkpointed state correctly held the honest fallback.
+        but ONLY when that node actually replaced the last message rather
+        than trusting it (graph.py's _TRUST_CONTENT_RETRY_REASONS — some
+        rejection reasons, like a real answer just missing its citation
+        marker, are attribution nitpicks the content stays trustworthy
+        despite, and retry_exhausted no-ops for those, leaving the
+        already-correctly-streamed content as the real final answer with
+        no "retry" needed at all). When it DOES replace: unlike a normal
+        retry_output round, there's no next `agent` call coming to supply
+        fresh tokens, so this case ALSO synthesizes one "token" event
+        carrying retry_exhausted's own replacement text right after the
+        "retry" event — two real bugs, caught live in immediate
+        succession: first, without that synthesis, a rejected answer's
+        own tokens (already streamed before the graph decided to replace
+        them — e.g. a leaked system prompt) reached the client with no
+        correction ever following, while the checkpointed state correctly
+        held the honest fallback; second, firing "retry" UNCONDITIONALLY
+        (the first fix's own initial shape) would have told the client to
+        discard a TRUSTED, already-correct answer too, with no
+        replacement message to follow it — a blank draft despite a
+        perfectly good checkpointed answer.
       {"type": "compacted"} — NOT terminal: graph.py's compact_history
         (GRAPH_PATTERNS.md pattern 41) just trimmed older turns out of
         active context (folding them into state["history_summary"] and
@@ -674,11 +683,25 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 # "token" event for the REAL replacement text here, since
                 # (unlike retry_output) there's no next agent round that
                 # would otherwise supply it.
-                final_answer.clear()
-                yield {"type": "retry"}
+                #
+                # ONLY when the node actually replaced something, though:
+                # retry_exhausted (graph.py) no-ops (`{}`) for
+                # too_short/uncited — reasons it TRUSTS the repeatedly-
+                # rejected content and leaves it as the real final answer
+                # (see _TRUST_CONTENT_RETRY_REASONS) — and that content
+                # already streamed correctly via on_chat_model_stream on
+                # its own round. A second real bug, caught immediately
+                # while fixing the first: firing "retry" unconditionally
+                # here would tell the client to discard that ALREADY-
+                # CORRECT content anyway, and with no replacement message
+                # to follow it (empty `output`), the client would be left
+                # with a blank draft despite the checkpointed state
+                # holding a perfectly good answer.
                 output = event["data"].get("output") or {}
                 replacement_messages = output.get("messages") or []
                 if replacement_messages:
+                    final_answer.clear()
+                    yield {"type": "retry"}
                     replacement_text = replacement_messages[-1].content
                     if isinstance(replacement_text, str) and replacement_text:
                         final_answer.append(replacement_text)

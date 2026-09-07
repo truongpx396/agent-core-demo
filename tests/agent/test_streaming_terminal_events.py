@@ -336,12 +336,19 @@ class TestRetryExhaustedReplacesAlreadyStreamedContent:
     def test_client_sees_the_honest_fallback_not_the_repeatedly_rejected_text(
         self, monkeypatch
     ):
+        # deferred_instead_of_acting — one of the two NOT trust-content
+        # reasons (see graph.py's _TRUST_CONTENT_RETRY_REASONS): pure
+        # narration has zero answer value, so it must be replaced. (The
+        # OTHER two — too_short, uncited — are deliberately TRUSTED and
+        # shown as-is now; see TestRetryExhaustedTrustsAttributionOnlyFailures
+        # below for that half of the behavior.)
+        narration = "I will use the query_employees tool to look that up. Let's proceed with that."
         llm = GenericFakeChatModel(
-            messages=iter([AIMessage(content="Yes."), AIMessage(content="Yes.")])
+            messages=iter([AIMessage(content=narration), AIMessage(content=narration)])
         )
         graph_obj = build_graph(GraphDeps(llm=llm))
 
-        events = _events_for(graph_obj, "is that right?", monkeypatch=monkeypatch)
+        events = _events_for(graph_obj, "who works in engineering?", monkeypatch=monkeypatch)
 
         token_events = [e for e in events if e["type"] == "token"]
         streamed_text = "".join(e["content"] for e in token_events)
@@ -357,6 +364,60 @@ class TestRetryExhaustedReplacesAlreadyStreamedContent:
         # graph just ending with nothing more shown.
         assert types_in_order[last_retry_idx + 1] == "token"
         assert "wasn't able to put together" in events[last_retry_idx + 1]["content"]
+
+
+class TestRetryExhaustedTrustsAttributionOnlyFailures:
+    """The other half of _TRUST_CONTENT_RETRY_REASONS (graph.py): a
+    repeatedly-uncited but otherwise CORRECT answer must reach the client
+    exactly as it streamed — no spurious "retry" clearing it out from
+    under an already-good answer, and no synthesized replacement token
+    (retry_exhausted no-ops for this reason; nothing to replace). Real
+    regression, found live (tests/live/test_prompt_injection_via_retrieval.py):
+    a real model answered correctly, twice in a row, just without its
+    citation marker — the first version of the retry_exhausted streaming
+    fix (see the sibling test class above) would have fired "retry"
+    unconditionally here too, discarding that already-correct content
+    with nothing to follow it."""
+
+    def test_no_spurious_retry_when_the_trusted_content_is_shown_as_is(self, monkeypatch):
+        source_text = "Acme Corp support hours are 9am to 5pm on weekdays."
+
+        def fake_search(query, ctx):
+            cited = {
+                "marker": "[1]",
+                "doc_id": "d1",
+                "title": "Support",
+                "text": source_text,
+                "score": 0.9,
+            }
+            return f"[1] {source_text}", [cited]
+
+        # Correct, on-topic, but never adds the [1] marker — the exact
+        # live-observed failure shape.
+        correct_but_uncited = "Acme Corp's support hours are from 9am to 5pm on weekdays."
+        llm = GenericFakeChatModel(
+            messages=iter(
+                [AIMessage(content=correct_but_uncited), AIMessage(content=correct_but_uncited)]
+            )
+        )
+        graph_obj = build_graph(GraphDeps(llm=llm, search_docs=fake_search))
+
+        events = _events_for(graph_obj, "what are the support hours?", monkeypatch=monkeypatch)
+
+        types_in_order = [e["type"] for e in events]
+        # Exactly one retry — round 1's rejection by retry_output. NONE
+        # from retry_exhausted: it no-ops for "uncited," so no second
+        # "retry" event fires (a client only ever clears its draft on an
+        # actual "retry" event — round 2's real content, streamed after
+        # the one retry above, is never cleared or replaced afterward).
+        assert types_in_order.count("retry") == 1
+        retry_idx = types_in_order.index("retry")
+        after = [e["content"] for e in events[retry_idx:] if e["type"] == "token"]
+        streamed_after_retry = "".join(after)
+        # Round 2's real content streamed and was never cleared/replaced
+        # by a second retry — it's the only text after the one real retry.
+        assert streamed_after_retry == correct_but_uncited
+        assert "wasn't able to put together" not in streamed_after_retry
 
 
 class TestCompactedEventSignalsHistoryTrimming:

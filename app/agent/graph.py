@@ -2184,23 +2184,50 @@ def retry_output(state: State) -> dict:
     return {"messages": [HumanMessage(content=feedback)]}
 
 
+# Reasons where a repeatedly-rejected answer is still SAFE to show
+# verbatim as the final one — real bug, found live (tests/live/
+# test_prompt_injection_via_retrieval.py): a real model answered a
+# poisoned-retrieval question CORRECTLY, twice in a row, just without its
+# `[1]` marker — "uncited" is purely an attribution nitpick when the
+# prose itself checks out, and discarding it in favor of a generic
+# apology was a real regression against the OLD (pre-retry_exhausted)
+# behavior, where exhausting MAX_ITERATIONS with the same non-blank
+# answer still showed it, uncited, rather than nothing. "too_short" gets
+# the same trust for the identical reason `no_answer_fallback` already
+# trusts non-blank content: a short-but-real answer beats no answer, and
+# an actually-EMPTY one still falls through to the generic text below (a
+# blank string is never "trusted" — see the `.strip()` check). The other
+# three reasons (`leaked_prompt`, `deferred_instead_of_acting`,
+# `misattributed`) are NOT about attribution polish — the content itself
+# is untrustworthy (a leak, pure narration with no real answer, or a
+# citation actively misattached to a claim it doesn't support, which
+# READS as verified when it isn't) — those always get replaced.
+_TRUST_CONTENT_RETRY_REASONS = frozenset({"too_short", "uncited"})
+
+
 # --- Node: retry loop gave up — reached via route_after_check when the SAME
 # check_output rejection reason repeats MAX_CONSECUTIVE_SAME_RETRY_REASON
 # times in a row (see that constant's own docstring). A sibling of
 # no_answer_fallback below (same "this run ended without a real answer,
 # should it stay silent for run_subagent or speak up for a real user"
 # shape, controlled by the SAME emit_message flag — see build_graph's
-# emit_no_answer_message docstring), but NOT a call to that same function:
-# no_answer_fallback trusts non-blank content (correct for should_continue's
-# safety-net exits, where the content just happens to be orphaned by an
-# UNRELATED budget trip); here the content has been REPEATEDLY, explicitly
-# judged bad by check_output itself — showing it verbatim would recreate
-# exactly the failure this exists to stop (e.g. a deferred_instead_of_acting
-# narration like "I will use the X tool..." displayed as if it were the
-# real, final answer). So this ALWAYS replaces the last message, never
-# conditionally. ---
+# emit_no_answer_message docstring), but not a plain call to that same
+# function: no_answer_fallback always trusts non-blank content (correct
+# for should_continue's safety-net exits, where the content is simply
+# orphaned by an UNRELATED budget trip, never itself judged); here
+# check_output HAS explicitly judged the content, so trust is
+# reason-dependent — see _TRUST_CONTENT_RETRY_REASONS above. ---
 def make_retry_exhausted_node(emit_message: bool = True):
     def retry_exhausted(state: State) -> dict:
+        last = state["messages"][-1] if state.get("messages") else None
+        content = getattr(last, "content", "") or ""
+        if state.get("last_retry_reason") in _TRUST_CONTENT_RETRY_REASONS and (
+            isinstance(content, str) and content.strip()
+        ):
+            # No-op: check_output's own most recent computation
+            # (used_citations, ungrounded_claims_count) already reflects
+            # this exact content correctly — nothing to override.
+            return {}
         if emit_message:
             content = (
                 "I wasn't able to put together a full answer to that just now "
@@ -2208,16 +2235,14 @@ def make_retry_exhausted_node(emit_message: bool = True):
             )
         else:
             # Silenced for run_subagent's nested graph — deliberately NOT
-            # a no-op `{}` the way no_answer_fallback's own silenced
-            # branch is. That shortcut is safe THERE because
-            # should_continue's safety-net paths already tend to leave an
-            # empty last message; here the rejected content is often
-            # substantive (real narration, a real-but-uncited paragraph),
-            # and leaving it in place would let run_subagent's own
-            # "is the final content non-empty" check wrongly treat a
-            # REPEATEDLY-REJECTED answer as a genuine completed one.
-            # Blanking it lets that check correctly fall into its own
-            # differently-worded "did not produce a final answer" /
+            # a no-op `{}` the way the trusted branch above is. That
+            # shortcut is safe THERE because the content really is being
+            # kept; here it's specifically UNTRUSTED (one of the three
+            # reasons that skipped the branch above), and leaving it in
+            # place would let run_subagent's own "is the final content
+            # non-empty" check wrongly treat it as a genuine completed
+            # answer. Blanking it lets that check correctly fall into its
+            # own differently-worded "did not produce a final answer" /
             # outcome="budget_exceeded" path instead.
             content = ""
         return {
