@@ -1,7 +1,7 @@
 """Tests for app/agent/runtime.py's `_resolve_domain_name`/`_domain_name` —
 GRAPH_PATTERNS.md pattern 49's per-process domain tag, used only to stamp
 app/agent/sessions.py's `chat_sessions.domain` column via `_upsert_session`.
-Hermetic: never touches init_graph_async/init_graph_sync's own real
+Hermetic: never touches init_graph_async's own real
 checkpointer setup, since `_resolve_domain_name` is a pure function of its
 `manifest` argument and `_upsert_session` only needs `app.agent.sessions`
 mocked out, the same "test the function, not the graph" scope

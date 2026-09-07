@@ -254,7 +254,7 @@ def _setup_checkpointer_schema_once(checkpointer_url: str) -> None:
 
     Found empirically, not theoretically: running this file's tests under
     real `-n auto` parallelism (multiple xdist worker PROCESSES, each
-    independently calling `init_graph_async()`/`init_graph_sync()` against
+    independently calling `init_graph_async()` against
     this ONE shared container) reliably hit
     `psycopg.errors.UniqueViolation: duplicate key value violates unique
     constraint "checkpoint_migrations_pkey"` — `.setup()`'s own

@@ -17,9 +17,9 @@ notes `astream_events` (what the queued path always runs through) forces
 every LLM call through the streaming HTTP path even when the calling node
 code does `.invoke()` — so a load-test run exercising `/chat/stream/queued`
 always hits the streaming branch below; the non-streaming branch exists so
-this server also works against a genuinely sync caller, e.g.
-scripts/hitl_demo.py's plain `graph.invoke()`, which does issue a real
-non-streaming request.
+this server also works against a genuinely sync top-level `graph.invoke()`
+caller (e.g. a test driving `build_graph(...)` directly rather than through
+`astream_events`), which does issue a real non-streaming request.
 
 Run: `make fake-llm` (defaults to :9009). Point a load-test run at it
 (bypassing LiteLLM/Ollama/Langfuse tracing entirely — this exists to

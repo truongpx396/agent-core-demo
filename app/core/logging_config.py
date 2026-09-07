@@ -1,9 +1,9 @@
 """Structured (JSON) logging, shared by every long-running service process
 (app/api/main.py, app/turns/agent_worker.py, app/ingestion/ingest_worker.py,
-app/channels/telegram.py) — NOT the interactive CLI tools (app/channels/chat.py,
-scripts/hitl_demo.py) or one-shot operator scripts (scripts/seed.py, scripts/eval.py),
-which print directly to the terminal for a human watching it and would just
-get JSON noise interleaved with that.
+app/channels/telegram.py) — NOT the interactive CLI tool (app/channels/chat.py)
+or one-shot operator scripts (scripts/seed.py, scripts/eval.py), which print
+directly to the terminal for a human watching it and would just get JSON
+noise interleaved with that.
 
 Built on structlog, not a hand-rolled `logging.Formatter` — but every log
 CALL site in this app already logs through the stdlib `logging` module

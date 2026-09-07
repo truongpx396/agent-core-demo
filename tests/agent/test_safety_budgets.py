@@ -22,6 +22,7 @@ from langchain_core.messages import (
 from app.agent import runtime as agent_module
 from app.agent import tools
 from app.agent.graph import (
+    COMPACTION_MARKER_KEY,
     MAX_ITERATIONS,
     MAX_TOKENS_PER_TURN,
     MAX_TOOL_CALLS_PER_TURN,
@@ -226,7 +227,15 @@ class TestCompactHistoryNode:
         result = compact_history({"messages": messages})
 
         assert "messages" in result
-        assert all(isinstance(m, RemoveMessage) for m in result["messages"])
+        *removals, marker = result["messages"]
+        assert all(isinstance(m, RemoveMessage) for m in removals)
+        # The permanent breadcrumb (see COMPACTION_MARKER_KEY's own
+        # docstring) — a real, tagged SystemMessage, not another removal,
+        # appended last so a transcript replay sees it after the turns it
+        # describes.
+        assert isinstance(marker, SystemMessage)
+        assert marker.additional_kwargs.get(COMPACTION_MARKER_KEY) is True
+        assert "summarized" in marker.content
         assert result["history_summary"] == "a summary"
         assert metric_value(metrics.agent_history_compacted_total) == before + 1
 
@@ -251,7 +260,14 @@ class TestCompactHistoryNode:
         result = compact_history({"messages": messages})
 
         assert "messages" in result
-        assert all(isinstance(m, RemoveMessage) for m in result["messages"])
+        *removals, marker = result["messages"]
+        assert all(isinstance(m, RemoveMessage) for m in removals)
+        # Still gets a breadcrumb even when summarization itself failed —
+        # worded to say "dropped," not "summarized," since there's no
+        # history_summary update to point to.
+        assert isinstance(marker, SystemMessage)
+        assert marker.additional_kwargs.get(COMPACTION_MARKER_KEY) is True
+        assert "dropped" in marker.content
         assert "history_summary" not in result
 
     def test_extends_a_prior_summary_rather_than_replacing_it(self):

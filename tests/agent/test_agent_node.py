@@ -85,6 +85,8 @@ def test_agent_inserts_context_before_the_question_at_the_anchor():
     assert [type(m).__name__ for m in fake_llm.seen_messages] == [
         "SystemMessage",
         "HumanMessage",
+        "SystemMessage",  # the tail-appended citation reminder — see
+        # test_agent_appends_a_citation_reminder_after_the_question below
     ]
     assert fake_llm.seen_messages[1] is question
 
@@ -115,7 +117,11 @@ def test_agent_keeps_context_anchored_across_a_turns_own_tool_loop():
     assert isinstance(seen[0], SystemMessage)
     assert "checkpointers persist" in seen[0].content
     assert seen[1] is question
-    assert seen[2:] == later_messages
+    assert seen[2:4] == later_messages
+    # The tail-appended citation reminder trails the accumulated tool/retry
+    # messages too — recency-weighted, same as history_summary's reminder.
+    assert isinstance(seen[4], SystemMessage)
+    assert "bracket marker" in seen[4].content
 
 
 def test_agent_falls_back_to_appending_context_without_an_anchor():
@@ -242,3 +248,64 @@ def test_agent_skips_history_summary_message_when_absent():
     agent({"messages": [HumanMessage(content="hi")]})
 
     assert not any(isinstance(m, SystemMessage) for m in fake_llm.seen_messages)
+
+
+def test_agent_appends_a_citation_reminder_after_the_question():
+    """Real bug, found live via Langfuse: qwen2.5:3b drops the (already
+    "mandatory") citation instruction in prompts of only ~2300-2800
+    tokens — a prompt-size/instruction-following-under-load problem, not
+    an ambiguity one, so a SECOND, short reminder positioned right before
+    generation (same recency-anchoring trick as history_summary's own
+    "do not restate" reminder) survives regardless of how large everything
+    earlier in the prompt has grown."""
+    fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
+    agent = make_agent_node(fake_llm)
+
+    question = HumanMessage(content="what is a checkpointer?")
+    state = {
+        "messages": [question],
+        "context": "doc: checkpointers persist graph state.",
+        "context_anchor_index": 0,
+    }
+    agent(state)
+
+    seen = fake_llm.seen_messages
+    assert isinstance(seen[-1], SystemMessage)
+    assert "bracket marker" in seen[-1].content
+    # The bulk context TEXT stays anchored before the question (unchanged,
+    # cache-stable); only this short reminder is recency-weighted.
+    assert seen[0] is not seen[-1]
+    assert "checkpointers persist" in seen[0].content
+
+
+def test_agent_skips_the_citation_reminder_when_context_is_empty():
+    """A general-knowledge or calculator-only answer has nothing to cite —
+    SYSTEM_PROMPT explicitly allows that, so a reminder about "the
+    retrieved content above" would be actively confusing when there is
+    none."""
+    fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
+    agent = make_agent_node(fake_llm)
+
+    agent({"messages": [HumanMessage(content="what is 2+2?")], "context": ""})
+
+    assert not any(isinstance(m, SystemMessage) for m in fake_llm.seen_messages)
+
+
+def test_citation_reminder_is_the_very_last_message_when_both_reminders_fire():
+    """Recency ordering matters: the citation reminder is what actually
+    drives retry_output's repair loop, so it gets the STRONGEST weighting
+    of the two tail reminders — placed after history_summary's own."""
+    fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
+    agent = make_agent_node(fake_llm)
+
+    state = {
+        "messages": [HumanMessage(content="what did we discuss earlier?")],
+        "history_summary": "Earlier, the user asked about refund policy.",
+        "context": "doc: checkpointers persist graph state.",
+        "context_anchor_index": 0,
+    }
+    agent(state)
+
+    seen = fake_llm.seen_messages
+    assert "do not restate" in seen[-2].content
+    assert "bracket marker" in seen[-1].content

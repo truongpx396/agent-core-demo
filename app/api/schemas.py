@@ -54,7 +54,11 @@ class SessionSummary(BaseModel):
 
 
 class SessionMessage(BaseModel):
-    role: str = Field(..., description='"user" or "assistant".')
+    role: str = Field(
+        ...,
+        description='"user" or "assistant", or "system" for a compact_history '
+        "breadcrumb noting that older turns were trimmed/summarized.",
+    )
     text: str = Field(..., description="The message's text content.")
 
 

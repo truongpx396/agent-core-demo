@@ -43,7 +43,7 @@ from app.core.logging_config import configure_logging
 from app.core.security import SecurityCtx
 from app.domains.ops.domain import OPS_DOMAIN_PLUGIN, OPS_MANIFEST
 
-# Local dev ctx, same shape as scripts/hitl_demo.py's _LOCAL_CTX — this
+# Local dev ctx, same shape as app/channels/chat.py's _LOCAL_CTX — this
 # process itself is the trusted boundary a real deployment's auth gateway
 # would otherwise stamp.
 _LOCAL_CTX: SecurityCtx = {

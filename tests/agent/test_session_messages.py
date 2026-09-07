@@ -11,6 +11,7 @@ import asyncio
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from app.agent import runtime as agent_module
+from app.agent.graph import COMPACTION_MARKER_KEY
 
 
 class _FakeState:
@@ -116,3 +117,35 @@ def test_multimodal_content_list_is_flattened_to_text(monkeypatch):
 
 def test_empty_thread_returns_an_empty_list(monkeypatch):
     assert _get([], monkeypatch) == []
+
+
+def test_a_compaction_marker_surfaces_as_a_system_role(monkeypatch):
+    """The ONE exception to "SystemMessages are omitted" (see
+    test_system_and_tool_messages_are_omitted above): a compact_history
+    breadcrumb (graph.py's COMPACTION_MARKER_KEY) is deliberately meant
+    for a human replaying this session to see — unlike the seeded base
+    prompt, which stays hidden."""
+    result = _get(
+        [
+            SystemMessage(content="You are a helpful assistant."),
+            HumanMessage(content="question 1?"),
+            AIMessage(content="answer 1."),
+            SystemMessage(
+                content="[1 earlier turn summarized to keep this conversation within budget.]",
+                additional_kwargs={COMPACTION_MARKER_KEY: True},
+            ),
+            HumanMessage(content="question 2?"),
+            AIMessage(content="answer 2."),
+        ],
+        monkeypatch,
+    )
+    assert result == [
+        {"role": "user", "text": "question 1?"},
+        {"role": "assistant", "text": "answer 1."},
+        {
+            "role": "system",
+            "text": "[1 earlier turn summarized to keep this conversation within budget.]",
+        },
+        {"role": "user", "text": "question 2?"},
+        {"role": "assistant", "text": "answer 2."},
+    ]

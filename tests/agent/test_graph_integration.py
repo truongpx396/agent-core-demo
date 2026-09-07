@@ -364,6 +364,69 @@ class TestOutputRetryPath:
         assert result["iterations"] == 2
 
 
+class TestRetryExhaustedPath:
+    """MAX_CONSECUTIVE_SAME_RETRY_REASON (app/agent/graph.py) — real bug,
+    found live via Langfuse: a turn stuck narrating tool intent instead of
+    calling one, round after round, burned 6 full LLM calls (and ~18k
+    tokens) before should_continue's own, much blunter
+    MAX_TOKENS_PER_TURN cap finally cut it off, landing on the exact same
+    "couldn't answer" fallback it could have reached in 2 rounds."""
+
+    def test_identical_rejection_reason_twice_gives_up_not_a_third_attempt(self):
+        """Exactly 2 responses queued — the SAME too-short answer, twice.
+        If route_after_check kept retrying instead of giving up,
+        GenericFakeChatModel would raise on its exhausted iterator when
+        the graph tried a 3rd agent call, failing this test loudly rather
+        than silently passing."""
+        llm = _fake_llm(AIMessage(content="Yes."), AIMessage(content="Yes."))
+        g = build_graph(GraphDeps(llm=llm))
+        result = g.invoke(
+            {"messages": [HumanMessage(content="is that right?")]}, config=_config()
+        )
+        assert "wasn't able to put together" in result["messages"][-1].content
+        assert result["iterations"] == 2
+        assert result["last_retry_reason"] == "too_short"
+        assert result["retry_reason_repeat_count"] == 2
+
+    def test_different_reasons_in_a_row_keep_retrying_not_giving_up(self):
+        """Genuinely different problems across rounds (too-short, THEN
+        uncited, then a correctly-cited success) is slow convergence, not
+        a stuck loop — must NOT trip the same-reason-repeat guard, which
+        only fires on the IDENTICAL reason twice in a row."""
+        citations = [
+            {
+                "marker": "[1]",
+                "doc_id": "abc123",
+                "title": "Qdrant",
+                "text": "Qdrant stores vectors with JSON payloads. You can filter "
+                "searches by payload fields, for example restricting results to a "
+                "single topic.",
+                "score": 0.91,
+            }
+        ]
+
+        def fake_search_docs(query, ctx):
+            return "[1] Qdrant stores vectors with JSON payloads.", citations
+
+        uncited_paraphrase = (
+            "Qdrant's hybrid search works by storing vectors with JSON payloads. "
+            "You can filter searches by payload fields, for example restricting "
+            "results to a single topic."
+        )
+        llm = _fake_llm(
+            AIMessage(content="Yes."),  # too_short
+            AIMessage(content=uncited_paraphrase),  # uncited (different reason)
+            AIMessage(content=f"{uncited_paraphrase} [1]"),  # cited -> success
+        )
+        g = build_graph(GraphDeps(llm=llm, search_docs=fake_search_docs))
+        result = g.invoke(
+            {"messages": [HumanMessage(content="how does Qdrant's search work?")]},
+            config=_config(),
+        )
+        assert result["messages"][-1].content == f"{uncited_paraphrase} [1]"
+        assert result["iterations"] == 3
+
+
 class TestToolErrorRecovery:
     def test_invalid_tool_args_become_a_tool_message_not_a_crash(self):
         """calculator's args_schema rejects a blank expression (see

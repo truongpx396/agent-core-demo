@@ -208,7 +208,7 @@ class TestSearchDocsCtx:
     def test_applies_tenant_prefilter(self, monkeypatch):
         captured = {}
 
-        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None):
+        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
             captured["tenant_filter"] = tenant_filter
             return []
 
@@ -231,7 +231,7 @@ class TestSearchDocsCtx:
         actually buys."""
         seen_filters = []
 
-        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None):
+        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
             seen_filters.append(tenant_filter)
             return []
 
@@ -253,7 +253,8 @@ class TestSearchDocsCtx:
         captured = {}
 
         def fake_hybrid_search(
-            query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None
+            query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None,
+            min_score=None,
         ):
             captured["tenant_filter"] = tenant_filter
             captured["doc_ids"] = doc_ids
@@ -329,7 +330,7 @@ class TestRecallMemories:
     def test_scopes_to_tenant_and_owner(self, monkeypatch):
         captured = {}
 
-        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None):
+        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
             captured["tenant_filter"] = tenant_filter
             captured["rerank_results"] = rerank_results
             return []
@@ -353,7 +354,7 @@ class TestRecallMemories:
         must produce filters that scope to different owners."""
         seen_filters = []
 
-        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None):
+        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
             seen_filters.append(tenant_filter)
             return []
 
@@ -904,6 +905,31 @@ class TestRunSubagentImpl:
 
         assert "did not produce a final answer" in result
         assert after == before + 1
+
+    def test_giving_up_on_a_stuck_retry_loop_reports_a_clear_message_not_the_rejected_text(self):
+        """Different route than the two tests above: those hit
+        should_continue's OWN tool-loop safety nets (never reaching
+        check_output at all); this one goes through check_output/
+        route_after_check's SEPARATE same-reason-repeat guard
+        (MAX_CONSECUTIVE_SAME_RETRY_REASON) instead — a nested subagent
+        can get stuck in that loop too. Real risk this guards against:
+        retry_exhausted's `emit_message=False` branch must BLANK the
+        content, not no-op like no_answer_fallback's own silenced branch
+        does — leaving the repeatedly-REJECTED text ("Yes.", twice) in
+        place would make this impl's own "is the final content non-empty"
+        check wrongly treat it as a genuine completed answer."""
+        fake_llm = _RecordingFakeLLM(
+            AIMessage(content="Yes."),
+            AIMessage(content="Yes."),
+        )
+        registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
+
+        result = _run_subagent_impl(
+            "researcher", "is that right?", _subagent_cfg(), registry=registry, llm=fake_llm
+        )
+
+        assert "did not produce a final answer" in result
+        assert "Yes." not in result
 
     def test_timeout_raises_and_is_recorded(self, monkeypatch):
         class _SlowLLM:

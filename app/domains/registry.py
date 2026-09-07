@@ -17,8 +17,7 @@ property of a whole PROCESS or of a single REQUEST:
 
 Deliberately NOT consulted by app/channels/chat.py, which keeps defaulting
 to Acme exactly as before this module existed — see app/agent/runtime.py's
-init_graph_sync/init_graph_async docstrings for why that default needed no
-code change here.
+init_graph_async docstring for why that default needed no code change here.
 """
 from app.agent.manifest import (
     DEFAULT_DOMAIN_PLUGIN,

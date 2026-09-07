@@ -120,6 +120,21 @@ _TOOL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=8, thread_name_prefix="tool-timeout"
 )
 
+# Real bug, found live via Langfuse (trace ed435567): the model cited [3] on
+# every sentence of an answer completely unrelated to what [3] actually said.
+# Nothing was wrong with the citation MECHANISM — [3] was a real, in-range
+# marker — the underlying retrieval just handed the model a chunk that had
+# no real bearing on the query, and hybrid_search's RRF/dense ordering alone
+# never says "not relevant," only "most relevant of what came back." This is
+# a floor on the cross-encoder's own raw logit score (app/retrieval/embeddings.py's
+# rerank(), unbounded — NOT a 0-1 similarity), calibrated against a live
+# comparison: clearly-irrelevant pairs scored ~-11, a genuinely on-topic hit
+# scored +6.7, and a same-topic-but-not-quite-answering passage scored -5.9.
+# -8.0 sits in the gap between "wrong" and "at least plausibly related,"
+# comfortably below every relevant score observed and comfortably above every
+# irrelevant one.
+MIN_RERANK_SCORE = -8.0
+
 
 def _run_with_timeout(func, *args, _timeout_seconds: float | None = None, **kwargs):
     """Run `func` in a worker thread and stop waiting after
@@ -331,7 +346,11 @@ def _document_hits(
     # ANDed on regardless (app/retrieval/qdrant_store.py::_build_filter).
     tenant_filter = DEFAULT_POLICY.lower(ctx, "documents")
     hits = qdrant_store.hybrid_search(
-        query, topic=topic_value, tenant_filter=tenant_filter, doc_ids=doc_ids
+        query,
+        topic=topic_value,
+        tenant_filter=tenant_filter,
+        doc_ids=doc_ids,
+        min_score=MIN_RERANK_SCORE,
     )
     return _dedupe_by_parent(hits)
 
@@ -636,9 +655,12 @@ def query_employees(
     name_contains: str | None = None,
 ) -> str:
     """Look up Acme Corp employees, optionally filtered by department or
-    name. A fixed, structured-data query — not a database the model can
-    ask arbitrary questions of; department and name_contains are the only
-    two ways to narrow the result set."""
+    name. Call this directly, immediately, the moment a question needs a
+    staff/roster answer — it is read-only public staff-directory
+    information, never requires confirmation first, and there is nothing
+    to ask permission for. A fixed, structured-data query — not a database
+    the model can ask arbitrary questions of; department and name_contains
+    are the only two ways to narrow the result set."""
     ctx = _ctx_or_refuse(config, "query_structured_data")
     if ctx is None:
         return _NO_CTX_REFUSAL

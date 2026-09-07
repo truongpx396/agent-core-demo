@@ -7,6 +7,7 @@ deterministic way it deserves.
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agent.graph import (
+    MAX_CONSECUTIVE_SAME_RETRY_REASON,
     MAX_HISTORY_SUMMARY_CHARS,
     MAX_ITERATIONS,
     MAX_REPEATED_ACTIONS,
@@ -480,28 +481,68 @@ class TestRouteAfterApproval:
 
 
 class TestRouteAfterCheck:
-    def test_short_answer_retries(self):
-        state = {"messages": [AIMessage(content="Yes.")]}
-        assert route_after_check(state) == "retry_output"
+    """route_after_check is now a pure READER of check_output's own
+    last_retry_reason/retry_reason_repeat_count — it no longer re-derives
+    a reason from raw message content or the individual
+    likely_uncited_citations/likely_misattributed_citations/
+    deferred_instead_of_acting fields itself (check_output already folds
+    all of those into _retry_reason, see that helper and
+    MAX_CONSECUTIVE_SAME_RETRY_REASON's own docstring for why: only
+    check_output can compare THIS round's reason against the PRIOR
+    round's to detect a stuck, non-converging loop). Node-level coverage
+    of _retry_reason/check_output's own reason-computation logic lives in
+    test_nodes.py; these tests are purely about the routing decision
+    given an already-computed reason."""
 
-    def test_empty_answer_retries(self):
-        state = {"messages": [AIMessage(content="")]}
-        assert route_after_check(state) == "retry_output"
-
-    def test_long_answer_goes_to_suggest_followups(self):
-        state = {"messages": [AIMessage(content="A sufficiently detailed answer.")]}
+    def test_no_reason_goes_to_suggest_followups(self):
+        state = {"last_retry_reason": None}
         assert route_after_check(state) == "suggest_followups"
 
-    def test_likely_uncited_citations_retries_even_though_long_enough(self):
+    def test_first_occurrence_of_a_reason_retries(self):
+        state = {"last_retry_reason": "too_short", "retry_reason_repeat_count": 1}
+        assert route_after_check(state) == "retry_output"
+
+    def test_missing_repeat_count_defaults_to_retrying(self):
+        """A reason with no repeat count at all (shouldn't happen once
+        check_output has run, but defensive against a hand-built state)
+        defaults to 0 — well under the threshold — rather than crashing."""
+        state = {"last_retry_reason": "uncited"}
+        assert route_after_check(state) == "retry_output"
+
+    def test_reason_repeated_up_to_but_not_over_threshold_still_retries(self):
         state = {
-            "messages": [AIMessage(content="A sufficiently detailed answer.")],
-            "likely_uncited_citations": [{"marker": "[1]", "text": "..."}],
+            "last_retry_reason": "deferred",
+            "retry_reason_repeat_count": MAX_CONSECUTIVE_SAME_RETRY_REASON - 1,
         }
         assert route_after_check(state) == "retry_output"
 
-    def test_no_likely_uncited_citations_goes_to_suggest_followups(self):
+    def test_reason_repeated_at_threshold_gives_up(self):
+        """Real bug, found live: a stuck deferral loop burned 6 full retry
+        rounds before should_continue's own, much blunter
+        MAX_TOKENS_PER_TURN cap finally ended it. This is the fix — give
+        up after the SAME reason repeats, rather than trusting the model
+        to eventually converge."""
         state = {
-            "messages": [AIMessage(content="A sufficiently detailed answer.")],
-            "likely_uncited_citations": [],
+            "last_retry_reason": "deferred",
+            "retry_reason_repeat_count": MAX_CONSECUTIVE_SAME_RETRY_REASON,
         }
-        assert route_after_check(state) == "suggest_followups"
+        assert route_after_check(state) == "retry_exhausted"
+
+    def test_reason_repeated_past_threshold_also_gives_up(self):
+        state = {
+            "last_retry_reason": "misattributed",
+            "retry_reason_repeat_count": MAX_CONSECUTIVE_SAME_RETRY_REASON + 5,
+        }
+        assert route_after_check(state) == "retry_exhausted"
+
+    def test_giving_up_increments_the_retry_exhausted_metric(self):
+        from app.core import metrics
+        from tests.conftest import metric_value
+
+        before = metric_value(metrics.agent_retry_exhausted_total)
+        state = {
+            "last_retry_reason": "too_short",
+            "retry_reason_repeat_count": MAX_CONSECUTIVE_SAME_RETRY_REASON,
+        }
+        route_after_check(state)
+        assert metric_value(metrics.agent_retry_exhausted_total) == before + 1
