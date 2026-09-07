@@ -29,8 +29,9 @@ from pydantic import BaseModel, Field, field_validator
 from app.agent.tools import _run_with_timeout
 from app.core.security import SecurityCtx, valid_ctx
 from app.domains import notify
-from app.domains.ops import metrics_client, store
+from app.domains.ops import metrics_client, sandbox_session, store
 from app.domains.policy import ActionAllowlistPolicy
+from app.ingestion.web_crawler import CRAWL_TOOL_TIMEOUT_SECONDS, render_url_to_markdown
 
 _NO_CTX_REFUSAL = (
     "Refused: no valid tenant/principal context for this request. "
@@ -46,6 +47,10 @@ OPS_POLICY = ActionAllowlistPolicy(
             "log_incident",
             "list_recent_incidents",
             "resolve_incident",
+            "check_vendor_status",
+            "run_command_in_sandbox",
+            "read_sandbox_file",
+            "write_sandbox_file",
         }
     )
 )
@@ -210,12 +215,159 @@ def resolve_incident(incident_id: int, resolution: str, config: RunnableConfig) 
     return _run_with_timeout(_resolve_incident_impl, incident_id, resolution, ctx)
 
 
+class CheckVendorStatusPageArgs(BaseModel):
+    url: str = Field(..., description="A vendor/dependency's public status page (https:// only).")
+
+
+def _check_vendor_status_page_impl(url: str) -> str:
+    return render_url_to_markdown(url)
+
+
+@tool(args_schema=CheckVendorStatusPageArgs)
+def check_vendor_status_page(url: str, config: RunnableConfig) -> str:
+    """Read a vendor/upstream-dependency's public status page LIVE (real
+    headless-browser render) — use this to check whether an anomaly you
+    found via fetch_metrics_summary correlates with a known incident on
+    their side before opening one of your own with log_incident. Reaches
+    the open internet — declared "outward" in TOOL_CAPABILITIES, so it
+    always requires human approval before it runs, same as
+    post_to_team_channel."""
+    ctx = _ctx_or_refuse(config, "check_vendor_status")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(
+        _check_vendor_status_page_impl, url, _timeout_seconds=CRAWL_TOOL_TIMEOUT_SECONDS
+    )
+
+
+def _thread_id_from_config(config: RunnableConfig | None) -> str:
+    return (config or {}).get("configurable", {}).get("thread_id", "unknown")
+
+
+# Three narrow, purpose-built tools over OpenSandbox's raw MCP catalog
+# (app/domains/ops/sandbox_session.py, GRAPH_PATTERNS.md pattern 50) —
+# NOT the raw ~19-tool catalog itself. Real, live-verified finding behind
+# this: handing a small local model (qwen2.5:3b) OpenSandbox's own
+# stateful create/connect/run tools directly produced reproducible
+# failures (a hallucinated sandbox_id, then reaching for sandbox_connect
+# instead of sandbox_create after an error) that a prompt-only fix did not
+# resolve — see sandbox_session.py's own docstring for the full writeup.
+# These three give the model the exact same flat, 1-3-field shape every
+# other tool in this app already has; the sandbox's entire lifecycle
+# (create-or-reuse per thread, connect_if_missing) is handled in
+# sandbox_session.py, never exposed to the model.
+#
+# Built conditionally: `_RAW_SANDBOX_TOOLS` is empty if opensandbox-mcp
+# isn't installed/reachable (sandbox_session.load_raw_sandbox_tools's own
+# degrade — see app/domains/sandbox_tools.py's docstring for why that's
+# safe to check eagerly, at this module's own import time) — the same
+# "resolves to nothing usable, not a crash" contract
+# app/agent/tools.py::make_domain_subagent_tool already established for an
+# AGENT.md with no real tools to offer. `_SANDBOX_TOOLS`/entries below are
+# ordinary members of TOOLS/TOOL_CAPABILITIES, not a special merge step —
+# app/domains/ops/domain.py needs no sandbox-specific code at all anymore.
+_RAW_SANDBOX_TOOLS = sandbox_session.load_raw_sandbox_tools()
+_SANDBOX_TOOLS = []
+
+if _RAW_SANDBOX_TOOLS:
+
+    class RunCommandInSandboxArgs(BaseModel):
+        command: str = Field(..., description="A shell command to run, e.g. a Python one-liner or script.")
+
+        @field_validator("command")
+        @classmethod
+        def _not_blank(cls, v: str) -> str:
+            if not v.strip():
+                raise ValueError("command must not be empty")
+            return v
+
+    def _run_command_in_sandbox_impl(command: str, thread_id: str, ctx: SecurityCtx) -> str:
+        return sandbox_session.run_command_in_sandbox_impl(command, thread_id, _RAW_SANDBOX_TOOLS)
+
+    @tool(args_schema=RunCommandInSandboxArgs)
+    def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
+        """Run a shell command inside an isolated, disposable sandbox —
+        use this for real computation calculator's plain arithmetic can't
+        do (recomputing a statistic from raw readings, parsing a pasted
+        log dump, diffing two configs). One sandbox is created
+        automatically per investigation and reused for every call in it —
+        you never create, connect to, or track a sandbox yourself, just
+        describe the command. The sandbox has NO network access by
+        default, so stick to the Python standard library rather than
+        `pip install`-ing anything. Reaches an external service — always
+        requires human approval before it runs."""
+        ctx = _ctx_or_refuse(config, "run_command_in_sandbox")
+        if ctx is None:
+            return _NO_CTX_REFUSAL
+        return _run_with_timeout(
+            _run_command_in_sandbox_impl,
+            command,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        )
+
+    class ReadSandboxFileArgs(BaseModel):
+        path: str = Field(..., description="Path of the file to read inside the sandbox.")
+
+    def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -> str:
+        return sandbox_session.read_sandbox_file_impl(path, thread_id, _RAW_SANDBOX_TOOLS)
+
+    @tool(args_schema=ReadSandboxFileArgs)
+    def read_sandbox_file(path: str, config: RunnableConfig) -> str:
+        """Read a text file from this investigation's sandbox (e.g. a
+        script's output written to disk, or a file written earlier with
+        write_sandbox_file). Same auto-created, per-investigation sandbox
+        as run_command_in_sandbox. Reaches an external service — always
+        requires human approval before it runs."""
+        ctx = _ctx_or_refuse(config, "read_sandbox_file")
+        if ctx is None:
+            return _NO_CTX_REFUSAL
+        return _run_with_timeout(
+            _read_sandbox_file_impl,
+            path,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        )
+
+    class WriteSandboxFileArgs(BaseModel):
+        path: str = Field(..., description="Destination path for the file inside the sandbox.")
+        content: str = Field(..., description="The file's full text content.")
+
+    def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx: SecurityCtx) -> str:
+        return sandbox_session.write_sandbox_file_impl(path, content, thread_id, _RAW_SANDBOX_TOOLS)
+
+    @tool(args_schema=WriteSandboxFileArgs)
+    def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
+        """Write a text file into this investigation's sandbox (e.g. stage
+        a script before running it with run_command_in_sandbox, or a log
+        dump/config to diff). Same auto-created, per-investigation sandbox
+        as run_command_in_sandbox. Reaches an external service — always
+        requires human approval before it runs."""
+        ctx = _ctx_or_refuse(config, "write_sandbox_file")
+        if ctx is None:
+            return _NO_CTX_REFUSAL
+        return _run_with_timeout(
+            _write_sandbox_file_impl,
+            path,
+            content,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        )
+
+    _SANDBOX_TOOLS = [run_command_in_sandbox, read_sandbox_file, write_sandbox_file]
+
+
 TOOLS = [
     fetch_metrics_summary,
     post_to_team_channel,
     log_incident,
     list_recent_incidents,
     resolve_incident,
+    check_vendor_status_page,
+    *_SANDBOX_TOOLS,
 ]
 
 TOOL_CAPABILITIES = {
@@ -224,4 +376,6 @@ TOOL_CAPABILITIES = {
     "log_incident": "mutating",
     "list_recent_incidents": "read_only",
     "resolve_incident": "mutating",
+    "check_vendor_status_page": "outward",
+    **{t.name: "outward" for t in _SANDBOX_TOOLS},
 }

@@ -7,7 +7,7 @@ primary way to add capacity — no coordination code needed here beyond what
 `app/turns/queue.py` already wraps.
 
 Like app/channels/telegram.py, ONE process still serves exactly ONE domain
-for its whole life — `AGENT_DOMAIN` (app/core/config.py, default `"acme"`)
+for its whole life — `AGENT_DOMAIN` (app/core/config.py, default `"ecorp"`)
 picks which domain's manifest/tools this process's graph is built from, and
 which domain's requests stream it reads (`AGENT_DOMAIN=support python -m
 app.turns.agent_worker` runs a support-only worker pool). The domain is a

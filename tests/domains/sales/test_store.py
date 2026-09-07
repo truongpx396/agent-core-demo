@@ -51,36 +51,36 @@ def test_find_or_create_lead_always_scopes_to_tenant(monkeypatch):
     fake = _FakeConnection(row=(1,))
     monkeypatch.setattr(store, "get_connection", lambda: fake)
 
-    lead_id = store.find_or_create_lead("acme", "Jordan", "jordan@example.com", "asked about pricing")
+    lead_id = store.find_or_create_lead("ecorp", "Jordan", "jordan@example.com", "asked about pricing")
 
     assert lead_id == 1
-    assert fake.captured["params"][0] == "acme"
+    assert fake.captured["params"][0] == "ecorp"
 
 
 def test_get_lead_scopes_to_tenant_and_contact(monkeypatch):
     fake = _FakeConnection(
-        row=(1, "acme", "Jordan", "jordan@example.com", "new", "notes", "t", "t"),
+        row=(1, "ecorp", "Jordan", "jordan@example.com", "new", "notes", "t", "t"),
         columns=_LEAD_COLUMNS,
     )
     monkeypatch.setattr(store, "get_connection", lambda: fake)
 
-    lead = store.get_lead("acme", "jordan@example.com")
+    lead = store.get_lead("ecorp", "jordan@example.com")
 
     assert lead["contact"] == "jordan@example.com"
-    assert fake.captured["params"] == ["acme", "jordan@example.com"]
+    assert fake.captured["params"] == ["ecorp", "jordan@example.com"]
 
 
 def test_get_lead_returns_none_for_no_match(monkeypatch):
     fake = _FakeConnection(row=None, columns=_LEAD_COLUMNS)
     monkeypatch.setattr(store, "get_connection", lambda: fake)
 
-    assert store.get_lead("acme", "nobody@example.com") is None
+    assert store.get_lead("ecorp", "nobody@example.com") is None
 
 
 def test_add_followup_returns_none_when_no_lead_exists(monkeypatch):
     monkeypatch.setattr(store, "get_lead", lambda tenant, contact: None)
 
-    followup_id = store.add_followup("acme", "nobody@example.com", "2099-01-01", "nudge", "rep-1")
+    followup_id = store.add_followup("ecorp", "nobody@example.com", "2099-01-01", "nudge", "rep-1")
 
     assert followup_id is None
 
@@ -90,10 +90,10 @@ def test_add_followup_scopes_to_tenant_and_the_leads_id(monkeypatch):
     fake = _FakeConnection(row=(9,))
     monkeypatch.setattr(store, "get_connection", lambda: fake)
 
-    followup_id = store.add_followup("acme", "jordan@example.com", "2099-01-01", "nudge", "rep-1")
+    followup_id = store.add_followup("ecorp", "jordan@example.com", "2099-01-01", "nudge", "rep-1")
 
     assert followup_id == 9
-    assert fake.captured["params"][:2] == ["acme", 5]
+    assert fake.captured["params"][:2] == ["ecorp", 5]
 
 
 def test_due_followups_scopes_to_tenant_and_pending_status(monkeypatch):
@@ -103,16 +103,16 @@ def test_due_followups_scopes_to_tenant_and_pending_status(monkeypatch):
     )
     monkeypatch.setattr(store, "get_connection", lambda: fake)
 
-    due = store.due_followups("acme", "2099-01-02")
+    due = store.due_followups("ecorp", "2099-01-02")
 
     assert due[0]["contact"] == "jordan@example.com"
-    assert fake.captured["params"][0] == "acme"
+    assert fake.captured["params"][0] == "ecorp"
 
 
 def test_lead_history_returns_none_when_no_lead_exists(monkeypatch):
     monkeypatch.setattr(store, "get_lead", lambda tenant, contact: None)
 
-    assert store.lead_history("acme", "nobody@example.com") is None
+    assert store.lead_history("ecorp", "nobody@example.com") is None
 
 
 def test_lead_history_includes_followups(monkeypatch):
@@ -124,11 +124,11 @@ def test_lead_history_includes_followups(monkeypatch):
     )
     monkeypatch.setattr(store, "get_connection", lambda: fake)
 
-    history = store.lead_history("acme", "jordan@example.com")
+    history = store.lead_history("ecorp", "jordan@example.com")
 
     assert history["name"] == "Jordan"
     assert len(history["followups"]) == 1
-    assert fake.captured["params"] == ["acme", 5]
+    assert fake.captured["params"] == ["ecorp", 5]
 
 
 _PENDING_FOLLOWUP_COLUMNS = ("id", "due_at", "note", "contact", "lead_name")
@@ -141,10 +141,10 @@ def test_list_pending_followups_scopes_to_tenant_and_pending_status(monkeypatch)
     )
     monkeypatch.setattr(store, "get_connection", lambda: fake)
 
-    followups = store.list_pending_followups("acme")
+    followups = store.list_pending_followups("ecorp")
 
     assert followups[0]["lead_name"] == "Jordan"
-    assert fake.captured["params"] == ["acme"]
+    assert fake.captured["params"] == ["ecorp"]
     assert "status = 'pending'" in fake.captured["sql"]
 
 
@@ -152,16 +152,16 @@ def test_list_pending_followups_filters_by_contact_when_given(monkeypatch):
     fake = _FakeConnection(rows=[], columns=_PENDING_FOLLOWUP_COLUMNS)
     monkeypatch.setattr(store, "get_connection", lambda: fake)
 
-    store.list_pending_followups("acme", "jordan@example.com")
+    store.list_pending_followups("ecorp", "jordan@example.com")
 
-    assert fake.captured["params"] == ["acme", "jordan@example.com"]
+    assert fake.captured["params"] == ["ecorp", "jordan@example.com"]
     assert "l.contact = %s" in fake.captured["sql"]
 
 
 def test_mark_lead_lost_returns_false_when_no_lead_exists(monkeypatch):
     monkeypatch.setattr(store, "get_lead", lambda tenant, contact: None)
 
-    assert store.mark_lead_lost("acme", "nobody@example.com", "unresponsive") is False
+    assert store.mark_lead_lost("ecorp", "nobody@example.com", "unresponsive") is False
 
 
 def test_mark_lead_lost_updates_status_and_cancels_pending_followups(monkeypatch):
@@ -177,13 +177,13 @@ def test_mark_lead_lost_updates_status_and_cancels_pending_followups(monkeypatch
     fake.execute = _record_execute
     monkeypatch.setattr(store, "get_connection", lambda: fake)
 
-    result = store.mark_lead_lost("acme", "jordan@example.com", "went with a competitor")
+    result = store.mark_lead_lost("ecorp", "jordan@example.com", "went with a competitor")
 
     assert result is True
     assert len(executed) == 2
     lead_sql, lead_params = executed[0]
     assert "status = 'lost'" in lead_sql
-    assert lead_params == ["went with a competitor", "acme", "jordan@example.com"]
+    assert lead_params == ["went with a competitor", "ecorp", "jordan@example.com"]
     followup_sql, followup_params = executed[1]
     assert "crm_followups" in followup_sql
-    assert followup_params == ["acme", 5]
+    assert followup_params == ["ecorp", 5]

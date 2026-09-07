@@ -7,7 +7,7 @@ INSIDE each domain's own tool implementations, the same way
 `app/agent/tools.py`'s `_ctx_or_refuse` calls `DEFAULT_POLICY.permit(...)`
 directly. These new domains follow that exact discipline, just against a
 different, domain-specific action vocabulary (`create_ticket`,
-`schedule_followup`, ...) instead of Acme's `{"search", "write_note", ...}`
+`schedule_followup`, ...) instead of Ecorp's `{"search", "write_note", ...}`
 — `app.core.security.TenantIsolationPolicy.permit` would fail closed on
 every one of these action names (its `_KNOWN_ACTIONS` allowlist has never
 heard of them), which is correct for THAT policy but means each new domain

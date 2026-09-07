@@ -19,8 +19,10 @@ FROM python:3.13-slim AS base
 
 # libgomp1: onnxruntime's runtime dependency (fastembed's BM25/rerank
 # models) — not bundled in its wheel, and the slim base doesn't ship it.
-# Nothing else here needs a system package: psycopg[binary]/lxml/pillow
-# all ship manylinux wheels for this base image's platform.
+# Nothing else here needs a system package for the Python deps themselves:
+# psycopg[binary]/lxml/pillow all ship manylinux wheels for this base
+# image's platform. `playwright install --with-deps` below pulls its OWN
+# much longer list (fonts, libnss3, ...) for headless Chromium specifically.
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -30,12 +32,27 @@ WORKDIR /app
 COPY requirements-lock.txt .
 RUN pip install --no-cache-dir -r requirements-lock.txt
 
+# fastembed/huggingface_hub cache their downloaded BM25/rerank models, and
+# playwright (below) caches its downloaded browser, under $HOME on first
+# use / first install — set BEFORE that install, not just before the final
+# chown, so the browser downloads straight into appuser's home instead of
+# root's default ~/.cache needing to be relocated after the fact.
+ENV HOME=/home/appuser
+
+# app/ingestion/web_crawler.py (crawl4ai, GRAPH_PATTERNS.md pattern 50)
+# needs a real headless-Chromium binary, not just the `playwright` Python
+# package requirements-lock.txt already installs above — `--with-deps`
+# also apt-get installs the browser's own system libraries (fonts,
+# libnss3, ...). Still running as root here (USER appuser hasn't taken
+# effect yet), same as the libgomp1 install above.
+RUN playwright install --with-deps chromium
+
 COPY app/ ./app/
 
-# fastembed/huggingface_hub cache their downloaded BM25/rerank models under
-# $HOME on first use (app/retrieval/embeddings.py) — appuser needs a real, writable
-# HOME for that, not root's.
-ENV HOME=/home/appuser
+# Both caches above were written as root (HOME already pointed at
+# /home/appuser, but the process creating them still ran as root) —
+# appuser needs a writable HOME, and needs to actually OWN what's already
+# in it, before USER switches below.
 RUN chown -R appuser:appuser /home/appuser
 USER appuser
 

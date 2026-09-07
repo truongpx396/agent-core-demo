@@ -413,15 +413,15 @@ class TestRetryExhaustedPath:
                 "marker": "[1]",
                 "doc_id": "d1",
                 "title": "Support",
-                "text": "Acme Corp support hours are 9am to 5pm on weekdays.",
+                "text": "Ecorp support hours are 9am to 5pm on weekdays.",
                 "score": 0.9,
             }
         ]
 
         def fake_search_docs(query, ctx):
-            return "[1] Acme Corp support hours are 9am to 5pm on weekdays.", citations
+            return "[1] Ecorp support hours are 9am to 5pm on weekdays.", citations
 
-        correct_but_uncited = "Acme Corp's support hours are from 9am to 5pm on weekdays."
+        correct_but_uncited = "Ecorp's support hours are from 9am to 5pm on weekdays."
         llm = _fake_llm(
             AIMessage(content=correct_but_uncited), AIMessage(content=correct_but_uncited)
         )

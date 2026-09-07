@@ -17,7 +17,7 @@ Endpoints:
                               — needs `make agent-worker` running, and a
                               real approve/reject UI can act on a pause it
                               emits (see POST /chat/resume). Routes by an
-                              `X-Domain` header (default "acme", see
+                              `X-Domain` header (default "ecorp", see
                               get_domain) to that domain's own worker pool
                               — this endpoint (and /chat/resume,
                               /chat/cancel below) is the ONE place this
@@ -148,7 +148,7 @@ async def get_ctx(
 
 async def get_domain(
     x_domain: str = Header(
-        "acme",
+        "ecorp",
         description=(
             "Which domain (app/domains/registry.py) this turn runs against. "
             "Read by every chat endpoint below (all of them queued)."
@@ -158,7 +158,7 @@ async def get_domain(
     """Unlike `get_ctx`'s two headers, this one defaults rather than fails
     closed — an absent `X-Domain` is a normal, common case (every existing
     caller before this dependency existed), not a misconfiguration, so it
-    should behave exactly as before: Acme. An UNKNOWN domain name is still
+    should behave exactly as before: Ecorp. An UNKNOWN domain name is still
     fail-loud, though — same discipline as
     app/domains/registry.py::resolve_domain itself, just surfaced as a 422
     here instead of a process-startup crash, since this is a per-request

@@ -212,7 +212,7 @@ class TestRouteAfterValidationCtx:
     def test_ctx_missing_principal_rejected(self):
         state = {
             "messages": [HumanMessage(content="a real question")],
-            "ctx": {"tenant": "acme", "principal": "", "claims": {}},
+            "ctx": {"tenant": "ecorp", "principal": "", "claims": {}},
         }
         assert route_after_validation(state) == "reject_context"
 

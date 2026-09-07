@@ -433,22 +433,22 @@ class TestCheckOutput:
 
     def test_likely_uncited_flags_a_real_qwen_paraphrase_case_two(self):
         """Regression case #2: another real qwen2.5:3b answer merging two
-        Acme Corp facts with zero markers ("what is Acme Corp?")."""
+        Ecorp facts with zero markers ("what is Ecorp?")."""
         citations = [
             {
                 "marker": "[1]",
-                "text": "Acme Corp's support hours are 9am to 5pm on weekdays, "
+                "text": "Ecorp's support hours are 9am to 5pm on weekdays, "
                 "and support is free for all open-source users.",
             },
             {
                 "marker": "[2]",
-                "text": "Acme Corp was founded in 2021 and builds offline "
+                "text": "Ecorp was founded in 2021 and builds offline "
                 "developer tools. Its flagship product is a local AI stack "
                 "starter kit.",
             },
         ]
         content = (
-            "Acme Corp was founded in 2021 and builds offline developer tools. "
+            "Ecorp was founded in 2021 and builds offline developer tools. "
             "Its flagship product is a local AI stack starter kit. Support is "
             "available from 9am to 5pm on weekdays, and support is free for all "
             "open-source users."
@@ -472,7 +472,7 @@ class TestCheckOutput:
         citations = [
             {
                 "marker": "[1]",
-                "text": "Acme Corp's support hours are 9am to 5pm on weekdays.",
+                "text": "Ecorp's support hours are 9am to 5pm on weekdays.",
             }
         ]
         content = "The capital of France is Paris."
@@ -608,7 +608,7 @@ class TestDefersInsteadOfActing:
     def test_flags_narrated_tool_intent(self):
         content = (
             "I will use the `query_employees` tool to look up the employees "
-            "in the engineering department of Acme Corp. \n\nLet's proceed "
+            "in the engineering department of Ecorp. \n\nLet's proceed "
             "with that.\n"
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
@@ -618,7 +618,7 @@ class TestDefersInsteadOfActing:
     def test_flags_asking_permission_to_proceed(self):
         content = (
             "I can use the `query_employees` tool to look up the employees "
-            "in the engineering department of Acme Corp. Would you like me "
+            "in the engineering department of Ecorp. Would you like me "
             "to proceed?"
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
@@ -634,8 +634,8 @@ class TestDefersInsteadOfActing:
         assert result["deferred_instead_of_acting"] is True
 
     def test_ignores_a_genuine_direct_answer(self):
-        content = "Acme Corp's support hours are 9am to 5pm on weekdays [1]."
-        citations = [{"marker": "[1]", "text": "Acme Corp's support hours are 9am to 5pm."}]
+        content = "Ecorp's support hours are 9am to 5pm on weekdays [1]."
+        citations = [{"marker": "[1]", "text": "Ecorp's support hours are 9am to 5pm."}]
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = graph.check_output(state)
         assert result["deferred_instead_of_acting"] is False
@@ -645,7 +645,7 @@ class TestDefersInsteadOfActing:
         have?") describes capability in third person, not first-person
         INTENT — must not trip the same heuristic that catches "I will
         use X"."""
-        content = "This agent can use the query_employees tool to look up Acme Corp staff."
+        content = "This agent can use the query_employees tool to look up Ecorp staff."
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = graph.check_output(state)
         assert result["deferred_instead_of_acting"] is False
@@ -686,8 +686,8 @@ class TestLeaksSystemPrompt:
         assert result["leaks_system_prompt"] is True
 
     def test_ignores_an_ordinary_answer(self):
-        content = "Acme Corp's support hours are 9am to 5pm on weekdays [1]."
-        citations = [{"marker": "[1]", "text": "Acme Corp's support hours are 9am to 5pm."}]
+        content = "Ecorp's support hours are 9am to 5pm on weekdays [1]."
+        citations = [{"marker": "[1]", "text": "Ecorp's support hours are 9am to 5pm."}]
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = graph.check_output(state)
         assert result["leaks_system_prompt"] is False
@@ -704,11 +704,11 @@ class TestLeaksSystemPrompt:
     def test_respects_a_custom_system_prompt_not_the_bare_default(self):
         """build_graph binds check_output to THIS domain's own
         manifest.system_prompt via functools.partial (see build_graph's
-        own comment) — a non-Acme domain's answer must be checked against
-        ITS OWN seeded prompt, not the bare Acme-only SYSTEM_PROMPT
+        own comment) — a non-Ecorp domain's answer must be checked against
+        ITS OWN seeded prompt, not the bare Ecorp-only SYSTEM_PROMPT
         module default, or a real leak of a custom prompt would go
         completely undetected (checked against the wrong text) and a
-        coincidental match against Acme's UNRELATED prompt could
+        coincidental match against Ecorp's UNRELATED prompt could
         false-positive."""
         custom_prompt = "You are Zephyr, a specialized ops assistant with unique tone rules."
         content = f"My instructions say: {custom_prompt}"

@@ -30,7 +30,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agent.graph import SYSTEM_PROMPT, make_agent_node
 
-CTX_A = {"tenant": "acme-corp", "principal": "alice", "claims": {"role": "admin"}}
+CTX_A = {"tenant": "ecorp-corp", "principal": "alice", "claims": {"role": "admin"}}
 CTX_B = {"tenant": "globex-inc", "principal": "bob", "claims": {"role": "viewer"}}
 
 

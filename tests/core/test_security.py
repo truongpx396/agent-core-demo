@@ -8,7 +8,7 @@ pure, fail-closed, and exhaustively testable without any I/O.
 """
 from app.core.security import DEFAULT_POLICY, TenantIsolationPolicy, valid_ctx
 
-FULL_CTX = {"tenant": "acme", "principal": "u1", "claims": {}}
+FULL_CTX = {"tenant": "ecorp", "principal": "u1", "claims": {}}
 
 
 class TestValidCtx:
@@ -22,13 +22,13 @@ class TestValidCtx:
         assert valid_ctx({"principal": "u1"}) is False
 
     def test_missing_principal_is_invalid(self):
-        assert valid_ctx({"tenant": "acme"}) is False
+        assert valid_ctx({"tenant": "ecorp"}) is False
 
     def test_empty_string_tenant_is_invalid(self):
         assert valid_ctx({"tenant": "", "principal": "u1"}) is False
 
     def test_empty_string_principal_is_invalid(self):
-        assert valid_ctx({"tenant": "acme", "principal": ""}) is False
+        assert valid_ctx({"tenant": "ecorp", "principal": ""}) is False
 
     def test_full_ctx_is_valid(self):
         assert valid_ctx(FULL_CTX) is True
@@ -63,7 +63,7 @@ class TestTenantIsolationPolicyPermit:
     def test_known_action_denied_with_empty_tenant_or_principal(self):
         policy = TenantIsolationPolicy()
         assert policy.permit("search", {"tenant": "", "principal": "u1"}) is False
-        assert policy.permit("search", {"tenant": "acme", "principal": ""}) is False
+        assert policy.permit("search", {"tenant": "ecorp", "principal": ""}) is False
 
 
 class TestTenantIsolationPolicyLower:
@@ -71,7 +71,7 @@ class TestTenantIsolationPolicyLower:
         policy = TenantIsolationPolicy()
         f = policy.lower(FULL_CTX, "documents")
         values = {c.key: c.match.value for c in f.must}
-        assert values == {"tenant": "acme", "kind": "document"}
+        assert values == {"tenant": "ecorp", "kind": "document"}
 
     def test_memories_target_additionally_scopes_to_owner(self):
         """The second, finer isolation axis nested inside the first — see
@@ -79,7 +79,7 @@ class TestTenantIsolationPolicyLower:
         policy = TenantIsolationPolicy()
         f = policy.lower(FULL_CTX, "memories")
         values = {c.key: c.match.value for c in f.must if c.match is not None}
-        assert values == {"tenant": "acme", "kind": "memory", "owner": "u1"}
+        assert values == {"tenant": "ecorp", "kind": "memory", "owner": "u1"}
 
     def test_memories_target_also_includes_a_retention_horizon_range(self):
         """The retention-at-recall condition (GRAPH_PATTERNS.md pattern
@@ -124,7 +124,7 @@ class TestTenantIsolationPolicyLower:
 
     def test_different_tenants_produce_different_filters(self):
         policy = TenantIsolationPolicy()
-        f1 = policy.lower({"tenant": "acme", "principal": "u1"}, "documents")
+        f1 = policy.lower({"tenant": "ecorp", "principal": "u1"}, "documents")
         f2 = policy.lower({"tenant": "other-co", "principal": "u1"}, "documents")
         t1 = next(c.match.value for c in f1.must if c.key == "tenant")
         t2 = next(c.match.value for c in f2.must if c.key == "tenant")

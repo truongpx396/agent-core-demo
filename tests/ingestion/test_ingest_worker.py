@@ -11,10 +11,10 @@ import json
 from app.ingestion import ingest_queue, ingest_worker
 from tests.turns.test_queue import FakeRedis
 
-TEST_CTX = {"tenant": "acme", "principal": "p1", "claims": {}}
+TEST_CTX = {"tenant": "ecorp", "principal": "p1", "claims": {}}
 
 
-def _entry(job_id="j1", filename="report.pdf", object_key="acme/abc-report.pdf", topic=None, ctx=None):
+def _entry(job_id="j1", filename="report.pdf", object_key="ecorp/abc-report.pdf", topic=None, ctx=None):
     payload = json.dumps(
         {
             "job_id": job_id,
@@ -53,7 +53,7 @@ class TestProcessJob:
 
         asyncio.run(ingest_worker.process_job(client, entry_id, fields))
 
-        assert captured["key"] == "acme/abc-report.pdf"
+        assert captured["key"] == "ecorp/abc-report.pdf"
         assert captured["extracted_from"] == b"pdf-bytes"
         assert captured["text"] == "Refund policy: 30 days."
         assert captured["title"] == "report"
@@ -74,7 +74,7 @@ class TestProcessJob:
         monkeypatch.setattr(ingest_worker.ingestor, "ingest_text", lambda *a, **kw: 1)
 
         client = FakeRedis()
-        entry_id, fields = _entry(job_id="j2", filename="notes.docx", object_key="acme/xyz-notes.docx")
+        entry_id, fields = _entry(job_id="j2", filename="notes.docx", object_key="ecorp/xyz-notes.docx")
 
         asyncio.run(ingest_worker.process_job(client, entry_id, fields))
 

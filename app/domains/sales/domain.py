@@ -15,7 +15,7 @@ across domains; see that factory's own docstring.
 from dataclasses import dataclass
 
 from app.agent.manifest import AgentManifest, DomainPlugin
-from app.agent.tools import TOOL_CAPABILITIES as _ACME_TOOL_CAPABILITIES
+from app.agent.tools import TOOL_CAPABILITIES as _ECORP_TOOL_CAPABILITIES
 from app.agent.tools import (
     ask_clarification,
     make_domain_subagent_tool,
@@ -36,15 +36,15 @@ _RUN_SUBAGENT = make_domain_subagent_tool(
     all_tools=list(_SALES_TOOLS) + _REUSED_READ_ONLY_TOOLS,
     tool_capabilities={
         **_SALES_TOOL_CAPABILITIES,
-        "search_docs": _ACME_TOOL_CAPABILITIES["search_docs"],
-        "skill_search": _ACME_TOOL_CAPABILITIES["skill_search"],
-        "use_skill": _ACME_TOOL_CAPABILITIES["use_skill"],
-        "ask_clarification": _ACME_TOOL_CAPABILITIES["ask_clarification"],
+        "search_docs": _ECORP_TOOL_CAPABILITIES["search_docs"],
+        "skill_search": _ECORP_TOOL_CAPABILITIES["skill_search"],
+        "use_skill": _ECORP_TOOL_CAPABILITIES["use_skill"],
+        "ask_clarification": _ECORP_TOOL_CAPABILITIES["ask_clarification"],
     },
 )
 # None unless at least one bundled AGENT.md declares `domains: [sales]`.
 
-SALES_SYSTEM_PROMPT = """You are Acme Corp's sales concierge.
+SALES_SYSTEM_PROMPT = """You are Ecorp's sales concierge.
 
 Voice: warm, concise, consultative — never pushy, never generic-sounding.
 Draft replies as if writing them yourself, ready for a human rep to review
@@ -58,7 +58,10 @@ schedule a second one on top of an existing pending one. Once a lead shows
 real buying intent (asks about pricing, timeline, or explicitly wants to
 talk to someone), call package_lead_brief and then handoff_to_human with a
 clear reason — don't keep going back and forth with a lead that's ready
-for a person. If a lead clearly isn't going to convert (explicitly not
+for a person. If the lead mentioned or you otherwise know their company's
+website, call enrich_lead_from_website before package_lead_brief so the
+brief includes real research, not just what the lead said themselves —
+this reaches the open internet and always needs human approval first. If a lead clearly isn't going to convert (explicitly not
 interested, or unresponsive after repeated follow-ups), call
 mark_lead_lost with a specific reason rather than leaving it to keep
 surfacing in the follow-up queue.
@@ -84,9 +87,9 @@ class _SalesDomainPlugin:
     def tool_capabilities(self) -> dict[str, str]:
         merged = dict(_SALES_TOOL_CAPABILITIES)
         for name in ("search_docs", "skill_search", "use_skill", "ask_clarification"):
-            merged[name] = _ACME_TOOL_CAPABILITIES[name]
+            merged[name] = _ECORP_TOOL_CAPABILITIES[name]
         if _RUN_SUBAGENT is not None:
-            merged["run_subagent"] = _ACME_TOOL_CAPABILITIES["run_subagent"]
+            merged["run_subagent"] = _ECORP_TOOL_CAPABILITIES["run_subagent"]
         return merged
 
     def policy(self) -> Policy:

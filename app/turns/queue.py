@@ -119,19 +119,19 @@ def results_stream_key(request_id: str) -> str:
     return f"agent:results:{request_id}"
 
 
-def requests_stream_key(domain: str = "acme") -> str:
+def requests_stream_key(domain: str = "ecorp") -> str:
     """The one requests stream a given domain's worker pool
     (app/turns/agent_worker.py, `AGENT_DOMAIN`) all consume from as a single
     Redis Streams consumer group — see this module's own docstring for why
     domain-scoping the stream, rather than sharing one flat stream across
     every domain, is what lets one worker pool's load stay independent of
-    every other domain's. Defaults to `"acme"` — same "no domain given
-    means Acme" convention as app/agent/runtime.py's init_graph_async
+    every other domain's. Defaults to `"ecorp"` — same "no domain given
+    means Ecorp" convention as app/agent/runtime.py's init_graph_async
     and app/core/config.py's own `AGENT_DOMAIN` default."""
     return f"agent:requests:{domain}"
 
 
-async def ensure_consumer_group(client: redis.Redis, domain: str = "acme") -> None:
+async def ensure_consumer_group(client: redis.Redis, domain: str = "ecorp") -> None:
     """Idempotent: creates domain's consumer group (and its stream, via
     mkstream) on first use, in whichever worker process reaches it first —
     same idempotent-setup shape app/retrieval/semantic_cache.py's `_ensure_index`
@@ -156,7 +156,7 @@ async def publish_request(
     text: str,
     thread_id: str,
     ctx: SecurityCtx,
-    domain: str = "acme",
+    domain: str = "ecorp",
     require_approval: bool = False,
     images: list[str] | None = None,
 ) -> None:
@@ -210,7 +210,7 @@ async def publish_resume_request(
     thread_id: str,
     approved: bool,
     ctx: SecurityCtx,
-    domain: str = "acme",
+    domain: str = "ecorp",
 ) -> None:
     """Producer side: enqueue a resume decision for a turn paused at
     human_approval — the queued-path counterpart to
@@ -234,7 +234,7 @@ async def publish_resume_request(
 
 
 async def publish_cancel_request(
-    client: redis.Redis, *, request_id: str, thread_id: str, ctx: SecurityCtx, domain: str = "acme"
+    client: redis.Redis, *, request_id: str, thread_id: str, ctx: SecurityCtx, domain: str = "ecorp"
 ) -> None:
     """Producer side: enqueue a cancel for a turn paused at human_approval
     (the queued-path counterpart to app/agent/runtime.py::cancel_run). Deliberately

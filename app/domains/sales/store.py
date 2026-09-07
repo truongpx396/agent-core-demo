@@ -140,6 +140,28 @@ def mark_followup_done(tenant: str, followup_id: int) -> None:
         conn.execute(sql, [tenant, followup_id])
 
 
+def append_lead_note(tenant: str, contact: str, note: str) -> bool:
+    """Appends `note` to an EXISTING lead's running notes log — same
+    `notes = notes || '\\n' || %s` append used by `mark_lead_lost`/
+    `find_or_create_lead`, but for a caller that already knows the lead
+    exists and isn't logging a new interaction or closing it out (see
+    app/domains/sales/tools.py::enrich_lead_from_website, which appends a
+    crawled firmographic summary this way). Returns False (nothing
+    updated) if no lead with that contact exists for this tenant, same
+    "tell the model, don't silently no-op" contract every other
+    contact-keyed write in this module already follows."""
+    lead = get_lead(tenant, contact)
+    if lead is None:
+        return False
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE crm_leads SET notes = COALESCE(notes || E'\\n', '') || %s, "
+            "updated_at = now() WHERE tenant = %s AND contact = %s",
+            [note, tenant, contact],
+        )
+    return True
+
+
 def lead_history(tenant: str, contact: str) -> dict | None:
     """A lead's full record plus its follow-ups (pending and done) —
     what package_lead_brief assembles a handoff brief from."""

@@ -16,7 +16,7 @@ def _write_subagent(tmp_path, slug, content):
 
 _VALID = """---
 name: researcher
-description: Look up Acme Corp facts without pulling search steps into the main conversation.
+description: Look up Ecorp facts without pulling search steps into the main conversation.
 tools: [search_docs, calculator]
 model: chat
 ---
@@ -33,7 +33,7 @@ class TestParseSubagentFile:
         record = _parse_subagent_file(path)
 
         assert record.name == "researcher"
-        assert record.description.startswith("Look up Acme Corp facts")
+        assert record.description.startswith("Look up Ecorp facts")
         assert record.tools == ("search_docs", "calculator")
         assert record.model == "chat"
         assert "focused research assistant" in record.system_prompt

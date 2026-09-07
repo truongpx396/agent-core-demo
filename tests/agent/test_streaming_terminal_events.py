@@ -380,7 +380,7 @@ class TestRetryExhaustedTrustsAttributionOnlyFailures:
     with nothing to follow it."""
 
     def test_no_spurious_retry_when_the_trusted_content_is_shown_as_is(self, monkeypatch):
-        source_text = "Acme Corp support hours are 9am to 5pm on weekdays."
+        source_text = "Ecorp support hours are 9am to 5pm on weekdays."
 
         def fake_search(query, ctx):
             cited = {
@@ -394,7 +394,7 @@ class TestRetryExhaustedTrustsAttributionOnlyFailures:
 
         # Correct, on-topic, but never adds the [1] marker — the exact
         # live-observed failure shape.
-        correct_but_uncited = "Acme Corp's support hours are from 9am to 5pm on weekdays."
+        correct_but_uncited = "Ecorp's support hours are from 9am to 5pm on weekdays."
         llm = GenericFakeChatModel(
             messages=iter(
                 [AIMessage(content=correct_but_uncited), AIMessage(content=correct_but_uncited)]

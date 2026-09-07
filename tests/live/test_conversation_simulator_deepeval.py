@@ -31,7 +31,7 @@ deepeval's docs:
 2. **The target model itself uncritically adopted a customer's FALSE
    premise instead of correcting it against its own retrieved context** —
    a real target-model finding, not a judge artifact. The simulated
-   persona asserted Acme Corp's support hours were "Monday and Thursday
+   persona asserted Ecorp's support hours were "Monday and Thursday
    afternoons" (nowhere in `_CONTEXT`, which says Monday-Friday 9am-5pm);
    the real `qwen2.5:3b` answer affirmed that fabricated schedule back
    ("it would be processed according to their usual schedule of Monday and
@@ -62,7 +62,7 @@ from tests.conftest import TEST_CTX
 pytestmark = pytest.mark.deepeval
 
 _CONTEXT = (
-    "[1] Acme Corp support hours are 9am to 5pm Monday through Friday, "
+    "[1] Ecorp support hours are 9am to 5pm Monday through Friday, "
     "closed on weekends and public holidays.\n\n"
     "[2] Once a refund is approved by a human agent, it takes 3-5 business "
     "days to process."
@@ -72,7 +72,7 @@ _CITATIONS = [
         "marker": "[1]",
         "doc_id": "support-hours-doc",
         "title": "support-hours",
-        "text": "Acme Corp support hours are 9am to 5pm Monday through Friday.",
+        "text": "Ecorp support hours are 9am to 5pm Monday through Friday.",
         "score": 0.9,
     },
     {
@@ -127,7 +127,7 @@ def test_multiturn_conversation_stays_grounded_and_in_role(deepeval_ollama):
 
     golden = ConversationalGolden(
         scenario=(
-            "A customer first asks about Acme Corp's support hours, then "
+            "A customer first asks about Ecorp's support hours, then "
             "follows up a moment later asking whether a refund would still "
             "be processed in time given those hours."
         ),
@@ -154,7 +154,7 @@ def test_multiturn_conversation_stays_grounded_and_in_role(deepeval_ollama):
     )
     test_cases = simulator.simulate(conversational_goldens=[golden], max_user_simulations=3)
     test_case = test_cases[0]
-    test_case.chatbot_role = "A Tier-1 customer support copilot for Acme Corp"
+    test_case.chatbot_role = "A Tier-1 customer support copilot for Ecorp"
 
     assert_test(
         test_case,

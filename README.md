@@ -147,34 +147,34 @@ declarations, tenant scoping, tests) — not a prompt-only reskin:
 
 | Domain | What it is | Sandbox | Run it |
 |---|---|---|---|
-| **Support copilot** (`app/domains/support/`) | Tier-1 customer support behind a chat gateway — searches the knowledge base, opens/checks/escalates a ticket, lists a customer's own tickets, and adds a follow-up comment to one already open (`support_tickets`, a new Postgres table) | Its `AgentManifest.allowed_tools` is exactly `search_docs`/`skill_search`/`use_skill`/`ask_clarification` + its own 5 ticket tools (`create_ticket`/`check_ticket_status`/`escalate_to_human`/`list_my_tickets`/`add_ticket_comment`) + its own `run_subagent` — no `calculator`, `add_note`, `remember`, or `query_employees`. That omission, not a Policy check, is what "sandboxed" means (`build_graph()`'s `ToolNode` only ever knows the tools this list names) | `make telegram-support` (needs `TELEGRAM_BOT_TOKEN`) |
-| **Internal ops bot** (`app/domains/ops/`) | Pulls this app's own operational metrics from the Prometheus this repo already ships (`make obs-up`), flags anything past an alert-matching threshold, and either posts a digest or answers an ad-hoc question — a real anomaly can be logged, listed, and resolved as a durable incident (`ops_incidents`, a new Postgres table) instead of only ever a channel post that scrolls away | `post_to_team_channel` is this repo's first real use of the `outward` tool capability; `log_incident`/`resolve_incident` are `mutating`, `list_recent_incidents` is `read_only` | `make ops-digest` (cron-callable) / `python -m scripts.ops_investigate "why is latency high?"` (ad hoc) |
-| **Sales/CRM concierge** (`app/domains/sales/`) | Logs inbound lead interactions, drafts replies in a configured voice, schedules follow-ups and lists the pending queue, packages a brief and hands a hot lead to a human rep, or marks a dead lead lost (cancelling its pending follow-ups) (`crm_leads`/`crm_followups`, two new Postgres tables) | No tool ever sends anything to a lead — every reply is a draft; `handoff_to_human`/`schedule_followup`/`mark_lead_lost` only ever run through the interactive agent loop, never from cron (see below) | `make telegram-sales` / `make followup-sweep` (cron-callable) |
+| **Support copilot** (`app/domains/support/`) | Tier-1 customer support behind a chat gateway — searches the knowledge base, opens/checks/escalates a ticket, lists a customer's own tickets, adds a follow-up comment to one already open (`support_tickets`, a new Postgres table), and reads a customer-linked third-party page LIVE via a real headless-browser render (`fetch_external_reference`, pattern 50) without ever writing to the knowledge base | Its `AgentManifest.allowed_tools` is exactly `search_docs`/`skill_search`/`use_skill`/`ask_clarification` + its own 5 ticket tools (`create_ticket`/`check_ticket_status`/`escalate_to_human`/`list_my_tickets`/`add_ticket_comment`) + `fetch_external_reference` (`outward`) + its own `run_subagent` — no `calculator`, `add_note`, `remember`, or `query_employees`. That omission, not a Policy check, is what "sandboxed" means (`build_graph()`'s `ToolNode` only ever knows the tools this list names) | `make telegram-support` (needs `TELEGRAM_BOT_TOKEN`) |
+| **Internal ops bot** (`app/domains/ops/`) | Pulls this app's own operational metrics from the Prometheus this repo already ships (`make obs-up`), flags anything past an alert-matching threshold, and either posts a digest or answers an ad-hoc question — a real anomaly can be logged, listed, and resolved as a durable incident (`ops_incidents`, a new Postgres table) instead of only ever a channel post that scrolls away. Can also check a vendor's live public status page (`check_vendor_status_page`) and, for real computation `calculator` can't safely do, run a command or read/write a file inside an isolated, auto-managed OpenSandbox sandbox (`run_command_in_sandbox`/`read_sandbox_file`/`write_sandbox_file`, consumed over MCP but never exposing OpenSandbox's own raw ~19-tool lifecycle API to the model — pattern 50) | `post_to_team_channel`/`check_vendor_status_page` and all three sandbox tools are `outward`; `log_incident`/`resolve_incident` are `mutating`, `list_recent_incidents` is `read_only`. Its own read-only metrics/incidents are also reachable from an external MCP client (`make mcp-serve-ops`) | `make ops-digest` (cron-callable) / `python -m scripts.ops_investigate "why is latency high?"` (ad hoc) |
+| **Sales/CRM concierge** (`app/domains/sales/`) | Logs inbound lead interactions, drafts replies in a configured voice, schedules follow-ups and lists the pending queue, packages a brief and hands a hot lead to a human rep, marks a dead lead lost (cancelling its pending follow-ups), or researches a lead's company website LIVE before a rep calls them (`enrich_lead_from_website`, pattern 50) (`crm_leads`/`crm_followups`, two new Postgres tables) | No tool ever sends anything to a lead — every reply is a draft; `handoff_to_human`/`schedule_followup`/`mark_lead_lost`/`enrich_lead_from_website` only ever run through the interactive agent loop, never from cron (see below) | `make telegram-sales` / `make followup-sweep` (cron-callable) |
 
 A fresh Postgres volume picks up their tables automatically
 (`postgres-init/07-support-tickets.sql`, `08-crm.sql`, `09-support-ticket-notes.sql`,
 `10-ops-incidents.sql`); against an existing volume, apply them by hand once.
 
-**Skills and subagents are domain-scoped, not just Acme-level.** Both
+**Skills and subagents are domain-scoped, not just Ecorp-level.** Both
 catalogs support an optional `domains: [...]` frontmatter field
 (`app/agent/skills.py::SkillRecord`, `app/agent/subagents.py::SubagentRecord`)
 — each of the three example domains gets its OWN `skill_search`/`use_skill`
 pair and its OWN `run_subagent` tool (`app/agent/tools.py::make_skill_tools`/
-`make_domain_subagent_tool`), never Acme's literal objects, so a
+`make_domain_subagent_tool`), never Ecorp's literal objects, so a
 domain-tagged package never leaks into a domain it wasn't written for (a
 support-domain `skill_search` call can't surface the `sales-lead-qualification`
 skill, and support's `run_subagent` menu only ever offers
-`ticket-researcher`, never Acme's own `researcher`). An untagged `SKILL.md`
+`ticket-researcher`, never Ecorp's own `researcher`). An untagged `SKILL.md`
 stays visible everywhere (the default every skill had before this field
 existed); an untagged `AGENT.md`, by contrast, stays exactly where it's
-always lived — visible only to Acme — since a subagent's declared `tools:`
+always lived — visible only to Ecorp — since a subagent's declared `tools:`
 are only ever meaningful against ONE specific tool universe. Each domain
 now ships its own bundled subagent too: `subagents/ticket-researcher/`,
 `subagents/lead-researcher/`, `subagents/metrics-researcher/`.
 
 **How one process picks a domain.** `app/channels/telegram.py` — already a
 real, working gateway (long-polling, no public webhook needed) — reads
-`AGENT_DOMAIN` (`app/core/config.py`, default `acme`) and resolves it via
+`AGENT_DOMAIN` (`app/core/config.py`, default `ecorp`) and resolves it via
 `app/domains/registry.py` before priming `app/agent/runtime.py`'s durable
 graph singleton, which now takes an optional `manifest`/`domain` override
 threaded straight into `build_graph()`. Each domain still runs as its own
@@ -226,7 +226,7 @@ GRAPH_PATTERNS.md's ["Extending Further"](GRAPH_PATTERNS.md#extending-further) s
 - **Orchestrated crash-restart / auto-scaling** — `docker-compose --profile app` containerizes workers and shuts them down gracefully, but nothing restarts a *crashed* one or scales replicas on real queue depth; that's a Kubernetes/ECS-shaped concern this app doesn't own an opinion about yet
 - **Real authentication** — `X-Tenant-Id`/`X-Principal-Id` are a trusted-header seam for a gateway to fill in, not authentication themselves; nothing today verifies who's actually behind a request
 - **Per-action authorization within a tenant** — every principal in a tenant currently shares the same write capability; a finer-grained `Policy` reading `ctx["claims"]` would express "this principal may write, that one may only read"
-- **A real multi-domain runtime** — `app/agent/runtime.py`'s `init_graph_async` now takes an optional `manifest`/`domain` a process can boot its singleton against (see "Example domains" above — `app/channels/telegram.py`'s `AGENT_DOMAIN` uses exactly this), so "which one domain" is a boot-time choice instead of hardcoded to Acme. Still not built: SEVERAL domains served concurrently from one running process (a per-domain graph registry, `_ensure_seeded_async`'s cache keyed by `(domain, thread_id)`, `app/api/main.py` reading which domain a request is for) — every domain above still runs as its own process
+- **A real multi-domain runtime** — `app/agent/runtime.py`'s `init_graph_async` now takes an optional `manifest`/`domain` a process can boot its singleton against (see "Example domains" above — `app/channels/telegram.py`'s `AGENT_DOMAIN` uses exactly this), so "which one domain" is a boot-time choice instead of hardcoded to Ecorp. Still not built: SEVERAL domains served concurrently from one running process (a per-domain graph registry, `_ensure_seeded_async`'s cache keyed by `(domain, thread_id)`, `app/api/main.py` reading which domain a request is for) — every domain above still runs as its own process
 - **A production-grade vision model** — every small local Ollama vision model tried supports vision OR tool-calling, never both together; the `vision` alias in `litellm-config.yaml` is a ready slot, not a verified default
 - **Image-aware moderation, Telegram/CLI image input** — moderation (pattern 25) only screens the text portion of a multimodal message; only the HTTP API surfaces `images` end-to-end today
 - **A webhook-based Telegram deployment** — long-polling needs no public URL (right for local/demo); a real deployment would switch to `setWebhook`
@@ -283,9 +283,9 @@ Try these in the chat:
   Ask the exact same thing again (same or a different thread) and the
   second answer comes back near-instantly, served from the **semantic
   cache** instead of re-running retrieval + the LLM (pattern 22)
-- `What are Acme Corp support hours?`  → retrieval with a **topic** the agent can filter on
+- `What are Ecorp support hours?`  → retrieval with a **topic** the agent can filter on
 - `what is 21 * 2?`                    → uses the **calculator** tool
-- `Who works in Engineering at Acme?`  → uses **query_employees**, a fixed,
+- `Who works in Engineering at Ecorp?`  → uses **query_employees**, a fixed,
   typed query against Postgres — not a text-to-SQL tool (pattern 21); also
   reachable over MCP, see below
 - `remember that our refund window is 30 days, under the company topic` →
@@ -357,7 +357,7 @@ pipeline every other document goes through:
 ```python
 from app.ingestion.ingestor import ingest_file, ingest_text, ingest_url
 
-ctx = {"tenant": "acme", "principal": "you", "claims": {}}
+ctx = {"tenant": "ecorp", "principal": "you", "claims": {}}
 ingest_file("notes.md", ctx)                          # .txt/.md only
 ingest_url("https://example.com/article", ctx)        # SSRF-guarded fetch
 ingest_text("some pasted text", title="My Notes", ctx=ctx)
@@ -396,7 +396,7 @@ make serve          # starts uvicorn on http://localhost:8000
 ```bash
 curl -s -N -X POST http://localhost:8000/chat/stream/queued \
   -H "Content-Type: application/json" \
-  -H "X-Tenant-Id: acme" \
+  -H "X-Tenant-Id: ecorp" \
   -H "X-Principal-Id: demo-user" \
   -d '{"message":"what is 21 * 2?","thread_id":"demo"}'
 # -> data: {"type": "token", "content": "The"}
@@ -405,7 +405,7 @@ curl -s -N -X POST http://localhost:8000/chat/stream/queued \
 #    data: {"type": "done"}
 ```
 
-Use `X-Tenant-Id: acme` to see the docs `make ingest` seeded (`acme` is
+Use `X-Tenant-Id: ecorp` to see the docs `make ingest` seeded (`ecorp` is
 `DEFAULT_TENANT` in `app/core/config.py`) — a different tenant id sees none of
 them, by design.
 
@@ -477,6 +477,61 @@ tools, capabilities = load_remote_tools(
 (`app/agent/manifest.py`, pattern 23) — `should_continue`'s mandatory
 human-approval gate then applies to a remote tool exactly as it would to
 an in-process one.
+
+**A second real server + a real remote consumer** (GRAPH_PATTERNS.md pattern 50):
+
+- `app/mcp/ops_server.py` extends the server side to a second domain —
+  `fetch_metrics_summary`/`list_recent_incidents`, so an on-call engineer's
+  own Claude Desktop/Cursor can pull live incident status directly
+  (`make mcp-serve-ops`), without opening this app's chat UI at all.
+- `app/domains/sandbox_tools.py` extends the client side with a genuinely
+  useful remote server instead of a synthetic example:
+  [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox)'s own
+  `opensandbox-mcp` bridge, giving the ops domain a real, isolated
+  code-execution sandbox for the computation `calculator`'s AST evaluator
+  deliberately can't do — zero changes to `app/mcp/client.py` itself,
+  every tool still forced through the same fail-closed `"outward"`
+  capability. Needs a separately-run `opensandbox-server` (`make
+  sandbox-serve`, needs Docker + `uv`) — the tool CATALOG loads fine
+  without it (verified empirically: it's served from `opensandbox-mcp`'s
+  own static definitions), only actually *calling* a sandbox tool needs
+  the backend reachable. **The model itself never sees this raw catalog**
+  — `app/domains/ops/sandbox_session.py` wraps it into three narrow tools
+  (`run_command_in_sandbox`/`read_sandbox_file`/`write_sandbox_file`),
+  because handing a small local model (this app's own `qwen2.5:3b`) the
+  raw ~19-tool, stateful create/connect/run API directly produced real,
+  live-verified failures (a hallucinated `sandbox_id`, then the wrong
+  recovery tool after an error) that a prompt-only fix didn't close —
+  see GRAPH_PATTERNS.md pattern 50 for the full, re-verified writeup.
+  Each investigation's sandbox is created once and reused automatically
+  (tagged by thread id, looked up via OpenSandbox's own metadata filter)
+  — the model just describes what it needs done.
+
+## Web crawling and lead/vendor research (`app/ingestion/web_crawler.py`)
+
+[crawl4ai](https://github.com/unclecode/crawl4ai) (GRAPH_PATTERNS.md
+pattern 50) backs a real headless-Chromium render — not the bare
+`httpx.get` + stdlib HTML-strip `app/ingestion/ingestor.py::ingest_url`
+already does for static pages, but something that actually works on a
+JS-rendered/SPA site. Same SSRF guard as the rest of this app's URL
+handling (`app/core/url_safety.py`, shared with `ingestor.py` rather than
+duplicated) runs before any browser launches. Three domain tools build on
+it, each `"outward"` (mandatory human approval):
+
+- `app/domains/sales/tools.py::enrich_lead_from_website` — research a
+  lead's company site before a rep calls them, folding a summary into
+  their CRM notes.
+- `app/domains/support/tools.py::fetch_external_reference` — read a
+  customer-linked third-party page live, for one turn's answer only, never
+  a knowledge-base write (keeps the support domain's own "sandboxed to
+  knowledge base + ticket system" design intact).
+- `app/domains/ops/tools.py::check_vendor_status_page` — correlate a
+  metrics anomaly against an upstream dependency's public status page
+  before opening an incident.
+
+Needs a one-time browser install: `make crawl4ai-setup` (or `playwright
+install --with-deps chromium`) for local dev; the Dockerfile does this
+automatically for the containerized `api`/`agent-worker` images.
 
 ## Observability
 
@@ -708,14 +763,18 @@ agent-worker` first, and ideally `make ingest` for real retrieval hits:
 | `make chat`       | Start the agent CLI |
 | `make serve`      | Start the FastAPI service (http://localhost:8000/docs) |
 | `make mcp-serve`  | Start the MCP server exposing `query_employees` (stdio transport) |
+| `make mcp-serve-ops`| Start the MCP server exposing the ops domain's `fetch_metrics_summary`/`list_recent_incidents` (stdio transport, pattern 50) |
 | `make mcp-inspect`| Launch the MCP Inspector against `app/mcp/server.py` |
+| `make crawl4ai-setup`| One-time headless-Chromium install for the crawl4ai-backed domain tools (pattern 50) |
+| `make sandbox-serve`| Start a local OpenSandbox server (needs Docker + `uv`) that the ops domain's sandbox tools execute against (pattern 50) |
 | `make telegram-support` | Telegram gateway as the Tier-1 support copilot (`AGENT_DOMAIN=support`) |
 | `make telegram-sales`   | Telegram gateway as the sales/CRM concierge (`AGENT_DOMAIN=sales`) |
 | `make ops-digest`       | One-shot ops metrics digest → team channel (meant for real cron; see "Example domains") |
 | `make followup-sweep`   | One-shot CRM due-follow-up sweep → drafted nudges (meant for real cron) |
 | `make test`       | Run the pytest suite in parallel (fake LLM, no live services needed) |
 | `make test-integration` | Real Postgres/Redis/Qdrant via testcontainers, no LLM (needs Docker, not `make up`) |
-| `make test-live`  | Real small Ollama model + full app/agent-worker stack, incl. a Playwright browser E2E (needs Docker) |
+| `make test-live`  | Real small Ollama model + full app/agent-worker stack, incl. a Playwright browser E2E and real crawl4ai renders (needs Docker) |
+| `make test-sandbox` | Real `opensandbox-mcp` round trip (needs `make sandbox-serve` running + `opensandbox-mcp` on PATH; self-skips otherwise) — manual only, like `make deepeval`/`garak` |
 | `make lint`       | `ruff check .` — see `pyproject.toml`'s `[tool.ruff]` |
 | `make typecheck`  | `mypy` over `app/` and `scripts/` — see `pyproject.toml`'s `[tool.mypy]` |
 | `make eval`       | Run the golden-dataset evaluation against the real stack |
@@ -760,6 +819,7 @@ from the library/service code in `app/`.
 | **`app/core/`** — cross-cutting, depended on by every other subpackage | |
 | `app/core/config.py`        | Typed settings (Pydantic `BaseSettings`) |
 | `app/core/security.py`      | `SecurityCtx` + `Policy` — tenant/owner isolation, enforced as a Qdrant pre-filter (GRAPH_PATTERNS.md pattern 17) |
+| `app/core/url_safety.py`    | The shared SSRF guard `app/ingestion/ingestor.py` and `app/ingestion/web_crawler.py` both call — one implementation, not two that can drift (pattern 50) |
 | `app/core/metrics.py`       | OpenTelemetry counters/histograms (a prometheus_client-shaped wrapper around the real OTel API) + the tool-call callback handler |
 | `app/core/telemetry.py`     | Installs the OTel `MeterProvider` — OTLP export, explicit histogram bucket Views — at real process startup only (never at import time; see its own docstring) |
 | `app/core/logging_config.py`| structlog-based structured (JSON) logging for every long-running service process, plus automatic `request_id`/`thread_id` propagation onto every log line touched while handling one turn (a contextvar + structlog processor, zero changes to individual `logger.info(...)` call sites) |
@@ -770,6 +830,7 @@ from the library/service code in `app/`.
 | **`app/ingestion/`** — turning files/URLs/text into indexed chunks | |
 | `app/ingestion/chunking.py`      | Parent-child, overlapping-sliding-window chunking — pure functions, no I/O (pattern 24) |
 | `app/ingestion/ingestor.py`      | General-purpose Ingestor — files/URLs/pasted text → chunked, embedded, indexed; SSRF-guarded URL fetch (pattern 24) |
+| `app/ingestion/web_crawler.py`   | crawl4ai-backed real headless-browser render (pattern 50) — backs sales/support/ops's own live-web domain tools |
 | **`app/agent/`** — the LangGraph agent itself | |
 | `app/agent/sql_store.py`     | The one fixed, parameterized `query_employees` query against Postgres, with a declared result cap — never generated SQL (GRAPH_PATTERNS.md pattern 21) |
 | `app/agent/moderation.py`    | Real (non-hollow) pattern-based input moderation — injection/jailbreak phrasings + a denylist (pattern 25) |
@@ -777,12 +838,13 @@ from the library/service code in `app/`.
 | `app/agent/tools.py`         | `search_docs` + `calculator` + `query_employees` + `ask_clarification` (read-only) + `add_note` + `remember` (mutating) — each wrapped with a timeout budget, each declaring a capability in `TOOL_CAPABILITIES`; ctx-scoped via `app/core/security.py` |
 | `app/agent/graph.py`         | LangGraph agent (state, edges, memory, safety budgets, mandatory capability gate, checkpoint version stamping, SecurityCtx fail-closed guard, moderation screen, semantic cache short-circuit, citation extraction, follow-up suggestions) |
 | `app/agent/runtime.py`         | Shared runtime (used by both CLI and API); request-level timeout + metrics recording; durable-checkpointer init (`init_graph_async`) |
-| `app/agent/manifest.py`      | `AgentManifest` (config) + `DomainPlugin` (code) — the multi-domain composition layer `build_graph(manifest=..., domain=...)` reads (pattern 23); `DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN` wrap this app's own Acme setup unchanged |
+| `app/agent/manifest.py`      | `AgentManifest` (config) + `DomainPlugin` (code) — the multi-domain composition layer `build_graph(manifest=..., domain=...)` reads (pattern 23); `DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN` wrap this app's own Ecorp setup unchanged |
 | **`app/turns/`** — async chat-turn queue + its worker | |
 | `app/turns/queue.py`   | Redis Streams queue between the SSE-serving process and agent-worker processes (GRAPH_PATTERNS.md pattern 43) |
 | `app/turns/agent_worker.py` | Consumes `app/turns/queue.py`, runs the graph, publishes results back — the only place that actually executes a queued turn |
 | **`app/mcp/`** — Model Context Protocol, both directions | |
 | `app/mcp/server.py`    | MCP server exposing `query_employees` over stdio (`make mcp-serve`) — a separate trust boundary from the in-process LLM (pattern 21) |
+| `app/mcp/ops_server.py`| A second MCP server, for the ops domain — `fetch_metrics_summary`/`list_recent_incidents` over stdio (`make mcp-serve-ops`, pattern 50) |
 | `app/mcp/client.py`    | MCP client — binds an external MCP server's tools into this app's own graph, with local `capability_overrides` as the sole trust source (pattern 28) |
 | **`app/api/`** — the HTTP layer | |
 | `app/api/health.py`        | Real dependency checks for `GET /health/ready` (Qdrant, both Postgres databases, Redis) — bounded per-check timeouts, run concurrently |
@@ -792,14 +854,15 @@ from the library/service code in `app/`.
 | `app/api/static/index.html`| The built-in web UI — self-contained, no build step, no CDN dependency (pattern 29) |
 | **`app/channels/`** — ways to talk to the agent outside HTTP | |
 | `app/channels/chat.py`          | Streaming CLI + Langfuse tracing |
-| `app/channels/telegram.py`      | Telegram gateway (pattern 42) — generalized via `AGENT_DOMAIN`/`app/domains/registry.py` to front any of the domains below, not just Acme |
+| `app/channels/telegram.py`      | Telegram gateway (pattern 42) — generalized via `AGENT_DOMAIN`/`app/domains/registry.py` to front any of the domains below, not just Ecorp |
 | **`app/domains/`** — example domains built on the manifest/plugin seam (pattern 23); see "Example domains" above | |
 | `app/domains/registry.py`       | `AGENT_DOMAIN` name → `(AgentManifest, DomainPlugin)`, used by `app/channels/telegram.py` |
 | `app/domains/policy.py`         | `ActionAllowlistPolicy` — the one small `Policy` shared by all three example domains |
 | `app/domains/notify.py`         | `post_to_team_channel` — shared team-channel sink (local file + log by default, optional Slack webhook) |
-| `app/domains/support/`          | Tier-1 support copilot: `store.py` (`support_tickets`), `tools.py` (create/check/escalate a ticket, list a customer's own tickets, add a follow-up comment), `domain.py` (manifest + sandboxed tool set) |
-| `app/domains/ops/`              | Internal ops bot: `metrics_client.py` (Prometheus queries + anomaly thresholds mirroring `observability/prometheus/alerts.yml`), `store.py` (`ops_incidents`, log/list/resolve), `tools.py`, `domain.py` |
-| `app/domains/sales/`            | Sales/CRM concierge: `store.py` (`crm_leads`/`crm_followups`), `tools.py` (log/schedule/brief/handoff, list pending follow-ups, mark a lead lost), `domain.py` |
+| `app/domains/sandbox_tools.py`  | OpenSandbox's RAW MCP catalog consumed over MCP (pattern 50) — `load_sandbox_tools()`, a thin, fail-soft wrapper around `app/mcp/client.py::load_remote_tools`; never handed to an LLM directly, only used internally by `app/domains/ops/sandbox_session.py` |
+| `app/domains/support/`          | Tier-1 support copilot: `store.py` (`support_tickets`), `tools.py` (create/check/escalate a ticket, list a customer's own tickets, add a follow-up comment, `fetch_external_reference` — pattern 50), `domain.py` (manifest + sandboxed tool set) |
+| `app/domains/ops/`              | Internal ops bot: `metrics_client.py` (Prometheus queries + anomaly thresholds mirroring `observability/prometheus/alerts.yml`), `store.py` (`ops_incidents`, log/list/resolve), `sandbox_session.py` (three narrow sandbox tools over OpenSandbox's raw catalog, built to work reliably with a small local model — pattern 50), `tools.py` (also `check_vendor_status_page`), `domain.py` |
+| `app/domains/sales/`            | Sales/CRM concierge: `store.py` (`crm_leads`/`crm_followups`, `append_lead_note`), `tools.py` (log/schedule/brief/handoff, list pending follow-ups, mark a lead lost, `enrich_lead_from_website` — pattern 50), `domain.py` |
 | **`scripts/`** — runnable operator/demo tools, not imported by `app/` | |
 | `scripts/sample_docs.py`   | Sample knowledge base |
 | `scripts/seed.py`        | Seeds the sample docs via `app/ingestion/ingestor.py`'s pipeline |
@@ -810,7 +873,9 @@ from the library/service code in `app/`.
 | `tests/`               | pytest suite, mirroring `app/`'s subpackages one-for-one (`tests/agent/`, `tests/api/`, ...) — routing/node/graph/tool/checkpointer/sql_store/mcp_server/mcp_client/ingestor/chunking/moderation/api tests against a fake LLM and mocked stores (`make test`, no live services) |
 | `tests/containers.py`  | Shared testcontainers helpers (real Postgres/Redis/Qdrant/Ollama, cross-`pytest -n auto`-worker-shared — pattern 48) |
 | `tests/integration/`   | Real Postgres/Redis/Qdrant tests, no LLM (`make test-integration`) |
-| `tests/live/`          | Real small-Ollama-model tests + a Playwright browser E2E against the built-in web UI (`make test-live`) |
+| `tests/live/`          | Real small-Ollama-model tests + a Playwright browser E2E against the built-in web UI, plus real crawl4ai browser renders — through `web_crawler.py` directly and through the real ops/support graphs (`make test-live`, pattern 50) |
+| `tests/live/test_opensandbox_mcp_live.py` | Real `opensandbox-mcp` tool-catalog round trip (`make test-sandbox`, pattern 50) — deliberately separate from `make test-live`'s sweep since it needs a manually-run `opensandbox-server` prerequisite this repo can't cleanly auto-provision |
+| `tests/live/test_ops_sandbox_session_live.py` | Real round trip for `app/domains/ops/sandbox_session.py`'s own lifecycle logic (`make test-sandbox`, pattern 50) — asserts "reaches the real bridge and either succeeds or fails cleanly," not a fixed outcome, so a broken local `opensandbox-server` can't turn into an asserted-correct test |
 | `promptfoo/`           | Prompt-level regression + adversarial checks for the domain system prompts against a real Ollama (`make promptfoo`/`make promptfoo-redteam` — pattern 48) |
 | `garak/`               | NVIDIA garak jailbreak/prompt-injection scan against the real model (`make garak`/`make garak-full` — pattern 48) |
 | `loadtest/`            | Locust load test against the running FastAPI service's queued chat path (`loadtest/locustfile_queued.py`, `make loadtest-queued`/`make loadtest-queued-headless` — see "Security scanning & load testing") |

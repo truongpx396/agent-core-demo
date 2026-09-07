@@ -72,7 +72,7 @@ def test_hybrid_search_round_trips_through_a_real_server():
     point = qdrant_store.build_point(
         point_id=1,
         dense_vector=dense_vector,
-        payload={"text": "A checkpointer persists LangGraph state across turns.", "tenant": "acme"},
+        payload={"text": "A checkpointer persists LangGraph state across turns.", "tenant": "ecorp"},
         sparse_vector=(sparse_indices, sparse_values),
     )
     qdrant_store.upsert([point], collection=collection)
@@ -99,18 +99,18 @@ def test_a_point_with_no_sparse_vector_is_still_found_via_the_dense_leg():
     `query_points` to just return `[]` and asserts on the call args) can
     exercise."""
     collection = "integration-test-docs-dense-only"
-    dense_vector = embeddings.embed_text("Acme support hours are 9am to 5pm weekdays")
+    dense_vector = embeddings.embed_text("Ecorp support hours are 9am to 5pm weekdays")
     qdrant_store.ensure_collection(dim=len(dense_vector), collection=collection)
 
     point = qdrant_store.build_point(
         point_id=1,
         dense_vector=dense_vector,
-        payload={"text": "Acme support hours are 9am to 5pm on weekdays.", "tenant": "acme"},
+        payload={"text": "Ecorp support hours are 9am to 5pm on weekdays.", "tenant": "ecorp"},
         sparse_vector=None,
     )
     qdrant_store.upsert([point], collection=collection)
 
-    results = qdrant_store.hybrid_search("when is Acme support available?", collection=collection)
+    results = qdrant_store.hybrid_search("when is Ecorp support available?", collection=collection)
 
     assert len(results) >= 1
     assert "9am" in results[0].payload["text"]

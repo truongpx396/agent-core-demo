@@ -95,7 +95,7 @@ GOLDEN_CASES: list[GoldenCase] = [
     ),
     GoldenCase(
         id="retrieval_company_topic_filter",
-        input="What are Acme Corp support hours?",
+        input="What are Ecorp support hours?",
         expect_tool="search_docs",
         expect_keywords=["9am", "9 am", "9:00", "weekday", "5pm", "5 pm"],
         min_answer_length=10,

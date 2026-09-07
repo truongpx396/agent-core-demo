@@ -20,7 +20,7 @@ from app.core import metrics
 from tests.conftest import metric_value
 
 
-def _make_request(path: str, *, tenant: str | None = "acme", client_host="10.0.0.1") -> Request:
+def _make_request(path: str, *, tenant: str | None = "ecorp", client_host="10.0.0.1") -> Request:
     headers = [(b"x-tenant-id", tenant.encode())] if tenant else []
     scope = {
         "type": "http",
@@ -71,13 +71,13 @@ class TestTenantRateLimitMiddleware:
 
     def test_different_tenants_get_independent_budgets(self, monkeypatch):
         middleware = _fresh_middleware(monkeypatch, limit_per_minute=1)
-        acme_request = _make_request("/chat/stream/queued", tenant="acme")
+        ecorp_request = _make_request("/chat/stream/queued", tenant="ecorp")
         other_request = _make_request("/chat/stream/queued", tenant="other-tenant")
 
-        assert asyncio.run(middleware.dispatch(acme_request, _call_next)).status_code == 200
-        # acme is now over budget — a DIFFERENT tenant hitting the same
-        # path must not be affected by acme's own count.
-        assert asyncio.run(middleware.dispatch(acme_request, _call_next)).status_code == 429
+        assert asyncio.run(middleware.dispatch(ecorp_request, _call_next)).status_code == 200
+        # ecorp is now over budget — a DIFFERENT tenant hitting the same
+        # path must not be affected by ecorp's own count.
+        assert asyncio.run(middleware.dispatch(ecorp_request, _call_next)).status_code == 429
         assert asyncio.run(middleware.dispatch(other_request, _call_next)).status_code == 200
 
     def test_missing_tenant_header_falls_back_to_client_address(self, monkeypatch):

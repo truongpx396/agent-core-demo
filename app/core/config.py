@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # stamps on the seeded sample docs. A real deployment ingests per real
     # tenant; this exists so `make ingest` still has a tenant to stamp
     # without inventing a signup flow just to run the demo.
-    default_tenant: str = "acme"
+    default_tenant: str = "ecorp"
 
     # Langfuse
     langfuse_host: str = "http://localhost:3000"
@@ -171,12 +171,12 @@ class Settings(BaseSettings):
 
     # Which domain (app/domains/registry.py) a process boots its shared
     # graph singleton against — read by app/channels/telegram.py, which is
-    # now a generalized gateway rather than an Acme-only one (GRAPH_PATTERNS.md
+    # now a generalized gateway rather than an Ecorp-only one (GRAPH_PATTERNS.md
     # pattern 23/42), and by app/turns/agent_worker.py, where it also picks
     # which domain's requests stream this worker POOL reads (see that
     # module's own docstring — `POST /chat/stream/queued` picks the domain
     # per REQUEST instead, via an X-Domain header, since that endpoint's
-    # process itself isn't domain-bound the way these two are). "acme" is
+    # process itself isn't domain-bound the way these two are). "ecorp" is
     # this app's own existing default; the demo example domains this app
     # ships alongside it are "support" and "sales" (see
     # app/domains/support/, app/domains/sales/) — "ops" is registered too,
@@ -185,7 +185,7 @@ class Settings(BaseSettings):
     # channel at all. An unknown name fails loud at process start
     # (app/domains/registry.py::resolve_domain), same discipline as
     # TELEGRAM_BOT_TOKEN's missing-config check above.
-    agent_domain: str = "acme"
+    agent_domain: str = "ecorp"
 
     # Ops bot (app/domains/ops/) — queries the Prometheus this repo already
     # runs (docker-compose.observability.yml, `make obs-up`) for its
@@ -193,6 +193,22 @@ class Settings(BaseSettings):
     # Not the otel-collector's OTLP port — that's a push target, not
     # queryable; Prometheus is what actually stores/serves these numbers.
     prometheus_url: str = "http://localhost:9090"
+
+    # Sandbox session defaults (app/domains/ops/sandbox_session.py,
+    # GRAPH_PATTERNS.md pattern 50) — the container image and lifetime for
+    # the ONE OpenSandbox sandbox each investigation (thread) lazily
+    # creates on first use and reuses after that. python:3.12-slim
+    # (stdlib only, no numpy/pandas) is the safe default specifically
+    # because a fresh sandbox has NO network egress by default (OpenSandbox's
+    # own NetworkPolicy defaults to deny-all) — a script that tries `pip
+    # install` would just hang/fail, so the ops system prompt steers the
+    # model toward stdlib (e.g. the `statistics` module) instead of
+    # widening egress just for convenience. Bump the image if a real
+    # deployment wants heavier packages preinstalled instead.
+    ops_sandbox_image: str = "python:3.12-slim"
+    ops_sandbox_ttl_seconds: int = 1800  # 30 minutes — long enough for an
+    # investigation spanning several human-approval pauses, short enough
+    # that an abandoned sandbox doesn't linger indefinitely.
 
     # Team-channel notifications (app/domains/notify.py) — used by the ops
     # bot's post_to_team_channel tool and the support/sales domains'
@@ -259,6 +275,17 @@ class Settings(BaseSettings):
     # vector, not just a slow request.
     max_upload_size_mb: int = 25
 
+    # OpenSandbox MCP bridge (app/domains/sandbox_tools.py, GRAPH_PATTERNS.md
+    # pattern 50) — `--domain` value passed to the `opensandbox-mcp` stdio
+    # bridge process app/mcp/client.py::load_remote_tools spawns, i.e. the
+    # host:port a separately-run `opensandbox-server` (`make sandbox-serve`)
+    # listens on. A host process, like PROMETHEUS_URL below and unlike every
+    # QDRANT_URL/REDIS_URL-style in-network service name — this app never
+    # runs the sandbox server itself (see app/domains/sandbox_tools.py's own
+    # docstring for why: OpenSandbox needs the HOST Docker daemon to create
+    # sandboxes, so containerizing it here would mean Docker-in-Docker).
+    opensandbox_mcp_domain: str = "localhost:8080"
+
     # OTel metrics export (app/core/telemetry.py) — the OTLP/HTTP base URL
     # (no /v1/metrics suffix; configure_telemetry appends it) every
     # long-running process pushes its metrics to. Points at the shared
@@ -314,4 +341,7 @@ AGENT_WORKER_MAX_CONCURRENCY = settings.agent_worker_max_concurrency
 REDIS_MAX_CONNECTIONS = settings.redis_max_connections
 CORS_ALLOWED_ORIGINS = settings.cors_allowed_origins
 MAX_UPLOAD_SIZE_MB = settings.max_upload_size_mb
+OPENSANDBOX_MCP_DOMAIN = settings.opensandbox_mcp_domain
+OPS_SANDBOX_IMAGE = settings.ops_sandbox_image
+OPS_SANDBOX_TTL_SECONDS = settings.ops_sandbox_ttl_seconds
 OTEL_EXPORTER_OTLP_ENDPOINT = settings.otel_exporter_otlp_endpoint

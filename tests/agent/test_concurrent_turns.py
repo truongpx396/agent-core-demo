@@ -492,13 +492,13 @@ class TestWorkerConcurrencyAgainstTheRealQueue:
         not a parameter. `queue.requests_stream_key` is patched (not a
         fixed constant, now that it's domain-parameterized) to always
         return this same `stream` regardless of domain — this test only
-        ever exercises the default ("acme") one anyway."""
+        ever exercises the default ("ecorp") one anyway."""
         info = ensure_redis()
         stream = f"agent:requests:test:{uuid.uuid4()}"
         group = f"agent-workers:test:{uuid.uuid4()}"
         monkeypatch.setattr(queue, "REDIS_URL", info["redis_url"])
         monkeypatch.setattr(queue, "_client", None)
-        monkeypatch.setattr(queue, "requests_stream_key", lambda domain="acme": stream)
+        monkeypatch.setattr(queue, "requests_stream_key", lambda domain="ecorp": stream)
         monkeypatch.setattr(queue, "CONSUMER_GROUP", group)
         monkeypatch.setattr(agent_worker, "REQUESTS_STREAM", stream)
         monkeypatch.setattr(agent_worker, "CONSUMER_GROUP", group)

@@ -61,7 +61,7 @@ class TestSandboxing:
     """The literal meaning of "sandboxed... knowledge base + ticket
     system" access: this domain's ToolNode knows exactly the KB tools plus
     its own five ticket tools (plus its own, domain-scoped run_subagent —
-    see TestDomainScopedSubagent below), and nothing else Acme's TOOLS
+    see TestDomainScopedSubagent below), and nothing else Ecorp's TOOLS
     list has."""
 
     def test_tool_node_only_knows_the_support_domains_tools(self):
@@ -76,10 +76,11 @@ class TestSandboxing:
             "escalate_to_human",
             "list_my_tickets",
             "add_ticket_comment",
+            "fetch_external_reference",
             "run_subagent",
         }
 
-    def test_acme_only_tools_are_absent(self):
+    def test_ecorp_only_tools_are_absent(self):
         g = _build()
         names = set(g.nodes["tools"].bound.tools_by_name)
         for excluded in ("calculator", "add_note", "remember", "query_employees"):
@@ -88,17 +89,17 @@ class TestSandboxing:
 
 class TestDomainScopedSubagent:
     """run_subagent is present, but it's this domain's OWN closure-built
-    tool (app.agent.tools.make_domain_subagent_tool), never Acme's literal
+    tool (app.agent.tools.make_domain_subagent_tool), never Ecorp's literal
     module-level object — and its menu offers only the bundled subagent(s)
     declared `domains: [support]` (subagents/ticket-researcher/AGENT.md),
-    never Acme's own `researcher`."""
+    never Ecorp's own `researcher`."""
 
-    def test_is_not_the_acme_level_run_subagent_object(self):
-        from app.agent.tools import run_subagent as acme_run_subagent
+    def test_is_not_the_ecorp_level_run_subagent_object(self):
+        from app.agent.tools import run_subagent as ecorp_run_subagent
 
         g = _build()
         domain_run_subagent = g.nodes["tools"].bound.tools_by_name["run_subagent"]
-        assert domain_run_subagent is not acme_run_subagent
+        assert domain_run_subagent is not ecorp_run_subagent
 
     def test_menu_offers_only_the_support_domains_own_subagent(self):
         g = _build()
@@ -218,6 +219,41 @@ class TestMandatoryApprovalGate:
         assert not g.get_state(_config()).next  # finished, not paused
         tool_messages = [m for m in result["messages"] if m.type == "tool"]
         assert any("Added your follow-up to ticket #7" in m.content for m in tool_messages)
+
+
+def test_fetch_external_reference_pauses_for_approval_as_an_outward_tool():
+    llm = _fake_llm_returning(
+        _tool_call("fetch_external_reference", {"url": "https://vendor.example.com/docs"})
+    )
+    g = _build(llm)
+    g.invoke(
+        {"messages": [HumanMessage(content="here's the doc that doesn't match what you said")]},
+        config=_config(),
+    )
+    assert g.get_state(_config()).next  # paused, not finished
+
+
+def test_approving_fetch_external_reference_runs_it_and_finishes(monkeypatch):
+    from app.domains.support import tools as support_tools
+
+    monkeypatch.setattr(
+        support_tools, "render_url_to_markdown", lambda url: "Webhook payloads must include `id`."
+    )
+
+    llm = _fake_llm_returning(
+        _tool_call("fetch_external_reference", {"url": "https://vendor.example.com/docs"}),
+        AIMessage(content="Their docs say every webhook payload needs an `id` field."),
+    )
+    g = _build(llm)
+    g.invoke(
+        {"messages": [HumanMessage(content="here's the doc that doesn't match what you said")]},
+        config=_config(),
+    )
+    result = g.invoke(Command(resume=True), config=_config())
+
+    assert not g.get_state(_config()).next  # finished, not paused
+    tool_messages = [m for m in result["messages"] if m.type == "tool"]
+    assert any("Webhook payloads must include" in m.content for m in tool_messages)
 
 
 def test_escalate_to_human_notifies_the_team_channel(monkeypatch):

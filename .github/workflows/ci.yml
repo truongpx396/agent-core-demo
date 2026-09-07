@@ -117,7 +117,10 @@ jobs:
 
   test-live:
     # Real small Ollama model + the full app/agent-worker stack, incl. a
-    # Playwright browser E2E (tests/live/) — the expensive job, so its
+    # Playwright browser E2E and real crawl4ai renders (tests/live/,
+    # GRAPH_PATTERNS.md pattern 50 — the `crawl` marker reuses this job's
+    # own `playwright install` step below, no separate setup needed) — the
+    # expensive job, so its
     # Ollama model pull is cached across runs (see tests/containers.py's
     # own ensure_ollama docstring for why `ollama_home` makes this possible
     # at all: a stable HOST directory bind-mounted into a fresh container
@@ -140,7 +143,7 @@ jobs:
           key: ollama-models-${{ runner.os }}-${{ env.TEST_LLM_MODEL }}
         env:
           TEST_LLM_MODEL: qwen2.5:1.5b
-      - run: pytest -n auto -m "llm or e2e" -q
+      - run: pytest -n auto -m "llm or e2e or crawl" -q
         env:
           TEST_LLM_MODEL: qwen2.5:1.5b
 

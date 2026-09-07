@@ -1,6 +1,6 @@
 ---
 name: researcher
-description: Look up Acme Corp facts, documents, or people without pulling the intermediate search steps into the main conversation. Use for a self-contained lookup whose reasoning doesn't need to appear in the main thread.
+description: Look up Ecorp facts, documents, or people without pulling the intermediate search steps into the main conversation. Use for a self-contained lookup whose reasoning doesn't need to appear in the main thread.
 tools: [search_docs, calculator, query_employees]
 ---
 

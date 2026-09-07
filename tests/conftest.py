@@ -76,7 +76,7 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
 from app.agent import graph
 
-TEST_CTX = {"tenant": "acme", "principal": "test-user", "claims": {}}
+TEST_CTX = {"tenant": "ecorp", "principal": "test-user", "claims": {}}
 
 _METRIC_READER = InMemoryMetricReader()
 metrics_api.set_meter_provider(MeterProvider(metric_readers=[_METRIC_READER]))

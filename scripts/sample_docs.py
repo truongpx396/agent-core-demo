@@ -40,15 +40,15 @@ DOCS: list[SampleDoc] = [
     {
         "id": 5,
         "topic": "company",
-        "title": "Acme Corp: About",
-        "text": "Acme Corp was founded in 2021 and builds offline developer tools. "
+        "title": "Ecorp: About",
+        "text": "Ecorp was founded in 2021 and builds offline developer tools. "
                 "Its flagship product is a local AI stack starter kit.",
     },
     {
         "id": 6,
         "topic": "company",
-        "title": "Acme Corp: Support Hours",
-        "text": "Acme Corp's support hours are 9am to 5pm on weekdays, and support is free "
+        "title": "Ecorp: Support Hours",
+        "text": "Ecorp's support hours are 9am to 5pm on weekdays, and support is free "
                 "for all open-source users.",
     },
 ]

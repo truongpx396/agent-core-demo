@@ -35,12 +35,12 @@ class TestEnsureConsumerGroup:
 class TestPublishIngestRequest:
     def test_enqueues_a_json_payload_with_every_field(self):
         client = FakeRedis()
-        ctx = {"tenant": "acme", "principal": "p1", "claims": {}}
+        ctx = {"tenant": "ecorp", "principal": "p1", "claims": {}}
         asyncio.run(
             ingest_queue.publish_ingest_request(
                 client,
                 job_id="j1",
-                object_key="acme/abc-report.pdf",
+                object_key="ecorp/abc-report.pdf",
                 filename="report.pdf",
                 content_type="application/pdf",
                 ctx=ctx,
@@ -52,7 +52,7 @@ class TestPublishIngestRequest:
         payload = json.loads(entries[0][1]["payload"])
         assert payload == {
             "job_id": "j1",
-            "object_key": "acme/abc-report.pdf",
+            "object_key": "ecorp/abc-report.pdf",
             "filename": "report.pdf",
             "content_type": "application/pdf",
             "ctx": ctx,
@@ -68,7 +68,7 @@ class TestPublishIngestRequest:
                 object_key="k",
                 filename="notes.docx",
                 content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                ctx={"tenant": "acme", "principal": "p1", "claims": {}},
+                ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
             )
         )
         payload = json.loads(client.streams[ingest_queue.INGEST_REQUESTS_STREAM][0][1]["payload"])

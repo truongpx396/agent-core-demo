@@ -53,7 +53,7 @@ tests:
 
   - description: uses a warm, consultative tone, not a generic sales-bot register
     vars:
-      user_message: "A lead asked what Acme Corp actually does."
+      user_message: "A lead asked what Ecorp actually does."
     assert:
       - type: not-icontains
         value: "As an AI"

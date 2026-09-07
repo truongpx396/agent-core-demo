@@ -654,7 +654,7 @@ def query_employees(
     department: Department | None = None,
     name_contains: str | None = None,
 ) -> str:
-    """Look up Acme Corp employees, optionally filtered by department or
+    """Look up Ecorp employees, optionally filtered by department or
     name. Call this directly, immediately, the moment a question needs a
     staff/roster answer — it is read-only public staff-directory
     information, never requires confirmation first, and there is nothing
@@ -693,7 +693,7 @@ def _skill_visible_to_domain(record: "skills_module.SkillRecord", domain: str) -
     """A skill with no `domains:` frontmatter (`record.domains is None`) is
     visible everywhere — the default every SKILL.md had before this field
     existed. A tagged one is visible only to the domains it names, INCLUDING
-    Acme: `domains: [support]` hides a skill from Acme's own catalog too,
+    Ecorp: `domains: [support]` hides a skill from Ecorp's own catalog too,
     not just from the other two example domains."""
     return record.domains is None or domain in record.domains
 
@@ -719,10 +719,10 @@ def _filter_skill_hits_by_domain(hits: list, domain: str, catalog: dict) -> list
 
 
 def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
-    """Builds a `(skill_search, use_skill)` pair scoped to `domain`. Acme's
-    own module-level pair below is `make_skill_tools("acme")`; each of
+    """Builds a `(skill_search, use_skill)` pair scoped to `domain`. Ecorp's
+    own module-level pair below is `make_skill_tools("ecorp")`; each of
     app/domains/support|sales|ops/domain.py builds its own via this same
-    factory instead of reusing Acme's literal tool objects, so a
+    factory instead of reusing Ecorp's literal tool objects, so a
     domain-tagged skill (`domains: [...]` in its SKILL.md frontmatter,
     app/agent/skills.py) never leaks into a domain it wasn't written for —
     enforced in BOTH tools here, not just skill_search's results: use_skill
@@ -792,7 +792,7 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
     return skill_search, use_skill
 
 
-skill_search, use_skill = make_skill_tools("acme")
+skill_search, use_skill = make_skill_tools("ecorp")
 
 
 TOOLS = [
@@ -938,7 +938,7 @@ _ALL_TOOL_NAMES = frozenset(t.name for t in TOOLS)  # computed before run_subage
 def _subagent_declared_for_domain(record: "subagents_module.SubagentRecord", domain: str) -> bool:
     """An AGENT.md with no `domains:` frontmatter (`record.domains is None`)
     stays exactly where every subagent has always lived — visible only to
-    `domain="acme"` — rather than silently becoming available to every new
+    `domain="ecorp"` — rather than silently becoming available to every new
     domain this app ever grows. See app/agent/subagents.py's own docstring
     for why that default differs from app/agent/skills.py's SkillRecord
     (there, `None` means "every domain"): a subagent's declared `tools:`
@@ -946,7 +946,7 @@ def _subagent_declared_for_domain(record: "subagents_module.SubagentRecord", dom
     untagged subagent handed to a domain its tools were never written for
     would typically just resolve to nothing useful anyway."""
     if record.domains is None:
-        return domain == "acme"
+        return domain == "ecorp"
     return domain in record.domains
 
 
@@ -958,7 +958,7 @@ def _build_subagent_registry(
     tool subset within `all_tool_names`/`tool_capabilities` — that pair is
     itself domain-specific (a nested subagent run can only ever call tools
     that exist, and are read_only, WITHIN the calling domain's own tool
-    universe, not Acme's)."""
+    universe, not Ecorp's)."""
     registry = {}
     for record in subagents_module.get_subagents().values():
         if not _subagent_declared_for_domain(record, domain):
@@ -968,7 +968,7 @@ def _build_subagent_registry(
     return registry
 
 
-_SUBAGENT_REGISTRY = _build_subagent_registry(_ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="acme")
+_SUBAGENT_REGISTRY = _build_subagent_registry(_ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="ecorp")
 
 _CITATION_MARKER_WARNING = (
     "Do not use '[n]'-style bracket citation markers in your final answer — "
@@ -994,7 +994,7 @@ class _SubagentDomainPlugin:
     docstrings: `if manifest.allowed_tools:` is falsy-skipped for an empty
     tuple). A subagent legitimately left with zero usable tools (e.g. every
     declared tool got dropped by `_resolve_subagent_tools`) must actually
-    run with zero tools, not silently fall back to the full Acme tool set —
+    run with zero tools, not silently fall back to the full Ecorp tool set —
     including `add_note`/`remember` — which would be exactly the kind of
     privilege-escalation-by-omission bug pattern 17's fail-closed discipline
     exists to rule out. Passing the already-narrowed tool list as this
@@ -1041,7 +1041,7 @@ def _run_subagent_impl(
     `registry`/`tools_by_name`/`llm` are DI for tests (mirror
     `build_graph(deps=...)`'s own override shape) — `registry` defaults to
     the real, process-wide `_SUBAGENT_REGISTRY`, `tools_by_name` defaults to
-    every Acme tool by name (`{t.name: t for t in TOOLS}`), `llm` defaults
+    every Ecorp tool by name (`{t.name: t for t in TOOLS}`), `llm` defaults
     to `None`, meaning "construct a real ChatOpenAI client for this
     subagent's own model alias." A test passing a fake chat model here
     bypasses that construction entirely, the same way `GraphDeps(llm=fake)`
@@ -1050,11 +1050,11 @@ def _run_subagent_impl(
 
     `tools_by_name` matters for the same reason `registry` itself does: a
     domain-scoped subagent's `registry` entry can resolve to a tool name
-    like `check_ticket_status` that simply isn't IN Acme's own `TOOLS` —
+    like `check_ticket_status` that simply isn't IN Ecorp's own `TOOLS` —
     looking it up there would silently drop it. `make_domain_subagent_tool`
-    passes the calling domain's own tool objects here; the Acme-level
-    construction below relies on the default, since Acme's own registry
-    only ever resolves to names already in Acme's own `TOOLS`.
+    passes the calling domain's own tool objects here; the Ecorp-level
+    construction below relies on the default, since Ecorp's own registry
+    only ever resolves to names already in Ecorp's own `TOOLS`.
 
     Isolation, in one place: a FRESH `messages` list (the subagent's own
     system prompt + exactly the delegated `task` as its sole HumanMessage —
@@ -1296,16 +1296,16 @@ def make_domain_subagent_tool(
     domain: str, all_tools: list, tool_capabilities: Mapping[str, str]
 ) -> BaseTool | None:
     """Builds a `run_subagent` tool scoped to `domain` — the domain
-    equivalent of the Acme-level construction above (same closed-enum
+    equivalent of the Ecorp-level construction above (same closed-enum
     menu, same `RunSubagentArgs` shape, same mandatory read_only-only
     resolution via `_resolve_subagent_tools`), but resolved against
     `all_tools`/`tool_capabilities` — the CALLING domain's own tool
     universe, e.g. app/domains/support/domain.py passes its own ticket
     tools plus its own `search_docs`/`skill_search`/`use_skill`/
-    `ask_clarification`, not Acme's `TOOLS`/`TOOL_CAPABILITIES` — and
+    `ask_clarification`, not Ecorp's `TOOLS`/`TOOL_CAPABILITIES` — and
     filtered to only the subagents actually declared for `domain`
     (`domains: [...]` frontmatter, see app/agent/subagents.py's docstring
-    for the "untagged means Acme-only" default this applies).
+    for the "untagged means Ecorp-only" default this applies).
 
     Returns `None` if that filtered registry ends up empty — a domain with
     no bundled subagent gets no `run_subagent` tool at all, never one
@@ -1316,10 +1316,10 @@ def make_domain_subagent_tool(
     docstring already takes for tools this app deliberately doesn't expose).
 
     Each call builds a genuinely NEW, distinct closure (its own Enum class,
-    `Args` schema, and `run_subagent` tool object) — never the Acme-level
+    `Args` schema, and `run_subagent` tool object) — never the Ecorp-level
     `run_subagent` above. Meant to be called ONCE, at each domain module's
     own import time (same "built once, not lazily" reasoning the
-    Acme-level block's own comment gives — a subagent added to disk after
+    Ecorp-level block's own comment gives — a subagent added to disk after
     the process starts needs a restart to appear here either way).
     """
     all_tool_names = frozenset(t.name for t in all_tools)
@@ -1330,7 +1330,7 @@ def make_domain_subagent_tool(
     tools_by_name = {t.name: t for t in all_tools}
 
     # A per-domain Enum TYPE (not just distinct member values) — reusing
-    # SubagentName here would mix this domain's menu with Acme's, and two
+    # SubagentName here would mix this domain's menu with Ecorp's, and two
     # domains both calling this factory would silently share one Enum
     # class between them, wrong the moment their registries diverge.
     domain_subagent_name = Enum(  # type: ignore[misc]

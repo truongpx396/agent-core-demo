@@ -11,7 +11,7 @@ from app.domains.support.domain import SUPPORT_MANIFEST
 @pytest.mark.parametrize(
     "name,expected_manifest",
     [
-        ("acme", DEFAULT_MANIFEST),
+        ("ecorp", DEFAULT_MANIFEST),
         ("support", SUPPORT_MANIFEST),
         ("ops", OPS_MANIFEST),
         ("sales", SALES_MANIFEST),
@@ -23,5 +23,5 @@ def test_resolves_each_known_domain(name, expected_manifest):
 
 
 def test_unknown_domain_raises_with_the_valid_names_listed():
-    with pytest.raises(ValueError, match="acme"):
+    with pytest.raises(ValueError, match="ecorp"):
         resolve_domain("not-a-real-domain")

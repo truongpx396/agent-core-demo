@@ -9,7 +9,7 @@ body, the same shape `app/agent/skills.py`'s `SKILL.md` uses:
 
     ---
     name: researcher
-    description: Look up Acme Corp facts, docs, or people...
+    description: Look up Ecorp facts, docs, or people...
     tools: [search_docs, calculator, query_employees]
     model: chat
     ---
@@ -27,7 +27,7 @@ only parses and carries the raw list (or `None`); app/agent/tools.py decides
 what an absent `domains` DEFAULTS to (unlike app/agent/skills.py's SkillRecord,
 where `None` means "every domain," an untagged subagent here stays exactly
 where it's always been — visible only when `app/agent/tools.py` builds
-Acme's own registry — precisely BECAUSE a subagent's declared `tools:` are
+Ecorp's own registry — precisely BECAUSE a subagent's declared `tools:` are
 only ever meaningful against one specific tool universe: a nested run
 resolves each declared name against the CALLING domain's own tools, so an
 untagged subagent silently exposed to every domain would mostly just resolve

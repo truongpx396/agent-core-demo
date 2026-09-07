@@ -18,18 +18,24 @@ ownership can't be established is refused, never ingested as
 tenant-less/public (mirrors app/core/security.py's fail-closed discipline: a
 missing ctx is a refusal, not a default).
 """
+# socket is not used directly below anymore, but kept imported so
+# tests/ingestion/test_ingestor.py's monkeypatch.setattr(ingestor.socket,
+# "getaddrinfo", ...) still patches the right object: `socket` is a single
+# shared module in sys.modules, so mutating the attribute via THIS
+# module's reference mutates the exact same function app/core/url_safety.py
+# (where the actual lookup now runs) sees too.
 import html.parser
-import ipaddress
 import logging
-import socket
+import socket  # noqa: F401
 import uuid
 from pathlib import Path
-from urllib.parse import urlparse
 
 import httpx
 
 from app.core import metrics
 from app.core.security import SecurityCtx, valid_ctx
+from app.core.url_safety import UnsafeURLError
+from app.core.url_safety import assert_safe_url as _assert_safe_url_impl
 from app.ingestion.chunking import chunk_text
 from app.retrieval import qdrant_store
 from app.retrieval.embeddings import embed_sparse, embed_text
@@ -158,46 +164,20 @@ class _TextExtractor(html.parser.HTMLParser):
 
 
 def _assert_safe_url(url: str) -> None:
-    """SSRF guard: https-only, and every A/AAAA record the hostname
-    resolves to must be public/routable — checked against ALL resolved
-    addresses, not just the first, so a hostname with a mixed public+
-    private record set still gets refused. A real, non-hollow check
-    (AR-035's "no hollow defaults"), not a no-op — but with one honestly
-    disclosed limitation: this validates resolution now and lets httpx
-    resolve and connect separately, a moment later. A classic DNS-
-    rebinding attack (the name resolving differently at actual connect
-    time) could still slip through that gap. Closing it fully means
-    pinning the connection to the address already validated here (a
-    custom transport) — real added complexity for a demo ingestor, so
-    this draws the line at "real check, disclosed gap" rather than
-    quietly shipping the narrower guard as if it were airtight.
+    """SSRF guard — the actual check now lives in app/core/url_safety.py,
+    shared with app/ingestion/web_crawler.py's crawl4ai-backed render (same
+    "reaches the open network" exposure, same guard, not two independently-
+    maintained copies). This wrapper only translates a generic
+    UnsafeURLError into this module's own caller-facing IngestRefused and
+    records the refusal metric — exactly what this function did inline
+    before the check itself moved out; see app/core/url_safety.py's own
+    docstring for the check's disclosed DNS-rebinding gap.
     """
-    parsed = urlparse(url)
-    if parsed.scheme != "https":
-        metrics.agent_ingest_refused_total.labels(reason="ssrf_blocked").inc()
-        raise IngestRefused(f"only https:// URLs are allowed, got {parsed.scheme!r}")
-    if not parsed.hostname:
-        metrics.agent_ingest_refused_total.labels(reason="ssrf_blocked").inc()
-        raise IngestRefused("URL has no hostname")
-
     try:
-        addr_info = socket.getaddrinfo(parsed.hostname, None)
-    except socket.gaierror as exc:
+        _assert_safe_url_impl(url)
+    except UnsafeURLError as exc:
         metrics.agent_ingest_refused_total.labels(reason="ssrf_blocked").inc()
-        raise IngestRefused(f"could not resolve host {parsed.hostname!r}: {exc}") from exc
-
-    for _family, _type, _proto, _canonname, sockaddr in addr_info:
-        ip = ipaddress.ip_address(sockaddr[0])
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
-            metrics.agent_ingest_refused_total.labels(reason="ssrf_blocked").inc()
-            raise IngestRefused(f"URL resolves to a disallowed address ({ip}) — refused")
+        raise IngestRefused(str(exc)) from exc
 
 
 def ingest_url(url: str, ctx: SecurityCtx | None, topic: str | None = None) -> int:

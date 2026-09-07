@@ -23,7 +23,7 @@ resumed under a DIFFERENT domain than it was opened in would run that
 domain's tools/prompt against a conversation history that was never built
 around them (see app/turns/queue.py::publish_request's own docstring on
 the identical hazard for a queued resume/cancel). `domain` defaults to
-`"acme"` everywhere in this module — same "no domain given" convention
+`"ecorp"` everywhere in this module — same "no domain given" convention
 `app/turns/queue.py::requests_stream_key`/`app/core/config.py`'s
 `AGENT_DOMAIN` already establish — and is set ONLY on first insert
 (`upsert_session`'s `ON CONFLICT` clause never touches it, same as
@@ -41,7 +41,7 @@ TITLE_MAX_CHARS = 60
 
 
 def upsert_session(
-    ctx: SecurityCtx | None, thread_id: str, title: str | None = None, domain: str = "acme"
+    ctx: SecurityCtx | None, thread_id: str, title: str | None = None, domain: str = "ecorp"
 ) -> None:
     """Best-effort write-through at the start of every turn (app/agent/runtime.py's
     astream_events_turn, right after seeding) — NOT
@@ -78,7 +78,7 @@ def upsert_session(
         )
 
 
-def list_sessions(ctx: SecurityCtx | None, domain: str = "acme") -> list[dict]:
+def list_sessions(ctx: SecurityCtx | None, domain: str = "ecorp") -> list[dict]:
     """Every session belonging to ctx's tenant+principal AND `domain`, most
     recently active first. Never scoped to tenant alone — a session
     belongs to whoever started it, the same owner-level isolation
@@ -99,7 +99,7 @@ def list_sessions(ctx: SecurityCtx | None, domain: str = "acme") -> list[dict]:
         return [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
 
 
-def session_belongs_to(ctx: SecurityCtx | None, thread_id: str, domain: str = "acme") -> bool:
+def session_belongs_to(ctx: SecurityCtx | None, thread_id: str, domain: str = "ecorp") -> bool:
     """Ownership check for GET /chat/sessions/{thread_id}/messages —
     app/agent/runtime.py::get_session_messages reads the shared Postgres
     checkpointer directly, which carries no tenant/principal (or domain) of

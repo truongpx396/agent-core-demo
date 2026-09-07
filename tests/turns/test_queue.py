@@ -127,14 +127,14 @@ class TestEnsureConsumerGroup:
     def test_creates_the_group_on_first_call(self):
         client = FakeRedis()
         asyncio.run(queue.ensure_consumer_group(client))
-        assert queue.CONSUMER_GROUP in client.groups[queue.requests_stream_key("acme")]
+        assert queue.CONSUMER_GROUP in client.groups[queue.requests_stream_key("ecorp")]
 
     def test_a_different_domain_gets_its_own_group_on_its_own_stream(self):
         client = FakeRedis()
         asyncio.run(queue.ensure_consumer_group(client, "support"))
         assert queue.CONSUMER_GROUP in client.groups[queue.requests_stream_key("support")]
-        # Never touched Acme's own stream/group at all.
-        assert queue.requests_stream_key("acme") not in client.groups
+        # Never touched Ecorp's own stream/group at all.
+        assert queue.requests_stream_key("ecorp") not in client.groups
 
     def test_is_idempotent_a_second_call_does_not_raise(self):
         client = FakeRedis()
@@ -151,11 +151,11 @@ class TestPublishRequest:
                 request_id="r1",
                 text="hello",
                 thread_id="t1",
-                ctx={"tenant": "acme", "principal": "p1", "claims": {}},
+                ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
                 require_approval=True,
             )
         )
-        entries = client.streams[queue.requests_stream_key("acme")]
+        entries = client.streams[queue.requests_stream_key("ecorp")]
         assert len(entries) == 1
         payload = json.loads(entries[0][1]["payload"])
         assert payload == {
@@ -163,7 +163,7 @@ class TestPublishRequest:
             "request_id": "r1",
             "text": "hello",
             "thread_id": "t1",
-            "ctx": {"tenant": "acme", "principal": "p1", "claims": {}},
+            "ctx": {"tenant": "ecorp", "principal": "p1", "claims": {}},
             "require_approval": True,
             "images": [],
         }
@@ -176,14 +176,14 @@ class TestPublishRequest:
                 request_id="r2",
                 text="what is in this image?",
                 thread_id="t1",
-                ctx={"tenant": "acme", "principal": "p1", "claims": {}},
+                ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
                 images=["data:image/png;base64,abc123"],
             )
         )
-        payload = json.loads(client.streams[queue.requests_stream_key("acme")][0][1]["payload"])
+        payload = json.loads(client.streams[queue.requests_stream_key("ecorp")][0][1]["payload"])
         assert payload["images"] == ["data:image/png;base64,abc123"]
 
-    def test_a_non_default_domain_lands_on_its_own_stream_not_acmes(self):
+    def test_a_non_default_domain_lands_on_its_own_stream_not_ecorps(self):
         client = FakeRedis()
         asyncio.run(
             queue.publish_request(
@@ -191,11 +191,11 @@ class TestPublishRequest:
                 request_id="r3",
                 text="my order hasn't shipped",
                 thread_id="t1",
-                ctx={"tenant": "acme", "principal": "p1", "claims": {}},
+                ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
                 domain="support",
             )
         )
-        assert queue.requests_stream_key("acme") not in client.streams
+        assert queue.requests_stream_key("ecorp") not in client.streams
         entries = client.streams[queue.requests_stream_key("support")]
         assert len(entries) == 1
         assert json.loads(entries[0][1]["payload"])["request_id"] == "r3"
@@ -213,10 +213,10 @@ class TestPublishResumeRequest:
                 request_id="r1",
                 thread_id="t1",
                 approved=True,
-                ctx={"tenant": "acme", "principal": "p1", "claims": {}},
+                ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
             )
         )
-        entries = client.streams[queue.requests_stream_key("acme")]
+        entries = client.streams[queue.requests_stream_key("ecorp")]
         assert len(entries) == 1
         payload = json.loads(entries[0][1]["payload"])
         assert payload == {
@@ -224,7 +224,7 @@ class TestPublishResumeRequest:
             "request_id": "r1",
             "thread_id": "t1",
             "approved": True,
-            "ctx": {"tenant": "acme", "principal": "p1", "claims": {}},
+            "ctx": {"tenant": "ecorp", "principal": "p1", "claims": {}},
         }
 
 
@@ -236,17 +236,17 @@ class TestPublishCancelRequest:
                 client,
                 request_id="r1",
                 thread_id="t1",
-                ctx={"tenant": "acme", "principal": "p1", "claims": {}},
+                ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
             )
         )
-        entries = client.streams[queue.requests_stream_key("acme")]
+        entries = client.streams[queue.requests_stream_key("ecorp")]
         assert len(entries) == 1
         payload = json.loads(entries[0][1]["payload"])
         assert payload == {
             "kind": "cancel",
             "request_id": "r1",
             "thread_id": "t1",
-            "ctx": {"tenant": "acme", "principal": "p1", "claims": {}},
+            "ctx": {"tenant": "ecorp", "principal": "p1", "claims": {}},
         }
 
 
