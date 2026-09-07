@@ -12,8 +12,9 @@ Shows real-world scenarios beyond basic "LLM + tools" loop:
 - State tracking: iterations, context, enriched messages.
 - Loop control: max iterations to prevent infinite loops.
 - Bounded conversation history: the only unbounded input in State
-  (`messages`) is trimmed to the last MAX_HISTORY_TURNS turns, never
-  splitting a tool_call/ToolMessage pair (see _trim_history).
+  (`messages`) is trimmed once its estimated token count crosses
+  HISTORY_TOKEN_CEILING, down to HISTORY_TOKEN_FLOOR, never splitting a
+  tool_call/ToolMessage pair (see _trim_history).
 - Output quality gate: a conditional node that can send the answer back to
   the agent for a retry, not a pass-through that always ends.
 - Per-node reliability policy: retrieve_context degrades (never fails the
@@ -62,6 +63,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict, cast
 
+import tiktoken
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -154,7 +156,36 @@ MAX_ITERATIONS = 10  # safety budget: LLM loop iterations, per turn (see validat
 MIN_ANSWER_LENGTH = 10
 MAX_TOOL_CALLS_PER_TURN = 5  # safety budget: simultaneous tool calls from one LLM turn
 MAX_TOKENS_PER_TURN = 8000  # safety budget: cumulative token usage, per turn (0 if the model/proxy doesn't report usage_metadata — fails open, not closed)
-MAX_HISTORY_TURNS = 8  # safety budget: bound the only unbounded input in State — see _trim_history
+HISTORY_TOKEN_CEILING = 12000  # safety budget: bound the only unbounded input
+# in State — see _trim_history. Trips compact_history once RAW (non-system)
+# history exceeds this estimated token count.
+HISTORY_TOKEN_FLOOR = 3000  # once HISTORY_TOKEN_CEILING trips, trim whole turns
+# from the front until the KEPT tail is at/under this — deliberately LOWER than
+# the ceiling (hysteresis/"sawtooth", not a sliding window of 1). A prior
+# turn-count design (MAX_HISTORY_TURNS, always trimming back to the exact same
+# count) was verified empirically to re-trigger compact_history's own LLM
+# summarization call on EVERY SINGLE TURN once past the threshold, forever —
+# and to keep re-shifting the entire kept history's position on every one of
+# those turns, which is worse for a provider's/inference engine's prefix-cache
+# reuse than the "occasional periodic reset" it looks like on paper. Cutting to
+# a lower floor instead means several turns of real, stable, cache-friendly
+# growth happen before the ceiling is crossed again, and the summarization
+# call fires a fraction as often.
+#
+# NOT scaled 1:1 with `litellm-config.yaml`'s ollama_chat `num_ctx: 24000` —
+# that number answers "what can fit without truncation" (it needed real
+# margin: system prompt + tool schemas alone measure ~2500 tokens on a bare
+# call); this pair answers "how much raw history is actually WORTH carrying,"
+# a cost/latency/relevance question num_ctx headroom doesn't change the
+# answer to. More history is real prefill latency on every round of every
+# turn, and this app has DIRECTLY caught qwen2.5:3b dropping a "mandatory"
+# instruction (citations) in prompts of only ~2300-2800 tokens — small-model
+# instruction-following degrades with more context well before its rated max
+# length, so a wide ceiling is a real, deliberate tradeoff (fewer, cheaper
+# compactions and better cache reuse) against a real cost (more tokens for a
+# 3B model to attend to per call), not a default to size up just because
+# num_ctx has room. 12000/3000 leaves this gap wide (fewer compactions than a
+# tighter pair would need) while keeping the post-compaction FLOOR modest.
 MAX_HISTORY_SUMMARY_CHARS = 4000  # safety budget: the CUMULATIVE history_summary
 # itself must stay bounded too (AR-015a) — compact_history keeps folding older
 # turns in, so without a ceiling here the "compacted" summary would just become
@@ -252,6 +283,13 @@ class State(TypedDict):
     # (GRAPH_PATTERNS.md pattern 20). What the streamed `citations` SSE event carries.
     ungrounded_claims_count: int  # Set by check_output — [n] markers the
     # answer used that don't match any real citation (GRAPH_PATTERNS.md pattern 39).
+    likely_uncited_citations: list[dict]  # Set by check_output — citations
+    # NOT referenced by marker in the answer, but whose own text shares
+    # heavy word overlap with it (see _likely_uncited_citations) — a
+    # stronger, much less ambiguous signal than agent_zero_citations_total's
+    # "citations were merely available" check that the model paraphrased a
+    # source without attributing it. Read by route_after_check to trigger a
+    # real retry (unlike agent_zero_citations_total, which is metric-only).
     cache_hit: bool  # Set by check_semantic_cache — read by
     # write_semantic_cache to skip a redundant re-embed+write on a turn that
     # was already served from cache (GRAPH_PATTERNS.md pattern 22).
@@ -266,6 +304,18 @@ class State(TypedDict):
     # (unlike citations/followups/etc.) — it accumulates turn over turn, the
     # same way the checkpointed message list itself does. Injected by
     # agent() as an early SystemMessage (GRAPH_PATTERNS.md pattern 41).
+    context_anchor_index: int  # Set by retrieve_context, alongside `context`
+    # — the index, in THAT MOMENT's `state["messages"]`, of the human
+    # message that opened this turn. Nothing removes messages between here
+    # and the end of the turn's agent<->tools/check_output<->retry_output
+    # loop (compact_history's own trimming already ran, once, earlier in
+    # the pipeline), only appends — so this index stays valid for every
+    # remaining call in the turn even as later ones grow the list past it.
+    # agent() re-locates this SAME fixed position on every call to splice
+    # history_summary/context in right before the turn's real question,
+    # instead of at whatever the CURRENT tail happens to be — see agent()'s
+    # own docstring for why a shifting position, not shifting CONTENT, was
+    # what broke prefix-cache reuse across a turn's own internal loop.
 
 
 def _last_human_message(messages: list[BaseMessage]) -> HumanMessage | None:
@@ -312,12 +362,45 @@ def _human_has_content(message: BaseMessage | None) -> bool:
     return any(isinstance(part, dict) and part.get("type") == "image_url" for part in content)
 
 
-def _messages_to_trim(messages: list[BaseMessage]) -> list[BaseMessage]:
-    """The actual message OBJECTS (with content) that fall outside the
-    kept window — everything older than the last MAX_HISTORY_TURNS whole
-    turns. Shared by `compact_history` (which needs the real content to
-    summarize) and, via `_trim_history`, anything that only needs the
-    ids to delete.
+# Not Qwen's own tokenizer (no local equivalent bundled with this app) — a
+# deliberately approximate, directional budget check, the same "good enough,
+# not byte-exact" posture MIN_ANSWER_LENGTH's char-count already takes
+# elsewhere in this file. tiktoken is already an installed dependency (pulled
+# in transitively by langchain-openai), so this adds nothing new. Built once,
+# lazily, at module scope — cheap to reuse, not cheap to rebuild per call.
+_TOKEN_ENCODING = tiktoken.get_encoding("cl100k_base")
+
+
+def _message_text(message: BaseMessage) -> str:
+    content = getattr(message, "content", "") or ""
+    return content if isinstance(content, str) else str(content)
+
+
+def _estimate_tokens(messages: list[BaseMessage]) -> int:
+    return sum(len(_TOKEN_ENCODING.encode(_message_text(m))) for m in messages)
+
+
+def _messages_to_trim(
+    messages: list[BaseMessage],
+    ceiling: int = HISTORY_TOKEN_CEILING,
+    floor: int = HISTORY_TOKEN_FLOOR,
+) -> list[BaseMessage]:
+    """The actual message OBJECTS (with content) that fall outside the kept
+    window. Shared by `compact_history` (which needs the real content to
+    summarize) and, via `_trim_history`, anything that only needs the ids to
+    delete.
+
+    Hysteresis, not a sliding window: does nothing while the estimated token
+    count of the non-system history is at/under `ceiling`; once it's
+    exceeded, drops whole OLDEST turns until the kept tail is at/under
+    `floor` — a strictly lower bar than `ceiling` — so the very next turn
+    starts from a real gap below the trigger point instead of sitting right
+    back at it. See HISTORY_TOKEN_CEILING/FLOOR's own comments for why a
+    plain "always trim back to the same ceiling" design (this function's
+    prior turn-count form) re-triggers on every single subsequent turn
+    forever instead of occasionally. `ceiling`/`floor` are parameters (both
+    defaulting to the module constants) purely for direct unit testing with
+    small, controlled values — no production caller overrides them.
 
     Trims by whole turn (a HumanMessage through the next HumanMessage),
     never by raw message count, so a tool_call/ToolMessage pair is never
@@ -325,24 +408,38 @@ def _messages_to_trim(messages: list[BaseMessage]) -> list[BaseMessage]:
     exactly like the HITL-rejection gotcha `_reject_tool_calls` exists to
     avoid on the *current* turn, just triggered by trimming instead of a
     disapproval. The seeded system prompt (app/agent/runtime.py::_ensure_seeded_async)
-    is never dropped. A message with no id (only possible outside a
-    compiled graph, e.g. a hand-built dict in a test) is left alone
-    rather than guessed at, since RemoveMessage deletes by id.
+    is never dropped, and the most recent turn is never dropped either — a
+    turn so large on its own that even keeping just it exceeds `floor` still
+    keeps it whole rather than cutting into it. A message with no id (only
+    possible outside a compiled graph, e.g. a hand-built dict in a test) is
+    left alone rather than guessed at, since RemoveMessage deletes by id.
     """
     turn_starts = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
-    if len(turn_starts) <= MAX_HISTORY_TURNS:
+    if len(turn_starts) <= 1:
+        return []  # nothing to drop without losing the current turn itself
+    non_system = [m for m in messages if not isinstance(m, SystemMessage)]
+    if _estimate_tokens(non_system) <= ceiling:
         return []
-    cutoff = turn_starts[-MAX_HISTORY_TURNS]
+    cutoff = turn_starts[-1]  # worst case: keep only the most recent turn
+    for idx in turn_starts[1:]:
+        kept = [m for m in messages[idx:] if not isinstance(m, SystemMessage)]
+        if _estimate_tokens(kept) <= floor:
+            cutoff = idx
+            break
     return [
         m for m in messages[:cutoff] if not isinstance(m, SystemMessage) and m.id is not None
     ]
 
 
-def _trim_history(messages: list[BaseMessage]) -> list[RemoveMessage]:
+def _trim_history(
+    messages: list[BaseMessage],
+    ceiling: int = HISTORY_TOKEN_CEILING,
+    floor: int = HISTORY_TOKEN_FLOOR,
+) -> list[RemoveMessage]:
     """`_messages_to_trim` reduced to `RemoveMessage` deletion stubs —
     kept as its own function for callers (and tests) that only care which
     ids get removed, not their content."""
-    return [RemoveMessage(id=cast(str, m.id)) for m in _messages_to_trim(messages)]
+    return [RemoveMessage(id=cast(str, m.id)) for m in _messages_to_trim(messages, ceiling, floor)]
 
 
 def _format_turns_for_summary(messages: list[BaseMessage]) -> str:
@@ -374,7 +471,9 @@ _HISTORY_SUMMARY_PROMPT = (
 )
 
 
-def make_compact_history_node(llm):
+def make_compact_history_node(
+    llm, ceiling: int = HISTORY_TOKEN_CEILING, floor: int = HISTORY_TOKEN_FLOOR
+):
     """Factory, same rationale as make_agent_node/make_suggest_followups_node:
     needs an LLM client to turn discarded turns into a running summary
     instead of just discarding them (AR-015a).
@@ -384,6 +483,11 @@ def make_compact_history_node(llm):
     kept as its own node rather than folded into validate_input because it
     needs an LLM call and validate_input is meant to stay a plain,
     dependency-free function of state/config.
+
+    `ceiling`/`floor` default to the module constants; overridable purely so
+    tests can trigger/observe the hysteresis behavior with small, controlled
+    token budgets instead of needing thousands of tokens of placeholder
+    content — no production caller passes anything but the defaults.
     """
 
     def compact_history(state: State) -> dict:
@@ -397,7 +501,7 @@ def make_compact_history_node(llm):
         summarization call succeeding, same reliability posture as
         suggest_followups.
         """
-        to_summarize = _messages_to_trim(state["messages"])
+        to_summarize = _messages_to_trim(state["messages"], ceiling, floor)
         if not to_summarize:
             return {}
 
@@ -525,7 +629,7 @@ def _make_llm(tools: list = TOOLS):
 # climbing turn over turn, so MAX_ITERATIONS would eventually end the graph
 # on a random future turn regardless of how much work that turn actually
 # did. `run_id` gets a fresh value here for the same reason. History
-# trimming+summarization (MAX_HISTORY_TURNS) runs one node later, in
+# trimming+summarization (HISTORY_TOKEN_CEILING/FLOOR) runs one node later, in
 # compact_history — it needs an LLM call, so it stays out of this node to
 # keep validate_input a plain, dependency-free function of state/config.
 #
@@ -550,6 +654,7 @@ def validate_input(state: State, config: RunnableConfig) -> dict:
         "citations": [],
         "used_citations": [],
         "ungrounded_claims_count": 0,
+        "likely_uncited_citations": [],
         "cache_hit": False,
         "moderation_blocked": False,
         "followups": [],
@@ -875,18 +980,26 @@ def make_retrieve_context_node(
         (AGENT_RETRY_POLICY).
         """
         last_human = _last_human_message(state["messages"])
+        # The turn's opening question is, right now, the last message in
+        # state — nothing appends after it until `agent` runs. Recording
+        # its index here (not re-deriving "the last human message" later,
+        # which would find a SYNTHETIC retry_output message instead once
+        # the turn's loop has run a few rounds) is what lets agent() anchor
+        # history_summary/context to the SAME fixed position on every call
+        # — see State.context_anchor_index's own docstring.
+        anchor = len(state["messages"]) - 1
         if last_human is None:
-            return {"context": "", "citations": []}
+            return {"context": "", "citations": [], "context_anchor_index": anchor}
         try:
             context, citations = search(_human_text(last_human), state.get("ctx"))
-            return {"context": context, "citations": citations}
+            return {"context": context, "citations": citations, "context_anchor_index": anchor}
         except Exception as exc:  # noqa: BLE001 - degrade, never crash the turn
             logger.warning(
                 "context retrieval failed; continuing without pre-fetched context",
                 extra={"node": "retrieve_context", "error_class": type(exc).__name__},
             )
             metrics.agent_context_retrieval_degraded_total.inc()
-            return {"context": "", "citations": []}
+            return {"context": "", "citations": [], "context_anchor_index": anchor}
 
     return retrieve_context
 
@@ -910,34 +1023,73 @@ def make_agent_node(llm):
         actually needs to reach the model on every agent step.
         """
         messages = list(state["messages"])
+        anchor = state.get("context_anchor_index")
         history_summary = state.get("history_summary", "")
+        context = state.get("context", "")
+
+        # Both history_summary and context are front-loaded together, right
+        # BEFORE the turn's own question, at the SAME fixed position on
+        # every call this turn makes (retrieve_context computed `anchor`
+        # once, before the agent<->tools/check_output<->retry_output loop
+        # started appending anything after it) — not appended at whatever
+        # the CURRENT tail happens to be, which would put them at a
+        # DIFFERENT relative position on every subsequent call as
+        # tool-calls/retries pile up after them. Bulk reference content
+        # belongs up front for two independent reasons at once: a
+        # provider's/inference engine's prefix-cache reuse (Ollama/
+        # llama.cpp included) needs a stable, unchanging prefix, AND the
+        # common convention for long reference material is to place it
+        # before the immediate ask, not after (Anthropic's own long-context
+        # guidance says the same for retrieved documents). Summary before
+        # context: more general background first, the currently-relevant
+        # retrieved docs closest to the question itself. See
+        # State.context_anchor_index's own docstring.
+        prefix_inserts: list[SystemMessage] = []
         if history_summary:
-            # Same "extra SystemMessage, appended" mechanism as the context
-            # injection right below — just for turns old enough to have
-            # been compacted (GRAPH_PATTERNS.md pattern 41) instead of
-            # retrieved documents. Appended rather than inserted at a fixed
-            # index: nothing here can assume messages[0] is always the
-            # seeded base SYSTEM_PROMPT (a hand-built test state may omit
-            # it), and the model reads a handful of SystemMessages the
-            # same regardless of their exact position in the list.
-            messages.append(
+            prefix_inserts.append(
                 SystemMessage(
-                    content=(
-                        "Summary of earlier conversation (background only — "
-                        f"do not restate this verbatim in your answer):\n{history_summary}"
-                    )
+                    content=f"Summary of earlier conversation (background only):\n{history_summary}"
                 )
             )
-        context = state.get("context", "")
         if context:
             # Untrusted content framing: retrieved text is data, never
             # instructions (a document saying "ignore previous instructions"
             # is the textbook prompt-injection vector) — the delimiters plus
             # the SYSTEM_PROMPT rule are what make that structural rather
             # than something the model has to remember to apply itself.
-            messages.append(
+            prefix_inserts.append(
                 SystemMessage(
                     content=f"<retrieved_document>\n{context}\n</retrieved_document>"
+                )
+            )
+        if prefix_inserts:
+            if isinstance(anchor, int) and 0 <= anchor < len(messages):
+                messages[anchor:anchor] = prefix_inserts
+            else:
+                # No anchor to work with (e.g. a hand-built test State
+                # that never ran retrieve_context) — fall back to the old
+                # tail-append rather than guessing at a position.
+                messages.extend(prefix_inserts)
+
+        if history_summary:
+            # A SHORT, standalone reminder appended at the CURRENT tail —
+            # deliberately NOT anchored like the summary text above. A real
+            # regression (see
+            # test_history_summary_injection_tells_the_model_not_to_restate_it_verbatim)
+            # showed a small model regurgitating the summary when this
+            # instruction wasn't close enough to the generation point.
+            # Splitting it out keeps only this one line — not the whole
+            # summary block — recency-weighted: the anti-regurgitation
+            # protection survives at a near-zero cache-stability cost,
+            # since the bulk of the summary TEXT now lives in the stable,
+            # anchored prefix above and only this short reminder's position
+            # shifts turn to turn.
+            messages.append(
+                SystemMessage(
+                    content=(
+                        "Reminder: do not restate the earlier-conversation "
+                        "summary above verbatim in your answer."
+                    )
                 )
             )
 
@@ -1095,7 +1247,7 @@ def should_continue(
     "too_many_tool_calls",
     "invalid_tool_call",
     "check_output",
-    "__end__",
+    "no_answer",
 ]:
     """Did the LLM call a tool, give a final answer, or hit a safety budget?
 
@@ -1144,19 +1296,30 @@ def should_continue(
     remains directly importable and callable with just `state`, matching
     every other routing function in this file (see this module's own
     docstring on why routing functions live at module level).
+
+    All four safety-net exits below route to `"no_answer"`, not straight to
+    `END` — `no_answer_fallback` is the one place that turns "some budget
+    fired before `check_output` ever ran" into a real, user-visible message
+    instead of silently ending the turn on whatever the `agent` node's last
+    AIMessage happened to be (often empty — a small model that fails to
+    produce a tool call or any content still burns real tokens doing it, so
+    a `retry_output` loop can hit `max_tokens` before ever producing prose).
+    Same "empty final AIMessage means a safety net tripped" signal
+    `run_subagent` (app/agent/tools.py) already uses for a NESTED run;
+    this is the top-level-turn equivalent, which previously had none.
     """
     if state.get("iterations", 0) >= max_iterations:
-        return "__end__"
+        return "no_answer"
     if state.get("total_tokens", 0) >= max_tokens:
         metrics.agent_token_budget_exceeded_total.inc()
-        return "__end__"
+        return "no_answer"
     if state.get("total_cost_usd", 0.0) >= max_cost_usd:
         # A HARD stop (GRAPH_PATTERNS.md pattern 35) — independent of the
         # token cap above: the same token count costs differently on
         # different model tiers, so a $ ceiling is not a derived quantity
         # of the token one, it's its own budget.
         metrics.agent_cost_ceiling_exceeded_total.inc()
-        return "__end__"
+        return "no_answer"
     result = tools_condition(state)  # type: ignore[arg-type]  # State is a valid Mapping at runtime; tools_condition's stub just doesn't say so
     if result != "tools":
         return "check_output"
@@ -1171,7 +1334,7 @@ def should_continue(
         # iteration cap and settle spend indistinguishably from a run
         # that was actually converging (GRAPH_PATTERNS.md pattern 34).
         metrics.agent_no_progress_total.inc()
-        return "__end__"
+        return "no_answer"
     mandatory_reason = _mandatory_gate_reason(tool_calls, tool_capabilities)
     if mandatory_reason:
         metrics.agent_capability_gate_total.labels(capability=mandatory_reason).inc()
@@ -1321,6 +1484,74 @@ def _ungrounded_claims_count(content: str, citations: list[dict]) -> int:
     return len(referenced - real_markers)
 
 
+# A small, deliberately crude stopword list — good enough to stop common
+# words from inflating an overlap ratio, without pulling in an NLP
+# dependency for what's fundamentally a coarse, directional heuristic.
+_STOPWORDS = frozenset(
+    "a an the is are was were and or of to in for on at by with from that "
+    "this it its be as you your can will if not into their his her they "
+    "he she we".split()
+)
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _content_words(text: str) -> set[str]:
+    return {
+        w for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS and len(w) > 2
+    }
+
+
+# Tuned against two real qwen2.5:3b answers that paraphrased a source
+# near-verbatim without any bracket marker (see the conversation this was
+# added from): both cleared 90%+ overlap on 8-14 content words. 60%/4 words
+# leaves real margin below that while still requiring enough distinctive
+# vocabulary that a coincidental match on a handful of common domain words
+# ("Qdrant", "search") alone can't trip it.
+_UNCITED_OVERLAP_RATIO = 0.6
+_UNCITED_MIN_OVERLAP_WORDS = 4
+
+
+def _likely_uncited_citations(
+    content: str, citations: list[dict], used: list[dict]
+) -> list[dict]:
+    """Citations NOT referenced by marker in `content` (i.e. not in `used`,
+    `_used_citations`'s own output) whose own text shares enough
+    distinctive vocabulary with the answer to suggest the model drew on it
+    anyway without attributing it — a much stronger, less ambiguous signal
+    than "citations were merely available" (metrics.agent_zero_citations_total's
+    own, noisier trigger in check_output): a general-knowledge or
+    calculator-only answer (both explicitly allowed uncited by
+    SYSTEM_PROMPT) has no particular reason to share heavy vocabulary with
+    an unrelated fetched document, so this stays quiet for those, unlike
+    the plain zero-citations check.
+
+    A citation shorter than _UNCITED_MIN_OVERLAP_WORDS content words is
+    skipped entirely, not just held to the ratio — a short/generic source
+    can hit a high overlap ratio by coincidence on too few words to mean
+    anything.
+    """
+    if not content or not citations:
+        return []
+    answer_words = _content_words(content)
+    if not answer_words:
+        return []
+    used_markers = {c["marker"] for c in used}
+    flagged = []
+    for citation in citations:
+        if citation.get("marker") in used_markers:
+            continue
+        cite_words = _content_words(citation.get("text", ""))
+        if len(cite_words) < _UNCITED_MIN_OVERLAP_WORDS:
+            continue
+        overlap = cite_words & answer_words
+        if (
+            len(overlap) >= _UNCITED_MIN_OVERLAP_WORDS
+            and len(overlap) / len(cite_words) >= _UNCITED_OVERLAP_RATIO
+        ):
+            flagged.append(citation)
+    return flagged
+
+
 # --- Node: check output — also extracts which offered citations the
 # final answer actually used (see _used_citations) and how many cited
 # markers were invented (see _ungrounded_claims_count). Recomputed from
@@ -1331,9 +1562,22 @@ def check_output(state: State) -> dict:
     last = state["messages"][-1]
     content = getattr(last, "content", "") or ""
     citations = state.get("citations") or []
+    used = _used_citations(content, citations)
+    if citations and not used and content:
+        # Directional signal only (the opposite failure mode from
+        # ungrounded_claims_count below) — not enforced. A legitimate
+        # general-knowledge or calculator-only answer looks IDENTICAL to a
+        # model that silently dropped a mandatory citation: retrieve_context
+        # always returns its top-K docs regardless of actual relevance, and
+        # the SYSTEM_PROMPT explicitly allows citing nothing for either of
+        # those cases. route_after_check deliberately doesn't retry on
+        # this, same reasoning as why it doesn't retry on a high
+        # ungrounded_claims_count either — see this metric's own docstring.
+        metrics.agent_zero_citations_total.inc()
     return {
-        "used_citations": _used_citations(content, citations),
+        "used_citations": used,
         "ungrounded_claims_count": _ungrounded_claims_count(content, citations),
+        "likely_uncited_citations": _likely_uncited_citations(content, citations, used),
     }
 
 
@@ -1341,6 +1585,8 @@ def route_after_check(state: State) -> Literal["retry_output", "suggest_followup
     last = state["messages"][-1]
     content = getattr(last, "content", "") or ""
     if isinstance(content, str) and len(content) < MIN_ANSWER_LENGTH:
+        return "retry_output"
+    if state.get("likely_uncited_citations"):
         return "retry_output"
     return "suggest_followups"
 
@@ -1442,15 +1688,76 @@ def make_write_semantic_cache_node(
 def retry_output(state: State) -> dict:
     """Send the agent back with corrective feedback instead of just
     looping on the exact same messages. MAX_ITERATIONS in should_continue
-    still bounds the total number of retries."""
+    still bounds the total number of retries.
+
+    Two independent reasons route here (route_after_check) — length and
+    likely-uncited-citations — so the feedback names the ACTUAL problem
+    rather than a generic "try again": a model nudged with the wrong
+    complaint (e.g. "too short" when the real issue was a missing
+    citation) has no reason to fix the thing that's actually wrong.
+    Length is checked first since an answer that's both too short AND
+    lexically overlapping a source is rare in practice, and "give a fuller
+    answer" is the more actionable ask of the two in that edge case.
+    """
     metrics.agent_retry_total.inc()
-    return {
-        "messages": [
-            HumanMessage(
-                content="That answer was too short — please give a fuller answer."
-            )
-        ]
-    }
+    messages = state.get("messages") or []
+    last = messages[-1] if messages else None
+    content = getattr(last, "content", "") or ""
+    likely_uncited = state.get("likely_uncited_citations") or []
+    if isinstance(content, str) and len(content) < MIN_ANSWER_LENGTH:
+        feedback = "That answer was too short — please give a fuller answer."
+    else:
+        markers = ", ".join(c["marker"] for c in likely_uncited)
+        feedback = (
+            f"That answer uses facts from source(s) {markers} without citing "
+            "them. Add the bracket marker(s) to every sentence that uses "
+            "retrieved content, exactly as instructed."
+        )
+    return {"messages": [HumanMessage(content=feedback)]}
+
+
+# --- Node: top-level "no answer" fallback — reached only via should_continue's
+# four safety-net exits (max iterations, max tokens, max cost,
+# no-progress/repeated-action detection), never from check_output's normal
+# path. Each of those means the turn got cut off before check_output could
+# ever run, so `state["messages"][-1]` is whatever the `agent` node's last
+# AIMessage happened to be — frequently empty (a small model that fails to
+# produce either real content or a valid tool call still burns real
+# completion tokens doing it, so a retry_output loop can hit MAX_TOKENS_PER_TURN
+# purely on failed attempts, before ever producing prose). Without this node,
+# that empty AIMessage would just BE the turn's final answer — and
+# app/agent/runtime.py::_run_graph_stream's own "no on_chat_model_stream
+# events fired" fallback reads exactly this last message to synthesize a
+# token event for a streaming client, so an empty one here means a real user
+# gets back a literal blank reply.
+#
+# `emit_message=False` (run_subagent's nested graphs — see build_graph) turns
+# this into a no-op: run_subagent (app/agent/tools.py) already does the
+# IDENTICAL "empty final AIMessage means some safety net fired" check on its
+# OWN terms, to produce a "Subagent {name!r} did not produce a final answer
+# ..." ToolMessage and tag its own outcome="budget_exceeded" metric — this
+# node filling in prose first would leave that check looking at real text
+# and wrongly reporting the run as "completed". ---
+def make_no_answer_fallback_node(emit_message: bool = True):
+    def no_answer_fallback(state: State) -> dict:
+        if not emit_message:
+            return {}
+        last = state["messages"][-1]
+        content = getattr(last, "content", "") or ""
+        if isinstance(content, str) and content.strip():
+            return {}
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        "I wasn't able to put together a full answer to that just now "
+                        "— could you try rephrasing, or asking again?"
+                    )
+                )
+            ]
+        }
+
+    return no_answer_fallback
 
 
 @dataclass
@@ -1478,6 +1785,9 @@ def build_graph(
     max_iterations: int | None = None,
     max_tokens_per_turn: int | None = None,
     max_cost_usd_per_turn: float | None = None,
+    emit_no_answer_message: bool = True,
+    history_token_ceiling: int | None = None,
+    history_token_floor: int | None = None,
 ):
     """Compile the graph.
 
@@ -1518,6 +1828,23 @@ def build_graph(
     MAX_SUBAGENT_COST_USD_PER_RUN (GRAPH_PATTERNS.md pattern 46), so a nested
     subagent run is bounded by its own ceiling rather than inheriting
     whichever budget the top-level runtime happens to use.
+
+    `emit_no_answer_message` (default True) controls whether the `no_answer`
+    node (reached via should_continue's four safety-net exits) fills an
+    empty final AIMessage with a user-facing fallback string — see
+    make_no_answer_fallback_node's docstring. `run_subagent` is the one
+    caller that sets this False: its nested graph needs the SAME empty
+    content should_continue's routing already produces, since it does its
+    own, differently-worded "did not produce a final answer" substitution
+    and outcome="budget_exceeded" tagging on the raw result.
+
+    `history_token_ceiling`/`history_token_floor` default to `None`, falling
+    back to HISTORY_TOKEN_CEILING/HISTORY_TOKEN_FLOOR — the same
+    None-means-module-default shape as max_iterations/max_tokens_per_turn
+    above. No production caller overrides these; they exist purely so
+    tests can exercise compact_history's hysteresis behavior with small,
+    controlled token budgets instead of needing thousands of tokens of
+    placeholder conversation content to trip the real ones.
     """
     from app.agent.manifest import DEFAULT_DOMAIN_PLUGIN, DEFAULT_MANIFEST
 
@@ -1542,7 +1869,11 @@ def build_graph(
     # Reuses the SAME llm client too — same reasoning as suggest_followups
     # above: a summarization call doesn't need tools bound, and a
     # tool-bound client asked a plain summarization prompt just answers it.
-    compact_history = make_compact_history_node(llm_client)
+    compact_history = make_compact_history_node(
+        llm_client,
+        ceiling=history_token_ceiling if history_token_ceiling is not None else HISTORY_TOKEN_CEILING,
+        floor=history_token_floor if history_token_floor is not None else HISTORY_TOKEN_FLOOR,
+    )
     retrieve_context = make_retrieve_context_node(deps.search_docs or _default_search)
     check_semantic_cache = make_check_semantic_cache_node(deps.cache_get or _default_cache_get)
     write_semantic_cache = make_write_semantic_cache_node(deps.cache_set or _default_cache_set)
@@ -1624,6 +1955,10 @@ def build_graph(
     builder.add_node("check_output", _instrumented("check_output")(check_output))
     builder.add_node("retry_output", _instrumented("retry_output")(retry_output))
     builder.add_node(
+        "no_answer",
+        _instrumented("no_answer")(make_no_answer_fallback_node(emit_no_answer_message)),
+    )
+    builder.add_node(
         "suggest_followups", _instrumented("suggest_followups")(suggest_followups)
     )
     builder.add_node(
@@ -1651,6 +1986,7 @@ def build_graph(
 
     builder.add_conditional_edges("check_output", route_after_check)
     builder.add_edge("retry_output", "agent")
+    builder.add_edge("no_answer", END)
     builder.add_edge("suggest_followups", "write_semantic_cache")
     builder.add_edge("write_semantic_cache", END)
 

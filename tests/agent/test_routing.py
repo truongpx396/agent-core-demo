@@ -138,7 +138,7 @@ class TestNoProgressDetection:
         }
 
     def test_ends_the_turn_once_max_repeated_actions_is_reached(self):
-        assert should_continue(self._repeating_state(MAX_REPEATED_ACTIONS)) == "__end__"
+        assert should_continue(self._repeating_state(MAX_REPEATED_ACTIONS)) == "no_answer"
 
     def test_does_not_end_below_the_threshold(self):
         assert should_continue(self._repeating_state(MAX_REPEATED_ACTIONS - 1)) == "tools"
@@ -228,14 +228,14 @@ class TestShouldContinue:
             "iterations": MAX_ITERATIONS,
             "messages": [AIMessage(content="still going")],
         }
-        assert should_continue(state) == "__end__"
+        assert should_continue(state) == "no_answer"
 
     def test_over_iteration_limit_ends(self):
         state = {
             "iterations": MAX_ITERATIONS + 5,
             "messages": [AIMessage(content="still going")],
         }
-        assert should_continue(state) == "__end__"
+        assert should_continue(state) == "no_answer"
 
     def test_tool_call_routes_to_tools(self):
         state = {
@@ -307,17 +307,17 @@ class TestShouldContinueBudgetOverrides:
     def test_custom_max_iterations_ends_a_run_the_default_would_still_allow(self):
         state = {"iterations": 3, "messages": [AIMessage(content="still going")]}
         assert should_continue(state) == "check_output"  # module default: not yet capped
-        assert should_continue(state, max_iterations=3) == "__end__"
+        assert should_continue(state, max_iterations=3) == "no_answer"
 
     def test_custom_max_tokens_ends_a_run_the_default_would_still_allow(self):
         state = {"iterations": 1, "total_tokens": 500, "messages": [AIMessage(content="still going")]}
         assert should_continue(state) == "check_output"
-        assert should_continue(state, max_tokens=500) == "__end__"
+        assert should_continue(state, max_tokens=500) == "no_answer"
 
     def test_custom_max_cost_ends_a_run_the_default_would_still_allow(self):
         state = {"iterations": 1, "total_cost_usd": 0.05, "messages": [AIMessage(content="still going")]}
         assert should_continue(state) == "check_output"
-        assert should_continue(state, max_cost_usd=0.05) == "__end__"
+        assert should_continue(state, max_cost_usd=0.05) == "no_answer"
 
 
 class TestToolCapability:
@@ -490,4 +490,18 @@ class TestRouteAfterCheck:
 
     def test_long_answer_goes_to_suggest_followups(self):
         state = {"messages": [AIMessage(content="A sufficiently detailed answer.")]}
+        assert route_after_check(state) == "suggest_followups"
+
+    def test_likely_uncited_citations_retries_even_though_long_enough(self):
+        state = {
+            "messages": [AIMessage(content="A sufficiently detailed answer.")],
+            "likely_uncited_citations": [{"marker": "[1]", "text": "..."}],
+        }
+        assert route_after_check(state) == "retry_output"
+
+    def test_no_likely_uncited_citations_goes_to_suggest_followups(self):
+        state = {
+            "messages": [AIMessage(content="A sufficiently detailed answer.")],
+            "likely_uncited_citations": [],
+        }
         assert route_after_check(state) == "suggest_followups"

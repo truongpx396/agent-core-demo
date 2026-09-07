@@ -574,6 +574,17 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
       {"type": "approval_required", "tool_calls": [{"name":..., "args":...}]}
         — the run paused at human_approval's interrupt() (see graph.py);
           call astream_events_resume(thread_id, approved) to continue.
+      {"type": "retry"} — NOT terminal: graph.py's retry_output just
+        rejected the last answer and looped back to `agent` for a fresh
+        one. Every "token" event already sent this turn belongs to the
+        now-discarded answer — a client must clear whatever it's rendered
+        so far before the next "token" arrives, or the rejected and
+        retried answers render concatenated with no indication a retry
+        ever happened (a real bug, caught live via Langfuse: an uncited
+        answer got retried, and the client showed both answers run
+        together as one). Fired from `on_chain_end` of the `retry_output`
+        node itself, which also resets `final_answer` here so Langfuse's
+        own `output` field doesn't show the same concatenation.
       {"type": "citations", "items": [...]} — emitted right before "done",
         only when the answer actually cited something; the same
         state["used_citations"] shape graph.py's check_output computes.
@@ -604,8 +615,27 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
         ):
             kind = event["event"]
 
-            if kind == "on_chat_model_stream":
-                # Raw token chunk — content may be str or list (multimodal)
+            if kind == "on_chat_model_stream" and event.get("metadata", {}).get(
+                "langgraph_node"
+            ) == "agent":
+                # Real bug, caught live via Langfuse: astream_events emits
+                # on_chat_model_stream for EVERY chat-model call anywhere in
+                # the graph, not just the main answer — suggest_followups
+                # (pattern 27) and compact_history (pattern 41) each make
+                # their OWN separate llm.invoke() call, and without this
+                # filter their output streamed as "token" events too,
+                # concatenating straight onto the end of the real answer
+                # with no separator (verified directly: a real turn's
+                # displayed text ended with the answer's last citation
+                # marker immediately followed by suggest_followups' own
+                # generated questions, no space, no newline). `metadata.
+                # langgraph_node` (verified empirically against a real
+                # astream_events run) is exactly which node's own graph
+                # step a given chat-model event belongs to — "agent" is
+                # the ONLY node whose text is ever meant to reach a user
+                # this way; suggest_followups' output already reaches the
+                # client correctly, and separately, via its own dedicated
+                # "followups" event below.
                 content = _text_content(event["data"]["chunk"].content)
                 if content:
                     final_answer.append(content)
@@ -620,6 +650,22 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
 
             elif kind == "on_tool_end":
                 yield {"type": "tool_end", "tool": event["name"]}
+
+            elif kind == "on_chain_end" and event["name"] == "retry_output":
+                # check_output rejected the last answer (too short, or
+                # citing without attribution — graph.py's retry_output) and
+                # the graph is looping back to `agent` for a fresh attempt.
+                # Every token already streamed above belongs to the
+                # REJECTED answer — with no signal here, a client just
+                # keeps appending (verified directly: app/api/static/
+                # index.html's handleEvent does exactly that), so the
+                # rejected answer and the retried one render concatenated
+                # as if they were one continuous response, no separator, no
+                # indication a retry happened at all. `final_answer` is
+                # reset for the SAME reason on the trace side — it's what
+                # ends up as Langfuse's own `output` field below.
+                final_answer.clear()
+                yield {"type": "retry"}
 
     except TurnCancelled:
         # Checked BEFORE the generic except below — a deliberate stop is

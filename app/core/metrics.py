@@ -158,6 +158,18 @@ agent_retry_total = Counter(
     "agent_retry_total", "Output-quality retries triggered by route_after_check"
 )
 
+agent_zero_citations_total = Counter(
+    "agent_zero_citations_total",
+    "Non-empty final answers with retrieved context available but zero "
+    "citation markers used (check_output) — the opposite failure mode "
+    "from ungrounded_claims_count (citing something not backed by a "
+    "source, vs. using sourced content without citing it at all). "
+    "Directional only, like ungrounded_claims_count: a legitimate "
+    "general-knowledge or calculator-only answer looks identical, since "
+    "retrieve_context always returns its top-K docs regardless of "
+    "relevance — not acted on by route_after_check, just observed.",
+)
+
 agent_tool_budget_exceeded_total = Counter(
     "agent_tool_budget_exceeded_total",
     "Turns where the LLM requested more tool calls at once than MAX_TOOL_CALLS_PER_TURN allows",
@@ -182,7 +194,8 @@ agent_context_retrieval_degraded_total = Counter(
 
 agent_history_compacted_total = Counter(
     "agent_history_compacted_total",
-    "Turns where conversation history was trimmed to MAX_HISTORY_TURNS",
+    "Turns where conversation history was trimmed after crossing "
+    "HISTORY_TOKEN_CEILING, down to HISTORY_TOKEN_FLOOR",
 )
 
 agent_capability_gate_total = Counter(

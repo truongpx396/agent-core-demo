@@ -1103,6 +1103,12 @@ def _run_subagent_impl(
         max_iterations=MAX_SUBAGENT_ITERATIONS,
         max_tokens_per_turn=MAX_SUBAGENT_TOKENS_PER_RUN,
         max_cost_usd_per_turn=MAX_SUBAGENT_COST_USD_PER_RUN,
+        # This function's own post-run check below needs a genuinely empty
+        # final AIMessage to detect "some safety net fired" and report its
+        # own "did not produce a final answer" message + outcome=
+        # "budget_exceeded" — the top-level graph's no_answer node would
+        # otherwise fill that content in first (see build_graph's docstring).
+        emit_no_answer_message=False,
     )
 
     parent_thread_id = (config or {}).get("configurable", {}).get("thread_id", "unknown")

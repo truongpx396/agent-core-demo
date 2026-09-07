@@ -20,19 +20,29 @@ from langgraph.types import Command
 from app.agent.graph import (
     AGENT_RETRY_POLICY,
     MAX_HISTORY_SUMMARY_CHARS,
-    MAX_HISTORY_TURNS,
     MAX_ITERATIONS,
     MAX_REPEATED_ACTIONS,
     MAX_TOKENS_PER_TURN,
     MAX_TOOL_CALLS_PER_TURN,
     GraphDeps,
+    _estimate_tokens,
     build_graph,
 )
 from tests.conftest import TEST_CTX
 
 
 def _config():
-    return {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
+    return {
+        "configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX},
+        # LangGraph's own default (25) sits right at the edge of what
+        # MAX_ITERATIONS worth of agent<->tools round trips plus the fixed
+        # pre/post-loop nodes needs — the same "each iteration is ~2 steps"
+        # math app/agent/runtime.py's own RECURSION_LIMIT and
+        # app/agent/tools.py::run_subagent's nested_config already use, so
+        # this test config does too rather than relying on the SDK default
+        # coincidentally being just enough.
+        "recursion_limit": MAX_ITERATIONS * 2 + 15,
+    }
 
 
 def _fake_llm(*responses):
@@ -207,40 +217,75 @@ class TestNoProgressDetection:
 
 
 class TestHistorySummarization:
-    """AR-015a end-to-end: a thread running past MAX_HISTORY_TURNS gets its
-    oldest turn folded into history_summary (compact_history) instead of
-    just discarded, while turns still inside the kept window survive
-    verbatim in state["messages"]. See TestSafetyBudgets' compact_history
-    unit tests for the discard/summarize logic in isolation; this proves
-    the whole graph wires it together across real successive g.invoke()
-    calls sharing one checkpointed thread."""
+    """AR-015a end-to-end: a thread running past its token-based history
+    budget gets its oldest turn folded into history_summary
+    (compact_history) instead of just discarded, while turns still inside
+    the kept window survive verbatim in state["messages"]. See
+    TestSafetyBudgets' compact_history unit tests for the
+    discard/summarize logic in isolation; this proves the whole graph
+    wires it together across real successive g.invoke() calls sharing one
+    checkpointed thread.
+
+    Every test here drives build_graph with small, LOCAL
+    history_token_ceiling/floor overrides — never the real
+    HISTORY_TOKEN_CEILING/FLOOR production constants, which would need
+    thousands of tokens of placeholder conversation content to actually
+    trip. `_estimate_tokens` (the same real, tiktoken-backed helper
+    compact_history itself uses) computes ceiling/floor directly from the
+    turns each test constructs, rather than a hand-guessed token count
+    that could silently drift out of sync with the real encoding.
+    """
+
+    N_TURNS = 3  # turns within budget before the triggering (N_TURNS + 1)-th
+
+    @classmethod
+    def _budget_for(cls, agent_responses):
+        """(ceiling, floor, questions) for a conversation of N_TURNS
+        "within budget" turns followed by one triggering turn: ceiling
+        fits exactly the N_TURNS turns (so the triggering turn's own new
+        question — added before compact_history runs, ahead of its own
+        answer — is what pushes it over); floor fits exactly the turns
+        that should survive (all but the oldest) plus that same pending
+        question, since it's already part of `state["messages"]` by the
+        time the trim decision runs."""
+        questions = [f"question {i}?" for i in range(1, cls.N_TURNS + 2)]
+        turns = []
+        for q, a in zip(questions[: cls.N_TURNS], agent_responses, strict=True):
+            turns.append(HumanMessage(content=q))
+            turns.append(a)
+        triggering_question = HumanMessage(content=questions[cls.N_TURNS])
+        ceiling = _estimate_tokens(turns)
+        floor = _estimate_tokens(turns[2:] + [triggering_question])
+        return ceiling, floor, questions
 
     def test_oldest_turn_is_summarized_while_recent_turns_stay_verbatim(self):
-        # Turns 1..MAX_HISTORY_TURNS: within budget, compact_history has
-        # nothing to trim yet, so only `agent` consumes a response each turn.
+        # Turns 1..N_TURNS: within budget, compact_history has nothing to
+        # trim yet, so only `agent` consumes a response each turn.
         agent_responses = [
             AIMessage(content=f"Answer number {i}, long enough to pass the length check.")
-            for i in range(1, MAX_HISTORY_TURNS + 1)
+            for i in range(1, self.N_TURNS + 1)
         ]
-        # Turn MAX_HISTORY_TURNS + 1 pushes turn_starts over budget: turn 1
-        # falls out of the window, so compact_history calls the LLM once
-        # (consumed BEFORE agent's own call, since compact_history runs
-        # earlier in the graph — see route_after_validation) ...
+        ceiling, floor, questions = self._budget_for(agent_responses)
+        # Turn N_TURNS + 1 pushes the estimated token count over ceiling:
+        # turn 1 falls out of the window, so compact_history calls the LLM
+        # once (consumed BEFORE agent's own call, since compact_history
+        # runs earlier in the graph — see route_after_validation) ...
         summary_response = AIMessage(content="The user first asked question 1.")
         # ... then agent answers the new turn as usual.
         final_response = AIMessage(
-            content=f"Answer number {MAX_HISTORY_TURNS + 1}, long enough to pass."
+            content=f"Answer number {self.N_TURNS + 1}, long enough to pass."
         )
         llm = _fake_llm(*agent_responses, summary_response, final_response)
-        g = build_graph(GraphDeps(llm=llm))
+        g = build_graph(
+            GraphDeps(llm=llm), history_token_ceiling=ceiling, history_token_floor=floor
+        )
         cfg = _config()
 
-        for i in range(1, MAX_HISTORY_TURNS + 1):
-            g.invoke({"messages": [HumanMessage(content=f"question {i}?")]}, config=cfg)
+        for q in questions[: self.N_TURNS]:
+            g.invoke({"messages": [HumanMessage(content=q)]}, config=cfg)
 
         result = g.invoke(
-            {"messages": [HumanMessage(content=f"question {MAX_HISTORY_TURNS + 1}?")]},
-            config=cfg,
+            {"messages": [HumanMessage(content=questions[self.N_TURNS])]}, config=cfg
         )
 
         assert result["history_summary"] == "The user first asked question 1."
@@ -255,19 +300,21 @@ class TestHistorySummarization:
         cleanly (same "would raise if invoked" proof as TestRejectPath)."""
         agent_responses = [
             AIMessage(content=f"Answer number {i}, long enough to pass the length check.")
-            for i in range(1, MAX_HISTORY_TURNS + 1)
+            for i in range(1, self.N_TURNS + 1)
         ]
+        ceiling, floor, questions = self._budget_for(agent_responses)
         oversized_summary = AIMessage(content="x" * (MAX_HISTORY_SUMMARY_CHARS + 1))
         llm = _fake_llm(*agent_responses, oversized_summary)
-        g = build_graph(GraphDeps(llm=llm))
+        g = build_graph(
+            GraphDeps(llm=llm), history_token_ceiling=ceiling, history_token_floor=floor
+        )
         cfg = _config()
 
-        for i in range(1, MAX_HISTORY_TURNS + 1):
-            g.invoke({"messages": [HumanMessage(content=f"question {i}?")]}, config=cfg)
+        for q in questions[: self.N_TURNS]:
+            g.invoke({"messages": [HumanMessage(content=q)]}, config=cfg)
 
         result = g.invoke(
-            {"messages": [HumanMessage(content=f"question {MAX_HISTORY_TURNS + 1}?")]},
-            config=cfg,
+            {"messages": [HumanMessage(content=questions[self.N_TURNS])]}, config=cfg
         )
 
         assert "too long" in result["messages"][-1].content.lower()
@@ -277,22 +324,24 @@ class TestHistorySummarization:
         must not fire on an ordinary, well-within-budget summary."""
         agent_responses = [
             AIMessage(content=f"Answer number {i}, long enough to pass the length check.")
-            for i in range(1, MAX_HISTORY_TURNS + 1)
+            for i in range(1, self.N_TURNS + 1)
         ]
+        ceiling, floor, questions = self._budget_for(agent_responses)
         summary_response = AIMessage(content="short summary")
         final_response = AIMessage(
-            content=f"Answer number {MAX_HISTORY_TURNS + 1}, long enough to pass."
+            content=f"Answer number {self.N_TURNS + 1}, long enough to pass."
         )
         llm = _fake_llm(*agent_responses, summary_response, final_response)
-        g = build_graph(GraphDeps(llm=llm))
+        g = build_graph(
+            GraphDeps(llm=llm), history_token_ceiling=ceiling, history_token_floor=floor
+        )
         cfg = _config()
 
-        for i in range(1, MAX_HISTORY_TURNS + 1):
-            g.invoke({"messages": [HumanMessage(content=f"question {i}?")]}, config=cfg)
+        for q in questions[: self.N_TURNS]:
+            g.invoke({"messages": [HumanMessage(content=q)]}, config=cfg)
 
         result = g.invoke(
-            {"messages": [HumanMessage(content=f"question {MAX_HISTORY_TURNS + 1}?")]},
-            config=cfg,
+            {"messages": [HumanMessage(content=questions[self.N_TURNS])]}, config=cfg
         )
 
         assert result["messages"][-1].content == final_response.content
