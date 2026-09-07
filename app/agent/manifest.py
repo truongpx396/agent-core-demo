@@ -24,7 +24,7 @@ Two deliberately different halves:
   Policy backs it (useful for tests and docs), not because build_graph
   threads it anywhere.
 
-`DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN` wrap this app's existing Acme
+`DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN` wrap this app's existing Ecorp
 setup completely unchanged — proof that today's single-domain app was
 always just the *default* domain, not a special case `build_graph()` has
 to keep working around. See `tests/agent/test_manifest.py` for a second,
@@ -91,7 +91,7 @@ class AgentManifest:
 
 
 @dataclass
-class _AcmeDomainPlugin:
+class _EcorpDomainPlugin:
     """Wraps this app's existing tools/capabilities/policy, unchanged."""
 
     def tools(self) -> list:
@@ -104,10 +104,10 @@ class _AcmeDomainPlugin:
         return DEFAULT_POLICY
 
 
-DEFAULT_DOMAIN_PLUGIN: DomainPlugin = _AcmeDomainPlugin()
+DEFAULT_DOMAIN_PLUGIN: DomainPlugin = _EcorpDomainPlugin()
 
 DEFAULT_MANIFEST = AgentManifest(
-    name="acme",
+    name="ecorp",
     system_prompt=SYSTEM_PROMPT,
     allowed_tools=tuple(t.name for t in TOOLS),
 )

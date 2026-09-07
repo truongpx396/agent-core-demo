@@ -48,13 +48,13 @@ def real_redis(monkeypatch):
     Patches `requests_stream_key` itself (not a fixed module constant, now
     that it's domain-parameterized) to ALWAYS return this one unique
     stream regardless of which domain a call passes in — this file only
-    ever exercises the default ("acme") domain, so collapsing every domain
+    ever exercises the default ("ecorp") domain, so collapsing every domain
     onto the same unique test stream changes nothing it actually asserts."""
     info = ensure_redis()
     monkeypatch.setattr(queue, "REDIS_URL", info["redis_url"])
     monkeypatch.setattr(queue, "_client", None)  # get_client() is a lazy singleton — see its own docstring
     test_stream = f"agent:requests:test:{uuid.uuid4()}"
-    monkeypatch.setattr(queue, "requests_stream_key", lambda domain="acme": test_stream)
+    monkeypatch.setattr(queue, "requests_stream_key", lambda domain="ecorp": test_stream)
     monkeypatch.setattr(queue, "CONSUMER_GROUP", f"agent-workers:test:{uuid.uuid4()}")
     yield
     queue._client = None

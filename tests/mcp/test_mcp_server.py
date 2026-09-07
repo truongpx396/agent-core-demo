@@ -40,7 +40,7 @@ def test_invalid_department_returns_a_friendly_error(monkeypatch):
 
     result = _call(
         "query_employees",
-        {"tenant": "acme", "principal": "p", "department": "NotADept"},
+        {"tenant": "ecorp", "principal": "p", "department": "NotADept"},
     )
 
     assert "Invalid department" in result
@@ -60,10 +60,10 @@ def test_valid_department_passes_through_as_the_enum_value(monkeypatch):
 
     _call(
         "query_employees",
-        {"tenant": "acme", "principal": "p", "department": "Engineering"},
+        {"tenant": "ecorp", "principal": "p", "department": "Engineering"},
     )
 
-    assert captured["tenant"] == "acme"
+    assert captured["tenant"] == "ecorp"
     assert captured["department"] == "Engineering"
 
 
@@ -75,7 +75,7 @@ def test_two_different_tenants_get_different_tenant_param(monkeypatch):
         lambda tenant, department=None, name_contains=None, limit=None: seen.append(tenant) or [],
     )
 
-    _call("query_employees", {"tenant": "acme", "principal": "p"})
+    _call("query_employees", {"tenant": "ecorp", "principal": "p"})
     _call("query_employees", {"tenant": "other-co", "principal": "p"})
 
     assert seen[0] != seen[1]

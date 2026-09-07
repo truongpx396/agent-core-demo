@@ -98,12 +98,12 @@ class TestUploadBytes:
         fake = _FakeMinioClient(bucket_exists=True)
         monkeypatch.setattr(object_store, "get_client", lambda: fake)
 
-        object_store.upload_bytes("acme/abc123-report.pdf", b"pdf-bytes-here", "application/pdf")
+        object_store.upload_bytes("ecorp/abc123-report.pdf", b"pdf-bytes-here", "application/pdf")
 
         assert len(fake.put_calls) == 1
         call = fake.put_calls[0]
         assert call["bucket"] == object_store.MINIO_BUCKET
-        assert call["object_name"] == "acme/abc123-report.pdf"
+        assert call["object_name"] == "ecorp/abc123-report.pdf"
         assert call["length"] == len(b"pdf-bytes-here")
         assert call["content_type"] == "application/pdf"
 

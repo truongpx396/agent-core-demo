@@ -24,6 +24,7 @@ from app.core.security import SecurityCtx, valid_ctx
 from app.domains import notify
 from app.domains.policy import ActionAllowlistPolicy
 from app.domains.support import store
+from app.ingestion.web_crawler import CRAWL_TOOL_TIMEOUT_SECONDS, render_url_to_markdown
 
 _NO_CTX_REFUSAL = (
     "Refused: no valid tenant/principal context for this request. "
@@ -39,6 +40,7 @@ SUPPORT_POLICY = ActionAllowlistPolicy(
             "escalate_to_human",
             "list_my_tickets",
             "add_ticket_comment",
+            "fetch_external_reference",
         }
     )
 )
@@ -220,12 +222,42 @@ def add_ticket_comment(ticket_id: int, comment: str, config: RunnableConfig) -> 
     return _run_with_timeout(_add_ticket_comment_impl, ticket_id, comment, ctx)
 
 
+class FetchExternalReferenceArgs(BaseModel):
+    url: str = Field(
+        ..., description="A third-party page relevant to the customer's issue (https:// only) — e.g. a link they shared."
+    )
+
+
+def _fetch_external_reference_impl(url: str) -> str:
+    return render_url_to_markdown(url)
+
+
+@tool(args_schema=FetchExternalReferenceArgs)
+def fetch_external_reference(url: str, config: RunnableConfig) -> str:
+    """Read a customer-linked or otherwise relevant third-party page LIVE
+    (real headless-browser render) for THIS turn's answer — e.g. the
+    customer links the API/webhook doc that doesn't match what they're
+    seeing. This does NOT add anything to the knowledge base (search_docs
+    is unaffected) — it's a one-off live read, never a corpus write, which
+    is why this domain can offer it without breaking its own "sandboxed to
+    knowledge base + ticket system" design. Reaches the open internet —
+    declared "outward" in TOOL_CAPABILITIES, so it always requires human
+    approval before it runs."""
+    ctx = _ctx_or_refuse(config, "fetch_external_reference")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(
+        _fetch_external_reference_impl, url, _timeout_seconds=CRAWL_TOOL_TIMEOUT_SECONDS
+    )
+
+
 TOOLS = [
     create_ticket,
     check_ticket_status,
     escalate_to_human,
     list_my_tickets,
     add_ticket_comment,
+    fetch_external_reference,
 ]
 
 TOOL_CAPABILITIES = {
@@ -234,4 +266,5 @@ TOOL_CAPABILITIES = {
     "escalate_to_human": "mutating",
     "list_my_tickets": "read_only",
     "add_ticket_comment": "mutating",
+    "fetch_external_reference": "outward",
 }

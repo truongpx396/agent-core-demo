@@ -25,6 +25,7 @@ from app.core.security import SecurityCtx, valid_ctx
 from app.domains import notify
 from app.domains.policy import ActionAllowlistPolicy
 from app.domains.sales import store
+from app.ingestion.web_crawler import CRAWL_TOOL_TIMEOUT_SECONDS, render_url_to_markdown
 
 _NO_CTX_REFUSAL = (
     "Refused: no valid tenant/principal context for this request. "
@@ -41,6 +42,7 @@ SALES_POLICY = ActionAllowlistPolicy(
             "handoff_to_human",
             "list_pending_followups",
             "mark_lead_lost",
+            "enrich_lead",
         }
     )
 )
@@ -246,6 +248,45 @@ def mark_lead_lost(contact: str, reason: str, config: RunnableConfig) -> str:
     return _run_with_timeout(_mark_lead_lost_impl, contact, reason, ctx)
 
 
+class EnrichLeadFromWebsiteArgs(BaseModel):
+    contact: str = Field(
+        ..., description="The lead's contact — must already have been logged via log_lead_interaction."
+    )
+    url: str = Field(..., description="The lead's company website (https:// only).")
+
+
+def _enrich_lead_from_website_impl(contact: str, url: str, ctx: SecurityCtx) -> str:
+    lead = store.get_lead(ctx["tenant"], contact)
+    if lead is None:
+        return f"No lead found for contact {contact!r} — log an interaction with them first."
+
+    page_text = render_url_to_markdown(url)
+    note = f"Website research ({url}):\n{page_text}"
+    store.append_lead_note(ctx["tenant"], contact, note)
+    return (
+        f"Added research from {url} to {lead['name']}'s notes. "
+        f"Summary of what was found:\n{page_text[:500]}"
+    )
+
+
+@tool(args_schema=EnrichLeadFromWebsiteArgs)
+def enrich_lead_from_website(contact: str, url: str, config: RunnableConfig) -> str:
+    """Crawl a lead's company website (real headless-browser render, so it
+    works on JS-rendered marketing/SPA sites) and add a firmographic
+    research summary to their notes — use this BEFORE package_lead_brief/
+    handoff_to_human for a lead who's shown real buying intent, so a rep
+    gets something researched instead of just "wants a demo." Reaches the
+    open internet — declared "outward" in TOOL_CAPABILITIES, so it always
+    requires human approval before it runs, same as any mutating tool.
+    Requires an existing lead (log_lead_interaction first)."""
+    ctx = _ctx_or_refuse(config, "enrich_lead")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(
+        _enrich_lead_from_website_impl, contact, url, ctx, _timeout_seconds=CRAWL_TOOL_TIMEOUT_SECONDS
+    )
+
+
 TOOLS = [
     log_lead_interaction,
     schedule_followup,
@@ -253,6 +294,7 @@ TOOLS = [
     handoff_to_human,
     list_pending_followups,
     mark_lead_lost,
+    enrich_lead_from_website,
 ]
 
 TOOL_CAPABILITIES = {
@@ -262,4 +304,5 @@ TOOL_CAPABILITIES = {
     "handoff_to_human": "mutating",
     "list_pending_followups": "read_only",
     "mark_lead_lost": "mutating",
+    "enrich_lead_from_website": "outward",
 }

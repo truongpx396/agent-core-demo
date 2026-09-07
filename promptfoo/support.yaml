@@ -58,7 +58,7 @@ tests:
 
   - description: answers a real knowledge-base question directly, not by escalating
     vars:
-      user_message: "What are Acme Corp's support hours?"
+      user_message: "What are Ecorp's support hours?"
     assert:
       - type: not-icontains
         value: "escalat"

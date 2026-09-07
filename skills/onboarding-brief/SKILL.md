@@ -1,6 +1,6 @@
 ---
 name: onboarding-brief
-description: Compose a new-hire onboarding brief for an Acme Corp employee. Use when the user asks for an onboarding brief, a welcome packet, a new-hire summary, or wants to prep for someone's first day.
+description: Compose a new-hire onboarding brief for an Ecorp employee. Use when the user asks for an onboarding brief, a welcome packet, a new-hire summary, or wants to prep for someone's first day.
 ---
 
 # Onboarding Brief
@@ -11,7 +11,7 @@ department, if no specific person is given).
 1. Call `query_employees` to look up the person (or the department's
    roster if no name was given). If the name doesn't match anyone, say so
    plainly instead of guessing who was meant.
-2. Call `search_docs` with `topic=company` for any Acme Corp policies or
+2. Call `search_docs` with `topic=company` for any Ecorp policies or
    background relevant to that person's department (e.g. team norms,
    onboarding policy notes already in the knowledge base).
 3. Write the brief as:

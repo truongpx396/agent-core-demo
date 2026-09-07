@@ -13,7 +13,7 @@ from app.turns.queue import CONSUMER_GROUP, results_stream_key
 from tests.turns.test_queue import FakeRedis
 
 REQUESTS_STREAM = agent_worker.REQUESTS_STREAM  # this test module's worker
-# runs as the default AGENT_DOMAIN ("acme"); see app/turns/agent_worker.py's
+# runs as the default AGENT_DOMAIN ("ecorp"); see app/turns/agent_worker.py's
 # own docstring on why the requests stream is a per-process, not per-message,
 # property.
 
@@ -28,7 +28,7 @@ def _entry(
     images=None,
     approved=True,
 ):
-    ctx = ctx or {"tenant": "acme", "principal": "p1", "claims": {}}
+    ctx = ctx or {"tenant": "ecorp", "principal": "p1", "claims": {}}
     if kind == "turn":
         payload = {
             "kind": "turn",
@@ -91,7 +91,7 @@ class TestProcessRequestTurn:
                 "request_id": "r1",
                 "text": "hi",
                 "thread_id": "t1",
-                "ctx": {"tenant": "acme", "principal": "p1", "claims": {}},
+                "ctx": {"tenant": "ecorp", "principal": "p1", "claims": {}},
                 "require_approval": False,
                 "images": [],
             }
@@ -164,7 +164,7 @@ class TestProcessRequestTurn:
 
         monkeypatch.setattr(agent_worker, "astream_events_turn", fake_turn)
         client = FakeRedis()
-        ctx = {"tenant": "acme", "principal": "p9", "claims": {}}
+        ctx = {"tenant": "ecorp", "principal": "p9", "claims": {}}
         entry_id, fields = _entry(text="what is 2+2?", thread_id="t9", ctx=ctx, require_approval=True)
 
         asyncio.run(agent_worker.process_request(client, entry_id, fields))
@@ -236,7 +236,7 @@ class TestProcessRequestResume:
 
         monkeypatch.setattr(agent_worker, "astream_events_resume", fake_resume)
         client = FakeRedis()
-        ctx = {"tenant": "acme", "principal": "p1", "claims": {}}
+        ctx = {"tenant": "ecorp", "principal": "p1", "claims": {}}
         entry_id, fields = _entry(kind="resume", request_id="r6", thread_id="t6", ctx=ctx, approved=False)
 
         asyncio.run(agent_worker.process_request(client, entry_id, fields))
@@ -272,7 +272,7 @@ class TestProcessRequestCancel:
 
         monkeypatch.setattr(agent_worker, "cancel_run", fake_cancel_run)
         client = FakeRedis()
-        ctx = {"tenant": "acme", "principal": "p1", "claims": {}}
+        ctx = {"tenant": "ecorp", "principal": "p1", "claims": {}}
         entry_id, fields = _entry(kind="cancel", request_id="r8", thread_id="t8", ctx=ctx)
 
         asyncio.run(agent_worker.process_request(client, entry_id, fields))

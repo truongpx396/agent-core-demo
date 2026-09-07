@@ -69,7 +69,7 @@ class SkillRecord:
     description: str
     body: str
     domains: tuple[str, ...] | None  # None = visible to every domain
-    # (including Acme) — see this module's docstring.
+    # (including Ecorp) — see this module's docstring.
     path: Path
 
 

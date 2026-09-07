@@ -380,7 +380,7 @@
          <option> here (and an `AGENT_DOMAIN=<name> make agent-worker`
          process actually running) before it's reachable from this page. -->
     <select id="domainSelect" title="Which domain this turn runs against (X-Domain) — needs a matching AGENT_DOMAIN agent-worker running">
-      <option value="acme">acme</option>
+      <option value="ecorp">ecorp</option>
       <option value="support">support</option>
       <option value="ops">ops</option>
       <option value="sales">sales</option>
@@ -584,7 +584,7 @@ function headers() {
     // client-supplied copies first; this page choosing to expose them as
     // plain editable fields is what makes multi-tenant/multi-principal
     // testing possible from one browser tab without that gateway.
-    "X-Tenant-Id": tenantEl.value || "acme",
+    "X-Tenant-Id": tenantEl.value || "ecorp",
     "X-Principal-Id": principalEl.value || "web-user",
     // Only /chat/stream/queued, /chat/resume, and /chat/cancel actually
     // read this (app/api/main.py's get_domain) — every other endpoint
@@ -1452,7 +1452,7 @@ function setupIdentitySelect(selectEl, storageKey, defaultValue, label, onChange
 // Re-scope the switcher the moment the caller's identity changes — these
 // sessions belong to tenant+principal (app/agent/sessions.py), so a
 // different tenant OR principal has a completely different list.
-setupIdentitySelect(tenantEl, "agent-core-demo:tenants", "acme", "tenant", loadSessions);
+setupIdentitySelect(tenantEl, "agent-core-demo:tenants", "ecorp", "tenant", loadSessions);
 setupIdentitySelect(principalEl, "agent-core-demo:principals", "web-user", "principal", loadSessions);
 
 // A different domain runs a different manifest/tool set/graph
@@ -1483,25 +1483,25 @@ domainSelect.addEventListener("change", () => {
 // "sandboxed"). A newly added domain falls back to no info box at all
 // (see SUGGESTED_QUESTIONS's own comment below on why that's fine).
 const DOMAIN_INFO = {
-  acme: {
+  ecorp: {
     title: "General Assistant",
     description:
-      "Answers from Acme Corp's knowledge base and general knowledge (with citations), does math, and looks up Acme Corp staff. Can search for and follow a bundled skill's playbook, delegate a self-contained lookup to a subagent, and remember facts across conversations (memory writes need your approval first).",
+      "Answers from Ecorp's knowledge base and general knowledge (with citations), does math, and looks up Ecorp staff. Can search for and follow a bundled skill's playbook, delegate a self-contained lookup to a subagent, and remember facts across conversations (memory writes need your approval first).",
   },
   support: {
     title: "Tier-1 Support Copilot",
     description:
-      "Answers from the knowledge base and manages support tickets — opens one, checks status, adds a follow-up comment, lists yours. Can't process a refund or change your account itself (no tool for that, by design) — escalates those to a human agent instead of guessing.",
+      "Answers from the knowledge base and manages support tickets — opens one, checks status, adds a follow-up comment, lists yours. Can read a customer-linked third-party page live (never adds it to the knowledge base). Can't process a refund or change your account itself (no tool for that, by design) — escalates those to a human agent instead of guessing.",
   },
   ops: {
     title: "Internal Ops Assistant",
     description:
-      "Reads this app's own live operational metrics (turn error rate, latency, tool errors, moderation blocks, rate limiting) and flags anything past its alert threshold. Can log/list/resolve durable incidents. Posting to the team channel needs your explicit approval every time — it never notifies on its own initiative.",
+      "Reads this app's own live operational metrics (turn error rate, latency, tool errors, moderation blocks, rate limiting) and flags anything past its alert threshold. Can log/list/resolve durable incidents, check a vendor's live status page, and — for real computation calculator's plain arithmetic can't do — run a short script inside an isolated sandbox. Posting to the team channel and every sandbox/status-page action need your explicit approval every time — none of them ever run on its own initiative.",
   },
   sales: {
     title: "Sales / CRM Concierge",
     description:
-      "Logs lead interactions, schedules and tracks follow-ups, packages a brief on a lead's history, and hands a hot lead to a human rep — or marks one lost. Has no tool that sends anything to a lead: every reply it drafts is for a human to review and send.",
+      "Logs lead interactions, schedules and tracks follow-ups, packages a brief on a lead's history, researches a lead's company website live, and hands a hot lead to a human rep — or marks one lost. Has no tool that sends anything to a lead: every reply it drafts is for a human to review and send.",
   },
 };
 
@@ -1518,29 +1518,30 @@ function renderDomainInfo() {
 // new endpoint: clicking one just calls the same send() a typed message
 // does. Picked to actually exercise each domain's real tools (see each
 // app/domains/*/domain.py's own SYSTEM_PROMPT and app/domains/*/tools.py's
-// own TOOLS list) rather than being generic filler; "What are Acme Corp's
+// own TOOLS list) rather than being generic filler; "What are Ecorp's
 // support hours?" is the exact realistic case promptfoo/support.yaml
 // already regression-tests. A newly added domain (see domainSelect's own
 // comment above) falls back to no suggestions at all rather than an
 // error — this list is a convenience layer on top of that selector, not a
 // requirement for a domain to work.
 const SUGGESTED_QUESTIONS = {
-  acme: [
+  ecorp: [
     "What is a LangGraph checkpointer?",
     "What's 15% of 2,450?",
-    "Who works on Acme Corp's engineering team?",
+    "Who works on Ecorp's engineering team?",
     "How does Qdrant's hybrid search work?",
     "What's (48 * 7) + 132?",
     "Is there a bundled skill for writing a report?",
   ],
   support: [
-    "What are Acme Corp's support hours?",
+    "What are Ecorp's support hours?",
     "How do I reset my password?",
     "What's the status of ticket #4471?",
     "My dashboard won't load — can you open a ticket?",
     "What are all of my open tickets?",
     "Can you just refund my last order right now?",
     "The same issue happened again this morning — I already have a ticket open for it.",
+    "Can you check this page for me — https://example.com — it seems to contradict what you told me?",
   ],
   ops: [
     "Did anything break overnight?",
@@ -1550,15 +1551,18 @@ const SUGGESTED_QUESTIONS = {
     "Are there any open incidents right now?",
     "Post a summary of current latency to the team channel.",
     "Has moderation blocked more requests than usual today?",
+    "Check if our payment processor's status page (https://example.com) shows an incident.",
+    "Can you write and run a script to find the 95th percentile of these latencies: 120, 340, 90, 500, 210, 180, 620, 150?",
   ],
   sales: [
-    "A lead asked what Acme Corp actually does.",
+    "A lead asked what Ecorp actually does.",
     "This lead wants pricing and to talk to someone directly.",
     "What follow-ups are pending right now?",
     "Draft a reply for a lead asking about our enterprise plan.",
     "This lead hasn't responded after three follow-ups — what should we do?",
     "Schedule a follow-up with this lead in 3 days.",
     "Give me a brief on this lead's history.",
+    "New lead Jordan (jordan@example.com) says their company site is https://example.com — log this and research their company before I call them.",
   ],
 };
 

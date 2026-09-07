@@ -46,10 +46,10 @@ def test_always_scopes_to_tenant(monkeypatch):
     fake = _FakeConnection()
     monkeypatch.setattr(sql_store, "get_connection", lambda: fake)
 
-    sql_store.query_employees("acme")
+    sql_store.query_employees("ecorp")
 
     assert "tenant = %s" in fake.captured["sql"]
-    assert fake.captured["params"] == ["acme"]
+    assert fake.captured["params"] == ["ecorp"]
 
 
 def test_department_and_name_filters_are_anded_onto_tenant_never_replacing_it(
@@ -58,14 +58,14 @@ def test_department_and_name_filters_are_anded_onto_tenant_never_replacing_it(
     fake = _FakeConnection()
     monkeypatch.setattr(sql_store, "get_connection", lambda: fake)
 
-    sql_store.query_employees("acme", department="Engineering", name_contains="ana")
+    sql_store.query_employees("ecorp", department="Engineering", name_contains="ana")
 
     sql = fake.captured["sql"]
     assert "tenant = %s" in sql
     assert "department = %s" in sql
     assert "name ILIKE %s" in sql
     assert " AND " in sql
-    assert fake.captured["params"] == ["acme", "Engineering", "%ana%"]
+    assert fake.captured["params"] == ["ecorp", "Engineering", "%ana%"]
 
 
 def test_two_different_tenants_get_different_params(monkeypatch):
@@ -75,13 +75,13 @@ def test_two_different_tenants_get_different_params(monkeypatch):
     fake = _FakeConnection()
     monkeypatch.setattr(sql_store, "get_connection", lambda: fake)
 
-    sql_store.query_employees("acme")
-    acme_params = fake.captured["params"]
+    sql_store.query_employees("ecorp")
+    ecorp_params = fake.captured["params"]
     sql_store.query_employees("other-co")
     other_params = fake.captured["params"]
 
-    assert acme_params != other_params
-    assert acme_params == ["acme"]
+    assert ecorp_params != other_params
+    assert ecorp_params == ["ecorp"]
     assert other_params == ["other-co"]
 
 
@@ -91,7 +91,7 @@ def test_returns_dicts_not_raw_tuples(monkeypatch):
     )
     monkeypatch.setattr(sql_store, "get_connection", lambda: fake)
 
-    result = sql_store.query_employees("acme")
+    result = sql_store.query_employees("ecorp")
 
     assert result == [
         {

@@ -22,13 +22,13 @@ CREATE TABLE employees (
 
 CREATE INDEX employees_tenant_idx ON employees (tenant);
 
--- Two tenants seeded, `acme` (DEFAULT_TENANT, app/config.py) and a second
+-- Two tenants seeded, `ecorp` (DEFAULT_TENANT, app/config.py) and a second
 -- one purely so a cross-tenant isolation test has something real to prove
 -- against — see tests/test_sql_store.py.
 INSERT INTO employees (tenant, name, department, title, hired_on) VALUES
-    ('acme', 'Priya Nair',      'Engineering', 'Staff Engineer',        '2021-03-01'),
-    ('acme', 'Marcus Cole',     'Engineering', 'Engineering Manager',   '2020-11-15'),
-    ('acme', 'Dana Whitfield',  'Support',     'Support Lead',          '2022-01-10'),
-    ('acme', 'Sam Okafor',      'Support',     'Support Engineer',      '2023-06-01'),
-    ('acme', 'Lena Fischer',    'Sales',       'Account Executive',     '2022-09-20'),
+    ('ecorp', 'Priya Nair',      'Engineering', 'Staff Engineer',        '2021-03-01'),
+    ('ecorp', 'Marcus Cole',     'Engineering', 'Engineering Manager',   '2020-11-15'),
+    ('ecorp', 'Dana Whitfield',  'Support',     'Support Lead',          '2022-01-10'),
+    ('ecorp', 'Sam Okafor',      'Support',     'Support Engineer',      '2023-06-01'),
+    ('ecorp', 'Lena Fischer',    'Sales',       'Account Executive',     '2022-09-20'),
     ('other-co', 'Jordan Lee',  'Engineering', 'Software Engineer',     '2021-07-01');

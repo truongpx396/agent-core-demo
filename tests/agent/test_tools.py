@@ -620,7 +620,7 @@ class TestUseSkill:
 class TestSkillVisibleToDomain:
     def test_untagged_skill_is_visible_everywhere(self):
         record = SkillRecord(name="x", description="d", body="b", domains=None, path=Path("x"))
-        assert _skill_visible_to_domain(record, "acme") is True
+        assert _skill_visible_to_domain(record, "ecorp") is True
         assert _skill_visible_to_domain(record, "support") is True
 
     def test_tagged_skill_is_visible_only_to_its_domains(self):
@@ -628,7 +628,7 @@ class TestSkillVisibleToDomain:
             name="x", description="d", body="b", domains=("support",), path=Path("x")
         )
         assert _skill_visible_to_domain(record, "support") is True
-        assert _skill_visible_to_domain(record, "acme") is False
+        assert _skill_visible_to_domain(record, "ecorp") is False
         assert _skill_visible_to_domain(record, "sales") is False
 
 
@@ -651,7 +651,7 @@ class TestFilterSkillHitsByDomain:
 
     def test_drops_a_hit_for_a_skill_no_longer_on_disk(self):
         hits = [_FakeHit({"name": "removed", "description": "d"})]
-        assert _filter_skill_hits_by_domain(hits, "acme", {}) == []
+        assert _filter_skill_hits_by_domain(hits, "ecorp", {}) == []
 
 
 class TestMakeSkillTools:
@@ -1020,7 +1020,7 @@ class TestRunSubagentTool:
     def test_schema_lists_available_subagents_by_name_and_description(self):
         schema = run_subagent.args_schema.model_json_schema()
         assert "researcher" in schema["$defs"]["SubagentName"]["enum"]
-        assert "Look up Acme Corp facts" in schema["properties"]["subagent_name"]["description"]
+        assert "Look up Ecorp facts" in schema["properties"]["subagent_name"]["description"]
 
     def test_blank_task_rejected(self):
         from app.agent.tools import RunSubagentArgs
@@ -1030,40 +1030,40 @@ class TestRunSubagentTool:
 
 
 class TestSubagentDeclaredForDomain:
-    def test_untagged_subagent_is_declared_only_for_acme(self):
+    def test_untagged_subagent_is_declared_only_for_ecorp(self):
         record = _fake_subagent_record(domains_=None)
-        assert _subagent_declared_for_domain(record, "acme") is True
+        assert _subagent_declared_for_domain(record, "ecorp") is True
         assert _subagent_declared_for_domain(record, "support") is False
 
     def test_tagged_subagent_is_declared_only_for_its_domains(self):
         record = _fake_subagent_record(domains_=("support",))
         assert _subagent_declared_for_domain(record, "support") is True
-        assert _subagent_declared_for_domain(record, "acme") is False
+        assert _subagent_declared_for_domain(record, "ecorp") is False
         assert _subagent_declared_for_domain(record, "sales") is False
 
 
 class TestBuildSubagentRegistryDomainFilter:
     def test_domain_filter_ONLY_admits_subagents_declared_for_it(self, monkeypatch):
-        acme_record = _fake_subagent_record(name="acme-only", tools_=("search_docs",), domains_=None)
+        ecorp_record = _fake_subagent_record(name="ecorp-only", tools_=("search_docs",), domains_=None)
         support_record = _fake_subagent_record(
             name="support-only", tools_=("search_docs",), domains_=("support",)
         )
         monkeypatch.setattr(
             subagents_module,
             "get_subagents",
-            lambda: {"acme-only": acme_record, "support-only": support_record},
+            lambda: {"ecorp-only": ecorp_record, "support-only": support_record},
         )
 
-        acme_registry = _build_subagent_registry(_ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="acme")
+        ecorp_registry = _build_subagent_registry(_ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="ecorp")
         support_registry = _build_subagent_registry(
             _ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="support"
         )
 
-        assert set(acme_registry) == {"acme-only"}
+        assert set(ecorp_registry) == {"ecorp-only"}
         assert set(support_registry) == {"support-only"}
 
-    def test_resolves_against_the_passed_in_tool_universe_not_acmes(self, monkeypatch):
-        """A domain-specific tool name (not in Acme's own TOOL_CAPABILITIES
+    def test_resolves_against_the_passed_in_tool_universe_not_ecorps(self, monkeypatch):
+        """A domain-specific tool name (not in Ecorp's own TOOL_CAPABILITIES
         at all) resolves correctly when the CALLER's own tool_capabilities
         dict is passed — proving the registry isn't secretly still reading
         the global TOOL_CAPABILITIES."""
@@ -1084,12 +1084,12 @@ class TestBuildSubagentRegistryDomainFilter:
 class TestSubagentDomainPluginCapabilityFix:
     """The bug make_domain_subagent_tool's docstring names directly: a
     nested run's own tool capabilities must come from the ALREADY-resolved
-    (guaranteed read_only) tool set, never a lookup into Acme's global
+    (guaranteed read_only) tool set, never a lookup into Ecorp's global
     TOOL_CAPABILITIES — which may not even contain a domain-specific tool's
     name, defaulting it to "outward" and wrongly pausing a run with no
     resume path."""
 
-    def test_reports_every_resolved_tool_as_read_only_even_when_absent_from_acmes_dict(self):
+    def test_reports_every_resolved_tool_as_read_only_even_when_absent_from_ecorps_dict(self):
         fake_tool = type("FakeTool", (), {"name": "check_ticket_status"})()
         plugin = _SubagentDomainPlugin([fake_tool])
 
@@ -1138,10 +1138,10 @@ class TestMakeDomainSubagentTool:
         assert next(iter(support_schema["$defs"].values()))["enum"] == ["support-agent"]
         assert next(iter(sales_schema["$defs"].values()))["enum"] == ["sales-agent"]
 
-    def test_delegates_using_the_domains_own_tools_not_acmes(self, monkeypatch):
+    def test_delegates_using_the_domains_own_tools_not_ecorps(self, monkeypatch):
         """The actual bug this whole mechanism exists to fix: a
         domain-specific tool name must be resolvable as a real nested tool
-        object, not silently dropped because it isn't in Acme's TOOLS."""
+        object, not silently dropped because it isn't in Ecorp's TOOLS."""
         record = _fake_subagent_record(
             name="ticket-researcher", tools_=("a_support_only_tool",), domains_=("support",)
         )

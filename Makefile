@@ -1,4 +1,4 @@
-.PHONY: help up up-app pull-models ingest index-skills chat chat-hitl serve mcp-serve telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep test test-integration test-live lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse obs-up obs-down obs-logs obs-clean
+.PHONY: help up up-app pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops crawl4ai-setup sandbox-serve telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse obs-up obs-down obs-logs obs-clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -43,7 +43,16 @@ mcp-serve:  ## Start the MCP server exposing query_employees (stdio transport; n
 mcp-inspect:  ## Launch the MCP Inspector against app/mcp/server.py for interactive testing
 	mcp dev app/mcp/server.py
 
-telegram:  ## Start the Telegram bot channel for the Acme domain (needs TELEGRAM_BOT_TOKEN in .env; see app/channels/telegram.py)
+mcp-serve-ops:  ## Start the MCP server exposing fetch_metrics_summary/list_recent_incidents (stdio transport; needs `make up`) — see app/mcp/ops_server.py
+	python -m app.mcp.ops_server
+
+crawl4ai-setup:  ## One-time headless-Chromium install for the crawl4ai-backed domain tools (enrich_lead_from_website, fetch_external_reference, check_vendor_status_page; see app/ingestion/web_crawler.py) — re-run after bumping the crawl4ai pin in requirements.txt
+	crawl4ai-setup
+
+sandbox-serve:  ## Start a local OpenSandbox server (needs Docker + uv; see app/domains/sandbox_tools.py) that the ops domain's sandbox tools actually execute against — a HOST process, like mcp-serve above, not part of `make up`'s containerized stack (OpenSandbox itself needs the host Docker daemon to create sandboxes). First run: `uvx opensandbox-server init-config ~/.sandbox.toml --example docker`
+	uvx opensandbox-server
+
+telegram:  ## Start the Telegram bot channel for the Ecorp domain (needs TELEGRAM_BOT_TOKEN in .env; see app/channels/telegram.py)
 	python -m app.channels.telegram
 
 telegram-support:  ## Start the Telegram channel as the Tier-1 support copilot (see app/domains/support/)
@@ -52,7 +61,7 @@ telegram-support:  ## Start the Telegram channel as the Tier-1 support copilot (
 telegram-sales:  ## Start the Telegram channel as the sales/CRM concierge (see app/domains/sales/)
 	AGENT_DOMAIN=sales python -m app.channels.telegram
 
-agent-worker:  ## Start a Redis Streams agent worker for the Acme domain (run several for independent scaling; see POST /chat/stream/queued)
+agent-worker:  ## Start a Redis Streams agent worker for the Ecorp domain (run several for independent scaling; see POST /chat/stream/queued)
 	python -m app.turns.agent_worker
 
 agent-worker-support:  ## Start an agent worker pool for the Tier-1 support domain (see app/domains/support/); the web UI's X-Domain: support turns route here
@@ -96,9 +105,12 @@ test-integration:  ## Real Postgres/Redis/Qdrant via testcontainers (no LLM) —
 	# ignores it) — see that module's own comment for why.
 	pytest -n auto -m integration -q --dist=loadgroup
 
-test-live:  ## Real small Ollama model + full app/agent-worker stack via testcontainers, incl. Playwright browser E2E — needs Docker (pattern 48)
+test-live:  ## Real small Ollama model + full app/agent-worker stack via testcontainers, incl. Playwright browser E2E and real crawl4ai renders — needs Docker (pattern 48/50)
 	playwright install --with-deps chromium
-	pytest -n auto -m "llm or e2e" -q
+	pytest -n auto -m "llm or e2e or crawl" -q
+
+test-sandbox:  ## Real OpenSandbox MCP round trip (pattern 50) — needs `make sandbox-serve` running separately AND opensandbox-mcp on PATH; self-skips cleanly if either isn't there. Deliberately manual, like `make deepeval`/`garak` — never CI
+	pytest -m sandbox -q -s
 
 lint:  ## Static checks: ruff (style/correctness) — see pyproject.toml's [tool.ruff]
 	ruff check .

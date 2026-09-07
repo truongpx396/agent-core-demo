@@ -16,7 +16,7 @@ property of a whole PROCESS or of a single REQUEST:
   running for.
 
 Deliberately NOT consulted by app/channels/chat.py, which keeps defaulting
-to Acme exactly as before this module existed — see app/agent/runtime.py's
+to Ecorp exactly as before this module existed — see app/agent/runtime.py's
 init_graph_async docstring for why that default needed no code change here.
 """
 from app.agent.manifest import (
@@ -30,7 +30,7 @@ from app.domains.sales.domain import SALES_DOMAIN_PLUGIN, SALES_MANIFEST
 from app.domains.support.domain import SUPPORT_DOMAIN_PLUGIN, SUPPORT_MANIFEST
 
 DOMAINS: dict[str, tuple[AgentManifest, DomainPlugin]] = {
-    "acme": (DEFAULT_MANIFEST, DEFAULT_DOMAIN_PLUGIN),
+    "ecorp": (DEFAULT_MANIFEST, DEFAULT_DOMAIN_PLUGIN),
     "support": (SUPPORT_MANIFEST, SUPPORT_DOMAIN_PLUGIN),
     "ops": (OPS_MANIFEST, OPS_DOMAIN_PLUGIN),
     "sales": (SALES_MANIFEST, SALES_DOMAIN_PLUGIN),
@@ -41,7 +41,7 @@ def resolve_domain(name: str) -> tuple[AgentManifest, DomainPlugin]:
     """Fail loud on an unknown name — same discipline as
     TELEGRAM_BOT_TOKEN's missing-config check
     (app/channels/telegram.py::run) — rather than silently falling back to
-    Acme, which would be a confusing way to discover a typo'd
+    Ecorp, which would be a confusing way to discover a typo'd
     AGENT_DOMAIN."""
     try:
         return DOMAINS[name]

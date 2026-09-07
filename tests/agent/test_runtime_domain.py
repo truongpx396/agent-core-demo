@@ -13,8 +13,8 @@ from tests.conftest import TEST_CTX
 
 
 class TestResolveDomainName:
-    def test_defaults_to_acme_when_no_manifest_is_given(self):
-        assert runtime._resolve_domain_name(None) == "acme"
+    def test_defaults_to_ecorp_when_no_manifest_is_given(self):
+        assert runtime._resolve_domain_name(None) == "ecorp"
 
     def test_uses_the_given_manifests_own_name(self):
         manifest = AgentManifest(name="support", system_prompt="irrelevant here")
@@ -46,15 +46,15 @@ class TestUpsertSessionStampsTheCurrentDomain:
             "domain": "ops",
         }
 
-    def test_defaults_to_acme_when_no_process_ever_set_a_different_domain(self, monkeypatch):
+    def test_defaults_to_ecorp_when_no_process_ever_set_a_different_domain(self, monkeypatch):
         captured = {}
         import app.agent.sessions as sessions_module
 
         monkeypatch.setattr(
             sessions_module, "upsert_session", lambda ctx, thread_id, title, domain: captured.update(domain=domain)
         )
-        monkeypatch.setattr(runtime, "_domain_name", "acme")
+        monkeypatch.setattr(runtime, "_domain_name", "ecorp")
 
         runtime._upsert_session(TEST_CTX, "t1", "hello")
 
-        assert captured["domain"] == "acme"
+        assert captured["domain"] == "ecorp"

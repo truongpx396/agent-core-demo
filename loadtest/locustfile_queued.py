@@ -27,8 +27,8 @@ from locust import HttpUser, between, task
 
 RETRIEVAL_QUESTIONS = [
     "What is a LangGraph checkpointer?",
-    "What are Acme Corp support hours?",
-    "Who works in Engineering at Acme?",
+    "What are Ecorp support hours?",
+    "Who works in Engineering at Ecorp?",
 ]
 
 

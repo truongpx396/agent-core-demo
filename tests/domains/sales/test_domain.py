@@ -44,10 +44,11 @@ class TestSandboxing:
             "handoff_to_human",
             "list_pending_followups",
             "mark_lead_lost",
+            "enrich_lead_from_website",
             "run_subagent",
         }
 
-    def test_acme_only_tools_are_absent(self):
+    def test_ecorp_only_tools_are_absent(self):
         g = _build()
         names = set(g.nodes["tools"].bound.tools_by_name)
         for excluded in ("calculator", "add_note", "remember", "query_employees"):
@@ -60,12 +61,12 @@ class TestDomainScopedSubagent:
     closure-built tool, and its menu offers only the bundled subagent(s)
     declared `domains: [sales]` (subagents/lead-researcher/AGENT.md)."""
 
-    def test_is_not_the_acme_level_run_subagent_object(self):
-        from app.agent.tools import run_subagent as acme_run_subagent
+    def test_is_not_the_ecorp_level_run_subagent_object(self):
+        from app.agent.tools import run_subagent as ecorp_run_subagent
 
         g = _build()
         domain_run_subagent = g.nodes["tools"].bound.tools_by_name["run_subagent"]
-        assert domain_run_subagent is not acme_run_subagent
+        assert domain_run_subagent is not ecorp_run_subagent
 
     def test_menu_offers_only_the_sales_domains_own_subagent(self):
         g = _build()
@@ -163,6 +164,51 @@ class TestListPendingFollowupsAndMarkLeadLost:
         assert not g.get_state(_config()).next  # finished, not paused
         tool_messages = [m for m in result["messages"] if m.type == "tool"]
         assert any("marked lost" in m.content.lower() for m in tool_messages)
+
+
+def test_enrich_lead_from_website_pauses_for_approval_as_an_outward_tool():
+    llm = _fake_llm_returning(
+        _tool_call(
+            "enrich_lead_from_website",
+            {"contact": "jordan@example.com", "url": "https://ecorp-lead.example.com"},
+        )
+    )
+    g = _build(llm)
+    g.invoke(
+        {"messages": [HumanMessage(content="jordan's company site is ecorp-lead.example.com")]},
+        config=_config(),
+    )
+    assert g.get_state(_config()).next  # paused, not finished
+
+
+def test_approving_enrich_lead_from_website_runs_it_and_finishes(monkeypatch):
+    from app.domains.sales import tools as sales_tools
+
+    monkeypatch.setattr(
+        store, "get_lead", lambda tenant, contact: {"name": "Jordan", "contact": contact}
+    )
+    monkeypatch.setattr(store, "append_lead_note", lambda tenant, contact, note: True)
+    monkeypatch.setattr(
+        sales_tools, "render_url_to_markdown", lambda url: "Ecorp Lead Co — mid-market SaaS."
+    )
+
+    llm = _fake_llm_returning(
+        _tool_call(
+            "enrich_lead_from_website",
+            {"contact": "jordan@example.com", "url": "https://ecorp-lead.example.com"},
+        ),
+        AIMessage(content="Added research on Jordan's company to their notes."),
+    )
+    g = _build(llm)
+    g.invoke(
+        {"messages": [HumanMessage(content="jordan's company site is ecorp-lead.example.com")]},
+        config=_config(),
+    )
+    result = g.invoke(Command(resume=True), config=_config())
+
+    assert not g.get_state(_config()).next  # finished, not paused
+    tool_messages = [m for m in result["messages"] if m.type == "tool"]
+    assert any("Ecorp Lead Co" in m.content for m in tool_messages)
 
 
 def test_handoff_to_human_notifies_the_team_channel(monkeypatch):

@@ -15,9 +15,9 @@ elsewhere (SecurityCtx, moderation). This is also the ONE surface in this
 app that necessarily reaches the public internet (Telegram's own servers)
 — unlike the rest of the stack, which runs fully local via docker-compose.
 
-## A generalized gateway, not an Acme-only one
+## A generalized gateway, not an Ecorp-only one
 
-`AGENT_DOMAIN` (app/core/config.py, default `"acme"`) picks which domain
+`AGENT_DOMAIN` (app/core/config.py, default `"ecorp"`) picks which domain
 (app/domains/registry.py) this process's shared graph singleton boots
 against — `AGENT_DOMAIN=support python -m app.channels.telegram` runs the
 Tier-1 support copilot (app/domains/support/), `AGENT_DOMAIN=sales` the

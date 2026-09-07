@@ -42,9 +42,9 @@ from app.agent.tools import Department, _query_employees_impl
 from app.core.security import DEFAULT_POLICY, SecurityCtx
 
 mcp = FastMCP(
-    name="acme-structured-data",
+    name="ecorp-structured-data",
     instructions=(
-        "Query Acme Corp's employee directory. tenant/principal identify "
+        "Query Ecorp's employee directory. tenant/principal identify "
         "the caller (see this server's module docstring for why they're "
         "explicit arguments here); department/name_contains are the only "
         "two optional narrowing filters — there is no free-form query."
@@ -59,7 +59,7 @@ def query_employees(
     department: str | None = None,
     name_contains: str | None = None,
 ) -> str:
-    """Look up Acme Corp employees, optionally filtered by department
+    """Look up Ecorp employees, optionally filtered by department
     (Engineering, Support, or Sales) or a case-insensitive name substring.
     `tenant`/`principal` identify the caller and scope every result — a
     fixed, parameterized query, never SQL text the caller supplies."""

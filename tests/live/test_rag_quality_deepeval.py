@@ -53,7 +53,7 @@ from tests.conftest import TEST_CTX
 pytestmark = pytest.mark.deepeval
 
 _CONTEXT = (
-    "[1] Acme Corp support hours are 9am to 5pm Monday through Friday, "
+    "[1] Ecorp support hours are 9am to 5pm Monday through Friday, "
     "closed on weekends and public holidays.\n\n"
     "[2] Once a refund is approved by a human agent, it takes 3-5 business "
     "days to process."
@@ -63,7 +63,7 @@ _CITATIONS = [
         "marker": "[1]",
         "doc_id": "support-hours-doc",
         "title": "support-hours",
-        "text": "Acme Corp support hours are 9am to 5pm Monday through Friday.",
+        "text": "Ecorp support hours are 9am to 5pm Monday through Friday.",
         "score": 0.9,
     },
     {
@@ -94,7 +94,7 @@ def test_grounded_answer_is_faithful_and_relevant_by_a_real_llm_judge(deepeval_o
 
     graph = build_graph(GraphDeps(search_docs=_real_search))
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
-    question = "What are Acme Corp's support hours, and how long do refunds take once approved?"
+    question = "What are Ecorp's support hours, and how long do refunds take once approved?"
 
     result = graph.invoke(
         {"messages": [HumanMessage(content=question)]},

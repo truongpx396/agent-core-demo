@@ -114,3 +114,28 @@ python-multipart>=0.0.9,<1
 # declared directly here since app/agent/skills.py now imports it as a
 # first-class dependency, not an implicit one (same reasoning as httpx above).
 pyyaml>=6.0,<7
+
+# Live web rendering (app/ingestion/web_crawler.py, GRAPH_PATTERNS.md
+# pattern 50) — a real headless-Chromium render for sales/support/ops
+# domain tools that need a JS-rendered page, not just the bare HTTP GET
+# app/ingestion/ingestor.py's ingest_url already does. Pinned to an exact
+# version, not a range: crawl4ai has broken its own public API across
+# point releases (its own changelog documents this repeatedly), and the
+# app/ingestion/web_crawler.py wrapper above was written and verified
+# against this EXACT version's result shape (result.markdown is a
+# str-compatible StringCompatibleMarkdown, result.success/error_message
+# are the fields checked on failure) — a version bump needs the same
+# empirical re-check before the pin moves. Needs a one-time
+# `crawl4ai-setup` (or `playwright install --with-deps chromium`) to fetch
+# its headless browser — see Dockerfile for the containerized equivalent.
+crawl4ai==0.9.3
+
+# OpenSandbox MCP bridge (app/domains/sandbox_tools.py, GRAPH_PATTERNS.md
+# pattern 50) — a real stdio MCP SERVER (not a library this app calls
+# directly) that app/mcp/client.py::load_remote_tools spawns as a
+# subprocess, exactly like the existing "one connection per call" pattern
+# already documented there. Bridges to a separately-run `opensandbox-server`
+# (see `make sandbox-serve`, README) — this pin is just the bridge CLI
+# itself; the sandbox server and the Docker daemon it drives are
+# operational prerequisites, not Python dependencies.
+opensandbox-mcp==0.1.1

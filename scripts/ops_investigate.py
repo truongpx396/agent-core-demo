@@ -16,7 +16,7 @@ answer is the honest signal something needs a human in the loop instead.
 A one-shot `build_graph(manifest=OPS_MANIFEST, domain=OPS_DOMAIN_PLUGIN)`
 call, NOT `run_subagent` — even though the ops domain has its own
 `run_subagent` today, resolved against its own tools
-(app/agent/tools.py::make_domain_subagent_tool, not hardwired to Acme's
+(app/agent/tools.py::make_domain_subagent_tool, not hardwired to Ecorp's
 tool universe the way an earlier version of this domain was). The reason
 to skip it here isn't a limitation, just a fit: `run_subagent` would
 delegate to `metrics-researcher`, restricted to

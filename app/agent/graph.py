@@ -102,8 +102,8 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant. Use the search_docs tool to answer questions "
-    "about LangGraph, Qdrant, or Acme Corp. Use the calculator tool for math. "
-    "Use the query_employees tool for questions about Acme Corp staff. "
+    "about LangGraph, Qdrant, or Ecorp. Use the calculator tool for math. "
+    "Use the query_employees tool for questions about Ecorp staff. "
     "For a task that might have packaged, multi-step instructions (like "
     "producing a specific kind of report or brief), call skill_search "
     "first; if it returns a good match, call use_skill with that exact "
@@ -1291,7 +1291,7 @@ def _tool_capability(name: str, tool_capabilities: Mapping[str, str] = TOOL_CAPA
     entry is gated rather than silently trusted. This is the one place
     that default is applied; everywhere else just reads the mapping.
     `tool_capabilities` defaults to app/agent/tools.py's TOOL_CAPABILITIES (the
-    Acme domain) so every existing direct call/import keeps working
+    Ecorp domain) so every existing direct call/import keeps working
     unchanged; `build_graph` passes a domain's own mapping instead (see
     its docstring and app/agent/manifest.py, GRAPH_PATTERNS.md pattern 23)."""
     return tool_capabilities.get(name, "outward")
@@ -1379,7 +1379,7 @@ def _invalid_tool_call_names(
     CLI/web UI's rendering) cannot itself produce a malformed name — every
     list construction and render path along that chain is structurally
     correct, so a bad name here can only be what the model already emitted.
-    `valid_tool_names` defaults to app/agent/tools.py's TOOLS (the Acme domain) so
+    `valid_tool_names` defaults to app/agent/tools.py's TOOLS (the Ecorp domain) so
     every existing direct call keeps working unchanged; `build_graph` passes
     a domain's own tool set instead, same pattern as `tool_capabilities`
     above."""
@@ -1432,7 +1432,7 @@ def should_continue(
       "outward," so forgetting to register a new tool's capability fails
       toward extra caution, not past it.
 
-    `tool_capabilities`/`valid_tool_names` both default to the Acme domain's
+    `tool_capabilities`/`valid_tool_names` both default to the Ecorp domain's
     mapping/tool set so every existing test/caller invoking
     `should_continue(state)` directly is unaffected; `build_graph` binds a
     domain's own values for both via `functools.partial` before registering
@@ -1519,11 +1519,11 @@ def too_many_tool_calls(state: State) -> dict:
 # shape as too_many_tool_calls above — see _invalid_tool_call_names for why
 # this exists (a small-model tool-calling fidelity issue, not a bug in this
 # app's own control flow). Uses the module-default `valid_tool_names` (the
-# Acme domain's TOOLS) to name the offending tool(s) in its message even
+# Ecorp domain's TOOLS) to name the offending tool(s) in its message even
 # for a non-default domain — should_continue already routed here using the
 # CORRECT domain-bound set, so the whole batch is rejected regardless; this
 # only affects which name(s), if any, get cited in the retry message for a
-# custom domain whose tool set differs from Acme's. ---
+# custom domain whose tool set differs from Ecorp's. ---
 def invalid_tool_call(state: State) -> dict:
     last_ai = cast(AIMessage, state["messages"][-1])
     tool_calls = last_ai.tool_calls or []
@@ -1930,7 +1930,7 @@ def _retry_reason(
 # `agent` (a new answer, possibly citing different sources) doesn't leave
 # stale values from the rejected short answer.
 #
-# `system_prompt` defaults to the module-level SYSTEM_PROMPT (the Acme
+# `system_prompt` defaults to the module-level SYSTEM_PROMPT (the Ecorp
 # domain's) so `graph.check_output(state)` stays directly callable exactly
 # as every existing test already calls it — same "plain module-level
 # function, not a factory" shape should_continue's own
@@ -2362,7 +2362,7 @@ def build_graph(
     different system prompt, tool set, tool-capability mapping, and Policy
     — without any code in this function branching on which domain it is.
     Both default to `app.agent.manifest`'s `DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN`
-    (this app's existing Acme setup, unchanged), imported here rather than
+    (this app's existing Ecorp setup, unchanged), imported here rather than
     at module level specifically to avoid a circular import — see
     app/agent/manifest.py's module docstring for the full reasoning; don't hoist
     this import without re-reading that. `deps.search_docs`/`cache_get`/
@@ -2450,8 +2450,8 @@ def build_graph(
     )
     # Same "plain module-level function, not a factory" shape and reason —
     # bound to THIS domain's own system prompt (manifest.system_prompt),
-    # not the bare Acme-only SYSTEM_PROMPT default, so _leaks_system_prompt
-    # checks a non-Acme domain's answer against the prompt it was ACTUALLY
+    # not the bare Ecorp-only SYSTEM_PROMPT default, so _leaks_system_prompt
+    # checks a non-Ecorp domain's answer against the prompt it was ACTUALLY
     # seeded with, not a different domain's text it would never match.
     domain_check_output = functools.partial(check_output, system_prompt=manifest.system_prompt)
 

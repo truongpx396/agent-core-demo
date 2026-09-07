@@ -88,7 +88,7 @@ except Exception:  # noqa: BLE001 - Langfuse optional if keys unset
     CallbackHandler = None
 
 _graph = None
-_domain_name = "acme"  # this process's own domain (app/domains/registry.py),
+_domain_name = "ecorp"  # this process's own domain (app/domains/registry.py),
 # set alongside _graph below — used only to stamp app/agent/sessions.py's
 # chat_sessions.domain column (GRAPH_PATTERNS.md pattern 49), since the
 # graph itself doesn't otherwise need to know its own domain's NAME (only
@@ -332,7 +332,7 @@ async def _open_checkpointer():
 
 def _resolve_domain_name(manifest: "AgentManifest | None") -> str:
     """`manifest.name` if given, else whatever build_graph() itself would
-    fall back to (DEFAULT_MANIFEST, "acme") — mirrors build_graph()'s own
+    fall back to (DEFAULT_MANIFEST, "ecorp") — mirrors build_graph()'s own
     `manifest = manifest or DEFAULT_MANIFEST` substitution (app/agent/graph.py)
     exactly, so `_domain_name` always names whichever manifest the graph
     was ACTUALLY built with, never guessed independently of it. Lazy
@@ -373,7 +373,7 @@ async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "Dom
     `manifest`/`domain` (GRAPH_PATTERNS.md pattern 23, app/agent/manifest.py)
     are threaded straight into `build_graph()`, which already accepts
     them — both default to `None`, meaning "build_graph()'s own default,
-    the Acme domain," so every EXISTING caller (app/api/main.py's lifespan,
+    the Ecorp domain," so every EXISTING caller (app/api/main.py's lifespan,
     app/channels/chat.py's --stream mode) is completely unaffected. This is
     what lets a NEW process boot the exact same durable-checkpointer
     machinery against a DIFFERENT domain instead — see
@@ -412,7 +412,7 @@ async def _ensure_seeded_async(graph, thread_id: str) -> None:
     module-level `SYSTEM_PROMPT` constant, so this seeds the CORRECT
     prompt for whichever domain `graph` was actually built for — every
     graph build_graph() returns always carries a `.manifest`, defaulting
-    to the Acme domain, so `graph.manifest.system_prompt` and the
+    to the Ecorp domain, so `graph.manifest.system_prompt` and the
     top-level `SYSTEM_PROMPT` import are identical for every caller in
     this app today (init_graph_async never passes a non-default
     manifest); this only starts to matter the day some caller does.

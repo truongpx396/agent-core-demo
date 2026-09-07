@@ -5,6 +5,7 @@ tool (post_to_team_channel — this repo's first real use of that
 capability, see GRAPH_PATTERNS.md pattern 47) is gated exactly like a
 mutating one.
 """
+import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
@@ -31,19 +32,54 @@ def _build(llm=None):
     return build_graph(GraphDeps(llm=llm), manifest=OPS_MANIFEST, domain=OPS_DOMAIN_PLUGIN)
 
 
-def test_tool_node_only_knows_the_ops_domains_tools():
+_CORE_OPS_TOOLS = {
+    "fetch_metrics_summary",
+    "post_to_team_channel",
+    "ask_clarification",
+    "skill_search",
+    "use_skill",
+    "log_incident",
+    "list_recent_incidents",
+    "resolve_incident",
+    "check_vendor_status_page",
+    "run_subagent",
+}
+
+_SANDBOX_TOOLS = {"run_command_in_sandbox", "read_sandbox_file", "write_sandbox_file"}
+
+
+def test_tool_node_knows_at_least_the_core_ops_domains_tools():
+    """Not a full exact-set check like tests/domains/sales/test_domain.py's
+    sibling test: app/domains/ops/tools.py also conditionally adds its
+    three narrow sandbox tools (app/domains/ops/sandbox_session.py,
+    GRAPH_PATTERNS.md pattern 50) — present as a FIXED trio if
+    opensandbox-mcp is installed/reachable in whatever environment runs
+    this test, absent entirely otherwise (see
+    sandbox_session.py::load_raw_sandbox_tools's own degrade). Only the
+    CORE, always-present ops tools are asserted here; the sandbox trio's
+    own behavior is covered by tests/domains/ops/test_sandbox_session.py
+    (hermetic) and tests/live/test_opensandbox_mcp_live.py (real bridge)."""
     g = _build()
-    assert set(g.nodes["tools"].bound.tools_by_name) == {
-        "fetch_metrics_summary",
-        "post_to_team_channel",
-        "ask_clarification",
-        "skill_search",
-        "use_skill",
-        "log_incident",
-        "list_recent_incidents",
-        "resolve_incident",
-        "run_subagent",
-    }
+    assert _CORE_OPS_TOOLS <= set(g.nodes["tools"].bound.tools_by_name)
+
+
+def test_sandbox_tools_are_present_as_a_fixed_trio_or_not_at_all():
+    """Unlike the old raw ~19-tool OpenSandbox catalog this domain used to
+    merge in directly, the exposed sandbox surface is now exactly these
+    three names or nothing — never a partial/variable subset — since
+    app/domains/ops/tools.py builds all three from the SAME
+    load_raw_sandbox_tools() call and only adds them as a unit."""
+    g = _build()
+    present = _SANDBOX_TOOLS & set(g.nodes["tools"].bound.tools_by_name)
+    assert present == _SANDBOX_TOOLS or present == set()
+
+
+def test_every_sandbox_tool_present_is_declared_outward():
+    g = _build()
+    present = _SANDBOX_TOOLS & set(g.nodes["tools"].bound.tools_by_name)
+    capabilities = OPS_DOMAIN_PLUGIN.tool_capabilities()
+    for name in present:
+        assert capabilities.get(name) == "outward", name
 
 
 class TestDomainScopedSubagent:
@@ -52,12 +88,12 @@ class TestDomainScopedSubagent:
     closure-built tool, and its menu offers only the bundled subagent(s)
     declared `domains: [ops]` (subagents/metrics-researcher/AGENT.md)."""
 
-    def test_is_not_the_acme_level_run_subagent_object(self):
-        from app.agent.tools import run_subagent as acme_run_subagent
+    def test_is_not_the_ecorp_level_run_subagent_object(self):
+        from app.agent.tools import run_subagent as ecorp_run_subagent
 
         g = _build()
         domain_run_subagent = g.nodes["tools"].bound.tools_by_name["run_subagent"]
-        assert domain_run_subagent is not acme_run_subagent
+        assert domain_run_subagent is not ecorp_run_subagent
 
     def test_menu_offers_only_the_ops_domains_own_subagent(self):
         g = _build()
@@ -148,6 +184,40 @@ def test_log_incident_pauses_for_approval_and_runs_once_approved(monkeypatch):
     assert any("Incident #3 logged" in m.content for m in tool_messages)
 
 
+def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monkeypatch):
+    """The sandbox trio only exists in the tool node if opensandbox-mcp was
+    installed/reachable at app/domains/ops/tools.py's own import time (see
+    _SANDBOX_TOOLS above) — self-skips rather than failing when it isn't,
+    same posture test_sandbox_tools_are_present_as_a_fixed_trio_or_not_at_all
+    already takes."""
+    from app.domains.ops import tools as ops_tools
+
+    if not hasattr(ops_tools, "run_command_in_sandbox"):
+        pytest.skip("opensandbox-mcp not installed/reachable — sandbox trio wasn't built")
+
+    monkeypatch.setattr(
+        ops_tools.sandbox_session,
+        "run_command_in_sandbox_impl",
+        lambda command, thread_id, raw: "exit code: 0\nstdout:\n42.75\n",
+    )
+
+    llm = _fake_llm_returning(
+        _tool_call("run_command_in_sandbox", {"command": "python3 -c 'print(42.75)'"}),
+        AIMessage(content="The 95th percentile is 42.75."),
+    )
+    g = _build(llm)
+    g.invoke(
+        {"messages": [HumanMessage(content="compute the 95th percentile of these numbers")]},
+        config=_config(),
+    )
+    assert g.get_state(_config()).next  # paused, not finished
+
+    result = g.invoke(Command(resume=True), config=_config())
+    assert not g.get_state(_config()).next  # finished, not paused
+    tool_messages = [m for m in result["messages"] if m.type == "tool"]
+    assert any("42.75" in m.content for m in tool_messages)
+
+
 def test_resolve_incident_pauses_for_approval_and_runs_once_approved(monkeypatch):
     from app.domains.ops import store
 
@@ -167,6 +237,41 @@ def test_resolve_incident_pauses_for_approval_and_runs_once_approved(monkeypatch
     assert not g.get_state(_config()).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("Incident #3 resolved" in m.content for m in tool_messages)
+
+
+def test_check_vendor_status_page_pauses_for_approval_as_an_outward_tool():
+    llm = _fake_llm_returning(
+        _tool_call("check_vendor_status_page", {"url": "https://status.example.com"})
+    )
+    g = _build(llm)
+    g.invoke(
+        {"messages": [HumanMessage(content="is our payment processor having an outage?")]},
+        config=_config(),
+    )
+    assert g.get_state(_config()).next  # paused, not finished
+
+
+def test_approving_check_vendor_status_page_runs_it_and_finishes(monkeypatch):
+    from app.domains.ops import tools as ops_tools
+
+    monkeypatch.setattr(
+        ops_tools, "render_url_to_markdown", lambda url: "All systems operational."
+    )
+
+    llm = _fake_llm_returning(
+        _tool_call("check_vendor_status_page", {"url": "https://status.example.com"}),
+        AIMessage(content="Their status page shows no ongoing incident."),
+    )
+    g = _build(llm)
+    g.invoke(
+        {"messages": [HumanMessage(content="is our payment processor having an outage?")]},
+        config=_config(),
+    )
+    result = g.invoke(Command(resume=True), config=_config())
+
+    assert not g.get_state(_config()).next  # finished, not paused
+    tool_messages = [m for m in result["messages"] if m.type == "tool"]
+    assert any("All systems operational." in m.content for m in tool_messages)
 
 
 def test_approving_post_to_team_channel_runs_it_and_finishes(monkeypatch):

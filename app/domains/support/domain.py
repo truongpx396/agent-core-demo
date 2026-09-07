@@ -10,7 +10,7 @@ same SecurityCtx/DEFAULT_POLICY enforcement under the hood — see that
 module's docstring) rather than reimplementing retrieval for a new domain.
 `skill_search`/`use_skill`, by contrast, are built via
 `app.agent.tools.make_skill_tools("support")` — this domain's OWN pair,
-not Acme's literal objects — so a domain-tagged `SKILL.md`
+not Ecorp's literal objects — so a domain-tagged `SKILL.md`
 (`domains: [...]` frontmatter) stays scoped to the domain(s) it names; see
 that factory's own docstring. `SUPPORT_MANIFEST.allowed_tools` is exactly
 those four plus this domain's own five ticket tools — deliberately
@@ -25,7 +25,7 @@ ever knows the tools this list names).
 from dataclasses import dataclass
 
 from app.agent.manifest import AgentManifest, DomainPlugin
-from app.agent.tools import TOOL_CAPABILITIES as _ACME_TOOL_CAPABILITIES
+from app.agent.tools import TOOL_CAPABILITIES as _ECORP_TOOL_CAPABILITIES
 from app.agent.tools import (
     ask_clarification,
     make_domain_subagent_tool,
@@ -46,17 +46,17 @@ _RUN_SUBAGENT = make_domain_subagent_tool(
     all_tools=list(_SUPPORT_TOOLS) + _REUSED_READ_ONLY_TOOLS,
     tool_capabilities={
         **_SUPPORT_TOOL_CAPABILITIES,
-        "search_docs": _ACME_TOOL_CAPABILITIES["search_docs"],
-        "skill_search": _ACME_TOOL_CAPABILITIES["skill_search"],
-        "use_skill": _ACME_TOOL_CAPABILITIES["use_skill"],
-        "ask_clarification": _ACME_TOOL_CAPABILITIES["ask_clarification"],
+        "search_docs": _ECORP_TOOL_CAPABILITIES["search_docs"],
+        "skill_search": _ECORP_TOOL_CAPABILITIES["skill_search"],
+        "use_skill": _ECORP_TOOL_CAPABILITIES["use_skill"],
+        "ask_clarification": _ECORP_TOOL_CAPABILITIES["ask_clarification"],
     },
 )
 # None unless at least one bundled AGENT.md declares `domains: [support]` —
 # see make_domain_subagent_tool's own docstring for why an empty menu means
 # "don't expose the tool at all" rather than a real, empty-choice tool.
 
-SUPPORT_SYSTEM_PROMPT = """You are Acme Corp's Tier-1 customer support copilot.
+SUPPORT_SYSTEM_PROMPT = """You are Ecorp's Tier-1 customer support copilot.
 
 Help customers using ONLY the knowledge base (search_docs) and the skill
 catalog (skill_search/use_skill) — never guess at company policy or
@@ -80,6 +80,12 @@ the same issue.
 Use ask_clarification when the request is genuinely ambiguous rather than
 guessing what they meant.
 
+If a customer links a third-party page relevant to their issue (a vendor's
+API doc, a status page) and the knowledge base doesn't already cover it,
+use fetch_external_reference to read it live rather than guessing — this
+reaches the open internet and always needs human approval first, and it
+never adds anything to the knowledge base itself.
+
 If a bundled subagent's focus matches a self-contained lookup better than
 doing it yourself, use run_subagent to delegate it — it does not see this
 conversation's history, so describe everything it needs to know."""
@@ -96,9 +102,9 @@ class _SupportDomainPlugin:
     def tool_capabilities(self) -> dict[str, str]:
         merged = dict(_SUPPORT_TOOL_CAPABILITIES)
         for name in ("search_docs", "skill_search", "use_skill", "ask_clarification"):
-            merged[name] = _ACME_TOOL_CAPABILITIES[name]
+            merged[name] = _ECORP_TOOL_CAPABILITIES[name]
         if _RUN_SUBAGENT is not None:
-            merged["run_subagent"] = _ACME_TOOL_CAPABILITIES["run_subagent"]
+            merged["run_subagent"] = _ECORP_TOOL_CAPABILITIES["run_subagent"]
         return merged
 
     def policy(self) -> Policy:
