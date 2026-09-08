@@ -7,6 +7,7 @@ literal meaning of "sandboxed" — see app/domains/support/domain.py), and
 show a mutating tool call pauses for human_approval and, once approved,
 actually runs.
 """
+import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
@@ -15,6 +16,22 @@ from app.agent.graph import GraphDeps, build_graph
 from app.domains.support import store
 from app.domains.support.domain import SUPPORT_DOMAIN_PLUGIN, SUPPORT_MANIFEST
 from tests.conftest import TEST_CTX
+
+_CORE_SUPPORT_TOOLS = {
+    "search_docs",
+    "skill_search",
+    "use_skill",
+    "ask_clarification",
+    "create_ticket",
+    "check_ticket_status",
+    "escalate_to_human",
+    "list_my_tickets",
+    "add_ticket_comment",
+    "fetch_external_reference",
+    "run_subagent",
+}
+
+_SANDBOX_TOOLS = {"run_command_in_sandbox", "read_sandbox_file", "write_sandbox_file"}
 
 
 class _FakeCursor:
@@ -62,23 +79,31 @@ class TestSandboxing:
     system" access: this domain's ToolNode knows exactly the KB tools plus
     its own five ticket tools (plus its own, domain-scoped run_subagent —
     see TestDomainScopedSubagent below), and nothing else Ecorp's TOOLS
-    list has."""
+    list has.
 
-    def test_tool_node_only_knows_the_support_domains_tools(self):
+    Not a full exact-set check like this used to be — app/domains/support/
+    tools.py now also conditionally adds its own three narrow sandbox
+    tools (app/domains/sandbox_session.py, GRAPH_PATTERNS.md pattern 50),
+    present as a FIXED trio if opensandbox-mcp is installed/reachable in
+    whatever environment runs this test, absent entirely otherwise (see
+    sandbox_session.py's own load_raw_sandbox_tools degrade) — the same
+    fix app/domains/ops/test_domain.py already needed for the same reason."""
+
+    def test_tool_node_knows_at_least_the_core_support_domains_tools(self):
         g = build_graph(GraphDeps(llm=None), manifest=SUPPORT_MANIFEST, domain=SUPPORT_DOMAIN_PLUGIN)
-        assert set(g.nodes["tools"].bound.tools_by_name) == {
-            "search_docs",
-            "skill_search",
-            "use_skill",
-            "ask_clarification",
-            "create_ticket",
-            "check_ticket_status",
-            "escalate_to_human",
-            "list_my_tickets",
-            "add_ticket_comment",
-            "fetch_external_reference",
-            "run_subagent",
-        }
+        assert _CORE_SUPPORT_TOOLS <= set(g.nodes["tools"].bound.tools_by_name)
+
+    def test_sandbox_tools_are_present_as_a_fixed_trio_or_not_at_all(self):
+        g = _build()
+        present = _SANDBOX_TOOLS & set(g.nodes["tools"].bound.tools_by_name)
+        assert present == _SANDBOX_TOOLS or present == set()
+
+    def test_every_sandbox_tool_present_is_declared_outward(self):
+        g = _build()
+        present = _SANDBOX_TOOLS & set(g.nodes["tools"].bound.tools_by_name)
+        capabilities = SUPPORT_DOMAIN_PLUGIN.tool_capabilities()
+        for name in present:
+            assert capabilities.get(name) == "outward", name
 
     def test_ecorp_only_tools_are_absent(self):
         g = _build()
@@ -274,3 +299,36 @@ def test_escalate_to_human_notifies_the_team_channel(monkeypatch):
     assert "escalated" in result.lower()
     assert "support-escalations" in posted
     assert "needs a refund" in posted["support-escalations"]
+
+
+def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monkeypatch):
+    """Same shape as app/domains/ops/test_domain.py's own version of this
+    test — the sandbox trio only exists in the tool node if opensandbox-mcp
+    was installed/reachable at app/domains/support/tools.py's own import
+    time, so this self-skips rather than failing when it isn't."""
+    from app.domains.support import tools as support_tools
+
+    if not hasattr(support_tools, "run_command_in_sandbox"):
+        pytest.skip("opensandbox-mcp not installed/reachable — sandbox trio wasn't built")
+
+    monkeypatch.setattr(
+        support_tools.sandbox_session,
+        "run_command_in_sandbox_impl",
+        lambda command, thread_id, raw: "exit code: 0\nstdout:\n2 db_timeout occurrences\n",
+    )
+
+    llm = _fake_llm_returning(
+        _tool_call("run_command_in_sandbox", {"command": "python3 -c \"...\""}),
+        AIMessage(content="The pasted log shows 2 db_timeout occurrences."),
+    )
+    g = _build(llm)
+    g.invoke(
+        {"messages": [HumanMessage(content="here's the error log, can you count db_timeout")]},
+        config=_config(),
+    )
+    assert g.get_state(_config()).next  # paused, not finished
+
+    result = g.invoke(Command(resume=True), config=_config())
+    assert not g.get_state(_config()).next  # finished, not paused
+    tool_messages = [m for m in result["messages"] if m.type == "tool"]
+    assert any("2 db_timeout occurrences" in m.content for m in tool_messages)
