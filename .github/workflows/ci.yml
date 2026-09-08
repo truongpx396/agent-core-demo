@@ -117,10 +117,9 @@ jobs:
 
   test-live:
     # Real small Ollama model + the full app/agent-worker stack, incl. a
-    # Playwright browser E2E and real crawl4ai renders (tests/live/,
-    # GRAPH_PATTERNS.md pattern 50 — the `crawl` marker reuses this job's
-    # own `playwright install` step below, no separate setup needed) — the
-    # expensive job, so its
+    # Playwright browser E2E (tests/live/, GRAPH_PATTERNS.md pattern 50)
+    # and real crawl4ai renders against a real `unclecode/crawl4ai`
+    # container (the `crawl` marker) — the expensive job, so its
     # Ollama model pull is cached across runs (see tests/containers.py's
     # own ensure_ollama docstring for why `ollama_home` makes this possible
     # at all: a stable HOST directory bind-mounted into a fresh container
@@ -136,7 +135,19 @@ jobs:
           pytest-xdist==3.8.0
           "testcontainers[postgres,redis,ollama]==4.9.0"
           pytest-playwright==0.7.1
+      # For this job's OWN `e2e` browser tests (pytest-playwright driving
+      # the built-in web UI) — unrelated to crawl4ai now that it runs
+      # server-side (below), but this job still needs a real browser itself.
       - run: playwright install --with-deps chromium
+      # Real crawl4ai server for the `crawl` marker's tests — same
+      # explicit-`docker run`-sidecar shape the `promptfoo` job below
+      # already uses for its own Ollama, not GH Actions' `services:` block.
+      - run: |
+          export CRAWL4AI_API_TOKEN="$(openssl rand -hex 32)"
+          echo "CRAWL4AI_API_TOKEN=$CRAWL4AI_API_TOKEN" >> "$GITHUB_ENV"
+          docker run -d --name crawl4ai -p 11235:11235 --shm-size=1g \
+            -e CRAWL4AI_API_TOKEN="$CRAWL4AI_API_TOKEN" unclecode/crawl4ai:0.9.3
+      - run: timeout 60 bash -c 'until curl -sf http://localhost:11235/health; do sleep 2; done'
       - uses: actions/cache@v4
         with:
           path: ~/.cache/agent-core-demo-ollama-models

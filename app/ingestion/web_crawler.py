@@ -23,6 +23,41 @@ like a bare httpx GET does, so it needs exactly the same guard, checked
 here rather than trusted to crawl4ai (which has no concept of this app's
 threat model at all).
 
+Renders via crawl4ai's own dockerized server (`docker-compose.yml`'s
+`crawl4ai` service, `unclecode/crawl4ai:0.9.3` — the browser now runs in
+its own warm, pooled container, not launched fresh in THIS process on
+every call), reached through crawl4ai's official `Crawl4aiDockerClient`
+rather than hand-built HTTP calls — verified directly that
+`CrawlerRunConfig.dump()`/`BrowserConfig.dump()` produce a non-trivial
+nested `{"type": ..., "params": {...}}` shape, not a flat dict, so letting
+the library serialize its own config objects is safer than reimplementing
+that contract by hand. `browser_config`/`crawler_config` are still applied
+per-request server-side exactly as before (confirmed in
+`Crawl4aiDockerClient._prepare_request`), so none of THIS module's own
+config logic changed, only the transport.
+
+Auth: crawl4ai 0.9.0+ is secure-by-default — without a valid
+`Authorization: Bearer` token matching the server's own
+`CRAWL4AI_API_TOKEN`, it silently binds loopback-only inside its own
+container (self-hosting.md). `Crawl4aiDockerClient` only exposes
+token-setting via `.authenticate(email)`, a `/token`-issued-JWT flow this
+app doesn't use (there's no login/email here, just a static pre-shared
+secret) — so the header is set directly on the client's own httpx client
+instead, verified empirically to work the same way `.authenticate()`
+itself sets it internally.
+
+No `browser_config` is sent at all — verified empirically against the real
+running server (not assumed from docs) that this matters: `BrowserConfig`'s
+own `.dump()` always includes a `headers` field (a `sec-ch-ua` fingerprint
+default, even with nothing explicitly set), and crawl4ai 0.9.0+'s
+server-side "strict trust boundary" (self-hosting.md's own phrase)
+unconditionally 400s any request carrying it — `"field 'headers' is not
+permitted on BrowserConfig from an untrusted request"`. Omitting
+`browser_config` (server falls back to its own internal default, `{}` on
+the wire) is what actually works; there is no in-between "just send
+headless/verbose" option once ANY BrowserConfig object is dumped. Only
+`crawler_config` is sent per-request.
+
 Verified empirically against a real crawl (this module wasn't written
 blind against crawl4ai's docs): `result.markdown` is a str-compatible
 `StringCompatibleMarkdown`, not an object requiring `.raw_markdown`;
@@ -30,19 +65,19 @@ blind against crawl4ai's docs): `result.markdown` is a str-compatible
 failure; a failed navigation's `error_message` is a multi-line, code-
 context-including dump of crawl4ai's own internals — truncated to its
 first line before it ever reaches a tool result/prompt, both to keep the
-result readable and to avoid leaking this process's local file paths to
-the model. `AsyncWebCrawler`'s own console progress logging (`[FETCH]`,
-`[SCRAPE]`, `[COMPLETE]` lines) is independent of `BrowserConfig.verbose`
-— confirmed empirically that `verbose=False` there does NOT silence it —
-so a dedicated quiet `AsyncLogger` is passed explicitly instead, keeping
-this app's own structured logging as the only thing writing to stdout.
+result readable and to avoid leaking crawl4ai server-side paths to the
+model.
 """
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig
-from crawl4ai.async_logger import AsyncLogger
+from crawl4ai import CacheMode, CrawlerRunConfig
+from crawl4ai.docker_client import ConnectionError as Crawl4aiConnectionError
+from crawl4ai.docker_client import Crawl4aiDockerClient
+from crawl4ai.docker_client import RequestError as Crawl4aiRequestError
 
+from app.core.config import CRAWL4AI_API_TOKEN, CRAWL4AI_SERVER_URL
 from app.core.url_safety import assert_safe_url
 
 logger = logging.getLogger(__name__)
@@ -68,19 +103,17 @@ _MAX_MARKDOWN_CHARS = 20_000  # bounded like app/ingestion/ingestor.py's
 # _MAX_URL_BYTES — a full page's rendered markdown could otherwise blow
 # well past what's reasonable to fold into a tool result/prompt.
 
-_BROWSER_CONFIG = BrowserConfig(headless=True, verbose=False)
-_QUIET_LOGGER = AsyncLogger(verbose=False)
-
 
 class CrawlFailed(Exception):
     """A URL that passed the SSRF guard but couldn't actually be rendered
-    (navigation error, timeout, no content) — an expected, caller-facing
-    outcome, not a bug to let propagate as crawl4ai's own exception type.
-    Propagates up through the calling tool exactly like any other
-    exception (app/agent/graph.py's handle_tool_errors turns it into a
-    ToolMessage the agent sees) — no domain tool here catches it itself,
-    same posture every existing domain tool already takes toward its own
-    store.py's exceptions."""
+    (navigation error, timeout, no content, or the crawl4ai server itself
+    unreachable/unauthorized) — an expected, caller-facing outcome, not a
+    bug to let propagate as crawl4ai's own exception type. Propagates up
+    through the calling tool exactly like any other exception
+    (app/agent/graph.py's handle_tool_errors turns it into a ToolMessage
+    the agent sees) — no domain tool here catches it itself, same posture
+    every existing domain tool already takes toward its own store.py's
+    exceptions."""
 
 
 async def _crawl(url: str) -> str:
@@ -89,8 +122,16 @@ async def _crawl(url: str) -> str:
         page_timeout=CRAWL_TIMEOUT_SECONDS * 1000,  # crawl4ai takes milliseconds
         verbose=False,
     )
-    async with AsyncWebCrawler(config=_BROWSER_CONFIG, logger=_QUIET_LOGGER) as crawler:
-        result = await crawler.arun(url=url, config=run_config)
+    async with Crawl4aiDockerClient(
+        base_url=CRAWL4AI_SERVER_URL, timeout=CRAWL_TOOL_TIMEOUT_SECONDS, verbose=False
+    ) as client:
+        # See module docstring: a static pre-shared token, set directly
+        # rather than through .authenticate()'s unrelated /token+email flow.
+        client._http_client.headers["Authorization"] = f"Bearer {CRAWL4AI_API_TOKEN}"
+        try:
+            result = await client.crawl([url], crawler_config=run_config)
+        except (Crawl4aiConnectionError, Crawl4aiRequestError) as exc:
+            raise CrawlFailed(f"could not reach the crawl4ai server for {url}: {exc}") from exc
     if not result.success:
         first_line = (result.error_message or "unknown error").strip().splitlines()[0]
         raise CrawlFailed(f"could not render {url}: {first_line}")
@@ -110,7 +151,25 @@ def render_url_to_markdown(url: str) -> str:
     normal exception handling is enough (see CrawlFailed's own docstring).
     """
     assert_safe_url(url)
-    text = asyncio.run(_crawl(url))
+    text = _run_crawl_sync(url)
     if len(text) > _MAX_MARKDOWN_CHARS:
         text = text[:_MAX_MARKDOWN_CHARS] + "\n\n[truncated: page content exceeds the fetch limit]"
     return text
+
+
+def _run_crawl_sync(url: str) -> str:
+    """`asyncio.run(_crawl(url))`, except also correct when the CALLING
+    thread already has a running event loop — verified directly this is a
+    real case, not theoretical: CI hit `RuntimeError: asyncio.run() cannot
+    be called from a running event loop` here (some other async work
+    sharing this pytest-xdist worker's thread, not this function's own
+    fault — `asyncio.run()` checks for a running loop before it ever
+    touches `_crawl` at all). The fast, common path (no loop already
+    running) is unchanged; the fallback runs `_crawl` in its own thread
+    with a fresh loop instead of fighting over the calling thread's."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_crawl(url))
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, _crawl(url)).result()

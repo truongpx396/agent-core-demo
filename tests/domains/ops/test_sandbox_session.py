@@ -1,13 +1,10 @@
 """Tests for app/domains/ops/sandbox_session.py — mocks the raw OpenSandbox
 MCP tools' `.invoke(...)` calls (returning realistic JSON strings matching
 the EXACT shapes read from opensandbox_mcp/opensandbox's own Pydantic
-models — see that module's own docstring for why these are ground truth,
-not inference from a working example: this session's local
-opensandbox-server hit a real HTTP 405 on every sandbox_create attempt, so
-the success path could never be confirmed against a real live call).
-Hermetic, no live opensandbox-mcp/opensandbox-server needed — the live
-counterpart (proving the mechanism reaches a REAL bridge, even though this
-environment's own server can't complete a real create) is
+models — see that module's own docstring for the full provenance, since
+confirmed against a real successful live call too). Hermetic, no live
+opensandbox-mcp/opensandbox-server needed — the live counterpart (proving
+the mechanism reaches a REAL bridge) is
 tests/live/test_ops_sandbox_session_live.py.
 """
 import json

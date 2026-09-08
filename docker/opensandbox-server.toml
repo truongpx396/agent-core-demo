@@ -1,0 +1,91 @@
+# Copyright 2025 Alibaba Group Holding Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# opensandbox-server config for THIS repo's docker-compose `sandbox` profile
+# (`make sandbox-up`) — adapted from OpenSandbox's own packaged `docker`
+# example (`uvx opensandbox-server init-config --example docker`), with two
+# deliberate changes from that example, both verified against OpenSandbox's
+# own server/configuration.md rather than assumed:
+#
+# 1. `host = "0.0.0.0"`, NOT the packaged example's `127.0.0.1` — the
+#    example is written for a bare host process reached only via its own
+#    published port; loopback-only would make this container's `8090:8090`
+#    docker-compose port mapping unreachable from outside the container.
+#    "0.0.0.0" also happens to be configuration.md's own documented default
+#    for `server.host` — this file states it explicitly rather than relying
+#    on that default silently doing the right thing.
+# 2. No `api_key` set here at all — `OPENSANDBOX_SERVER_API_KEY`
+#    (docker-compose.yml's `opensandbox-server` service, from this repo's
+#    own `.env`'s `OPENSANDBOX_API_KEY`) overrides it at container start,
+#    confirmed against configuration.md to be the documented mechanism for
+#    exactly this — no env-var-interpolation-in-TOML trick needed.
+#
+# Full configuration reference: https://github.com/opensandbox-group/OpenSandbox/blob/main/server/configuration.md
+
+[server]
+host = "0.0.0.0"
+port = 8090
+max_sandbox_timeout_seconds = 86400
+
+[log]
+level = "INFO"
+
+[runtime]
+type = "docker"
+execd_image = "opensandbox/execd:v1.0.22"
+
+[storage]
+# Allowlist of host path prefixes permitted for bind mounts.
+# If empty, all host paths are allowed (not recommended for production).
+# Example: allowed_host_paths = ["/data/opensandbox", "/tmp/sandbox"]
+allowed_host_paths = []
+
+# Default storage size for auto-created Kubernetes PVCs (when caller omits size).
+volume_default_size = "1Gi"
+
+[store]
+type = "sqlite"
+path = "/data/opensandbox.db"   # docker-compose's opensandbox-data named
+# volume is mounted at /data — see docker/opensandbox-server.Dockerfile —
+# so this survives a container restart instead of living in the
+# container's own ephemeral filesystem.
+
+[docker]
+network_mode = "bridge"
+# Host port range for bridge-mode sandbox port allocation. Sibling sandbox
+# containers are created via the bind-mounted host Docker socket, so these
+# ports bind on the HOST directly (not inside this container's own network
+# namespace) — this docker-compose service does not need to publish this
+# range itself, only its own API port (8090) above.
+port_range_min = 40000
+port_range_max = 60000
+# Drop dangerous capabilities and block privilege escalation
+drop_capabilities = ["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]
+no_new_privileges = true
+apparmor_profile = ""
+# Limit process count to reduce host impact from fork bombs; set to null to disable
+pids_limit = 4096
+seccomp_profile = ""
+
+[ingress]
+mode = "direct"
+
+[egress]
+image = "opensandbox/egress:v1.1.7"
+mode = "dns"
+readiness_timeout_seconds = 30.0
+
+[renew_intent]
+enabled = false
+min_interval_seconds = 60

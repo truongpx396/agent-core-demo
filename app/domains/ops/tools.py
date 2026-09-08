@@ -292,10 +292,11 @@ if _RAW_SANDBOX_TOOLS:
         log dump, diffing two configs). One sandbox is created
         automatically per investigation and reused for every call in it —
         you never create, connect to, or track a sandbox yourself, just
-        describe the command. The sandbox has NO network access by
-        default, so stick to the Python standard library rather than
-        `pip install`-ing anything. Reaches an external service — always
-        requires human approval before it runs."""
+        describe the command. The sandbox has NO network access, so don't
+        `pip install` anything — numpy and pandas are already available
+        (Python standard library plus those two), so use them directly for
+        anything beyond plain arithmetic. Reaches an external service —
+        always requires human approval before it runs."""
         ctx = _ctx_or_refuse(config, "run_command_in_sandbox")
         if ctx is None:
             return _NO_CTX_REFUSAL

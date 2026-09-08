@@ -9,11 +9,13 @@ tests/domains/ops/test_domain.py's live-environment-dependent assertions
 (see that file's own comment on why it can't hardcode an exact sandbox
 tool set).
 """
+import sys
+
 from app.domains import sandbox_tools
 from app.mcp import client as mcp_client
 
 
-def test_passes_the_configured_domain_and_http_protocol_to_the_bridge(monkeypatch):
+def test_passes_the_configured_domain_protocol_and_api_key_to_the_bridge(monkeypatch):
     captured = {}
 
     def fake_load_remote_tools(**kwargs):
@@ -24,8 +26,17 @@ def test_passes_the_configured_domain_and_http_protocol_to_the_bridge(monkeypatc
 
     sandbox_tools.load_sandbox_tools()
 
-    assert captured["command"] == "opensandbox-mcp"
-    assert captured["args"] == ["--domain", sandbox_tools.OPENSANDBOX_MCP_DOMAIN, "--protocol", "http"]
+    # sys.executable + scripts/opensandbox_mcp_bridge.py, NOT the packaged
+    # `opensandbox-mcp` binary directly — see sandbox_tools.py's own
+    # `_BRIDGE_SCRIPT` comment for why (opensandbox-mcp==0.1.1's CLI has no
+    # way to set ConnectionConfig(use_server_proxy=True), which this app's
+    # containerized opensandbox-server deployment needs).
+    assert captured["command"] == sys.executable
+    assert captured["args"] == [
+        sandbox_tools._BRIDGE_SCRIPT,
+        "--domain", sandbox_tools.OPENSANDBOX_MCP_DOMAIN, "--protocol", "http",
+        "--api-key", sandbox_tools.OPENSANDBOX_API_KEY,
+    ]
 
 
 def test_never_supplies_capability_overrides_so_every_tool_defaults_to_outward(monkeypatch):

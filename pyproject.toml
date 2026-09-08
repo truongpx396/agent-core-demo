@@ -19,8 +19,8 @@ markers = [
     "llm: needs a real, small Ollama model container (tests/live/conftest.py)",
     "e2e: drives a real browser (pytest-playwright) against the real app + a real Ollama model",
     "deepeval: LLM-judged RAG quality metrics (tests/live/test_rag_quality_deepeval.py) — manual only, never CI (GRAPH_PATTERNS.md pattern 48); a separate marker from `llm`, not swept into test-live's `-m \"llm or e2e\"`",
-    "crawl: needs a real headless-Chromium browser (crawl4ai/Playwright, GRAPH_PATTERNS.md pattern 50) — no LLM, no Docker; swept into `make test-live`'s selection since that job already installs the same browser for its own `e2e` tests",
-    "sandbox: needs a real, separately-run opensandbox-server + the opensandbox-mcp bridge on PATH (GRAPH_PATTERNS.md pattern 50, `make sandbox-serve`) — deliberately NOT swept into `make test-live` (same 'needs a manual, non-testcontainers-managed prerequisite' reasoning `deepeval`/`garak`/`promptfoo-redteam` already have); self-skips cleanly when the bridge isn't on PATH",
+    "crawl: needs a real crawl4ai server reachable (docker-compose.yml's `crawl4ai` service, GRAPH_PATTERNS.md pattern 50) — no LLM; swept into `make test-live`'s selection since `docker compose up -d crawl4ai` is part of the default `make up` profile",
+    "sandbox: needs a real, containerized opensandbox-server (`make sandbox-up`) + the opensandbox-mcp bridge on PATH (GRAPH_PATTERNS.md pattern 50) — deliberately NOT swept into `make test-live` (same 'needs a manual, non-testcontainers-managed prerequisite' reasoning `deepeval`/`garak`/`promptfoo-redteam` already have); self-skips cleanly when the bridge isn't on PATH",
 ]
 
 [tool.ruff]

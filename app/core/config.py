@@ -197,15 +197,15 @@ class Settings(BaseSettings):
     # Sandbox session defaults (app/domains/ops/sandbox_session.py,
     # GRAPH_PATTERNS.md pattern 50) — the container image and lifetime for
     # the ONE OpenSandbox sandbox each investigation (thread) lazily
-    # creates on first use and reuses after that. python:3.12-slim
-    # (stdlib only, no numpy/pandas) is the safe default specifically
-    # because a fresh sandbox has NO network egress by default (OpenSandbox's
-    # own NetworkPolicy defaults to deny-all) — a script that tries `pip
-    # install` would just hang/fail, so the ops system prompt steers the
-    # model toward stdlib (e.g. the `statistics` module) instead of
-    # widening egress just for convenience. Bump the image if a real
-    # deployment wants heavier packages preinstalled instead.
-    ops_sandbox_image: str = "python:3.12-slim"
+    # creates on first use and reuses after that. A fresh sandbox has NO
+    # network egress by default (OpenSandbox's own NetworkPolicy defaults
+    # to deny-all) — a script that tries `pip install` would just
+    # hang/fail — so rather than widen egress for convenience, needed
+    # packages are baked into a small custom image instead:
+    # docker/ops-sandbox.Dockerfile (`make ops-sandbox-build`), currently
+    # python:3.12-slim + numpy + pandas. Bump that Dockerfile (and this
+    # default, if the tag changes) if a real deployment needs more.
+    ops_sandbox_image: str = "agent-core-demo-ops-sandbox:latest"
     ops_sandbox_ttl_seconds: int = 1800  # 30 minutes — long enough for an
     # investigation spanning several human-approval pauses, short enough
     # that an abandoned sandbox doesn't linger indefinitely.
@@ -278,13 +278,56 @@ class Settings(BaseSettings):
     # OpenSandbox MCP bridge (app/domains/sandbox_tools.py, GRAPH_PATTERNS.md
     # pattern 50) — `--domain` value passed to the `opensandbox-mcp` stdio
     # bridge process app/mcp/client.py::load_remote_tools spawns, i.e. the
-    # host:port a separately-run `opensandbox-server` (`make sandbox-serve`)
-    # listens on. A host process, like PROMETHEUS_URL below and unlike every
-    # QDRANT_URL/REDIS_URL-style in-network service name — this app never
-    # runs the sandbox server itself (see app/domains/sandbox_tools.py's own
-    # docstring for why: OpenSandbox needs the HOST Docker daemon to create
-    # sandboxes, so containerizing it here would mean Docker-in-Docker).
-    opensandbox_mcp_domain: str = "localhost:8080"
+    # host:port `opensandbox-server` listens on. Localhost:PORT, like
+    # PROMETHEUS_URL below and unlike every QDRANT_URL/REDIS_URL-style
+    # in-network service name — `opensandbox-mcp` itself is spawned by THIS
+    # process (a host process for `make serve`/`make agent-worker`, or the
+    # containerized `agent-worker` role talking out to its host-published
+    # port either way), never inside the opensandbox-server container, so it
+    # always reaches the server via a published port, not an in-network name.
+    #
+    # 8090, NOT OpenSandbox's own packaged `docker` example config's default
+    # of 8080 — verified directly this collision is real, not theoretical:
+    # this repo's own `open-webui` (docker-compose.yml) already binds host
+    # port 8080 via `make up`. Before opensandbox_api_key below existed, a
+    # stray `opensandbox-server` that failed to bind 8080 didn't surface as a
+    # connection error — every request just landed on open-webui's own
+    # uvicorn instead, which returned a same-shaped generic
+    # `{"detail":"Method Not Allowed"}` 405 for the unrecognized `POST
+    # /sandboxes` route, indistinguishable from a real OpenSandbox error
+    # without checking which process actually answered. `make sandbox-up`'s
+    # docker-compose service (docker/opensandbox-server.toml) publishes this
+    # exact port.
+    opensandbox_mcp_domain: str = "localhost:8090"
+
+    # Bearer token `opensandbox-mcp` sends OpenSandbox's own server
+    # (app/domains/sandbox_tools.py appends `--api-key` with this value to
+    # the bridge's args). `docker-compose.yml`'s `opensandbox-server` service
+    # (opt-in `sandbox` profile, `make sandbox-up`) sets the SAME value via
+    # `OPENSANDBOX_SERVER_API_KEY` — verified against OpenSandbox's own
+    # server/configuration.md that this env var overrides the TOML's
+    # `server.api_key` directly. Required: current opensandbox-server
+    # releases refuse to start in non-interactive mode without one set
+    # (`opensandbox_server.startup_guard`) — no insecure-mode fallback here,
+    # unlike SLACK_WEBHOOK_URL below, since an unauthenticated sandbox
+    # executor is a meaningfully worse default to silently allow.
+    opensandbox_api_key: str = ""
+
+    # crawl4ai's own dockerized server (app/ingestion/web_crawler.py,
+    # docker-compose.yml's `crawl4ai` service, default profile — no
+    # `make up-app`/profile gate needed, unlike opensandbox-server, since it
+    # needs no host Docker socket access, just a published port like
+    # qdrant/redis). Verified against crawl4ai's own self-hosting.md: 11235
+    # is the image's real listen port (NOT `Crawl4aiDockerClient`'s stale
+    # `localhost:8000` constructor default).
+    crawl4ai_server_url: str = "http://localhost:11235"
+
+    # Bearer token for the crawl4ai server above. Required: crawl4ai 0.9.0+
+    # is secure-by-default — without a token matching this value, the server
+    # binds loopback-only INSIDE its own container, so the published port
+    # just connection-resets rather than failing with a clear auth error
+    # (verified against crawl4ai's own self-hosting.md).
+    crawl4ai_api_token: str = ""
 
     # OTel metrics export (app/core/telemetry.py) — the OTLP/HTTP base URL
     # (no /v1/metrics suffix; configure_telemetry appends it) every
@@ -342,6 +385,9 @@ REDIS_MAX_CONNECTIONS = settings.redis_max_connections
 CORS_ALLOWED_ORIGINS = settings.cors_allowed_origins
 MAX_UPLOAD_SIZE_MB = settings.max_upload_size_mb
 OPENSANDBOX_MCP_DOMAIN = settings.opensandbox_mcp_domain
+OPENSANDBOX_API_KEY = settings.opensandbox_api_key
 OPS_SANDBOX_IMAGE = settings.ops_sandbox_image
 OPS_SANDBOX_TTL_SECONDS = settings.ops_sandbox_ttl_seconds
+CRAWL4AI_SERVER_URL = settings.crawl4ai_server_url
+CRAWL4AI_API_TOKEN = settings.crawl4ai_api_token
 OTEL_EXPORTER_OTLP_ENDPOINT = settings.otel_exporter_otlp_endpoint

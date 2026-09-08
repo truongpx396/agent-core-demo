@@ -1,4 +1,10 @@
-# One command (`make up`) brings up the whole offline AI stack.
+# One command (`make up`) brings up the whole offline AI stack, including
+# crawl4ai (real headless-Chromium rendering, GRAPH_PATTERNS.md pattern 50).
+# Two further opt-in profiles layer on top: `app` (`make up-app`) for the
+# containerized app itself, and `sandbox` (`make sandbox-up`) for a
+# containerized, authenticated OpenSandbox server — each profile-gated
+# separately since each adds real host privilege/cost most `make up`
+# users don't need by default (see each service's own comment below).
 
 # Shared env for the containerized app roles below (services: api,
 # agent-worker, ingest-worker) — every URL points at the OTHER containers'
@@ -17,6 +23,17 @@ x-app-env: &app-env
   LANGFUSE_HOST: http://langfuse-web:3000
   LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
   LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+  CRAWL4AI_SERVER_URL: http://crawl4ai:11235
+  CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
+  # opensandbox-mcp is a stdio subprocess THIS process spawns
+  # (app/domains/sandbox_tools.py) — for the containerized agent-worker
+  # role, that subprocess runs INSIDE this same container, on this same
+  # compose network, so it resolves opensandbox-server's in-network name
+  # exactly like any other service here (only needed if the `sandbox`
+  # profile is also up — see `make sandbox-up`; sandbox_tools.py already
+  # degrades to no sandbox tools if it isn't reachable).
+  OPENSANDBOX_MCP_DOMAIN: opensandbox-server:8090
+  OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:-}
   # The otel-collector lives in the SEPARATE, optional
   # docker-compose.observability.yml (`make obs-up`) — reached via
   # host.docker.internal, not an in-network service name, so this app never
@@ -192,6 +209,69 @@ services:
     volumes:
       - minio:/data
 
+  # --- Real headless-Chromium rendering server for app/ingestion/web_crawler.py
+  # (GRAPH_PATTERNS.md pattern 50) — crawl4ai's own official dockerized
+  # server (verified tag exists on Docker Hub, matches the requirements.txt
+  # pin exactly), NOT this app's own build: the browser now runs warm and
+  # pooled in its own container instead of a fresh launch per tool call in
+  # THIS app's process. Default profile (no `profiles:` key), unlike
+  # opensandbox-server below — it needs no host Docker socket access, just
+  # a published port like qdrant/redis, so there's no reason to gate it
+  # behind an opt-in profile the way that one is.
+  crawl4ai:
+    image: unclecode/crawl4ai:0.9.3
+    shm_size: 1g   # Chromium needs real /dev/shm — crawl4ai's own docker run docs
+    ports:
+      - "11235:11235"   # verified official default port (self-hosting.md), NOT 8000
+    environment:
+      # Required: crawl4ai 0.9.0+ is secure-by-default — without this, the
+      # server binds loopback-only INSIDE its own container and the
+      # published port above just connection-resets.
+      CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
+    healthcheck:
+      # Verified this image ships curl (`docker run --entrypoint sh
+      # unclecode/crawl4ai:0.9.3 -c "which curl"`) — /health needs no auth
+      # per crawl4ai's own docs.
+      test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s   # crawl4ai's own docs: allow up to 40s startup
+
+  # --- Real, isolated code-execution sandbox for the ops domain's sandbox
+  # tools (app/domains/sandbox_tools.py, GRAPH_PATTERNS.md pattern 50) — a
+  # containerized, authenticated opensandbox-server (no official image
+  # exists upstream, verified against OpenSandbox's own docs; this repo
+  # builds its own from docker/opensandbox-server.{Dockerfile,toml}).
+  #
+  # Own opt-in "sandbox" profile, separate from "app" above: it needs
+  # /var/run/docker.sock bind-mounted to create sibling sandbox containers
+  # on the HOST daemon (OpenSandbox needs real Docker, so this is a socket
+  # bind-mount, not Docker-in-Docker) — the SAME privilege a bare
+  # `uvx opensandbox-server` host process already had as whatever user ran
+  # it, just packaged differently, but sensitive enough to stay
+  # deliberately opt-in like "app", under its OWN name since it's a
+  # different concern (containerizing a third-party tool, not this app's
+  # own roles). Bring it up with `make sandbox-up` (or
+  # `docker compose --profile sandbox up -d --build`).
+  opensandbox-server:
+    build:
+      context: .
+      dockerfile: docker/opensandbox-server.Dockerfile
+    profiles: ["sandbox"]
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - opensandbox-data:/data
+    environment:
+      # Overrides docker/opensandbox-server.toml's (unset) server.api_key —
+      # verified exact env var name against OpenSandbox's own
+      # server/configuration.md. Required: current opensandbox-server
+      # releases refuse to start in non-interactive mode without one.
+      OPENSANDBOX_SERVER_API_KEY: ${OPENSANDBOX_API_KEY}
+
   # --- Containerized app roles (opt-in, NOT started by `make up`) ---
   #
   # Everyday dev/demo still runs `make serve`/`make agent-worker`/
@@ -259,3 +339,4 @@ volumes:
   open-webui:
   redis:
   minio:
+  opensandbox-data:

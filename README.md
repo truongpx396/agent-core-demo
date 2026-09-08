@@ -491,11 +491,13 @@ an in-process one.
   code-execution sandbox for the computation `calculator`'s AST evaluator
   deliberately can't do — zero changes to `app/mcp/client.py` itself,
   every tool still forced through the same fail-closed `"outward"`
-  capability. Needs a separately-run `opensandbox-server` (`make
-  sandbox-serve`, needs Docker + `uv`) — the tool CATALOG loads fine
-  without it (verified empirically: it's served from `opensandbox-mcp`'s
-  own static definitions), only actually *calling* a sandbox tool needs
-  the backend reachable. **The model itself never sees this raw catalog**
+  capability. Needs a containerized, authenticated `opensandbox-server`
+  (`make sandbox-up` — docker-compose's opt-in `sandbox` profile, needs
+  Docker + `OPENSANDBOX_API_KEY` set in `.env`) — the tool CATALOG loads
+  fine without it (verified empirically: it's served from
+  `opensandbox-mcp`'s own static definitions), only actually *calling* a
+  sandbox tool needs the backend reachable. **The model itself never sees
+  this raw catalog**
   — `app/domains/ops/sandbox_session.py` wraps it into three narrow tools
   (`run_command_in_sandbox`/`read_sandbox_file`/`write_sandbox_file`),
   because handing a small local model (this app's own `qwen2.5:3b`) the
@@ -513,10 +515,14 @@ an in-process one.
 pattern 50) backs a real headless-Chromium render — not the bare
 `httpx.get` + stdlib HTML-strip `app/ingestion/ingestor.py::ingest_url`
 already does for static pages, but something that actually works on a
-JS-rendered/SPA site. Same SSRF guard as the rest of this app's URL
-handling (`app/core/url_safety.py`, shared with `ingestor.py` rather than
-duplicated) runs before any browser launches. Three domain tools build on
-it, each `"outward"` (mandatory human approval):
+JS-rendered/SPA site. Runs as its own dockerized server
+(`docker-compose.yml`'s `crawl4ai` service, part of the default `make up`
+profile — a warm, pooled browser container, not a fresh launch per tool
+call), reached over its official `Crawl4aiDockerClient`. Same SSRF guard
+as the rest of this app's URL handling (`app/core/url_safety.py`, shared
+with `ingestor.py` rather than duplicated) runs before any crawl is ever
+attempted. Three domain tools build on it, each `"outward"` (mandatory
+human approval):
 
 - `app/domains/sales/tools.py::enrich_lead_from_website` — research a
   lead's company site before a rep calls them, folding a summary into
@@ -529,9 +535,11 @@ it, each `"outward"` (mandatory human approval):
   metrics anomaly against an upstream dependency's public status page
   before opening an incident.
 
-Needs a one-time browser install: `make crawl4ai-setup` (or `playwright
-install --with-deps chromium`) for local dev; the Dockerfile does this
-automatically for the containerized `api`/`agent-worker` images.
+Needs the `crawl4ai` container reachable and `CRAWL4AI_API_TOKEN` set in
+`.env` (crawl4ai 0.9.0+ is secure-by-default — without a matching token
+the server binds loopback-only inside its own container). No local
+browser install needed — the app's own image no longer bundles Chromium
+at all.
 
 ## Observability
 
@@ -758,6 +766,7 @@ agent-worker` first, and ideally `make ingest` for real retrieval hits:
 |-------------------|-------------|
 | `make up`         | Start all infra services |
 | `make up-app`     | `make up`, plus the containerized app itself (`api`/`agent-worker`/`ingest-worker`, built from `Dockerfile`) |
+| `make sandbox-up` | `make up`, plus a containerized, authenticated OpenSandbox server (opt-in `sandbox` profile — needs `OPENSANDBOX_API_KEY` in `.env`; see "Real code execution" below) |
 | `make pull-models`| Download Ollama chat + embedding models |
 | `make ingest`     | Embed sample docs → Qdrant |
 | `make chat`       | Start the agent CLI |
@@ -765,16 +774,14 @@ agent-worker` first, and ideally `make ingest` for real retrieval hits:
 | `make mcp-serve`  | Start the MCP server exposing `query_employees` (stdio transport) |
 | `make mcp-serve-ops`| Start the MCP server exposing the ops domain's `fetch_metrics_summary`/`list_recent_incidents` (stdio transport, pattern 50) |
 | `make mcp-inspect`| Launch the MCP Inspector against `app/mcp/server.py` |
-| `make crawl4ai-setup`| One-time headless-Chromium install for the crawl4ai-backed domain tools (pattern 50) |
-| `make sandbox-serve`| Start a local OpenSandbox server (needs Docker + `uv`) that the ops domain's sandbox tools execute against (pattern 50) |
 | `make telegram-support` | Telegram gateway as the Tier-1 support copilot (`AGENT_DOMAIN=support`) |
 | `make telegram-sales`   | Telegram gateway as the sales/CRM concierge (`AGENT_DOMAIN=sales`) |
 | `make ops-digest`       | One-shot ops metrics digest → team channel (meant for real cron; see "Example domains") |
 | `make followup-sweep`   | One-shot CRM due-follow-up sweep → drafted nudges (meant for real cron) |
 | `make test`       | Run the pytest suite in parallel (fake LLM, no live services needed) |
 | `make test-integration` | Real Postgres/Redis/Qdrant via testcontainers, no LLM (needs Docker, not `make up`) |
-| `make test-live`  | Real small Ollama model + full app/agent-worker stack, incl. a Playwright browser E2E and real crawl4ai renders (needs Docker) |
-| `make test-sandbox` | Real `opensandbox-mcp` round trip (needs `make sandbox-serve` running + `opensandbox-mcp` on PATH; self-skips otherwise) — manual only, like `make deepeval`/`garak` |
+| `make test-live`  | Real small Ollama model + full app/agent-worker stack, incl. a Playwright browser E2E and real crawl4ai renders against the `crawl4ai` container (needs Docker) |
+| `make test-sandbox` | Real `opensandbox-mcp` round trip (needs `make sandbox-up` running + `opensandbox-mcp` installed; self-skips otherwise) — manual only, like `make deepeval`/`garak` |
 | `make lint`       | `ruff check .` — see `pyproject.toml`'s `[tool.ruff]` |
 | `make typecheck`  | `mypy` over `app/` and `scripts/` — see `pyproject.toml`'s `[tool.mypy]` |
 | `make eval`       | Run the golden-dataset evaluation against the real stack |
@@ -808,10 +815,11 @@ from the library/service code in `app/`.
 
 | File | Responsibility |
 |------|----------------|
-| `docker-compose.yml`   | Infra services (including `postgres-exporter`/`redis-exporter`, feeding the observability stack below), plus an opt-in `app` profile (`make up-app`) containerizing the app itself — `api`/`agent-worker`/`ingest-worker`, built from `Dockerfile` |
+| `docker-compose.yml`   | Infra services (including `postgres-exporter`/`redis-exporter`, feeding the observability stack below, plus `crawl4ai` — pattern 50), an opt-in `app` profile (`make up-app`) containerizing the app itself (`api`/`agent-worker`/`ingest-worker`, built from `Dockerfile`), and an opt-in `sandbox` profile (`make sandbox-up`) for OpenSandbox, built from `docker/opensandbox-server.Dockerfile` |
+| `docker/`              | `opensandbox-server.Dockerfile`/`opensandbox-server.toml` — this repo's own container build for OpenSandbox (no official image exists upstream), bind-mounts the host Docker socket to create sandbox containers, real `OPENSANDBOX_SERVER_API_KEY` auth (pattern 50) |
 | `docker-compose.observability.yml` | Optional, separate stack (`make obs-up`) — Grafana, Prometheus, Alertmanager, Loki, Promtail, an OTel Collector; see [Observability](#observability) |
 | `observability/`       | Config for the stack above — `prometheus/prometheus.yml` (scrape config) + `prometheus/alerts.yml` (alert rules), `alertmanager/`, `loki/`, `promtail/`, `otel-collector/config.yaml`, and `grafana/` (provisioned datasources + the two dashboards) |
-| `Dockerfile`           | The deployable image (one image, three roles via `command:` override) — non-root user, `HEALTHCHECK` against `/health/ready`, installs from `requirements-lock.txt` |
+| `Dockerfile`           | The deployable image (one image, three roles via `command:` override) — non-root user, `HEALTHCHECK` against `/health/ready`, installs from `requirements-lock.txt`; no bundled browser — crawl4ai now runs in its own container |
 | `.github/workflows/ci.yml` | Runs `ruff`/`mypy`/`pytest` (no live services needed) and a Docker build check on every push/PR against `main` |
 | `requirements-lock.txt`| Fully pinned freeze of `requirements.txt`'s runtime deps — what the `Dockerfile`/CI actually install from, so a build today and next year resolve identically |
 | `litellm-config.yaml`  | Model routing, retries, fallbacks, Langfuse callback, LiteLLM's own built-in Prometheus metrics callback |
@@ -859,7 +867,7 @@ from the library/service code in `app/`.
 | `app/domains/registry.py`       | `AGENT_DOMAIN` name → `(AgentManifest, DomainPlugin)`, used by `app/channels/telegram.py` |
 | `app/domains/policy.py`         | `ActionAllowlistPolicy` — the one small `Policy` shared by all three example domains |
 | `app/domains/notify.py`         | `post_to_team_channel` — shared team-channel sink (local file + log by default, optional Slack webhook) |
-| `app/domains/sandbox_tools.py`  | OpenSandbox's RAW MCP catalog consumed over MCP (pattern 50) — `load_sandbox_tools()`, a thin, fail-soft wrapper around `app/mcp/client.py::load_remote_tools`; never handed to an LLM directly, only used internally by `app/domains/ops/sandbox_session.py` |
+| `app/domains/sandbox_tools.py`  | OpenSandbox's RAW MCP catalog consumed over MCP (pattern 50) — `load_sandbox_tools()`, a thin, fail-soft wrapper around `app/mcp/client.py::load_remote_tools`, authenticated via `OPENSANDBOX_API_KEY`; never handed to an LLM directly, only used internally by `app/domains/ops/sandbox_session.py` |
 | `app/domains/support/`          | Tier-1 support copilot: `store.py` (`support_tickets`), `tools.py` (create/check/escalate a ticket, list a customer's own tickets, add a follow-up comment, `fetch_external_reference` — pattern 50), `domain.py` (manifest + sandboxed tool set) |
 | `app/domains/ops/`              | Internal ops bot: `metrics_client.py` (Prometheus queries + anomaly thresholds mirroring `observability/prometheus/alerts.yml`), `store.py` (`ops_incidents`, log/list/resolve), `sandbox_session.py` (three narrow sandbox tools over OpenSandbox's raw catalog, built to work reliably with a small local model — pattern 50), `tools.py` (also `check_vendor_status_page`), `domain.py` |
 | `app/domains/sales/`            | Sales/CRM concierge: `store.py` (`crm_leads`/`crm_followups`, `append_lead_note`), `tools.py` (log/schedule/brief/handoff, list pending follow-ups, mark a lead lost, `enrich_lead_from_website` — pattern 50), `domain.py` |
@@ -873,9 +881,9 @@ from the library/service code in `app/`.
 | `tests/`               | pytest suite, mirroring `app/`'s subpackages one-for-one (`tests/agent/`, `tests/api/`, ...) — routing/node/graph/tool/checkpointer/sql_store/mcp_server/mcp_client/ingestor/chunking/moderation/api tests against a fake LLM and mocked stores (`make test`, no live services) |
 | `tests/containers.py`  | Shared testcontainers helpers (real Postgres/Redis/Qdrant/Ollama, cross-`pytest -n auto`-worker-shared — pattern 48) |
 | `tests/integration/`   | Real Postgres/Redis/Qdrant tests, no LLM (`make test-integration`) |
-| `tests/live/`          | Real small-Ollama-model tests + a Playwright browser E2E against the built-in web UI, plus real crawl4ai browser renders — through `web_crawler.py` directly and through the real ops/support graphs (`make test-live`, pattern 50) |
-| `tests/live/test_opensandbox_mcp_live.py` | Real `opensandbox-mcp` tool-catalog round trip (`make test-sandbox`, pattern 50) — deliberately separate from `make test-live`'s sweep since it needs a manually-run `opensandbox-server` prerequisite this repo can't cleanly auto-provision |
-| `tests/live/test_ops_sandbox_session_live.py` | Real round trip for `app/domains/ops/sandbox_session.py`'s own lifecycle logic (`make test-sandbox`, pattern 50) — asserts "reaches the real bridge and either succeeds or fails cleanly," not a fixed outcome, so a broken local `opensandbox-server` can't turn into an asserted-correct test |
+| `tests/live/`          | Real small-Ollama-model tests + a Playwright browser E2E against the built-in web UI, plus real crawl4ai renders against the `crawl4ai` container — through `web_crawler.py` directly and through the real ops/support graphs (`make test-live`, pattern 50) |
+| `tests/live/test_opensandbox_mcp_live.py` | Real `opensandbox-mcp` tool-catalog round trip (`make test-sandbox`, pattern 50) — deliberately separate from `make test-live`'s sweep since it needs `make sandbox-up`'s containerized `opensandbox-server` running, a prerequisite this repo doesn't auto-provision |
+| `tests/live/test_ops_sandbox_session_live.py` | Real round trip for `app/domains/ops/sandbox_session.py`'s own lifecycle logic (`make test-sandbox`, pattern 50) — asserts "reaches the real bridge and either succeeds or fails cleanly," not a fixed outcome: even against a correctly authenticated server, real back-to-back sandbox creation can hit a client-side readiness-check timing race on this host (disclosed in the test's own docstring) |
 | `promptfoo/`           | Prompt-level regression + adversarial checks for the domain system prompts against a real Ollama (`make promptfoo`/`make promptfoo-redteam` — pattern 48) |
 | `garak/`               | NVIDIA garak jailbreak/prompt-injection scan against the real model (`make garak`/`make garak-full` — pattern 48) |
 | `loadtest/`            | Locust load test against the running FastAPI service's queued chat path (`loadtest/locustfile_queued.py`, `make loadtest-queued`/`make loadtest-queued-headless` — see "Security scanning & load testing") |
