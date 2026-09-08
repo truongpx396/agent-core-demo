@@ -1,10 +1,17 @@
-"""Pure helper logic behind the ops domain's three sandbox tools —
-run_command_in_sandbox, read_sandbox_file, write_sandbox_file
-(app/domains/ops/tools.py, the only module that wraps these as `@tool`
-objects / does ctx checks) — built on top of OpenSandbox's raw MCP catalog
-(app/domains/sandbox_tools.py, GRAPH_PATTERNS.md pattern 50) instead of
-exposing that catalog to the LLM directly, the way app/domains/ops/domain.py
-originally did.
+"""Pure helper logic behind each domain's own three sandbox tools —
+run_command_in_sandbox, read_sandbox_file, write_sandbox_file, wrapped
+separately per domain (app/domains/{ops,support,sales}/tools.py — each does
+its own ctx checks and writes its own domain-specific docstring, the same
+"one shared impl, one @tool wrapper per domain" shape
+render_url_to_markdown already has for the crawl4ai tools) — built on top
+of OpenSandbox's raw MCP catalog (app/domains/sandbox_tools.py,
+GRAPH_PATTERNS.md pattern 50) instead of exposing that catalog to the LLM
+directly, the way app/domains/ops/domain.py originally did.
+
+Domain-agnostic on purpose, not an accident this file only lives under
+app/domains/ (not app/domains/ops/ anymore) — verified directly nothing
+below ever referenced "ops" in its actual logic, only in stale prose; the
+relocation just made the file's location match what was already true.
 
 ## Why this exists: a real, live-verified model-capability finding
 
@@ -68,14 +75,14 @@ just source:
 - file_read -> `{"path": ..., "content": ...}`
 - file_write -> `{"status": "written"}`
 Hermetically tested against these exact shapes in
-tests/domains/ops/test_sandbox_session.py.
+tests/domains/test_sandbox_session.py.
 """
 import json
 import logging
 
 from langchain_core.tools import BaseTool
 
-from app.core.config import OPS_SANDBOX_IMAGE, OPS_SANDBOX_TTL_SECONDS
+from app.core.config import SANDBOX_IMAGE, SANDBOX_TTL_SECONDS
 from app.domains.sandbox_tools import load_sandbox_tools
 
 logger = logging.getLogger(__name__)
@@ -117,15 +124,31 @@ class SandboxCallFailed(Exception):
     surface as a raw traceback."""
 
 
+_raw_sandbox_tools_cache: dict[str, BaseTool] | None = None
+
+
 def load_raw_sandbox_tools() -> dict[str, BaseTool]:
     """OpenSandbox's raw MCP tool catalog as a {name: tool} lookup, empty
     if opensandbox-mcp isn't installed/reachable (see
     app/domains/sandbox_tools.py's own docstring for why that degrade is
-    safe to rely on eagerly). Called once, at app/domains/ops/tools.py's own
-    import time — ops/tools.py only builds/exposes the three sandbox tools
-    below when this comes back non-empty."""
-    raw_tools, _capabilities = load_sandbox_tools()
-    return {t.name: t for t in raw_tools}
+    safe to rely on eagerly). Called at each of app/domains/{ops,support,
+    sales}/tools.py's own import time — each only builds/exposes its three
+    sandbox tools when this comes back non-empty.
+
+    Cached at module level, not recomputed per caller — now that THREE
+    domains call this (not just ops), a process that imports all three
+    (app/domains/registry.py, most test runs) would otherwise spawn the
+    real opensandbox-mcp subprocess and do the real MCP catalog listing
+    three separate times, up to `_SANDBOX_LIST_TIMEOUT_SECONDS`
+    (app/domains/sandbox_tools.py) each — a real, new cost this module
+    didn't have to worry about with a single caller. Every caller gets the
+    exact same dict (mutating it would affect every domain, but nothing
+    here ever does)."""
+    global _raw_sandbox_tools_cache
+    if _raw_sandbox_tools_cache is None:
+        raw_tools, _capabilities = load_sandbox_tools()
+        _raw_sandbox_tools_cache = {t.name: t for t in raw_tools}
+    return _raw_sandbox_tools_cache
 
 
 def _call_raw_tool(raw: dict[str, BaseTool], name: str, **kwargs) -> dict:
@@ -183,9 +206,9 @@ def get_or_create_sandbox_id(raw: dict[str, BaseTool], thread_id: str) -> str:
     created = _call_raw_tool(
         raw,
         "sandbox_create",
-        image=OPS_SANDBOX_IMAGE,
+        image=SANDBOX_IMAGE,
         metadata={SANDBOX_METADATA_KEY: thread_id},
-        timeout_seconds=OPS_SANDBOX_TTL_SECONDS,
+        timeout_seconds=SANDBOX_TTL_SECONDS,
     )
     sandbox_id = created.get("sandbox_id")
     if not sandbox_id:
@@ -218,6 +241,20 @@ def run_command_in_sandbox_impl(command: str, thread_id: str, raw: dict[str, Bas
 
 
 def read_sandbox_file_impl(path: str, thread_id: str, raw: dict[str, BaseTool]) -> str:
+    # DISCLOSED, PRE-EXISTING third-party gap, found live while adding
+    # sandbox tools to two more domains — not introduced by that work, and
+    # not something this app's own code can fix: `file_read` reliably
+    # 404s ("file not found") on a file THIS SAME PROCESS just wrote with
+    # `write_sandbox_file`, confirmed still genuinely present on disk via
+    # a real `command_run` (`ls -la <path>`) run immediately after —
+    # reproduced with both relative and absolute paths. `write_sandbox_file`
+    # and `command_run` are both independently verified working correctly;
+    # only `file_read` (opensandbox-mcp==0.1.1 / opensandbox-server==0.2.3)
+    # is affected. No prior test in this app ever exercised a real
+    # write-then-read round trip live (only mocked) until this was found.
+    # Workaround, not a fix: every domain's own `run_command_in_sandbox`
+    # docstring now tells the model to use `cat <path>` instead of this
+    # tool when it needs a file's contents back.
     sandbox_id = get_or_create_sandbox_id(raw, thread_id)
     result = _call_raw_tool(raw, "file_read", sandbox_id=sandbox_id, path=path, connect_if_missing=True)
     return result.get("content", "")

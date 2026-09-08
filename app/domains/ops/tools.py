@@ -28,8 +28,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.agent.tools import _run_with_timeout
 from app.core.security import SecurityCtx, valid_ctx
-from app.domains import notify
-from app.domains.ops import metrics_client, sandbox_session, store
+from app.domains import notify, sandbox_session
+from app.domains.ops import metrics_client, store
 from app.domains.policy import ActionAllowlistPolicy
 from app.ingestion.web_crawler import CRAWL_TOOL_TIMEOUT_SECONDS, render_url_to_markdown
 
@@ -228,7 +228,15 @@ def check_vendor_status_page(url: str, config: RunnableConfig) -> str:
     """Read a vendor/upstream-dependency's public status page LIVE (real
     headless-browser render) — use this to check whether an anomaly you
     found via fetch_metrics_summary correlates with a known incident on
-    their side before opening one of your own with log_incident. Reaches
+    their side before opening one of your own with log_incident. For a
+    real quantitative read on a vendor's reliability (not just "are they
+    down right now"), pass this page's own text into
+    run_command_in_sandbox to compute real stats from their own incident
+    history (frequency, total downtime window) — then, if you want to
+    check whether OUR OWN incidents cluster around the same window, that
+    read-only cross-reference is exactly what the metrics-researcher
+    subagent (run_subagent) already exists for, so it doesn't have to
+    pollute this investigation with its own intermediate lookups. Reaches
     the open internet — declared "outward" in TOOL_CAPABILITIES, so it
     always requires human approval before it runs, same as
     post_to_team_channel."""
@@ -245,7 +253,7 @@ def _thread_id_from_config(config: RunnableConfig | None) -> str:
 
 
 # Three narrow, purpose-built tools over OpenSandbox's raw MCP catalog
-# (app/domains/ops/sandbox_session.py, GRAPH_PATTERNS.md pattern 50) —
+# (app/domains/sandbox_session.py, GRAPH_PATTERNS.md pattern 50) —
 # NOT the raw ~19-tool catalog itself. Real, live-verified finding behind
 # this: handing a small local model (qwen2.5:3b) OpenSandbox's own
 # stateful create/connect/run tools directly produced reproducible
@@ -289,14 +297,19 @@ if _RAW_SANDBOX_TOOLS:
         """Run a shell command inside an isolated, disposable sandbox —
         use this for real computation calculator's plain arithmetic can't
         do (recomputing a statistic from raw readings, parsing a pasted
-        log dump, diffing two configs). One sandbox is created
+        log dump, diffing two configs). Embed already-fetched content
+        directly in your script — e.g. paste check_vendor_status_page's
+        own returned text into a small parsing script here to compute real
+        stats from it (incident count, total downtime) rather than reading
+        it by eye; the sandbox itself has no network access, so it can
+        only work with what you hand it. One sandbox is created
         automatically per investigation and reused for every call in it —
         you never create, connect to, or track a sandbox yourself, just
-        describe the command. The sandbox has NO network access, so don't
-        `pip install` anything — numpy and pandas are already available
-        (Python standard library plus those two), so use them directly for
-        anything beyond plain arithmetic. Reaches an external service —
-        always requires human approval before it runs."""
+        describe the command. Don't `pip install` anything — numpy and
+        pandas are already available (Python standard library plus those
+        two), so use them directly for anything beyond plain arithmetic.
+        Reaches an external service — always requires human approval
+        before it runs."""
         ctx = _ctx_or_refuse(config, "run_command_in_sandbox")
         if ctx is None:
             return _NO_CTX_REFUSAL
@@ -319,7 +332,11 @@ if _RAW_SANDBOX_TOOLS:
         """Read a text file from this investigation's sandbox (e.g. a
         script's output written to disk, or a file written earlier with
         write_sandbox_file). Same auto-created, per-investigation sandbox
-        as run_command_in_sandbox. Reaches an external service — always
+        as run_command_in_sandbox. If this returns an unexpected "file not
+        found" for a file you know exists, use run_command_in_sandbox with
+        `cat <path>` instead — a disclosed, environment-specific gap in
+        this particular tool, not in write_sandbox_file or
+        run_command_in_sandbox. Reaches an external service — always
         requires human approval before it runs."""
         ctx = _ctx_or_refuse(config, "read_sandbox_file")
         if ctx is None:

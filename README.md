@@ -147,9 +147,9 @@ declarations, tenant scoping, tests) — not a prompt-only reskin:
 
 | Domain | What it is | Sandbox | Run it |
 |---|---|---|---|
-| **Support copilot** (`app/domains/support/`) | Tier-1 customer support behind a chat gateway — searches the knowledge base, opens/checks/escalates a ticket, lists a customer's own tickets, adds a follow-up comment to one already open (`support_tickets`, a new Postgres table), and reads a customer-linked third-party page LIVE via a real headless-browser render (`fetch_external_reference`, pattern 50) without ever writing to the knowledge base | Its `AgentManifest.allowed_tools` is exactly `search_docs`/`skill_search`/`use_skill`/`ask_clarification` + its own 5 ticket tools (`create_ticket`/`check_ticket_status`/`escalate_to_human`/`list_my_tickets`/`add_ticket_comment`) + `fetch_external_reference` (`outward`) + its own `run_subagent` — no `calculator`, `add_note`, `remember`, or `query_employees`. That omission, not a Policy check, is what "sandboxed" means (`build_graph()`'s `ToolNode` only ever knows the tools this list names) | `make telegram-support` (needs `TELEGRAM_BOT_TOKEN`) |
+| **Support copilot** (`app/domains/support/`) | Tier-1 customer support behind a chat gateway — searches the knowledge base, opens/checks/escalates a ticket, lists a customer's own tickets, adds a follow-up comment to one already open (`support_tickets`, a new Postgres table), reads a customer-linked third-party page LIVE via a real headless-browser render (`fetch_external_reference`, pattern 50) without ever writing to the knowledge base, and — if `opensandbox-mcp` is reachable — parses a customer-pasted log/JSON payload or validates a customer-reported value against a live-crawled page in an isolated sandbox (`run_command_in_sandbox`/`read_sandbox_file`/`write_sandbox_file`, pattern 50) | Its `AgentManifest.allowed_tools` is exactly `search_docs`/`skill_search`/`use_skill`/`ask_clarification` + its own 5 ticket tools (`create_ticket`/`check_ticket_status`/`escalate_to_human`/`list_my_tickets`/`add_ticket_comment`) + `fetch_external_reference` + the sandbox trio (all `outward`) + its own `run_subagent` — no `calculator`, `add_note`, `remember`, or `query_employees`. That omission, not a Policy check, is what "sandboxed" means (`build_graph()`'s `ToolNode` only ever knows the tools this list names) | `make telegram-support` (needs `TELEGRAM_BOT_TOKEN`) |
 | **Internal ops bot** (`app/domains/ops/`) | Pulls this app's own operational metrics from the Prometheus this repo already ships (`make obs-up`), flags anything past an alert-matching threshold, and either posts a digest or answers an ad-hoc question — a real anomaly can be logged, listed, and resolved as a durable incident (`ops_incidents`, a new Postgres table) instead of only ever a channel post that scrolls away. Can also check a vendor's live public status page (`check_vendor_status_page`) and, for real computation `calculator` can't safely do, run a command or read/write a file inside an isolated, auto-managed OpenSandbox sandbox (`run_command_in_sandbox`/`read_sandbox_file`/`write_sandbox_file`, consumed over MCP but never exposing OpenSandbox's own raw ~19-tool lifecycle API to the model — pattern 50) | `post_to_team_channel`/`check_vendor_status_page` and all three sandbox tools are `outward`; `log_incident`/`resolve_incident` are `mutating`, `list_recent_incidents` is `read_only`. Its own read-only metrics/incidents are also reachable from an external MCP client (`make mcp-serve-ops`) | `make ops-digest` (cron-callable) / `python -m scripts.ops_investigate "why is latency high?"` (ad hoc) |
-| **Sales/CRM concierge** (`app/domains/sales/`) | Logs inbound lead interactions, drafts replies in a configured voice, schedules follow-ups and lists the pending queue, packages a brief and hands a hot lead to a human rep, marks a dead lead lost (cancelling its pending follow-ups), or researches a lead's company website LIVE before a rep calls them (`enrich_lead_from_website`, pattern 50) (`crm_leads`/`crm_followups`, two new Postgres tables) | No tool ever sends anything to a lead — every reply is a draft; `handoff_to_human`/`schedule_followup`/`mark_lead_lost`/`enrich_lead_from_website` only ever run through the interactive agent loop, never from cron (see below) | `make telegram-sales` / `make followup-sweep` (cron-callable) |
+| **Sales/CRM concierge** (`app/domains/sales/`) | Logs inbound lead interactions, drafts replies in a configured voice, schedules follow-ups and lists the pending queue, packages a brief and hands a hot lead to a human rep, marks a dead lead lost (cancelling its pending follow-ups), researches a lead's company website LIVE before a rep calls them (`enrich_lead_from_website`, pattern 50), and — if `opensandbox-mcp` is reachable — computes real deal economics (`skills/deal-economics`) or extracts structured signals from an already-crawled lead page in an isolated sandbox (`run_command_in_sandbox`/`read_sandbox_file`/`write_sandbox_file`, pattern 50) (`crm_leads`/`crm_followups`, two new Postgres tables) | No tool ever sends anything to a lead — every reply is a draft; `handoff_to_human`/`schedule_followup`/`mark_lead_lost`/`enrich_lead_from_website`/the sandbox trio only ever run through the interactive agent loop, never from cron (see below) | `make telegram-sales` / `make followup-sweep` (cron-callable) |
 
 A fresh Postgres volume picks up their tables automatically
 (`postgres-init/07-support-tickets.sql`, `08-crm.sql`, `09-support-ticket-notes.sql`,
@@ -487,18 +487,21 @@ an in-process one.
 - `app/domains/sandbox_tools.py` extends the client side with a genuinely
   useful remote server instead of a synthetic example:
   [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox)'s own
-  `opensandbox-mcp` bridge, giving the ops domain a real, isolated
-  code-execution sandbox for the computation `calculator`'s AST evaluator
-  deliberately can't do — zero changes to `app/mcp/client.py` itself,
-  every tool still forced through the same fail-closed `"outward"`
-  capability. Needs a containerized, authenticated `opensandbox-server`
-  (`make sandbox-up` — docker-compose's opt-in `sandbox` profile, needs
-  Docker + `OPENSANDBOX_API_KEY` set in `.env`) — the tool CATALOG loads
-  fine without it (verified empirically: it's served from
-  `opensandbox-mcp`'s own static definitions), only actually *calling* a
-  sandbox tool needs the backend reachable. **The model itself never sees
-  this raw catalog**
-  — `app/domains/ops/sandbox_session.py` wraps it into three narrow tools
+  `opensandbox-mcp` bridge, giving **every** domain (ops, support, sales)
+  a real, isolated code-execution sandbox for the computation
+  `calculator`'s AST evaluator deliberately can't do — zero changes to
+  `app/mcp/client.py` itself, every tool still forced through the same
+  fail-closed `"outward"` capability. Needs a containerized, authenticated
+  `opensandbox-server` (`make sandbox-up` — docker-compose's opt-in
+  `sandbox` profile, needs Docker + `OPENSANDBOX_API_KEY` set in `.env`)
+  — the tool CATALOG loads fine without it (verified empirically: it's
+  served from `opensandbox-mcp`'s own static definitions), only actually
+  *calling* a sandbox tool needs the backend reachable. **The model
+  itself never sees this raw catalog**
+  — `app/domains/sandbox_session.py` (shared by every domain, one
+  `@tool`-wrapped trio per domain with its own docstring — the same "one
+  shared impl, one wrapper per domain" shape `render_url_to_markdown`
+  already has for crawl4ai) wraps it into three narrow tools
   (`run_command_in_sandbox`/`read_sandbox_file`/`write_sandbox_file`),
   because handing a small local model (this app's own `qwen2.5:3b`) the
   raw ~19-tool, stateful create/connect/run API directly produced real,
@@ -507,7 +510,18 @@ an in-process one.
   see GRAPH_PATTERNS.md pattern 50 for the full, re-verified writeup.
   Each investigation's sandbox is created once and reused automatically
   (tagged by thread id, looked up via OpenSandbox's own metadata filter)
-  — the model just describes what it needs done.
+  — the model just describes what it needs done. Combined with crawl4ai
+  in one investigation, not just side by side: ops computes real stats
+  from a vendor status page's own crawled incident history; sales
+  extracts structured signals from a lead's already-crawled site instead
+  of skimming it by eye; support validates a customer-reported value
+  against a live-crawled docs page. Each domain's own read-only
+  "researcher" subagent (`metrics-researcher`/`ticket-researcher`/
+  `lead-researcher`) is what the sandbox tool's own docstring suggests
+  delegating a cross-reference lookup to, rather than polluting the main
+  investigation — subagents can't run these tools themselves (they're
+  `read_only`-only by design, GRAPH_PATTERNS.md pattern 46), so this is
+  the honest way the two mechanisms actually combine.
 
 ## Web crawling and lead/vendor research (`app/ingestion/web_crawler.py`)
 
@@ -867,10 +881,11 @@ from the library/service code in `app/`.
 | `app/domains/registry.py`       | `AGENT_DOMAIN` name → `(AgentManifest, DomainPlugin)`, used by `app/channels/telegram.py` |
 | `app/domains/policy.py`         | `ActionAllowlistPolicy` — the one small `Policy` shared by all three example domains |
 | `app/domains/notify.py`         | `post_to_team_channel` — shared team-channel sink (local file + log by default, optional Slack webhook) |
-| `app/domains/sandbox_tools.py`  | OpenSandbox's RAW MCP catalog consumed over MCP (pattern 50) — `load_sandbox_tools()`, a thin, fail-soft wrapper around `app/mcp/client.py::load_remote_tools`, authenticated via `OPENSANDBOX_API_KEY`; never handed to an LLM directly, only used internally by `app/domains/ops/sandbox_session.py` |
-| `app/domains/support/`          | Tier-1 support copilot: `store.py` (`support_tickets`), `tools.py` (create/check/escalate a ticket, list a customer's own tickets, add a follow-up comment, `fetch_external_reference` — pattern 50), `domain.py` (manifest + sandboxed tool set) |
-| `app/domains/ops/`              | Internal ops bot: `metrics_client.py` (Prometheus queries + anomaly thresholds mirroring `observability/prometheus/alerts.yml`), `store.py` (`ops_incidents`, log/list/resolve), `sandbox_session.py` (three narrow sandbox tools over OpenSandbox's raw catalog, built to work reliably with a small local model — pattern 50), `tools.py` (also `check_vendor_status_page`), `domain.py` |
-| `app/domains/sales/`            | Sales/CRM concierge: `store.py` (`crm_leads`/`crm_followups`, `append_lead_note`), `tools.py` (log/schedule/brief/handoff, list pending follow-ups, mark a lead lost, `enrich_lead_from_website` — pattern 50), `domain.py` |
+| `app/domains/sandbox_tools.py`  | OpenSandbox's RAW MCP catalog consumed over MCP (pattern 50) — `load_sandbox_tools()`, a thin, fail-soft wrapper around `app/mcp/client.py::load_remote_tools`, authenticated via `OPENSANDBOX_API_KEY`; never handed to an LLM directly, only used internally by `app/domains/sandbox_session.py` |
+| `app/domains/sandbox_session.py` | Shared sandbox lifecycle logic behind every domain's own three narrow sandbox tools (ops/support/sales — pattern 50), cached at module level so all three importing it costs one real MCP catalog listing, not three |
+| `app/domains/support/`          | Tier-1 support copilot: `store.py` (`support_tickets`), `tools.py` (create/check/escalate a ticket, list a customer's own tickets, add a follow-up comment, `fetch_external_reference`, its own sandbox trio over `app/domains/sandbox_session.py` — pattern 50), `domain.py` (manifest + sandboxed tool set) |
+| `app/domains/ops/`              | Internal ops bot: `metrics_client.py` (Prometheus queries + anomaly thresholds mirroring `observability/prometheus/alerts.yml`), `store.py` (`ops_incidents`, log/list/resolve), `tools.py` (its own sandbox trio over `app/domains/sandbox_session.py`'s shared logic — pattern 50 — plus `check_vendor_status_page`), `domain.py` |
+| `app/domains/sales/`            | Sales/CRM concierge: `store.py` (`crm_leads`/`crm_followups`, `append_lead_note`), `tools.py` (log/schedule/brief/handoff, list pending follow-ups, mark a lead lost, `enrich_lead_from_website`, its own sandbox trio over `app/domains/sandbox_session.py` — pattern 50), `domain.py` |
 | **`scripts/`** — runnable operator/demo tools, not imported by `app/` | |
 | `scripts/sample_docs.py`   | Sample knowledge base |
 | `scripts/seed.py`        | Seeds the sample docs via `app/ingestion/ingestor.py`'s pipeline |
@@ -883,7 +898,7 @@ from the library/service code in `app/`.
 | `tests/integration/`   | Real Postgres/Redis/Qdrant tests, no LLM (`make test-integration`) |
 | `tests/live/`          | Real small-Ollama-model tests + a Playwright browser E2E against the built-in web UI, plus real crawl4ai renders against the `crawl4ai` container — through `web_crawler.py` directly and through the real ops/support graphs (`make test-live`, pattern 50) |
 | `tests/live/test_opensandbox_mcp_live.py` | Real `opensandbox-mcp` tool-catalog round trip (`make test-sandbox`, pattern 50) — deliberately separate from `make test-live`'s sweep since it needs `make sandbox-up`'s containerized `opensandbox-server` running, a prerequisite this repo doesn't auto-provision |
-| `tests/live/test_ops_sandbox_session_live.py` | Real round trip for `app/domains/ops/sandbox_session.py`'s own lifecycle logic (`make test-sandbox`, pattern 50) — asserts "reaches the real bridge and either succeeds or fails cleanly," not a fixed outcome: even against a correctly authenticated server, real back-to-back sandbox creation can hit a client-side readiness-check timing race on this host (disclosed in the test's own docstring) |
+| `tests/live/test_sandbox_session_live.py` | Real round trip for `app/domains/sandbox_session.py`'s own shared lifecycle logic (`make test-sandbox`, pattern 50) — hard-asserts success (the earlier real client-side timing bug behind a softer "succeeds or fails cleanly" contract is fixed, see GRAPH_PATTERNS.md pattern 50) |
 | `promptfoo/`           | Prompt-level regression + adversarial checks for the domain system prompts against a real Ollama (`make promptfoo`/`make promptfoo-redteam` — pattern 48) |
 | `garak/`               | NVIDIA garak jailbreak/prompt-injection scan against the real model (`make garak`/`make garak-full` — pattern 48) |
 | `loadtest/`            | Locust load test against the running FastAPI service's queued chat path (`loadtest/locustfile_queued.py`, `make loadtest-queued`/`make loadtest-queued-headless` — see "Security scanning & load testing") |

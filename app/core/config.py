@@ -194,7 +194,8 @@ class Settings(BaseSettings):
     # queryable; Prometheus is what actually stores/serves these numbers.
     prometheus_url: str = "http://localhost:9090"
 
-    # Sandbox session defaults (app/domains/ops/sandbox_session.py,
+    # Sandbox session defaults (app/domains/sandbox_session.py, shared by
+    # every domain that wires in the sandbox trio — ops/support/sales,
     # GRAPH_PATTERNS.md pattern 50) — the container image and lifetime for
     # the ONE OpenSandbox sandbox each investigation (thread) lazily
     # creates on first use and reuses after that. A fresh sandbox has NO
@@ -202,11 +203,16 @@ class Settings(BaseSettings):
     # to deny-all) — a script that tries `pip install` would just
     # hang/fail — so rather than widen egress for convenience, needed
     # packages are baked into a small custom image instead:
-    # docker/ops-sandbox.Dockerfile (`make ops-sandbox-build`), currently
+    # docker/sandbox.Dockerfile (`make sandbox-build`), currently
     # python:3.12-slim + numpy + pandas. Bump that Dockerfile (and this
-    # default, if the tag changes) if a real deployment needs more.
-    ops_sandbox_image: str = "agent-core-demo-ops-sandbox:latest"
-    ops_sandbox_ttl_seconds: int = 1800  # 30 minutes — long enough for an
+    # default, if the tag changes) if a real deployment needs more. No
+    # `ops_`/domain prefix on these two — matches the already
+    # domain-agnostic naming every other OpenSandbox/crawl4ai setting here
+    # already has (OPENSANDBOX_MCP_DOMAIN, CRAWL4AI_SERVER_URL, ...);
+    # sandbox creation itself has never been ops-specific, only its
+    # one-time original wiring was.
+    sandbox_image: str = "agent-core-demo-sandbox:latest"
+    sandbox_ttl_seconds: int = 1800  # 30 minutes — long enough for an
     # investigation spanning several human-approval pauses, short enough
     # that an abandoned sandbox doesn't linger indefinitely.
 
@@ -386,8 +392,8 @@ CORS_ALLOWED_ORIGINS = settings.cors_allowed_origins
 MAX_UPLOAD_SIZE_MB = settings.max_upload_size_mb
 OPENSANDBOX_MCP_DOMAIN = settings.opensandbox_mcp_domain
 OPENSANDBOX_API_KEY = settings.opensandbox_api_key
-OPS_SANDBOX_IMAGE = settings.ops_sandbox_image
-OPS_SANDBOX_TTL_SECONDS = settings.ops_sandbox_ttl_seconds
+SANDBOX_IMAGE = settings.sandbox_image
+SANDBOX_TTL_SECONDS = settings.sandbox_ttl_seconds
 CRAWL4AI_SERVER_URL = settings.crawl4ai_server_url
 CRAWL4AI_API_TOKEN = settings.crawl4ai_api_token
 OTEL_EXPORTER_OTLP_ENDPOINT = settings.otel_exporter_otlp_endpoint

@@ -1,7 +1,10 @@
-"""A real opensandbox-mcp round trip for app/domains/ops/sandbox_session.py
+"""A real opensandbox-mcp round trip for app/domains/sandbox_session.py
 (GRAPH_PATTERNS.md pattern 50) — the fake-free counterpart to
-tests/domains/ops/test_sandbox_session.py, which (correctly, for a fast/
-hermetic suite) mocks the raw tools' `.invoke(...)` entirely.
+tests/domains/test_sandbox_session.py, which (correctly, for a fast/
+hermetic suite) mocks the raw tools' `.invoke(...)` entirely. Shared logic
+behind every domain's sandbox trio (ops/support/sales), so this file
+doesn't test through any one domain's own tool layer — `get_or_create_sandbox_id`
+directly, same as the hermetic counterpart.
 
 Hard-asserts success for `get_or_create_sandbox_id` — an EARLIER version of
 this test deliberately didn't, chasing what looked like a real, twice-
@@ -28,7 +31,7 @@ import importlib.util
 
 import pytest
 
-from app.domains.ops import sandbox_session
+from app.domains import sandbox_session
 
 pytestmark = pytest.mark.sandbox
 

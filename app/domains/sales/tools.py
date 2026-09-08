@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.agent.tools import _run_with_timeout
 from app.core.security import SecurityCtx, valid_ctx
-from app.domains import notify
+from app.domains import notify, sandbox_session
 from app.domains.policy import ActionAllowlistPolicy
 from app.domains.sales import store
 from app.ingestion.web_crawler import CRAWL_TOOL_TIMEOUT_SECONDS, render_url_to_markdown
@@ -43,6 +43,9 @@ SALES_POLICY = ActionAllowlistPolicy(
             "list_pending_followups",
             "mark_lead_lost",
             "enrich_lead",
+            "run_command_in_sandbox",
+            "read_sandbox_file",
+            "write_sandbox_file",
         }
     )
 )
@@ -287,6 +290,127 @@ def enrich_lead_from_website(contact: str, url: str, config: RunnableConfig) -> 
     )
 
 
+def _thread_id_from_config(config: RunnableConfig | None) -> str:
+    return (config or {}).get("configurable", {}).get("thread_id", "unknown")
+
+
+# Three narrow, purpose-built tools over OpenSandbox's raw MCP catalog
+# (app/domains/sandbox_session.py, GRAPH_PATTERNS.md pattern 50) — same
+# shared plumbing/wrapper shape app/domains/ops/tools.py and
+# app/domains/support/tools.py already use (see either's own comment for
+# the full "why not the raw ~19-tool catalog" writeup). Built
+# conditionally — empty if opensandbox-mcp isn't installed/reachable — so
+# a deployment without it still gets every OTHER sales tool intact.
+_RAW_SANDBOX_TOOLS = sandbox_session.load_raw_sandbox_tools()
+_SANDBOX_TOOLS = []
+
+if _RAW_SANDBOX_TOOLS:
+
+    class RunCommandInSandboxArgs(BaseModel):
+        command: str = Field(..., description="A shell command to run, e.g. a Python one-liner or script.")
+
+        @field_validator("command")
+        @classmethod
+        def _not_blank(cls, v: str) -> str:
+            if not v.strip():
+                raise ValueError("command must not be empty")
+            return v
+
+    def _run_command_in_sandbox_impl(command: str, thread_id: str, ctx: SecurityCtx) -> str:
+        return sandbox_session.run_command_in_sandbox_impl(command, thread_id, _RAW_SANDBOX_TOOLS)
+
+    @tool(args_schema=RunCommandInSandboxArgs)
+    def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
+        """Run a shell command inside an isolated, disposable sandbox —
+        use this for real deal-economics math calculator's plain
+        arithmetic can't do: a multi-year contract with an annual
+        escalation % and volume-discount tiers, not just one flat
+        expression (see the deal-economics skill via use_skill for a
+        worked script template). Also useful together with
+        enrich_lead_from_website: that tool's own crawled page text is
+        already in this lead's notes — pass relevant parts of it into a
+        script here to extract/count real signals (team-size mentions,
+        specific keyword hits) into a short structured summary, rather
+        than skimming raw crawled markdown by eye. If you just want to
+        check whether this lead already has research notes or a pending
+        follow-up before doing any of that work again, that read-only
+        lookup is exactly what the lead-researcher subagent
+        (run_subagent) already exists for. One sandbox is created
+        automatically per conversation and reused for every call in it —
+        you never create, connect to, or track a sandbox yourself, just
+        describe the command. Don't `pip install` anything (no network
+        access) — numpy and pandas are already available if you need
+        them. Reaches an external service — always requires human
+        approval before it runs."""
+        ctx = _ctx_or_refuse(config, "run_command_in_sandbox")
+        if ctx is None:
+            return _NO_CTX_REFUSAL
+        return _run_with_timeout(
+            _run_command_in_sandbox_impl,
+            command,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        )
+
+    class ReadSandboxFileArgs(BaseModel):
+        path: str = Field(..., description="Path of the file to read inside the sandbox.")
+
+    def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -> str:
+        return sandbox_session.read_sandbox_file_impl(path, thread_id, _RAW_SANDBOX_TOOLS)
+
+    @tool(args_schema=ReadSandboxFileArgs)
+    def read_sandbox_file(path: str, config: RunnableConfig) -> str:
+        """Read a text file from this conversation's sandbox (e.g. a
+        script's output written to disk, or a file written earlier with
+        write_sandbox_file). Same auto-created sandbox as
+        run_command_in_sandbox. If this returns an unexpected "file not
+        found" for a file you know exists, use run_command_in_sandbox with
+        `cat <path>` instead — a disclosed, environment-specific gap in
+        this particular tool, not in write_sandbox_file or
+        run_command_in_sandbox. Reaches an external service — always
+        requires human approval before it runs."""
+        ctx = _ctx_or_refuse(config, "read_sandbox_file")
+        if ctx is None:
+            return _NO_CTX_REFUSAL
+        return _run_with_timeout(
+            _read_sandbox_file_impl,
+            path,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        )
+
+    class WriteSandboxFileArgs(BaseModel):
+        path: str = Field(..., description="Destination path for the file inside the sandbox.")
+        content: str = Field(..., description="The file's full text content.")
+
+    def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx: SecurityCtx) -> str:
+        return sandbox_session.write_sandbox_file_impl(path, content, thread_id, _RAW_SANDBOX_TOOLS)
+
+    @tool(args_schema=WriteSandboxFileArgs)
+    def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
+        """Write a text file into this conversation's sandbox (e.g. stage
+        a script before running it with run_command_in_sandbox, or a
+        chunk of crawled page text too big to pass inline). Same
+        auto-created sandbox as run_command_in_sandbox. Reaches an
+        external service — always requires human approval before it
+        runs."""
+        ctx = _ctx_or_refuse(config, "write_sandbox_file")
+        if ctx is None:
+            return _NO_CTX_REFUSAL
+        return _run_with_timeout(
+            _write_sandbox_file_impl,
+            path,
+            content,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        )
+
+    _SANDBOX_TOOLS = [run_command_in_sandbox, read_sandbox_file, write_sandbox_file]
+
+
 TOOLS = [
     log_lead_interaction,
     schedule_followup,
@@ -295,6 +419,7 @@ TOOLS = [
     list_pending_followups,
     mark_lead_lost,
     enrich_lead_from_website,
+    *_SANDBOX_TOOLS,
 ]
 
 TOOL_CAPABILITIES = {
@@ -305,4 +430,5 @@ TOOL_CAPABILITIES = {
     "list_pending_followups": "read_only",
     "mark_lead_lost": "mutating",
     "enrich_lead_from_website": "outward",
+    **{t.name: "outward" for t in _SANDBOX_TOOLS},
 }

@@ -1542,6 +1542,8 @@ const SUGGESTED_QUESTIONS = {
     "Can you just refund my last order right now?",
     "The same issue happened again this morning — I already have a ticket open for it.",
     "Can you check this page for me — https://example.com — it seems to contradict what you told me?",
+    "Here's the error log the customer pasted — can you run it through a script and tell me how many times 'db_timeout' shows up: db_timeout at 09:12, retry ok, db_timeout at 09:14, auth_failed at 09:15",
+    "Check our API docs page (https://example.com) for the real rate limit, then verify it against what the customer says they're seeing (60/min).",
   ],
   ops: [
     "Did anything break overnight?",
@@ -1553,6 +1555,7 @@ const SUGGESTED_QUESTIONS = {
     "Has moderation blocked more requests than usual today?",
     "Check if our payment processor's status page (https://example.com) shows an incident.",
     "Can you write and run a script to find the 95th percentile of these latencies: 120, 340, 90, 500, 210, 180, 620, 150?",
+    "Check our payment processor's status page (https://example.com), then compute how many incidents they've had this month from the page's own history — and check whether any of ours line up with theirs.",
   ],
   sales: [
     "A lead asked what Ecorp actually does.",
@@ -1563,6 +1566,8 @@ const SUGGESTED_QUESTIONS = {
     "Schedule a follow-up with this lead in 3 days.",
     "Give me a brief on this lead's history.",
     "New lead Jordan (jordan@example.com) says their company site is https://example.com — log this and research their company before I call them.",
+    "This lead wants a 3-year deal at $50k/year with 5% annual escalation and a 10% volume discount on the total — what's the real contract value?",
+    "Pull out any team-size or hiring signals from Jordan's company site research and summarize what that suggests about deal size.",
   ],
 };
 

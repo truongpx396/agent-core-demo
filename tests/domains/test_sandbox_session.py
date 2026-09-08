@@ -1,17 +1,18 @@
-"""Tests for app/domains/ops/sandbox_session.py — mocks the raw OpenSandbox
-MCP tools' `.invoke(...)` calls (returning realistic JSON strings matching
-the EXACT shapes read from opensandbox_mcp/opensandbox's own Pydantic
-models — see that module's own docstring for the full provenance, since
-confirmed against a real successful live call too). Hermetic, no live
-opensandbox-mcp/opensandbox-server needed — the live counterpart (proving
-the mechanism reaches a REAL bridge) is
-tests/live/test_ops_sandbox_session_live.py.
+"""Tests for app/domains/sandbox_session.py — the shared logic behind
+every domain's own sandbox tool trio (ops/support/sales), mocks the raw
+OpenSandbox MCP tools' `.invoke(...)` calls (returning realistic JSON
+strings matching the EXACT shapes read from opensandbox_mcp/opensandbox's
+own Pydantic models — see that module's own docstring for the full
+provenance, since confirmed against a real successful live call too).
+Hermetic, no live opensandbox-mcp/opensandbox-server needed — the live
+counterpart (proving the mechanism reaches a REAL bridge) is
+tests/live/test_sandbox_session_live.py.
 """
 import json
 
 import pytest
 
-from app.domains.ops import sandbox_session
+from app.domains import sandbox_session
 
 
 class _FakeTool:

@@ -238,8 +238,9 @@ services:
       retries: 10
       start_period: 40s   # crawl4ai's own docs: allow up to 40s startup
 
-  # --- Real, isolated code-execution sandbox for the ops domain's sandbox
-  # tools (app/domains/sandbox_tools.py, GRAPH_PATTERNS.md pattern 50) — a
+  # --- Real, isolated code-execution sandbox for every domain's sandbox
+  # tools (ops/support/sales — app/domains/sandbox_tools.py, GRAPH_PATTERNS.md
+  # pattern 50) — a
   # containerized, authenticated opensandbox-server (no official image
   # exists upstream, verified against OpenSandbox's own docs; this repo
   # builds its own from docker/opensandbox-server.{Dockerfile,toml}).
