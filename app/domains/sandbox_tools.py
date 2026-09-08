@@ -1,10 +1,19 @@
 """OpenSandbox (https://github.com/opensandbox-group/OpenSandbox) consumed
 over MCP — GRAPH_PATTERNS.md pattern 50, built entirely on the EXISTING,
-unmodified `app/mcp/client.py::load_remote_tools` (pattern 28). No new
-client plumbing: `opensandbox-mcp` is a real, purpose-built stdio MCP
-server that bridges to a separately-run `opensandbox-server` (`make
-sandbox-serve`), so this module is just the (small) wiring that turns that
-remote tool catalog into something a domain's `DomainPlugin` can merge in.
+unmodified `app/mcp/client.py::load_remote_tools` (pattern 28). No new MCP
+CLIENT plumbing: `opensandbox-mcp` is a real, purpose-built stdio MCP
+server that bridges to a containerized `opensandbox-server` (`make
+sandbox-up`, docker-compose's opt-in `sandbox` profile — `docker/
+opensandbox-server.{Dockerfile,toml}`). What IS new: `scripts/
+opensandbox_mcp_bridge.py`, a thin wrapper this module spawns INSTEAD of
+the packaged `opensandbox-mcp` binary directly — necessary because that
+package's own CLI has no way to set `ConnectionConfig(use_server_proxy=
+True)`, which containerizing opensandbox-server made a hard requirement
+(that script's own docstring has the full, verified finding: without it, a
+real sandbox call hangs 40+ seconds trying to reach a Docker-internal
+bridge IP unreachable from this host process). This module is otherwise
+just the (small) wiring that turns the remote tool catalog into something
+a domain's `DomainPlugin` can merge in.
 
 Verified empirically against a real, locally-run `opensandbox-server` +
 `opensandbox-mcp` (not written blind): `load_remote_tools` correctly lists
@@ -14,11 +23,17 @@ already defaults every one of them to `"outward"` — this module still
 passes an explicit empty override dict below, so that fail-closed default
 is visible here rather than an implicit fact a reader has to already know
 about `load_remote_tools`. The actual sandbox-creation call itself hit a
-`405` against this environment's locally `uvx`-launched server — reproduced
-identically via OpenSandbox's own official `osb` CLI, so it's a
-server-side/environment quirk in that one local test, not a defect in this
-module or in `load_remote_tools`; the tool-discovery/dispatch round trip
-this module actually depends on is what was proven to work.
+`405` against a locally `uvx`-launched server, reproduced identically via
+OpenSandbox's own official `osb` CLI too — at first this looked like a
+server-side/environment quirk, but was later root-caused to a real bug in
+THIS app's own old default: `opensandbox_mcp_domain`'s port (8080)
+collided with `docker-compose.yml`'s `open-webui` service, so every
+request was silently landing on open-webui's uvicorn instead of
+OpenSandbox at all (see app/core/config.py's `opensandbox_mcp_domain`
+comment, GRAPH_PATTERNS.md pattern 50). Fixed by moving to port 8090 and,
+separately, wiring real `--api-key` auth below (`opensandbox_api_key`) —
+the tool-discovery/dispatch round trip this module depends on was never
+the broken part.
 
 ## Why a real code-execution tool, when app/agent/tools.py::calculator
 ## deliberately is NOT one
@@ -72,11 +87,13 @@ gate (every tool forced to "outward" below) is the actual safety boundary,
 not per-tenant isolation.
 """
 import logging
+import sys
+from pathlib import Path
 
 from langchain_core.tools import BaseTool
 
 from app.agent.tools import _run_with_timeout
-from app.core.config import OPENSANDBOX_MCP_DOMAIN
+from app.core.config import OPENSANDBOX_API_KEY, OPENSANDBOX_MCP_DOMAIN
 from app.mcp import client as mcp_client
 
 logger = logging.getLogger(__name__)
@@ -86,22 +103,37 @@ _SANDBOX_LIST_TIMEOUT_SECONDS = 10  # bounds the one-time catalog-listing
 # docstring), this is a backstop against a hung bridge process, not the
 # expected path.
 
+# scripts/opensandbox_mcp_bridge.py, NOT the packaged `opensandbox-mcp` CLI
+# directly — verified directly (a real Sandbox.create() call hung 44+
+# seconds against the containerized opensandbox-server, see that script's
+# own docstring for the full finding) that opensandbox-mcp==0.1.1's CLI has
+# no way to set ConnectionConfig(use_server_proxy=True), which THIS
+# process's own deployment topology (a host process talking to sandboxes
+# that live on a Docker bridge network) genuinely needs. Same interpreter
+# this process is already running under, so the same installed
+# opensandbox-mcp/opensandbox packages are guaranteed available.
+_BRIDGE_SCRIPT = str(Path(__file__).resolve().parent.parent.parent / "scripts" / "opensandbox_mcp_bridge.py")
+
 
 def load_sandbox_tools() -> tuple[list[BaseTool], dict[str, str]]:
-    """Connects to `opensandbox-mcp` (the stdio bridge; a separately-run
-    `opensandbox-server`, `make sandbox-serve`, is only needed once a tool
-    is actually CALLED, not for this listing step — see module docstring)
-    and returns its tool catalog as LangChain tools, every one of them
-    capped at `"outward"`. Degrades to `([], {})` with a logged warning —
-    never raises — if the bridge isn't installed/reachable or hangs past
+    """Connects to `opensandbox-mcp` (the stdio bridge; the containerized
+    `opensandbox-server`, `make sandbox-up`, is only needed once a tool is
+    actually CALLED, not for this listing step — see module docstring) and
+    returns its tool catalog as LangChain tools, every one of them capped at
+    `"outward"`. Degrades to `([], {})` with a logged warning — never raises
+    — if the bridge isn't installed/reachable or hangs past
     `_SANDBOX_LIST_TIMEOUT_SECONDS`, so a domain merging this in still
     builds and runs with every OTHER tool intact.
     """
     try:
         return _run_with_timeout(
             mcp_client.load_remote_tools,
-            command="opensandbox-mcp",
-            args=["--domain", OPENSANDBOX_MCP_DOMAIN, "--protocol", "http"],
+            command=sys.executable,
+            args=[
+                _BRIDGE_SCRIPT,
+                "--domain", OPENSANDBOX_MCP_DOMAIN, "--protocol", "http",
+                "--api-key", OPENSANDBOX_API_KEY,
+            ],
             capability_overrides={},  # explicit: every tool defaults to
             # "outward" (see module docstring) — never trust OpenSandbox's
             # own annotations, same reasoning app/mcp/client.py always applies.

@@ -50,22 +50,25 @@ separate tool invocations anyway — every call after the one that created
 the sandbox would otherwise hit "not found in local registry" regardless
 of how correct the sandbox_id is.
 
-## Response shapes are read from OpenSandbox's own source, not guessed
+## Response shapes: read from OpenSandbox's own source, then confirmed live
 
-This session's own opensandbox-server hit a real HTTP 405 on every
-sandbox_create attempt (a local server-version quirk, disclosed in
-GRAPH_PATTERNS.md pattern 50 — reproduced even via OpenSandbox's own `osb`
-CLI), so the success-path JSON shapes below could not be confirmed against
-a real successful call. They're read directly from the installed
-`opensandbox_mcp`/`opensandbox` packages' own Pydantic models instead:
+The shapes below were originally read directly from the installed
+`opensandbox_mcp`/`opensandbox` packages' own Pydantic models (ground
+truth, not inference) because this session's opensandbox-server hit a real
+HTTP 405 on every `sandbox_create` attempt at the time — since root-caused
+to this app's own `opensandbox_mcp_domain` port colliding with
+`docker-compose.yml`'s `open-webui` (app/core/config.py's own comment,
+GRAPH_PATTERNS.md pattern 50), not an OpenSandbox defect. With that fixed
+(port 8090 + real `--api-key` auth, `make sandbox-up`), a full live round
+trip now confirms these shapes against a REAL successful response, not
+just source:
 - sandbox_create -> `{"sandbox_id": ..., "info": {...}}`
 - sandbox_list -> `{"sandbox_infos": [{"id": ..., "status": {"state": "RUNNING", ...}, "metadata": {...}, ...}], "pagination": {...}}`
 - command_run -> Execution: `{"exit_code": int|None, "logs": {"stdout": [{"text": ...}], "stderr": [{"text": ...}]}, ...}`
 - file_read -> `{"path": ..., "content": ...}`
 - file_write -> `{"status": "written"}`
-Ground truth, not inference from a working example. Hermetically tested
-against these exact shapes in tests/domains/ops/test_sandbox_session.py;
-the live gap is disclosed, not hidden.
+Hermetically tested against these exact shapes in
+tests/domains/ops/test_sandbox_session.py.
 """
 import json
 import logging
@@ -83,6 +86,26 @@ SANDBOX_CALL_TIMEOUT_SECONDS = 60  # a real command_run (e.g. a slow
 # its own named budget, same "this takes longer than the default"
 # reasoning every other override of app/agent/tools.py's
 # TOOL_TIMEOUT_SECONDS already uses in this app.
+#
+# Two real production timeouts (Langfuse traces d9034aaa.../30f20dfc...,
+# 2026-09-08) hit this budget while `get_or_create_sandbox_id` was still
+# in progress, both on trivial commands — briefly bumped to 150s as a
+# band-aid, then REVERTED once the actual bug was found and fixed (don't
+# read this constant's own git history as "150 was tried and abandoned for
+# no reason" — it was a workaround for a real bug, removed once that bug
+# was gone). Root cause, found by tracing the real request URLs in
+# debug-level httpx logs: the OpenSandbox SDK's `ConnectionConfig.
+# use_server_proxy` defaults to `False`, and `opensandbox-mcp==0.1.1`'s own
+# CLI has no flag/env var to override it — so `opensandbox-mcp` (a bare
+# host process, app/domains/sandbox_tools.py) was trying to reach each
+# sandbox directly at its Docker bridge-network IP (e.g.
+# `172.19.0.13:port`), an address genuinely UNREACHABLE from the host on
+# Docker Desktop for Mac, not merely slow. A raw `Sandbox.create()` call
+# confirmed this directly: 44+ seconds stuck retrying against that address
+# with `use_server_proxy=False`, under 1.2s with it `True`. Fixed via
+# `scripts/opensandbox_mcp_bridge.py` (see its own docstring) — normal
+# calls now complete in low single-digit seconds, so 60s is generous
+# headroom again, not a tight fit.
 
 
 class SandboxCallFailed(Exception):
@@ -151,9 +174,9 @@ def get_or_create_sandbox_id(raw: dict[str, BaseTool], thread_id: str) -> str:
     """The one lifecycle decision every tool in this module makes before
     anything else: reuse this thread's existing sandbox if sandbox_list
     finds one, otherwise create a fresh one tagged for this thread. Raises
-    SandboxCallFailed if creation itself fails (e.g. this environment's own
-    disclosed opensandbox-server version issue, GRAPH_PATTERNS.md pattern
-    50) — there's nothing to fall back to at that point."""
+    SandboxCallFailed if creation itself fails (e.g. opensandbox-server
+    unreachable or misconfigured — see GRAPH_PATTERNS.md pattern 50) —
+    there's nothing to fall back to at that point."""
     existing = _find_existing_sandbox_id(raw, thread_id)
     if existing:
         return existing

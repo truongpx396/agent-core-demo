@@ -1,4 +1,4 @@
-.PHONY: help up up-app pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops crawl4ai-setup sandbox-serve telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse obs-up obs-down obs-logs obs-clean
+.PHONY: help up up-app sandbox-up ops-sandbox-build pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -9,6 +9,12 @@ up:  ## Start all services (ollama, litellm, qdrant, langfuse, postgres, minio)
 
 up-app:  ## Start infra + the containerized app itself (api, agent-worker, ingest-worker; see Dockerfile)
 	docker compose --profile app up -d --build
+
+sandbox-up: ops-sandbox-build  ## Start the containerized, authenticated OpenSandbox server (docker/opensandbox-server.{Dockerfile,toml}) that the ops domain's sandbox tools execute against — opt-in `sandbox` profile like `up-app`'s `app` profile, not part of plain `make up`, since it bind-mounts the host Docker socket to create sibling sandbox containers. Needs OPENSANDBOX_API_KEY set in .env first (see .env.example) — the server refuses to start without one.
+	docker compose --profile sandbox up -d --build
+
+ops-sandbox-build:  ## Build the ops domain's sandbox base image (docker/ops-sandbox.Dockerfile — python:3.12-slim + numpy + pandas, no network egress) that OPS_SANDBOX_IMAGE (app/core/config.py) references. A plain `docker build`, not a docker-compose service — opensandbox-server pulls it by tag from the same host Docker daemon it already has via its bind-mounted socket. Run again after editing that Dockerfile.
+	docker build -t agent-core-demo-ops-sandbox:latest -f docker/ops-sandbox.Dockerfile .
 
 pull-models:  ## Download the Ollama chat + embedding models
 	docker compose exec ollama ollama pull qwen2.5:3b
@@ -46,12 +52,6 @@ mcp-inspect:  ## Launch the MCP Inspector against app/mcp/server.py for interact
 mcp-serve-ops:  ## Start the MCP server exposing fetch_metrics_summary/list_recent_incidents (stdio transport; needs `make up`) — see app/mcp/ops_server.py
 	python -m app.mcp.ops_server
 
-crawl4ai-setup:  ## One-time headless-Chromium install for the crawl4ai-backed domain tools (enrich_lead_from_website, fetch_external_reference, check_vendor_status_page; see app/ingestion/web_crawler.py) — re-run after bumping the crawl4ai pin in requirements.txt
-	crawl4ai-setup
-
-sandbox-serve:  ## Start a local OpenSandbox server (needs Docker + uv; see app/domains/sandbox_tools.py) that the ops domain's sandbox tools actually execute against — a HOST process, like mcp-serve above, not part of `make up`'s containerized stack (OpenSandbox itself needs the host Docker daemon to create sandboxes). First run: `uvx opensandbox-server init-config ~/.sandbox.toml --example docker`
-	uvx opensandbox-server
-
 telegram:  ## Start the Telegram bot channel for the Ecorp domain (needs TELEGRAM_BOT_TOKEN in .env; see app/channels/telegram.py)
 	python -m app.channels.telegram
 
@@ -75,7 +75,31 @@ agent-worker-sales:  ## Start an agent worker pool for the sales/CRM domain (see
 
 restart-all:  ## Kill and relaunch the API service (which also serves the built-in web UI) + every domain's agent-worker pool as backgrounded host processes (logs under var/*.log), then reset+re-seed ingest data (`make ingest`) — host-native dev convenience; not for the containerized `up-app` stack
 	pkill -f 'uvicorn app\.api\.main:app' 2>/dev/null || true
+	# Reload mode (`serve`'s own `--reload`) runs the real server as a
+	# `multiprocessing` worker whose OS-level command line is just a generic
+	# Python multiprocessing bootstrap string — verified directly this
+	# means the pkill above can NEVER match it, only the reloader parent.
+	# If that parent has already died for any reason (crashed, terminal
+	# closed), the worker is silently orphaned: still bound to :8000, still
+	# serving stale code, forever invisible to the pkill above. Killing
+	# whatever actually holds the port catches that case.
+	lsof -tiTCP:8000 -sTCP:LISTEN 2>/dev/null | xargs -r kill 2>/dev/null || true
 	pkill -f 'app\.turns\.agent_worker' 2>/dev/null || true
+	# A killed process doesn't free its port / stop matching `pgrep`
+	# instantly — verified directly this isn't theoretical: a plain
+	# `sleep 1` here twice left a stale agent-worker alive long enough to
+	# start a SECOND, duplicate worker for the same domain (both then
+	# competing for the same Redis consumer group), and separately caused
+	# a real code/config change to silently not take effect because the
+	# stale process was still the one actually handling requests. Poll
+	# for actual exit instead of guessing a fixed delay; SIGKILL anything
+	# still alive after 10s rather than waiting forever.
+	for i in $$(seq 1 20); do \
+		lsof -tiTCP:8000 -sTCP:LISTEN >/dev/null 2>&1 || pgrep -f 'app\.turns\.agent_worker' >/dev/null 2>&1 || break; \
+		sleep 0.5; \
+	done
+	lsof -tiTCP:8000 -sTCP:LISTEN 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+	pkill -9 -f 'app\.turns\.agent_worker' 2>/dev/null || true
 	mkdir -p var
 	nohup $(MAKE) serve > var/serve.log 2>&1 &
 	nohup $(MAKE) agent-worker > var/agent-worker.log 2>&1 &
@@ -109,7 +133,7 @@ test-live:  ## Real small Ollama model + full app/agent-worker stack via testcon
 	playwright install --with-deps chromium
 	pytest -n auto -m "llm or e2e or crawl" -q
 
-test-sandbox:  ## Real OpenSandbox MCP round trip (pattern 50) — needs `make sandbox-serve` running separately AND opensandbox-mcp on PATH; self-skips cleanly if either isn't there. Deliberately manual, like `make deepeval`/`garak` — never CI
+test-sandbox:  ## Real OpenSandbox MCP round trip (pattern 50) — needs `make sandbox-up` running separately AND opensandbox-mcp on PATH; self-skips cleanly if either isn't there. Deliberately manual, like `make deepeval`/`garak` — never CI
 	pytest -m sandbox -q -s
 
 lint:  ## Static checks: ruff (style/correctness) — see pyproject.toml's [tool.ruff]
@@ -207,6 +231,11 @@ clear-checkpoints:  ## Truncate the LangGraph checkpointer's tables (checkpoints
 
 clear-langfuse:  ## Truncate Langfuse's own telemetry tables (traces, observations incl. generations, scores, trace_sessions, events, comments, media) in the `langfuse` Postgres DB, CASCADE (also clears dependent job_executions rows) — leaves projects/api_keys/users/models/pricing config intact so LANGFUSE_PUBLIC_KEY/SECRET_KEY keep working
 	docker compose exec postgres psql -U langfuse -d langfuse -c "TRUNCATE traces, observations, scores, trace_sessions, events, comments, media, trace_media, observation_media CASCADE;"
+
+clear-litellm:  ## Truncate LiteLLM's own usage/spend logs (SpendLogs + its tool/guardrail indexes, ErrorLogs, AuditLog, every Daily*Spend/Metrics table) in the `litellm` Postgres DB, CASCADE — leaves users/teams/keys/model config intact so the proxy and its admin UI (`make up` → http://localhost:4000/ui) keep working
+	docker compose exec postgres psql -U langfuse -d litellm -c "TRUNCATE \"LiteLLM_SpendLogs\", \"LiteLLM_SpendLogToolIndex\", \"LiteLLM_SpendLogGuardrailIndex\", \"LiteLLM_ErrorLogs\", \"LiteLLM_AuditLog\", \"LiteLLM_DailyUserSpend\", \"LiteLLM_DailyTeamSpend\", \"LiteLLM_DailyTagSpend\", \"LiteLLM_DailyEndUserSpend\", \"LiteLLM_DailyOrganizationSpend\", \"LiteLLM_DailyAgentSpend\", \"LiteLLM_DailyToolSpend\", \"LiteLLM_DailyGuardrailMetrics\", \"LiteLLM_DailyPolicyMetrics\" CASCADE;"
+
+clear-all: clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm  ## Run every clear-* target above in one shot — semantic cache, Redis Streams, checkpointer state, Langfuse telemetry, LiteLLM usage/spend logs. Same per-target scope/exclusions as running each individually (see each target's own description); does NOT touch appdata (employees/tickets/leads/incidents/usage_ledger) or delete any volume — for that, `make clean`
 
 clean:  ## Stop services and delete volumes (models, vectors, traces)
 	docker compose down -v

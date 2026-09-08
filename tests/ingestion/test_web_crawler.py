@@ -4,12 +4,15 @@ convention (e.g. tests/mcp/test_mcp_client.py mocks `_list_remote_tools`/
 `_call_remote_tool`, not the stdio transport underneath them):
 
 - `render_url_to_markdown`'s own tests patch `web_crawler._crawl` (the
-  async function actually launching a browser) — proves the SSRF guard
-  runs BEFORE any crawl is attempted, and that truncation applies after.
-- `_crawl`'s own tests patch `web_crawler.AsyncWebCrawler` with a fake
+  async function actually talking to the crawl4ai server) — proves the
+  SSRF guard runs BEFORE any crawl is attempted, and that truncation
+  applies after.
+- `_crawl`'s own tests patch `web_crawler.Crawl4aiDockerClient` with a fake
   async context manager — proves the CrawlFailed/success-flag handling
-  this module adds on top of crawl4ai's own result object, without a real
-  browser. That result shape (`result.success`, `result.error_message`,
+  this module adds on top of crawl4ai's own result object, and that a
+  server-unreachable/auth-rejected error (`Crawl4aiConnectionError`/
+  `Crawl4aiRequestError`) becomes a `CrawlFailed` too, without a real
+  server. That result shape (`result.success`, `result.error_message`,
   a str-compatible `result.markdown`) was verified empirically against a
   real crawl before this module was written — see its own docstring.
 """
@@ -26,9 +29,11 @@ class _FakeResult:
         self.error_message = error_message
 
 
-class _FakeCrawler:
-    def __init__(self, result):
+class _FakeClient:
+    def __init__(self, result=None, raises=None):
         self._result = result
+        self._raises = raises
+        self._http_client = type("_H", (), {"headers": {}})()
 
     async def __aenter__(self):
         return self
@@ -36,13 +41,15 @@ class _FakeCrawler:
     async def __aexit__(self, *exc_info):
         return False
 
-    async def arun(self, url, config):
+    async def crawl(self, urls, crawler_config=None, **kwargs):
+        if self._raises is not None:
+            raise self._raises
         return self._result
 
 
-def _fake_crawler_class(result):
+def _fake_client_class(result=None, raises=None):
     def factory(*args, **kwargs):
-        return _FakeCrawler(result)
+        return _FakeClient(result=result, raises=raises)
 
     return factory
 
@@ -101,8 +108,8 @@ class TestCrawl:
     def test_returns_markdown_on_success(self, monkeypatch):
         monkeypatch.setattr(
             web_crawler,
-            "AsyncWebCrawler",
-            _fake_crawler_class(_FakeResult(success=True, markdown="# Example")),
+            "Crawl4aiDockerClient",
+            _fake_client_class(_FakeResult(success=True, markdown="# Example")),
         )
 
         result = asyncio.run(web_crawler._crawl("https://example.com"))
@@ -112,8 +119,8 @@ class TestCrawl:
     def test_raises_crawl_failed_on_a_failed_render(self, monkeypatch):
         monkeypatch.setattr(
             web_crawler,
-            "AsyncWebCrawler",
-            _fake_crawler_class(
+            "Crawl4aiDockerClient",
+            _fake_client_class(
                 _FakeResult(success=False, error_message="net::ERR_NAME_NOT_RESOLVED\nmore detail")
             ),
         )
@@ -129,13 +136,41 @@ class TestCrawl:
     def test_treats_a_missing_error_message_as_unknown_error(self, monkeypatch):
         monkeypatch.setattr(
             web_crawler,
-            "AsyncWebCrawler",
-            _fake_crawler_class(_FakeResult(success=False, error_message="")),
+            "Crawl4aiDockerClient",
+            _fake_client_class(_FakeResult(success=False, error_message="")),
         )
 
         try:
             asyncio.run(web_crawler._crawl("https://example.com"))
         except web_crawler.CrawlFailed as exc:
             assert "unknown error" in str(exc)
+        else:
+            raise AssertionError("expected CrawlFailed")
+
+    def test_raises_crawl_failed_when_the_server_is_unreachable(self, monkeypatch):
+        monkeypatch.setattr(
+            web_crawler,
+            "Crawl4aiDockerClient",
+            _fake_client_class(raises=web_crawler.Crawl4aiConnectionError("Cannot connect to server")),
+        )
+
+        try:
+            asyncio.run(web_crawler._crawl("https://example.com"))
+        except web_crawler.CrawlFailed as exc:
+            assert "could not reach the crawl4ai server" in str(exc)
+        else:
+            raise AssertionError("expected CrawlFailed")
+
+    def test_raises_crawl_failed_when_the_server_rejects_the_request(self, monkeypatch):
+        monkeypatch.setattr(
+            web_crawler,
+            "Crawl4aiDockerClient",
+            _fake_client_class(raises=web_crawler.Crawl4aiRequestError("Server error 401: unauthorized")),
+        )
+
+        try:
+            asyncio.run(web_crawler._crawl("https://example.com"))
+        except web_crawler.CrawlFailed as exc:
+            assert "could not reach the crawl4ai server" in str(exc)
         else:
             raise AssertionError("expected CrawlFailed")
