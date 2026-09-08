@@ -95,12 +95,12 @@ class TestDomainScopedSubagent:
         domain_run_subagent = g.nodes["tools"].bound.tools_by_name["run_subagent"]
         assert domain_run_subagent is not ecorp_run_subagent
 
-    def test_menu_offers_only_the_ops_domains_own_subagent(self):
+    def test_menu_offers_only_the_ops_domains_own_subagents(self):
         g = _build()
         domain_run_subagent = g.nodes["tools"].bound.tools_by_name["run_subagent"]
         schema = domain_run_subagent.args_schema.model_json_schema()
         enum_def = next(iter(schema["$defs"].values()))
-        assert enum_def["enum"] == ["metrics-researcher"]
+        assert set(enum_def["enum"]) == {"metrics-researcher", "vendor-history-researcher"}
 
     def test_never_pauses_it_is_read_only(self, monkeypatch):
         from app.agent import tools as agent_tools_module

@@ -228,18 +228,20 @@ def check_vendor_status_page(url: str, config: RunnableConfig) -> str:
     """Read a vendor/upstream-dependency's public status page LIVE (real
     headless-browser render) — use this to check whether an anomaly you
     found via fetch_metrics_summary correlates with a known incident on
-    their side before opening one of your own with log_incident. For a
-    real quantitative read on a vendor's reliability (not just "are they
-    down right now"), pass this page's own text into
-    run_command_in_sandbox to compute real stats from their own incident
-    history (frequency, total downtime window) — then, if you want to
-    check whether OUR OWN incidents cluster around the same window, that
-    read-only cross-reference is exactly what the metrics-researcher
-    subagent (run_subagent) already exists for, so it doesn't have to
-    pollute this investigation with its own intermediate lookups. Reaches
-    the open internet — declared "outward" in TOOL_CAPABILITIES, so it
-    always requires human approval before it runs, same as
-    post_to_team_channel."""
+    their side before opening one of your own with log_incident. For the
+    full worked procedure (crawl their page, compute real stats from it
+    in the sandbox, cross-reference our own incident history, decide
+    whether to log a new incident), use_skill("vendor-incident-postmortem")
+    has the whole thing — don't freehand it from scratch. Short version:
+    pass this page's own text into run_command_in_sandbox to compute real
+    stats from their own incident history (frequency, total downtime
+    window); to check whether THIS SPECIFIC vendor has come up in OUR
+    OWN incident log before, that's what the vendor-history-researcher
+    subagent (run_subagent) is for — a different, more targeted question
+    than metrics-researcher's own "what does current telemetry look
+    like." Reaches the open internet — declared "outward" in
+    TOOL_CAPABILITIES, so it always requires human approval before it
+    runs, same as post_to_team_channel."""
     ctx = _ctx_or_refuse(config, "check_vendor_status")
     if ctx is None:
         return _NO_CTX_REFUSAL
@@ -302,7 +304,10 @@ if _RAW_SANDBOX_TOOLS:
         own returned text into a small parsing script here to compute real
         stats from it (incident count, total downtime) rather than reading
         it by eye; the sandbox itself has no network access, so it can
-        only work with what you hand it. One sandbox is created
+        only work with what you hand it. For the full worked procedure
+        that combines this with a live crawl and a subagent lookup,
+        use_skill("vendor-incident-postmortem") walks through the whole
+        investigation end to end. One sandbox is created
         automatically per investigation and reused for every call in it —
         you never create, connect to, or track a sandbox yourself, just
         describe the command. Don't `pip install` anything — numpy and
