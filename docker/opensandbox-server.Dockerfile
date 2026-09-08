@@ -19,4 +19,10 @@ COPY docker/opensandbox-server.toml /config/sandbox.toml
 
 EXPOSE 8090
 
+# /health verified directly: no auth required, real 200 {"status":"healthy"}
+# — no curl in this slim image, so urllib instead (same pattern the app's
+# own Dockerfile already uses for its own HEALTHCHECK).
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=5 \
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8090/health', timeout=3)" || exit 1
+
 CMD ["opensandbox-server", "--config", "/config/sandbox.toml"]

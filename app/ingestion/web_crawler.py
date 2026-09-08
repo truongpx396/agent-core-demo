@@ -70,6 +70,7 @@ model.
 """
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 from crawl4ai import CacheMode, CrawlerRunConfig
 from crawl4ai.docker_client import ConnectionError as Crawl4aiConnectionError
@@ -150,7 +151,25 @@ def render_url_to_markdown(url: str) -> str:
     normal exception handling is enough (see CrawlFailed's own docstring).
     """
     assert_safe_url(url)
-    text = asyncio.run(_crawl(url))
+    text = _run_crawl_sync(url)
     if len(text) > _MAX_MARKDOWN_CHARS:
         text = text[:_MAX_MARKDOWN_CHARS] + "\n\n[truncated: page content exceeds the fetch limit]"
     return text
+
+
+def _run_crawl_sync(url: str) -> str:
+    """`asyncio.run(_crawl(url))`, except also correct when the CALLING
+    thread already has a running event loop — verified directly this is a
+    real case, not theoretical: CI hit `RuntimeError: asyncio.run() cannot
+    be called from a running event loop` here (some other async work
+    sharing this pytest-xdist worker's thread, not this function's own
+    fault — `asyncio.run()` checks for a running loop before it ever
+    touches `_crawl` at all). The fast, common path (no loop already
+    running) is unchanged; the fallback runs `_crawl` in its own thread
+    with a fresh loop instead of fighting over the calling thread's."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_crawl(url))
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, _crawl(url)).result()
