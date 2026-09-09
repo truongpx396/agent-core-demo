@@ -71,7 +71,7 @@ import logging
 import operator
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -780,7 +780,27 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
                 f"No skill named {name!r} found. Call skill_search first to find "
                 "the exact name of an available skill."
             )
-        return record.body
+        body = record.body
+        if "run_command_in_sandbox" in body:
+            # A proactive nudge, not a replacement for the reactive check —
+            # app/agent/graph.py::_skipped_required_sandbox_after_skill
+            # still catches and retries this AFTER the fact if the model
+            # ignores this too (real bug, found live: the deal-economics
+            # skill's own body ALREADY says "don't estimate this kind of
+            # number in your head," several paragraphs in, and the model
+            # still computed it by hand anyway — one more directive line,
+            # right here at the very end of what it reads next, costs
+            # nothing to try even though this exact model has a real,
+            # demonstrated ceiling on prompt-only fixes elsewhere this
+            # session). Placed at the END, not folded into the skill's own
+            # prose, so it survives even a skill author who forgets to
+            # write one themselves.
+            body += (
+                "\n\n---\nReminder: call run_command_in_sandbox now, with a real "
+                "script, for the actual computation this skill describes — do not "
+                "compute the result yourself."
+            )
+        return body
 
     @tool(args_schema=UseSkillArgs)
     def use_skill(name: str) -> str:
@@ -795,15 +815,56 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
 skill_search, use_skill = make_skill_tools("ecorp")
 
 
+def skill_tools_first(action_tools: Sequence[BaseTool], reused_tools: Sequence[BaseTool]) -> list[BaseTool]:
+    """Orders a domain's bound tool list with skill_search/use_skill FIRST,
+    ahead of every action tool — a real, LIVE-VERIFIED fix, not a guess.
+
+    Every domain previously built its tool list as `action_tools +
+    reused_tools` (skill_search/use_skill landing near the END, after every
+    domain-specific action tool). Live-tested against a repeated failure —
+    a sales deal-math question never once calling skill_search across many
+    separate runs, even after three escalating system-prompt/docstring
+    rewrites (name it as the literal first required tool call, a `STOP:`
+    directive in run_command_in_sandbox's own docstring, an explicit
+    quoting warning) — all three changed nothing. The actual cause turned
+    out to be list POSITION, not prompt wording: swapping ONLY the order
+    (skill_search/use_skill moved before the domain's action tools, same
+    prompt otherwise) made this app's own local model (qwen2.5:3b via
+    Ollama, grammar-constrained tool-calling) call use_skill('deal-economics')
+    as its very FIRST move, 3/3 fresh runs, zero prompt changes. A small,
+    grammar-constrained model's tool selection is sensitive to where a
+    tool sits in the bound list, not just to how it's described — worth
+    trying before assuming a "won't call X" pattern is an instruction-
+    following ceiling.
+
+    Only skill_search/use_skill move to the front — the rest of
+    `reused_tools` (search_docs, ask_clarification) keep their original
+    relative position, after the domain's own action tools. search_docs
+    does NOT share this problem; a separate live finding needed to REDUCE
+    its reflexive-default use (GRAPH_PATTERNS.md), so promoting it too
+    would fight that fix rather than help."""
+    by_name = {t.name: t for t in reused_tools}
+    promoted = [by_name[name] for name in ("skill_search", "use_skill") if name in by_name]
+    rest = [t for t in reused_tools if t.name not in ("skill_search", "use_skill")]
+    return promoted + list(action_tools) + rest
+
+
 TOOLS = [
+    # skill_search/use_skill lead the list on purpose — see
+    # skill_tools_first's own docstring for the live-verified finding
+    # behind this (tool-call selection for a grammar-constrained small
+    # local model is sensitive to list position). Every domain-specific
+    # TOOLS list uses that same helper; this is Ecorp's own equivalent,
+    # done inline since there's no separate "reused tools" list to merge
+    # here.
+    skill_search,
+    use_skill,
     search_docs,
     calculator,
     add_note,
     remember,
     query_employees,
     ask_clarification,
-    skill_search,
-    use_skill,
 ]
 
 # --- Tool capability declarations -------------------------------------------

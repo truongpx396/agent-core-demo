@@ -31,6 +31,7 @@ from app.agent.tools import (
     make_domain_subagent_tool,
     make_skill_tools,
     search_docs,
+    skill_tools_first,
 )
 from app.core.security import Policy
 from app.domains.support.tools import SUPPORT_POLICY
@@ -58,10 +59,15 @@ _RUN_SUBAGENT = make_domain_subagent_tool(
 
 SUPPORT_SYSTEM_PROMPT = """You are Ecorp's Tier-1 customer support copilot.
 
-Help customers using ONLY the knowledge base (search_docs) and the skill
-catalog (skill_search/use_skill) — never guess at company policy or
-procedure. If the knowledge base resolves the question, answer directly
-with citations.
+For a question about Ecorp's OWN policy, procedure, or product behavior,
+use ONLY the knowledge base (search_docs) and the skill catalog
+(skill_search/use_skill) to answer it — never guess or invent an answer
+from general knowledge. If the knowledge base resolves the question,
+answer directly with citations. search_docs' own `topic` filter, if you
+use it at all, only ever accepts `langgraph`, `qdrant`, or `company` —
+omit it entirely rather than guess a value outside that list, and never
+use search_docs at all for something that isn't an Ecorp policy/procedure
+question in the first place (see the pasted-log/payload case below).
 
 If it doesn't, or the request is something you cannot do yourself (a
 refund, an account change, anything a customer explicitly asks a human
@@ -86,6 +92,13 @@ use fetch_external_reference to read it live rather than guessing — this
 reaches the open internet and always needs human approval first, and it
 never adds anything to the knowledge base itself.
 
+If a customer pastes a raw error log, stack trace, or JSON/webhook payload
+and asks what it means or how often something happened, call
+skill_search("support log triage") first — don't count occurrences or
+judge whether it's valid JSON by eye. It has the worked procedure for
+run_command_in_sandbox, this domain's tool for real parsing (always needs
+human approval first, same as fetch_external_reference).
+
 If a bundled subagent's focus matches a self-contained lookup better than
 doing it yourself, use run_subagent to delegate it — it does not see this
 conversation's history, so describe everything it needs to know."""
@@ -94,7 +107,7 @@ conversation's history, so describe everything it needs to know."""
 @dataclass
 class _SupportDomainPlugin:
     def tools(self) -> list:
-        tools = list(_SUPPORT_TOOLS) + list(_REUSED_READ_ONLY_TOOLS)
+        tools = skill_tools_first(_SUPPORT_TOOLS, _REUSED_READ_ONLY_TOOLS)
         if _RUN_SUBAGENT is not None:
             tools.append(_RUN_SUBAGENT)
         return tools

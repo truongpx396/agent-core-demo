@@ -13,8 +13,10 @@ and don't log an incident on a hunch when the evidence doesn't support it.
    there's an actual anomaly before investigating a vendor at all.
 2. Call `check_vendor_status_page` on the vendor's public status page.
    This is a live crawl — real page content back, not a summary.
-3. Turn that crawled text into real numbers with `run_command_in_sandbox`
-   — don't eyeball it. A short parsing script is usually enough:
+3. Turn that crawled text into real numbers with `run_python_in_sandbox`
+   — don't eyeball it. Pass the script text directly as the `script`
+   argument, not as a shell command. A short parsing script is usually
+   enough:
    ```python
    import re
    text = """<paste the relevant part of the crawled page here>"""

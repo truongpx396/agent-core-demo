@@ -8,7 +8,8 @@ domains: [sales]
 
 `calculator` only evaluates a single arithmetic expression — it can't hold
 a loop or a multi-year schedule. For anything beyond one flat number, write
-a short script and run it with `run_command_in_sandbox` instead.
+a short script and run it with `run_python_in_sandbox` — pass the script
+text directly as the `script` argument, not as a shell command.
 
 ## The pattern
 
@@ -41,5 +42,5 @@ the total.
 3. Present the result plainly in your answer — the actual total, not just
    "I calculated it in the sandbox."
 
-`run_command_in_sandbox` has no network access and no numpy/pandas
+`run_python_in_sandbox` has no network access and no numpy/pandas
 requirement for this — plain Python arithmetic is enough for deal math.

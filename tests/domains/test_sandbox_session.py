@@ -186,6 +186,193 @@ class TestRunCommandInSandboxImpl:
             sandbox_session.run_command_in_sandbox_impl("ls", "t", raw)
 
 
+class TestRunPythonInSandboxImpl:
+    """run_python_in_sandbox_impl exists specifically to sidestep shell
+    quoting entirely — `script` reaches OpenSandbox's own file_write as a
+    plain string, never a shell command, so it can contain any quotes or
+    apostrophes without needing the model to escape anything (the single
+    most common real failure mode of run_command_in_sandbox's own
+    `python -c '...'` pattern, confirmed via repeated Langfuse traces)."""
+
+    def test_writes_the_script_then_runs_it_with_python3(self):
+        captured_write_kwargs = {}
+        captured_run_kwargs = {}
+
+        def fake_file_write(**kwargs):
+            captured_write_kwargs.update(kwargs)
+            return json.dumps({"status": "written"})
+
+        def fake_command_run(**kwargs):
+            captured_run_kwargs.update(kwargs)
+            return json.dumps({"exit_code": 0, "logs": {"stdout": [{"text": "42\n"}], "stderr": []}})
+
+        raw = _raw(
+            sandbox_list=lambda filter: json.dumps({"sandbox_infos": [], "pagination": {}}),
+            sandbox_create=lambda **kw: json.dumps({"sandbox_id": "sbx_1", "info": {}}),
+            file_write=fake_file_write,
+            command_run=fake_command_run,
+        )
+
+        script = "print('it worked even with a \\'quote\\' inside')"
+        result = sandbox_session.run_python_in_sandbox_impl(script, "t", raw)
+
+        assert captured_write_kwargs["content"] == script  # passed through untouched, no shell escaping
+        assert captured_write_kwargs["path"] == captured_run_kwargs["command"].split()[-1]
+        assert captured_run_kwargs["command"].startswith("python3 ")
+        assert "42" in result
+
+    def test_a_script_with_quotes_and_newlines_survives_untouched(self):
+        """The exact real failure class this tool exists to eliminate:
+        nested single quotes, apostrophes, and multi-line code that would
+        break a `python -c '...'` one-liner never even reach a shell
+        here."""
+        captured = {}
+
+        def fake_file_write(**kwargs):
+            captured["content"] = kwargs["content"]
+            return json.dumps({"status": "written"})
+
+        raw = _raw(
+            sandbox_list=lambda filter: json.dumps({"sandbox_infos": [], "pagination": {}}),
+            sandbox_create=lambda **kw: json.dumps({"sandbox_id": "sbx_1", "info": {}}),
+            file_write=fake_file_write,
+            command_run=lambda **kw: json.dumps({"exit_code": 0, "logs": {"stdout": [], "stderr": []}}),
+        )
+
+        script = "text = \"db_timeout at 09:12, retry ok\"\nprint(text.count('db_timeout'))\n"
+        sandbox_session.run_python_in_sandbox_impl(script, "t", raw)
+
+        assert captured["content"] == script
+
+    def test_reuses_the_same_sandbox_as_other_sandbox_tools(self):
+        """Same thread-scoped sandbox reuse as run_command_in_sandbox —
+        no separate sandbox lifecycle for this tool."""
+        create_calls = []
+
+        def fake_sandbox_list(filter):
+            if create_calls:
+                return json.dumps(
+                    {"sandbox_infos": [{"id": create_calls[-1], "status": {"state": "RUNNING"}}], "pagination": {}}
+                )
+            return json.dumps({"sandbox_infos": [], "pagination": {}})
+
+        def fake_sandbox_create(**kwargs):
+            new_id = f"sbx_{len(create_calls)}"
+            create_calls.append(new_id)
+            return json.dumps({"sandbox_id": new_id, "info": {}})
+
+        raw = _raw(
+            sandbox_list=fake_sandbox_list,
+            sandbox_create=fake_sandbox_create,
+            file_write=lambda **kw: json.dumps({"status": "written"}),
+            command_run=lambda **kw: json.dumps({"exit_code": 0, "logs": {"stdout": [], "stderr": []}}),
+        )
+
+        sandbox_session.run_command_in_sandbox_impl("echo hi", "same-thread", raw)
+        sandbox_session.run_python_in_sandbox_impl("print(1)", "same-thread", raw)
+
+        assert len(create_calls) == 1  # only ONE sandbox for both tools, same thread
+
+    def test_a_remote_tool_error_on_file_write_propagates(self):
+        raw = _raw(
+            sandbox_list=lambda filter: json.dumps({"sandbox_infos": [], "pagination": {}}),
+            sandbox_create=lambda **kw: json.dumps({"sandbox_id": "sbx_1", "info": {}}),
+            file_write=lambda **kw: "Remote tool error: Error executing tool file_write: disk full",
+        )
+
+        with pytest.raises(sandbox_session.SandboxCallFailed):
+            sandbox_session.run_python_in_sandbox_impl("print(1)", "t", raw)
+
+    def test_strips_a_markdown_code_fence_the_model_wrapped_the_script_in(self):
+        """Real bug, found live immediately after this tool shipped: the
+        model wrapped its script in ```python\\n...\\n``` — the same
+        shape it uses to SHOW code to a human — which is not valid
+        Python and fails with a SyntaxError on line 1. Stripped here,
+        not left to the model to avoid reliably."""
+        captured = {}
+
+        def fake_file_write(**kwargs):
+            captured["content"] = kwargs["content"]
+            return json.dumps({"status": "written"})
+
+        raw = _raw(
+            sandbox_list=lambda filter: json.dumps({"sandbox_infos": [], "pagination": {}}),
+            sandbox_create=lambda **kw: json.dumps({"sandbox_id": "sbx_1", "info": {}}),
+            file_write=fake_file_write,
+            command_run=lambda **kw: json.dumps({"exit_code": 0, "logs": {"stdout": [], "stderr": []}}),
+        )
+
+        fenced = "```python\nprint('hi')\n```"
+        sandbox_session.run_python_in_sandbox_impl(fenced, "t", raw)
+
+        assert captured["content"] == "print('hi')"
+
+    def test_strips_a_closing_fence_glued_directly_onto_the_last_code_line(self):
+        """Real variant found live in a later call of the same
+        investigation: the model sometimes emits the closing ``` with no
+        newline before it (glued straight onto the last line of code),
+        rather than on its own line. Must still be stripped."""
+        captured = {}
+
+        def fake_file_write(**kwargs):
+            captured["content"] = kwargs["content"]
+            return json.dumps({"status": "written"})
+
+        raw = _raw(
+            sandbox_list=lambda filter: json.dumps({"sandbox_infos": [], "pagination": {}}),
+            sandbox_create=lambda **kw: json.dumps({"sandbox_id": "sbx_1", "info": {}}),
+            file_write=fake_file_write,
+            command_run=lambda **kw: json.dumps({"exit_code": 0, "logs": {"stdout": [], "stderr": []}}),
+        )
+
+        glued = "```python\nprint('hi')```"
+        sandbox_session.run_python_in_sandbox_impl(glued, "t", raw)
+
+        assert captured["content"] == "print('hi')"
+
+    def test_leaves_a_script_with_no_fence_untouched(self):
+        captured = {}
+
+        def fake_file_write(**kwargs):
+            captured["content"] = kwargs["content"]
+            return json.dumps({"status": "written"})
+
+        raw = _raw(
+            sandbox_list=lambda filter: json.dumps({"sandbox_infos": [], "pagination": {}}),
+            sandbox_create=lambda **kw: json.dumps({"sandbox_id": "sbx_1", "info": {}}),
+            file_write=fake_file_write,
+            command_run=lambda **kw: json.dumps({"exit_code": 0, "logs": {"stdout": [], "stderr": []}}),
+        )
+
+        plain = "print('hi')"
+        sandbox_session.run_python_in_sandbox_impl(plain, "t", raw)
+
+        assert captured["content"] == plain
+
+    def test_leaves_a_stray_triple_backtick_inside_the_script_alone(self):
+        """Only a fence wrapping the WHOLE script is stripped — a stray
+        ``` that's legitimately part of the script's own content (e.g.
+        inside a string) must survive untouched, since it's never both
+        the first AND last line in that case."""
+        captured = {}
+
+        def fake_file_write(**kwargs):
+            captured["content"] = kwargs["content"]
+            return json.dumps({"status": "written"})
+
+        raw = _raw(
+            sandbox_list=lambda filter: json.dumps({"sandbox_infos": [], "pagination": {}}),
+            sandbox_create=lambda **kw: json.dumps({"sandbox_id": "sbx_1", "info": {}}),
+            file_write=fake_file_write,
+            command_run=lambda **kw: json.dumps({"exit_code": 0, "logs": {"stdout": [], "stderr": []}}),
+        )
+
+        script = "text = 'a fenced block looks like ```'\nprint(text)"
+        sandbox_session.run_python_in_sandbox_impl(script, "t", raw)
+
+        assert captured["content"] == script
+
+
 class TestReadWriteSandboxFileImpl:
     def test_read_returns_the_file_content(self):
         raw = _raw(
