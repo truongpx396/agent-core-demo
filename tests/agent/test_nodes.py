@@ -242,6 +242,64 @@ def test_retrieve_context_calls_search_docs_with_last_human_message_and_ctx():
     }
 
 
+def test_retrieve_context_enriches_a_vague_followup_with_the_prior_question():
+    """Real bug, found live via Langfuse (trace `e46c97c4`, 2026-09-09): a
+    follow-up of "pls be more the detailed" alone matched nothing in
+    Qdrant, so the model answered with generic filler while still
+    habitually citing the PREVIOUS turn's real sources — check_output
+    correctly flagged both markers as ungrounded, but that check is
+    directional-only and never retries, so it shipped as-is. Folding in
+    the prior turn's own question (still the live topic in a genuine
+    "tell me more" follow-up) gives search real vocabulary to work with."""
+    captured = {}
+
+    def fake_search_docs(query, ctx):
+        captured["query"] = query
+        return "[1] doc 1", [{"marker": "[1]", "text": "doc 1"}]
+
+    retrieve_context = graph.make_retrieve_context_node(fake_search_docs)
+
+    state = {
+        "messages": [
+            HumanMessage(content="how to build a good production grade ai agent?"),
+            AIMessage(content="Here's how... [1]"),
+            HumanMessage(content="pls be more the detailed"),
+        ],
+        "ctx": TEST_CTX,
+    }
+    result = retrieve_context(state)
+
+    assert captured["query"] == (
+        "how to build a good production grade ai agent? pls be more the detailed"
+    )
+    assert result["context_anchor_index"] == 2
+
+
+def test_retrieve_context_leaves_a_self_contained_followup_alone():
+    """The enrichment only fires on a genuinely VAGUE follow-up — a real,
+    substantive new question must search on its own text alone, not get
+    diluted with an unrelated prior topic."""
+    captured = {}
+
+    def fake_search_docs(query, ctx):
+        captured["query"] = query
+        return "[1] doc 1", [{"marker": "[1]", "text": "doc 1"}]
+
+    retrieve_context = graph.make_retrieve_context_node(fake_search_docs)
+
+    state = {
+        "messages": [
+            HumanMessage(content="how to build a good production grade ai agent?"),
+            AIMessage(content="Here's how... [1]"),
+            HumanMessage(content="how does Qdrant's hybrid search actually work?"),
+        ],
+        "ctx": TEST_CTX,
+    }
+    retrieve_context(state)
+
+    assert captured["query"] == "how does Qdrant's hybrid search actually work?"
+
+
 def test_retrieve_context_no_human_message_skips_search():
     def fail_search_docs(query, ctx):
         raise AssertionError("search_docs should not be called")
@@ -414,7 +472,13 @@ class TestCheckOutput:
     def test_likely_uncited_flags_a_real_qwen_paraphrase_without_markers(self):
         """Regression case #1: a real qwen2.5:3b answer that near-verbatim
         merged two sources with zero citation markers (caught in a live
-        Langfuse trace for "How does Qdrant's hybrid search work?")."""
+        Langfuse trace for "How does Qdrant's hybrid search work?").
+        check_output USED to just flag this for a model retry; it now
+        mechanically inserts the missing markers instead
+        (_insert_missing_citation_markers) — see that function's own
+        docstring for the live evidence that retrying the model doesn't
+        work here, so likely_uncited_citations comes back empty (already
+        fixed) and the corrected message is what the user actually sees."""
         citations = [
             {
                 "marker": "[1]",
@@ -437,11 +501,20 @@ class TestCheckOutput:
         )
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = graph.check_output(state)
-        assert {c["marker"] for c in result["likely_uncited_citations"]} == {"[1]", "[2]"}
+        assert result["likely_uncited_citations"] == []
+        corrected = result["messages"][0].content
+        assert "payload fields [1]." in corrected
+        assert "embeddings in Qdrant [2]." in corrected
+        # The untouched third sentence survives exactly as written.
+        assert "This combination enables more targeted and relevant search results." in corrected
 
     def test_likely_uncited_flags_a_real_qwen_paraphrase_case_two(self):
         """Regression case #2: another real qwen2.5:3b answer merging two
-        Ecorp facts with zero markers ("what is Ecorp?")."""
+        Ecorp facts with zero markers ("what is Ecorp?") — same
+        auto-correction as case #1 above, applied to a different citation
+        order (the FIRST sentence best-matches [2], the LAST best-matches
+        [1] — proves the fix inserts by best MATCH, not by citation list
+        order or sentence position)."""
         citations = [
             {
                 "marker": "[1]",
@@ -463,7 +536,10 @@ class TestCheckOutput:
         )
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = graph.check_output(state)
-        assert {c["marker"] for c in result["likely_uncited_citations"]} == {"[1]", "[2]"}
+        assert result["likely_uncited_citations"] == []
+        corrected = result["messages"][0].content
+        assert "offline developer tools [2]." in corrected
+        assert "for all open-source users [1]." in corrected
 
     def test_likely_uncited_ignores_a_properly_cited_source(self):
         citations = [{"marker": "[1]", "text": "Cosine distance is a common similarity metric."}]
@@ -488,6 +564,57 @@ class TestCheckOutput:
         result = graph.check_output(state)
         assert result["likely_uncited_citations"] == []
 
+    def test_likely_uncited_flags_a_short_paraphrase_of_a_long_source(self):
+        """Regression for the heuristic's OWN fix, not the model behavior it
+        detects: the ORIGINAL ratio (overlap / len(cite_words)) structurally
+        couldn't catch a genuine paraphrase of a LONG source condensed into
+        a SHORT sentence — the source's total vocabulary dwarfs whatever
+        fraction a faithful paraphrase actually reuses, no matter how
+        directly it's drawn from it. Real gap, found live via Langfuse
+        (trace 057e3594, "how to build a production grade agent?"): a
+        ~100-word citation paraphrased into one sentence scored ~23-37%
+        against the citation's own length — well under the 60% bar — for
+        an unambiguous case. This fixture's citation is deliberately long
+        with unrelated filler (word count similar to the real trace); the
+        answer draws on only its first half. Old ratio here: ~0.22 (would
+        NOT have flagged). New per-sentence ratio: ~0.78 (flags
+        correctly) — verified by hand before writing this assertion, not
+        just asserted on faith.
+        """
+        citations = [
+            {
+                "marker": "[1]",
+                "text": (
+                    "The Agent Status Bar is a mechanism that packages "
+                    "dynamic information as structured state and injects it "
+                    "into the context. When building production-grade agent "
+                    "systems, relying solely on the native capabilities of "
+                    "language models is often insufficient. Agents executing "
+                    "complex tasks can fall into failure modes such as "
+                    "infinite loops, loss of state, and goal drift. The root "
+                    "cause is often that the model lacks a clear view of the "
+                    "current environment state and task progress. This "
+                    "section also covers several unrelated implementation "
+                    "details about figure numbering and diagram layout that "
+                    "a short summary would never restate."
+                ),
+            }
+        ]
+        content = (
+            "To build a production-grade agent, track task progress and "
+            "environment state to avoid failure modes like infinite loops, "
+            "loss of state, and goal drift."
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": citations}
+        result = graph.check_output(state)
+        assert result["likely_uncited_citations"] == []
+        corrected = result["messages"][0].content
+        assert corrected == (
+            "To build a production-grade agent, track task progress and "
+            "environment state to avoid failure modes like infinite loops, "
+            "loss of state, and goal drift [1]."
+        )
+
     def test_likely_uncited_ignores_a_short_generic_citation(self):
         """A citation too short to reliably judge overlap on is skipped
         entirely, not just held to the ratio — avoids flagging a coincidental
@@ -497,6 +624,47 @@ class TestCheckOutput:
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = graph.check_output(state)
         assert result["likely_uncited_citations"] == []
+
+    def test_strips_a_fabricated_reference_footer(self):
+        """Real bug, found live via Langfuse (trace `e46c97c4`,
+        2026-09-09): qwen2.5:3b appended a markdown-style reference list
+        after its own inline [n] markers, with an obviously fabricated
+        '[Link to the book or resource]' placeholder — this app's own
+        citation convention is inline-only and never gives the model a
+        real URL to cite, so the footer can only mislead. check_output
+        strips it before it ever reaches the user."""
+        content = (
+            "By following these principles, you can build a robust and "
+            "effective AI agent that meets the needs of your project and "
+            "users. [1][2]\n\n"
+            "[1]: [Link to the book or resource]\n"
+            "[2]: [Link to the book or resource]"
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph.check_output(state)
+        assert result["messages"][0].content == (
+            "By following these principles, you can build a robust and "
+            "effective AI agent that meets the needs of your project and "
+            "users. [1][2]"
+        )
+
+    def test_a_reference_footer_free_answer_is_never_touched(self):
+        """No footer, no correction — check_output returns no `messages`
+        key at all rather than a redundant identical replacement."""
+        content = "Checkpointers persist state [1]."
+        citations = [{"marker": "[1]", "text": "Checkpointers persist state."}]
+        state = {"messages": [AIMessage(content=content)], "citations": citations}
+        result = graph.check_output(state)
+        assert "messages" not in result
+
+    def test_an_inline_marker_at_the_start_of_a_line_is_never_mistaken_for_a_footer(self):
+        """`_REFERENCE_FOOTER_LINE_RE` requires a colon right after the
+        bracket — a real inline marker that just happens to start a new
+        line/paragraph must survive untouched."""
+        content = "Some setup text.\n[3] continues the same sentence's source."
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph.check_output(state)
+        assert "messages" not in result
 
     def test_likely_misattributed_flags_a_real_marker_on_unrelated_content(self):
         """Regression case: a real Langfuse trace (ed435567) where the model
@@ -1318,11 +1486,15 @@ class TestNoAnswerFallback:
     def test_an_uncited_answer_still_gets_no_used_citations(self):
         """Not a magic fix for the underlying uncited-answer problem —
         just an accurate reflection of it: if the last round's answer
-        genuinely didn't cite anything, used_citations correctly stays
-        empty rather than fabricating one."""
+        genuinely didn't cite anything AND doesn't overlap with the
+        available citation enough to trigger check_output's own citation
+        auto-correction (_insert_missing_citation_markers — see
+        test_no_answer_fallback_propagates_an_auto_corrected_citation
+        below for that case), used_citations correctly stays empty rather
+        than fabricating one."""
         citations = [{"marker": "[1]", "text": "Checkpointers persist state."}]
         state = {
-            "messages": [AIMessage(content="Checkpointers persist state, in general.")],
+            "messages": [AIMessage(content="The weather today is sunny.")],
             "citations": citations,
         }
         no_answer = graph.make_no_answer_fallback_node()
@@ -1330,6 +1502,35 @@ class TestNoAnswerFallback:
 
         assert "messages" not in result
         assert result["used_citations"] == []
+
+    def test_no_answer_fallback_propagates_an_auto_corrected_citation(self):
+        """Real bug, found while adding check_output's citation
+        auto-correction: no_answer_fallback calls check_output fresh but
+        used to cherry-pick only used_citations/ungrounded_claims_count
+        from its result, silently DROPPING any corrected message
+        check_output produced — so used_citations would claim a marker
+        that the message the user actually sees (left as the stale,
+        uncited original, since the `trustworthy` branch never otherwise
+        touches state["messages"]) doesn't contain. The trustworthy path
+        must carry check_output's corrected message through, not just its
+        citation bookkeeping."""
+        citations = [
+            {
+                "marker": "[1]",
+                "text": "Checkpointers persist state across process restarts by "
+                "writing to a durable backend.",
+            }
+        ]
+        state = {
+            "messages": [AIMessage(content="Checkpointers persist state across restarts.")],
+            "citations": citations,
+        }
+        no_answer = graph.make_no_answer_fallback_node()
+        result = no_answer(state)
+
+        assert result["used_citations"] != []
+        assert "messages" in result
+        assert result["messages"][0].content == "Checkpointers persist state across restarts [1]."
 
     def test_a_deferred_answer_gets_replaced_even_though_should_continue_skipped_check_output(self):
         """Real, serious bug, found live (Langfuse trace `633eee2b`,

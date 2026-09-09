@@ -934,17 +934,24 @@ class TestRunSubagentImpl:
         assert "did not produce a final answer" in result
         assert narration not in result
 
-    def test_giving_up_on_a_repeatedly_uncited_answer_still_returns_the_real_content(
+    def test_an_uncited_answer_gets_auto_corrected_and_returns_the_real_content(
         self, monkeypatch
     ):
-        """The TRUSTED half of the same guard: an answer that's correct
-        but keeps missing its citation marker is an attribution nitpick,
-        not a reason to discard it — retry_exhausted no-ops for
-        "uncited" (see _TRUST_CONTENT_RETRY_REASONS), so the subagent's
-        own outcome check correctly sees real, non-empty content and
-        reports outcome="completed" with the actual answer, not a
-        budget_exceeded apology the parent agent would have to work
-        around for no reason."""
+        """An answer that's correct but missing its citation marker is an
+        attribution nitpick, not a reason to discard it — check_output's
+        own citation auto-correction (_insert_missing_citation_markers)
+        now fixes this directly on round 1 rather than needing
+        retry_exhausted's trust after repeated identical rounds (see
+        test_graph_integration.py's
+        test_uncited_but_correct_answer_gets_auto_corrected_on_the_first_
+        round for the top-level-turn equivalent), so the subagent's own
+        outcome check correctly sees real, cited, non-empty content and
+        reports outcome="completed" with the actual (now-corrected)
+        answer, not a budget_exceeded apology the parent agent would have
+        to work around for no reason. Only ONE fake LLM response queued:
+        if this still needed a second round, _RecordingFakeLLM's inner
+        GenericFakeChatModel would raise on its exhausted iterator,
+        failing this test loudly rather than silently passing."""
         from app.agent import graph as graph_module
 
         source_text = "The sky is blue due to Rayleigh scattering."
@@ -955,17 +962,14 @@ class TestRunSubagentImpl:
         monkeypatch.setattr(graph_module, "_default_search", fake_default_search)
 
         correct_but_uncited = "The sky is blue due to Rayleigh scattering."
-        fake_llm = _RecordingFakeLLM(
-            AIMessage(content=correct_but_uncited),
-            AIMessage(content=correct_but_uncited),
-        )
+        fake_llm = _RecordingFakeLLM(AIMessage(content=correct_but_uncited))
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
         result = _run_subagent_impl(
             "researcher", "why is the sky blue?", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
-        assert result == correct_but_uncited
+        assert result == "The sky is blue due to Rayleigh scattering [1]."
         assert "did not produce a final answer" not in result
 
     def test_timeout_raises_and_is_recorded(self, monkeypatch):
