@@ -5,7 +5,6 @@ tool (post_to_team_channel — this repo's first real use of that
 capability, see GRAPH_PATTERNS.md pattern 47) is gated exactly like a
 mutating one.
 """
-import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
@@ -45,33 +44,33 @@ _CORE_OPS_TOOLS = {
     "run_subagent",
 }
 
-_SANDBOX_TOOLS = {"run_command_in_sandbox", "read_sandbox_file", "write_sandbox_file"}
+_SANDBOX_TOOLS = {"run_command_in_sandbox", "run_python_in_sandbox", "read_sandbox_file", "write_sandbox_file"}
 
 
 def test_tool_node_knows_at_least_the_core_ops_domains_tools():
-    """Not a full exact-set check like tests/domains/sales/test_domain.py's
-    sibling test: app/domains/ops/tools.py also conditionally adds its
-    three narrow sandbox tools (app/domains/ops/sandbox_session.py,
-    GRAPH_PATTERNS.md pattern 50) — present as a FIXED trio if
-    opensandbox-mcp is installed/reachable in whatever environment runs
-    this test, absent entirely otherwise (see
-    sandbox_session.py::load_raw_sandbox_tools's own degrade). Only the
-    CORE, always-present ops tools are asserted here; the sandbox trio's
-    own behavior is covered by tests/domains/ops/test_sandbox_session.py
-    (hermetic) and tests/live/test_opensandbox_mcp_live.py (real bridge)."""
+    """Subset, not exact-set, check — leaves room for the manifest to grow
+    without this test becoming a maintenance chore for every addition."""
     g = _build()
     assert _CORE_OPS_TOOLS <= set(g.nodes["tools"].bound.tools_by_name)
 
 
-def test_sandbox_tools_are_present_as_a_fixed_trio_or_not_at_all():
+def test_sandbox_tools_are_always_present_as_a_fixed_set():
     """Unlike the old raw ~19-tool OpenSandbox catalog this domain used to
-    merge in directly, the exposed sandbox surface is now exactly these
-    three names or nothing — never a partial/variable subset — since
-    app/domains/ops/tools.py builds all three from the SAME
-    load_raw_sandbox_tools() call and only adds them as a unit."""
+    merge in directly, the exposed sandbox surface is exactly these four
+    names, always — app/domains/ops/tools.py builds all four (run_command_in_sandbox,
+    run_python_in_sandbox, read_sandbox_file, write_sandbox_file) from the
+    SAME load_raw_sandbox_tools() call and adds them unconditionally, no
+    longer gated on opensandbox-mcp's reachability at import time (that
+    gate caused a real, live bug — a process that booted before
+    opensandbox-server was ready stayed permanently blind to all of them;
+    see sandbox_session.load_raw_sandbox_tools's own docstring).
+    Reachability is now a per-call concern (each impl calls
+    load_raw_sandbox_tools() fresh and raises a plain error if it's still
+    unreachable), not a presence concern — covered by
+    tests/domains/test_sandbox_session.py (hermetic) and
+    tests/live/test_sandbox_session_live.py (real bridge)."""
     g = _build()
-    present = _SANDBOX_TOOLS & set(g.nodes["tools"].bound.tools_by_name)
-    assert present == _SANDBOX_TOOLS or present == set()
+    assert _SANDBOX_TOOLS <= set(g.nodes["tools"].bound.tools_by_name)
 
 
 def test_every_sandbox_tool_present_is_declared_outward():
@@ -185,16 +184,14 @@ def test_log_incident_pauses_for_approval_and_runs_once_approved(monkeypatch):
 
 
 def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monkeypatch):
-    """The sandbox trio only exists in the tool node if opensandbox-mcp was
-    installed/reachable at app/domains/ops/tools.py's own import time (see
-    _SANDBOX_TOOLS above) — self-skips rather than failing when it isn't,
-    same posture test_sandbox_tools_are_present_as_a_fixed_trio_or_not_at_all
-    already takes."""
+    """The sandbox trio is always present now (see
+    test_sandbox_tools_are_always_present_as_a_fixed_set above), but its
+    impl still calls load_raw_sandbox_tools() fresh on every real call —
+    stub that out too, not just run_command_in_sandbox_impl, so this test
+    doesn't depend on opensandbox-mcp actually being reachable."""
     from app.domains.ops import tools as ops_tools
 
-    if not hasattr(ops_tools, "run_command_in_sandbox"):
-        pytest.skip("opensandbox-mcp not installed/reachable — sandbox trio wasn't built")
-
+    monkeypatch.setattr(ops_tools.sandbox_session, "load_raw_sandbox_tools", lambda: {"command_run": object()})
     monkeypatch.setattr(
         ops_tools.sandbox_session,
         "run_command_in_sandbox_impl",
@@ -203,6 +200,38 @@ def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monke
 
     llm = _fake_llm_returning(
         _tool_call("run_command_in_sandbox", {"command": "python3 -c 'print(42.75)'"}),
+        AIMessage(content="The 95th percentile is 42.75."),
+    )
+    g = _build(llm)
+    g.invoke(
+        {"messages": [HumanMessage(content="compute the 95th percentile of these numbers")]},
+        config=_config(),
+    )
+    assert g.get_state(_config()).next  # paused, not finished
+
+    result = g.invoke(Command(resume=True), config=_config())
+    assert not g.get_state(_config()).next  # finished, not paused
+    tool_messages = [m for m in result["messages"] if m.type == "tool"]
+    assert any("42.75" in m.content for m in tool_messages)
+
+
+def test_run_python_in_sandbox_pauses_for_approval_and_runs_once_approved(monkeypatch):
+    """Same shape as run_command_in_sandbox's own version of this test —
+    run_python_in_sandbox exists specifically so the model can pass a
+    real multi-line script (quotes, apostrophes, f-strings all fine) as
+    a plain parameter instead of fighting shell quoting via
+    `python -c '...'` (a real, repeatedly-observed failure mode)."""
+    from app.domains.ops import tools as ops_tools
+
+    monkeypatch.setattr(ops_tools.sandbox_session, "load_raw_sandbox_tools", lambda: {"command_run": object()})
+    monkeypatch.setattr(
+        ops_tools.sandbox_session,
+        "run_python_in_sandbox_impl",
+        lambda script, thread_id, raw: "exit code: 0\nstdout:\n42.75\n",
+    )
+
+    llm = _fake_llm_returning(
+        _tool_call("run_python_in_sandbox", {"script": "print(42.75)"}),
         AIMessage(content="The 95th percentile is 42.75."),
     )
     g = _build(llm)

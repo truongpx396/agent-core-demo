@@ -1,6 +1,6 @@
 ---
 name: metrics-researcher
-description: Pull current operational metrics and recent incident history without pulling the intermediate lookup steps into the main conversation. Use for a self-contained lookup whose reasoning doesn't need to appear in the main thread.
+description: Pull current operational metrics and recent incident history without pulling the intermediate lookup steps into the main conversation — "what does telemetry look like right now / has anything similar happened recently." For "has THIS SPECIFIC vendor come up before" instead, use vendor-history-researcher — it's the more targeted lookup for a named vendor/dependency.
 tools: [fetch_metrics_summary, list_recent_incidents]
 domains: [ops]
 ---

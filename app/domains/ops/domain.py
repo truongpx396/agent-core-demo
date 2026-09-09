@@ -37,6 +37,7 @@ from app.agent.tools import (
     ask_clarification,
     make_domain_subagent_tool,
     make_skill_tools,
+    skill_tools_first,
 )
 from app.core.security import Policy
 from app.domains.ops.tools import OPS_POLICY
@@ -73,8 +74,14 @@ explanation — don't speculate beyond what the metrics actually show. Check
 list_recent_incidents to see if something similar has happened before.
 
 If an anomaly might be caused by an upstream dependency rather than this
-app itself, use check_vendor_status_page on that vendor's public status
-page before opening an incident — reaches the open internet, always needs
+app itself — or someone directly asks whether something is "our fault or
+theirs" — call skill_search first: don't just check the vendor's status
+page and stop there, a real answer needs their own numbers (not just
+"are they down right now") and a check of whether this vendor has come up
+in OUR OWN incident history before, and skill_search will find the
+bundled playbook for that full investigation. Short version if you skip
+it: use check_vendor_status_page on that vendor's public status page
+before opening an incident — reaches the open internet, always needs
 human approval first.
 
 If you confirm a real anomaly (past its threshold, not just a routine
@@ -108,7 +115,7 @@ conversation's history, so describe everything it needs to know."""
 @dataclass
 class _OpsDomainPlugin:
     def tools(self) -> list:
-        tools = list(_OPS_TOOLS) + list(_REUSED_READ_ONLY_TOOLS)
+        tools = skill_tools_first(_OPS_TOOLS, _REUSED_READ_ONLY_TOOLS)
         if _RUN_SUBAGENT is not None:
             tools.append(_RUN_SUBAGENT)
         return tools

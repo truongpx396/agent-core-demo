@@ -49,6 +49,7 @@ OPS_POLICY = ActionAllowlistPolicy(
             "resolve_incident",
             "check_vendor_status",
             "run_command_in_sandbox",
+            "run_python_in_sandbox",
             "read_sandbox_file",
             "write_sandbox_file",
         }
@@ -228,7 +229,12 @@ def check_vendor_status_page(url: str, config: RunnableConfig) -> str:
     """Read a vendor/upstream-dependency's public status page LIVE (real
     headless-browser render) — use this to check whether an anomaly you
     found via fetch_metrics_summary correlates with a known incident on
-    their side before opening one of your own with log_incident. For the
+    their side before opening one of your own with log_incident. A result
+    coming back at all means the URL WAS valid and the fetch succeeded —
+    if the page's content doesn't look like a status page (no incident
+    history, no uptime numbers), say that plainly rather than telling the
+    user the URL itself was invalid; that's a different, false claim about
+    a call that actually worked. For the
     full worked procedure (crawl their page, compute real stats from it
     in the sandbox, cross-reference our own incident history, decide
     whether to log a new incident), use_skill("vendor-incident-postmortem")
@@ -267,120 +273,198 @@ def _thread_id_from_config(config: RunnableConfig | None) -> str:
 # (create-or-reuse per thread, connect_if_missing) is handled in
 # sandbox_session.py, never exposed to the model.
 #
-# Built conditionally: `_RAW_SANDBOX_TOOLS` is empty if opensandbox-mcp
-# isn't installed/reachable (sandbox_session.load_raw_sandbox_tools's own
-# degrade — see app/domains/sandbox_tools.py's docstring for why that's
-# safe to check eagerly, at this module's own import time) — the same
-# "resolves to nothing usable, not a crash" contract
-# app/agent/tools.py::make_domain_subagent_tool already established for an
-# AGENT.md with no real tools to offer. `_SANDBOX_TOOLS`/entries below are
-# ordinary members of TOOLS/TOOL_CAPABILITIES, not a special merge step —
-# app/domains/ops/domain.py needs no sandbox-specific code at all anymore.
-_RAW_SANDBOX_TOOLS = sandbox_session.load_raw_sandbox_tools()
-_SANDBOX_TOOLS = []
+# Always defined and always in TOOLS/TOOL_CAPABILITIES below — NOT gated
+# on opensandbox-mcp's reachability at this module's own import time,
+# unlike an earlier version of this code. That gate meant a process that
+# finished booting before opensandbox-server finished starting cached an
+# empty tool set FOREVER (see sandbox_session.load_raw_sandbox_tools's own
+# docstring for the live trace that surfaced this) — no self-healing short
+# of a full process restart, since a domain module only ever runs its
+# top-level code once per process. These three tools now match
+# fetch_external_reference's own established shape instead: always present
+# in the graph's tool list, each impl below calls
+# sandbox_session.load_raw_sandbox_tools() FRESH on every call (never a
+# value captured once at import time) and raises a plain, catchable error
+# if it's still empty — the same "a real call can fail, that's not the
+# same as the tool not existing" contract every other outward tool in this
+# app already has. app/domains/ops/domain.py needs no sandbox-specific
+# code at all either way.
 
-if _RAW_SANDBOX_TOOLS:
 
-    class RunCommandInSandboxArgs(BaseModel):
-        command: str = Field(..., description="A shell command to run, e.g. a Python one-liner or script.")
+class RunCommandInSandboxArgs(BaseModel):
+    command: str = Field(..., description="A shell command to run, e.g. a Python one-liner or script.")
 
-        @field_validator("command")
-        @classmethod
-        def _not_blank(cls, v: str) -> str:
-            if not v.strip():
-                raise ValueError("command must not be empty")
-            return v
+    @field_validator("command")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("command must not be empty")
+        return v
 
-    def _run_command_in_sandbox_impl(command: str, thread_id: str, ctx: SecurityCtx) -> str:
-        return sandbox_session.run_command_in_sandbox_impl(command, thread_id, _RAW_SANDBOX_TOOLS)
 
-    @tool(args_schema=RunCommandInSandboxArgs)
-    def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
-        """Run a shell command inside an isolated, disposable sandbox —
-        use this for real computation calculator's plain arithmetic can't
-        do (recomputing a statistic from raw readings, parsing a pasted
-        log dump, diffing two configs). Embed already-fetched content
-        directly in your script — e.g. paste check_vendor_status_page's
-        own returned text into a small parsing script here to compute real
-        stats from it (incident count, total downtime) rather than reading
-        it by eye; the sandbox itself has no network access, so it can
-        only work with what you hand it. For the full worked procedure
-        that combines this with a live crawl and a subagent lookup,
-        use_skill("vendor-incident-postmortem") walks through the whole
-        investigation end to end. One sandbox is created
-        automatically per investigation and reused for every call in it —
-        you never create, connect to, or track a sandbox yourself, just
-        describe the command. Don't `pip install` anything — numpy and
-        pandas are already available (Python standard library plus those
-        two), so use them directly for anything beyond plain arithmetic.
-        Reaches an external service — always requires human approval
-        before it runs."""
-        ctx = _ctx_or_refuse(config, "run_command_in_sandbox")
-        if ctx is None:
-            return _NO_CTX_REFUSAL
-        return _run_with_timeout(
-            _run_command_in_sandbox_impl,
-            command,
-            _thread_id_from_config(config),
-            ctx,
-            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+def _raw_sandbox_tools_or_raise() -> dict:
+    raw = sandbox_session.load_raw_sandbox_tools()
+    if not raw:
+        raise sandbox_session.SandboxCallFailed(
+            "OpenSandbox is not reachable right now (opensandbox-mcp/opensandbox-server may still be "
+            "starting, or the sandbox profile isn't running) — try again in a moment."
         )
+    return raw
 
-    class ReadSandboxFileArgs(BaseModel):
-        path: str = Field(..., description="Path of the file to read inside the sandbox.")
 
-    def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -> str:
-        return sandbox_session.read_sandbox_file_impl(path, thread_id, _RAW_SANDBOX_TOOLS)
+def _run_command_in_sandbox_impl(command: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return sandbox_session.run_command_in_sandbox_impl(command, thread_id, _raw_sandbox_tools_or_raise())
 
-    @tool(args_schema=ReadSandboxFileArgs)
-    def read_sandbox_file(path: str, config: RunnableConfig) -> str:
-        """Read a text file from this investigation's sandbox (e.g. a
-        script's output written to disk, or a file written earlier with
-        write_sandbox_file). Same auto-created, per-investigation sandbox
-        as run_command_in_sandbox. If this returns an unexpected "file not
-        found" for a file you know exists, use run_command_in_sandbox with
-        `cat <path>` instead — a disclosed, environment-specific gap in
-        this particular tool, not in write_sandbox_file or
-        run_command_in_sandbox. Reaches an external service — always
-        requires human approval before it runs."""
-        ctx = _ctx_or_refuse(config, "read_sandbox_file")
-        if ctx is None:
-            return _NO_CTX_REFUSAL
-        return _run_with_timeout(
-            _read_sandbox_file_impl,
-            path,
-            _thread_id_from_config(config),
-            ctx,
-            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
-        )
 
-    class WriteSandboxFileArgs(BaseModel):
-        path: str = Field(..., description="Destination path for the file inside the sandbox.")
-        content: str = Field(..., description="The file's full text content.")
+@tool(args_schema=RunCommandInSandboxArgs)
+def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
+    """Run a shell command inside an isolated, disposable sandbox —
+    use this for grep/diff/cat and other plain shell tasks (diffing two
+    configs, reading a file with `cat <path>`). For actual PYTHON
+    computation — recomputing a statistic, parsing a pasted log dump —
+    use run_python_in_sandbox instead, not this tool: it takes your
+    script as a plain parameter, with no shell quoting to get right and
+    no separate write-then-run dance. Passing Python source here via
+    `python -c '...'` is exactly the mistake run_python_in_sandbox
+    exists to make impossible — any quote or apostrophe in your code
+    (a dict literal, an f-string) collides with the shell's own
+    quoting and silently breaks the script, confirmed via repeated
+    real failures. For the full worked procedure that combines this
+    with a live crawl and a subagent lookup, call
+    use_skill("vendor-incident-postmortem") BEFORE writing anything —
+    it walks through the whole investigation end to end, don't
+    freehand it. One sandbox is created
+    automatically per investigation and reused for every call in it —
+    you never create, connect to, or track a sandbox yourself, just
+    describe the command. Don't `pip install` anything — numpy and
+    pandas are already available (Python standard library plus those
+    two), so use them directly for anything beyond plain arithmetic.
+    Reaches an external service — always requires human approval
+    before it runs."""
+    ctx = _ctx_or_refuse(config, "run_command_in_sandbox")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(
+        _run_command_in_sandbox_impl,
+        command,
+        _thread_id_from_config(config),
+        ctx,
+        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    )
 
-    def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx: SecurityCtx) -> str:
-        return sandbox_session.write_sandbox_file_impl(path, content, thread_id, _RAW_SANDBOX_TOOLS)
 
-    @tool(args_schema=WriteSandboxFileArgs)
-    def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
-        """Write a text file into this investigation's sandbox (e.g. stage
-        a script before running it with run_command_in_sandbox, or a log
-        dump/config to diff). Same auto-created, per-investigation sandbox
-        as run_command_in_sandbox. Reaches an external service — always
-        requires human approval before it runs."""
-        ctx = _ctx_or_refuse(config, "write_sandbox_file")
-        if ctx is None:
-            return _NO_CTX_REFUSAL
-        return _run_with_timeout(
-            _write_sandbox_file_impl,
-            path,
-            content,
-            _thread_id_from_config(config),
-            ctx,
-            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
-        )
+class RunPythonInSandboxArgs(BaseModel):
+    script: str = Field(..., description="Python source code to run, as plain text (not a shell command).")
 
-    _SANDBOX_TOOLS = [run_command_in_sandbox, read_sandbox_file, write_sandbox_file]
+    @field_validator("script")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("script must not be empty")
+        return v
+
+
+def _run_python_in_sandbox_impl(script: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return sandbox_session.run_python_in_sandbox_impl(script, thread_id, _raw_sandbox_tools_or_raise())
+
+
+@tool(args_schema=RunPythonInSandboxArgs)
+def run_python_in_sandbox(script: str, config: RunnableConfig) -> str:
+    """Run real Python computation calculator's plain arithmetic can't
+    do (recomputing a statistic from raw readings, parsing a pasted log
+    dump, diffing two configs) — use this, not run_command_in_sandbox,
+    for anything beyond a single shell command. Pass your FULL Python
+    source as `script`, exactly as you'd write it in a file — multi-line
+    code, quotes, apostrophes, f-strings, dict literals, all fine, none
+    of it goes through a shell. Embed already-fetched content directly
+    in your script — e.g. paste check_vendor_status_page's own returned
+    text into a small parsing script here to compute real stats from it
+    (incident count, total downtime) rather than reading it by eye; the
+    sandbox itself has no network access, so it can only work with what
+    you hand it. For the full worked procedure that combines this with
+    a live crawl and a subagent lookup, call
+    use_skill("vendor-incident-postmortem") BEFORE writing anything —
+    it walks through the whole investigation end to end, don't freehand
+    it. One sandbox is created automatically per investigation and
+    reused for every call in it (shared with run_command_in_sandbox) —
+    you never create, connect to, or track a sandbox yourself, or write
+    the script to a file first. Don't `pip install` anything — numpy
+    and pandas are already available, so use them directly for anything
+    beyond plain arithmetic. Reaches an external service — always
+    requires human approval before it runs."""
+    ctx = _ctx_or_refuse(config, "run_python_in_sandbox")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(
+        _run_python_in_sandbox_impl,
+        script,
+        _thread_id_from_config(config),
+        ctx,
+        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    )
+
+
+class ReadSandboxFileArgs(BaseModel):
+    path: str = Field(..., description="Path of the file to read inside the sandbox.")
+
+
+def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return sandbox_session.read_sandbox_file_impl(path, thread_id, _raw_sandbox_tools_or_raise())
+
+
+@tool(args_schema=ReadSandboxFileArgs)
+def read_sandbox_file(path: str, config: RunnableConfig) -> str:
+    """Read a text file from this investigation's sandbox (e.g. a
+    script's output written to disk, or a file written earlier with
+    write_sandbox_file). Same auto-created, per-investigation sandbox
+    as run_command_in_sandbox. If this returns an unexpected "file not
+    found" for a file you know exists, use run_command_in_sandbox with
+    `cat <path>` instead — a disclosed, environment-specific gap in
+    this particular tool, not in write_sandbox_file or
+    run_command_in_sandbox. Reaches an external service — always
+    requires human approval before it runs."""
+    ctx = _ctx_or_refuse(config, "read_sandbox_file")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(
+        _read_sandbox_file_impl,
+        path,
+        _thread_id_from_config(config),
+        ctx,
+        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    )
+
+
+class WriteSandboxFileArgs(BaseModel):
+    path: str = Field(..., description="Destination path for the file inside the sandbox.")
+    content: str = Field(..., description="The file's full text content.")
+
+
+def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return sandbox_session.write_sandbox_file_impl(path, content, thread_id, _raw_sandbox_tools_or_raise())
+
+
+@tool(args_schema=WriteSandboxFileArgs)
+def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
+    """Write a text file into this investigation's sandbox (e.g. stage
+    a script before running it with run_command_in_sandbox, or a log
+    dump/config to diff). Same auto-created, per-investigation sandbox
+    as run_command_in_sandbox. Reaches an external service — always
+    requires human approval before it runs."""
+    ctx = _ctx_or_refuse(config, "write_sandbox_file")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(
+        _write_sandbox_file_impl,
+        path,
+        content,
+        _thread_id_from_config(config),
+        ctx,
+        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    )
+
+
+_SANDBOX_TOOLS = [run_command_in_sandbox, run_python_in_sandbox, read_sandbox_file, write_sandbox_file]
 
 
 TOOLS = [

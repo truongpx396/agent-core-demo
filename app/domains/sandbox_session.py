@@ -79,6 +79,7 @@ tests/domains/test_sandbox_session.py.
 """
 import json
 import logging
+import re
 
 from langchain_core.tools import BaseTool
 
@@ -124,28 +125,42 @@ class SandboxCallFailed(Exception):
     surface as a raw traceback."""
 
 
-_raw_sandbox_tools_cache: dict[str, BaseTool] | None = None
+_raw_sandbox_tools_cache: dict[str, BaseTool] = {}
 
 
 def load_raw_sandbox_tools() -> dict[str, BaseTool]:
     """OpenSandbox's raw MCP tool catalog as a {name: tool} lookup, empty
     if opensandbox-mcp isn't installed/reachable (see
     app/domains/sandbox_tools.py's own docstring for why that degrade is
-    safe to rely on eagerly). Called at each of app/domains/{ops,support,
-    sales}/tools.py's own import time — each only builds/exposes its three
-    sandbox tools when this comes back non-empty.
+    safe to rely on). Called by each of app/domains/{ops,support,sales}/
+    tools.py's own per-call impl wrappers — NOT at their module import
+    time (see those files' own comments for why that distinction matters).
 
-    Cached at module level, not recomputed per caller — now that THREE
-    domains call this (not just ops), a process that imports all three
-    (app/domains/registry.py, most test runs) would otherwise spawn the
-    real opensandbox-mcp subprocess and do the real MCP catalog listing
-    three separate times, up to `_SANDBOX_LIST_TIMEOUT_SECONDS`
-    (app/domains/sandbox_tools.py) each — a real, new cost this module
-    didn't have to worry about with a single caller. Every caller gets the
+    Self-healing, not cache-once-forever: a successful (non-empty) result
+    is cached for the rest of the process's life (repeating a working
+    catalog listing on every call would be pure waste, and now that THREE
+    domains call this, a process that imports all three — app/domains/
+    registry.py, most test runs — would otherwise pay that cost three
+    times over). An EMPTY result is never cached, so every call made while
+    opensandbox-mcp is unreachable retries the real connection attempt,
+    bounded by `_SANDBOX_LIST_TIMEOUT_SECONDS` (app/domains/sandbox_tools.py)
+    each time.
+
+    Found live, not hypothetical: this used to cache a `None` sentinel
+    forever after the first call, computed once at each domain module's
+    import time. A dev server that finished booting before
+    `opensandbox-server` finished starting cached an empty result
+    permanently — every sandbox tool then stayed invisible to every domain
+    for that process's entire remaining lifetime, even hours after the
+    container became healthy, with no restart to fix it short of actually
+    restarting the process. The model, unable to find run_command_in_sandbox,
+    hallucinated a nonexistent run_subagent name trying to route around the
+    gap instead of ever getting a clear error to act on or surface to a
+    human (Langfuse trace 806125c9, 2026-09-08). Every caller gets the
     exact same dict (mutating it would affect every domain, but nothing
     here ever does)."""
     global _raw_sandbox_tools_cache
-    if _raw_sandbox_tools_cache is None:
+    if not _raw_sandbox_tools_cache:
         raw_tools, _capabilities = load_sandbox_tools()
         _raw_sandbox_tools_cache = {t.name: t for t in raw_tools}
     return _raw_sandbox_tools_cache
@@ -174,7 +189,29 @@ def _call_raw_tool(raw: dict[str, BaseTool], name: str, **kwargs) -> dict:
     return parsed
 
 
-def _find_existing_sandbox_id(raw: dict[str, BaseTool], thread_id: str) -> str | None:
+_INVALID_METADATA_CHARS = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def _sanitize_thread_id_for_metadata(thread_id: str) -> str:
+    """OpenSandbox's own sandbox-metadata VALUE rules (confirmed live, not
+    guessed, from a real `sandbox_create` rejection): 63 chars or less,
+    start/end alphanumeric, only alphanumeric/-/_/. in between. Real
+    thread_ids don't necessarily satisfy this — app/channels/telegram.py's
+    own `_thread_id_for_chat` returns `f"telegram:{chat_id}"`, and that
+    colon alone made every sandbox_create/sandbox_list call for a Telegram
+    thread fail with SANDBOX::INVALID_METADATA_LABEL, unconditionally, for
+    every domain's sandbox tools. Sanitized HERE, not by changing
+    thread_id's own format at the source — thread_id is also the Postgres
+    checkpointer's key and the Langfuse trace's thread_id metadata, and
+    this is OpenSandbox's own constraint alone, not a property thread_id
+    needs to satisfy generally. Collisions between two thread_ids that
+    happen to sanitize to the same string are a theoretical, not a
+    practical, concern at this app's scale."""
+    sanitized = _INVALID_METADATA_CHARS.sub("-", thread_id)[:63].strip("_-.")
+    return sanitized or "thread"
+
+
+def _find_existing_sandbox_id(raw: dict[str, BaseTool], sandbox_metadata_value: str) -> str | None:
     """Looks up a RUNNING sandbox already tagged for this thread — see
     module docstring for why this is a server-side sandbox_list metadata
     filter, not a local cache. Returns None (not found, or the lookup
@@ -182,7 +219,9 @@ def _find_existing_sandbox_id(raw: dict[str, BaseTool], thread_id: str) -> str |
     through to creating a fresh sandbox, not abort the whole call."""
     try:
         result = _call_raw_tool(
-            raw, "sandbox_list", filter={"metadata": {SANDBOX_METADATA_KEY: thread_id}, "states": ["RUNNING"]}
+            raw,
+            "sandbox_list",
+            filter={"metadata": {SANDBOX_METADATA_KEY: sandbox_metadata_value}, "states": ["RUNNING"]},
         )
     except SandboxCallFailed as exc:
         logger.warning("sandbox_list_failed", extra={"error": str(exc)[:300]})
@@ -200,14 +239,15 @@ def get_or_create_sandbox_id(raw: dict[str, BaseTool], thread_id: str) -> str:
     SandboxCallFailed if creation itself fails (e.g. opensandbox-server
     unreachable or misconfigured — see GRAPH_PATTERNS.md pattern 50) —
     there's nothing to fall back to at that point."""
-    existing = _find_existing_sandbox_id(raw, thread_id)
+    sandbox_metadata_value = _sanitize_thread_id_for_metadata(thread_id)
+    existing = _find_existing_sandbox_id(raw, sandbox_metadata_value)
     if existing:
         return existing
     created = _call_raw_tool(
         raw,
         "sandbox_create",
         image=SANDBOX_IMAGE,
-        metadata={SANDBOX_METADATA_KEY: thread_id},
+        metadata={SANDBOX_METADATA_KEY: sandbox_metadata_value},
         timeout_seconds=SANDBOX_TTL_SECONDS,
     )
     sandbox_id = created.get("sandbox_id")
@@ -237,6 +277,79 @@ def _format_execution(execution: dict) -> str:
 def run_command_in_sandbox_impl(command: str, thread_id: str, raw: dict[str, BaseTool]) -> str:
     sandbox_id = get_or_create_sandbox_id(raw, thread_id)
     execution = _call_raw_tool(raw, "command_run", sandbox_id=sandbox_id, command=command, connect_if_missing=True)
+    return _format_execution(execution)
+
+
+# Fixed, framework-managed path — every run_python_in_sandbox call
+# overwrites it and runs it fresh, so there's no need for a unique name
+# per call (see that function's own docstring for why this exists at
+# all). The leading underscore is a plain naming convention, not an
+# OpenSandbox/OS-level privacy mechanism — it just signals "this file is
+# this tool's own scratch space," distinct from any path the model
+# deliberately writes itself via write_sandbox_file.
+_RUN_PYTHON_SCRIPT_PATH = "_run_python_in_sandbox.py"
+
+
+def _strip_markdown_fence(script: str) -> str:
+    """If the model wrapped its script in a markdown code fence
+    (```python\\n...\\n```), strip it rather than let a `SyntaxError` on
+    line 1 waste the call — a real, live-verified mistake, found
+    immediately after this tool shipped: a fenced code block is how the
+    model normally SHOWS code to a human in its own prose, so it reached
+    for the identical shape when passing code as a tool parameter,
+    without registering that `script` needs raw source, not markdown.
+
+    Only activates when the script STARTS with ``` — three literal
+    backticks can never legally begin a Python statement, so this is an
+    unambiguous "this is markdown, not source" signal; a script that
+    doesn't start this way is returned completely untouched, so a stray
+    ``` that's legitimately part of the script's own content (inside a
+    string, say) is never at risk. Handles both fence shapes seen live:
+    a clean closing ``` on its own line, AND one glued directly onto the
+    end of the last code line with no newline before it (the model
+    produced both in different calls of the same investigation)."""
+    stripped = script.strip()
+    if not stripped.startswith("```"):
+        return script
+    first_newline = stripped.find("\n")
+    if first_newline == -1:
+        return ""
+    body = stripped[first_newline + 1 :].rstrip()
+    if body.endswith("```"):
+        body = body[:-3].rstrip("\n")
+    return body
+
+
+def run_python_in_sandbox_impl(script: str, thread_id: str, raw: dict[str, BaseTool]) -> str:
+    """Writes `script` to a file in this thread's sandbox, then runs it
+    with `python3 <path>` — see run_python_in_sandbox's own tool
+    docstring (app/domains/{ops,support,sales}/tools.py) for WHY this
+    exists as a separate tool from run_command_in_sandbox: `script`
+    reaches OpenSandbox's own `file_write` as a plain string argument,
+    never passed through a shell at all, so it can contain any quotes,
+    apostrophes, or newlines without needing the model to get shell
+    escaping right — the single most common way run_command_in_sandbox
+    calls failed live throughout this app's own development (a
+    `python -c '...'` one-liner whose own quotes collide with the
+    shell's), confirmed via repeated real Langfuse traces, not a
+    one-off."""
+    script = _strip_markdown_fence(script)
+    sandbox_id = get_or_create_sandbox_id(raw, thread_id)
+    _call_raw_tool(
+        raw,
+        "file_write",
+        sandbox_id=sandbox_id,
+        path=_RUN_PYTHON_SCRIPT_PATH,
+        content=script,
+        connect_if_missing=True,
+    )
+    execution = _call_raw_tool(
+        raw,
+        "command_run",
+        sandbox_id=sandbox_id,
+        command=f"python3 {_RUN_PYTHON_SCRIPT_PATH}",
+        connect_if_missing=True,
+    )
     return _format_execution(execution)
 
 

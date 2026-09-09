@@ -2,7 +2,7 @@
 of the real ChatOpenAI client — see `make_agent_node`'s docstring in
 app/agent/graph.py for why it's a factory."""
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from app.agent.graph import make_agent_node
 
@@ -309,3 +309,81 @@ def test_citation_reminder_is_the_very_last_message_when_both_reminders_fire():
     seen = fake_llm.seen_messages
     assert "do not restate" in seen[-2].content
     assert "bracket marker" in seen[-1].content
+
+
+def test_agent_appends_a_sandbox_reminder_after_a_sandbox_requiring_skill_loads():
+    """Real bug, found live via Langfuse (trace `633eee2b`, 2026-09-08):
+    the deal-economics skill was loaded, its own body already says to use
+    run_python_in_sandbox rather than estimate by hand, and the model
+    computed the answer freehand anyway — the instruction was buried in a
+    large tool-result chunk that got pushed further from the generation
+    point as the turn went on. Same recency-anchoring fix as the citation
+    reminder above: a short, tail-appended line, not a bigger rewrite of
+    the skill's own body."""
+    fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
+    agent = make_agent_node(fake_llm)
+
+    state = {
+        "messages": [
+            HumanMessage(content="What's the real contract value?"),
+            AIMessage(content="", tool_calls=[{"name": "use_skill", "args": {}, "id": "c1"}]),
+            ToolMessage(
+                content="write a short script and run it with run_python_in_sandbox instead",
+                tool_call_id="c1",
+                name="use_skill",
+            ),
+        ],
+    }
+    agent(state)
+
+    seen = fake_llm.seen_messages
+    assert isinstance(seen[-1], SystemMessage)
+    assert "run_python_in_sandbox" in seen[-1].content
+
+
+def test_agent_skips_the_sandbox_reminder_once_the_tool_was_actually_called():
+    fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
+    agent = make_agent_node(fake_llm)
+
+    state = {
+        "messages": [
+            HumanMessage(content="What's the real contract value?"),
+            AIMessage(content="", tool_calls=[{"name": "use_skill", "args": {}, "id": "c1"}]),
+            ToolMessage(
+                content="write a short script and run it with run_python_in_sandbox instead",
+                tool_call_id="c1",
+                name="use_skill",
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "run_python_in_sandbox", "args": {}, "id": "c2"}],
+            ),
+            ToolMessage(content="141862.50", tool_call_id="c2", name="run_python_in_sandbox"),
+        ],
+    }
+    agent(state)
+
+    assert not any(
+        isinstance(m, SystemMessage) and "run_python_in_sandbox" in m.content
+        for m in fake_llm.seen_messages
+    )
+
+
+def test_agent_skips_the_sandbox_reminder_when_no_skill_mentions_the_tool():
+    fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
+    agent = make_agent_node(fake_llm)
+
+    state = {
+        "messages": [
+            HumanMessage(content="Help with my ticket."),
+            AIMessage(content="", tool_calls=[{"name": "use_skill", "args": {}, "id": "c1"}]),
+            ToolMessage(
+                content="check the knowledge base first, then open a ticket",
+                tool_call_id="c1",
+                name="use_skill",
+            ),
+        ],
+    }
+    agent(state)
+
+    assert not any(isinstance(m, SystemMessage) for m in fake_llm.seen_messages)

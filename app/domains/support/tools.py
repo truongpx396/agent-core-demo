@@ -42,6 +42,7 @@ SUPPORT_POLICY = ActionAllowlistPolicy(
             "add_ticket_comment",
             "fetch_external_reference",
             "run_command_in_sandbox",
+            "run_python_in_sandbox",
             "read_sandbox_file",
             "write_sandbox_file",
         }
@@ -264,117 +265,194 @@ def _thread_id_from_config(config: RunnableConfig | None) -> str:
 # comment for the full "why not the raw ~19-tool catalog" writeup); this is
 # just this domain's own @tool wrapper layer around it, same "one shared
 # impl, one wrapper per domain" shape fetch_external_reference already has
-# around render_url_to_markdown. Built conditionally — empty if
-# opensandbox-mcp isn't installed/reachable (load_raw_sandbox_tools's own
-# degrade) — so a deployment without it still gets every OTHER support
-# tool intact.
-_RAW_SANDBOX_TOOLS = sandbox_session.load_raw_sandbox_tools()
-_SANDBOX_TOOLS = []
+# around render_url_to_markdown.
+#
+# Always defined and always in TOOLS/TOOL_CAPABILITIES below — NOT gated on
+# opensandbox-mcp's reachability at this module's own import time, unlike
+# an earlier version of this code (see sandbox_session.load_raw_sandbox_tools's
+# own docstring for the live trace that surfaced why: a process that
+# finished booting before opensandbox-server finished starting cached an
+# empty tool set forever, with no self-healing short of a restart). These
+# three tools now match fetch_external_reference's own established shape
+# instead: always present, each impl below calls
+# sandbox_session.load_raw_sandbox_tools() FRESH on every call and raises a
+# plain, catchable error if it's still empty.
 
-if _RAW_SANDBOX_TOOLS:
 
-    class RunCommandInSandboxArgs(BaseModel):
-        command: str = Field(..., description="A shell command to run, e.g. a Python one-liner or script.")
+class RunCommandInSandboxArgs(BaseModel):
+    command: str = Field(..., description="A shell command to run, e.g. a Python one-liner or script.")
 
-        @field_validator("command")
-        @classmethod
-        def _not_blank(cls, v: str) -> str:
-            if not v.strip():
-                raise ValueError("command must not be empty")
-            return v
+    @field_validator("command")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("command must not be empty")
+        return v
 
-    def _run_command_in_sandbox_impl(command: str, thread_id: str, ctx: SecurityCtx) -> str:
-        return sandbox_session.run_command_in_sandbox_impl(command, thread_id, _RAW_SANDBOX_TOOLS)
 
-    @tool(args_schema=RunCommandInSandboxArgs)
-    def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
-        """Run a shell command inside an isolated, disposable sandbox —
-        use this to actually PARSE a customer-pasted error log, stack
-        trace, or webhook/JSON payload (count occurrences of an error
-        code, pull out the real exception type, validate the JSON is
-        even well-formed) instead of eyeballing raw pasted text. Embed
-        the customer's pasted content directly in your script — e.g. as a
-        string literal fed to `json.loads`/a regex. Also useful together
-        with fetch_external_reference: crawl a docs/status page live,
-        then check a specific customer-reported value (a rate limit, a
-        version number) against what that page actually says, rather than
-        comparing them by eye. If you want to know whether this exact
-        issue has come up in other tickets before adding a comment or
-        opening a new one, that read-only history lookup is exactly what
-        the ticket-researcher subagent (run_subagent) already exists for.
-        One sandbox is created automatically per conversation and reused
-        for every call in it — you never create, connect to, or track a
-        sandbox yourself, just describe the command. Don't `pip install`
-        anything (no network access) — numpy and pandas are already
-        available if you need them. Reaches an external service — always
-        requires human approval before it runs."""
-        ctx = _ctx_or_refuse(config, "run_command_in_sandbox")
-        if ctx is None:
-            return _NO_CTX_REFUSAL
-        return _run_with_timeout(
-            _run_command_in_sandbox_impl,
-            command,
-            _thread_id_from_config(config),
-            ctx,
-            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+def _raw_sandbox_tools_or_raise() -> dict:
+    raw = sandbox_session.load_raw_sandbox_tools()
+    if not raw:
+        raise sandbox_session.SandboxCallFailed(
+            "OpenSandbox is not reachable right now (opensandbox-mcp/opensandbox-server may still be "
+            "starting, or the sandbox profile isn't running) — try again in a moment."
         )
+    return raw
 
-    class ReadSandboxFileArgs(BaseModel):
-        path: str = Field(..., description="Path of the file to read inside the sandbox.")
 
-    def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -> str:
-        return sandbox_session.read_sandbox_file_impl(path, thread_id, _RAW_SANDBOX_TOOLS)
+def _run_command_in_sandbox_impl(command: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return sandbox_session.run_command_in_sandbox_impl(command, thread_id, _raw_sandbox_tools_or_raise())
 
-    @tool(args_schema=ReadSandboxFileArgs)
-    def read_sandbox_file(path: str, config: RunnableConfig) -> str:
-        """Read a text file from this conversation's sandbox (e.g. a
-        script's output written to disk, or a file written earlier with
-        write_sandbox_file). Same auto-created sandbox as
-        run_command_in_sandbox. If this returns an unexpected "file not
-        found" for a file you know exists, use run_command_in_sandbox with
-        `cat <path>` instead — a disclosed, environment-specific gap in
-        this particular tool, not in write_sandbox_file or
-        run_command_in_sandbox. Reaches an external service — always
-        requires human approval before it runs."""
-        ctx = _ctx_or_refuse(config, "read_sandbox_file")
-        if ctx is None:
-            return _NO_CTX_REFUSAL
-        return _run_with_timeout(
-            _read_sandbox_file_impl,
-            path,
-            _thread_id_from_config(config),
-            ctx,
-            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
-        )
 
-    class WriteSandboxFileArgs(BaseModel):
-        path: str = Field(..., description="Destination path for the file inside the sandbox.")
-        content: str = Field(..., description="The file's full text content.")
+@tool(args_schema=RunCommandInSandboxArgs)
+def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
+    """Run a shell command inside an isolated, disposable sandbox —
+    use this for plain shell tasks (grep/diff, reading a file with
+    `cat <path>`), NOT for Python computation — for actually PARSING a
+    customer-pasted error log, stack trace, or webhook/JSON payload,
+    use run_python_in_sandbox instead: it takes your script as a plain
+    parameter, no shell quoting to get right. Passing Python source
+    here via `python -c '...'` is exactly the mistake
+    run_python_in_sandbox exists to make impossible — a pasted payload
+    with its own quote or apostrophe collides with the shell's own
+    quoting and silently breaks the script, confirmed via repeated
+    real failures. For the full worked procedure, call
+    use_skill("support-log-triage") before writing anything — don't
+    freehand it. One sandbox is created automatically per conversation
+    and reused for every call in it — you never create, connect to, or
+    track a sandbox yourself, just describe the command. Don't
+    `pip install` anything (no network access) — numpy and pandas are
+    already available if you need them. Reaches an external service —
+    always requires human approval before it runs."""
+    ctx = _ctx_or_refuse(config, "run_command_in_sandbox")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(
+        _run_command_in_sandbox_impl,
+        command,
+        _thread_id_from_config(config),
+        ctx,
+        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    )
 
-    def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx: SecurityCtx) -> str:
-        return sandbox_session.write_sandbox_file_impl(path, content, thread_id, _RAW_SANDBOX_TOOLS)
 
-    @tool(args_schema=WriteSandboxFileArgs)
-    def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
-        """Write a text file into this conversation's sandbox (e.g. stage
-        a big pasted log dump before parsing it with run_command_in_sandbox,
-        rather than passing all of it inline in a command string). Same
-        auto-created sandbox as run_command_in_sandbox. Reaches an
-        external service — always requires human approval before it
-        runs."""
-        ctx = _ctx_or_refuse(config, "write_sandbox_file")
-        if ctx is None:
-            return _NO_CTX_REFUSAL
-        return _run_with_timeout(
-            _write_sandbox_file_impl,
-            path,
-            content,
-            _thread_id_from_config(config),
-            ctx,
-            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
-        )
+class RunPythonInSandboxArgs(BaseModel):
+    script: str = Field(..., description="Python source code to run, as plain text (not a shell command).")
 
-    _SANDBOX_TOOLS = [run_command_in_sandbox, read_sandbox_file, write_sandbox_file]
+    @field_validator("script")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("script must not be empty")
+        return v
+
+
+def _run_python_in_sandbox_impl(script: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return sandbox_session.run_python_in_sandbox_impl(script, thread_id, _raw_sandbox_tools_or_raise())
+
+
+@tool(args_schema=RunPythonInSandboxArgs)
+def run_python_in_sandbox(script: str, config: RunnableConfig) -> str:
+    """Run real Python computation to actually PARSE a customer-pasted
+    error log, stack trace, or webhook/JSON payload (count occurrences
+    of an error code, pull out the real exception type, validate the
+    JSON is even well-formed) instead of eyeballing raw pasted text —
+    use this, not run_command_in_sandbox, for anything beyond a single
+    shell command. Pass your FULL Python source as `script`, exactly as
+    you'd write it in a file — multi-line code, quotes, apostrophes,
+    f-strings, dict literals, all fine, none of it goes through a
+    shell; embed the customer's pasted content directly in your script,
+    e.g. as a string literal fed to `json.loads`/a regex. Also useful
+    together with fetch_external_reference: crawl a docs/status page
+    live, then check a specific customer-reported value (a rate limit,
+    a version number) against what that page actually says, rather
+    than comparing them by eye. If you want to know whether this exact
+    issue has come up in other tickets before adding a comment or
+    opening a new one, that read-only history lookup is exactly what
+    the ticket-researcher subagent (run_subagent) already exists for.
+    For the full worked procedure, call use_skill("support-log-triage")
+    BEFORE writing anything — don't freehand it. One sandbox is
+    created automatically per conversation and reused for every call
+    in it (shared with run_command_in_sandbox) — you never create,
+    connect to, or track a sandbox yourself, or write the script to a
+    file first. Don't `pip install` anything (no network access) —
+    numpy and pandas are already available if you need them. Reaches
+    an external service — always requires human approval before it
+    runs."""
+    ctx = _ctx_or_refuse(config, "run_python_in_sandbox")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(
+        _run_python_in_sandbox_impl,
+        script,
+        _thread_id_from_config(config),
+        ctx,
+        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    )
+
+
+class ReadSandboxFileArgs(BaseModel):
+    path: str = Field(..., description="Path of the file to read inside the sandbox.")
+
+
+def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return sandbox_session.read_sandbox_file_impl(path, thread_id, _raw_sandbox_tools_or_raise())
+
+
+@tool(args_schema=ReadSandboxFileArgs)
+def read_sandbox_file(path: str, config: RunnableConfig) -> str:
+    """Read a text file from this conversation's sandbox (e.g. a
+    script's output written to disk, or a file written earlier with
+    write_sandbox_file). Same auto-created sandbox as
+    run_command_in_sandbox. If this returns an unexpected "file not
+    found" for a file you know exists, use run_command_in_sandbox with
+    `cat <path>` instead — a disclosed, environment-specific gap in
+    this particular tool, not in write_sandbox_file or
+    run_command_in_sandbox. Reaches an external service — always
+    requires human approval before it runs."""
+    ctx = _ctx_or_refuse(config, "read_sandbox_file")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(
+        _read_sandbox_file_impl,
+        path,
+        _thread_id_from_config(config),
+        ctx,
+        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    )
+
+
+class WriteSandboxFileArgs(BaseModel):
+    path: str = Field(..., description="Destination path for the file inside the sandbox.")
+    content: str = Field(..., description="The file's full text content.")
+
+
+def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return sandbox_session.write_sandbox_file_impl(path, content, thread_id, _raw_sandbox_tools_or_raise())
+
+
+@tool(args_schema=WriteSandboxFileArgs)
+def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
+    """Write a text file into this conversation's sandbox (e.g. stage
+    a big pasted log dump before parsing it with run_command_in_sandbox,
+    rather than passing all of it inline in a command string). Same
+    auto-created sandbox as run_command_in_sandbox. Reaches an
+    external service — always requires human approval before it
+    runs."""
+    ctx = _ctx_or_refuse(config, "write_sandbox_file")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return _run_with_timeout(
+        _write_sandbox_file_impl,
+        path,
+        content,
+        _thread_id_from_config(config),
+        ctx,
+        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    )
+
+
+_SANDBOX_TOOLS = [run_command_in_sandbox, run_python_in_sandbox, read_sandbox_file, write_sandbox_file]
 
 
 TOOLS = [

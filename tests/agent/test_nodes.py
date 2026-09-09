@@ -287,6 +287,8 @@ class TestCheckOutput:
             "likely_uncited_citations": [],
             "likely_misattributed_citations": [],
             "deferred_instead_of_acting": False,
+            "fabricated_tool_output": False,
+            "skipped_required_tool": None,
             "leaks_system_prompt": False,
             "last_retry_reason": "too_short",
             "retry_reason_repeat_count": 1,
@@ -308,6 +310,8 @@ class TestCheckOutput:
             "likely_uncited_citations": [],
             "likely_misattributed_citations": [],
             "deferred_instead_of_acting": False,
+            "fabricated_tool_output": False,
+            "skipped_required_tool": None,
             "leaks_system_prompt": False,
             "last_retry_reason": None,
             "retry_reason_repeat_count": 0,
@@ -326,6 +330,8 @@ class TestCheckOutput:
             "likely_uncited_citations": [],
             "likely_misattributed_citations": [],
             "deferred_instead_of_acting": False,
+            "fabricated_tool_output": False,
+            "skipped_required_tool": None,
             "leaks_system_prompt": False,
             "last_retry_reason": None,
             "retry_reason_repeat_count": 0,
@@ -353,6 +359,8 @@ class TestCheckOutput:
             "likely_uncited_citations": [],
             "likely_misattributed_citations": [],
             "deferred_instead_of_acting": False,
+            "fabricated_tool_output": False,
+            "skipped_required_tool": None,
             "leaks_system_prompt": False,
             "last_retry_reason": None,
             "retry_reason_repeat_count": 0,
@@ -633,6 +641,58 @@ class TestDefersInsteadOfActing:
         result = graph.check_output(state)
         assert result["deferred_instead_of_acting"] is True
 
+    def test_flags_announcing_a_manual_fallback_without_ever_delivering_it(self):
+        """The exact real trace text (Langfuse `9336aaa6`, 2026-09-08): after
+        a sandbox script failed, the model announced it would count/parse
+        manually and then just stopped — no count ever given. Neither "I'll"
+        (a contraction) nor "count the"/"manually" were covered before this
+        was found live."""
+        content = (
+            "It seems there was an issue running the script directly. Let's "
+            "try parsing the log manually instead. I'll count the "
+            "occurrences of 'db_timeout' in the provided log.\n"
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph.check_output(state)
+        assert result["deferred_instead_of_acting"] is True
+
+    def test_flags_narrating_a_correct_script_instead_of_running_it(self):
+        """The exact real trace text, found live immediately after fixing
+        skill_tools_first (app/agent/tools.py): a complete, correct script
+        quoted verbatim, followed by "Let's run this script in a sandbox
+        to get the result" — that announcement never became a real
+        tool_calls entry. "run this/that/it/the X" wasn't covered before
+        this was found live."""
+        content = (
+            "To calculate the real contract value for a 3-year deal, we need to "
+            "write a short script and run it using `run_command_in_sandbox`.\n\n"
+            "Here's the script to compute the total contract value:\n\n"
+            "```python\nbase = 50000\nescalation = 0.05\n```\n\n"
+            "Let's run this script in a sandbox to get the result."
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph.check_output(state)
+        assert result["deferred_instead_of_acting"] is True
+
+    def test_ignores_a_negated_apology_for_a_failed_tool_call(self):
+        """Real regression, caught by tests/core/test_metrics.py's own
+        tool-error path: "I could" + "run that" matched the widened
+        pattern above just as readily as a genuine deferral, even though
+        this is an apology for FAILURE ("could NOT"), not a promise to
+        act. Wrong here wasn't just a bad flag — it triggered an unwanted
+        retry that outran a fake LLM's queued messages and crashed the
+        graph with a raw StopIteration."""
+        content = "Sorry, I could not run that calculation."
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph.check_output(state)
+        assert result["deferred_instead_of_acting"] is False
+
+    def test_ignores_a_negated_contraction(self):
+        content = "I can't look that up right now — the service is down."
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph.check_output(state)
+        assert result["deferred_instead_of_acting"] is False
+
     def test_ignores_a_genuine_direct_answer(self):
         content = "Ecorp's support hours are 9am to 5pm on weekdays [1]."
         citations = [{"marker": "[1]", "text": "Ecorp's support hours are 9am to 5pm."}]
@@ -656,6 +716,201 @@ class TestDefersInsteadOfActing:
         before = metric_value(metrics.agent_deferred_instead_of_acting_total)
         graph.check_output(state)
         assert metric_value(metrics.agent_deferred_instead_of_acting_total) == before + 1
+
+
+class TestFabricatesToolOutput:
+    """Real bug, found live via Langfuse: after a run_command_in_sandbox
+    approval was declined once, the model invented BOTH a plausible Python
+    script AND a plausible "output" for it, narrated in PRESENT tense
+    ("Running the calculation script...") — no tool_calls, nothing ever
+    executed. deferred_instead_of_acting's own future-intent phrasing
+    ("I will"/"let's") never fires on present-tense narration, so this
+    reached the user as an ordinary final answer. The fabricated
+    arithmetic didn't even match the fabricated code
+    (`50000 * (1-0.10)**3` is 36450.00, the model claimed 43750.00)."""
+
+    def test_flags_a_script_and_a_fabricated_output_block(self):
+        content = (
+            "Running the calculation script with the provided inputs:\n\n"
+            "```python\nbase = 50000\nyears = 3\ndiscount = 0.10\n"
+            "total = base * (1 - discount) ** years\n"
+            'print(f"{years}-year total: {total:.2f}")\n```\n\n'
+            "The total contract value is:\n\n"
+            "```\n3-year total: 43750.00\n```\n\n"
+            "Therefore, the real contract value is $43,750.00."
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph.check_output(state)
+        assert result["fabricated_tool_output"] is True
+        assert result["last_retry_reason"] == "fabricated"
+
+    def test_ignores_a_single_code_block_explaining_a_formula(self):
+        """One fenced block (e.g. showing what a script WOULD look like,
+        as part of pointing the user at a skill) is normal and not
+        fabrication — only two-or-more (script + claimed output) is
+        flagged."""
+        content = (
+            "Here's the pattern from the deal-economics skill:\n\n"
+            "```python\nbase = 50000\nyears = 3\n```\n\n"
+            "Use run_command_in_sandbox to actually run it."
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph.check_output(state)
+        assert result["fabricated_tool_output"] is False
+
+    def test_ignores_a_genuine_answer_with_no_code_at_all(self):
+        content = "Ecorp's support hours are 9am to 5pm on weekdays [1]."
+        citations = [{"marker": "[1]", "text": "Ecorp's support hours are 9am to 5pm."}]
+        state = {"messages": [AIMessage(content=content)], "citations": citations}
+        result = graph.check_output(state)
+        assert result["fabricated_tool_output"] is False
+
+    def test_outranks_deferred_instead_of_acting_when_both_could_apply(self):
+        """fabricated is checked before deferred in _retry_reason's
+        priority chain — presenting a fake result is worse than merely
+        narrating intent, so if a message somehow does both, fabricated
+        is the one named."""
+        content = (
+            "Let's run this now. Running the calculation script:\n\n"
+            "```python\ntotal = 50000\n```\n\n"
+            "Output:\n\n```\n50000.00\n```\n\nSo the total is $50,000.00."
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph.check_output(state)
+        assert result["fabricated_tool_output"] is True
+        assert result["last_retry_reason"] == "fabricated"
+
+    def test_metric_fires(self):
+        content = (
+            "Running it now:\n\n```python\nx = 1\n```\n\nOutput:\n\n```\n1\n```"
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        before = metric_value(metrics.agent_fabricated_tool_output_total)
+        graph.check_output(state)
+        assert metric_value(metrics.agent_fabricated_tool_output_total) == before + 1
+
+
+class TestSkippedRequiredSandboxAfterSkill:
+    """Real bug, found live via Langfuse (trace `633eee2b`, 2026-09-08):
+    the deal-economics skill was loaded (use_skill), its own body says to
+    use run_python_in_sandbox rather than estimate the number by hand,
+    and the model computed a $141,862.50 figure via step-by-step prose
+    instead of ever calling the tool. That specific number happened to be
+    correct — verified independently — but nothing enforced that, and
+    every OTHER live attempt at the same freehand math this session landed
+    on a wrong number."""
+
+    @staticmethod
+    def _skill_result(mentions_sandbox: bool = True) -> ToolMessage:
+        body = (
+            "write a short script and run it with run_python_in_sandbox instead"
+            if mentions_sandbox
+            else "check the knowledge base first, then open a ticket"
+        )
+        return ToolMessage(content=body, tool_call_id="c1", name="use_skill")
+
+    def test_flags_a_dollar_answer_when_sandbox_was_never_called(self):
+        state = {
+            "messages": [
+                HumanMessage(content="What's the real contract value?"),
+                AIMessage(content="", tool_calls=[{"name": "use_skill", "args": {}, "id": "c1"}]),
+                self._skill_result(),
+                AIMessage(content="Step by step, the total is $141,862.50."),
+            ],
+            "citations": [],
+        }
+        result = graph.check_output(state)
+        assert result["skipped_required_tool"] == "run_python_in_sandbox"
+        assert result["last_retry_reason"] == "skipped_tool"
+
+    def test_ignores_it_when_sandbox_was_actually_called(self):
+        state = {
+            "messages": [
+                HumanMessage(content="What's the real contract value?"),
+                AIMessage(content="", tool_calls=[{"name": "use_skill", "args": {}, "id": "c1"}]),
+                self._skill_result(),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "run_python_in_sandbox", "args": {}, "id": "c2"}],
+                ),
+                ToolMessage(content="141862.50", tool_call_id="c2", name="run_python_in_sandbox"),
+                AIMessage(content="The total is $141,862.50."),
+            ],
+            "citations": [],
+        }
+        result = graph.check_output(state)
+        assert result["skipped_required_tool"] is None
+
+    def test_ignores_it_when_the_loaded_skill_never_mentions_a_tool(self):
+        """A skill like support-tier1-triage never names a required
+        tool — can't trip this."""
+        state = {
+            "messages": [
+                HumanMessage(content="Help with my ticket."),
+                AIMessage(content="", tool_calls=[{"name": "use_skill", "args": {}, "id": "c1"}]),
+                self._skill_result(mentions_sandbox=False),
+                AIMessage(content="I've opened ticket #5 for you — no charge, $0.00 due."),
+            ],
+            "citations": [],
+        }
+        result = graph.check_output(state)
+        assert result["skipped_required_tool"] is None
+
+    def test_ignores_it_when_no_skill_was_loaded_this_turn(self):
+        state = {
+            "messages": [
+                HumanMessage(content="What's the real contract value?"),
+                AIMessage(content="Step by step, the total is $141,862.50."),
+            ],
+            "citations": [],
+        }
+        result = graph.check_output(state)
+        assert result["skipped_required_tool"] is None
+
+    def test_ignores_it_when_the_answer_states_no_dollar_figure(self):
+        """A clarifying question or an honest "couldn't compute this" is
+        not the problem this exists to catch."""
+        state = {
+            "messages": [
+                HumanMessage(content="What's the real contract value?"),
+                AIMessage(content="", tool_calls=[{"name": "use_skill", "args": {}, "id": "c1"}]),
+                self._skill_result(),
+                AIMessage(content="Could you confirm the exact escalation percentage first?"),
+            ],
+            "citations": [],
+        }
+        result = graph.check_output(state)
+        assert result["skipped_required_tool"] is None
+
+    def test_outranks_deferred_but_not_fabricated(self):
+        """skipped_tool ranks between fabricated (worse: invents a fake
+        result) and deferred (milder: no confident answer at all) in
+        _retry_reason's priority chain."""
+        state = {
+            "messages": [
+                HumanMessage(content="What's the real contract value?"),
+                AIMessage(content="", tool_calls=[{"name": "use_skill", "args": {}, "id": "c1"}]),
+                self._skill_result(),
+                AIMessage(content="I will compute this. The total is $141,862.50."),
+            ],
+            "citations": [],
+        }
+        result = graph.check_output(state)
+        assert result["last_retry_reason"] == "skipped_tool"
+
+    def test_metric_fires(self):
+        state = {
+            "messages": [
+                HumanMessage(content="What's the real contract value?"),
+                AIMessage(content="", tool_calls=[{"name": "use_skill", "args": {}, "id": "c1"}]),
+                self._skill_result(),
+                AIMessage(content="The total is $141,862.50."),
+            ],
+            "citations": [],
+        }
+        before = metric_value(metrics.agent_skipped_required_tool_total)
+        graph.check_output(state)
+        assert metric_value(metrics.agent_skipped_required_tool_total) == before + 1
 
 
 class TestLeaksSystemPrompt:
@@ -877,6 +1132,83 @@ def test_retry_output_prefers_deferred_complaint_over_citation_complaints():
     assert "[1]" not in result["messages"][0].content
 
 
+def test_retry_output_tells_the_model_its_output_was_never_real_when_fabricated():
+    """Distinct feedback from the deferred branch — a model that already
+    believes it ran something needs to be told that belief is false, not
+    just told to call a tool "now" (implying it hadn't tried yet)."""
+    state = {
+        "messages": [AIMessage(content="Running it now:\n\n```python\nx=1\n```\n\nOutput:\n\n```\n1\n```")],
+        "fabricated_tool_output": True,
+    }
+    result = graph.retry_output(state)
+    msg = result["messages"][0]
+    assert isinstance(msg, HumanMessage)
+    assert "invented" in msg.content.lower() or "not actually" in msg.content.lower()
+
+
+def test_retry_output_prefers_fabricated_complaint_over_deferred_complaint():
+    """fabricated_tool_output is checked before deferred_instead_of_acting
+    — presenting invented output as real is a more severe problem than
+    merely narrating intent, so if a message somehow trips both, the
+    fabrication is the one named."""
+    state = {
+        "messages": [
+            AIMessage(content="Let's run this now. Output:\n\n```python\nx=1\n```\n\n```\n1\n```")
+        ],
+        "fabricated_tool_output": True,
+        "deferred_instead_of_acting": True,
+    }
+    result = graph.retry_output(state)
+    assert "invented" in result["messages"][0].content.lower()
+    assert "call it now" not in result["messages"][0].content.lower()
+
+
+def test_retry_output_tells_the_model_the_skill_named_a_required_tool():
+    """Distinct from both fabricated (no fake tool-output claim here) and
+    deferred (this IS a full, confident answer, not a narrated
+    non-answer) — the specific problem is a skill-named tool never
+    called, regardless of how right the freehand number reads."""
+    state = {
+        "messages": [AIMessage(content="Step by step, the total is $141,862.50.")],
+        "skipped_required_tool": "run_python_in_sandbox",
+    }
+    result = graph.retry_output(state)
+    msg = result["messages"][0]
+    assert isinstance(msg, HumanMessage)
+    assert "run_python_in_sandbox" in msg.content
+    assert "by hand" in msg.content.lower()
+
+
+def test_retry_output_prefers_skipped_tool_complaint_over_deferred_complaint():
+    """skipped_required_tool is checked before deferred_instead_of_acting
+    — a skill-mandated tool being skipped is more specific and severe
+    than generic narrated intent."""
+    state = {
+        "messages": [AIMessage(content="I will compute this. The total is $141,862.50.")],
+        "skipped_required_tool": "run_python_in_sandbox",
+        "deferred_instead_of_acting": True,
+    }
+    result = graph.retry_output(state)
+    assert "run_python_in_sandbox" in result["messages"][0].content
+    assert "call it now" not in result["messages"][0].content.lower()
+
+
+def test_retry_output_prefers_fabricated_complaint_over_skipped_tool_complaint():
+    """fabricated_tool_output outranks skipped_required_tool too —
+    inventing a fake tool result is worse than merely skipping the real
+    tool and computing by hand."""
+    state = {
+        "messages": [
+            AIMessage(content="Running it now:\n\n```python\nx=1\n```\n\nOutput:\n\n```\n141862.50\n```")
+        ],
+        "fabricated_tool_output": True,
+        "skipped_required_tool": "run_python_in_sandbox",
+    }
+    result = graph.retry_output(state)
+    assert "invented" in result["messages"][0].content.lower()
+    assert "by hand" not in result["messages"][0].content.lower()
+
+
 class TestHumanApproval:
     """`human_approval` calls `interrupt()`, which suspends the whole graph
     run outside of a compiled-graph context — so these node-level tests
@@ -998,6 +1330,50 @@ class TestNoAnswerFallback:
 
         assert "messages" not in result
         assert result["used_citations"] == []
+
+    def test_a_deferred_answer_gets_replaced_even_though_should_continue_skipped_check_output(self):
+        """Real, serious bug, found live (Langfuse trace `633eee2b`,
+        2026-09-08): should_continue routes here PRECISELY because
+        check_output never ran on this round — so trusting any non-blank
+        content unconditionally (the old behavior) meant a narrated
+        deferral ("I will now run this script in the sandbox to get the
+        actual contract value.") reached the user completely unvetted the
+        moment a budget happened to trip on that exact round, even though
+        _defers_instead_of_acting correctly flags that same text the
+        moment check_output actually gets to see it. This node must now
+        run that same check fresh, not skip it."""
+        state = {
+            "messages": [
+                AIMessage(
+                    content="I will now run this script in the sandbox to get the actual contract value."
+                )
+            ],
+            "citations": [],
+        }
+        no_answer = graph.make_no_answer_fallback_node()
+        result = no_answer(state)
+
+        assert "messages" in result
+        assert "wasn't able to put together" in result["messages"][0].content
+        assert "run this script" not in result["messages"][0].content
+
+    def test_a_fabricated_answer_gets_replaced_too(self):
+        """Same gap, different check_output reason — a fabricated
+        script-plus-output pair must not reach the user just because a
+        budget tripped before check_output could see it."""
+        state = {
+            "messages": [
+                AIMessage(
+                    content="Running it now:\n\n```python\nx=1\n```\n\nOutput:\n\n```\n1\n```"
+                )
+            ],
+            "citations": [],
+        }
+        no_answer = graph.make_no_answer_fallback_node()
+        result = no_answer(state)
+
+        assert "messages" in result
+        assert "wasn't able to put together" in result["messages"][0].content
 
     def test_emit_message_false_skips_everything_for_the_nested_subagent_case(self):
         """run_subagent's own nested graphs (emit_no_answer_message=False)

@@ -21,6 +21,7 @@ from app.agent.tools import (
     make_domain_subagent_tool,
     make_skill_tools,
     search_docs,
+    skill_tools_first,
 )
 from app.core.security import Policy
 from app.domains.sales.tools import SALES_POLICY
@@ -51,8 +52,12 @@ Draft replies as if writing them yourself, ready for a human rep to review
 and send. You have NO tool that sends anything to a lead — every reply you
 write is a draft for a human, always.
 
-For every meaningful inbound message: call log_lead_interaction first. If
-the lead needs a nudge later rather than an answer now, use
+For every meaningful inbound message: call log_lead_interaction first —
+but it needs the lead's actual name AND contact (email/phone/handle) to
+succeed, so if either one isn't already in this conversation, use
+ask_clarification to get it instead of inventing a placeholder value;
+retrying the same call with the same missing field again won't fix it.
+If the lead needs a nudge later rather than an answer now, use
 schedule_followup — check list_pending_followups first so you don't
 schedule a second one on top of an existing pending one. Once a lead shows
 real buying intent (asks about pricing, timeline, or explicitly wants to
@@ -69,7 +74,12 @@ surfacing in the follow-up queue.
 Use search_docs for product/company facts you're unsure of rather than
 guessing, skill_search/use_skill for a bundled playbook on handling a
 lead's full lifecycle, and ask_clarification when the lead's intent is
-genuinely ambiguous.
+genuinely ambiguous. If a deal involves more than one flat number (a
+multi-year term, an annual escalation %, a volume discount), your very
+first tool call is skill_search("deal economics") — it has the exact
+formula for this, so use it before writing any sandbox script yourself.
+`calculator` only evaluates one flat expression, not a multi-year
+schedule; don't estimate this kind of number in your head either.
 
 If a bundled subagent's focus matches a self-contained lookup better than
 doing it yourself, use run_subagent to delegate it — it does not see this
@@ -79,7 +89,7 @@ conversation's history, so describe everything it needs to know."""
 @dataclass
 class _SalesDomainPlugin:
     def tools(self) -> list:
-        tools = list(_SALES_TOOLS) + list(_REUSED_READ_ONLY_TOOLS)
+        tools = skill_tools_first(_SALES_TOOLS, _REUSED_READ_ONLY_TOOLS)
         if _RUN_SUBAGENT is not None:
             tools.append(_RUN_SUBAGENT)
         return tools

@@ -350,6 +350,33 @@ class State(TypedDict):
     # repeating this across several turns, each "yes" reply just
     # restarting the identical cycle since no real tool_calls were ever
     # made. Read by route_after_check to trigger a real retry.
+    fabricated_tool_output: bool  # Set by check_output — the answer
+    # contains two or more markdown code fences with NO real tool_calls
+    # entry backing them (see _fabricates_tool_output) — a script AND a
+    # plausible-looking "output" for it, presented as if run_command_in_sandbox
+    # had actually executed, when it never did. A real bug, found live:
+    # after a sandbox approval was declined once, the model invented BOTH
+    # a script and its output, narrated in present tense ("Running the
+    # calculation script...") so deferred_instead_of_acting's own
+    # future-intent phrasing never caught it — the fabricated arithmetic
+    # didn't even match the fabricated code. Read by route_after_check to
+    # trigger a real retry, same as the other check_output-computed
+    # reasons — this one ranks ABOVE deferred_instead_of_acting (see
+    # _retry_reason) since presenting false information as true is worse
+    # than merely failing to act on it.
+    skipped_required_tool: str | None  # Set by check_output — the NAME of
+    # a tool a skill loaded THIS TURN (use_skill) named as required, if
+    # that tool was never actually called even though the final answer
+    # states a specific dollar figure (see
+    # _skipped_required_sandbox_after_skill) — None if nothing was
+    # skipped. A real bug, found live: the deal-economics skill was
+    # loaded, its own text says "don't estimate this kind of number in
+    # your head," and the model estimated it in its head anyway —
+    # correctly, that one specific time, but nothing enforced that, and
+    # every other live freehand attempt at the same math landed on a
+    # wrong number. The actual tool NAME, not just a bool, so
+    # retry_output's feedback can name it specifically rather than
+    # hardcoding one. Read by route_after_check to trigger a real retry.
     leaks_system_prompt: bool  # Set by check_output — the final answer
     # contains a long, verbatim run of the seeded system prompt's own text
     # (see _leaks_system_prompt) — output-side defense-in-depth alongside
@@ -738,7 +765,36 @@ def _make_llm(tools: list = TOOLS):
         # response.usage_metadata is silently None under --stream mode:
         # MAX_TOKENS_PER_TURN never trips, and Langfuse shows 0 tokens.
         stream_usage=True,
-    ).bind_tools(tools)
+    ).bind_tools(
+        tools,
+        # A real, live-verified streaming bug, not a guess: attempting two
+        # simultaneous tool calls in one turn (e.g. log_lead_interaction +
+        # enrich_lead_from_website together) produced ONE malformed
+        # tool_calls entry whose id/name/arguments were each the raw
+        # concatenation of both calls' own fields ("log_lead_interaction"
+        # + "enrich_lead_from_website" glued into one string, both calls'
+        # JSON args glued into one unparseable blob) — some part of the
+        # streaming delta-accumulation pipeline (litellm/backend or
+        # langchain_openai's own AIMessageChunk merge) isn't correctly
+        # keying a second tool call's fragments by its own index. This
+        # correctly fails `_invalid_tool_call_names`/`invalid_tool_call`
+        # every time (the glued name is never a real tool), but the model
+        # regenerated the SAME malformed batch 5 times before giving up on
+        # calling both at once — burning ~15k tokens and most of that
+        # turn's MAX_TOKENS_PER_TURN budget before ever reaching a human
+        # approval pause, then tipping the NEXT turn over budget into
+        # `no_answer` for an otherwise ordinary follow-up (Langfuse trace
+        # `fc0a31db`/`dbd2c02b`, 2026-09-08). `parallel_tool_calls=False`
+        # is the correct fix at the actual layer this bug lives in: the
+        # model is never offered the option to emit more than one tool
+        # call per turn, so the buggy multi-call accumulation path can
+        # never trigger. This app's whole HITL design (one pending
+        # decision at a time — human_approval's interrupt payload,
+        # `approval_required`'s SSE event) already assumed single-call
+        # turns everywhere else observed live this session; nothing here
+        # relied on genuine parallel calls.
+        parallel_tool_calls=False,
+    )
 
 
 # --- Node: validate input. Also resets the per-turn safety budgets
@@ -780,6 +836,8 @@ def validate_input(state: State, config: RunnableConfig) -> dict:
         "likely_uncited_citations": [],
         "likely_misattributed_citations": [],
         "deferred_instead_of_acting": False,
+        "fabricated_tool_output": False,
+        "skipped_required_tool": None,
         "leaks_system_prompt": False,
         "last_retry_reason": None,
         "retry_reason_repeat_count": 0,
@@ -1246,6 +1304,38 @@ def make_agent_node(llm):
                 )
             )
 
+        pending_tool = _pending_skill_required_tool(_current_turn_messages(state["messages"]))
+        if pending_tool:
+            # Same recency-weighted, tail-appended mechanism as the two
+            # reminders above, for the SAME underlying reason
+            # (_pending_skill_required_tool's own docstring): a loaded
+            # skill's own "use this tool, don't estimate by hand"
+            # instruction lives buried in a big chunk of tool-result text,
+            # and gets pushed further from the generation point every
+            # subsequent round a turn takes (a failed script, an error
+            # message, a narrated retry) — this is a SHORT, standalone
+            # line placed as close to generation as possible instead,
+            # surviving regardless of how large everything before it has
+            # grown. Names `pending_tool` itself, not a hardcoded tool
+            # name, so this stays correct if _SKILL_REQUIRED_TOOL_MARKERS
+            # ever grows past run_command_in_sandbox. Proactive, not a
+            # replacement for the reactive catch: check_output's own
+            # _skipped_required_sandbox_after_skill still fires afterward
+            # if this doesn't work either — real bug, found live, the
+            # model ignored an equally direct reminder appended to
+            # use_skill's OWN returned text (app/agent/tools.py) once
+            # already, so no single nudge is assumed sufficient on its
+            # own.
+            messages.append(
+                SystemMessage(
+                    content=(
+                        f"Reminder: call {pending_tool} now, for real, for the "
+                        "computation the skill you loaded described — do not "
+                        "compute the result yourself."
+                    )
+                )
+            )
+
         response = llm.invoke(messages)
 
         # Token budget bookkeeping: usage_metadata is populated when the
@@ -1309,18 +1399,28 @@ def _tool_call_fingerprint(tool_calls: list) -> str:
     return json.dumps(normalized)
 
 
-def _current_turn_tool_call_batches(messages: list) -> list:
-    """Tool-call batches from AIMessages within the CURRENT turn only —
-    after the most recent HumanMessage, in reverse order (most recent
-    first) — never spanning into a prior turn's tool calls. This is a
-    per-turn loop-progress check (GRAPH_PATTERNS.md pattern 34), not a
-    cross-conversation one: a model that called search_docs last turn and
-    calls it again this turn hasn't repeated anything."""
+def _current_turn_messages(messages: list) -> list:
+    """All messages within the CURRENT turn only — after the most recent
+    HumanMessage, inclusive — never spanning into a prior turn. Shared
+    slice logic behind _current_turn_tool_call_batches (loop-progress,
+    GRAPH_PATTERNS.md pattern 34) and _skipped_required_sandbox_after_skill
+    (skill-instruction-compliance) below; both need "everything said and
+    done so far in THIS turn," just filtered differently afterward."""
     last_human_index = next(
         (i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)),
         None,
     )
-    turn_messages = messages[last_human_index:] if last_human_index is not None else messages
+    return messages[last_human_index:] if last_human_index is not None else messages
+
+
+def _current_turn_tool_call_batches(messages: list) -> list:
+    """Tool-call batches from AIMessages within the CURRENT turn only, in
+    reverse order (most recent first) — never spanning into a prior
+    turn's tool calls. This is a per-turn loop-progress check
+    (GRAPH_PATTERNS.md pattern 34), not a cross-conversation one: a model
+    that called search_docs last turn and calls it again this turn hasn't
+    repeated anything."""
+    turn_messages = _current_turn_messages(messages)
     return [
         m.tool_calls
         for m in reversed(turn_messages)
@@ -1805,12 +1905,66 @@ def _likely_misattributed_citations(
 # proceed?", "shall I go ahead?") — the second also already violates
 # SYSTEM_PROMPT's separate "don't ask if the user wants to know more" rule,
 # so flagging it is doubly justified regardless of tool intent specifically.
+#
+# A THIRD real instance, found live, widened phrasing (1) rather than
+# adding a third category: after a run_command_in_sandbox script failed,
+# the model announced "Let's try parsing the log manually instead. I'll
+# count the occurrences of 'db_timeout'..." and just STOPPED there — never
+# produced the actual count. This slipped through the original pattern for
+# two independent reasons: "I'll" (a contraction) wasn't recognized as
+# equivalent to "I will", and neither "count the X"/"parse X manually" was
+# in the trailing-phrase list (which only covered tool-specific verbs like
+# "look up"/"check"/"search for"). Both gaps closed narrowly — "i'll" added
+# as its own lead-in alternative, "count the"/"calculate"/"compute"/
+# "manually" added as trailing alternatives — rather than attempting a more
+# general "does this message actually deliver what it promises" check,
+# same "deliberately crude, not exhaustive" posture as every other
+# heuristic in this module. Consequence of the miss, not just a missed
+# retry: check_output accepted the incomplete answer as final, and it was
+# then written to the semantic cache (app/retrieval/semantic_cache.py) —
+# every future semantically-similar question would have kept replaying
+# this same non-answer until the cache entry expired, not just this one
+# turn (Langfuse trace `9336aaa6`, 2026-09-08).
+#
+# A FOURTH real instance, found live immediately after fixing
+# skill_tools_first's own bug (app/agent/tools.py) — once the model
+# actually started calling use_skill (see that function's docstring), the
+# NEXT failure point was narrating the skill's own returned script instead
+# of running it: "Here's the script to compute the total contract
+# value:\n\n```python\n...\n```\n\nLet's run this script in a sandbox to
+# get the result." — a complete, correct script, quoted verbatim, followed
+# by an announcement to run it that never became a real tool_calls entry.
+# "run this"/"run that"/"run it"/"run the X" added as trailing
+# alternatives for the same reason count/calculate/compute were: the
+# original list only covered "look up"/"check"/"search for", never the
+# single most common verb for what this app's own sandbox tools actually
+# do.
 _TOOL_INTENT_RE = re.compile(
-    r"\b(?:i (?:will|can|could|would)|let(?:'s| us)|let me)\b"
+    r"\b(?:i (?:will|can|could|would)|i'll|let(?:'s| us)|let me)\b"
+    # A real, live-verified false positive, found the same session this was
+    # widened: "Sorry, I could not run that calculation." matches "i could"
+    # (lead-in) + "run that" (trailing) just as readily as a genuine
+    # deferral — an apology for FAILURE, not a promise to act, but the
+    # regex couldn't tell the difference. This negative lookahead rejects
+    # a negation immediately after the lead-in ("'t" for can't/couldn't/
+    # wouldn't, " not" for the separate-word form) before the match can
+    # even reach the trailing-phrase alternatives. Caught by a hermetic
+    # test (tests/core/test_metrics.py's own tool-error path) that starts
+    # a fake LLM with exactly two queued messages: the false positive
+    # triggered an unwanted retry_output round, the fake model's message
+    # iterator ran out on the THIRD call it was never told to expect, and
+    # that raw StopIteration surfaced as LangGraph's own pregel loop
+    # crashing with "generator raised StopIteration" — a good illustration
+    # of why this heuristic being wrong isn't just a wasted retry, it can
+    # break the turn outright.
+    r"(?!'t\b|\s+not\b)"
     r"[^.!?\n]{0,60}"
     r"\b(?:use\s+the\s+\S+\s+tool|look\s+(?:that|this|it)\s+up|"
     r"look\s+up\s+(?:that|this|it)|check\s+(?:on\s+)?that|"
-    r"search\s+for\s+that|proceed\s+with\s+that)\b",
+    r"search\s+for\s+that|proceed\s+with\s+that|"
+    r"count\s+the|calculate\s+(?:that|this|it)|compute\s+(?:that|this|it)|"
+    r"run\s+(?:this|that|it|the\s+\S+)|"
+    r"manually)\b",
     re.IGNORECASE,
 )
 _PERMISSION_SEEKING_RE = re.compile(
@@ -1836,6 +1990,135 @@ def _defers_instead_of_acting(content: str) -> bool:
     if not content or not isinstance(content, str):
         return False
     return bool(_TOOL_INTENT_RE.search(content) or _PERMISSION_SEEKING_RE.search(content))
+
+
+# Two full ```...``` fenced blocks (open+close each) = 4 total ``` markers.
+_FABRICATED_OUTPUT_FENCE_THRESHOLD = 4
+
+
+def _fabricates_tool_output(content: str) -> bool:
+    """True when a tool-call-free final answer contains two or more
+    markdown code fences — the specific shape of "here's the script"
+    immediately followed by "here's its output," presented as if
+    run_command_in_sandbox had actually run, when no tool_calls entry
+    exists for this message at all (check_output's only caller already
+    guarantees that — same precondition _defers_instead_of_acting already
+    documents). A single code block (explaining a formula, or showing what
+    a script would look like) is normal and not flagged; two or more is
+    the shape a genuine script-plus-its-output pair takes.
+
+    Real bug, found live: after a run_command_in_sandbox approval was
+    declined once, the model invented BOTH a plausible-looking Python
+    script AND a plausible-looking "output" line for it, narrated in
+    PRESENT tense ("Running the calculation script with the provided
+    inputs:") — not narrated future intent, so _defers_instead_of_acting's
+    own phrasing never caught it. The fabricated arithmetic didn't even
+    match the fabricated code (`50000 * (1-0.10)**3` is 36450.00, not the
+    claimed 43750.00) — this reached the user as an ordinary, confident
+    final answer, undetected by every other check (content wasn't too
+    short, didn't leak the prompt, had no citations to misattribute)."""
+    if not content or not isinstance(content, str):
+        return False
+    return content.count("```") >= _FABRICATED_OUTPUT_FENCE_THRESHOLD
+
+
+# Every tool a current skill's own body names as required for real
+# computation — deal-economics/vendor-incident-postmortem/support-log-triage
+# all point at run_python_in_sandbox (added specifically to eliminate the
+# shell-quoting failures run_command_in_sandbox kept hitting live — see
+# that tool's own docstring, app/domains/{ops,support,sales}/tools.py).
+# run_command_in_sandbox deliberately does NOT belong here: this is a
+# crude SUBSTRING match against the skill's own text (see
+# _pending_skill_required_tool below), not a real intent parse — a real
+# bug, found live, was each skill's own "not as a shell command" aside
+# mentioning run_command_in_sandbox BY NAME as a negative example, which
+# the substring check can't tell apart from a genuine requirement, so it
+# fired a false "you skipped this" correction on a turn that had ALREADY
+# succeeded via run_python_in_sandbox. Fixed at the source (the skill
+# text no longer names it at all) — kept out of this tuple too, so a
+# future skill's own aside doesn't reintroduce the same false positive.
+# Checked as a tuple, not a single hardcoded name, so a FUTURE skill
+# naming a different required tool is picked up automatically instead of
+# silently falling through this whole mechanism. Still not a fully
+# generic "any tool a skill mentions" scanner — most skills genuinely
+# don't require one at all (support-tier1-triage never mentions a tool),
+# so this stays an explicit allowlist of tools worth nudging about, not a
+# blind cross-reference against every tool name in the app.
+_SKILL_REQUIRED_TOOL_MARKERS = ("run_python_in_sandbox",)
+_DOLLAR_FIGURE_RE = re.compile(r"\$[\d,]+(?:\.\d{1,2})?")
+
+
+def _pending_skill_required_tool(turn_messages: list) -> str | None:
+    """The name of a tool a skill loaded THIS TURN (via use_skill) named
+    as required, if that tool hasn't been called yet anywhere in this
+    turn — or None if no loaded skill named one of
+    _SKILL_REQUIRED_TOOL_MARKERS, or the one it named was already called.
+    `turn_messages` is already scoped to the current turn (see
+    _current_turn_messages) — shared by TWO different callers checking
+    the SAME facts at two different points for two different purposes:
+    agent() (proactive — a recency-weighted reminder naming THIS specific
+    tool, injected before the NEXT generation, same mechanism as the
+    citation/history-summary reminders right above its own call site) and
+    _skipped_required_sandbox_after_skill below (reactive — a
+    check_output rejection AFTER the fact, if the proactive reminder
+    didn't work). Returning the actual name (not just a bool) means
+    neither caller has to hardcode which tool it's talking about — both
+    read it from whichever marker actually matched."""
+    for name in _SKILL_REQUIRED_TOOL_MARKERS:
+        skill_named_it = any(
+            isinstance(m, ToolMessage)
+            and getattr(m, "name", None) == "use_skill"
+            and name in str(m.content)
+            for m in turn_messages
+        )
+        if not skill_named_it:
+            continue
+        already_called = any(
+            isinstance(m, ToolMessage) and getattr(m, "name", None) == name for m in turn_messages
+        )
+        if not already_called:
+            return name
+    return None
+
+
+def _skipped_required_sandbox_after_skill(messages: list) -> str | None:
+    """The tool name _pending_skill_required_tool still names, if the
+    model produced a FINAL answer this round (no more tool_calls) that
+    states a specific dollar figure without ever calling it — the model
+    read "write a short script and run it with run_command_in_sandbox
+    instead... don't estimate this kind of number in your head" and
+    estimated it in its head anyway, ignoring even agent()'s own
+    proactive reminder. Returns the actual name (not just a bool) so
+    retry_output's own feedback can name the SPECIFIC tool a skill
+    required, not a hardcoded one — same reasoning as
+    _pending_skill_required_tool's own docstring.
+
+    Real bug, found live (Langfuse trace `633eee2b`, 2026-09-08): the
+    deal-economics skill was loaded, its own text says exactly the above,
+    and the final answer computed a $141,862.50 figure via step-by-step
+    PROSE arithmetic instead of ever calling the tool. That particular
+    number happened to be correct (independently verified against the
+    skill's own formula) — but nothing here actually enforced that, and
+    every OTHER live attempt at this same freehand deal math earlier in
+    this session landed on a materially wrong number instead. Getting
+    lucky once is not the same as being reliable; this closes the gap
+    between "the skill said to use a tool" and "the tool was actually
+    used," rather than trusting whatever number the model happens to
+    produce by hand.
+
+    Deliberately narrow in one more way beyond _pending_skill_required_tool
+    itself: only fires when the final answer states a dollar figure (a
+    clarifying question, or an honest "I couldn't compute this," is not
+    the problem this exists to catch)."""
+    turn_messages = _current_turn_messages(messages)
+    pending_tool = _pending_skill_required_tool(turn_messages)
+    if not pending_tool:
+        return None
+    last = turn_messages[-1] if turn_messages else None
+    content = getattr(last, "content", "") if last else ""
+    if isinstance(content, str) and _DOLLAR_FIGURE_RE.search(content):
+        return pending_tool
+    return None
 
 
 # Long enough that a coincidental short-phrase overlap (the model
@@ -1889,18 +2172,20 @@ def _leaks_system_prompt(content: str, system_prompt: str) -> bool:
 def _retry_reason(
     content: str,
     leaks_prompt: bool,
+    fabricated: bool,
+    skipped_tool: str | None,
     deferred: bool,
     likely_uncited: list[dict],
     likely_misattributed: list[dict],
 ) -> str | None:
     """Which single reason (if any) route_after_check/retry_output would
     act on for this round — same priority order those two already use
-    (leaked system prompt, then length, then deferred-instead-of-acting,
-    then uncited, then misattributed), pulled into one place so
-    check_output can compare THIS round's reason against the PRIOR
-    round's (see retry_reason_repeat_count) without duplicating that
-    ordering a third time. Returns None when the answer needs no retry at
-    all.
+    (leaked system prompt, then length, then fabricated-tool-output, then
+    skipped-required-tool, then deferred-instead-of-acting, then uncited,
+    then misattributed), pulled into one place so check_output can compare
+    THIS round's reason against the PRIOR round's (see
+    retry_reason_repeat_count) without duplicating that ordering a third
+    time. Returns None when the answer needs no retry at all.
 
     Leaked system prompt is checked FIRST, ahead of even length: it's the
     one reason here with a real security dimension (see
@@ -1909,11 +2194,27 @@ def _retry_reason(
     to matter — the two conditions can't meaningfully co-occur, so
     ordering them relative to each other is really about which gets named
     in the feedback on the rare turn where both were somehow true.
+
+    Fabricated tool output is checked ahead of deferred-instead-of-acting
+    (both are "no real tool call happened" problems, but presenting FALSE
+    information as true is worse than merely narrating an intention to act
+    — see _fabricates_tool_output's own docstring for the live case that
+    motivated this ordering). Skipped-required-tool is checked right after
+    fabricated, still ahead of deferred — it doesn't invent a fake tool
+    result the way fabricated does, but it's still a specific, more severe
+    problem than generic deferral: the model was TOLD (by a skill it
+    itself just loaded) to use a tool for this exact kind of math, and
+    used none, no matter how the answer happens to read (see
+    _skipped_required_sandbox_after_skill's own docstring).
     """
     if leaks_prompt:
         return "leaked_prompt"
     if isinstance(content, str) and len(content) < MIN_ANSWER_LENGTH:
         return "too_short"
+    if fabricated:
+        return "fabricated"
+    if skipped_tool:
+        return "skipped_tool"
     if deferred:
         return "deferred"
     if likely_uncited:
@@ -1960,11 +2261,19 @@ def check_output(state: State, system_prompt: str = SYSTEM_PROMPT) -> dict:
     defers = _defers_instead_of_acting(content)
     if defers:
         metrics.agent_deferred_instead_of_acting_total.inc()
+    fabricated = _fabricates_tool_output(content)
+    if fabricated:
+        metrics.agent_fabricated_tool_output_total.inc()
+    skipped_tool = _skipped_required_sandbox_after_skill(state["messages"])
+    if skipped_tool:
+        metrics.agent_skipped_required_tool_total.inc()
     leaks_prompt = _leaks_system_prompt(content, system_prompt)
     if leaks_prompt:
         metrics.agent_system_prompt_leak_total.inc()
     likely_uncited = _likely_uncited_citations(content, citations, used)
-    reason = _retry_reason(content, leaks_prompt, defers, likely_uncited, likely_misattributed)
+    reason = _retry_reason(
+        content, leaks_prompt, fabricated, skipped_tool, defers, likely_uncited, likely_misattributed
+    )
     prior_reason = state.get("last_retry_reason")
     if reason is None:
         repeat_count = 0
@@ -1978,6 +2287,8 @@ def check_output(state: State, system_prompt: str = SYSTEM_PROMPT) -> dict:
         "likely_uncited_citations": likely_uncited,
         "likely_misattributed_citations": likely_misattributed,
         "deferred_instead_of_acting": defers,
+        "fabricated_tool_output": fabricated,
+        "skipped_required_tool": skipped_tool,
         "leaks_system_prompt": leaks_prompt,
         "last_retry_reason": reason,
         "retry_reason_repeat_count": repeat_count,
@@ -2099,13 +2410,13 @@ def retry_output(state: State) -> dict:
     looping on the exact same messages. MAX_ITERATIONS in should_continue
     still bounds the total number of retries.
 
-    Five independent reasons route here (route_after_check) — a leaked
-    system prompt, length, deferred-instead-of-acting, likely-uncited-
-    citations, and likely-misattributed-citations — so the feedback names
-    the ACTUAL problem rather than a generic "try again": a model nudged
-    with the wrong complaint (e.g. "too short" when the real issue was a
-    missing citation) has no reason to fix the thing that's actually
-    wrong. A leaked system prompt is checked FIRST — see
+    Seven independent reasons route here (route_after_check) — a leaked
+    system prompt, length, fabricated-tool-output, skipped-required-tool,
+    deferred-instead-of-acting, likely-uncited-citations, and
+    likely-misattributed-citations — so the feedback names the ACTUAL
+    problem rather than a generic "try again": a model nudged with the wrong complaint (e.g. "too short" when
+    the real issue was a missing citation) has no reason to fix the thing
+    that's actually wrong. A leaked system prompt is checked FIRST — see
     _leaks_system_prompt/_retry_reason's own docstrings for why it outranks
     even length. Length is checked next since an answer that's both too
     short AND lexically overlapping a source is rare in practice, and
@@ -2115,14 +2426,19 @@ def retry_output(state: State) -> dict:
     round-2 narration — see _defers_instead_of_acting's own docstring), so
     it nudges toward tool use directly rather than just "write more," on
     the theory that an empty response is often a stalled tool decision,
-    not a stalled prose one. Deferred-instead-of-acting is checked next,
-    before either citation reason: a model that just narrated tool intent
-    instead of calling one has nothing real to cite yet anyway, so a
-    citation complaint would be meaningless noise on top of the actual
-    problem. Uncited is checked before misattributed for the same reason
-    those two are ordered — both are citation problems, but a citation
-    missing entirely is the more common and more actionable of the two to
-    lead with.
+    not a stalled prose one. Fabricated-tool-output is checked next, ahead
+    of deferred-instead-of-acting — presenting a fake script AND a fake
+    result is a more severe problem than merely narrating intent, and the
+    feedback for each needs to say something different (one has to be told
+    ITS RESULT WAS NEVER REAL; the other just needs to actually call the
+    tool). Deferred-instead-of-acting is checked next, before either
+    citation reason: a model that just narrated tool intent instead of
+    calling one has nothing real to cite yet anyway, so a citation
+    complaint would be meaningless noise on top of the actual problem.
+    Uncited is checked before misattributed for the same reason those two
+    are ordered — both are citation problems, but a citation missing
+    entirely is the more common and more actionable of the two to lead
+    with.
     """
     metrics.agent_retry_total.inc()
     messages = state.get("messages") or []
@@ -2147,6 +2463,36 @@ def retry_output(state: State) -> dict:
             "That answer was too short — please give a fuller answer. If a "
             "tool would help answer this, call it directly; do not just "
             "return an empty response."
+        )
+    elif state.get("fabricated_tool_output"):
+        # Explicitly names the problem as FABRICATION, not just "call a
+        # tool" (deferred_instead_of_acting's own feedback below) — a model
+        # that already believes it ran something needs to be told that
+        # belief is false before it will call the real tool instead of
+        # just reformatting the same invented numbers.
+        feedback = (
+            "That answer showed a script and its output as if a real tool "
+            "had run it, but no tool was actually called — that output was "
+            "invented, not computed. Call run_command_in_sandbox for real "
+            "this time, and only report the number it actually returns."
+        )
+    elif state.get("skipped_required_tool"):
+        # Distinct from BOTH fabricated (no fake tool-output claim here —
+        # the model didn't pretend to run anything) and deferred (this
+        # model actually gave a full, confident-sounding answer, not a
+        # narrated non-answer) — the specific problem is that a skill it
+        # already loaded named a required tool, and it computed the
+        # number by hand instead, no matter how correct that number reads.
+        # Names the ACTUAL tool the skill required (state carries the
+        # name, not just a bool — see _skipped_required_sandbox_after_skill's
+        # own docstring), not a hardcoded one, so this stays correct if a
+        # future skill names something other than run_command_in_sandbox.
+        pending_tool = state.get("skipped_required_tool")
+        feedback = (
+            f"The skill you loaded said to use {pending_tool} for this — "
+            "you computed a number by hand instead of calling it. Call "
+            f"{pending_tool} now, for real, and use the number it actually "
+            "returns, even if your own arithmetic seemed right."
         )
     elif state.get("deferred_instead_of_acting"):
         # The OPPOSITE instruction from the citation branches below — those
@@ -2197,11 +2543,21 @@ def retry_output(state: State) -> dict:
 # trusts non-blank content: a short-but-real answer beats no answer, and
 # an actually-EMPTY one still falls through to the generic text below (a
 # blank string is never "trusted" — see the `.strip()` check). The other
-# three reasons (`leaked_prompt`, `deferred_instead_of_acting`,
-# `misattributed`) are NOT about attribution polish — the content itself
-# is untrustworthy (a leak, pure narration with no real answer, or a
-# citation actively misattached to a claim it doesn't support, which
-# READS as verified when it isn't) — those always get replaced.
+# five reasons (`leaked_prompt`, `fabricated`, `skipped_tool`,
+# `deferred_instead_of_acting`, `misattributed`) are NOT about attribution
+# polish — the content itself is untrustworthy (a leak, INVENTED numbers
+# presented as computed, an UNVERIFIED number a skill said needed a real
+# tool, pure narration with no real answer, or a citation actively
+# misattached to a claim it doesn't support, which READS as verified when
+# it isn't) — those always get replaced. `fabricated` and `skipped_tool`
+# in particular must never be trusted: unlike `too_short`/`uncited`, where
+# the underlying content is still correct, both center on a number that
+# was never actually computed by the tool that was supposed to compute it
+# — showing either verbatim on exhaustion would be worse than the generic
+# fallback, not just less polished. (`skipped_tool`'s number MIGHT be
+# right — see its own docstring — but "might" is exactly the problem: the
+# whole point of `run_command_in_sandbox` existing is to not have to
+# trust a model's own arithmetic.)
 _TRUST_CONTENT_RETRY_REASONS = frozenset({"too_short", "uncited"})
 
 
@@ -2276,37 +2632,52 @@ def make_retry_exhausted_node(emit_message: bool = True):
 # ..." ToolMessage and tag its own outcome="budget_exceeded" metric — this
 # node filling in prose first would leave that check looking at real text
 # and wrongly reporting the run as "completed". ---
-def make_no_answer_fallback_node(emit_message: bool = True):
+def make_no_answer_fallback_node(emit_message: bool = True, system_prompt: str = SYSTEM_PROMPT):
     def no_answer_fallback(state: State) -> dict:
         if not emit_message:
             return {}
         last = state["messages"][-1]
         content = getattr(last, "content", "") or ""
-        updates: dict = {}
-        if not (isinstance(content, str) and content.strip()):
+        # Freshly run check_output's OWN validity logic on THIS EXACT
+        # content, not a stale state["last_retry_reason"] left over from
+        # an earlier round — should_continue routed here via one of its
+        # own safety-net exits (max iterations/tokens/cost, no-progress),
+        # which means check_output NEVER GOT TO RUN on this round at all.
+        # A real, serious bug, found live: this used to trust ANY
+        # non-blank content unconditionally, which meant EVERY
+        # check_output-computed safety check (leaked system prompt,
+        # fabricated tool output, a skill-required tool skipped,
+        # deferred-instead-of-acting) was silently bypassed the moment a
+        # budget happened to trip on the exact round that produced bad
+        # content — a narrated deferral ("I will now run this script in
+        # the sandbox to get the actual contract value.") reached the
+        # user completely unvetted this way (Langfuse trace `633eee2b`,
+        # 2026-09-08), even though _defers_instead_of_acting correctly
+        # flags that exact text when check_output actually gets to see
+        # it. Recomputing fresh here — not duplicating the checks, not
+        # skipping them — means every current AND future check_output
+        # safety check automatically applies here too, not just whichever
+        # ones existed when this node was first written.
+        fresh = check_output(state, system_prompt=system_prompt)
+        trustworthy = (
+            fresh["last_retry_reason"] is None
+            or fresh["last_retry_reason"] in _TRUST_CONTENT_RETRY_REASONS
+        ) and isinstance(content, str) and bool(content.strip())
+        updates: dict = {
+            "used_citations": fresh["used_citations"],
+            "ungrounded_claims_count": fresh["ungrounded_claims_count"],
+        }
+        if not trustworthy:
             content = (
                 "I wasn't able to put together a full answer to that just now "
                 "— could you try rephrasing, or asking again?"
             )
             updates["messages"] = [AIMessage(content=content)]
-        # Real grounding for whatever content actually ends up in front of
-        # the user — the original answer if it had one, or the fallback
-        # text just built above. should_continue routed here SPECIFICALLY
-        # because check_output never got to run, so without this, a turn
-        # that happened to produce a perfectly good, correctly-cited answer
-        # on the exact round a safety budget tripped would show that answer
-        # with no citations UI at all (a real bug, caught live: a
-        # correctly-cited final answer's `used_citations` stayed stuck at
-        # an earlier, REJECTED round's empty value, because check_output
-        # simply never ran on the round that actually mattered).
         # `followups` is deliberately NOT computed here — suggest_followups
         # needs its own LLM call, and generating MORE content right after
         # deciding a turn is over budget defeats the point of the budget;
         # citations are different, a free computation over content that's
         # already been paid for.
-        citations = state.get("citations") or []
-        updates["used_citations"] = _used_citations(content, citations)
-        updates["ungrounded_claims_count"] = _ungrounded_claims_count(content, citations)
         return updates
 
     return no_answer_fallback
@@ -2525,7 +2896,9 @@ def build_graph(
     )
     builder.add_node(
         "no_answer",
-        _instrumented("no_answer")(make_no_answer_fallback_node(emit_no_answer_message)),
+        _instrumented("no_answer")(
+            make_no_answer_fallback_node(emit_no_answer_message, system_prompt=manifest.system_prompt)
+        ),
     )
     builder.add_node(
         "suggest_followups", _instrumented("suggest_followups")(suggest_followups)

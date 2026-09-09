@@ -194,6 +194,34 @@ agent_deferred_instead_of_acting_total = Counter(
     "triggers a retry with feedback to call the tool now, not describe it.",
 )
 
+agent_fabricated_tool_output_total = Counter(
+    "agent_fabricated_tool_output_total",
+    "Final answers containing two or more markdown code fences with NO "
+    "real tool_calls entry backing them (check_output's "
+    "_fabricates_tool_output) — a script AND a plausible-looking 'output' "
+    "for it, presented as if run_command_in_sandbox had actually run, when "
+    "it never did. Real bug, found live: after a sandbox approval was "
+    "declined once, the model invented both a script and its output, whose "
+    "own fabricated arithmetic didn't even match its own fabricated code. "
+    "Acted on by route_after_check: triggers a retry with feedback that "
+    "the tool was never actually called.",
+)
+
+agent_skipped_required_tool_total = Counter(
+    "agent_skipped_required_tool_total",
+    "Final answers where a skill was loaded this turn (use_skill) whose "
+    "own text names run_command_in_sandbox as required, but that tool was "
+    "never actually called, even though the final answer states a "
+    "specific dollar figure (check_output's "
+    "_skipped_required_sandbox_after_skill). Real bug, found live: the "
+    "deal-economics skill's own text says not to estimate this kind of "
+    "number by hand, and the model estimated it by hand anyway — correct "
+    "that one specific time, but nothing enforced it, and every other "
+    "live freehand attempt at the same math landed on a wrong number. "
+    "Acted on by route_after_check: triggers a retry with feedback to "
+    "actually call the tool the skill named.",
+)
+
 agent_system_prompt_leak_total = Counter(
     "agent_system_prompt_leak_total",
     "Final answers containing a long, verbatim run of the seeded system "
