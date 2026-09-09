@@ -28,6 +28,7 @@ import html.parser
 import logging
 import socket  # noqa: F401
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -38,7 +39,7 @@ from app.core.url_safety import UnsafeURLError
 from app.core.url_safety import assert_safe_url as _assert_safe_url_impl
 from app.ingestion.chunking import chunk_text
 from app.retrieval import qdrant_store
-from app.retrieval.embeddings import embed_sparse, embed_text
+from app.retrieval.embeddings import EMBED_BATCH_SIZE, embed_sparse_batch, embed_texts
 
 logger = logging.getLogger(__name__)
 
@@ -55,17 +56,22 @@ class IngestRefused(Exception):
     whichever caller happened to catch the exception."""
 
 
-def _sparse_vector_or_none(text: str) -> tuple[list[int], list[float]] | None:
-    """Best-effort sparse leg for an ingested chunk — same degrade-not-fail
-    shape as app/agent/tools.py's identical helper for add_note/remember: a local
-    BM25 model hiccup must not block an ingest, just cost it the sparse
-    leg's recall (the point still writes, findable dense-only)."""
+def _sparse_vectors_or_none(
+    texts: list[str],
+) -> list[tuple[list[int], list[float]] | None] | None:
+    """Best-effort sparse leg for a WHOLE document's chunks at once — same
+    degrade-not-fail shape as app/agent/tools.py's identical helper for
+    add_note/remember, batched the same way embed_texts is (see that
+    function's docstring for why): a local BM25 model hiccup must not
+    block an ingest, just cost the WHOLE document's sparse leg recall
+    (every point still writes, findable dense-only) rather than one point
+    at a time."""
     try:
-        return embed_sparse(text)
+        return embed_sparse_batch(texts)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "sparse embedding unavailable for an ingested chunk; writing dense-only",
-            extra={"error_class": type(exc).__name__},
+            "sparse embedding unavailable for this ingest; writing dense-only",
+            extra={"error_class": type(exc).__name__, "chunk_count": len(texts)},
         )
         return None
 
@@ -76,11 +82,33 @@ def ingest_text(
     ctx: SecurityCtx | None,
     source: str = "text",
     topic: str | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> int:
     """Chunk, embed, and upsert `text` as one or more Qdrant points — the
     shared core every `ingest_*` entry point below funnels through.
     Returns the number of child chunks written (0 for blank/whitespace
     text — not an error, there's simply nothing to index).
+
+    Sparse vectors are computed in ONE batched call for the whole document
+    (`_sparse_vectors_or_none`, a local ONNX model — trivially fast even at
+    thousands of chunks, live-verified at ~0.5s for 5700). Dense vectors —
+    the actual bottleneck, a real HTTP round trip per batch against the
+    embedding endpoint — are embedded `EMBED_BATCH_SIZE` chunks at a time
+    rather than one `embed_texts` call for everything, specifically so
+    there's a natural per-batch checkpoint to report progress from: a
+    5700-chunk document has ~28 checkpoints instead of one all-or-nothing
+    wait. Live-verified ~10x wall-clock improvement over the original
+    one-chunk-at-a-time loop (13 minutes -> 75 seconds on a real 5700-chunk
+    document) comes from batching itself (see `embed_texts`'s own
+    docstring), not from this per-batch splitting — this loop calls
+    `embed_texts` exactly as many times either way, just interleaved with
+    `on_progress` instead of collected into one list first.
+
+    `on_progress(chunks_embedded, chunks_total)`, if given, is called after
+    each dense batch — optional, for a caller that wants to report
+    incremental progress on a large document (app/ingestion/ingest_worker.py
+    does, for the upload UI's progress bar). Never called for a document
+    with 0 chunks.
     """
     if not valid_ctx(ctx):
         metrics.agent_ingest_refused_total.labels(reason="no_ctx").inc()
@@ -90,7 +118,18 @@ def ingest_text(
     if not parents:
         return 0
 
+    child_texts = [child_text for parent in parents for child_text in parent.children]
+    total = len(child_texts)
+    sparse_vectors = _sparse_vectors_or_none(child_texts)
+
+    dense_vectors: list[list[float]] = []
+    for start in range(0, total, EMBED_BATCH_SIZE):
+        dense_vectors.extend(embed_texts(child_texts[start : start + EMBED_BATCH_SIZE]))
+        if on_progress is not None:
+            on_progress(len(dense_vectors), total)
+
     points = []
+    i = 0
     for parent in parents:
         for child_text in parent.children:
             payload = {
@@ -108,11 +147,12 @@ def ingest_text(
             points.append(
                 qdrant_store.build_point(
                     point_id=uuid.uuid4().hex,
-                    dense_vector=embed_text(child_text),
+                    dense_vector=dense_vectors[i],
                     payload=payload,
-                    sparse_vector=_sparse_vector_or_none(child_text),
+                    sparse_vector=sparse_vectors[i] if sparse_vectors is not None else None,
                 )
             )
+            i += 1
 
     qdrant_store.upsert(points)
     metrics.agent_ingest_total.labels(source=source.split(":")[0]).inc()

@@ -341,6 +341,9 @@
   .upload-status-line .upload-filename { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .upload-status-line.upload-done { color: var(--success); }
   .upload-status-line.upload-error { color: var(--danger); }
+  .upload-progress { width: 5rem; height: .35rem; accent-color: var(--accent); border-radius: 999px; }
+  .upload-progress::-webkit-progress-bar { background: var(--border); border-radius: 999px; }
+  .upload-progress::-webkit-progress-value { border-radius: 999px; }
 
   #domainInfo {
     font-size: .82rem; line-height: 1.55; color: var(--text-secondary);
@@ -692,21 +695,31 @@ function addUploadStatusLine(filename) {
   const name = document.createElement("span");
   name.className = "upload-filename";
   name.textContent = filename;
+  const bar = document.createElement("progress");
+  bar.className = "upload-progress";
+  bar.max = 100;
+  bar.value = 0;
+  bar.hidden = true; // shown only once a real "progress" event gives it something to report
   const state = document.createElement("span");
   state.className = "upload-state";
   state.textContent = "uploading…";
   line.appendChild(name);
+  line.appendChild(bar);
   line.appendChild(state);
   uploadStatusEl.appendChild(line);
-  return { line, state };
+  return { line, bar, state };
 }
 
-// Streams one upload's progress (started/done/error — see
+// Streams one upload's progress (started/progress/done/error — see
 // app/api.py::ingest_stream) into its own status line, independently of
 // every other file in the same batch — one slow or failing file never
-// blocks or hides the others' outcomes.
+// blocks or hides the others' outcomes. `progress` events (`{done,
+// total}` chunk counts) only start arriving once the worker's own
+// embedding loop is actually running — see app/ingestion/ingest_worker.py's
+// module docstring for why that's a real mid-flight signal now, not just
+// a start/end guess, on a potentially multi-minute large upload.
 async function trackIngestJob(filename, jobId) {
-  const { line, state } = addUploadStatusLine(filename);
+  const { line, bar, state } = addUploadStatusLine(filename);
   try {
     const response = await fetch(`/ingest/stream/${encodeURIComponent(jobId)}`, {
       headers: headers(),
@@ -714,15 +727,23 @@ async function trackIngestJob(filename, jobId) {
     await pumpSSE(response, (event) => {
       if (event.type === "started") {
         state.textContent = "processing…";
+      } else if (event.type === "progress") {
+        const pct = event.total > 0 ? Math.round((event.done / event.total) * 100) : 0;
+        bar.hidden = false;
+        bar.value = pct;
+        state.textContent = `processing… ${pct}% (${event.done}/${event.total} chunks)`;
       } else if (event.type === "done") {
+        bar.hidden = true;
         line.classList.add("upload-done");
         state.textContent = `✓ indexed (${event.chunks} chunk${event.chunks === 1 ? "" : "s"})`;
       } else if (event.type === "error") {
+        bar.hidden = true;
         line.classList.add("upload-error");
         state.textContent = `✕ ${event.content}`;
       }
     });
   } catch (err) {
+    bar.hidden = true;
     line.classList.add("upload-error");
     state.textContent = `✕ ${err}`;
   }

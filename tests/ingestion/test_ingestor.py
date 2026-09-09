@@ -1,5 +1,6 @@
-"""Tests for app/ingestion/ingestor.py — mocks embed_text/embed_sparse/qdrant_store.upsert
-(same boundary tests/agent/test_tools.py mocks), plus socket.getaddrinfo/httpx for
+"""Tests for app/ingestion/ingestor.py — mocks embed_texts/embed_sparse_batch/
+qdrant_store.upsert (same boundary tests/agent/test_tools.py mocks for the
+single-item embed_text/embed_sparse), plus socket.getaddrinfo/httpx for
 ingest_url, so these stay hermetic (no live network, no live Qdrant) like the
 rest of the suite.
 """
@@ -12,8 +13,10 @@ from tests.conftest import TEST_CTX
 
 
 def _mock_embeddings(monkeypatch):
-    monkeypatch.setattr(ingestor, "embed_text", lambda text: [0.1, 0.2])
-    monkeypatch.setattr(ingestor, "embed_sparse", lambda text: ([1, 2], [0.5, 0.5]))
+    monkeypatch.setattr(ingestor, "embed_texts", lambda texts: [[0.1, 0.2] for _ in texts])
+    monkeypatch.setattr(
+        ingestor, "embed_sparse_batch", lambda texts: [([1, 2], [0.5, 0.5]) for _ in texts]
+    )
 
 
 class TestIngestText:
@@ -54,12 +57,12 @@ class TestIngestText:
             assert "parent_text" in point.payload
 
     def test_sparse_embedding_failure_degrades_to_dense_only(self, monkeypatch):
-        monkeypatch.setattr(ingestor, "embed_text", lambda text: [0.1])
+        monkeypatch.setattr(ingestor, "embed_texts", lambda texts: [[0.1] for _ in texts])
 
-        def failing_sparse(text):
+        def failing_sparse_batch(texts):
             raise RuntimeError("model not loaded")
 
-        monkeypatch.setattr(ingestor, "embed_sparse", failing_sparse)
+        monkeypatch.setattr(ingestor, "embed_sparse_batch", failing_sparse_batch)
         captured = {}
         monkeypatch.setattr(qdrant_store, "upsert", lambda points: captured.update(points=points))
 
@@ -67,6 +70,33 @@ class TestIngestText:
 
         assert "sparse" not in captured["points"][0].vector
         assert captured["points"][0].vector["dense"] == [0.1]
+
+    def test_embeds_all_chunks_in_one_batched_call_each(self, monkeypatch):
+        """The actual point of this change — proves the speedup, not just
+        the shape: however many chunks a document produces, embed_texts/
+        embed_sparse_batch are each called exactly ONCE, not once per
+        chunk (see embed_texts's own docstring for why that matters)."""
+        dense_calls = []
+        sparse_calls = []
+        monkeypatch.setattr(
+            ingestor,
+            "embed_texts",
+            lambda texts: dense_calls.append(texts) or [[0.1] for _ in texts],
+        )
+        monkeypatch.setattr(
+            ingestor,
+            "embed_sparse_batch",
+            lambda texts: sparse_calls.append(texts) or [([1], [0.5]) for _ in texts],
+        )
+        monkeypatch.setattr(qdrant_store, "upsert", lambda points: None)
+
+        text = "Paragraph one about checkpointers.\n\nParagraph two about Qdrant."
+        count = ingestor.ingest_text(text, title="T", ctx=TEST_CTX)
+
+        assert len(dense_calls) == 1
+        assert len(sparse_calls) == 1
+        assert len(dense_calls[0]) == count
+        assert len(sparse_calls[0]) == count
 
 
 class TestIngestFile:

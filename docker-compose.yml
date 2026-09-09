@@ -77,7 +77,15 @@ services:
       - "4000:4000"
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
+      # sitecustomize.py, auto-imported by Python at startup (PYTHONPATH
+      # below) — patches a live-verified litellm bug where two tool calls
+      # from an ollama_chat model in one turn get corrupted into one glued,
+      # unusable tool_call. See litellm-patches/sitecustomize.py's own
+      # comment for the full root cause and repro; the stock image itself
+      # is untouched, so `docker compose pull litellm` still works normally.
+      - ./litellm-patches:/app/patches:ro
     environment:
+      PYTHONPATH: /app/patches
       # Proxy-level Langfuse logging (falls back to empty if unset).
       LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
