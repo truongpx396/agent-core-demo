@@ -329,12 +329,20 @@ class State(TypedDict):
     ungrounded_claims_count: int  # Set by check_output — [n] markers the
     # answer used that don't match any real citation (GRAPH_PATTERNS.md pattern 39).
     likely_uncited_citations: list[dict]  # Set by check_output — citations
-    # NOT referenced by marker in the answer, but whose own text shares
-    # heavy word overlap with it (see _likely_uncited_citations) — a
+    # NOT referenced by marker in the FINAL answer text, but whose own text
+    # shares heavy word overlap with it (see _likely_uncited_citations) — a
     # stronger, much less ambiguous signal than agent_zero_citations_total's
     # "citations were merely available" check that the model paraphrased a
-    # source without attributing it. Read by route_after_check to trigger a
-    # real retry (unlike agent_zero_citations_total, which is metric-only).
+    # source without attributing it. Almost always empty in practice: when
+    # check_output finds one, it mechanically inserts the missing marker
+    # itself (_insert_missing_citation_markers) rather than routing to a
+    # retry — live-verified that asking the model to fix this reliably
+    # doesn't work — and recomputes this field against the CORRECTED
+    # answer before returning, so a real value here means the auto-fix
+    # itself found no matching sentence to attach the marker to (should not
+    # happen given how _uncited_citation_matches is built, but checked
+    # rather than assumed). route_after_check still retries on a real
+    # value, as the last line of defense.
     likely_misattributed_citations: list[dict]  # Set by check_output — the
     # mirror image of likely_uncited_citations: a real, in-range marker IS
     # used in the answer, but every sentence citing it shares no meaningful
@@ -430,6 +438,61 @@ class State(TypedDict):
 
 def _last_human_message(messages: list[BaseMessage]) -> HumanMessage | None:
     return next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
+
+
+def _previous_human_message(messages: list[BaseMessage], before_index: int) -> HumanMessage | None:
+    """The HumanMessage immediately before position `before_index` in
+    `messages` — the prior turn's own question, used by `_retrieval_query`
+    to enrich a vague follow-up's search. `before_index` is
+    `retrieve_context`'s own `anchor` (the current turn's question is,
+    at that point, the last message in state), so `messages[:before_index]`
+    is exactly everything said before THIS turn. None on the first turn
+    of a conversation."""
+    return next(
+        (m for m in reversed(messages[:before_index]) if isinstance(m, HumanMessage)),
+        None,
+    )
+
+
+# Below this many content words, a query rarely carries enough distinctive
+# vocabulary for hybrid search to match anything real — see
+# _retrieval_query's own docstring for the live case that surfaced this.
+# "pls be more the detailed" scores 3 ("pls", "more", "detailed" — "be"
+# and "the" are stopwords); an ordinary, self-contained question like
+# "how do I build a production-ready AI agent?" scores well above it
+# (build, production, ready, agent, ...). 4 sits below real questions and
+# at/above the shortest genuine follow-ups worth enriching anyway.
+_VAGUE_QUERY_MAX_CONTENT_WORDS = 4
+
+
+def _retrieval_query(current_text: str, previous_human: HumanMessage | None) -> str:
+    """The text `retrieve_context` actually searches on — the current
+    turn's own question, UNLESS it's too vague/short to search on
+    meaningfully by itself, in which case the PRIOR turn's own question is
+    folded in too.
+
+    Real bug, found live via Langfuse (trace `e46c97c4`, 2026-09-09): a
+    follow-up of "pls be more the detailed" alone matched nothing in
+    Qdrant (verified: `retrieve_context`'s own output that turn was
+    `citations: []`, `context length: 0`), so the model answered with
+    generic filler while still habitually reusing `[1]`/`[2]` from the
+    PREVIOUS turn's real citations — check_output correctly flagged both
+    as ungrounded (`ungrounded_claims_count=2`), but that check is
+    directional-only by design (see its own docstring) and was never
+    going to retry over it, so the ungrounded answer shipped as-is.
+
+    Folding in the prior turn's own question gives the SAME search real
+    vocabulary to work with — the same move a human makes re-reading the
+    last question before answering "can you elaborate?" — and, live-
+    verified (see this function's own test), finds the SAME real content
+    again for the exact query that originally returned nothing. Only one
+    turn back, not the whole history: a chain of several vague follow-ups
+    in a row is a real but much rarer case this doesn't chase, and
+    reaching further back risks pulling in a topic several turns stale.
+    """
+    if previous_human is not None and len(_content_words(current_text)) <= _VAGUE_QUERY_MAX_CONTENT_WORDS:
+        return f"{_human_text(previous_human)} {current_text}"
+    return current_text
 
 
 def _human_text(message: BaseMessage | None) -> str:
@@ -765,36 +828,60 @@ def _make_llm(tools: list = TOOLS):
         # response.usage_metadata is silently None under --stream mode:
         # MAX_TOKENS_PER_TURN never trips, and Langfuse shows 0 tokens.
         stream_usage=True,
-    ).bind_tools(
-        tools,
-        # A real, live-verified streaming bug, not a guess: attempting two
-        # simultaneous tool calls in one turn (e.g. log_lead_interaction +
-        # enrich_lead_from_website together) produced ONE malformed
-        # tool_calls entry whose id/name/arguments were each the raw
-        # concatenation of both calls' own fields ("log_lead_interaction"
-        # + "enrich_lead_from_website" glued into one string, both calls'
-        # JSON args glued into one unparseable blob) — some part of the
-        # streaming delta-accumulation pipeline (litellm/backend or
-        # langchain_openai's own AIMessageChunk merge) isn't correctly
-        # keying a second tool call's fragments by its own index. This
-        # correctly fails `_invalid_tool_call_names`/`invalid_tool_call`
-        # every time (the glued name is never a real tool), but the model
-        # regenerated the SAME malformed batch 5 times before giving up on
-        # calling both at once — burning ~15k tokens and most of that
-        # turn's MAX_TOKENS_PER_TURN budget before ever reaching a human
-        # approval pause, then tipping the NEXT turn over budget into
-        # `no_answer` for an otherwise ordinary follow-up (Langfuse trace
-        # `fc0a31db`/`dbd2c02b`, 2026-09-08). `parallel_tool_calls=False`
-        # is the correct fix at the actual layer this bug lives in: the
-        # model is never offered the option to emit more than one tool
-        # call per turn, so the buggy multi-call accumulation path can
-        # never trigger. This app's whole HITL design (one pending
-        # decision at a time — human_approval's interrupt payload,
-        # `approval_required`'s SSE event) already assumed single-call
-        # turns everywhere else observed live this session; nothing here
-        # relied on genuine parallel calls.
-        parallel_tool_calls=False,
-    )
+    ).bind_tools(tools)
+    # No `parallel_tool_calls=False` here (removed 2026-09-09) — genuine
+    # multi-tool-call turns are now supported end to end, deliberately.
+    #
+    # History: a real, live-verified streaming bug once made two
+    # simultaneous tool calls in one turn (e.g. calculator + add_note)
+    # come back as ONE malformed tool_calls entry whose id/name/arguments
+    # were each the raw concatenation of both calls' own fields
+    # ("calculatoradd_note" glued into one string, both calls' JSON args
+    # glued into one unparseable blob) — burning ~15k tokens across 5
+    # identical failed retries before ever reaching a human approval pause
+    # (Langfuse trace `fc0a31db`/`dbd2c02b`, 2026-09-08). `parallel_tool_calls
+    # =False` was added here as the apparent fix, but it was a proven no-op
+    # against this stack: litellm's ollama_chat provider doesn't list
+    # `parallel_tool_calls` in its get_supported_openai_params() at all, and
+    # litellm-config.yaml's `drop_params: true` makes litellm silently
+    # discard unsupported params instead of erroring, so the parameter
+    # never reached Ollama — confirmed when the exact same corruption
+    # recurred in a fresh trace (`3c6ed3b0`, 2026-09-09) well after that
+    # line shipped.
+    #
+    # The actual bug lived one layer down, in litellm itself:
+    # OllamaChatCompletionResponseIterator.chunk_parser builds a fresh
+    # Delta per top-level Ollama stream chunk, and Delta's own
+    # auto-indexing restarts its counter at 0 for every chunk instead of
+    # tracking it across the whole response — so two tool calls arriving
+    # in separate chunks (how ollama_chat actually delivers them) both got
+    # index 0, and any OpenAI-compatible client (langchain_openai
+    # included) is spec-correct to merge same-index tool_call chunks by
+    # string-concatenating their fields, which is exactly the glued
+    # garbage observed. Fixed at that layer:
+    # litellm-patches/sitecustomize.py, loaded into the litellm proxy
+    # container via PYTHONPATH (docker-compose.yml) — it patches
+    # chunk_parser to hand out one globally-increasing index per response
+    # instead of per chunk. See that file for the full writeup.
+    #
+    # With the transport bug actually fixed, `parallel_tool_calls=False`
+    # was removed rather than kept as "harmless defense-in-depth": this
+    # app's should_continue/human_approval/ToolNode/runtime.py SSE/frontend
+    # code was already written generically over the full tool_calls list
+    # (see _mandatory_gate_reason, _reject_tool_calls, human_approval's own
+    # interrupt payload) even though nothing had ever exercised it with a
+    # real multi-call batch — verified live end to end (calculator +
+    # add_note in one turn: routes to human_approval with both calls
+    # bundled, one approve/reject resumes both, ToolNode runs both, mixed
+    # success/failure is reported per-call) and covered by
+    # tests/live/test_agent_parallel_tool_calls.py. Deliberate consequence,
+    # not an oversight: a batch needing approval is now approved/rejected
+    # as ONE decision covering every call in it, not one decision per call
+    # — the pending-tool-calls list in the approval prompt (human_approval,
+    # the `approval_required` SSE event, the web UI's renderApprovalButtons)
+    # already shows every call in the batch, so this trades "one action per
+    # approval" for "fewer round trips," not for reduced visibility into
+    # what's being approved.
 
 
 # --- Node: validate input. Also resets the per-turn safety budgets
@@ -1172,7 +1259,10 @@ def make_retrieve_context_node(
         if last_human is None:
             return {"context": "", "citations": [], "context_anchor_index": anchor}
         try:
-            context, citations = search(_human_text(last_human), state.get("ctx"))
+            query = _retrieval_query(
+                _human_text(last_human), _previous_human_message(state["messages"], anchor)
+            )
+            context, citations = search(query, state.get("ctx"))
             return {"context": context, "citations": citations, "context_anchor_index": anchor}
         except Exception as exc:  # noqa: BLE001 - degrade, never crash the turn
             logger.warning(
@@ -1486,6 +1576,37 @@ def _invalid_tool_call_names(
     return [tc["name"] for tc in tool_calls if tc["name"] not in valid_tool_names]
 
 
+def _use_skill_called_without_search(tool_calls: list, messages: list) -> bool:
+    """True if this batch calls `use_skill` but `skill_search` was never
+    called earlier in THIS turn — SYSTEM_PROMPT requires skill_search
+    first specifically so the model looks up a skill's real name instead
+    of guessing one. `use_skill`'s own "no skill named X found" response
+    (app/agent/tools.py) already recovers gracefully from a WRONG name,
+    but nothing stopped the model from inventing one outright and never
+    searching at all. Real bug, found live via Langfuse (trace
+    `197ab4e1`, 2026-09-09): the model called
+    `use_skill(name="build_production_ai_agents")` — a name with no basis
+    in the actual catalog whatsoever (verified: no skill in this app's
+    bundled catalog remotely resembles it) — for an ordinary "how do I
+    build X" question that had nothing to do with any packaged skill and
+    already had highly relevant retrieved context to answer from
+    directly. It then narrated the resulting "no skill found" failure
+    straight into the user-facing answer once use_skill returned it —
+    an internal tool-naming miss leaking out as if it were part of the
+    real answer.
+
+    Checked over `_current_turn_tool_call_batches` (already-established
+    per-turn helper, GRAPH_PATTERNS.md pattern 34) — a skill_search from
+    an EARLIER turn doesn't license skipping it on a fresh question now.
+    """
+    if not any(tc["name"] == "use_skill" for tc in tool_calls):
+        return False
+    return not any(
+        any(tc["name"] == "skill_search" for tc in batch)
+        for batch in _current_turn_tool_call_batches(messages)
+    )
+
+
 # --- Edge fn: after agent, route to tools / output check / abort ---
 def should_continue(
     state: State,
@@ -1499,6 +1620,7 @@ def should_continue(
     "human_approval",
     "too_many_tool_calls",
     "invalid_tool_call",
+    "use_skill_without_search",
     "check_output",
     "no_answer",
 ]:
@@ -1509,11 +1631,18 @@ def should_continue(
     whether this is a tool call at all; then whether it's *too many* tool
     calls at once; then whether any of them isn't a real registered tool at
     all (`invalid_tool_call` — see `_invalid_tool_call_names`); then whether
-    it needs human approval before running. The invalid-name check runs
-    BEFORE the human-approval gate deliberately: a malformed name isn't a
-    real tool anyone could meaningfully approve or reject, so it's rejected
-    and looped back to `agent` for a self-correcting retry instead of ever
-    reaching a human with garbage to review.
+    `use_skill` was called without `skill_search` earlier this turn
+    (`use_skill_without_search` — see `_use_skill_called_without_search`);
+    then whether it needs human approval before running. Both the
+    invalid-name and use_skill-without-search checks run BEFORE the
+    human-approval gate deliberately: neither is a real tool call anyone
+    could meaningfully approve or reject (a malformed name outright, or a
+    real tool called on a guessed argument the model was explicitly told
+    to look up first), so both are rejected and looped back to `agent` for
+    a self-correcting retry instead of ever reaching a human with garbage
+    to review — `use_skill` is read_only anyway (never reaches
+    human_approval on its own merits), but the ordering still matters for
+    consistency with the invalid-name check right above it.
 
     Two independent reasons route to `human_approval`, and only one of them
     is optional:
@@ -1581,6 +1710,8 @@ def should_continue(
         return "too_many_tool_calls"
     if _invalid_tool_call_names(tool_calls, valid_tool_names):
         return "invalid_tool_call"
+    if _use_skill_called_without_search(tool_calls, state["messages"]):
+        return "use_skill_without_search"
     if _consecutive_repeat_count(state["messages"]) >= MAX_REPEATED_ACTIONS:
         # Checked here, independently of MAX_ITERATIONS — a run looping
         # on one identical action would otherwise just exhaust the
@@ -1634,6 +1765,28 @@ def invalid_tool_call(state: State) -> dict:
         tool_calls,
         f"I tried to call a tool that doesn't exist ({names_text}). Let me try again "
         "using only the tools actually available to me.",
+    )
+    return {"messages": rejections}
+
+
+# --- Node: safety guardrail — abort a batch that calls use_skill without
+# ever calling skill_search first this turn, instead of dispatching it and
+# letting the model discover its own guessed name doesn't exist. Same
+# "reject the whole batch + loop back to agent for a self-correcting
+# retry" shape as invalid_tool_call above — see
+# _use_skill_called_without_search for the real bug this exists for (a
+# fabricated skill name, and its "not found" failure narrated straight
+# into the final answer). ---
+def use_skill_without_search(state: State) -> dict:
+    last_ai = cast(AIMessage, state["messages"][-1])
+    tool_calls = last_ai.tool_calls or []
+    metrics.agent_use_skill_without_search_total.inc()
+    rejections = _reject_tool_calls(
+        tool_calls,
+        "You called use_skill without calling skill_search first this turn. "
+        "Call skill_search now to find the exact name of a matching skill — "
+        "if nothing matches well, don't guess a name; just answer directly "
+        "using what you already have.",
     )
     return {"messages": rejections}
 
@@ -1754,55 +1907,183 @@ def _content_words(text: str) -> set[str]:
     }
 
 
-# Tuned against two real qwen2.5:3b answers that paraphrased a source
-# near-verbatim without any bracket marker (see the conversation this was
-# added from): both cleared 90%+ overlap on 8-14 content words. 60%/4 words
-# leaves real margin below that while still requiring enough distinctive
-# vocabulary that a coincidental match on a handful of common domain words
-# ("Qdrant", "search") alone can't trip it.
+# Originally tuned (and still valid) against two real qwen2.5:3b answers
+# that paraphrased a source near-verbatim without any bracket marker (see
+# the conversation this was added from): both cleared 90%+ overlap on
+# 8-14 content words. 0.6 leaves real margin below that while still
+# requiring enough distinctive vocabulary that a coincidental match on a
+# handful of common domain words ("Qdrant", "search") alone can't trip it.
+#
+# The ratio's DENOMINATOR changed since (see _likely_uncited_citations's
+# own docstring for why: overlap / len(cite_words) structurally couldn't
+# catch a genuine paraphrase of a long source), but 0.6 itself is still
+# the right cutoff under the new overlap / len(sentence_words) — live
+# numbers from the real trace this was re-tuned against (Langfuse
+# `057e3594`, 2026-09-09): sentences that were clearly direct restatements
+# of one specific citation scored 0.79-1.00; sentences merely sharing
+# generic connective/domain vocabulary across MULTIPLE citations (a real
+# risk in a corpus this deliberately overlapping — everything's from one
+# "AI agents" book) topped out at 0.50. 0.6 sits in the gap between those
+# two groups with margin on both sides, not a guess.
 _UNCITED_OVERLAP_RATIO = 0.6
-_UNCITED_MIN_OVERLAP_WORDS = 4
+
+
+def _uncited_citation_matches(
+    content: str, citations: list[dict], used: list[dict]
+) -> list[tuple[dict, str]]:
+    """For each citation NOT referenced by marker in `content` (i.e. not in
+    `used`, `_used_citations`'s own output), its single BEST-matching
+    answer sentence — the one sharing the most distinctive vocabulary with
+    that citation's own text, only when it clears `_UNCITED_OVERLAP_RATIO`
+    — paired together as `(citation, sentence)`. The shared sentence-
+    matching logic behind both `_likely_uncited_citations` (just wants to
+    know WHICH citations) and `_insert_missing_citation_markers` (also
+    needs to know WHERE, so it can append the marker to that exact
+    sentence). See `_likely_uncited_citations`'s own docstring for why
+    this is sentence-level in the first place, not the original
+    whole-answer-vs-whole-citation ratio.
+
+    The BEST match, not just the first sentence to clear the bar — matters
+    for insertion specifically: attaching a citation's marker to whichever
+    sentence happens to appear first (a plausible-but-generic transition
+    sentence, say) instead of the one that actually reads as its source
+    would put the marker somewhere a reader has no reason to trust it.
+    """
+    if not content or not citations:
+        return []
+    used_markers = {c["marker"] for c in used}
+    sentences = _SENTENCE_SPLIT_RE.split(content)
+    matches = []
+    for citation in citations:
+        if citation.get("marker") in used_markers:
+            continue
+        cite_words = _content_words(citation.get("text", ""))
+        if not cite_words:
+            continue
+        best_sentence = None
+        best_ratio = 0.0
+        for sentence in sentences:
+            sentence_words = _content_words(sentence)
+            if len(sentence_words) < _MIN_JUDGED_SENTENCE_WORDS:
+                continue
+            overlap = sentence_words & cite_words
+            ratio = len(overlap) / len(sentence_words)
+            if ratio >= _UNCITED_OVERLAP_RATIO and ratio > best_ratio:
+                best_ratio = ratio
+                best_sentence = sentence
+        if best_sentence is not None:
+            matches.append((citation, best_sentence))
+    return matches
 
 
 def _likely_uncited_citations(
     content: str, citations: list[dict], used: list[dict]
 ) -> list[dict]:
-    """Citations NOT referenced by marker in `content` (i.e. not in `used`,
-    `_used_citations`'s own output) whose own text shares enough
-    distinctive vocabulary with the answer to suggest the model drew on it
-    anyway without attributing it — a much stronger, less ambiguous signal
-    than "citations were merely available" (metrics.agent_zero_citations_total's
+    """Citations NOT referenced by marker in `content` where at least one
+    ANSWER SENTENCE shares enough distinctive vocabulary with that
+    citation's own text to suggest the model drew on it anyway without
+    attributing it — a much stronger, less ambiguous signal than
+    "citations were merely available" (metrics.agent_zero_citations_total's
     own, noisier trigger in check_output): a general-knowledge or
     calculator-only answer (both explicitly allowed uncited by
     SYSTEM_PROMPT) has no particular reason to share heavy vocabulary with
     an unrelated fetched document, so this stays quiet for those, unlike
     the plain zero-citations check.
 
-    A citation shorter than _UNCITED_MIN_OVERLAP_WORDS content words is
-    skipped entirely, not just held to the ratio — a short/generic source
-    can hit a high overlap ratio by coincidence on too few words to mean
-    anything.
+    Sentence-level, mirroring `_likely_misattributed_citations`'s own
+    ratio (`overlap / len(sentence_words)`, gated by the same
+    `_MIN_JUDGED_SENTENCE_WORDS` floor on how much of the SENTENCE,
+    not the source, there is to judge) rather than the ORIGINAL whole-
+    answer-vs-whole-citation ratio this function used before — real gap,
+    found live via Langfuse (trace `057e3594`, 2026-09-09): a qwen2.5:3b
+    answer paraphrased two ~100-word citations into a few short sentences,
+    restating enough of each to be unmistakably the source (see this
+    file's own regression tests for the exact text), with zero bracket
+    markers — but scored only 23-37% overlap against each citation's FULL
+    word count, nowhere near the (then-) 60% bar. Measuring overlap
+    against the CITATION's length structurally punishes exactly this
+    case: a long source's total vocabulary will always dwarf what a short,
+    faithful paraphrase of it actually reuses, no matter how directly that
+    paraphrase is drawn from it. Measuring per-sentence against the
+    SENTENCE's own length instead asks the right question — "how much of
+    what the model chose to write in THIS sentence came from THIS
+    source" — which stays high for a real, focused paraphrase regardless
+    of how long the source it's drawn from happens to be.
+
+    Delegates the actual matching to `_uncited_citation_matches`, which
+    `check_output` also uses to auto-insert the missing marker instead of
+    retrying the model over it — see `_insert_missing_citation_markers`'s
+    own docstring for why: seven different live prompt-level attempts
+    (the original reminder, six reworded variants, and the actual
+    concrete retry-feedback message naming the exact missed marker) all
+    failed to get qwen2.5:3b to add one back on a real case.
     """
-    if not content or not citations:
-        return []
-    answer_words = _content_words(content)
-    if not answer_words:
-        return []
-    used_markers = {c["marker"] for c in used}
-    flagged = []
-    for citation in citations:
-        if citation.get("marker") in used_markers:
-            continue
-        cite_words = _content_words(citation.get("text", ""))
-        if len(cite_words) < _UNCITED_MIN_OVERLAP_WORDS:
-            continue
-        overlap = cite_words & answer_words
-        if (
-            len(overlap) >= _UNCITED_MIN_OVERLAP_WORDS
-            and len(overlap) / len(cite_words) >= _UNCITED_OVERLAP_RATIO
-        ):
-            flagged.append(citation)
-    return flagged
+    return [citation for citation, _sentence in _uncited_citation_matches(content, citations, used)]
+
+
+def _insert_missing_citation_markers(
+    content: str, citations: list[dict], used: list[dict]
+) -> tuple[str, list[dict]]:
+    """Mechanically append each `_likely_uncited_citations`-flagged
+    citation's `[n]` marker onto the specific sentence
+    `_uncited_citation_matches` identified as its best match, instead of
+    asking the model to redo it. Live-verified this matters, not assumed:
+    on a real Langfuse trace (`057e3594`, 2026-09-09) where the model
+    paraphrased two sources with zero markers, neither the standard
+    citation reminder, six reworded variants of it (including one with a
+    worked example), NOR the actual concrete retry-feedback message
+    (naming the exact missed markers and saying explicitly "rewrite so
+    every sentence ends with its bracket marker") got qwen2.5:3b to add
+    one — all seven attempts reproduced the identical uncited prose.
+    `_uncited_citation_matches` only ever returns a citation when a
+    specific sentence already clears the overlap bar, so insertion here
+    is fully deterministic — there's always a well-defined place to put
+    the marker, and no LLM round-trip (and its retry-budget cost) is
+    needed for a fix code can already make correctly.
+
+    Multiple citations best-matching the SAME sentence get appended
+    together in that sentence, e.g. '...these safeguards [1][2].';
+    otherwise each marker goes immediately before ITS sentence's own
+    trailing punctuation — the same position SYSTEM_PROMPT's own citation
+    example uses ('X did Y [2].') — or at the sentence's end if it has no
+    trailing .!? (the last sentence in an answer, sometimes). Matching by
+    exact substring position (not by rebuilding from the split sentences)
+    preserves the original text's exact whitespace/paragraph breaks
+    outside the touched sentences.
+
+    Returns `(possibly-modified content, citations actually inserted)` —
+    `check_output` uses the second value to know a fix was applied (for
+    its own metric) and recomputes `likely_uncited_citations` against the
+    NEW content afterward rather than assuming this emptied it, though by
+    construction it always does.
+    """
+    matches = _uncited_citation_matches(content, citations, used)
+    if not matches:
+        return content, []
+
+    markers_by_sentence: dict[str, list[str]] = {}
+    for citation, sentence in matches:
+        markers_by_sentence.setdefault(sentence, []).append(citation["marker"])
+    ordered_sentences = sorted(markers_by_sentence, key=content.find)
+
+    parts = []
+    cursor = 0
+    for sentence in ordered_sentences:
+        idx = content.find(sentence, cursor)
+        if idx == -1:
+            continue  # shouldn't happen — `sentence` came from splitting `content` itself
+        parts.append(content[cursor:idx])
+        markers_text = "".join(markers_by_sentence[sentence])
+        end_match = re.search(r"[.!?]$", sentence)
+        if end_match:
+            parts.append(sentence[: end_match.start()] + f" {markers_text}" + sentence[end_match.start() :])
+        else:
+            parts.append(sentence + f" {markers_text}")
+        cursor = idx + len(sentence)
+    parts.append(content[cursor:])
+
+    fixed_citations = [citation for citation, _sentence in matches]
+    return "".join(parts), fixed_citations
 
 
 # Coarse sentence splitter — same "good enough, no NLP dependency" posture
@@ -1811,16 +2092,22 @@ def _likely_uncited_citations(
 # attached to the sentence it terminates.
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
-# A sentence shorter than this has too little vocabulary for an overlap
-# ratio to mean anything (mirrors _UNCITED_MIN_OVERLAP_WORDS's own reasoning,
-# applied to the citing sentence instead of the source). Below this ratio of
-# a citing sentence's content words appearing in the marker's OWN source
-# text, the citation looks attached to content that source doesn't actually
-# support. Deliberately looser than _UNCITED_OVERLAP_RATIO's 0.6: a sentence
-# can legitimately draw on a source while adding its own connecting words,
-# so this only needs to catch the "shares essentially nothing" case, not
-# police close paraphrasing.
-_MISATTRIBUTED_MIN_SENTENCE_WORDS = 4
+# Shared by _likely_uncited_citations and _likely_misattributed_citations
+# below — a sentence shorter than this has too little vocabulary for
+# either function's overlap ratio to mean anything, regardless of which
+# direction that ratio is being checked (a real, distinctive-vocabulary
+# source drawn on heavily, or a real, in-range marker attached to content
+# its own source doesn't support). Judging by the SENTENCE's length, not
+# the citation's, matters for both: a short (even single-word) source
+# can't inflate either ratio by coincidence just because it's short — see
+# _likely_misattributed_citations's own docstring for the live bug this
+# was found from.
+_MIN_JUDGED_SENTENCE_WORDS = 4
+# Deliberately looser than _UNCITED_OVERLAP_RATIO's 0.6 (and in the
+# OPPOSITE direction: a LOW ratio here still counts as "supported" — this
+# only needs to catch a citing sentence that shares essentially NOTHING
+# with its own marker's source, not police close paraphrasing the other
+# way).
 _MISATTRIBUTED_OVERLAP_RATIO = 0.25
 
 
@@ -1843,19 +2130,20 @@ def _likely_misattributed_citations(
     was long enough to judge — a marker whose only citing sentences are all
     too short to score isn't flagged.
 
-    Deliberately does NOT reuse `_likely_uncited_citations`'s short-source
-    skip (`_UNCITED_MIN_OVERLAP_WORDS` against `cite_words`): that guard
-    exists there because its ratio is `overlap / len(cite_words)` — a short
-    source can hit a HIGH ratio by pure coincidence on too few words to
-    mean anything. Here the ratio is `overlap / len(sentence_words)`
-    instead, so a short (even single-word) source can't inflate it the
-    same way — real bug, found live via Langfuse: a one-word memory
-    ("magiclab396") cited three times on an answer about bundled skills
-    for report-writing went undetected specifically because this function
-    used to reuse that guard, skipping every citation short enough to be
-    the clearest, least ambiguous case of misattribution there is. Only
-    skipped when a source has NO content words at all — nothing to compare
-    against, not merely few.
+    Judges by `_MIN_JUDGED_SENTENCE_WORDS` on the SENTENCE, not the
+    citation's own length — a short (even single-word) source can't
+    inflate `overlap / len(sentence_words)` just because it's short, the
+    way it could if the floor were on `cite_words` instead. Real bug,
+    found live via Langfuse: a one-word memory ("magiclab396") cited three
+    times on an answer about bundled skills for report-writing went
+    undetected specifically because this function used to skip any
+    citation short enough on ITS OWN length, missing the clearest, least
+    ambiguous case of misattribution there is — a source with almost no
+    vocabulary of its own to have been drawn on at all.
+    `_likely_uncited_citations` was later brought in line with this same
+    sentence-length floor for the identical reason, in the other
+    direction (see its own docstring). Only skipped when a source has NO
+    content words at all — nothing to compare against, not merely few.
     """
     if not content or not used:
         return []
@@ -1871,7 +2159,7 @@ def _likely_misattributed_citations(
         supported = False
         for sentence in citing_sentences:
             sentence_words = _content_words(sentence)
-            if len(sentence_words) < _MISATTRIBUTED_MIN_SENTENCE_WORDS:
+            if len(sentence_words) < _MIN_JUDGED_SENTENCE_WORDS:
                 continue
             judged = True
             overlap = sentence_words & cite_words
@@ -2022,6 +2310,50 @@ def _fabricates_tool_output(content: str) -> bool:
     return content.count("```") >= _FABRICATED_OUTPUT_FENCE_THRESHOLD
 
 
+# Matches a markdown REFERENCE-DEFINITION line ("[1]: some link/text") —
+# never this app's own citation convention, which is exclusively an
+# inline "[n]" marker with no colon and no separate reference list
+# anywhere. Requires the colon specifically so a real inline marker at
+# the start of a line ("[3] some sentence continuing a paragraph.") is
+# never mistaken for one.
+_REFERENCE_FOOTER_LINE_RE = re.compile(r"^\[\d+\]:\s")
+
+
+def _strip_fabricated_reference_footer(content: str) -> str:
+    """Strips a trailing markdown-style reference list the model
+    sometimes appends after its own inline `[n]` markers, e.g.:
+
+        ...meets the needs of your project and users. [1][2]
+
+        [1]: [Link to the book or resource]
+        [2]: [Link to the book or resource]
+
+    Real bug, found live via Langfuse (trace `e46c97c4`, 2026-09-09):
+    qwen2.5:3b pattern-matched a DIFFERENT citation convention it saw in
+    training data (academic/web citations with a reference list at the
+    bottom) onto this app's inline-only one — the "link" is always
+    fabricated (this app never gives the model a URL to cite; retrieved
+    content is numbered passages, not sources with links), so the footer
+    can only ever mislead a reader into thinking a real reference exists.
+
+    Only strips lines matching `_REFERENCE_FOOTER_LINE_RE` found in an
+    unbroken run at the very END of the content (plus one blank line
+    separating it from the real answer) — never touches a legitimate
+    inline `[n]` marker anywhere earlier in the prose, and returns
+    `content` completely unchanged (not even whitespace-trimmed) when no
+    such footer is present at all.
+    """
+    if not isinstance(content, str) or not content:
+        return content
+    lines = content.rstrip().splitlines()
+    end = len(lines)
+    while end > 0 and _REFERENCE_FOOTER_LINE_RE.match(lines[end - 1]):
+        end -= 1
+    if end == len(lines):
+        return content
+    return "\n".join(lines[:end]).rstrip()
+
+
 # Every tool a current skill's own body names as required for real
 # computation — deal-economics/vendor-incident-postmortem/support-log-triage
 # all point at run_python_in_sandbox (added specifically to eliminate the
@@ -2125,10 +2457,9 @@ def _skipped_required_sandbox_after_skill(messages: list) -> str | None:
 # naturally reusing a few words of its own instructions, e.g. "Be concise
 # and direct") can't trip this, short enough to catch a real "repeat your
 # instructions" recitation without needing the WHOLE prompt reproduced
-# verbatim — same reasoning _UNCITED_MIN_OVERLAP_WORDS/
-# _MISATTRIBUTED_MIN_SENTENCE_WORDS above apply to word-count thresholds,
-# just on characters here since a leak is judged by verbatim reproduction,
-# not topical word overlap.
+# verbatim — same reasoning `_MIN_JUDGED_SENTENCE_WORDS` above applies to
+# its word-count threshold, just on characters here since a leak is
+# judged by verbatim reproduction, not topical word overlap.
 _SYSTEM_PROMPT_LEAK_MIN_CHARS = 60
 # Step between checked windows — smaller than the window itself so a leak
 # starting at any alignment still gets caught (a leak that starts exactly
@@ -2243,6 +2574,19 @@ def check_output(state: State, system_prompt: str = SYSTEM_PROMPT) -> dict:
     last = state["messages"][-1]
     content = getattr(last, "content", "") or ""
     citations = state.get("citations") or []
+
+    # Strip a fabricated reference-list footer FIRST, before any
+    # citation-related computation below — it isn't a real answer sentence
+    # to judge grounding on either way, and cleaning it up front means
+    # every field this node returns already reflects the text the user
+    # will actually see.
+    message_update: dict = {}
+    cleaned_content = _strip_fabricated_reference_footer(content)
+    if cleaned_content != content:
+        metrics.agent_reference_footer_stripped_total.inc()
+        content = cleaned_content
+        message_update["messages"] = [last.model_copy(update={"content": content})]
+
     used = _used_citations(content, citations)
     if citations and not used and content:
         # Directional signal only (the opposite failure mode from
@@ -2270,7 +2614,27 @@ def check_output(state: State, system_prompt: str = SYSTEM_PROMPT) -> dict:
     leaks_prompt = _leaks_system_prompt(content, system_prompt)
     if leaks_prompt:
         metrics.agent_system_prompt_leak_total.inc()
+
+    # Auto-correct rather than retry: _insert_missing_citation_markers's
+    # own docstring has the live evidence (7 different prompt-level
+    # attempts, all failed) for why this fixes the marker directly instead
+    # of routing to retry_output over it. `used`/`likely_uncited`/`content`
+    # are all recomputed against the CORRECTED text below so every other
+    # field this node returns (and _retry_reason's own inputs) reflect
+    # what the user will actually see, not the pre-correction draft. Reuses
+    # `message_update` from the reference-footer strip above, if that
+    # already fired this round — both corrections compose onto the SAME
+    # final message rather than each overwriting the other's fix.
     likely_uncited = _likely_uncited_citations(content, citations, used)
+    if likely_uncited:
+        corrected_content, fixed = _insert_missing_citation_markers(content, citations, used)
+        if fixed:
+            metrics.agent_citation_auto_inserted_total.inc()
+            content = corrected_content
+            used = _used_citations(content, citations)
+            likely_uncited = _likely_uncited_citations(content, citations, used)
+            message_update["messages"] = [last.model_copy(update={"content": content})]
+
     reason = _retry_reason(
         content, leaks_prompt, fabricated, skipped_tool, defers, likely_uncited, likely_misattributed
     )
@@ -2282,6 +2646,7 @@ def check_output(state: State, system_prompt: str = SYSTEM_PROMPT) -> dict:
     else:
         repeat_count = 1
     return {
+        **message_update,
         "used_citations": used,
         "ungrounded_claims_count": _ungrounded_claims_count(content, citations),
         "likely_uncited_citations": likely_uncited,
@@ -2673,6 +3038,15 @@ def make_no_answer_fallback_node(emit_message: bool = True, system_prompt: str =
                 "— could you try rephrasing, or asking again?"
             )
             updates["messages"] = [AIMessage(content=content)]
+        elif "messages" in fresh:
+            # check_output mechanically inserted a missing citation marker
+            # into THIS exact content (_insert_missing_citation_markers) —
+            # carry that correction through. Without this, `used_citations`
+            # above (taken from `fresh`, computed against the CORRECTED
+            # text) would claim a marker that the message the user actually
+            # sees — left as the stale original, since `trustworthy` alone
+            # never touches `state["messages"]` — doesn't contain.
+            updates["messages"] = fresh["messages"]
         # `followups` is deliberately NOT computed here — suggest_followups
         # needs its own LLM call, and generating MORE content right after
         # deciding a turn is over budget defeats the point of the budget;
@@ -2888,6 +3262,10 @@ def build_graph(
         "invalid_tool_call",
         _instrumented("invalid_tool_call")(invalid_tool_call),
     )
+    builder.add_node(
+        "use_skill_without_search",
+        _instrumented("use_skill_without_search")(use_skill_without_search),
+    )
     builder.add_node("check_output", _instrumented("check_output")(domain_check_output))
     builder.add_node("retry_output", _instrumented("retry_output")(retry_output))
     builder.add_node(
@@ -2925,6 +3303,7 @@ def build_graph(
     builder.add_edge("tools", "agent")
     builder.add_edge("too_many_tool_calls", "agent")
     builder.add_edge("invalid_tool_call", "agent")
+    builder.add_edge("use_skill_without_search", "agent")
 
     builder.add_conditional_edges("check_output", route_after_check)
     builder.add_edge("retry_output", "agent")

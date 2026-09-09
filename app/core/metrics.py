@@ -182,6 +182,30 @@ agent_misattributed_citations_total = Counter(
     "this one triggers a retry.",
 )
 
+agent_reference_footer_stripped_total = Counter(
+    "agent_reference_footer_stripped_total",
+    "Final answers where check_output stripped a fabricated markdown-style "
+    "reference-list footer ('[1]: some link') the model appended after its "
+    "own inline [n] markers (see _strip_fabricated_reference_footer) — this "
+    "app's citation convention is inline-only, so any such footer's 'link' "
+    "is always invented, never a real source the model was actually given.",
+)
+
+agent_citation_auto_inserted_total = Counter(
+    "agent_citation_auto_inserted_total",
+    "Final answers where check_output mechanically inserted a missing [n] "
+    "marker into the specific sentence likely_uncited_citations flagged, "
+    "instead of retrying the model over it (see "
+    "_insert_missing_citation_markers's own docstring) — live-verified "
+    "that asking the model to fix this itself (the standard reminder, six "
+    "reworded variants, and the actual concrete retry-feedback message) "
+    "reliably does not work on a real case, so this is the primary "
+    "correction path for likely_uncited_citations now, not a fallback. "
+    "Watch this alongside likely_uncited_citations firing at all: a rising "
+    "rate here means the model is drifting toward citing less, even though "
+    "each individual case still gets silently corrected.",
+)
+
 agent_deferred_instead_of_acting_total = Counter(
     "agent_deferred_instead_of_acting_total",
     "Final answers that narrate an intent to use a tool ('I will use the X "
@@ -257,6 +281,19 @@ agent_invalid_tool_call_total = Counter(
     "Turns where the LLM emitted a tool_call whose name isn't a real registered tool "
     "(app/agent/graph.py's invalid_tool_call node) — a model output-quality issue, not dispatched "
     "or surfaced to human_approval",
+)
+
+agent_use_skill_without_search_total = Counter(
+    "agent_use_skill_without_search_total",
+    "Turns where the LLM called use_skill without ever calling skill_search "
+    "first in the same turn (app/agent/graph.py's use_skill_without_search "
+    "node, see _use_skill_called_without_search) — rejected and looped back "
+    "to agent instead of dispatched, so a fabricated skill name never gets "
+    "as far as a 'not found' failure the model might narrate into the final "
+    "answer. A rising rate here is a real signal the model is reaching for "
+    "a packaged skill it shouldn't (SYSTEM_PROMPT's skill_search trigger "
+    "over-firing on a plain 'how do I build X' question, say), not just a "
+    "quality nitpick.",
 )
 
 agent_token_budget_exceeded_total = Counter(

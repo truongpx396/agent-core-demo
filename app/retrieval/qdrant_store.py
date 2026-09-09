@@ -110,8 +110,31 @@ def build_point(
     return PointStruct(id=point_id, vector=vector, payload=payload)
 
 
+# Qdrant rejects a single request whose serialized JSON body exceeds its
+# own default limit (`service.max_request_size_mb`, 32MiB) with a 400 —
+# live-verified, not a guess: ingesting one real 9.7MB PDF
+# (app/ingestion/ingestor.py::ingest_text, via the upload path) chunked
+# into 5700 points, whose single `client.upsert(...)` call serialized to
+# ~94MB and was rejected with `"JSON payload (94238282 bytes) is larger
+# than allowed (limit: 33554432 bytes)."` — losing the ~13 minutes already
+# spent embedding every chunk, since ingest_text calls this once with the
+# WHOLE points list. 300 points/batch keeps each request comfortably under
+# that limit even at this app's worst-case point size (a full 1200-char
+# parent_text + 300-char child text + a 768-float dense vector + a sparse
+# vector + metadata is still only ~20KB/point here, so 300/batch is ~6MB,
+# more than 5x headroom) without needing to reason about a specific
+# document's actual chunk count at every call site — `add_note`/`remember`
+# (always a single point) and `scripts/seed.py`/`scripts/index_skills.py`
+# (small, hand-authored corpora) never notice the batching at all.
+_MAX_POINTS_PER_UPSERT_BATCH = 300
+
+
 def upsert(points: list[PointStruct], collection: str | None = None) -> None:
-    get_client().upsert(collection_name=collection or COLLECTION, points=points)
+    client = get_client()
+    name = collection or COLLECTION
+    for start in range(0, len(points), _MAX_POINTS_PER_UPSERT_BATCH):
+        batch = points[start : start + _MAX_POINTS_PER_UPSERT_BATCH]
+        client.upsert(collection_name=name, points=batch)
 
 
 def _build_filter(

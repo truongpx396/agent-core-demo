@@ -1,4 +1,5 @@
 .env
+CREDENTIALS.local.md
 .venv/
 __pycache__/
 *.pyc

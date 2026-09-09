@@ -4,7 +4,7 @@ Each of these is a plain function of a hand-built state dict — no LLM call,
 no graph compile, no I/O — so the routing logic is tested the boring,
 deterministic way it deserves.
 """
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent.graph import (
     MAX_CONSECUTIVE_SAME_RETRY_REASON,
@@ -15,6 +15,7 @@ from app.agent.graph import (
     _mandatory_gate_reason,
     _tool_call_fingerprint,
     _tool_capability,
+    _use_skill_called_without_search,
     route_after_approval,
     route_after_cache,
     route_after_check,
@@ -456,6 +457,118 @@ class TestShouldContinueInvalidToolCall:
             should_continue(state, valid_tool_names=frozenset({"search_docs", "calculator"}))
             == "tools"
         )
+
+
+class TestUseSkillCalledWithoutSearch:
+    """SYSTEM_PROMPT requires skill_search before use_skill, so the model
+    looks up a skill's real name instead of guessing one — real bug,
+    found live via Langfuse (trace `197ab4e1`, 2026-09-09):
+    use_skill(name="build_production_ai_agents"), a name with no basis in
+    the actual catalog at all, called with no skill_search anywhere in
+    the turn, for a question that didn't need a packaged skill in the
+    first place."""
+
+    def test_use_skill_with_no_search_this_turn_is_flagged(self):
+        messages = [
+            HumanMessage(content="how to build a good ai agent?"),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "use_skill", "args": {"name": "made_up"}, "id": "1"}],
+            ),
+        ]
+        assert _use_skill_called_without_search(
+            [{"name": "use_skill", "args": {"name": "made_up"}, "id": "1"}], messages
+        )
+
+    def test_use_skill_after_a_real_search_this_turn_is_not_flagged(self):
+        messages = [
+            HumanMessage(content="how to build a good ai agent?"),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "skill_search", "args": {"query": "q"}, "id": "1"}],
+            ),
+            ToolMessage(content="found: onboarding-brief", tool_call_id="1"),
+        ]
+        assert not _use_skill_called_without_search(
+            [{"name": "use_skill", "args": {"name": "onboarding-brief"}, "id": "2"}], messages
+        )
+
+    def test_a_search_from_a_prior_turn_does_not_count(self):
+        """skill_search from an earlier turn doesn't license skipping it
+        on a fresh question now — a stale search result could easily be
+        for a completely different task."""
+        messages = [
+            HumanMessage(content="earlier question"),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "skill_search", "args": {"query": "q"}, "id": "1"}],
+            ),
+            ToolMessage(content="found: onboarding-brief", tool_call_id="1"),
+            AIMessage(content="done with that"),
+            HumanMessage(content="how to build a good ai agent?"),
+        ]
+        assert _use_skill_called_without_search(
+            [{"name": "use_skill", "args": {"name": "made_up"}, "id": "2"}], messages
+        )
+
+    def test_a_batch_without_use_skill_is_never_flagged(self):
+        messages = [HumanMessage(content="what is 2+2?")]
+        assert not _use_skill_called_without_search(
+            [{"name": "calculator", "args": {"expression": "2+2"}, "id": "1"}], messages
+        )
+
+
+class TestShouldContinueUseSkillWithoutSearch:
+    def test_routes_to_use_skill_without_search(self):
+        state = {
+            "iterations": 1,
+            "require_approval": False,
+            "messages": [
+                HumanMessage(content="how to build a good ai agent?"),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "use_skill", "args": {"name": "made_up"}, "id": "1"}],
+                ),
+            ],
+        }
+        assert should_continue(state) == "use_skill_without_search"
+
+    def test_checked_before_human_approval_even_when_require_approval_is_set(self):
+        """use_skill is read_only (never reaches human_approval on its own
+        merits anyway), but this proves the ordering is still correct
+        relative to the invalid-name check right above it in
+        should_continue."""
+        state = {
+            "iterations": 1,
+            "require_approval": True,  # would otherwise force human_approval
+            "messages": [
+                HumanMessage(content="how to build a good ai agent?"),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "use_skill", "args": {"name": "made_up"}, "id": "1"}],
+                ),
+            ],
+        }
+        assert should_continue(state) == "use_skill_without_search"
+
+    def test_use_skill_after_a_real_search_routes_normally(self):
+        state = {
+            "iterations": 1,
+            "require_approval": False,
+            "messages": [
+                HumanMessage(content="how to build a good ai agent?"),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "skill_search", "args": {"query": "q"}, "id": "1"}],
+                ),
+                ToolMessage(content="found: onboarding-brief", tool_call_id="1"),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "use_skill", "args": {"name": "onboarding-brief"}, "id": "2"}],
+                ),
+            ],
+        }
+        assert should_continue(state) == "tools"
 
 
 class TestRouteAfterApproval:

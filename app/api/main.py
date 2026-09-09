@@ -559,9 +559,14 @@ async def ingest_upload(
 
 @app.get("/ingest/stream/{job_id}")
 async def ingest_stream(job_id: str) -> StreamingResponse:
-    """SSE progress for one upload's job — `{"type": "started"}`, then
-    exactly one terminal event: `{"type": "done", "chunks": N}` or
-    `{"type": "error", "content": "..."}`. Deliberately NOT
+    """SSE progress for one upload's job — `{"type": "started"}`, zero or
+    more `{"type": "progress", "done": N, "total": M}` while
+    app/ingestion/ingest_worker.py's embedding loop is actually running (chunk
+    counts, published once per embedding batch — see that module's own
+    docstring for why it needs `asyncio.to_thread` to publish these WHILE
+    embedding runs, not just before/after it), then exactly one terminal
+    event: `{"type": "done", "chunks": N}` or `{"type": "error", "content":
+    "..."}`. Deliberately NOT
     ownership-checked against app/agent/sessions.py-style records (this
     pipeline doesn't maintain a job directory the way chat sessions do) —
     `job_id` is a `uuid4().hex`, unguessable in practice, the same

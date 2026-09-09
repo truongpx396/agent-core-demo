@@ -398,16 +398,25 @@ class TestRetryExhaustedPath:
         assert result["last_retry_reason"] == "deferred"
         assert result["retry_reason_repeat_count"] == 2
 
-    def test_repeatedly_uncited_but_correct_answer_is_trusted_not_discarded(self):
-        """Real regression, found live
+    def test_uncited_but_correct_answer_gets_auto_corrected_on_the_first_round(self):
+        """Historical regression, found live
         (tests/live/test_prompt_injection_via_retrieval.py): a real model
         answered a question CORRECTLY, twice in a row, just without its
         citation marker. "uncited" is an attribution nitpick, not a
-        correctness problem (the prose itself is fine) — discarding it in
-        favor of a generic apology would be strictly worse than the OLD
-        pre-retry_exhausted behavior, where exhausting MAX_ITERATIONS with
-        the same non-blank answer still showed it, uncited, rather than
-        nothing. retry_exhausted must trust it and show it as-is."""
+        correctness problem (the prose itself is fine) — this test USED
+        to exercise retry_exhausted's trust-uncited-content fallback (2
+        identical rounds, same "uncited" reason twice, gives up and shows
+        it anyway, uncited). check_output now fixes this directly instead
+        (_insert_missing_citation_markers, added after live-verifying
+        that asking the model to add the marker itself — the original
+        reminder, six reworded variants, and the actual concrete
+        retry-feedback message — reliably does not work), so the exact
+        same scenario now succeeds on the FIRST round, marker actually
+        present, never even reaching a retry. Only one fake LLM response
+        queued (not two): if this still needed a second round,
+        GenericFakeChatModel would raise on its exhausted iterator,
+        failing this test loudly rather than silently passing.
+        """
         citations = [
             {
                 "marker": "[1]",
@@ -422,23 +431,30 @@ class TestRetryExhaustedPath:
             return "[1] Ecorp support hours are 9am to 5pm on weekdays.", citations
 
         correct_but_uncited = "Ecorp's support hours are from 9am to 5pm on weekdays."
-        llm = _fake_llm(
-            AIMessage(content=correct_but_uncited), AIMessage(content=correct_but_uncited)
-        )
+        llm = _fake_llm(AIMessage(content=correct_but_uncited))
         g = build_graph(GraphDeps(llm=llm, search_docs=fake_search_docs))
         result = g.invoke(
             {"messages": [HumanMessage(content="what are the support hours?")]},
             config=_config(),
         )
-        assert result["messages"][-1].content == correct_but_uncited
-        assert result["last_retry_reason"] == "uncited"
-        assert result["retry_reason_repeat_count"] == 2
+        assert result["messages"][-1].content == (
+            "Ecorp's support hours are from 9am to 5pm on weekdays [1]."
+        )
+        assert result["last_retry_reason"] is None
+        assert result["iterations"] == 1
 
     def test_different_reasons_in_a_row_keep_retrying_not_giving_up(self):
         """Genuinely different problems across rounds (too-short, THEN
-        uncited, then a correctly-cited success) is slow convergence, not
-        a stuck loop — must NOT trip the same-reason-repeat guard, which
-        only fires on the IDENTICAL reason twice in a row."""
+        misattributed, then a correctly-cited success) is slow
+        convergence, not a stuck loop — must NOT trip the
+        same-reason-repeat guard, which only fires on the IDENTICAL
+        reason twice in a row. Uses "misattributed" as the middle reason,
+        not "uncited": an uncited-but-matching answer now gets fixed
+        directly by check_output's own auto-correction on that same
+        round (see test_uncited_but_correct_answer_gets_auto_corrected_
+        on_the_first_round above) rather than surfacing as a retry
+        reason at all, so it can no longer stand in for "some other,
+        still-retried failure mode" here."""
         citations = [
             {
                 "marker": "[1]",
@@ -454,22 +470,27 @@ class TestRetryExhaustedPath:
         def fake_search_docs(query, ctx):
             return "[1] Qdrant stores vectors with JSON payloads.", citations
 
-        uncited_paraphrase = (
-            "Qdrant's hybrid search works by storing vectors with JSON payloads. "
-            "You can filter searches by payload fields, for example restricting "
-            "results to a single topic."
+        misattributed_answer = (
+            "Databases address scalability concerns through horizontal "
+            "partitioning and read replicas [1]. Flexibility often comes from "
+            "schema-less designs that let applications evolve independently [1]."
+        )
+        correctly_cited = (
+            "Qdrant's hybrid search works by storing vectors with JSON payloads, "
+            "and you can filter searches by payload fields to restrict results "
+            "to a single topic [1]."
         )
         llm = _fake_llm(
             AIMessage(content="Yes."),  # too_short
-            AIMessage(content=uncited_paraphrase),  # uncited (different reason)
-            AIMessage(content=f"{uncited_paraphrase} [1]"),  # cited -> success
+            AIMessage(content=misattributed_answer),  # misattributed (different reason)
+            AIMessage(content=correctly_cited),  # cited correctly -> success
         )
         g = build_graph(GraphDeps(llm=llm, search_docs=fake_search_docs))
         result = g.invoke(
             {"messages": [HumanMessage(content="how does Qdrant's search work?")]},
             config=_config(),
         )
-        assert result["messages"][-1].content == f"{uncited_paraphrase} [1]"
+        assert result["messages"][-1].content == correctly_cited
         assert result["iterations"] == 3
 
 
@@ -597,6 +618,64 @@ class TestInvalidToolCallGuardrail:
         state = g.get_state(config)
         assert not state.next
         assert result["messages"][-1].content == "Let me try that again properly."
+
+
+class TestUseSkillWithoutSearchGate:
+    """Real bug, found live via Langfuse (trace `197ab4e1`, 2026-09-09):
+    the model called use_skill with a hallucinated name
+    ("build_production_ai_agents", no basis in the actual catalog)
+    without ever calling skill_search, then narrated the resulting "not
+    found" failure into the final answer. use_skill_without_search
+    rejects the call before it ever dispatches, same "reject the whole
+    batch + loop back to agent for a self-correcting retry" shape as
+    invalid_tool_call above."""
+
+    def test_use_skill_without_search_is_rejected_then_agent_retries_without_pausing(self):
+        guessed_skill = AIMessage(
+            content="",
+            tool_calls=[{"name": "use_skill", "args": {"name": "made_up_skill"}, "id": "c1"}],
+        )
+        llm = _fake_llm(
+            guessed_skill,
+            AIMessage(content="Here's a general answer without a packaged skill."),
+        )
+        g = build_graph(GraphDeps(llm=llm))
+        config = _config()
+
+        result = g.invoke(
+            {"messages": [HumanMessage(content="how do I build a good ai agent?")]},
+            config=config,
+        )
+
+        state = g.get_state(config)
+        assert not state.next, "use_skill is read_only, must never pause at human_approval"
+        assert (
+            result["messages"][-1].content
+            == "Here's a general answer without a packaged skill."
+        )
+
+    def test_use_skill_right_after_a_real_search_this_turn_dispatches_normally(self):
+        """The gate only fires on a MISSING search, not on use_skill
+        itself — a real skill_search earlier this same turn clears it."""
+        search_then_use = AIMessage(
+            content="",
+            tool_calls=[{"name": "skill_search", "args": {"query": "onboarding"}, "id": "c1"}],
+        )
+        use_real_skill = AIMessage(
+            content="",
+            tool_calls=[{"name": "use_skill", "args": {"name": "onboarding-brief"}, "id": "c2"}],
+        )
+        final = AIMessage(content="Here's the onboarding brief you asked for.")
+        llm = _fake_llm(search_then_use, use_real_skill, final)
+        g = build_graph(GraphDeps(llm=llm))
+        config = _config()
+
+        result = g.invoke(
+            {"messages": [HumanMessage(content="write an onboarding brief")]},
+            config=config,
+        )
+
+        assert result["messages"][-1].content == "Here's the onboarding brief you asked for."
 
 
 class TestMandatoryCapabilityGate:

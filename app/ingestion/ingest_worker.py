@@ -20,7 +20,21 @@ convention of calling sync I/O (app/agent/sql_store.py's psycopg calls,
 app/agent/meter.py::record_usage) directly from async contexts elsewhere; this
 worker processes one job at a time regardless (`_READ_COUNT = 1`), so
 there's no concurrent async task within the SAME process a blocking call
-could starve.
+could starve. Both are fast (no per-chunk work) — nothing here needs a
+progress signal.
+
+`ingestor.ingest_text` itself is the one exception: it DOES run via
+`asyncio.to_thread`, not for concurrency (still only one job at a time),
+but so the event loop stays free to actually publish `on_progress`'s
+"progress" events (`publish_result`, async, Redis I/O) WHILE that
+synchronous embedding loop is still running in the worker thread —
+calling it directly on the loop, like download/extraction above, would
+mean every progress event queues up behind the whole blocking call and
+all arrive at once right before "done", defeating the entire point of a
+progress bar in `POST /ingest/upload`'s SSE stream (app/api/main.py).
+`asyncio.run_coroutine_threadsafe` is the standard bridge from that
+worker thread's sync `on_progress` callback back to publishing on this
+process's actual event loop.
 
 Run with: `python -m app.ingestion.ingest_worker` (see Makefile's `ingest-worker`
 target). Needs `make up`'s Redis + MinIO running; NOT started by `make up`
@@ -28,6 +42,7 @@ itself — an opt-in path alongside `POST /ingest/upload` (app/api/main.py),
 which just publishes the job and does no parsing/embedding of its own.
 """
 import asyncio
+import concurrent.futures
 import json
 import logging
 import signal
@@ -56,6 +71,34 @@ _READ_COUNT = 1  # one job at a time per worker — parsing/embedding a large do
 _BLOCK_MS = 5000
 
 
+def _log_progress_publish_failure(job_id: str, future: concurrent.futures.Future) -> None:
+    exc = future.exception()
+    if exc is not None:
+        logger.warning(
+            "ingest_worker_progress_publish_failed",
+            extra={"job_id": job_id, "error_class": type(exc).__name__},
+        )
+
+
+def _make_progress_reporter(client, job_id: str, loop: asyncio.AbstractEventLoop):
+    """A plain SYNC callback `ingestor.ingest_text` calls directly from the
+    worker thread `asyncio.to_thread` runs it on (see this module's own
+    docstring for why that thread exists at all). Fire-and-forget: a
+    dropped progress tick is never worth blocking embedding over, same
+    "best effort" posture as `ingest_queue.delete_results_stream`'s own
+    cleanup — the terminal `done`/`error` event, published normally from
+    the main coroutine below, is what actually matters for correctness."""
+
+    def on_progress(done: int, total: int) -> None:
+        future = asyncio.run_coroutine_threadsafe(
+            publish_result(client, job_id, {"type": "progress", "done": done, "total": total}),
+            loop,
+        )
+        future.add_done_callback(lambda f: _log_progress_publish_failure(job_id, f))
+
+    return on_progress
+
+
 async def process_job(client, entry_id: str, fields: dict) -> None:
     """Run one ingest job and publish its outcome — always ack, even on
     failure, same "never silently redeliver an already-attempted job"
@@ -78,18 +121,31 @@ async def process_job(client, entry_id: str, fields: dict) -> None:
                 )
             data = object_store.download_bytes(payload["object_key"])
             text = extractor(data)
-            chunks = ingestor.ingest_text(
+            on_progress = _make_progress_reporter(client, job_id, asyncio.get_running_loop())
+            chunks = await asyncio.to_thread(
+                ingestor.ingest_text,
                 text,
                 title=Path(filename).stem,
                 ctx=payload["ctx"],
                 source=f"upload:{filename}",
                 topic=payload.get("topic"),
+                on_progress=on_progress,
             )
             await publish_result(client, job_id, {"type": "done", "chunks": chunks})
         except Exception as exc:  # noqa: BLE001 - the queue must keep moving regardless
+            # The actual message, not just error_class — same truncated-string
+            # convention as app/domains/sandbox_session.py/app/agent/skills.py.
+            # Without it, this job's real failure reason only ever existed in
+            # the result Redis stream (`publish_result` below), which expires
+            # after RESULTS_STREAM_TTL_SECONDS — gone long before anyone
+            # thinks to go looking for why a large upload silently failed.
             logger.warning(
                 "ingest_worker_job_failed",
-                extra={"job_id": job_id, "error_class": type(exc).__name__},
+                extra={
+                    "job_id": job_id,
+                    "error_class": type(exc).__name__,
+                    "error": str(exc)[:300],
+                },
             )
             await publish_result(client, job_id, {"type": "error", "content": str(exc)})
         finally:

@@ -42,7 +42,7 @@ class TestProcessJob:
 
         monkeypatch.setitem(ingest_worker.EXTRACTORS_BY_SUFFIX, ".pdf", fake_extract_pdf)
 
-        def fake_ingest_text(text, title, ctx, source, topic=None):
+        def fake_ingest_text(text, title, ctx, source, topic=None, on_progress=None):
             captured.update(text=text, title=title, ctx=ctx, source=source, topic=topic)
             return 3
 
@@ -64,6 +64,35 @@ class TestProcessJob:
         events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j1")]]
         assert events == [{"type": "started"}, {"type": "done", "chunks": 3}]
         assert client.acked == [entry_id]
+
+    def test_ingest_texts_progress_callback_publishes_progress_events_in_order(self, monkeypatch):
+        """The actual point of running ingest_text via asyncio.to_thread —
+        proves progress events reach the results stream WHILE ingest_text
+        is still "running" (simulated here by calling on_progress twice
+        before returning), in order, before the terminal `done` event, not
+        collected and only visible afterward."""
+        monkeypatch.setattr(ingest_worker.object_store, "download_bytes", lambda key: b"pdf-bytes")
+        monkeypatch.setitem(ingest_worker.EXTRACTORS_BY_SUFFIX, ".pdf", lambda data: "text")
+
+        def fake_ingest_text(text, title, ctx, source, topic=None, on_progress=None):
+            on_progress(200, 570)
+            on_progress(570, 570)
+            return 570
+
+        monkeypatch.setattr(ingest_worker.ingestor, "ingest_text", fake_ingest_text)
+
+        client = FakeRedis()
+        entry_id, fields = _entry(job_id="j8")
+
+        asyncio.run(ingest_worker.process_job(client, entry_id, fields))
+
+        events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j8")]]
+        assert events == [
+            {"type": "started"},
+            {"type": "progress", "done": 200, "total": 570},
+            {"type": "progress", "done": 570, "total": 570},
+            {"type": "done", "chunks": 570},
+        ]
 
     def test_docx_dispatches_to_the_docx_extractor(self, monkeypatch):
         captured = {}

@@ -41,6 +41,45 @@ def embed_text(text: str) -> list[float]:
     return embeddings.embed_query(text)
 
 
+# `OpenAIEmbeddings.embed_documents` sub-batches internally at `chunk_size`
+# (1000 texts/request, its OWN default) rather than sending everything in
+# one request — but that default is tuned for real OpenAI's embedding
+# infrastructure, not this app's local Ollama backend, and it's a proven
+# bad fit here: a batch of 1000 real chunks against `ollama_chat/
+# nomic-embed-text` broke Ollama's embedding endpoint outright
+# (`OllamaException - {"error":"Post \"http://127.0.0.1:.../tokenize\":
+# EOF"}`, litellm exhausting its own retries before giving up) — and a
+# batch of 700 didn't even fail fast, it hung well past a minute (litellm's
+# own retry/backoff against an already-broken connection). Empirically
+# swept against a real 5700-chunk document: 100/200/300/500 all embedded
+# successfully (11-29ms/chunk, no clear win past ~200), so 200 is used
+# here — comfortably below the last known-good size (500) and nowhere
+# near the 700+ zone that hangs, not a guess at "smaller must be safer."
+# Public (not `_`-prefixed): `app/ingestion/ingestor.py::ingest_text` reuses
+# this exact value to drive its own outer batching loop directly, one
+# `embed_texts` call per batch, so it has a natural per-batch checkpoint to
+# report ingest progress from — see that function's `on_progress` param.
+EMBED_BATCH_SIZE = 200
+
+
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    """Dense embeddings for MANY texts in one batched round trip — the
+    bulk-ingest counterpart to `embed_text`'s single-query call
+    (`app/ingestion/ingestor.py::ingest_text`, which embeds every chunk of
+    a document) — see `EMBED_BATCH_SIZE`'s own comment for why the batch
+    size is capped explicitly rather than left at `embed_documents`'s own
+    default.
+
+    Live-verified speedup, not a guess: embedding 60 real chunks from this
+    app's own test PDF one at a time (`embed_text` in a loop, ingest_text's
+    OLD behavior) took 46ms/chunk; the same chunks batched at 200/request
+    took ~11ms/chunk — ~4x, dominated by per-HTTP-call overhead (the
+    LiteLLM proxy hop + Ollama request handling), not model compute. A
+    real ~9.7MB PDF's 5700 chunks were taking ~13 minutes under the old
+    per-chunk loop."""
+    return embeddings.embed_documents(texts, chunk_size=EMBED_BATCH_SIZE)
+
+
 _sparse_model = None
 _reranker = None
 
@@ -73,6 +112,24 @@ def embed_sparse(text: str) -> tuple[list[int], list[float]]:
     """
     vec = next(iter(_get_sparse_model().embed([text])))
     return vec.indices.tolist(), vec.values.tolist()
+
+
+def embed_sparse_batch(texts: list[str]) -> list[tuple[list[int], list[float]]]:
+    """Batched sparse/BM25 vectors — same local fastembed model as
+    `embed_sparse`, batched for the same bulk-ingest reason `embed_texts`
+    is (fastembed's own `.embed()` already accepts a list and batches the
+    ONNX inference itself). Raises on failure; the caller owns the
+    degrade-to-dense-only policy (see `embed_sparse`'s own docstring) —
+    here that policy applies to the WHOLE batch at once, not per-text, so
+    one bad text degrades the entire document's sparse leg rather than
+    just its own point. Acceptable: this local model failing at all
+    (versus one text tripping some content-specific edge case) is the
+    realistic failure mode — see `app/ingestion/ingestor.py`'s
+    `_sparse_vectors_or_none`."""
+    return [
+        (vec.indices.tolist(), vec.values.tolist())
+        for vec in _get_sparse_model().embed(texts)
+    ]
 
 
 def rerank(query: str, candidates: list[str]) -> list[float]:

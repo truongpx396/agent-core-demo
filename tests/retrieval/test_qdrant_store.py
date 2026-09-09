@@ -17,6 +17,7 @@ class _FakeClient:
     def __init__(self):
         self.recreate_calls: list[str] = []
         self.upsert_calls: list[str] = []
+        self.upsert_batch_sizes: list[int] = []
         self.query_points_calls: list[str] = []
 
     def recreate_collection(self, collection_name, **kwargs):
@@ -24,6 +25,7 @@ class _FakeClient:
 
     def upsert(self, collection_name, points):
         self.upsert_calls.append(collection_name)
+        self.upsert_batch_sizes.append(len(points))
 
     def query_points(self, collection_name, **kwargs):
         self.query_points_calls.append(collection_name)
@@ -60,6 +62,29 @@ class TestUpsert:
         point = qdrant_store.build_point(point_id="1", dense_vector=[0.1, 0.2], payload={})
         qdrant_store.upsert([point], collection="skills")
         assert client.upsert_calls == ["skills"]
+
+    def test_a_batch_within_the_limit_is_one_call(self, monkeypatch):
+        client = _fake_client(monkeypatch)
+        point = qdrant_store.build_point(point_id="1", dense_vector=[0.1, 0.2], payload={})
+        qdrant_store.upsert([point])
+        assert client.upsert_batch_sizes == [1]
+
+    def test_a_large_batch_is_split_to_stay_under_qdrants_request_size_limit(self, monkeypatch):
+        """Live-verified, not a guess: one real large-PDF ingest built a
+        5700-point single upsert whose serialized body (~94MB) blew past
+        Qdrant's own 32MB request limit and lost the whole batch — see
+        _MAX_POINTS_PER_UPSERT_BATCH's own comment for the repro."""
+        client = _fake_client(monkeypatch)
+        limit = qdrant_store._MAX_POINTS_PER_UPSERT_BATCH
+        points = [
+            qdrant_store.build_point(point_id=str(i), dense_vector=[0.1], payload={})
+            for i in range(limit + 50)
+        ]
+
+        qdrant_store.upsert(points)
+
+        assert client.upsert_batch_sizes == [limit, 50]
+        assert client.upsert_calls == [COLLECTION, COLLECTION]
 
 
 class TestHybridSearchCollection:

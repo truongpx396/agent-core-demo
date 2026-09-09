@@ -556,7 +556,17 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
         (the first fix's own initial shape) would have told the client to
         discard a TRUSTED, already-correct answer too, with no
         replacement message to follow it — a blank draft despite a
-        perfectly good checkpointed answer.
+        perfectly good checkpointed answer. A THIRD source, same
+        replace-in-place shape: `on_chain_end` of `check_output` itself,
+        when `_insert_missing_citation_markers` mechanically added a
+        missing `[n]` marker to an already-streamed answer — the exact
+        same "tokens already reached the client before the graph edited
+        them" problem retry_exhausted's own replacement solves, so it
+        gets the identical fix (clear, "retry", synthesize the corrected
+        text as one "token" event) rather than a new event type. Also
+        ONLY when check_output actually returned a replacement — the
+        overwhelmingly common "nothing needed correcting" case emits
+        nothing here.
       {"type": "compacted"} — NOT terminal: graph.py's compact_history
         (GRAPH_PATTERNS.md pattern 41) just trimmed older turns out of
         active context (folding them into state["history_summary"] and
@@ -650,6 +660,31 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 # ends up as Langfuse's own `output` field below.
                 final_answer.clear()
                 yield {"type": "retry"}
+
+            elif kind == "on_chain_end" and event["name"] == "check_output":
+                # check_output (graph.py) mechanically inserted a missing
+                # citation marker into the answer AFTER it already
+                # finished streaming above (_insert_missing_citation_
+                # markers) — same "already-streamed tokens belong to
+                # stale content" problem retry_exhausted's own in-place
+                # replacement below solves, fixed the identical way: clear
+                # the client's buffer via the same "retry" event, then
+                # synthesize a fresh "token" event for the CORRECTED text,
+                # since — like retry_exhausted, unlike a normal
+                # retry_output round — no next `agent` call is coming to
+                # supply it. Only fires when check_output actually
+                # returned a replacement; the overwhelmingly common case
+                # where nothing needed correcting emits nothing here, same
+                # guard retry_exhausted's own handler below uses.
+                output = event["data"].get("output") or {}
+                replacement_messages = output.get("messages") or []
+                if replacement_messages:
+                    final_answer.clear()
+                    yield {"type": "retry"}
+                    replacement_text = replacement_messages[-1].content
+                    if isinstance(replacement_text, str) and replacement_text:
+                        final_answer.append(replacement_text)
+                        yield {"type": "token", "content": replacement_text}
 
             elif kind == "on_chain_end" and event["name"] == "retry_exhausted":
                 # graph.py's route_after_check gave up on a stuck
