@@ -28,7 +28,8 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from app.agent import graph as graph_module
-from app.agent.graph import GraphDeps, build_graph
+from app.agent.graph import GraphDeps
+from app.agent.graph_build import build_graph
 from tests.conftest import TEST_CTX
 
 pytestmark = pytest.mark.llm
@@ -36,7 +37,7 @@ pytestmark = pytest.mark.llm
 
 @pytest.fixture(autouse=True)
 def real_ollama_chat_model(monkeypatch, ollama_endpoint):
-    """Points app/agent/graph.py's OWN `_make_llm` at the real Ollama
+    """Points app/agent/graph_utils.py's OWN `_make_llm` at the real Ollama
     container — `graph.CHAT_MODEL`/`graph.OPENAI_API_BASE` specifically
     (that module's `from app.core.config import CHAT_MODEL, OPENAI_API_BASE`
     bindings, not `app.core.config`'s own — same "a `from X import Y`

@@ -78,8 +78,10 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from app.agent import runtime as agent_module
+from app.agent import subagent_tools
 from app.agent import tools as tools_module
-from app.agent.graph import GraphDeps, build_graph
+from app.agent.graph import GraphDeps
+from app.agent.graph_build import build_graph
 from app.core import metrics
 from app.retrieval import embeddings as embeddings_module
 from app.retrieval import qdrant_store, semantic_cache
@@ -181,7 +183,7 @@ def reset_agent_singleton(monkeypatch):
     file's docstring for why `_graph`/`_checkpointer_pool` (module-level
     singletons) need resetting before and after every test here too.
 
-    Also resets tools_module's own `_subagent_graph_cache`: this file's
+    Also resets subagent_tools' own `_subagent_graph_cache`: this file's
     TestSubagentCallUnderConcurrency drives the REAL `run_subagent` tool
     (`use_cache=True` on every production call), monkeypatching
     `tools_module.ChatOpenAI` rather than DI-ing a fake `llm=` in directly —
@@ -198,11 +200,11 @@ def reset_agent_singleton(monkeypatch):
     )
     agent_module._graph = None
     agent_module._checkpointer_pool = None
-    tools_module.reset_subagent_graph_cache()
+    subagent_tools.reset_subagent_graph_cache()
     yield
     agent_module._graph = None
     agent_module._checkpointer_pool = None
-    tools_module.reset_subagent_graph_cache()
+    subagent_tools.reset_subagent_graph_cache()
 
 
 def run_with_checkpointer_cleanup(coro_fn):

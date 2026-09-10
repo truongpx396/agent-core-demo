@@ -25,10 +25,10 @@ ever knows the tools this list names).
 from dataclasses import dataclass
 
 from app.agent.manifest import AgentManifest, DomainPlugin
+from app.agent.subagent_tools import make_domain_subagent_tool
 from app.agent.tools import TOOL_CAPABILITIES as _ECORP_TOOL_CAPABILITIES
 from app.agent.tools import (
     ask_clarification,
-    make_domain_subagent_tool,
     make_skill_tools,
     search_docs,
     skill_tools_first,

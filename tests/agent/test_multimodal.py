@@ -228,7 +228,8 @@ class TestAstreamEventsTurnBuildsMultimodalContent:
         import asyncio
         import uuid
 
-        from app.agent.graph import GraphDeps, build_graph
+        from app.agent.graph import GraphDeps
+        from app.agent.graph_build import build_graph
 
         llm = _RecordingFakeLLM(
             AIMessage(content="A cat sitting on a windowsill, sufficiently long.")

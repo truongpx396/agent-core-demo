@@ -61,12 +61,11 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from app.agent.graph import (
-    CANCEL_SENTINEL,
     COMPACTION_MARKER_KEY,
     MAX_ITERATIONS,
-    build_graph,
-    resumability_error_async,
 )
+from app.agent.graph_build import build_graph
+from app.agent.graph_hitl import CANCEL_SENTINEL, resumability_error_async
 from app.core import metrics
 from app.core.config import (
     CHAT_MODEL,
@@ -156,7 +155,7 @@ def _tenant_over_daily_budget(ctx: SecurityCtx | None) -> bool:
     BEFORE a turn starts (astream_events_turn), so an
     over-budget tenant is refused without ever reaching the LLM/tool loop
     at all. Distinct from MAX_COST_USD_PER_TURN
-    (app/agent/graph.py::should_continue): that ceiling only ever sees ONE
+    (app/agent/graph_routing.py::should_continue): that ceiling only ever sees ONE
     turn's own running total and has no memory of what the same tenant
     already spent on turns before it — this is the ceiling that
     accumulates ACROSS turns.
@@ -522,7 +521,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
     graph.astream_events() call, translate events to the app's typed event
     shapes, and yield exactly one terminal event:
       {"type": "approval_required", "tool_calls": [{"name":..., "args":...}]}
-        — the run paused at human_approval's interrupt() (see graph.py);
+        — the run paused at human_approval's interrupt() (see graph_hitl.py);
           call astream_events_resume(thread_id, approved) to continue.
       {"type": "retry"} — NOT terminal: graph.py's retry_output just
         rejected the last answer and looped back to `agent` for a fresh
@@ -581,7 +580,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
         runs on every single turn, and returns `{}` on most of them.
       {"type": "citations", "items": [...]} — emitted right before "done",
         only when the answer actually cited something; the same
-        state["used_citations"] shape graph.py's check_output computes.
+        state["used_citations"] shape graph_routing.py's check_output computes.
       {"type": "followups", "items": ["...", ...]} — emitted right before
         "done", only when suggest_followups (pattern 27) produced any;
         same state["followups"] shape, never sent for a cache hit or an

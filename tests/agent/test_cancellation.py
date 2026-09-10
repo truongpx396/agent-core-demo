@@ -19,7 +19,8 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 
 from app.agent import runtime as agent_module
-from app.agent.graph import GraphDeps, build_graph
+from app.agent.graph import GraphDeps
+from app.agent.graph_build import build_graph
 from app.core import metrics
 from app.core.errors import ErrorCode
 from tests.conftest import TEST_CTX

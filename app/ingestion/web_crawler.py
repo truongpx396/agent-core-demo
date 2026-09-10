@@ -7,7 +7,7 @@ SPA docs, anything gated behind a JS redirect).
 
 Backs three domain tools, all declared "outward" wherever they're wired in
 (app/agent/tools.py::TOOL_CAPABILITIES — reaches the open internet, so
-app/agent/graph.py::should_continue always routes them through mandatory
+app/agent/graph_routing.py::should_continue always routes them through mandatory
 human approval, same tier as app/domains/ops/tools.py::post_to_team_channel):
 - app/domains/sales/tools.py::enrich_lead_from_website — research a lead's
   company site before a rep calls them.

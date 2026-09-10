@@ -9,10 +9,10 @@ many concurrent callers there are. Locust load results against real Ollama
 therefore measure Ollama's own serialization, not agent_worker.py's —
 pointing at this server instead removes that confound.
 
-`langchain_openai.ChatOpenAI` (app/agent/graph.py::_make_llm) needs zero
+`langchain_openai.ChatOpenAI` (app/agent/graph_utils.py::_make_llm) needs zero
 code changes to talk to this: just point `OPENAI_API_BASE` here instead of
 LiteLLM. Implements both streaming and non-streaming `POST
-/v1/chat/completions`, since app/agent/graph.py's `_make_llm()` comment
+/v1/chat/completions`, since app/agent/graph_utils.py's `_make_llm()` comment
 notes `astream_events` (what the queued path always runs through) forces
 every LLM call through the streaming HTTP path even when the calling node
 code does `.invoke()` — so a load-test run exercising `/chat/stream/queued`
@@ -322,7 +322,7 @@ async def _stream_completion(model: str, tool_call: ToolCall | None, messages: l
     # A final usage-only chunk (empty `choices`) — matches what a real
     # OpenAI-compatible server sends when the request set
     # `stream_options: {"include_usage": true}`, which langchain_openai's
-    # `stream_usage=True` (app/agent/graph.py::_make_llm) always requests.
+    # `stream_usage=True` (app/agent/graph_utils.py::_make_llm) always requests.
     yield chunk(
         {},
         usage={

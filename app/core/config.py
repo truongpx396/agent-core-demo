@@ -104,7 +104,7 @@ class Settings(BaseSettings):
     # app/agent/memory.py::delete_memories (GRAPH_PATTERNS.md pattern 33).
     memory_retention_days: int = 365
 
-    # Per-run cost ceiling (app/agent/graph.py::should_continue, GRAPH_PATTERNS.md
+    # Per-run cost ceiling (app/agent/graph_routing.py::should_continue, GRAPH_PATTERNS.md
     # pattern 35) — a HARD stop, enforced before the next tool/LLM call,
     # independent of MAX_TOKENS_PER_TURN: a token cap bounds work done, a
     # dollar cap bounds what that work is actually worth on whichever

@@ -6,7 +6,7 @@ chunk instead of tracking it across the whole response. Two tool calls in one
 turn arrive as two SEPARATE top-level Ollama chunks (confirmed against the
 live litellm proxy: both chunks came back stamped "index":0), so an
 OpenAI-compatible client string-concatenates their name/arguments as if they
-were fragments of one call — see app/agent/graph.py's _make_llm comment and
+were fragments of one call — see app/agent/graph_utils.py's _make_llm comment and
 Langfuse trace 3c6ed3b0 (2026-09-09) for the corrupted result this produced.
 
 The first test below documents the bug against the STOCK, unpatched

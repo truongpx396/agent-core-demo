@@ -5,7 +5,7 @@ is the only node that needs one.
 """
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from app.agent import graph
+from app.agent import graph, graph_hitl, graph_routing
 from app.core import metrics
 from tests.conftest import TEST_CTX, metric_value
 
@@ -338,7 +338,7 @@ class TestCheckOutput:
         # test predates that constant's exact value, but the reason is a
         # real, correct part of check_output's output now, not an
         # incidental detail to paper over.
-        result = graph.check_output({"messages": [AIMessage(content="anything")]})
+        result = graph_routing.check_output({"messages": [AIMessage(content="anything")]})
         assert result == {
             "used_citations": [],
             "ungrounded_claims_count": 0,
@@ -361,7 +361,7 @@ class TestCheckOutput:
             "messages": [AIMessage(content="Checkpointers persist state [1].")],
             "citations": citations,
         }
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result == {
             "used_citations": [citations[0]],
             "ungrounded_claims_count": 0,
@@ -381,7 +381,7 @@ class TestCheckOutput:
             "messages": [AIMessage(content="A general answer with no citation.")],
             "citations": citations,
         }
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result == {
             "used_citations": [],
             "ungrounded_claims_count": 0,
@@ -401,7 +401,7 @@ class TestCheckOutput:
             "messages": [AIMessage(content="Checkpointers persist state [1] and also [5].")],
             "citations": citations,
         }
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["ungrounded_claims_count"] == 1
         assert result["used_citations"] == citations  # [1] is still real and used
 
@@ -410,7 +410,7 @@ class TestCheckOutput:
             "messages": [AIMessage(content="This is backed by [1], trust me.")],
             "citations": [],
         }
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result == {
             "used_citations": [],
             "ungrounded_claims_count": 1,
@@ -435,7 +435,7 @@ class TestCheckOutput:
             "citations": citations,
         }
         before = metric_value(metrics.agent_zero_citations_total)
-        graph.check_output(state)
+        graph_routing.check_output(state)
         assert metric_value(metrics.agent_zero_citations_total) == before + 1
 
     def test_zero_citations_metric_does_not_fire_without_available_citations(self):
@@ -447,7 +447,7 @@ class TestCheckOutput:
             "citations": [],
         }
         before = metric_value(metrics.agent_zero_citations_total)
-        graph.check_output(state)
+        graph_routing.check_output(state)
         assert metric_value(metrics.agent_zero_citations_total) == before
 
     def test_zero_citations_metric_does_not_fire_when_a_citation_was_used(self):
@@ -457,7 +457,7 @@ class TestCheckOutput:
             "citations": citations,
         }
         before = metric_value(metrics.agent_zero_citations_total)
-        graph.check_output(state)
+        graph_routing.check_output(state)
         assert metric_value(metrics.agent_zero_citations_total) == before
 
     def test_zero_citations_metric_does_not_fire_on_empty_content(self):
@@ -466,7 +466,7 @@ class TestCheckOutput:
         citations = [{"marker": "[1]", "text": "checkpointers persist state"}]
         state = {"messages": [AIMessage(content="")], "citations": citations}
         before = metric_value(metrics.agent_zero_citations_total)
-        graph.check_output(state)
+        graph_routing.check_output(state)
         assert metric_value(metrics.agent_zero_citations_total) == before
 
     def test_likely_uncited_flags_a_real_qwen_paraphrase_without_markers(self):
@@ -500,7 +500,7 @@ class TestCheckOutput:
             "relevant search results."
         )
         state = {"messages": [AIMessage(content=content)], "citations": citations}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["likely_uncited_citations"] == []
         corrected = result["messages"][0].content
         assert "payload fields [1]." in corrected
@@ -535,7 +535,7 @@ class TestCheckOutput:
             "open-source users."
         )
         state = {"messages": [AIMessage(content=content)], "citations": citations}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["likely_uncited_citations"] == []
         corrected = result["messages"][0].content
         assert "offline developer tools [2]." in corrected
@@ -545,7 +545,7 @@ class TestCheckOutput:
         citations = [{"marker": "[1]", "text": "Cosine distance is a common similarity metric."}]
         content = "Cosine distance is a common similarity metric [1]."
         state = {"messages": [AIMessage(content=content)], "citations": citations}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["likely_uncited_citations"] == []
 
     def test_likely_uncited_ignores_unrelated_general_knowledge_answer(self):
@@ -561,7 +561,7 @@ class TestCheckOutput:
         ]
         content = "The capital of France is Paris."
         state = {"messages": [AIMessage(content=content)], "citations": citations}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["likely_uncited_citations"] == []
 
     def test_likely_uncited_flags_a_short_paraphrase_of_a_long_source(self):
@@ -606,7 +606,7 @@ class TestCheckOutput:
             "loss of state, and goal drift."
         )
         state = {"messages": [AIMessage(content=content)], "citations": citations}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["likely_uncited_citations"] == []
         corrected = result["messages"][0].content
         assert corrected == (
@@ -622,7 +622,7 @@ class TestCheckOutput:
         citations = [{"marker": "[1]", "text": "Qdrant is a vector database."}]
         content = "Qdrant is a fast, open-source vector database built in Rust."
         state = {"messages": [AIMessage(content=content)], "citations": citations}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["likely_uncited_citations"] == []
 
     def test_strips_a_fabricated_reference_footer(self):
@@ -641,7 +641,7 @@ class TestCheckOutput:
             "[2]: [Link to the book or resource]"
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["messages"][0].content == (
             "By following these principles, you can build a robust and "
             "effective AI agent that meets the needs of your project and "
@@ -654,7 +654,7 @@ class TestCheckOutput:
         content = "Checkpointers persist state [1]."
         citations = [{"marker": "[1]", "text": "Checkpointers persist state."}]
         state = {"messages": [AIMessage(content=content)], "citations": citations}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert "messages" not in result
 
     def test_an_inline_marker_at_the_start_of_a_line_is_never_mistaken_for_a_footer(self):
@@ -663,7 +663,7 @@ class TestCheckOutput:
         line/paragraph must survive untouched."""
         content = "Some setup text.\n[3] continues the same sentence's source."
         state = {"messages": [AIMessage(content=content)], "citations": []}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert "messages" not in result
 
     def test_likely_misattributed_flags_a_real_marker_on_unrelated_content(self):
@@ -685,7 +685,7 @@ class TestCheckOutput:
             "schema-less designs that let applications evolve independently [3]."
         )
         state = {"messages": [AIMessage(content=content)], "citations": citations}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert {c["marker"] for c in result["likely_misattributed_citations"]} == {"[3]"}
 
     def test_likely_misattributed_ignores_a_genuinely_supported_citation(self):
@@ -702,7 +702,7 @@ class TestCheckOutput:
             "searches by payload fields to restrict results to a single topic [1]."
         )
         state = {"messages": [AIMessage(content=content)], "citations": citations}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["likely_misattributed_citations"] == []
 
     def test_likely_misattributed_flags_even_a_single_word_source(self):
@@ -723,7 +723,7 @@ class TestCheckOutput:
             "summarization, and formatting [1]."
         )
         state = {"messages": [AIMessage(content=content)], "citations": citations}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert {c["marker"] for c in result["likely_misattributed_citations"]} == {"[1]"}
 
     def test_likely_misattributed_ignores_a_citation_with_no_content_words(self):
@@ -734,7 +734,7 @@ class TestCheckOutput:
         citations = [{"marker": "[1]", "text": "is a the of"}]
         content = "Totally unrelated content about baking bread at home [1]."
         state = {"messages": [AIMessage(content=content)], "citations": citations}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["likely_misattributed_citations"] == []
 
     def test_likely_misattributed_ignores_when_only_citing_sentence_is_too_short(self):
@@ -749,7 +749,7 @@ class TestCheckOutput:
         ]
         content = "Sure [1]."
         state = {"messages": [AIMessage(content=content)], "citations": citations}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["likely_misattributed_citations"] == []
 
     def test_likely_misattributed_metric_fires(self):
@@ -767,7 +767,7 @@ class TestCheckOutput:
         )
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         before = metric_value(metrics.agent_misattributed_citations_total)
-        graph.check_output(state)
+        graph_routing.check_output(state)
         assert metric_value(metrics.agent_misattributed_citations_total) == before + 1
 
 
@@ -788,7 +788,7 @@ class TestDefersInsteadOfActing:
             "with that.\n"
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["deferred_instead_of_acting"] is True
 
     def test_flags_asking_permission_to_proceed(self):
@@ -798,7 +798,7 @@ class TestDefersInsteadOfActing:
             "to proceed?"
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["deferred_instead_of_acting"] is True
 
     def test_flags_a_bare_offer_with_no_tool_name_mentioned(self):
@@ -806,7 +806,7 @@ class TestDefersInsteadOfActing:
         vague offer plus a stalling question."""
         content = "I can look that up for you. Would you like to know more?"
         state = {"messages": [AIMessage(content=content)], "citations": []}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["deferred_instead_of_acting"] is True
 
     def test_flags_announcing_a_manual_fallback_without_ever_delivering_it(self):
@@ -821,7 +821,7 @@ class TestDefersInsteadOfActing:
             "occurrences of 'db_timeout' in the provided log.\n"
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["deferred_instead_of_acting"] is True
 
     def test_flags_narrating_a_correct_script_instead_of_running_it(self):
@@ -839,7 +839,7 @@ class TestDefersInsteadOfActing:
             "Let's run this script in a sandbox to get the result."
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["deferred_instead_of_acting"] is True
 
     def test_ignores_a_negated_apology_for_a_failed_tool_call(self):
@@ -852,20 +852,20 @@ class TestDefersInsteadOfActing:
         graph with a raw StopIteration."""
         content = "Sorry, I could not run that calculation."
         state = {"messages": [AIMessage(content=content)], "citations": []}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["deferred_instead_of_acting"] is False
 
     def test_ignores_a_negated_contraction(self):
         content = "I can't look that up right now — the service is down."
         state = {"messages": [AIMessage(content=content)], "citations": []}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["deferred_instead_of_acting"] is False
 
     def test_ignores_a_genuine_direct_answer(self):
         content = "Ecorp's support hours are 9am to 5pm on weekdays [1]."
         citations = [{"marker": "[1]", "text": "Ecorp's support hours are 9am to 5pm."}]
         state = {"messages": [AIMessage(content=content)], "citations": citations}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["deferred_instead_of_acting"] is False
 
     def test_ignores_a_third_person_description_of_the_agents_own_tools(self):
@@ -875,14 +875,14 @@ class TestDefersInsteadOfActing:
         use X"."""
         content = "This agent can use the query_employees tool to look up Ecorp staff."
         state = {"messages": [AIMessage(content=content)], "citations": []}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["deferred_instead_of_acting"] is False
 
     def test_metric_fires(self):
         content = "I can look that up for you. Would you like to know more?"
         state = {"messages": [AIMessage(content=content)], "citations": []}
         before = metric_value(metrics.agent_deferred_instead_of_acting_total)
-        graph.check_output(state)
+        graph_routing.check_output(state)
         assert metric_value(metrics.agent_deferred_instead_of_acting_total) == before + 1
 
 
@@ -908,7 +908,7 @@ class TestFabricatesToolOutput:
             "Therefore, the real contract value is $43,750.00."
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["fabricated_tool_output"] is True
         assert result["last_retry_reason"] == "fabricated"
 
@@ -923,14 +923,14 @@ class TestFabricatesToolOutput:
             "Use run_command_in_sandbox to actually run it."
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["fabricated_tool_output"] is False
 
     def test_ignores_a_genuine_answer_with_no_code_at_all(self):
         content = "Ecorp's support hours are 9am to 5pm on weekdays [1]."
         citations = [{"marker": "[1]", "text": "Ecorp's support hours are 9am to 5pm."}]
         state = {"messages": [AIMessage(content=content)], "citations": citations}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["fabricated_tool_output"] is False
 
     def test_outranks_deferred_instead_of_acting_when_both_could_apply(self):
@@ -944,7 +944,7 @@ class TestFabricatesToolOutput:
             "Output:\n\n```\n50000.00\n```\n\nSo the total is $50,000.00."
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["fabricated_tool_output"] is True
         assert result["last_retry_reason"] == "fabricated"
 
@@ -954,7 +954,7 @@ class TestFabricatesToolOutput:
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
         before = metric_value(metrics.agent_fabricated_tool_output_total)
-        graph.check_output(state)
+        graph_routing.check_output(state)
         assert metric_value(metrics.agent_fabricated_tool_output_total) == before + 1
 
 
@@ -987,7 +987,7 @@ class TestSkippedRequiredSandboxAfterSkill:
             ],
             "citations": [],
         }
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["skipped_required_tool"] == "run_python_in_sandbox"
         assert result["last_retry_reason"] == "skipped_tool"
 
@@ -1006,7 +1006,7 @@ class TestSkippedRequiredSandboxAfterSkill:
             ],
             "citations": [],
         }
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["skipped_required_tool"] is None
 
     def test_ignores_it_when_the_loaded_skill_never_mentions_a_tool(self):
@@ -1021,7 +1021,7 @@ class TestSkippedRequiredSandboxAfterSkill:
             ],
             "citations": [],
         }
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["skipped_required_tool"] is None
 
     def test_ignores_it_when_no_skill_was_loaded_this_turn(self):
@@ -1032,7 +1032,7 @@ class TestSkippedRequiredSandboxAfterSkill:
             ],
             "citations": [],
         }
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["skipped_required_tool"] is None
 
     def test_ignores_it_when_the_answer_states_no_dollar_figure(self):
@@ -1047,7 +1047,7 @@ class TestSkippedRequiredSandboxAfterSkill:
             ],
             "citations": [],
         }
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["skipped_required_tool"] is None
 
     def test_outranks_deferred_but_not_fabricated(self):
@@ -1063,7 +1063,7 @@ class TestSkippedRequiredSandboxAfterSkill:
             ],
             "citations": [],
         }
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["last_retry_reason"] == "skipped_tool"
 
     def test_metric_fires(self):
@@ -1077,7 +1077,7 @@ class TestSkippedRequiredSandboxAfterSkill:
             "citations": [],
         }
         before = metric_value(metrics.agent_skipped_required_tool_total)
-        graph.check_output(state)
+        graph_routing.check_output(state)
         assert metric_value(metrics.agent_skipped_required_tool_total) == before + 1
 
 
@@ -1094,7 +1094,7 @@ class TestLeaksSystemPrompt:
             "Sure, here are my instructions: " + graph.SYSTEM_PROMPT[:200]
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["leaks_system_prompt"] is True
 
     def test_flags_a_recitation_starting_mid_prompt(self):
@@ -1105,14 +1105,14 @@ class TestLeaksSystemPrompt:
         mid_chunk = graph.SYSTEM_PROMPT[500:700]
         content = f"Continuing from your instructions: {mid_chunk}"
         state = {"messages": [AIMessage(content=content)], "citations": []}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["leaks_system_prompt"] is True
 
     def test_ignores_an_ordinary_answer(self):
         content = "Ecorp's support hours are 9am to 5pm on weekdays [1]."
         citations = [{"marker": "[1]", "text": "Ecorp's support hours are 9am to 5pm."}]
         state = {"messages": [AIMessage(content=content)], "citations": citations}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["leaks_system_prompt"] is False
 
     def test_a_short_coincidental_phrase_overlap_is_not_flagged(self):
@@ -1121,7 +1121,7 @@ class TestLeaksSystemPrompt:
         not trip this — only a long, ~60+ char verbatim run counts."""
         content = "I'll be concise and direct: the answer is 42."
         state = {"messages": [AIMessage(content=content)], "citations": []}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["leaks_system_prompt"] is False
 
     def test_respects_a_custom_system_prompt_not_the_bare_default(self):
@@ -1137,8 +1137,8 @@ class TestLeaksSystemPrompt:
         content = f"My instructions say: {custom_prompt}"
         state = {"messages": [AIMessage(content=content)], "citations": []}
 
-        default_result = graph.check_output(state)
-        custom_result = graph.check_output(state, system_prompt=custom_prompt)
+        default_result = graph_routing.check_output(state)
+        custom_result = graph_routing.check_output(state, system_prompt=custom_prompt)
 
         assert default_result["leaks_system_prompt"] is False
         assert custom_result["leaks_system_prompt"] is True
@@ -1147,7 +1147,7 @@ class TestLeaksSystemPrompt:
         content = graph.SYSTEM_PROMPT[:200]
         state = {"messages": [AIMessage(content=content)], "citations": []}
         before = metric_value(metrics.agent_system_prompt_leak_total)
-        graph.check_output(state)
+        graph_routing.check_output(state)
         assert metric_value(metrics.agent_system_prompt_leak_total) == before + 1
 
     def test_outranks_every_other_retry_reason(self):
@@ -1156,7 +1156,7 @@ class TestLeaksSystemPrompt:
         length."""
         content = graph.SYSTEM_PROMPT[:200]
         state = {"messages": [AIMessage(content=content)], "citations": []}
-        result = graph.check_output(state)
+        result = graph_routing.check_output(state)
         assert result["last_retry_reason"] == "leaked_prompt"
 
 
@@ -1392,7 +1392,7 @@ class TestHumanApproval:
         ai = self._ai_with_tool_calls(
             {"name": "search_docs", "args": {"query": "x"}, "id": "call_1"}
         )
-        result = graph.human_approval({"messages": [ai]})
+        result = graph_hitl.human_approval({"messages": [ai]})
         assert result == {"approved": True}
 
     def test_cancelled_synthesizes_tool_message_and_sets_cancelled_flag(self, monkeypatch):
@@ -1400,11 +1400,11 @@ class TestHumanApproval:
         from both approved and rejected: `cancelled: True`, not just
         `approved: False`, is what route_after_approval needs to send
         this straight to __end__ instead of back to `agent`."""
-        monkeypatch.setattr(graph, "interrupt", lambda payload: graph.CANCEL_SENTINEL)
+        monkeypatch.setattr(graph, "interrupt", lambda payload: graph_hitl.CANCEL_SENTINEL)
         ai = self._ai_with_tool_calls(
             {"name": "add_note", "args": {"title": "T", "content": "C", "topic": "company"}, "id": "call_1"}
         )
-        result = graph.human_approval({"messages": [ai]})
+        result = graph_hitl.human_approval({"messages": [ai]})
 
         assert result["approved"] is False
         assert result["cancelled"] is True
@@ -1422,7 +1422,7 @@ class TestHumanApproval:
             {"name": "search_docs", "args": {"query": "x"}, "id": "call_1"},
             {"name": "calculator", "args": {"expression": "1+1"}, "id": "call_2"},
         )
-        result = graph.human_approval({"messages": [ai]})
+        result = graph_hitl.human_approval({"messages": [ai]})
 
         assert result["approved"] is False
         assert len(result["messages"]) == 2
@@ -1441,7 +1441,7 @@ class TestHumanApproval:
         ai = self._ai_with_tool_calls(
             {"name": "search_docs", "args": {"query": "x"}, "id": "call_1"}
         )
-        graph.human_approval({"messages": [ai]})
+        graph_hitl.human_approval({"messages": [ai]})
 
         assert seen["action"] == "approve_tool_calls"
         assert seen["tool_calls"] == [{"name": "search_docs", "args": {"query": "x"}}]

@@ -15,14 +15,14 @@ import uuid
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent import graph
+from app.agent import graph, graph_routing
 from app.agent.graph import (
     GraphDeps,
-    build_graph,
-    human_approval,
     retry_output,
-    too_many_tool_calls,
 )
+from app.agent.graph_build import build_graph
+from app.agent.graph_hitl import human_approval
+from app.agent.graph_tools import too_many_tool_calls
 from app.core import metrics
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
@@ -122,7 +122,7 @@ class TestNodeLevelMetrics:
                 )
             ],
         }
-        assert graph.should_continue(state) == "human_approval"
+        assert graph_routing.should_continue(state) == "human_approval"
         assert (
             _count(metrics.agent_capability_gate_total, capability="mutating")
             == before + 1
@@ -144,7 +144,7 @@ class TestNodeLevelMetrics:
                 )
             ],
         }
-        assert graph.should_continue(state) == "human_approval"
+        assert graph_routing.should_continue(state) == "human_approval"
         assert (
             _count(metrics.agent_capability_gate_total, capability="mutating")
             == before

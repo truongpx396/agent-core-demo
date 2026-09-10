@@ -8,7 +8,7 @@ real, live-verified bug used to corrupt: two simultaneous tool calls from an
 ollama_chat model got glued into one malformed tool_calls entry (litellm's
 OllamaChatCompletionResponseIterator.chunk_parser assigning duplicate
 "index":0 across separate stream chunks — see litellm-patches/
-sitecustomize.py and graph.py's _make_llm comment for the full writeup). A
+sitecustomize.py and graph_utils.py's _make_llm comment for the full writeup). A
 fake-model test (tests/agent/test_graph_integration.py's
 TestMandatoryCapabilityGate) already covers should_continue/human_approval's
 OWN batch-handling logic in isolation; this proves the real model's real
@@ -28,7 +28,8 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
 from app.agent import graph as graph_module
-from app.agent.graph import GraphDeps, build_graph
+from app.agent.graph import GraphDeps
+from app.agent.graph_build import build_graph
 from tests.conftest import TEST_CTX
 
 pytestmark = pytest.mark.llm

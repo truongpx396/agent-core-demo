@@ -102,7 +102,7 @@ async def async_main(hitl: bool = False) -> None:
     """Streaming CLI: token-level latency + visible tool indicators.
 
     `hitl=True` gates every tool call behind an approve/reject prompt (see
-    graph.py's human_approval) — the streaming event protocol's own
+    graph_hitl.py's human_approval) — the streaming event protocol's own
     opt-in HITL mechanism.
     """
     # Opens the durable checkpointer on THIS asyncio.run() loop, before any

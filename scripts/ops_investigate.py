@@ -37,7 +37,7 @@ import uuid
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from app.agent.graph import build_graph
+from app.agent.graph_build import build_graph
 from app.core.config import DEFAULT_TENANT
 from app.core.logging_config import configure_logging
 from app.core.security import SecurityCtx

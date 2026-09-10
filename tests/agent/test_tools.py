@@ -17,35 +17,37 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 
 from app.agent import skills as skills_module
-from app.agent import sql_store, tools
+from app.agent import sql_store, subagent_tools, tools
 from app.agent import subagents as subagents_module
 from app.agent.skills import SkillRecord
+from app.agent.subagent_tools import (
+    _ALL_TOOL_NAMES,
+    SubagentName,
+    SubagentResult,
+    _build_subagent_registry,
+    _resolve_subagent_tools,
+    _run_subagent_impl,
+    _subagent_declared_for_domain,
+    _SubagentDomainPlugin,
+    make_domain_subagent_tool,
+    run_subagent,
+)
 from app.agent.subagents import SubagentRecord
 from app.agent.tools import (
-    _ALL_TOOL_NAMES,
     TOOL_CAPABILITIES,
     TOOLS,
     AddNoteArgs,
     AskClarificationArgs,
     RememberArgs,
-    SubagentName,
-    SubagentResult,
     Topic,
-    _build_subagent_registry,
     _filter_skill_hits_by_domain,
-    _resolve_subagent_tools,
-    _run_subagent_impl,
     _skill_visible_to_domain,
-    _subagent_declared_for_domain,
-    _SubagentDomainPlugin,
     add_note,
     ask_clarification,
-    make_domain_subagent_tool,
     make_skill_tools,
     query_employees,
     recall_memories,
     remember,
-    run_subagent,
     search_docs,
     skill_search,
     use_skill,
@@ -794,6 +796,60 @@ class TestResolveSubagentTools:
         assert resolved == ()
 
 
+class TestBuildSubagentGraphTopology:
+    """build_subagent_graph() (app/agent/graph_build_subagent.py) reuses
+    build_graph()'s own node functions/factories but drops 5 nodes that
+    are pure overhead (or worse) for a nested one-shot run — see that
+    function's own docstring for the full per-node reasoning. Verified
+    here directly at the graph level, not just indirectly via
+    _run_subagent_impl's own behavior tests below."""
+
+    def test_drops_exactly_the_five_overhead_nodes(self):
+        from app.agent import graph as graph_module
+        from app.agent import graph_build_subagent
+
+        fake_llm = _RecordingFakeLLM(AIMessage(content="unused"))
+        compiled = graph_build_subagent.build_subagent_graph(deps=graph_module.GraphDeps(llm=fake_llm))
+        nodes = set(compiled.get_graph().nodes) - {"__start__", "__end__"}
+
+        dropped = {
+            "compact_history",
+            "context_window_exceeded",
+            "check_semantic_cache",
+            "write_semantic_cache",
+            "suggest_followups",
+        }
+        assert dropped.isdisjoint(nodes)
+
+    def test_keeps_every_safety_and_agent_loop_node(self):
+        from app.agent import graph as graph_module
+        from app.agent import graph_build_subagent
+
+        fake_llm = _RecordingFakeLLM(AIMessage(content="unused"))
+        compiled = graph_build_subagent.build_subagent_graph(deps=graph_module.GraphDeps(llm=fake_llm))
+        nodes = set(compiled.get_graph().nodes) - {"__start__", "__end__"}
+
+        kept = {
+            "validate_input",
+            "reject_input",
+            "reject_context",
+            "moderate_input",
+            "reject_moderation",
+            "retrieve_context",
+            "agent",
+            "tools",
+            "human_approval",
+            "too_many_tool_calls",
+            "invalid_tool_call",
+            "use_skill_without_search",
+            "check_output",
+            "retry_output",
+            "retry_exhausted",
+            "no_answer",
+        }
+        assert kept == nodes
+
+
 class TestRunSubagentImpl:
     def test_refuses_without_ctx(self):
         result = _run_subagent_impl("researcher", "do something", {"configurable": {}})
@@ -979,7 +1035,7 @@ class TestRunSubagentImpl:
                 time.sleep(0.5)
                 return AIMessage(content="too slow")
 
-        monkeypatch.setattr(tools, "SUBAGENT_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr(subagent_tools, "SUBAGENT_TIMEOUT_SECONDS", 0.05)
         registry = {"researcher": (_fake_subagent_record(), ())}
 
         before = metric_value(
@@ -1015,6 +1071,54 @@ class TestRunSubagentImpl:
         assert captured["ctx"] == TEST_CTX
         assert captured["thread_id"].startswith("parent-thread:subagent:researcher:")
 
+    def test_never_touches_the_shared_semantic_cache(self, monkeypatch):
+        """Closes GRAPH_PATTERNS.md pattern 46's previously-disclosed gap:
+        a subagent run used to check/write the SAME semantic cache the
+        top-level conversation uses (keyed by tenant+principal, shared
+        with the parent's own ctx) — a subagent's cached answer could in
+        theory have been served back for a top-level query with
+        near-identical phrasing, or vice versa. build_subagent_graph()
+        doesn't wire check_semantic_cache/write_semantic_cache as nodes at
+        all, so their underlying default functions must never be called."""
+        from app.agent import graph as graph_module
+
+        cache_get_calls: list = []
+        cache_set_calls: list = []
+        monkeypatch.setattr(
+            graph_module, "_default_cache_get", lambda *a, **k: cache_get_calls.append(1)
+        )
+        monkeypatch.setattr(
+            graph_module, "_default_cache_set", lambda *a, **k: cache_set_calls.append(1)
+        )
+        fake_llm = _RecordingFakeLLM(AIMessage(content="An answer, long enough to pass."))
+        registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
+
+        _run_subagent_impl(
+            "researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm
+        )
+
+        assert cache_get_calls == []
+        assert cache_set_calls == []
+
+    def test_never_pays_for_a_discarded_suggest_followups_call(self):
+        """The other previously-disclosed gap: a subagent run used to pay
+        for a suggest_followups LLM call whose result was simply thrown
+        away. Queuing exactly ONE response for a one-round, uncited answer
+        proves it's gone: if suggest_followups were still wired, this
+        would raise on the fake LLM's exhausted queue instead of returning
+        cleanly (same "queue sized to exactly what should be called"
+        technique test_respects_its_own_smaller_iteration_ceiling_not_the_parents
+        and others above already use)."""
+        fake_llm = _RecordingFakeLLM(AIMessage(content="A single-round answer, long enough."))
+        registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
+
+        result = _run_subagent_impl(
+            "researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm
+        )
+
+        assert result.answer == "A single-round answer, long enough."
+        assert len(fake_llm.calls) == 1
+
 
 class TestSubagentGraphCache:
     """`use_cache=True` reuses a compiled nested graph across calls instead
@@ -1027,22 +1131,24 @@ class TestSubagentGraphCache:
     excluded from the cache with no change to its own call shape."""
 
     def setup_method(self):
-        tools.reset_subagent_graph_cache()
+        subagent_tools.reset_subagent_graph_cache()
 
     def teardown_method(self):
-        tools.reset_subagent_graph_cache()
+        subagent_tools.reset_subagent_graph_cache()
 
     def test_use_cache_reuses_the_compiled_graph_across_calls(self, monkeypatch):
-        from app.agent import graph as graph_module
+        from app.agent import graph_build_subagent
 
         build_calls = []
-        real_build_graph = graph_module.build_graph
+        real_build_subagent_graph = graph_build_subagent.build_subagent_graph
 
-        def counting_build_graph(*args, **kwargs):
+        def counting_build_subagent_graph(*args, **kwargs):
             build_calls.append(1)
-            return real_build_graph(*args, **kwargs)
+            return real_build_subagent_graph(*args, **kwargs)
 
-        monkeypatch.setattr(graph_module, "build_graph", counting_build_graph)
+        monkeypatch.setattr(
+            graph_build_subagent, "build_subagent_graph", counting_build_subagent_graph
+        )
 
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
         # The cached graph reuses the SAME bound LLM client across BOTH
@@ -1084,14 +1190,14 @@ class TestSubagentGraphCache:
         assert never_used_llm.calls == []
 
     def test_different_domains_get_independent_cache_entries(self, monkeypatch):
-        from app.agent import graph as graph_module
+        from app.agent import graph_build_subagent
 
         build_calls = []
-        real_build_graph = graph_module.build_graph
+        real_build_subagent_graph = graph_build_subagent.build_subagent_graph
         monkeypatch.setattr(
-            graph_module,
-            "build_graph",
-            lambda *a, **k: (build_calls.append(1), real_build_graph(*a, **k))[1],
+            graph_build_subagent,
+            "build_subagent_graph",
+            lambda *a, **k: (build_calls.append(1), real_build_subagent_graph(*a, **k))[1],
         )
 
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
@@ -1111,7 +1217,10 @@ class TestSubagentGraphCache:
         # Two distinct (domain, subagent_name) keys -> two real builds, not
         # a false cache hit across domains for the same subagent name.
         assert len(build_calls) == 2
-        assert set(tools._subagent_graph_cache) == {("ecorp", "researcher"), ("support", "researcher")}
+        assert set(subagent_tools._subagent_graph_cache) == {
+            ("ecorp", "researcher"),
+            ("support", "researcher"),
+        }
 
     def test_without_use_cache_the_graph_cache_is_never_touched(self):
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
@@ -1121,7 +1230,7 @@ class TestSubagentGraphCache:
             "researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
-        assert tools._subagent_graph_cache == {}
+        assert subagent_tools._subagent_graph_cache == {}
 
 
 class TestRunSubagentTool:
@@ -1136,7 +1245,7 @@ class TestRunSubagentTool:
         assert "Look up Ecorp facts" in schema["properties"]["subagent_name"]["description"]
 
     def test_blank_task_rejected(self):
-        from app.agent.tools import RunSubagentArgs
+        from app.agent.subagent_tools import RunSubagentArgs
 
         with pytest.raises(ValueError):
             RunSubagentArgs(
@@ -1152,7 +1261,7 @@ class TestRunSubagentTool:
         from langgraph.types import Command
 
         monkeypatch.setattr(
-            tools, "_run_subagent_impl", lambda *a, **k: SubagentResult("42", 123, 0.05)
+            subagent_tools, "_run_subagent_impl", lambda *a, **k: SubagentResult("42", 123, 0.05)
         )
 
         result = run_subagent.invoke(
@@ -1300,7 +1409,7 @@ class TestMakeDomainSubagentTool:
             captured["registry"] = registry
             return SubagentResult("ok", 0, 0.0)
 
-        monkeypatch.setattr(tools, "_run_subagent_impl", fake_run_subagent_impl)
+        monkeypatch.setattr(subagent_tools, "_run_subagent_impl", fake_run_subagent_impl)
 
         fake_support_tool = type("FakeTool", (), {"name": "a_support_only_tool"})()
         domain_tool = make_domain_subagent_tool(

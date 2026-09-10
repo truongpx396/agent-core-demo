@@ -11,7 +11,8 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from app.agent.graph import GraphDeps, build_graph
+from app.agent.graph import GraphDeps
+from app.agent.graph_build import build_graph
 from app.domains.support import store
 from app.domains.support.domain import SUPPORT_DOMAIN_PLUGIN, SUPPORT_MANIFEST
 from tests.conftest import TEST_CTX
@@ -119,7 +120,7 @@ class TestDomainScopedSubagent:
     never Ecorp's own `researcher`."""
 
     def test_is_not_the_ecorp_level_run_subagent_object(self):
-        from app.agent.tools import run_subagent as ecorp_run_subagent
+        from app.agent.subagent_tools import run_subagent as ecorp_run_subagent
 
         g = _build()
         domain_run_subagent = g.nodes["tools"].bound.tools_by_name["run_subagent"]
@@ -133,7 +134,7 @@ class TestDomainScopedSubagent:
         assert enum_def["enum"] == ["ticket-researcher"]
 
     def test_never_pauses_it_is_read_only(self, monkeypatch):
-        from app.agent import tools as agent_tools_module
+        from app.agent import subagent_tools as agent_tools_module
 
         monkeypatch.setattr(
             agent_tools_module,
