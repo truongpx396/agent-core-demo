@@ -24,6 +24,7 @@ from app.agent import tools
 from app.agent.graph import (
     COMPACTION_MARKER_KEY,
     MAX_ITERATIONS,
+    MAX_SUBAGENT_TOKENS_PER_RUN,
     MAX_TOKENS_PER_TURN,
     MAX_TOOL_CALLS_PER_TURN,
     _estimate_tokens,
@@ -35,6 +36,7 @@ from app.agent.graph import (
     validate_input,
 )
 from app.core import metrics
+from app.core.config import MAX_COST_USD_PER_TURN, MAX_SUBAGENT_COST_USD_PER_RUN
 from tests.conftest import TEST_CTX, metric_value
 
 
@@ -58,10 +60,12 @@ class TestPerTurnReset:
             "messages": [HumanMessage(content="hi")],
             "iterations": 7,
             "total_tokens": 5000,
+            "subagent_spend": [(500, 0.05)],
         }
         result = validate_input(state, _cfg())
         assert result["iterations"] == 0
         assert result["total_tokens"] == 0
+        assert result["subagent_spend"] == []
 
     def test_validate_input_generates_a_fresh_run_id_every_turn(self):
         """run_id correlates this turn's node lifecycle logs (_instrumented)
@@ -346,6 +350,60 @@ class TestTokenBudget:
     def test_missing_total_tokens_defaults_to_zero(self):
         state = {"iterations": 1, "messages": [AIMessage(content="final answer here.")]}
         assert should_continue(state) == "check_output"
+
+
+class TestSubagentSpendBudget:
+    """subagent_spend folds a turn's run_subagent delegations into the
+    PARENT's own live token/cost ceiling (GRAPH_PATTERNS.md pattern 46's
+    disclosed gap) without touching the nested run's own, separate
+    MAX_SUBAGENT_TOKENS_PER_RUN/MAX_SUBAGENT_COST_USD_PER_RUN ceiling."""
+
+    def test_own_tokens_under_budget_but_subagent_spend_tips_it_over(self):
+        state = {
+            "iterations": 1,
+            "total_tokens": MAX_TOKENS_PER_TURN - 1,
+            "subagent_spend": [(1, 0.0)],
+            "messages": [AIMessage(content="final answer, long enough.")],
+        }
+        assert should_continue(state) == "no_answer"
+
+    def test_own_cost_under_budget_but_subagent_spend_tips_it_over(self):
+        state = {
+            "iterations": 1,
+            "total_cost_usd": MAX_COST_USD_PER_TURN - 0.001,
+            "subagent_spend": [(0, 0.001)],
+            "messages": [AIMessage(content="final answer, long enough.")],
+        }
+        assert should_continue(state) == "no_answer"
+
+    def test_missing_subagent_spend_defaults_to_empty(self):
+        state = {
+            "iterations": 1,
+            "total_tokens": MAX_TOKENS_PER_TURN - 1,
+            "messages": [AIMessage(content="final answer, long enough.")],
+        }
+        assert should_continue(state) == "check_output"
+
+    def test_subagent_spend_well_under_its_own_run_ceiling_can_still_trip_the_turn_ceiling(self):
+        """The nested run's own MAX_SUBAGENT_TOKENS_PER_RUN/
+        MAX_SUBAGENT_COST_USD_PER_RUN stay independent, per-call ceilings —
+        a single subagent call comfortably under ITS ceiling can still be
+        the delta that pushes the PARENT turn's own, separate ceiling over,
+        once combined with what the turn already spent directly."""
+        state = {
+            "iterations": 1,
+            "total_tokens": MAX_TOKENS_PER_TURN - 1,
+            "subagent_spend": [(MAX_SUBAGENT_TOKENS_PER_RUN // 2, 0.0)],
+            "messages": [AIMessage(content="final answer, long enough.")],
+        }
+        assert should_continue(state) == "no_answer"
+        state = {
+            "iterations": 1,
+            "total_cost_usd": MAX_COST_USD_PER_TURN - 0.001,
+            "subagent_spend": [(0, MAX_SUBAGENT_COST_USD_PER_RUN / 2)],
+            "messages": [AIMessage(content="final answer, long enough.")],
+        }
+        assert should_continue(state) == "no_answer"
 
 
 class TestToolTimeout:

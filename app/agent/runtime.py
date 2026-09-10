@@ -609,9 +609,11 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
         ):
             kind = event["event"]
 
-            if kind == "on_chat_model_stream" and event.get("metadata", {}).get(
-                "langgraph_node"
-            ) == "agent":
+            if (
+                kind == "on_chat_model_stream"
+                and event.get("metadata", {}).get("langgraph_node") == "agent"
+                and not event.get("metadata", {}).get("subagent_name")
+            ):
                 # Real bug, caught live via Langfuse: astream_events emits
                 # on_chat_model_stream for EVERY chat-model call anywhere in
                 # the graph, not just the main answer — suggest_followups
@@ -630,20 +632,51 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 # this way; suggest_followups' output already reaches the
                 # client correctly, and separately, via its own dedicated
                 # "followups" event below.
+                #
+                # `metadata.subagent_name` guards a SECOND, distinct source
+                # of the same problem: app/agent/tools.py::_run_subagent_impl
+                # threads this turn's own callbacks into a NESTED graph's
+                # invoke() (so its internal LLM/tool calls trace correctly as
+                # child spans) — and that nested graph, built via this exact
+                # same build_graph(), ALSO has a node literally named
+                # "agent". Without this guard its own internal reasoning
+                # tokens would satisfy the langgraph_node check above too and
+                # leak into the client's main answer stream, indistinguishable
+                # from the top-level answer. Verified empirically: a bare
+                # top-level on_chat_model_start already carries a non-empty
+                # `parent_ids` (LangGraph's own __start__/channel-write
+                # machinery nests everything 2+ levels deep), so
+                # `parent_ids`-emptiness is NOT a usable discriminator here —
+                # `metadata.subagent_name` (stamped only on the nested run's
+                # own config, tools.py's `nested_config["metadata"]`) is.
                 content = _text_content(event["data"]["chunk"].content)
                 if content:
                     final_answer.append(content)
                     yield {"type": "token", "content": content}
 
             elif kind == "on_tool_start":
-                yield {
+                payload = {
                     "type": "tool_start",
                     "tool": event["name"],
                     "args": event["data"].get("input", {}),
                 }
+                subagent_name = event.get("metadata", {}).get("subagent_name")
+                if subagent_name:
+                    # This tool call happened INSIDE a run_subagent's own
+                    # nested run (tagged via nested_config["metadata"]),
+                    # rather than at the top level — surfaced to the client
+                    # so a ~45s delegation isn't a silent black box, tagged
+                    # so the UI can render it as the subagent's own activity
+                    # rather than confusing it with a top-level tool call.
+                    payload["subagent"] = subagent_name
+                yield payload
 
             elif kind == "on_tool_end":
-                yield {"type": "tool_end", "tool": event["name"]}
+                payload = {"type": "tool_end", "tool": event["name"]}
+                subagent_name = event.get("metadata", {}).get("subagent_name")
+                if subagent_name:
+                    payload["subagent"] = subagent_name
+                yield payload
 
             elif kind == "on_chain_end" and event["name"] == "retry_output":
                 # check_output rejected the last answer (too short, or

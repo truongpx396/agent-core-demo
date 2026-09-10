@@ -75,12 +75,13 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool, InjectedToolCallId, tool
 from langchain_openai import ChatOpenAI
+from langgraph.types import Command
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from app.agent import skills as skills_module
@@ -934,6 +935,26 @@ SUBAGENT_TIMEOUT_SECONDS = 45  # safety budget: wall-clock cap on one nested
 # just longer, since a nested multi-step agent loop legitimately needs more
 # time than a single Qdrant query or arithmetic eval.
 
+# Compiled nested graph + bound LLM client, reused across calls instead of
+# rebuilt from scratch on every single run_subagent invocation — the
+# topology/LLM/tools/manifest are all static per (domain, subagent_name),
+# so rebuilding per-call was pure waste (a whole StateGraph compile + a
+# fresh ChatOpenAI().bind_tools() every time). Same lazy, unlocked,
+# process-wide cache shape as app/agent/subagents.py's own
+# `_subagents_cache`/`get_subagents()`/`reload_subagents()` — a benign
+# first-use race (two concurrent misses both build) is already accepted
+# there and accepted here for the same reason. Only ever populated/read
+# when a caller opts in via `_run_subagent_impl(..., use_cache=True)` — see
+# that function's own docstring for why this is opt-in, not inferred from
+# whether `registry`/`tools_by_name`/`llm` were passed.
+_subagent_graph_cache: dict[tuple[str, str], Any] = {}
+
+
+def reset_subagent_graph_cache() -> None:
+    """Test/ops hook — mirrors app/agent/subagents.py::reload_subagents()."""
+    global _subagent_graph_cache
+    _subagent_graph_cache = {}
+
 
 def _resolve_subagent_tools(
     subagent_name: str,
@@ -1089,17 +1110,35 @@ class _SubagentDomainPlugin:
         return DEFAULT_POLICY
 
 
+@dataclass(frozen=True)
+class SubagentResult:
+    """`_run_subagent_impl`'s return shape: the scrubbed answer text plus the
+    nested run's own `total_tokens`/`total_cost_usd` — needed separately
+    from the answer string so the calling `run_subagent` tool can fold them
+    into the PARENT turn's live budget via `Command(update={"subagent_spend":
+    [(total_tokens, total_cost_usd)]})` (see app/agent/graph.py's `State`
+    docstring and `should_continue`, GRAPH_PATTERNS.md pattern 46's disclosed
+    "spend isn't live-folded into the parent's own ceiling" gap)."""
+
+    answer: str
+    total_tokens: int
+    total_cost_usd: float
+
+
 def _run_subagent_impl(
     subagent_name: str,
     task: str,
     config: RunnableConfig,
+    *,
+    domain: str = "ecorp",
     registry: dict[str, tuple] | None = None,
     tools_by_name: Mapping[str, Any] | None = None,
     llm: Any = None,
-) -> str:
+    use_cache: bool = False,
+) -> SubagentResult:
     """Build and run one nested, isolated agent turn, then return its final
-    answer text. See GRAPH_PATTERNS.md pattern 46 for the full design;
-    `registry`/`tools_by_name`/`llm` are DI for tests (mirror
+    answer plus its own usage. See GRAPH_PATTERNS.md pattern 46 for the full
+    design; `registry`/`tools_by_name`/`llm` are DI for tests (mirror
     `build_graph(deps=...)`'s own override shape) — `registry` defaults to
     the real, process-wide `_SUBAGENT_REGISTRY`, `tools_by_name` defaults to
     every Ecorp tool by name (`{t.name: t for t in TOOLS}`), `llm` defaults
@@ -1116,6 +1155,25 @@ def _run_subagent_impl(
     passes the calling domain's own tool objects here; the Ecorp-level
     construction below relies on the default, since Ecorp's own registry
     only ever resolves to names already in Ecorp's own `TOOLS`.
+
+    `domain` is purely a cache-key/tracing-metadata component — it does NOT
+    select `registry` (that's still always whatever the caller passes, or
+    `_SUBAGENT_REGISTRY` by default); `make_domain_subagent_tool` already
+    resolves a domain-scoped `registry`/`tools_by_name` pair itself and
+    passes both explicitly, `domain` just labels which one so the compiled-
+    graph cache below and the nested run's tracing metadata can tell two
+    domains' same-named subagent apart.
+
+    `use_cache` opts into reusing a compiled nested graph across calls
+    (see `_subagent_graph_cache` above) — deliberately NOT inferred from
+    whether `llm`/`registry`/`tools_by_name` were passed, since
+    `make_domain_subagent_tool`'s real production closure always passes its
+    own `registry`/`tools_by_name` (there's no sensible domain-agnostic
+    default for a non-Ecorp domain), so that inference would silently
+    defeat caching for every domain but Ecorp. Only the two real
+    `run_subagent` tool closures pass `use_cache=True`; every test calls
+    this function directly and never sets it, so tests are automatically
+    excluded from the cache with no change needed to their own call shape.
 
     Isolation, in one place: a FRESH `messages` list (the subagent's own
     system prompt + exactly the delegated `task` as its sole HumanMessage —
@@ -1140,12 +1198,12 @@ def _run_subagent_impl(
     """
     ctx = _ctx_from_config(config)
     if not valid_ctx(ctx):
-        return _NO_CTX_REFUSAL
+        return SubagentResult(_NO_CTX_REFUSAL, 0, 0.0)
 
     reg = registry if registry is not None else _SUBAGENT_REGISTRY
     entry = reg.get(subagent_name)
     if entry is None:
-        return f"No subagent named {subagent_name!r} is registered."
+        return SubagentResult(f"No subagent named {subagent_name!r} is registered.", 0, 0.0)
     record, resolved_tool_names = entry
     all_tools_by_name = tools_by_name if tools_by_name is not None else {t.name: t for t in TOOLS}
     nested_tools = [all_tools_by_name[name] for name in resolved_tool_names if name in all_tools_by_name]
@@ -1167,37 +1225,64 @@ def _run_subagent_impl(
     from app.agent.manifest import AgentManifest
     from app.agent.meter import record_usage
 
-    nested_llm = llm if llm is not None else ChatOpenAI(
-        model=record.model or CHAT_MODEL,
-        base_url=OPENAI_API_BASE,
-        api_key=SecretStr(OPENAI_API_KEY),
-        temperature=0,
-        stream_usage=True,
-    ).bind_tools(nested_tools)
-
+    # Computed fresh on every call regardless of caching below — cheap string
+    # formatting, fully determined by record.system_prompt (already resolved
+    # from the registry above), no need to cache it separately from the
+    # compiled graph.
     nested_system_prompt = f"{record.system_prompt}\n\n{_CITATION_MARKER_WARNING}"
-    nested_manifest = AgentManifest(name=record.name, system_prompt=nested_system_prompt)
-    nested_domain = _SubagentDomainPlugin(nested_tools)
 
-    nested_graph = build_graph(
-        deps=GraphDeps(llm=nested_llm),
-        manifest=nested_manifest,
-        domain=nested_domain,
-        max_iterations=MAX_SUBAGENT_ITERATIONS,
-        max_tokens_per_turn=MAX_SUBAGENT_TOKENS_PER_RUN,
-        max_cost_usd_per_turn=MAX_SUBAGENT_COST_USD_PER_RUN,
-        # This function's own post-run check below needs a genuinely empty
-        # final AIMessage to detect "some safety net fired" and report its
-        # own "did not produce a final answer" message + outcome=
-        # "budget_exceeded" — the top-level graph's no_answer node would
-        # otherwise fill that content in first (see build_graph's docstring).
-        emit_no_answer_message=False,
-    )
+    cache_key = (domain, subagent_name)
+    if use_cache and cache_key in _subagent_graph_cache:
+        nested_graph = _subagent_graph_cache[cache_key]
+    else:
+        nested_llm = llm if llm is not None else ChatOpenAI(
+            model=record.model or CHAT_MODEL,
+            base_url=OPENAI_API_BASE,
+            api_key=SecretStr(OPENAI_API_KEY),
+            temperature=0,
+            stream_usage=True,
+        ).bind_tools(nested_tools)
+
+        nested_manifest = AgentManifest(name=record.name, system_prompt=nested_system_prompt)
+        nested_domain = _SubagentDomainPlugin(nested_tools)
+
+        nested_graph = build_graph(
+            deps=GraphDeps(llm=nested_llm),
+            manifest=nested_manifest,
+            domain=nested_domain,
+            max_iterations=MAX_SUBAGENT_ITERATIONS,
+            max_tokens_per_turn=MAX_SUBAGENT_TOKENS_PER_RUN,
+            max_cost_usd_per_turn=MAX_SUBAGENT_COST_USD_PER_RUN,
+            # This function's own post-run check below needs a genuinely empty
+            # final AIMessage to detect "some safety net fired" and report its
+            # own "did not produce a final answer" message + outcome=
+            # "budget_exceeded" — the top-level graph's no_answer node would
+            # otherwise fill that content in first (see build_graph's docstring).
+            emit_no_answer_message=False,
+        )
+        if use_cache:
+            _subagent_graph_cache[cache_key] = nested_graph
 
     parent_thread_id = (config or {}).get("configurable", {}).get("thread_id", "unknown")
     nested_thread_id = f"{parent_thread_id}:subagent:{record.name}:{uuid.uuid4().hex[:8]}"
     nested_config = {
         "configurable": {"thread_id": nested_thread_id, "ctx": ctx},
+        # Threads the parent run's own tracing callbacks (e.g. Langfuse)
+        # through, so this nested run's internal LLM/tool calls show up as
+        # child spans instead of being invisible until _invoke() returns.
+        "callbacks": config.get("callbacks"),
+        # Tags every event this nested run produces (LLM stream chunks, tool
+        # start/end) with which subagent it came from — consumed by
+        # app/agent/runtime.py::_run_graph_stream to (a) keep this run's own
+        # "agent" node token stream from leaking into the client's main
+        # answer stream (both graphs use the SAME node name), and (b)
+        # surface this run's own tool activity to the client, tagged, instead
+        # of a silent black box for the whole call.
+        "metadata": {
+            "subagent_name": record.name,
+            "parent_thread_id": parent_thread_id,
+            "domain": domain,
+        },
         # LangGraph's OWN graph-step cap — a different, coarser unit than
         # MAX_SUBAGENT_ITERATIONS (an agent-node-invocation count): every
         # turn also runs ~5 fixed pre-loop nodes (validate_input,
@@ -1250,6 +1335,7 @@ def _run_subagent_impl(
     duration = time.monotonic() - started
 
     total_tokens = result_state.get("total_tokens", 0)
+    total_cost_usd = result_state.get("total_cost_usd", 0.0)
     messages = result_state.get("messages", [])
     final_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
     content = final_ai.content if final_ai is not None else ""
@@ -1289,7 +1375,7 @@ def _run_subagent_impl(
             "duration_ms": round(duration * 1000, 1),
         },
     )
-    return answer
+    return SubagentResult(answer, total_tokens, total_cost_usd)
 
 
 if _SUBAGENT_REGISTRY:
@@ -1330,6 +1416,17 @@ if _SUBAGENT_REGISTRY:
             "access to this conversation's history, so include everything it needs "
             "to know in this one description.",
         )
+        # Injected by ToolNode, never shown to or settable by the LLM. Must be
+        # declared here, on the args_schema itself, not just on the wrapper
+        # function's own signature below — this codebase's tools all use an
+        # explicit args_schema, and LangChain's injected-argument detection
+        # for InjectedToolCallId (unlike its `config: RunnableConfig`
+        # detection, which scans the raw function) scans args_schema's own
+        # fields, verified directly against this repo's pinned
+        # langchain-core: omitting it here raises a TypeError at invocation
+        # despite the function parameter existing. Needed to build the
+        # ToolMessage this tool now returns itself via Command(update=...).
+        tool_call_id: Annotated[str, InjectedToolCallId]
 
         @field_validator("task")
         @classmethod
@@ -1339,7 +1436,12 @@ if _SUBAGENT_REGISTRY:
             return v
 
     @tool(args_schema=RunSubagentArgs)
-    def run_subagent(subagent_name: SubagentName, task: str, config: RunnableConfig) -> str:
+    def run_subagent(
+        subagent_name: SubagentName,
+        task: str,
+        config: RunnableConfig,
+        tool_call_id: Annotated[str, InjectedToolCallId],
+    ) -> Command:
         """Delegate a self-contained task to a specialized subagent running in
         its own isolated context — it does NOT see this conversation's
         history, only the `task` description you give it, so describe
@@ -1348,7 +1450,13 @@ if _SUBAGENT_REGISTRY:
         matches a subagent's specific focus better than doing it yourself.
         Every subagent is restricted to read_only tools, so calling this
         never needs human approval."""
-        return _run_subagent_impl(subagent_name.value, task, config)
+        result = _run_subagent_impl(subagent_name.value, task, config, domain="ecorp", use_cache=True)
+        return Command(
+            update={
+                "messages": [ToolMessage(content=result.answer, tool_call_id=tool_call_id)],
+                "subagent_spend": [(result.total_tokens, result.total_cost_usd)],
+            }
+        )
 
     TOOLS.append(run_subagent)
 
@@ -1412,6 +1520,9 @@ def make_domain_subagent_tool(
             "access to this conversation's history, so include everything it needs "
             "to know in this one description.",
         )
+        # See RunSubagentArgs's identical field above for why this must be
+        # declared on the schema itself, not just the wrapper function below.
+        tool_call_id: Annotated[str, InjectedToolCallId]
 
         @field_validator("task")
         @classmethod
@@ -1421,7 +1532,12 @@ def make_domain_subagent_tool(
             return v
 
     @tool(args_schema=_RunSubagentArgs)
-    def run_subagent(subagent_name: domain_subagent_name, task: str, config: RunnableConfig) -> str:
+    def run_subagent(
+        subagent_name: domain_subagent_name,
+        task: str,
+        config: RunnableConfig,
+        tool_call_id: Annotated[str, InjectedToolCallId],
+    ) -> Command:
         """Delegate a self-contained task to a specialized subagent running in
         its own isolated context — it does NOT see this conversation's
         history, only the `task` description you give it, so describe
@@ -1430,8 +1546,20 @@ def make_domain_subagent_tool(
         matches a subagent's specific focus better than doing it yourself.
         Every subagent is restricted to read_only tools, so calling this
         never needs human approval."""
-        return _run_subagent_impl(
-            subagent_name.value, task, config, registry=registry, tools_by_name=tools_by_name
+        result = _run_subagent_impl(
+            subagent_name.value,
+            task,
+            config,
+            domain=domain,
+            registry=registry,
+            tools_by_name=tools_by_name,
+            use_cache=True,
+        )
+        return Command(
+            update={
+                "messages": [ToolMessage(content=result.answer, tool_call_id=tool_call_id)],
+                "subagent_spend": [(result.total_tokens, result.total_cost_usd)],
+            }
         )
 
     return run_subagent
