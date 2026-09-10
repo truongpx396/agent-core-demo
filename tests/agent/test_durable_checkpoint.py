@@ -1,5 +1,5 @@
 """Tests for the durable checkpointer machinery in app/agent/runtime.py
-(init_graph_async) and app/agent/graph.py's resumability_error_async.
+(init_graph_async) and app/agent/graph_hitl.py's resumability_error_async.
 
 Everything here uses a real AsyncPostgresSaver — no Qdrant/LiteLLM — so it
 stays as close as possible to this suite's "no live services" contract
@@ -48,9 +48,9 @@ from app.agent.graph import (
     STATE_SCHEMA_VERSION,
     SYSTEM_PROMPT,
     GraphDeps,
-    build_graph,
-    resumability_error_async,
 )
+from app.agent.graph_build import build_graph
+from app.agent.graph_hitl import resumability_error_async
 from app.core import metrics
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count

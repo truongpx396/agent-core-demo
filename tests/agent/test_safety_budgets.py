@@ -31,10 +31,10 @@ from app.agent.graph import (
     _messages_to_trim,
     _trim_history,
     make_compact_history_node,
-    should_continue,
-    too_many_tool_calls,
     validate_input,
 )
+from app.agent.graph_routing import should_continue
+from app.agent.graph_tools import too_many_tool_calls
 from app.core import metrics
 from app.core.config import MAX_COST_USD_PER_TURN, MAX_SUBAGENT_COST_USD_PER_RUN
 from tests.conftest import TEST_CTX, metric_value

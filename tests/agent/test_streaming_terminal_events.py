@@ -27,7 +27,8 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
 from app.agent import moderation
 from app.agent import runtime as agent_module
-from app.agent.graph import GraphDeps, _estimate_tokens, build_graph
+from app.agent.graph import GraphDeps, _estimate_tokens
+from app.agent.graph_build import build_graph
 from tests.conftest import TEST_CTX
 
 

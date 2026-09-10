@@ -56,7 +56,8 @@ from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from app.agent import graph as graph_module
-from app.agent.graph import GraphDeps, build_graph
+from app.agent.graph import GraphDeps
+from app.agent.graph_build import build_graph
 from tests.conftest import TEST_CTX
 
 pytestmark = pytest.mark.deepeval

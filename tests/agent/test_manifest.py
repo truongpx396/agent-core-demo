@@ -14,7 +14,8 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.types import Command
 
-from app.agent.graph import GraphDeps, build_graph
+from app.agent.graph import GraphDeps
+from app.agent.graph_build import build_graph
 from app.agent.manifest import DEFAULT_DOMAIN_PLUGIN, DEFAULT_MANIFEST, AgentManifest
 from app.core.security import Policy, SecurityCtx, valid_ctx
 
@@ -182,7 +183,7 @@ class TestSecondDomainProvesReuse:
         assert TOOL_CAPABILITIES["search_docs"] == "read_only"
 
     def test_check_output_leak_detection_uses_this_domains_own_system_prompt(self):
-        """check_output (app/agent/graph.py's _leaks_system_prompt) is bound
+        """check_output (app/agent/graph_routing.py's _leaks_system_prompt) is bound
         via functools.partial to manifest.system_prompt inside build_graph
         — NOT the bare Ecorp-only SYSTEM_PROMPT module default. Proof: an
         answer that verbatim-reproduces the WIDGET domain's own (much

@@ -52,7 +52,7 @@ from pathlib import Path
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from app.agent.graph import build_graph
+from app.agent.graph_build import build_graph
 from app.core.config import DEFAULT_TENANT
 from app.core.security import SecurityCtx
 

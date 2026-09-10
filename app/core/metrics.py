@@ -279,14 +279,14 @@ agent_tool_budget_exceeded_total = Counter(
 agent_invalid_tool_call_total = Counter(
     "agent_invalid_tool_call_total",
     "Turns where the LLM emitted a tool_call whose name isn't a real registered tool "
-    "(app/agent/graph.py's invalid_tool_call node) — a model output-quality issue, not dispatched "
+    "(app/agent/graph_tools.py's invalid_tool_call node) — a model output-quality issue, not dispatched "
     "or surfaced to human_approval",
 )
 
 agent_use_skill_without_search_total = Counter(
     "agent_use_skill_without_search_total",
     "Turns where the LLM called use_skill without ever calling skill_search "
-    "first in the same turn (app/agent/graph.py's use_skill_without_search "
+    "first in the same turn (app/agent/graph_skills.py's use_skill_without_search "
     "node, see _use_skill_called_without_search) — rejected and looped back "
     "to agent instead of dispatched, so a fabricated skill name never gets "
     "as far as a 'not found' failure the model might narrate into the final "
@@ -380,12 +380,12 @@ agent_memory_deletion_total = Counter(
 agent_no_progress_total = Counter(
     "agent_no_progress_total",
     "Turns ended early for repeating an identical tool-call batch "
-    "MAX_REPEATED_ACTIONS times in a row (app/agent/graph.py::should_continue)",
+    "MAX_REPEATED_ACTIONS times in a row (app/agent/graph_routing.py::should_continue)",
 )
 
 agent_cost_ceiling_exceeded_total = Counter(
     "agent_cost_ceiling_exceeded_total",
-    "Turns ended early for exceeding MAX_COST_USD_PER_TURN (app/agent/graph.py::should_continue)",
+    "Turns ended early for exceeding MAX_COST_USD_PER_TURN (app/agent/graph_routing.py::should_continue)",
 )
 
 agent_cancellation_total = Counter(

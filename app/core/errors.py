@@ -10,7 +10,7 @@ moderation."
 Applied to this app's own OPERATOR/CALLER-facing surfaces: the SSE
 `error` event (`app/agent/runtime.py::_run_graph_stream`) and the CLI's
 printed error text (`app/channels/chat.py`). Deliberately NOT applied to `ToolMessage` content — what
-a failing tool returns to the LLM (`app/agent/graph.py::_friendly_tool_error`)
+a failing tool returns to the LLM (`app/agent/graph_utils.py::_friendly_tool_error`)
 is natural-language by design, read and reacted to by the model, a
 different audience than an operator or an integrating caller.
 """

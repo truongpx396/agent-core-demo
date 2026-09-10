@@ -12,7 +12,7 @@ import logging
 import pytest
 from langgraph.errors import GraphInterrupt
 
-from app.agent.graph import _instrumented
+from app.agent.graph_utils import _instrumented
 
 
 def test_wraps_node_and_returns_its_result_unchanged():
@@ -28,7 +28,7 @@ def test_logs_started_and_completed_on_success(caplog):
     def node(state):
         return {"ok": True}
 
-    with caplog.at_level(logging.INFO, logger="app.agent.graph"):
+    with caplog.at_level(logging.INFO, logger="app.agent.graph_utils"):
         node({"run_id": "abc123"})
 
     messages = [r.message for r in caplog.records]
@@ -57,7 +57,7 @@ def test_logs_failed_and_reraises_on_exception(caplog):
     def node(state):
         raise ValueError("boom")
 
-    with caplog.at_level(logging.WARNING, logger="app.agent.graph"):
+    with caplog.at_level(logging.WARNING, logger="app.agent.graph_utils"):
         with pytest.raises(ValueError, match="boom"):
             node({"run_id": "abc123"})
 
@@ -77,7 +77,7 @@ def test_graph_interrupt_is_logged_as_paused_not_failed_and_still_propagates(cap
     def node(state):
         raise GraphInterrupt()
 
-    with caplog.at_level(logging.INFO, logger="app.agent.graph"):
+    with caplog.at_level(logging.INFO, logger="app.agent.graph_utils"):
         with pytest.raises(GraphInterrupt):
             node({"run_id": "abc123"})
 
