@@ -54,6 +54,7 @@ factory's own docstring for why.
 import functools
 import json
 import logging
+import operator
 import os
 import re
 import subprocess
@@ -305,6 +306,25 @@ class State(TypedDict):
     total_cost_usd: float  # Cumulative $ cost *this turn*, computed from
     # app/agent/meter.py's PRICE_PER_1K_TOKENS_USD — should_continue enforces
     # MAX_COST_USD_PER_TURN against this (GRAPH_PATTERNS.md pattern 35).
+    subagent_spend: Annotated[list[tuple[int, float]], operator.add]  # One
+    # (tokens, cost_usd) entry per completed run_subagent call *this turn*,
+    # appended via Command(update=...) from app/agent/tools.py's run_subagent
+    # tool(s). The only other reducer field besides `messages`, for the same
+    # reason: ToolNode already runs multiple tool calls from one AI turn
+    # CONCURRENTLY (GRAPH_PATTERNS.md pattern 9) — two simultaneous
+    # run_subagent calls each returning Command(update={"subagent_spend":
+    # [...]}) must be safely list-concatenated, not raced as a read-then-
+    # overwrite pair the way total_tokens/total_cost_usd above are (agent()'s
+    # own read-modify-write is safe only because `agent` itself never runs
+    # concurrently with a sibling `agent` call, unlike `tools`). should_continue
+    # sums this on top of total_tokens/total_cost_usd when checking
+    # MAX_TOKENS_PER_TURN/MAX_COST_USD_PER_TURN — folding a subagent's spend
+    # into the PARENT turn's own live ceiling (GRAPH_PATTERNS.md pattern 46's
+    # disclosed gap), without touching MAX_SUBAGENT_TOKENS_PER_RUN/
+    # MAX_SUBAGENT_COST_USD_PER_RUN (the nested run's own separate per-call
+    # ceiling, unchanged). Reset to [] every turn by validate_input, same as
+    # total_tokens/total_cost_usd — unlike history_summary, this must NOT
+    # accumulate turn over turn.
     require_approval: bool  # Opt-in: gate tool calls behind human_approval.
     approved: bool  # Set by human_approval; read by route_after_approval.
     cancelled: bool  # Set by human_approval on a cancel decision; read by
@@ -910,6 +930,7 @@ def validate_input(state: State, config: RunnableConfig) -> dict:
         "iterations": 0,
         "total_tokens": 0,
         "total_cost_usd": 0.0,
+        "subagent_spend": [],
         "run_id": uuid.uuid4().hex[:8],
         "graph_version": _graph_version(),
         "state_schema_version": STATE_SCHEMA_VERSION,
@@ -1692,10 +1713,18 @@ def should_continue(
     """
     if state.get("iterations", 0) >= max_iterations:
         return "no_answer"
-    if state.get("total_tokens", 0) >= max_tokens:
+    # Folds any run_subagent spend THIS turn into the parent's own live
+    # ceiling (GRAPH_PATTERNS.md pattern 46's disclosed gap) — each nested
+    # run is still separately, independently bounded by its own
+    # MAX_SUBAGENT_TOKENS_PER_RUN/MAX_SUBAGENT_COST_USD_PER_RUN; this only
+    # makes the PARENT aware that delegating doesn't happen for free.
+    subagent_spend = state.get("subagent_spend", [])
+    effective_tokens = state.get("total_tokens", 0) + sum(t for t, _ in subagent_spend)
+    if effective_tokens >= max_tokens:
         metrics.agent_token_budget_exceeded_total.inc()
         return "no_answer"
-    if state.get("total_cost_usd", 0.0) >= max_cost_usd:
+    effective_cost_usd = state.get("total_cost_usd", 0.0) + sum(c for _, c in subagent_spend)
+    if effective_cost_usd >= max_cost_usd:
         # A HARD stop (GRAPH_PATTERNS.md pattern 35) — independent of the
         # token cap above: the same token count costs differently on
         # different model tiers, so a $ ceiling is not a derived quantity

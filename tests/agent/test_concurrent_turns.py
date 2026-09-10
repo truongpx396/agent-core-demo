@@ -181,6 +181,15 @@ def reset_agent_singleton(monkeypatch):
     file's docstring for why `_graph`/`_checkpointer_pool` (module-level
     singletons) need resetting before and after every test here too.
 
+    Also resets tools_module's own `_subagent_graph_cache`: this file's
+    TestSubagentCallUnderConcurrency drives the REAL `run_subagent` tool
+    (`use_cache=True` on every production call), monkeypatching
+    `tools_module.ChatOpenAI` rather than DI-ing a fake `llm=` in directly —
+    without this reset, the first test to exercise it here would
+    permanently cache a test-scoped fake ChatOpenAI under the real
+    `("ecorp", "researcher")` key, silently serving it to every later
+    test/request in this process for the rest of the pytest session.
+
     Deliberately does NOT also close the checkpointer pool here (a first
     attempt at that hung this file's own teardown — see
     `run_with_checkpointer_cleanup` below for why and the actual fix)."""
@@ -189,9 +198,11 @@ def reset_agent_singleton(monkeypatch):
     )
     agent_module._graph = None
     agent_module._checkpointer_pool = None
+    tools_module.reset_subagent_graph_cache()
     yield
     agent_module._graph = None
     agent_module._checkpointer_pool = None
+    tools_module.reset_subagent_graph_cache()
 
 
 def run_with_checkpointer_cleanup(coro_fn):
@@ -791,6 +802,53 @@ class TestSubagentCallUnderConcurrency:
                     assert f"delegate task {j}" not in answer, (
                         f"thread {i}'s answer leaked thread {j}'s delegated task: {answer!r}"
                     )
+
+    def test_two_parallel_subagent_calls_in_one_turn_both_land_in_subagent_spend(
+        self, monkeypatch
+    ):
+        """Different axis than the test above: THAT one proves N separate
+        concurrent TURNS never cross-wire; this proves TWO run_subagent
+        calls issued in a SINGLE AI turn (ToolNode already runs a batch of
+        tool calls concurrently, GRAPH_PATTERNS.md pattern 9) each safely
+        contribute their own entry to `subagent_spend` — the
+        `Annotated[list, operator.add]` reducer merging two concurrent
+        `Command(update={"subagent_spend": [...]})` writes within the same
+        graph superstep, not racing/clobbering each other the way a plain
+        overwrite field would."""
+        monkeypatch.setattr(
+            tools_module,
+            "ChatOpenAI",
+            lambda *args, **kwargs: _echoing_llm(lambda msgs: AIMessage(content="nested done")),
+        )
+
+        def _top_respond(messages: list[BaseMessage]) -> AIMessage:
+            tool_messages = [m for m in messages if isinstance(m, ToolMessage)]
+            if len(tool_messages) >= 2:
+                return AIMessage(content="Both subagents reported back.")
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "run_subagent",
+                        "args": {"subagent_name": "researcher", "task": f"lookup {i}"},
+                        "id": f"call-{i}-{uuid.uuid4().hex[:8]}",
+                    }
+                    for i in range(2)
+                ],
+            )
+
+        _install_fake_graph(monkeypatch, _echoing_llm(_top_respond))
+
+        async def _run():
+            graph = await agent_module.init_graph_async()
+            cfg = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": _ctx("tenant-x")}}
+            return await graph.ainvoke(
+                {"messages": [HumanMessage(content="delegate two lookups")]}, config=cfg
+            )
+
+        result = run_with_checkpointer_cleanup(_run)
+
+        assert len(result["subagent_spend"]) == 2
 
 
 class TestQdrantReadWriteUnderConcurrency:

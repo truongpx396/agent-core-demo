@@ -23,7 +23,7 @@ import asyncio
 import uuid
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
 from app.agent import moderation
 from app.agent import runtime as agent_module
@@ -562,3 +562,138 @@ class TestNormalStreamingIsUnaffected:
         # chunking), not a single synthetic fallback token appended on
         # top of the real stream.
         assert len(token_events) > 1
+
+
+class _FakeTurnState:
+    def __init__(self, messages):
+        self.values = {
+            "messages": messages,
+            "used_citations": [],
+            "ungrounded_claims_count": 0,
+            "followups": [],
+        }
+        self.next = ()
+
+
+class _FakeStreamGraph:
+    """A minimal stand-in for the compiled graph `_run_graph_stream`
+    drives — yields exactly the hand-built `astream_events` v2 event dicts
+    given, rather than a real GenericFakeChatModel-backed graph. Chosen
+    over driving a real tool-calling turn through `astream_events_turn`
+    (this file's usual `_events_for` pattern): verified directly that
+    GenericFakeChatModel's own `_stream` reconstruction raises "No
+    generations found in stream" for an empty-content, tool-calls-only
+    AIMessage once routed through `astream_events()` specifically (its
+    plain `.invoke()`/`.ainvoke()` path — what tests/agent/test_concurrent_turns.py's
+    own subagent tests use instead — doesn't hit this) — a pre-existing
+    fake-model/streaming-API interaction limitation, reproduced even with
+    ZERO subagent involvement, unrelated to the filtering logic under test
+    here. Testing `_run_graph_stream`'s event TRANSLATION directly, with
+    synthetic events shaped exactly like real `astream_events` v2 output,
+    sidesteps that limitation entirely and tests precisely the code this
+    change touched."""
+
+    def __init__(self, events, final_messages):
+        self._events = events
+        self._final_messages = final_messages
+
+    async def astream_events(self, graph_input, config=None, version="v2"):
+        for event in self._events:
+            yield event
+
+    async def aget_state(self, cfg):
+        return _FakeTurnState(self._final_messages)
+
+
+def _chat_stream_event(content, *, subagent_name=None):
+    metadata = {"langgraph_node": "agent"}
+    if subagent_name:
+        metadata["subagent_name"] = subagent_name
+    return {
+        "event": "on_chat_model_stream",
+        "run_id": "fake-run",
+        "name": "ChatOpenAI",
+        "metadata": metadata,
+        "data": {"chunk": AIMessageChunk(content=content)},
+    }
+
+
+def _tool_event(kind, tool_name, *, subagent_name=None):
+    metadata = {"subagent_name": subagent_name} if subagent_name else {}
+    data = {"input": {}} if kind == "on_tool_start" else {"output": "irrelevant"}
+    return {"event": kind, "run_id": "fake-run", "name": tool_name, "metadata": metadata, "data": data}
+
+
+def _stream_events(fake_events, final_messages):
+    async def _run():
+        graph_obj = _FakeStreamGraph(fake_events, final_messages)
+        cfg = {"configurable": {"thread_id": "fake-thread", "ctx": TEST_CTX}}
+        return [
+            event
+            async for event in agent_module._run_graph_stream(graph_obj, {}, cfg, trace=None)
+        ]
+
+    return asyncio.run(_run())
+
+
+class TestSubagentEventsDontLeakIntoTheMainStream:
+    """_run_graph_stream (app/agent/runtime.py) threads this turn's own
+    callbacks/metadata into a subagent's NESTED graph.invoke() (see
+    app/agent/tools.py::_run_subagent_impl's `nested_config`) so its
+    internal LLM/tool calls trace correctly — but that nested graph is
+    built via this exact same build_graph(), so it ALSO has a node named
+    "agent". Without the `metadata.subagent_name` guard added alongside
+    that threading, the nested run's own reasoning tokens would satisfy
+    the existing `langgraph_node == "agent"` check too and leak into the
+    client's main answer stream, indistinguishable from the real answer."""
+
+    def test_nested_reasoning_tokens_never_appear_in_the_token_stream(self):
+        events = _stream_events(
+            [
+                _chat_stream_event(
+                    "Nested subagent reasoning that must never leak.",
+                    subagent_name="researcher",
+                ),
+                _chat_stream_event("Delegation complete, here is the final answer."),
+            ],
+            final_messages=[AIMessage(content="Delegation complete, here is the final answer.")],
+        )
+
+        token_events = [e for e in events if e["type"] == "token"]
+        streamed_text = "".join(e["content"] for e in token_events)
+        assert streamed_text == "Delegation complete, here is the final answer."
+        assert "Nested subagent reasoning" not in streamed_text
+
+    def test_the_subagents_own_tool_activity_is_surfaced_and_tagged(self):
+        """The other half of the same fix: unlike raw reasoning tokens,
+        the subagent's own internal tool_start/tool_end SHOULD reach the
+        client (instead of a silent ~45s black box for the whole
+        delegation) — tagged with which subagent they came from, distinct
+        from the top-level run_subagent call itself, which carries no tag."""
+        events = _stream_events(
+            [
+                _tool_event("on_tool_start", "run_subagent"),
+                _tool_event("on_tool_start", "calculator", subagent_name="researcher"),
+                _tool_event("on_tool_end", "calculator", subagent_name="researcher"),
+                _chat_stream_event("Delegation complete, here is the final answer."),
+                _tool_event("on_tool_end", "run_subagent"),
+            ],
+            final_messages=[AIMessage(content="Delegation complete, here is the final answer.")],
+        )
+
+        tool_starts = [e for e in events if e["type"] == "tool_start"]
+        top_level_call = next(e for e in tool_starts if e["tool"] == "run_subagent")
+        assert "subagent" not in top_level_call
+
+        nested_start = next(e for e in tool_starts if e["tool"] == "calculator")
+        assert nested_start["subagent"] == "researcher"
+
+        nested_end = next(
+            e for e in events if e["type"] == "tool_end" and e["tool"] == "calculator"
+        )
+        assert nested_end["subagent"] == "researcher"
+
+        top_level_end = next(
+            e for e in events if e["type"] == "tool_end" and e["tool"] == "run_subagent"
+        )
+        assert "subagent" not in top_level_end

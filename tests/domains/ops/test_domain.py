@@ -104,7 +104,11 @@ class TestDomainScopedSubagent:
     def test_never_pauses_it_is_read_only(self, monkeypatch):
         from app.agent import tools as agent_tools_module
 
-        monkeypatch.setattr(agent_tools_module, "_run_subagent_impl", lambda *a, **k: "found it")
+        monkeypatch.setattr(
+            agent_tools_module,
+            "_run_subagent_impl",
+            lambda *a, **k: agent_tools_module.SubagentResult("found it", 0, 0.0),
+        )
         llm = _fake_llm_returning(
             _tool_call(
                 "run_subagent",
