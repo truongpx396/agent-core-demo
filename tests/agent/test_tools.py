@@ -50,6 +50,7 @@ from app.agent.tools import (
     remember,
     search_docs,
     skill_search,
+    skill_tools_first,
     use_skill,
 )
 from app.core import metrics
@@ -751,6 +752,41 @@ def _fake_subagent_record(name="researcher", tools_=("search_docs", "calculator"
 
 def _subagent_cfg(ctx=TEST_CTX, thread_id="parent-thread"):
     return {"configurable": {"thread_id": thread_id, "ctx": ctx}}
+
+
+class TestSkillToolsFirst:
+    def test_promotes_skill_tools_to_the_front(self):
+        ordered = skill_tools_first([search_docs], [skill_search, use_skill, ask_clarification])
+        assert [t.name for t in ordered] == [
+            "skill_search",
+            "use_skill",
+            "search_docs",
+            "ask_clarification",
+        ]
+
+    def test_run_subagent_joins_the_same_leading_tier_when_given(self):
+        """run_subagent, when passed, lands right after skill_search/use_skill
+        and before the domain's own action tools — the same leading tier
+        skill_search/use_skill themselves occupy, not appended at the end
+        the way every caller used to do it (see skill_tools_first's own
+        docstring: the same established position-sensitivity finding,
+        extended to a tool that was previously stuck in the worst slot).
+        `add_note` stands in for run_subagent here — any BaseTool works,
+        skill_tools_first only cares about its position, never its name."""
+        ordered = skill_tools_first(
+            [search_docs], [skill_search, use_skill, ask_clarification], run_subagent=add_note
+        )
+        assert [t.name for t in ordered] == [
+            "skill_search",
+            "use_skill",
+            "add_note",
+            "search_docs",
+            "ask_clarification",
+        ]
+
+    def test_run_subagent_omitted_when_none(self):
+        ordered = skill_tools_first([search_docs], [skill_search, use_skill], run_subagent=None)
+        assert [t.name for t in ordered] == ["skill_search", "use_skill", "search_docs"]
 
 
 class TestResolveSubagentTools:

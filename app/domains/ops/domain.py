@@ -115,10 +115,7 @@ conversation's history, so describe everything it needs to know."""
 @dataclass
 class _OpsDomainPlugin:
     def tools(self) -> list:
-        tools = skill_tools_first(_OPS_TOOLS, _REUSED_READ_ONLY_TOOLS)
-        if _RUN_SUBAGENT is not None:
-            tools.append(_RUN_SUBAGENT)
-        return tools
+        return skill_tools_first(_OPS_TOOLS, _REUSED_READ_ONLY_TOOLS, _RUN_SUBAGENT)
 
     def tool_capabilities(self) -> dict[str, str]:
         merged = dict(_OPS_TOOL_CAPABILITIES)
