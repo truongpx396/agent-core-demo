@@ -73,7 +73,7 @@ agent-worker-ops:  ## Start an agent worker pool for the ops domain (see app/dom
 agent-worker-sales:  ## Start an agent worker pool for the sales/CRM domain (see app/domains/sales/); the web UI's X-Domain: sales turns route here
 	AGENT_DOMAIN=sales python -m app.turns.agent_worker
 
-restart-all:  ## Kill and relaunch the API service (which also serves the built-in web UI) + every domain's agent-worker pool as backgrounded host processes (logs under var/*.log), then reset+re-seed ingest data (`make ingest`) — host-native dev convenience; not for the containerized `up-app` stack
+restart-all:  ## Kill and relaunch the API service (which also serves the built-in web UI) + every domain's agent-worker pool + the ingest-worker as backgrounded host processes (logs under var/*.log), then reset+re-seed ingest data (`make ingest`) and the skills search index (`make index-skills`) — host-native dev convenience; not for the containerized `up-app` stack
 	pkill -f 'uvicorn app\.api\.main:app' 2>/dev/null || true
 	# Reload mode (`serve`'s own `--reload`) runs the real server as a
 	# `multiprocessing` worker whose OS-level command line is just a generic
@@ -85,6 +85,7 @@ restart-all:  ## Kill and relaunch the API service (which also serves the built-
 	# whatever actually holds the port catches that case.
 	lsof -tiTCP:8000 -sTCP:LISTEN 2>/dev/null | xargs -r kill 2>/dev/null || true
 	pkill -f 'app\.turns\.agent_worker' 2>/dev/null || true
+	pkill -f 'app\.ingestion\.ingest_worker' 2>/dev/null || true
 	# A killed process doesn't free its port / stop matching `pgrep`
 	# instantly — verified directly this isn't theoretical: a plain
 	# `sleep 1` here twice left a stale agent-worker alive long enough to
@@ -95,18 +96,21 @@ restart-all:  ## Kill and relaunch the API service (which also serves the built-
 	# for actual exit instead of guessing a fixed delay; SIGKILL anything
 	# still alive after 10s rather than waiting forever.
 	for i in $$(seq 1 20); do \
-		lsof -tiTCP:8000 -sTCP:LISTEN >/dev/null 2>&1 || pgrep -f 'app\.turns\.agent_worker' >/dev/null 2>&1 || break; \
+		lsof -tiTCP:8000 -sTCP:LISTEN >/dev/null 2>&1 || pgrep -f 'app\.turns\.agent_worker' >/dev/null 2>&1 || pgrep -f 'app\.ingestion\.ingest_worker' >/dev/null 2>&1 || break; \
 		sleep 0.5; \
 	done
 	lsof -tiTCP:8000 -sTCP:LISTEN 2>/dev/null | xargs -r kill -9 2>/dev/null || true
 	pkill -9 -f 'app\.turns\.agent_worker' 2>/dev/null || true
+	pkill -9 -f 'app\.ingestion\.ingest_worker' 2>/dev/null || true
 	mkdir -p var
 	nohup $(MAKE) serve > var/serve.log 2>&1 &
 	nohup $(MAKE) agent-worker > var/agent-worker.log 2>&1 &
 	nohup $(MAKE) agent-worker-support > var/agent-worker-support.log 2>&1 &
 	nohup $(MAKE) agent-worker-ops > var/agent-worker-ops.log 2>&1 &
 	nohup $(MAKE) agent-worker-sales > var/agent-worker-sales.log 2>&1 &
+	nohup $(MAKE) ingest-worker > var/ingest-worker.log 2>&1 &
 	$(MAKE) ingest
+	$(MAKE) index-skills
 
 fake-llm:  ## Start the fake concurrent-LLM double (loadtest/fake_llm_server.py, :9009) for load-testing agent_worker.py's own concurrency in isolation from native Ollama's hard `-np 1` ceiling — see that file's docstring for how to point a run at it
 	uvicorn loadtest.fake_llm_server:app --host 0.0.0.0 --port 9009
