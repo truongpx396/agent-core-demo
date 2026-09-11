@@ -532,6 +532,29 @@ class TestIngestUpload:
         assert "../" not in uploaded[0]
         assert uploaded[0].endswith("-passwd.pdf")
 
+    def test_too_many_files_in_one_request_is_rejected_before_any_upload(self, monkeypatch):
+        """MAX_UPLOAD_FILES_PER_REQUEST (app/core/config.py) — a per-request
+        batch-size guard, distinct from app/ingestion/ingest_worker.py's own
+        concurrency setting (see WORKER_CONCURRENCY.md): this caps how many
+        jobs ONE submission may create, checked before any file in the
+        batch is touched, so a 6th file never reaches MinIO just because
+        the first 5 would have been fine."""
+        monkeypatch.setattr(api, "MAX_UPLOAD_FILES_PER_REQUEST", 2)
+        uploaded = []
+        monkeypatch.setattr(api.object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
+
+        files = [
+            _upload_file("a.pdf", b"x", "application/pdf"),
+            _upload_file("b.pdf", b"x", "application/pdf"),
+            _upload_file("c.pdf", b"x", "application/pdf"),
+        ]
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(api.ingest_upload(files=files, topic=None, ctx=TEST_CTX))
+
+        assert exc_info.value.status_code == 400
+        assert uploaded == []  # never reached MinIO, not even the first two
+
     def test_a_file_over_the_size_cap_is_rejected_before_any_upload(self, monkeypatch):
         """_read_bounded (app/api/main.py) checks the running total WHILE
         reading, not after — this only has to prove the outcome (413,
