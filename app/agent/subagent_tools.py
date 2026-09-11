@@ -606,7 +606,16 @@ if _SUBAGENT_REGISTRY:
             }
         )
 
-    TOOLS.append(run_subagent)
+    # Inserted right after skill_search/use_skill (index 2, not appended at
+    # the end) — the same leading-tier position skill_tools_first gives
+    # run_subagent for every OTHER domain (see that function's own
+    # docstring for why, and the honest caveat that this specific
+    # placement isn't independently live-verified the way skill_search's
+    # own promotion was). TOOLS has no separate "reused tools" list to
+    # route this through the shared helper, so it's done inline here,
+    # same as skill_search/use_skill's own inline positioning in TOOLS's
+    # literal above.
+    TOOLS.insert(2, run_subagent)
 
 
 def make_domain_subagent_tool(

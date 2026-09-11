@@ -6,7 +6,10 @@ download -> extract -> ingest WIRING, not any of those three pieces'
 own logic (each already has its own dedicated tests).
 """
 import asyncio
+import contextlib
 import json
+import threading
+import time
 
 from app.ingestion import ingest_queue, ingest_worker
 from tests.turns.test_queue import FakeRedis
@@ -207,3 +210,116 @@ class TestRunLoop:
 
         events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j7")]]
         assert events == [{"type": "started"}, {"type": "done", "chunks": 5}]
+
+    def test_sizes_the_default_executor_to_max_concurrency(self, monkeypatch):
+        """The loop's default executor (what asyncio.to_thread borrows from)
+        has no relationship to _MAX_CONCURRENCY out of the box — Python's own
+        default is min(32, cpu_count+4), unrelated to this app's own
+        concurrency setting and hard-capped at 32 regardless of host (see
+        run()'s own comment). Proves run() sizes it explicitly instead,
+        rather than leaving it to that unrelated, environment-dependent
+        default."""
+        client = FakeRedis()
+        monkeypatch.setattr(ingest_worker, "get_client", lambda: client)
+
+        # FakeRedis.xreadgroup has no internal `await` — calling it never
+        # actually suspends the coroutine, so run()'s `while` loop would
+        # busy-spin forever without ever yielding back to the event loop
+        # (starving even the asyncio.sleep(0.05)/task.cancel() below). A
+        # real await point here is what lets this test's own cancellation
+        # actually take effect.
+        real_xreadgroup = client.xreadgroup
+
+        async def yielding_xreadgroup(*a, **kw):
+            await asyncio.sleep(0)
+            return await real_xreadgroup(*a, **kw)
+
+        client.xreadgroup = yielding_xreadgroup
+
+        captured = {}
+
+        async def _run_briefly():
+            # Patched on the LOOP INSTANCE, not the class — set_default_executor
+            # is implemented on BaseEventLoop (concrete), not AbstractEventLoop,
+            # so a class-level patch on the abstract base is silently never hit.
+            loop = asyncio.get_running_loop()
+            real_set_default_executor = loop.set_default_executor
+
+            def spy_set_default_executor(executor):
+                captured["max_workers"] = executor._max_workers
+                return real_set_default_executor(executor)
+
+            loop.set_default_executor = spy_set_default_executor
+
+            task = asyncio.create_task(ingest_worker.run())
+            await asyncio.sleep(0.05)  # let run() get past executor setup, into its read loop
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        asyncio.run(_run_briefly())
+
+        assert captured["max_workers"] == ingest_worker._MAX_CONCURRENCY
+
+
+class TestConcurrentDispatch:
+    """run() no longer awaits process_job one job at a time — it acquires a
+    semaphore slot, then asyncio.create_tasks _process_with_limit per entry
+    (see run()'s own comments for why the semaphore is acquired BEFORE task
+    creation, not inside it). Same shape, same test structure, as
+    app/turns/agent_worker.py::TestConcurrentDispatch — this replicates that
+    exact acquire-then-dispatch pattern against several ingest jobs at once."""
+
+    def test_bounds_concurrency_and_actually_overlaps(self, monkeypatch):
+        max_concurrency = 2
+        num_jobs = 5
+        current = 0
+        peak = 0
+        count_lock = threading.Lock()
+
+        def slow_download(key):
+            # object_store.download_bytes is sync and runs via
+            # asyncio.to_thread inside process_job, i.e. on a REAL OS thread
+            # from the default executor pool — plain threading primitives
+            # (not asyncio ones, which aren't safe to share across the
+            # separate thread asyncio.to_thread hands this to) are what
+            # actually measure overlap here.
+            nonlocal current, peak
+            with count_lock:
+                current += 1
+                peak = max(peak, current)
+            time.sleep(0.05)  # long enough for siblings to overlap, short enough for a fast test
+            with count_lock:
+                current -= 1
+            return b"pdf-bytes"
+
+        monkeypatch.setattr(ingest_worker.object_store, "download_bytes", slow_download)
+        monkeypatch.setitem(ingest_worker.EXTRACTORS_BY_SUFFIX, ".pdf", lambda data: "text")
+        monkeypatch.setattr(ingest_worker.ingestor, "ingest_text", lambda *a, **kw: 1)
+
+        client = FakeRedis()
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        async def _dispatch_all():
+            tasks = []
+            for i in range(num_jobs):
+                entry_id, fields = _entry(job_id=f"j{i}")
+                await semaphore.acquire()
+                task = asyncio.create_task(
+                    ingest_worker._process_with_limit(client, entry_id, fields, semaphore)
+                )
+                tasks.append(task)
+            await asyncio.gather(*tasks)
+
+        asyncio.run(_dispatch_all())
+
+        # Never exceeded the cap...
+        assert peak <= max_concurrency
+        # ...but genuinely reached it — proves siblings actually overlapped
+        # in wall-clock time rather than running strictly one at a time
+        # (which would leave peak == 1 no matter how many jobs ran).
+        assert peak == max_concurrency
+        assert len(client.acked) == num_jobs
+        for i in range(num_jobs):
+            events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key(f"j{i}")]]
+            assert events == [{"type": "started"}, {"type": "done", "chunks": 1}]

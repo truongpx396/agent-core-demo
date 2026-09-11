@@ -813,7 +813,11 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
 skill_search, use_skill = make_skill_tools("ecorp")
 
 
-def skill_tools_first(action_tools: Sequence[BaseTool], reused_tools: Sequence[BaseTool]) -> list[BaseTool]:
+def skill_tools_first(
+    action_tools: Sequence[BaseTool],
+    reused_tools: Sequence[BaseTool],
+    run_subagent: BaseTool | None = None,
+) -> list[BaseTool]:
     """Orders a domain's bound tool list with skill_search/use_skill FIRST,
     ahead of every action tool — a real, LIVE-VERIFIED fix, not a guess.
 
@@ -840,9 +844,26 @@ def skill_tools_first(action_tools: Sequence[BaseTool], reused_tools: Sequence[B
     relative position, after the domain's own action tools. search_docs
     does NOT share this problem; a separate live finding needed to REDUCE
     its reflexive-default use (GRAPH_PATTERNS.md), so promoting it too
-    would fight that fix rather than help."""
+    would fight that fix rather than help.
+
+    `run_subagent`, if given, is promoted into the SAME leading tier, right
+    after skill_search/use_skill — previously appended dead last, after
+    every domain action tool AND the rest of `reused_tools` (every caller
+    used `tools.append(run_subagent)` once this list was already built; see
+    app/domains/ops/domain.py's git history for the pre-extraction shape).
+    Unlike the skill_search reordering above, this is NOT independently
+    live-verified against a demonstrated run_subagent under-use failure —
+    there's no equivalent repro run backing it. It's a reasoned extension
+    of the SAME established principle (this model class is position-
+    sensitive, dead-last is the position that specific finding was fixing
+    FOR skill_search) applied to another tool stuck in that same worst
+    slot, not a second confirmed fix. Worth confirming live the same way
+    skill_search's promotion was, if this ever gets questioned — nothing
+    here has been re-verified against a real qwen2.5:3b run."""
     by_name = {t.name: t for t in reused_tools}
     promoted = [by_name[name] for name in ("skill_search", "use_skill") if name in by_name]
+    if run_subagent is not None:
+        promoted.append(run_subagent)
     rest = [t for t in reused_tools if t.name not in ("skill_search", "use_skill")]
     return promoted + list(action_tools) + rest
 

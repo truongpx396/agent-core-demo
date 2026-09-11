@@ -420,9 +420,9 @@
   <button type="button" id="themeToggle" title="Toggle light/dark theme" aria-label="Toggle light/dark theme">🌙</button>
 </header>
 <details id="uploadPanel">
-  <summary>📄 Upload documents (PDF/DOCX) to the knowledge base</summary>
+  <summary>📄 Upload documents (PDF/DOCX) to the knowledge base — up to 5 at a time</summary>
   <form id="uploadForm">
-    <input id="uploadFiles" type="file" accept=".pdf,.docx" multiple>
+    <input id="uploadFiles" type="file" accept=".pdf,.docx" multiple title="Up to 5 files per upload">
     <input id="uploadTopic" type="text" placeholder="Optional topic">
     <button type="submit" id="uploadSubmit">Upload</button>
   </form>
@@ -689,6 +689,15 @@ dropZone.addEventListener("drop", (e) => {
 // ingest job), not a one-turn multimodal attachment. Deliberately its own
 // panel, not folded into the chat form, since uploading a document isn't
 // "sending a message."
+//
+// Mirrors MAX_UPLOAD_FILES_PER_REQUEST (app/core/config.py), which is the
+// actual authority — POST /ingest/upload rejects a batch over this size
+// with a 400 regardless of what this constant says. This is only here so
+// picking too many files fails fast, client-side, instead of via a round
+// trip (see WORKER_CONCURRENCY.md's note on why this is a per-request
+// batch-size guard, not a worker concurrency setting).
+const MAX_UPLOAD_FILES = 5;
+
 function addUploadStatusLine(filename) {
   const line = document.createElement("div");
   line.className = "upload-status-line";
@@ -749,10 +758,29 @@ async function trackIngestJob(filename, jobId) {
   }
 }
 
+// Fails fast on selection, not just on submit — a user picking 30 files
+// sees why immediately instead of after filling in a topic and clicking
+// Upload.
+uploadFilesEl.addEventListener("change", () => {
+  if (uploadFilesEl.files.length > MAX_UPLOAD_FILES) {
+    addUploadStatusLine(`${uploadFilesEl.files.length} files selected`).state.textContent =
+      `✕ pick at most ${MAX_UPLOAD_FILES} files per upload`;
+    uploadFilesEl.value = "";
+  }
+});
+
 uploadForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const files = Array.from(uploadFilesEl.files || []);
   if (!files.length) return;
+  if (files.length > MAX_UPLOAD_FILES) {
+    // Belt-and-suspenders — the change listener above already clears an
+    // over-limit selection, this only matters if files got onto the input
+    // some other way (e.g. a drag-drop this form doesn't wire up today).
+    addUploadStatusLine(files.map((f) => f.name).join(", ")).state.textContent =
+      `✕ pick at most ${MAX_UPLOAD_FILES} files per upload`;
+    return;
+  }
 
   uploadSubmitEl.disabled = true;
   const formData = new FormData();

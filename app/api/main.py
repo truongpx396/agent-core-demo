@@ -115,6 +115,7 @@ from app.core import metrics
 from app.core.config import (
     CORS_ALLOWED_ORIGINS,
     MAX_COST_USD_PER_TENANT_PER_DAY,
+    MAX_UPLOAD_FILES_PER_REQUEST,
     MAX_UPLOAD_SIZE_MB,
 )
 from app.core.logging_config import configure_logging
@@ -517,8 +518,19 @@ async def ingest_upload(
 
     An unsupported extension is rejected here, synchronously, before any
     MinIO write — no reason to pay for an upload this app already knows
-    it can't process.
+    it can't process. Same for too many files in one request — a UX/abuse
+    guard on this ONE call, distinct from app/ingestion/ingest_worker.py's own
+    INGEST_WORKER_MAX_CONCURRENCY (see WORKER_CONCURRENCY.md): this caps how
+    many jobs one submission may create, not how many jobs a worker may run
+    at once.
     """
+    if len(files) > MAX_UPLOAD_FILES_PER_REQUEST:
+        metrics.agent_upload_rejected_total.labels(reason="too_many_files").inc()
+        raise HTTPException(
+            status_code=400,
+            detail=f"{len(files)} files exceeds the {MAX_UPLOAD_FILES_PER_REQUEST}-file "
+            "limit per upload — split into multiple submissions",
+        )
     client = queue.get_client()  # ingest_queue reuses this same Redis client — see its module docstring
     results = []
     for upload in files:

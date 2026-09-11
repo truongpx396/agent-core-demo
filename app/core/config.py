@@ -251,6 +251,22 @@ class Settings(BaseSettings):
     # concurrent backend).
     agent_worker_max_concurrency: int = 10
 
+    # Concurrent ingest jobs ONE app/ingestion/ingest_worker.py process will
+    # run at once (asyncio.Semaphore-bounded, same shape as
+    # agent_worker_max_concurrency above — see that module's own docstring
+    # for the pattern both share). An ingest job's blocking stages (MinIO
+    # download, PDF/DOCX extraction) are offloaded via asyncio.to_thread,
+    # which overlaps their I/O portions across concurrent jobs but doesn't
+    # grant CPU-bound extraction genuine parallelism (Python's GIL still
+    # serializes it across threads) — unlike agent_worker_max_concurrency,
+    # this isn't backed by "matches the downstream backend's real
+    # concurrency" reasoning, just matched to that same default (10) as a
+    # starting point. Env-configurable so a load test (or a deployment with
+    # genuinely I/O-dominated documents) can dial it without a redeploy;
+    # lower it — and lean on more ingest-worker replicas instead — if
+    # profiling shows CPU-bound extraction, not I/O wait, dominates.
+    ingest_worker_max_concurrency: int = 10
+
     # Cap on app/turns/queue.py::get_client()'s connection pool — redis-py's
     # own default (100, unset if this weren't here) is silent and easy to
     # blow through: every POST /chat/stream/queued SSE connection holds a
@@ -280,6 +296,16 @@ class Settings(BaseSettings):
     # (app/api/main.py) — an unbounded upload is a memory/storage exhaustion
     # vector, not just a slow request.
     max_upload_size_mb: int = 25
+
+    # POST /ingest/upload's per-REQUEST file-count cap (app/api/main.py),
+    # mirrored client-side by the upload form's own check
+    # (app/api/static/index.html) so a user gets an immediate "trim your
+    # selection" message instead of a 400 after picking 30 files. A UX/abuse
+    # guard on one HTTP request, NOT a worker concurrency setting — see
+    # WORKER_CONCURRENCY.md's own note on why this is a different lever
+    # from ingest_worker_max_concurrency (raising this doesn't add ingest
+    # throughput; it only changes how many files one submission may batch).
+    max_upload_files_per_request: int = 5
 
     # OpenSandbox MCP bridge (app/domains/sandbox_tools.py, GRAPH_PATTERNS.md
     # pattern 50) — `--domain` value passed to the `opensandbox-mcp` stdio
@@ -387,9 +413,11 @@ MINIO_BUCKET = settings.minio_bucket
 MINIO_SECURE = settings.minio_secure
 RATE_LIMIT_PER_MINUTE = settings.rate_limit_per_minute
 AGENT_WORKER_MAX_CONCURRENCY = settings.agent_worker_max_concurrency
+INGEST_WORKER_MAX_CONCURRENCY = settings.ingest_worker_max_concurrency
 REDIS_MAX_CONNECTIONS = settings.redis_max_connections
 CORS_ALLOWED_ORIGINS = settings.cors_allowed_origins
 MAX_UPLOAD_SIZE_MB = settings.max_upload_size_mb
+MAX_UPLOAD_FILES_PER_REQUEST = settings.max_upload_files_per_request
 OPENSANDBOX_MCP_DOMAIN = settings.opensandbox_mcp_domain
 OPENSANDBOX_API_KEY = settings.opensandbox_api_key
 SANDBOX_IMAGE = settings.sandbox_image

@@ -28,7 +28,7 @@ import html.parser
 import logging
 import socket  # noqa: F401
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import httpx
@@ -58,14 +58,23 @@ class IngestRefused(Exception):
 
 def _sparse_vectors_or_none(
     texts: list[str],
-) -> list[tuple[list[int], list[float]] | None] | None:
+) -> Sequence[tuple[list[int], list[float]] | None] | None:
     """Best-effort sparse leg for a WHOLE document's chunks at once — same
     degrade-not-fail shape as app/agent/tools.py's identical helper for
     add_note/remember, batched the same way embed_texts is (see that
     function's docstring for why): a local BM25 model hiccup must not
     block an ingest, just cost the WHOLE document's sparse leg recall
     (every point still writes, findable dense-only) rather than one point
-    at a time."""
+    at a time.
+
+    `Sequence`, not `list`, specifically so `embed_sparse_batch`'s own
+    `list[tuple[...]]` (every element a real tuple, never `None`) can be
+    returned as-is on the success path below — `list` is invariant in its
+    type parameter (mypy can't assume a `list[X]` reference is safe to
+    treat as `list[X | None]`, since a caller could append a bare `None` to
+    it), `Sequence` is covariant (read-only, so that hazard doesn't apply),
+    and the one caller (`ingest_text`) only ever reads this by index,
+    never mutates it."""
     try:
         return embed_sparse_batch(texts)
     except Exception as exc:  # noqa: BLE001

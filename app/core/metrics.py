@@ -429,7 +429,7 @@ agent_upload_rejected_total = Counter(
     "agent_upload_rejected_total",
     "POST /ingest/upload files rejected before any MinIO write",
     ["reason"],
-)  # reason: bad_file_type | too_large
+)  # reason: bad_file_type | too_large | too_many_files
 
 agent_subagent_run_total = Counter(
     "agent_subagent_run_total",
