@@ -798,6 +798,39 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
         metrics.agent_streaming_cancellation_total.inc()
         envelope = ErrorEnvelope(code=ErrorCode.CANCELLED, message="Cancelled by user.")
         terminal_event = {"type": "error", "content": envelope.message, **envelope.to_dict()}
+    except asyncio.CancelledError:
+        # A genuine asyncio-level cancellation reaching here — NOT the
+        # same thing as TurnCancelled above, which only fires from
+        # cancel_check's own cooperative Redis-flag poll at a clean event
+        # boundary. This is the real `task.cancel()` machinery: the ASGI
+        # layer tearing down a disconnected request's task, an
+        # asyncio.wait_for elsewhere timing out and cancelling this task
+        # as a side effect, etc. Since Python 3.8, CancelledError is a
+        # BaseException (not Exception) SPECIFICALLY so a bare `except
+        # Exception` like the one below can't accidentally swallow it —
+        # which means without this branch, a real cancellation skipped
+        # straight past both except clauses, never called trace.update()
+        # or _record_turn_metrics, and this generator just died with no
+        # clean terminal event. The only thing that recorded anything was
+        # Langfuse's own CallbackHandler, wired independently into
+        # graph.astream_events()'s own callbacks — verified live against a
+        # real load-test run: "LangGraph" spans left permanently open (no
+        # end_time, ever) with status_message set to raw asyncio
+        # internals ("<Task cancelled name=... coro=<AsyncExitStack.
+        # __aexit__()...>>"), not any message this app ever wrote.
+        #
+        # Re-raises after cleanup — a cancellation is real and must still
+        # propagate (the caller, e.g. app/turns/agent_worker.py's own
+        # dispatch loop, needs to see it), this branch only makes sure
+        # the trace/metrics get a clean, honest record before it does.
+        if trace:
+            trace.update(
+                output="".join(final_answer) + " [cancelled: task cancelled]",
+                level="WARNING",
+            )
+        _record_turn_metrics(time.monotonic() - start, "cancelled")
+        metrics.agent_streaming_cancellation_total.inc()
+        raise
     except Exception as exc:  # noqa: BLE001
         if trace:
             trace.update(output=f"error: {exc}", level="ERROR")

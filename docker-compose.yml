@@ -141,6 +141,13 @@ services:
   # app/agent/sql_store.py's structured-data tool — see postgres-init/02-appdata.sql) ---
   postgres:
     image: postgres:16
+    # pg_stat_statements must be loaded at server start (shared_preload_libraries),
+    # not just CREATE EXTENSION'd — it needs its own shared-memory hash table
+    # allocated at postmaster startup. postgres-exporter's stat_statements
+    # collector (docker-compose.yml's postgres-exporter service) reads this via
+    # a plain SQL view once the extension is created in appdata (see `make`
+    # target or the one-time `CREATE EXTENSION` run after this service restarts).
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
     ports:
       - "5432:5432"   # exposed so app/agent/sql_store.py (host process) can connect directly
     environment:
@@ -166,7 +173,30 @@ services:
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:latest
     environment:
-      DATA_SOURCE_NAME: postgresql://langfuse:langfuse@postgres:5432/postgres?sslmode=disable
+      # Points at appdata, not the "postgres" system database — verified
+      # directly (--auto-discover-databases, despite the exporter's own docs
+      # describing it as scraping every discovered database, is a no-op for
+      # the stat_user_tables/statio_user_tables collectors on this exporter
+      # version: they only ever query the single database the DSN itself
+      # connects to). appdata is where this app's own tables (employees,
+      # chat_sessions, crm_leads, ...) actually live — the ones worth adding
+      # an index to. All the OTHER pg_stat_database/pg_locks/pg_stat_activity
+      # metrics stay cluster-wide regardless (verified: they already showed
+      # every database's rows even when this pointed at "postgres"), so this
+      # change costs nothing for the rest of the dashboard.
+      DATA_SOURCE_NAME: postgresql://langfuse:langfuse@postgres:5432/appdata?sslmode=disable
+    # Both collectors are opt-in (disabled by default) since the exporter's own
+    # --help warns pg_stat_statements can be expensive on a busy server — every
+    # distinct query becomes its own timeseries. stat_statements.limit below
+    # caps that; it also needs the pg_stat_statements extension actually
+    # loaded in Postgres (postgres service's shared_preload_libraries) or this
+    # collector just silently reports no data. stat_user_tables needs no such
+    # extension — it's a built-in stats view — so it starts working immediately.
+    command:
+      - "--collector.stat_user_tables"
+      - "--collector.stat_statements"
+      - "--collector.stat_statements.include_query"
+      - "--collector.stat_statements.limit=25"
     ports:
       - "9187:9187"
     depends_on:
@@ -182,6 +212,80 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+
+  # --- Host + per-container resource metrics, purely to power the
+  # community "Docker and system monitoring (nodeexporter v1.3.1)" dashboard
+  # (grafana.com id 16310 — observability/grafana/dashboards/docker-system-
+  # monitoring.json; brought under this repo's own file-based provisioning
+  # like every other dashboard there). Neither exporter is used by anything
+  # else in this stack.
+  #
+  # On Docker Desktop for Mac, "host" metrics are actually the stats of
+  # Docker Desktop's own hidden Linux VM, not the physical Mac — there is no
+  # way to see real host hardware from inside any container on this
+  # platform. On native Linux Docker both exporters report real host state.
+  node-exporter:
+    image: prom/node-exporter:latest
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+      - textfile_collector:/textfile-collector:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+      - "--collector.textfile.directory=/textfile-collector"
+    ports:
+      - "9100:9100"
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    # No /dev/kmsg device mount (the usual Linux cadvisor recipe) — that
+    # path doesn't exist in Docker Desktop's VM and makes the container
+    # crash-loop on Mac; omitting it is harmless on native Linux too, it
+    # just means kernel-log-derived metrics (OOM events) stay unavailable.
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # KNOWN LIMITATION on Docker Desktop for Mac: cadvisor's
+    # docker-container-factory (needed for human-readable container
+    # names/labels, not just raw cgroup ids) talks to containerd, not
+    # docker.sock — verified via its own startup log ("Registration of the
+    # docker container factory failed: ... containerd.sock: no such file"),
+    # and confirmed as a genuine upstream regression (google/cadvisor#3772,
+    # still open) rather than a config mistake — cAdvisor 0.54.1+ made the
+    # DOCKER factory require containerd too, when previously only the
+    # separate containerd factory did; 0.54.0 (last good) registers the
+    # docker factory fine but panics on this specific Docker Desktop
+    # version's container metadata shape instead. Docker Desktop's
+    # containerd lives entirely inside its own hidden Linux VM with no
+    # bind-mountable path exposed to the host. So cAdvisor's own metrics
+    # stay keyed by raw cgroup id (e.g. "/docker/<hash>") — the
+    # container-name-mapper service below (docker.sock only, no cAdvisor
+    # involved) supplies the id -> name join the dashboard's panels use
+    # instead. Native Linux Docker doesn't have this gap since containerd's
+    # socket is a normal host path there.
+    ports:
+      - "8081:8080"   # 8080 is already open-webui's port in this compose file
+
+  # --- id -> name lookup for cadvisor's cgroup-id-only metrics above
+  # (docker:cli is the official Docker CLI with no daemon — nothing else
+  # here needs one). The dashboard's per-container panels join this in via
+  # `* on(id) group_left(name) container_id_name_map{name=~"$container"}`,
+  # which also doubles as the $container selector's actual filter.
+  container-name-mapper:
+    image: docker:cli
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./observability/textfile-collectors/container-name-map.sh:/container-name-map.sh:ro
+      - textfile_collector:/textfile-collector
+    entrypoint: ["/bin/sh", "/container-name-map.sh"]
 
   langfuse-web:
     image: langfuse/langfuse:2
@@ -325,6 +429,62 @@ services:
     # unlike a pull-based /metrics endpoint, scaling this doesn't need any
     # scrape-config change; the otel-collector aggregates all of them.
 
+  # --- Per-domain agent-worker pools, containerized counterparts of
+  # `make agent-worker-support`/`-ops`/`-sales` (Makefile) — same image/
+  # command as `agent-worker` above, just AGENT_DOMAIN-scoped so the web
+  # UI's X-Domain: support/ops/sales turns route to a worker that's
+  # actually running when the app is brought up via `up-app` instead of
+  # the host-native `make restart-all` path. Also gets these domains'
+  # logs into Loki (observability/promtail/promtail-config.yaml's service
+  # allowlist keys off these exact compose service names).
+  agent-worker-support:
+    build: .
+    profiles: ["app"]
+    restart: unless-stopped
+    command: ["python", "-m", "app.turns.agent_worker"]
+    environment:
+      <<: *app-env
+      AGENT_DOMAIN: support
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  agent-worker-ops:
+    build: .
+    profiles: ["app"]
+    restart: unless-stopped
+    command: ["python", "-m", "app.turns.agent_worker"]
+    environment:
+      <<: *app-env
+      AGENT_DOMAIN: ops
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  agent-worker-sales:
+    build: .
+    profiles: ["app"]
+    restart: unless-stopped
+    command: ["python", "-m", "app.turns.agent_worker"]
+    environment:
+      <<: *app-env
+      AGENT_DOMAIN: sales
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   ingest-worker:
     build: .
     profiles: ["app"]
@@ -349,3 +509,4 @@ volumes:
   redis:
   minio:
   opensandbox-data:
+  textfile_collector:

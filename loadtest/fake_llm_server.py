@@ -39,6 +39,20 @@ is needed to compare them:
   ceiling as an A/B baseline, or any N to simulate a rate-limited real
   provider.
 
+Every request logs a timestamped start/end line (var/fake-llm.log under
+`make loadtest-up`) with a duration and the CURRENT in-flight request
+count — uvicorn's own default access log carries no timestamp at all
+(verified directly: its lines are bare "INFO:     <client> - "METHOD path
+HTTP/1.1" status"), which made a real stuck-trace investigation dead-end
+here with no way to tell whether this server was event-loop-starved by a
+pile of concurrent requests at that moment or genuinely idle. A request
+that logs "start" but never logs "end" — the streaming branch's own
+try/finally still fires even on a client-initiated cancel/disconnect
+(Starlette closes an in-flight async generator via `.aclose()`, which
+throws `GeneratorExit` in at the current suspension point) — means the
+server-side task never got scheduled again at all, not just a slow
+client.
+
 Also implements `POST /v1/embeddings` — every real turn calls
 app/retrieval/embeddings.py::embed_text unconditionally (retrieve_context's
 own automatic pre-fetch, plus `remember`/`add_note`'s writes), and without
@@ -55,6 +69,7 @@ server's job of exercising concurrency, only a consistent one.
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import random
 import re
@@ -67,6 +82,25 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 app = FastAPI(title="Fake concurrent LLM (load-test double)")
+
+# uvicorn's own default access log has no timestamps at all (verified
+# directly: its lines are bare "INFO:     <client> - "METHOD path
+# HTTP/1.1" status", nothing else) — useless for correlating a specific
+# slow/stuck request against a specific Langfuse trace or Prometheus
+# window after the fact, which is exactly what this server exists to make
+# possible for agent_worker.py's own concurrency. `_in_flight` is logged
+# on every line specifically to answer "was the event loop just busy with
+# a pile of OTHER concurrent requests at that moment" without needing to
+# cross-reference anything else.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s.%(msecs)03dZ %(levelname)s %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
+logging.Formatter.converter = time.gmtime  # UTC, matching every other timestamp in this stack
+logger = logging.getLogger("fake_llm_server")
+
+_in_flight = 0
 
 LATENCY_SECONDS = float(os.environ.get("FAKE_LLM_LATENCY_SECONDS", "1.5"))
 LATENCY_JITTER_SECONDS = float(os.environ.get("FAKE_LLM_LATENCY_JITTER_SECONDS", "0.5"))
@@ -336,50 +370,125 @@ async def _stream_completion(model: str, tool_call: ToolCall | None, messages: l
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
+    global _in_flight
+    request_id = uuid.uuid4().hex[:8]
     body = await request.json()
     messages = body.get("messages", [])
     tools = body.get("tools")
     model = body.get("model", "fake-llm")
+    stream = bool(body.get("stream"))
     tool_call = _pick_tool_call(messages, tools)
 
-    if body.get("stream"):
-        return StreamingResponse(
-            _stream_completion(model, tool_call, messages), media_type="text/event-stream"
+    started = time.monotonic()
+    _in_flight += 1
+    logger.info(
+        "chat_completion_start request_id=%s stream=%s messages=%d tool_call=%s in_flight=%d",
+        request_id, stream, len(messages), tool_call.name if tool_call else None, _in_flight,
+    )
+
+    if stream:
+
+        async def _wrapped():
+            # try/finally here (not a plain call site log) so the end
+            # line still fires even if the client disconnects/cancels
+            # mid-stream — Starlette closes an in-flight async generator
+            # via .aclose(), which throws GeneratorExit in at the current
+            # suspension point and DOES run finally blocks normally. A
+            # request that logs start but never logs end, ever, means the
+            # server-side task genuinely never got scheduled again at
+            # all — real event-loop starvation, not just a slow client.
+            global _in_flight
+            try:
+                async for chunk in _stream_completion(model, tool_call, messages):
+                    yield chunk
+            finally:
+                _in_flight -= 1
+                logger.info(
+                    "chat_completion_end request_id=%s stream=True duration_s=%.3f in_flight=%d",
+                    request_id, time.monotonic() - started, _in_flight,
+                )
+
+        return StreamingResponse(_wrapped(), media_type="text/event-stream")
+
+    try:
+        await _think()
+        return JSONResponse(_completion_response(model, tool_call, messages))
+    finally:
+        _in_flight -= 1
+        logger.info(
+            "chat_completion_end request_id=%s stream=False duration_s=%.3f in_flight=%d",
+            request_id, time.monotonic() - started, _in_flight,
         )
-    await _think()
-    return JSONResponse(_completion_response(model, tool_call, messages))
 
 
-FAKE_EMBED_DIM = 32  # len(hashlib.sha256(...).digest()) — callers that
-# create a Qdrant collection against this server (tests/integration/
-# test_worker_scaling.py's own qdrant_store.ensure_collection(dim=...))
-# must use this same value.
+FAKE_EMBED_DIM = 768  # callers that create a Qdrant collection against this
+# server (tests/integration/test_worker_scaling.py's own
+# qdrant_store.ensure_collection(dim=...)) must use this same value — it
+# imports this constant rather than hardcoding its own, so changing it here
+# is safe on its own. 768 specifically because app/retrieval/semantic_cache.py's
+# Redis index is a HARD schema match, not a hint: FT.SEARCH rejects a query
+# vector of the wrong byte length outright ("Invalid vector length"), and
+# that index's own dim=768 (verified directly via `redis-cli FT.INFO
+# idx:semantic_cache` against a real deployment) comes from
+# litellm-config.yaml's real embedding model (ollama/nomic-embed-text,
+# 768-dim). This used to be 32 (len(hashlib.sha256(...).digest())) purely
+# because that was convenient for a single SHA-256 call — nothing about 32
+# was ever load-bearing beyond this constant itself matching whatever
+# _fake_embedding actually returns; the semantic cache path silently
+# 100%-errored against this server before the mismatch was caught (every
+# lookup AND every write rejected — verified via a real load test run's
+# agent-worker logs and `FT.INFO`'s own indexing-failure counter).
 
 
 def _fake_embedding(text: str) -> list[float]:
-    digest = hashlib.sha256(text.encode()).digest()
-    return [b / 255.0 for b in digest]
+    # Deterministic (same text -> same vector every time, still required
+    # for a semantic-cache HIT to be reproducible under load) — just
+    # expanded to FAKE_EMBED_DIM bytes via repeated SHA-256 over the text
+    # plus a counter, instead of the single 32-byte digest a hash
+    # naturally produces. 768 / 32 = 24 calls, evenly.
+    values: list[float] = []
+    counter = 0
+    while len(values) < FAKE_EMBED_DIM:
+        digest = hashlib.sha256(f"{text}:{counter}".encode()).digest()
+        values.extend(b / 255.0 for b in digest)
+        counter += 1
+    return values[:FAKE_EMBED_DIM]
 
 
 @app.post("/v1/embeddings")
 async def embeddings(request: Request):
-    body = await request.json()
-    raw_input = body.get("input", "")
-    texts = raw_input if isinstance(raw_input, list) else [raw_input]
-    model = body.get("model", "fake-embed")
-    data = [
-        {"object": "embedding", "index": i, "embedding": _fake_embedding(text)}
-        for i, text in enumerate(texts)
-    ]
-    tokens = sum(len(t.split()) for t in texts)
-    return JSONResponse(
-        {
-            "object": "list",
-            "data": data,
-            "model": model,
-            "usage": {"prompt_tokens": tokens, "total_tokens": tokens},
-        }
-    )
+    global _in_flight
+    request_id = uuid.uuid4().hex[:8]
+    started = time.monotonic()
+    _in_flight += 1
+    try:
+        body = await request.json()
+        raw_input = body.get("input", "")
+        texts = raw_input if isinstance(raw_input, list) else [raw_input]
+        model = body.get("model", "fake-embed")
+        logger.info(
+            "embeddings_start request_id=%s texts=%d in_flight=%d",
+            request_id, len(texts), _in_flight,
+        )
+        data = [
+            {"object": "embedding", "index": i, "embedding": _fake_embedding(text)}
+            for i, text in enumerate(texts)
+        ]
+        tokens = sum(len(t.split()) for t in texts)
+        return JSONResponse(
+            {
+                "object": "list",
+                "data": data,
+                "model": model,
+                "usage": {"prompt_tokens": tokens, "total_tokens": tokens},
+            }
+        )
+    finally:
+        _in_flight -= 1
+        logger.info(
+            "embeddings_end request_id=%s duration_s=%.3f in_flight=%d",
+            request_id, time.monotonic() - started, _in_flight,
+        )
 
 
 @app.get("/health")

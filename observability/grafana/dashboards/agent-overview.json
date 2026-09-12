@@ -42,7 +42,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (outcome) (rate(agent_requests_total[5m]))",
+          "expr": "sum by (outcome) (rate(agent_requests_total[$__rate_interval]))",
           "legendFormat": "{{outcome}}",
           "refId": "A"
         }
@@ -82,7 +82,7 @@
     },
     {
       "type": "stat",
-      "title": "Turn error rate (5m)",
+      "title": "Turn error rate",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -94,7 +94,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_requests_total{outcome=\"error\"}[5m])) / sum(rate(agent_requests_total[5m]))",
+          "expr": "sum(rate(agent_requests_total{outcome=\"error\"}[$__rate_interval])) / sum(rate(agent_requests_total[$__rate_interval]))",
           "legendFormat": "",
           "refId": "A"
         }
@@ -145,7 +145,7 @@
     },
     {
       "type": "stat",
-      "title": "p95 turn latency (5m)",
+      "title": "p95 turn latency",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -157,7 +157,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(agent_latency_seconds_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(agent_latency_seconds_bucket[$__rate_interval])) by (le))",
           "legendFormat": "",
           "refId": "A"
         }
@@ -220,7 +220,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum(rate(agent_latency_seconds_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(agent_latency_seconds_bucket[$__rate_interval])) by (le))",
           "legendFormat": "p50",
           "refId": "A"
         },
@@ -229,7 +229,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(agent_latency_seconds_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(agent_latency_seconds_bucket[$__rate_interval])) by (le))",
           "legendFormat": "p95",
           "refId": "B"
         },
@@ -238,7 +238,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum(rate(agent_latency_seconds_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(agent_latency_seconds_bucket[$__rate_interval])) by (le))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -290,7 +290,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum(rate(agent_iterations_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(agent_iterations_bucket[$__rate_interval])) by (le))",
           "legendFormat": "p50",
           "refId": "A"
         },
@@ -299,7 +299,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum(rate(agent_iterations_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(agent_iterations_bucket[$__rate_interval])) by (le))",
           "legendFormat": "p95",
           "refId": "B"
         }
@@ -351,7 +351,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_tokens_total[5m]))",
+          "expr": "sum(rate(agent_tokens_total[$__rate_interval]))",
           "legendFormat": "tokens/sec",
           "refId": "A"
         }
@@ -416,7 +416,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (outcome) (rate(agent_moderation_total[5m]))",
+          "expr": "sum by (outcome) (rate(agent_moderation_total[$__rate_interval]))",
           "legendFormat": "{{outcome}}",
           "refId": "A"
         }
@@ -468,7 +468,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_token_budget_exceeded_total[5m]))",
+          "expr": "sum(rate(agent_token_budget_exceeded_total[$__rate_interval]))",
           "legendFormat": "token budget",
           "refId": "A"
         },
@@ -477,7 +477,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_cost_ceiling_exceeded_total[5m]))",
+          "expr": "sum(rate(agent_cost_ceiling_exceeded_total[$__rate_interval]))",
           "legendFormat": "cost ceiling",
           "refId": "B"
         },
@@ -486,7 +486,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_tool_budget_exceeded_total[5m]))",
+          "expr": "sum(rate(agent_tool_budget_exceeded_total[$__rate_interval]))",
           "legendFormat": "tool-call budget",
           "refId": "C"
         },
@@ -495,7 +495,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_no_progress_total[5m]))",
+          "expr": "sum(rate(agent_no_progress_total[$__rate_interval]))",
           "legendFormat": "no progress",
           "refId": "D"
         },
@@ -504,7 +504,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_context_window_exceeded_total[5m]))",
+          "expr": "sum(rate(agent_context_window_exceeded_total[$__rate_interval]))",
           "legendFormat": "context window",
           "refId": "E"
         },
@@ -513,7 +513,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_invalid_tool_call_total[5m]))",
+          "expr": "sum(rate(agent_invalid_tool_call_total[$__rate_interval]))",
           "legendFormat": "invalid tool call",
           "refId": "F"
         }
@@ -565,7 +565,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (decision) (rate(agent_human_approval_total[5m]))",
+          "expr": "sum by (decision) (rate(agent_human_approval_total[$__rate_interval]))",
           "legendFormat": "{{decision}}",
           "refId": "A"
         }
@@ -617,7 +617,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (capability) (rate(agent_capability_gate_total[5m]))",
+          "expr": "sum by (capability) (rate(agent_capability_gate_total[$__rate_interval]))",
           "legendFormat": "{{capability}}",
           "refId": "A"
         }
@@ -669,7 +669,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_tenant_budget_warning_total[5m]))",
+          "expr": "sum(rate(agent_tenant_budget_warning_total[$__rate_interval]))",
           "legendFormat": "warning (80%)",
           "refId": "A"
         },
@@ -678,7 +678,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_tenant_budget_exceeded_total[5m]))",
+          "expr": "sum(rate(agent_tenant_budget_exceeded_total[$__rate_interval]))",
           "legendFormat": "exceeded",
           "refId": "B"
         }
@@ -730,7 +730,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_cancellation_total[5m]))",
+          "expr": "sum(rate(agent_cancellation_total[$__rate_interval]))",
           "legendFormat": "paused run cancelled",
           "refId": "A"
         },
@@ -739,7 +739,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_streaming_cancellation_total[5m]))",
+          "expr": "sum(rate(agent_streaming_cancellation_total[$__rate_interval]))",
           "legendFormat": "streaming turn stopped",
           "refId": "B"
         }
@@ -804,7 +804,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (tool) (rate(agent_tool_calls_total[5m]))",
+          "expr": "sum by (tool) (rate(agent_tool_calls_total[$__rate_interval]))",
           "legendFormat": "{{tool}}",
           "refId": "A"
         }
@@ -856,7 +856,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_tool_errors_total[5m])) / sum(rate(agent_tool_calls_total[5m]))",
+          "expr": "sum(rate(agent_tool_errors_total[$__rate_interval])) / sum(rate(agent_tool_calls_total[$__rate_interval]))",
           "legendFormat": "error rate",
           "refId": "A"
         }
@@ -908,7 +908,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (outcome) (rate(agent_semantic_cache_total[5m]))",
+          "expr": "sum by (outcome) (rate(agent_semantic_cache_total[$__rate_interval]))",
           "legendFormat": "{{outcome}}",
           "refId": "A"
         }
@@ -960,7 +960,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (stage) (rate(agent_retrieval_degraded_total[5m]))",
+          "expr": "sum by (stage) (rate(agent_retrieval_degraded_total[$__rate_interval]))",
           "legendFormat": "{{stage}}",
           "refId": "A"
         }
@@ -1012,7 +1012,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_history_compacted_total[5m]))",
+          "expr": "sum(rate(agent_history_compacted_total[$__rate_interval]))",
           "legendFormat": "compactions/sec",
           "refId": "A"
         }
@@ -1064,7 +1064,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (reason) (rate(agent_checkpoint_issue_total[5m]))",
+          "expr": "sum by (reason) (rate(agent_checkpoint_issue_total[$__rate_interval]))",
           "legendFormat": "{{reason}}",
           "refId": "A"
         }
@@ -1129,7 +1129,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (source) (rate(agent_ingest_total[5m]))",
+          "expr": "sum by (source) (rate(agent_ingest_total[$__rate_interval]))",
           "legendFormat": "{{source}}",
           "refId": "A"
         }
@@ -1181,7 +1181,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (reason) (rate(agent_ingest_refused_total[5m]))",
+          "expr": "sum by (reason) (rate(agent_ingest_refused_total[$__rate_interval]))",
           "legendFormat": "{{reason}}",
           "refId": "A"
         }
@@ -1233,7 +1233,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (reason) (rate(agent_upload_rejected_total[5m]))",
+          "expr": "sum by (reason) (rate(agent_upload_rejected_total[$__rate_interval]))",
           "legendFormat": "{{reason}}",
           "refId": "A"
         }
@@ -1285,7 +1285,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (outcome) (rate(agent_memory_deletion_total[5m]))",
+          "expr": "sum by (outcome) (rate(agent_memory_deletion_total[$__rate_interval]))",
           "legendFormat": "{{outcome}}",
           "refId": "A"
         }
@@ -1337,7 +1337,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_rate_limit_exceeded_total[5m]))",
+          "expr": "sum(rate(agent_rate_limit_exceeded_total[$__rate_interval]))",
           "legendFormat": "rejections/sec",
           "refId": "A"
         }
@@ -1389,7 +1389,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(agent_unattended_pause_total[5m]))",
+          "expr": "sum(rate(agent_unattended_pause_total[$__rate_interval]))",
           "legendFormat": "auto-declines/sec",
           "refId": "A"
         }

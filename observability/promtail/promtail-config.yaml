@@ -28,7 +28,7 @@ scrape_configs:
         refresh_interval: 5s
     relabel_configs:
       - source_labels: [__meta_docker_container_label_com_docker_compose_service]
-        regex: "^(api|agent-worker|ingest-worker|litellm|postgres|redis|qdrant|minio|ollama|langfuse-web|open-webui|postgres-exporter|redis-exporter)$"
+        regex: "^(api|agent-worker|agent-worker-support|agent-worker-ops|agent-worker-sales|ingest-worker|litellm|postgres|redis|qdrant|minio|ollama|langfuse-web|open-webui|postgres-exporter|redis-exporter)$"
         action: keep
       - source_labels: [__meta_docker_container_name]
         regex: "/(.*)"
