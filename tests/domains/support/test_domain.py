@@ -6,7 +6,19 @@ manifest+plugin, show its ToolNode only knows this domain's tools (the
 literal meaning of "sandboxed" — see app/domains/support/domain.py), and
 show a mutating tool call pauses for human_approval and, once approved,
 actually runs.
+
+The compiled graph's `agent`/`retrieve_context`/etc. nodes are `async def`
+now (real LLM/Redis/Qdrant I/O — see app/agent/graph.py), so every
+`g.invoke`/`g.get_state` below runs as `asyncio.run(g.ainvoke(...))`/
+`asyncio.run(g.aget_state(...))` instead — LangGraph's sync Pregel loop
+can't run an async-only node at all. Each call gets its own `asyncio.run`
+rather than one shared event loop across a test, which is fine here since
+this domain's graphs use the default in-memory MemorySaver (no event-loop-
+bound state — contrast with `AsyncPostgresSaver`'s per-instance
+`asyncio.Lock`, see app/agent/runtime.py's module docstring).
 """
+import asyncio
+
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
@@ -149,10 +161,10 @@ class TestDomainScopedSubagent:
             AIMessage(content="Here's what the subagent found out for you."),
         )
         g = _build(llm)
-        g.invoke(
+        asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="look into ticket 7 for me")]}, config=_config()
-        )
-        assert not g.get_state(_config()).next  # never paused
+        ))
+        assert not asyncio.run(g.aget_state(_config())).next  # never paused
 
 
 class TestMandatoryApprovalGate:
@@ -161,10 +173,10 @@ class TestMandatoryApprovalGate:
             _tool_call("create_ticket", {"subject": "Login broken", "description": "Can't log in"})
         )
         g = _build(llm)
-        g.invoke(
+        asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="I can't log in")]}, config=_config()
-        )
-        assert g.get_state(_config()).next  # paused, not finished
+        ))
+        assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
 
     def test_approving_runs_create_ticket_and_finishes(self, monkeypatch):
         fake_conn = _FakeConnection(row=(7,))
@@ -178,10 +190,10 @@ class TestMandatoryApprovalGate:
             AIMessage(content="I've opened ticket #7 for you."),
         )
         g = build_graph(GraphDeps(llm=llm), manifest=SUPPORT_MANIFEST, domain=SUPPORT_DOMAIN_PLUGIN)
-        g.invoke({"messages": [HumanMessage(content="I can't log in")]}, config=_config())
-        result = g.invoke(Command(resume=True), config=_config())
+        asyncio.run(g.ainvoke({"messages": [HumanMessage(content="I can't log in")]}, config=_config()))
+        result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
 
-        assert not g.get_state(_config()).next  # finished, not paused
+        assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
         tool_messages = [m for m in result["messages"] if m.type == "tool"]
         assert any("Ticket #7 opened" in m.content for m in tool_messages)
         assert result["messages"][-1].content == "I've opened ticket #7 for you."
@@ -203,11 +215,11 @@ class TestMandatoryApprovalGate:
             AIMessage(content="Ticket #7 is still open."),
         )
         g = build_graph(GraphDeps(llm=llm), manifest=SUPPORT_MANIFEST, domain=SUPPORT_DOMAIN_PLUGIN)
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="what's the status of ticket 7?")]},
             config=_config(),
-        )
-        assert not g.get_state(_config()).next  # never paused
+        ))
+        assert not asyncio.run(g.aget_state(_config())).next  # never paused
         assert result["messages"][-1].content == "Ticket #7 is still open."
 
     def test_list_my_tickets_is_read_only_and_never_pauses(self, monkeypatch):
@@ -219,11 +231,11 @@ class TestMandatoryApprovalGate:
             AIMessage(content="You have no open tickets."),
         )
         g = build_graph(GraphDeps(llm=llm), manifest=SUPPORT_MANIFEST, domain=SUPPORT_DOMAIN_PLUGIN)
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="what tickets have I opened?")]},
             config=_config(),
-        )
-        assert not g.get_state(_config()).next  # never paused
+        ))
+        assert not asyncio.run(g.aget_state(_config())).next  # never paused
         assert result["messages"][-1].content == "You have no open tickets."
 
     def test_add_ticket_comment_pauses_for_approval_and_runs_once_approved(self, monkeypatch):
@@ -234,14 +246,14 @@ class TestMandatoryApprovalGate:
             AIMessage(content="Added that to ticket #7."),
         )
         g = build_graph(GraphDeps(llm=llm), manifest=SUPPORT_MANIFEST, domain=SUPPORT_DOMAIN_PLUGIN)
-        g.invoke(
+        asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="it's still happening on ticket 7")]},
             config=_config(),
-        )
-        assert g.get_state(_config()).next  # paused, not finished
+        ))
+        assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
 
-        result = g.invoke(Command(resume=True), config=_config())
-        assert not g.get_state(_config()).next  # finished, not paused
+        result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
+        assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
         tool_messages = [m for m in result["messages"] if m.type == "tool"]
         assert any("Added your follow-up to ticket #7" in m.content for m in tool_messages)
 
@@ -251,11 +263,11 @@ def test_fetch_external_reference_pauses_for_approval_as_an_outward_tool():
         _tool_call("fetch_external_reference", {"url": "https://vendor.example.com/docs"})
     )
     g = _build(llm)
-    g.invoke(
+    asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="here's the doc that doesn't match what you said")]},
         config=_config(),
-    )
-    assert g.get_state(_config()).next  # paused, not finished
+    ))
+    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
 
 
 def test_approving_fetch_external_reference_runs_it_and_finishes(monkeypatch):
@@ -270,13 +282,13 @@ def test_approving_fetch_external_reference_runs_it_and_finishes(monkeypatch):
         AIMessage(content="Their docs say every webhook payload needs an `id` field."),
     )
     g = _build(llm)
-    g.invoke(
+    asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="here's the doc that doesn't match what you said")]},
         config=_config(),
-    )
-    result = g.invoke(Command(resume=True), config=_config())
+    ))
+    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
 
-    assert not g.get_state(_config()).next  # finished, not paused
+    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("Webhook payloads must include" in m.content for m in tool_messages)
 
@@ -320,14 +332,14 @@ def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monke
         AIMessage(content="The pasted log shows 2 db_timeout occurrences."),
     )
     g = _build(llm)
-    g.invoke(
+    asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="here's the error log, can you count db_timeout")]},
         config=_config(),
-    )
-    assert g.get_state(_config()).next  # paused, not finished
+    ))
+    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
 
-    result = g.invoke(Command(resume=True), config=_config())
-    assert not g.get_state(_config()).next  # finished, not paused
+    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
+    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("2 db_timeout occurrences" in m.content for m in tool_messages)
 
@@ -352,13 +364,13 @@ def test_run_python_in_sandbox_pauses_for_approval_and_runs_once_approved(monkey
         AIMessage(content="The pasted log shows 2 db_timeout occurrences."),
     )
     g = _build(llm)
-    g.invoke(
+    asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="here's the error log, can you count db_timeout")]},
         config=_config(),
-    )
-    assert g.get_state(_config()).next  # paused, not finished
+    ))
+    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
 
-    result = g.invoke(Command(resume=True), config=_config())
-    assert not g.get_state(_config()).next  # finished, not paused
+    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
+    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("2 db_timeout occurrences" in m.content for m in tool_messages)

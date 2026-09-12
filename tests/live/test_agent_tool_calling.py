@@ -22,6 +22,7 @@ the semantic cache are already mocked for every test in this whole suite by
 tests/conftest.py's autouse fixtures; nothing here needs them anyway, since
 neither scenario below calls search_docs.
 """
+import asyncio
 import uuid
 
 import pytest
@@ -53,7 +54,13 @@ def real_ollama_chat_model(monkeypatch, ollama_endpoint):
 def _invoke(text: str) -> dict:
     graph = build_graph(GraphDeps())
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
-    return graph.invoke({"messages": [HumanMessage(content=text)]}, config=config)
+    # asyncio.run(...ainvoke(...)), not the sync .invoke() this used to be:
+    # the graph's agent/retrieve_context/etc. nodes are async def now (real
+    # LLM/Redis/Qdrant I/O — see app/agent/graph.py), and LangGraph's sync
+    # Pregel loop can't run an async-only node at all.
+    return asyncio.run(
+        graph.ainvoke({"messages": [HumanMessage(content=text)]}, config=config)
+    )
 
 
 def test_real_model_uses_the_calculator_tool_and_returns_the_right_answer():

@@ -3,7 +3,19 @@ seam tests/agent/test_manifest.py's widget-support example and
 tests/domains/support/test_domain.py already proved out — this domain's
 ToolNode only knows its own tools, and a mutating tool call pauses for
 human_approval and, once approved, actually runs.
+
+The compiled graph's `agent`/`retrieve_context`/etc. nodes are `async def`
+now (real LLM/Redis/Qdrant I/O — see app/agent/graph.py), so every
+`g.invoke`/`g.get_state` below runs as `asyncio.run(g.ainvoke(...))`/
+`asyncio.run(g.aget_state(...))` instead — LangGraph's sync Pregel loop
+can't run an async-only node at all. Each call gets its own `asyncio.run`
+rather than one shared event loop across a test, which is fine here since
+this domain's graphs use the default in-memory MemorySaver (no event-loop-
+bound state — contrast with `AsyncPostgresSaver`'s per-instance
+`asyncio.Lock`, see app/agent/runtime.py's module docstring).
 """
+import asyncio
+
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
@@ -117,10 +129,10 @@ class TestDomainScopedSubagent:
             AIMessage(content="Here's what the subagent found out for you."),
         )
         g = _build(llm)
-        g.invoke(
+        asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="look into jordan for me")]}, config=_config()
-        )
-        assert not g.get_state(_config()).next  # never paused
+        ))
+        assert not asyncio.run(g.aget_state(_config())).next  # never paused
 
 
 class TestMandatoryApprovalGate:
@@ -132,10 +144,10 @@ class TestMandatoryApprovalGate:
             )
         )
         g = _build(llm)
-        g.invoke(
+        asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="Hi, what does this cost?")]}, config=_config()
-        )
-        assert g.get_state(_config()).next  # paused, not finished
+        ))
+        assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
 
     def test_approving_runs_log_lead_interaction_and_finishes(self, monkeypatch):
         monkeypatch.setattr(store, "find_or_create_lead", lambda tenant, name, contact, note: 3)
@@ -148,12 +160,12 @@ class TestMandatoryApprovalGate:
             AIMessage(content="Got it, I've logged that."),
         )
         g = _build(llm)
-        g.invoke(
+        asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="Hi, what does this cost?")]}, config=_config()
-        )
-        result = g.invoke(Command(resume=True), config=_config())
+        ))
+        result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
 
-        assert not g.get_state(_config()).next  # finished, not paused
+        assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
         tool_messages = [m for m in result["messages"] if m.type == "tool"]
         assert any("Logged interaction for lead #3" in m.content for m in tool_messages)
 
@@ -166,11 +178,11 @@ class TestListPendingFollowupsAndMarkLeadLost:
             AIMessage(content="No pending follow-ups."),
         )
         g = _build(llm)
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="what follow-ups are coming up?")]},
             config=_config(),
-        )
-        assert not g.get_state(_config()).next  # never paused
+        ))
+        assert not asyncio.run(g.aget_state(_config())).next  # never paused
         assert result["messages"][-1].content == "No pending follow-ups."
 
     def test_mark_lead_lost_pauses_for_approval_and_runs_once_approved(self, monkeypatch):
@@ -184,14 +196,14 @@ class TestListPendingFollowupsAndMarkLeadLost:
             AIMessage(content="Marked that lead lost."),
         )
         g = _build(llm)
-        g.invoke(
+        asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="jordan went with a competitor")]},
             config=_config(),
-        )
-        assert g.get_state(_config()).next  # paused, not finished
+        ))
+        assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
 
-        result = g.invoke(Command(resume=True), config=_config())
-        assert not g.get_state(_config()).next  # finished, not paused
+        result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
+        assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
         tool_messages = [m for m in result["messages"] if m.type == "tool"]
         assert any("marked lost" in m.content.lower() for m in tool_messages)
 
@@ -204,11 +216,11 @@ def test_enrich_lead_from_website_pauses_for_approval_as_an_outward_tool():
         )
     )
     g = _build(llm)
-    g.invoke(
+    asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="jordan's company site is ecorp-lead.example.com")]},
         config=_config(),
-    )
-    assert g.get_state(_config()).next  # paused, not finished
+    ))
+    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
 
 
 def test_approving_enrich_lead_from_website_runs_it_and_finishes(monkeypatch):
@@ -230,13 +242,13 @@ def test_approving_enrich_lead_from_website_runs_it_and_finishes(monkeypatch):
         AIMessage(content="Added research on Jordan's company to their notes."),
     )
     g = _build(llm)
-    g.invoke(
+    asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="jordan's company site is ecorp-lead.example.com")]},
         config=_config(),
-    )
-    result = g.invoke(Command(resume=True), config=_config())
+    ))
+    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
 
-    assert not g.get_state(_config()).next  # finished, not paused
+    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("Ecorp Lead Co" in m.content for m in tool_messages)
 
@@ -282,14 +294,14 @@ def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monke
         AIMessage(content="The 3-year deal value is $142,575.00."),
     )
     g = _build(llm)
-    g.invoke(
+    asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="what's this 3-year deal worth with the discount")]},
         config=_config(),
-    )
-    assert g.get_state(_config()).next  # paused, not finished
+    ))
+    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
 
-    result = g.invoke(Command(resume=True), config=_config())
-    assert not g.get_state(_config()).next  # finished, not paused
+    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
+    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("142575.00" in m.content for m in tool_messages)
 
@@ -314,13 +326,13 @@ def test_run_python_in_sandbox_pauses_for_approval_and_runs_once_approved(monkey
         AIMessage(content="The 3-year deal value is $142,575.00."),
     )
     g = _build(llm)
-    g.invoke(
+    asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="what's this 3-year deal worth with the discount")]},
         config=_config(),
-    )
-    assert g.get_state(_config()).next  # paused, not finished
+    ))
+    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
 
-    result = g.invoke(Command(resume=True), config=_config())
-    assert not g.get_state(_config()).next  # finished, not paused
+    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
+    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("142575.00" in m.content for m in tool_messages)

@@ -4,7 +4,19 @@ tests/domains/support/test_domain.py / tests/domains/sales/test_domain.py
 tool (post_to_team_channel — this repo's first real use of that
 capability, see GRAPH_PATTERNS.md pattern 47) is gated exactly like a
 mutating one.
+
+The compiled graph's `agent`/`retrieve_context`/etc. nodes are `async def`
+now (real LLM/Redis/Qdrant I/O — see app/agent/graph.py), so every
+`g.invoke`/`g.get_state` below runs as `asyncio.run(g.ainvoke(...))`/
+`asyncio.run(g.aget_state(...))` instead — LangGraph's sync Pregel loop
+can't run an async-only node at all. Each call gets its own `asyncio.run`
+rather than one shared event loop across a test, which is fine here since
+this domain's graphs use the default in-memory MemorySaver (no event-loop-
+bound state — contrast with `AsyncPostgresSaver`'s per-instance
+`asyncio.Lock`, see app/agent/runtime.py's module docstring).
 """
+import asyncio
+
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
@@ -118,10 +130,10 @@ class TestDomainScopedSubagent:
             AIMessage(content="Here's what the subagent found out for you."),
         )
         g = _build(llm)
-        g.invoke(
+        asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="has this happened before?")]}, config=_config()
-        )
-        assert not g.get_state(_config()).next  # never paused
+        ))
+        assert not asyncio.run(g.aget_state(_config())).next  # never paused
 
 
 def test_fetch_metrics_summary_is_read_only_and_never_pauses(monkeypatch):
@@ -133,10 +145,10 @@ def test_fetch_metrics_summary_is_read_only_and_never_pauses(monkeypatch):
         AIMessage(content="Everything looks normal."),
     )
     g = _build(llm)
-    result = g.invoke(
+    result = asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="is everything ok?")]}, config=_config()
-    )
-    assert not g.get_state(_config()).next  # never paused
+    ))
+    assert not asyncio.run(g.aget_state(_config())).next  # never paused
     assert result["messages"][-1].content == "Everything looks normal."
 
 
@@ -145,10 +157,10 @@ def test_post_to_team_channel_pauses_for_approval_as_an_outward_tool():
         _tool_call("post_to_team_channel", {"channel": "ops-digest", "message": "all clear"})
     )
     g = _build(llm)
-    g.invoke(
+    asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="post an update to the team")]}, config=_config()
-    )
-    assert g.get_state(_config()).next  # paused, not finished
+    ))
+    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
 
 
 def test_list_recent_incidents_is_read_only_and_never_pauses(monkeypatch):
@@ -160,10 +172,10 @@ def test_list_recent_incidents_is_read_only_and_never_pauses(monkeypatch):
         AIMessage(content="No incidents on record."),
     )
     g = _build(llm)
-    result = g.invoke(
+    result = asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="has this happened before?")]}, config=_config()
-    )
-    assert not g.get_state(_config()).next  # never paused
+    ))
+    assert not asyncio.run(g.aget_state(_config())).next  # never paused
     assert result["messages"][-1].content == "No incidents on record."
 
 
@@ -177,13 +189,13 @@ def test_log_incident_pauses_for_approval_and_runs_once_approved(monkeypatch):
         AIMessage(content="Logged incident #3."),
     )
     g = _build(llm)
-    g.invoke(
+    asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="latency looks bad, log it")]}, config=_config()
-    )
-    assert g.get_state(_config()).next  # paused, not finished
+    ))
+    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
 
-    result = g.invoke(Command(resume=True), config=_config())
-    assert not g.get_state(_config()).next  # finished, not paused
+    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
+    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("Incident #3 logged" in m.content for m in tool_messages)
 
@@ -208,14 +220,14 @@ def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monke
         AIMessage(content="The 95th percentile is 42.75."),
     )
     g = _build(llm)
-    g.invoke(
+    asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="compute the 95th percentile of these numbers")]},
         config=_config(),
-    )
-    assert g.get_state(_config()).next  # paused, not finished
+    ))
+    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
 
-    result = g.invoke(Command(resume=True), config=_config())
-    assert not g.get_state(_config()).next  # finished, not paused
+    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
+    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("42.75" in m.content for m in tool_messages)
 
@@ -240,14 +252,14 @@ def test_run_python_in_sandbox_pauses_for_approval_and_runs_once_approved(monkey
         AIMessage(content="The 95th percentile is 42.75."),
     )
     g = _build(llm)
-    g.invoke(
+    asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="compute the 95th percentile of these numbers")]},
         config=_config(),
-    )
-    assert g.get_state(_config()).next  # paused, not finished
+    ))
+    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
 
-    result = g.invoke(Command(resume=True), config=_config())
-    assert not g.get_state(_config()).next  # finished, not paused
+    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
+    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("42.75" in m.content for m in tool_messages)
 
@@ -262,13 +274,13 @@ def test_resolve_incident_pauses_for_approval_and_runs_once_approved(monkeypatch
         AIMessage(content="Resolved incident #3."),
     )
     g = _build(llm)
-    g.invoke(
+    asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="incident 3 is fixed now")]}, config=_config()
-    )
-    assert g.get_state(_config()).next  # paused, not finished
+    ))
+    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
 
-    result = g.invoke(Command(resume=True), config=_config())
-    assert not g.get_state(_config()).next  # finished, not paused
+    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
+    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("Incident #3 resolved" in m.content for m in tool_messages)
 
@@ -278,11 +290,11 @@ def test_check_vendor_status_page_pauses_for_approval_as_an_outward_tool():
         _tool_call("check_vendor_status_page", {"url": "https://status.example.com"})
     )
     g = _build(llm)
-    g.invoke(
+    asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="is our payment processor having an outage?")]},
         config=_config(),
-    )
-    assert g.get_state(_config()).next  # paused, not finished
+    ))
+    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
 
 
 def test_approving_check_vendor_status_page_runs_it_and_finishes(monkeypatch):
@@ -297,13 +309,13 @@ def test_approving_check_vendor_status_page_runs_it_and_finishes(monkeypatch):
         AIMessage(content="Their status page shows no ongoing incident."),
     )
     g = _build(llm)
-    g.invoke(
+    asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="is our payment processor having an outage?")]},
         config=_config(),
-    )
-    result = g.invoke(Command(resume=True), config=_config())
+    ))
+    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
 
-    assert not g.get_state(_config()).next  # finished, not paused
+    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("All systems operational." in m.content for m in tool_messages)
 
@@ -319,11 +331,11 @@ def test_approving_post_to_team_channel_runs_it_and_finishes(monkeypatch):
         AIMessage(content="Posted the update to the team channel."),
     )
     g = _build(llm)
-    g.invoke(
+    asyncio.run(g.ainvoke(
         {"messages": [HumanMessage(content="post an update to the team")]}, config=_config()
-    )
-    result = g.invoke(Command(resume=True), config=_config())
+    ))
+    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
 
-    assert not g.get_state(_config()).next  # finished, not paused
+    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
     assert posted.get("ops-digest") == "all clear"
     assert result["messages"][-1].content == "Posted the update to the team channel."

@@ -31,6 +31,7 @@ still deterministically triggers this module to load and append
 `run_subagent` onto the SAME shared `TOOLS` list object, regardless of
 which module a caller (chiefly `graph.py`) imports `TOOLS` from.
 """
+import asyncio
 import time
 import uuid
 from collections.abc import Mapping
@@ -454,15 +455,34 @@ def _run_subagent_impl(
         # every subsequent turn, which doesn't apply here: this graph is
         # invoked exactly once, so the system prompt is just the first
         # message in this one-shot call.
-        return nested_graph.invoke(
-            {
-                "messages": [
-                    SystemMessage(content=nested_system_prompt),
-                    HumanMessage(content=task),
-                ],
-                "require_approval": False,
-            },
-            config=nested_config,
+        #
+        # `asyncio.run(nested_graph.ainvoke(...))`, not the sync
+        # `nested_graph.invoke(...)` this used to be: the shared node
+        # factories this graph is built from (`agent`, `compact_history`,
+        # `check_semantic_cache`, `retrieve_context`, `write_semantic_cache`
+        # — see app/agent/graph.py) are `async def` now, and LangGraph's own
+        # sync Pregel loop can't run an async-only node at all — it raises
+        # "No synchronous function provided" the moment it reaches one
+        # (verified directly against langgraph/utils/runnable.py's
+        # RunnableCallable.invoke()), regardless of what thread calls it.
+        # `asyncio.run` is safe here specifically because `_invoke` always
+        # runs on one of `_TOOL_EXECUTOR`'s worker threads (via
+        # `_run_with_timeout` below) — a plain thread with no event loop of
+        # its own to conflict with, unlike the graph's OWN checkpointer/loop
+        # (see app/agent/runtime.py's module docstring on why THAT loop
+        # binding matters) which this nested, one-shot MemorySaver-backed
+        # graph doesn't share or touch.
+        return asyncio.run(
+            nested_graph.ainvoke(
+                {
+                    "messages": [
+                        SystemMessage(content=nested_system_prompt),
+                        HumanMessage(content=task),
+                    ],
+                    "require_approval": False,
+                },
+                config=nested_config,
+            )
         )
 
     started = time.monotonic()

@@ -5,7 +5,14 @@ matching the rest of this suite's hermetic discipline — scripts/eval.py
 itself is meant to run against the real stack (see its own module
 docstring), but the AGGREGATION math is pure and worth testing in
 isolation.
+
+run_case/_run_case_once are `async def` (call `graph.ainvoke`/`aget_state` —
+see scripts/eval.py), so every call below runs through `asyncio.run(...)`,
+this repo's established pattern for exercising async code from a plain
+`def test_...` (no pytest-asyncio configured).
 """
+import asyncio
+
 import pytest
 from langchain_core.messages import AIMessage
 
@@ -18,17 +25,17 @@ class _FakeState:
 
 
 class _FakeGraph:
-    """A graph whose .invoke() returns a pre-scripted sequence of result
+    """A graph whose .ainvoke() returns a pre-scripted sequence of result
     dicts, one per call — enough to drive run_case's repetition loop
     without a real LLM."""
 
     def __init__(self, results):
         self._results = iter(results)
 
-    def invoke(self, input_, config):
+    async def ainvoke(self, input_, config):
         return next(self._results)
 
-    def get_state(self, config):
+    async def aget_state(self, config):
         return _FakeState()
 
 
@@ -58,7 +65,7 @@ class TestRunCaseAggregation:
         case = GoldenCase(id="c1", input="hi", expect_keywords=["hello"])
         graph = _FakeGraph([_result("hello there") for _ in range(5)])
 
-        result = run_case(graph, case, repetitions=5)
+        result = asyncio.run(run_case(graph, case, repetitions=5))
 
         assert result.pass_rate == 1.0
         assert result.passed is True
@@ -76,7 +83,7 @@ class TestRunCaseAggregation:
             ]
         )
 
-        result = run_case(graph, case, repetitions=5)
+        result = asyncio.run(run_case(graph, case, repetitions=5))
 
         assert result.pass_rate == 0.4
         assert result.passed is False
@@ -94,7 +101,7 @@ class TestRunCaseAggregation:
             ]
         )
 
-        result = run_case(graph, case, repetitions=5)
+        result = asyncio.run(run_case(graph, case, repetitions=5))
 
         assert result.pass_rate == 0.8
         assert result.passed is True
@@ -108,7 +115,7 @@ class TestRunCaseAggregation:
             ]
         )
 
-        result = run_case(graph, case, repetitions=2)
+        result = asyncio.run(run_case(graph, case, repetitions=2))
 
         assert result.total_tokens == 300
         assert result.total_cost_usd == pytest.approx(0.03)
@@ -122,7 +129,7 @@ class TestRunCaseAggregation:
             ]
         )
 
-        result = run_case(graph, case, repetitions=2)
+        result = asyncio.run(run_case(graph, case, repetitions=2))
 
         assert result.used_citations_count == 3
         assert result.ungrounded_claims_count == 1
@@ -131,7 +138,7 @@ class TestRunCaseAggregation:
         case = GoldenCase(id="c1", input="hi", expect_keywords=["hello"])
         graph = _FakeGraph([_result("hello there"), _result("the final one")])
 
-        result = run_case(graph, case, repetitions=2)
+        result = asyncio.run(run_case(graph, case, repetitions=2))
 
         assert result.answer == "the final one"
 

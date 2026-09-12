@@ -41,6 +41,7 @@ actually available here to make the signal more trustworthy; still read
 the `reason` fields by hand rather than trusting `assert_test`'s pass/fail
 alone.
 """
+import asyncio
 import uuid
 
 import pytest
@@ -97,9 +98,13 @@ def test_grounded_answer_is_faithful_and_relevant_by_a_real_llm_judge(deepeval_o
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
     question = "What are Ecorp's support hours, and how long do refunds take once approved?"
 
-    result = graph.invoke(
-        {"messages": [HumanMessage(content=question)]},
-        config=config,
+    # asyncio.run(...ainvoke(...)), not the sync .invoke() this used to be —
+    # see app/agent/graph.py: agent/retrieve_context/etc. are async def now.
+    result = asyncio.run(
+        graph.ainvoke(
+            {"messages": [HumanMessage(content=question)]},
+            config=config,
+        )
     )
     answer = result["messages"][-1].content
 

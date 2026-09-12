@@ -9,7 +9,18 @@ tool-execution step (inside ToolNode, which isn't touched by that stub)
 also stays hermetic.
 
 Scenarios mirror the graph's documented flow in GRAPH_PATTERNS.md.
+
+The compiled graph's `agent`/`retrieve_context`/etc. nodes are `async def`
+now (real LLM/Redis/Qdrant I/O — see app/agent/graph.py), so every
+`g.invoke`/`g.get_state` below runs as `asyncio.run(g.ainvoke(...))`/
+`asyncio.run(g.aget_state(...))` instead — LangGraph's sync Pregel loop
+can't run an async-only node at all. Each call gets its own `asyncio.run`
+rather than one shared event loop across a test, which is fine here since
+these graphs use the default in-memory MemorySaver (no event-loop-bound
+state — contrast with `AsyncPostgresSaver`'s per-instance `asyncio.Lock`,
+see app/agent/runtime.py's module docstring).
 """
+import asyncio
 import time
 import uuid
 
@@ -59,7 +70,7 @@ class TestRejectPath:
     def test_empty_input_never_reaches_llm(self):
         llm = _fake_llm()  # would raise StopIteration if invoked
         g = build_graph(GraphDeps(llm=llm))
-        result = g.invoke({"messages": [HumanMessage(content="")]}, config=_config())
+        result = asyncio.run(g.ainvoke({"messages": [HumanMessage(content="")]}, config=_config()))
         assert "try again" in result["messages"][-1].content.lower()
 
 
@@ -67,10 +78,10 @@ class TestDirectAnswerPath:
     def test_final_answer_ends_without_tool_call(self):
         llm = _fake_llm(AIMessage(content="This is a sufficiently long final answer."))
         g = build_graph(GraphDeps(llm=llm))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="what is a checkpointer?")]},
             config=_config(),
-        )
+        ))
         assert (
             result["messages"][-1].content
             == "This is a sufficiently long final answer."
@@ -85,9 +96,9 @@ class TestToolCallPath:
             AIMessage(content="12 times 7 is 84."),
         )
         g = build_graph(GraphDeps(llm=llm))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="what is 12*7?")]}, config=_config()
-        )
+        ))
         assert result["messages"][-1].content == "12 times 7 is 84."
         assert result["iterations"] == 2
 
@@ -100,17 +111,17 @@ class TestHumanApprovalPath:
         )
         g = build_graph(GraphDeps(llm=llm))
         config = _config()
-        g.invoke(
+        asyncio.run(g.ainvoke(
             {
                 "messages": [HumanMessage(content="what is 2+2?")],
                 "require_approval": True,
             },
             config=config,
-        )
-        state = g.get_state(config)
+        ))
+        state = asyncio.run(g.aget_state(config))
         assert state.next, "graph should be paused at the interrupt"
 
-        result = g.invoke(Command(resume=True), config=config)
+        result = asyncio.run(g.ainvoke(Command(resume=True), config=config))
         assert result["messages"][-1].content == "2 plus 2 equals 4."
 
     def test_rejected_tool_call_returns_to_agent_without_running_tool(self):
@@ -120,14 +131,14 @@ class TestHumanApprovalPath:
         )
         g = build_graph(GraphDeps(llm=llm))
         config = _config()
-        g.invoke(
+        asyncio.run(g.ainvoke(
             {
                 "messages": [HumanMessage(content="what is 2+2?")],
                 "require_approval": True,
             },
             config=config,
-        )
-        result = g.invoke(Command(resume=False), config=config)
+        ))
+        result = asyncio.run(g.ainvoke(Command(resume=False), config=config))
         assert (
             result["messages"][-1].content == "Okay, I will not run that calculation."
         )
@@ -142,20 +153,20 @@ class TestHumanApprovalPath:
         llm = _fake_llm(_tool_call_message("calculator", {"expression": "2+2"}))
         g = build_graph(GraphDeps(llm=llm))
         config = _config()
-        g.invoke(
+        asyncio.run(g.ainvoke(
             {
                 "messages": [HumanMessage(content="what is 2+2?")],
                 "require_approval": True,
             },
             config=config,
-        )
-        assert g.get_state(config).next, "graph should be paused at the interrupt"
+        ))
+        assert asyncio.run(g.aget_state(config)).next, "graph should be paused at the interrupt"
 
         from app.agent.graph_hitl import CANCEL_SENTINEL
 
-        result = g.invoke(Command(resume=CANCEL_SENTINEL), config=config)
+        result = asyncio.run(g.ainvoke(Command(resume=CANCEL_SENTINEL), config=config))
 
-        assert not g.get_state(config).next  # finished, not paused
+        assert not asyncio.run(g.aget_state(config)).next  # finished, not paused
         assert "Cancelled" in result["messages"][-1].content
 
 
@@ -175,9 +186,9 @@ class TestIterationCap:
         ]
         llm = _fake_llm(*responses)
         g = build_graph(GraphDeps(llm=llm))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="loop forever")]}, config=_config()
-        )
+        ))
         assert result["iterations"] == MAX_ITERATIONS
 
 
@@ -193,9 +204,9 @@ class TestNoProgressDetection:
         llm = _fake_llm(*responses)
         g = build_graph(GraphDeps(llm=llm))
 
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="keep trying")]}, config=_config()
-        )
+        ))
 
         assert result["iterations"] < MAX_ITERATIONS
 
@@ -209,9 +220,9 @@ class TestNoProgressDetection:
         llm = _fake_llm(*responses)
         g = build_graph(GraphDeps(llm=llm))
 
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="compute several things")]}, config=_config()
-        )
+        ))
 
         assert result["messages"][-1].content == "Here is my final, sufficiently long answer."
 
@@ -223,7 +234,7 @@ class TestHistorySummarization:
     the kept window survive verbatim in state["messages"]. See
     TestSafetyBudgets' compact_history unit tests for the
     discard/summarize logic in isolation; this proves the whole graph
-    wires it together across real successive g.invoke() calls sharing one
+    wires it together across real successive asyncio.run(g.ainvoke()) calls sharing one
     checkpointed thread.
 
     Every test here drives build_graph with small, LOCAL
@@ -282,11 +293,11 @@ class TestHistorySummarization:
         cfg = _config()
 
         for q in questions[: self.N_TURNS]:
-            g.invoke({"messages": [HumanMessage(content=q)]}, config=cfg)
+            asyncio.run(g.ainvoke({"messages": [HumanMessage(content=q)]}, config=cfg))
 
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content=questions[self.N_TURNS])]}, config=cfg
-        )
+        ))
 
         assert result["history_summary"] == "The user first asked question 1."
         remaining_contents = [getattr(m, "content", "") for m in result["messages"]]
@@ -311,11 +322,11 @@ class TestHistorySummarization:
         cfg = _config()
 
         for q in questions[: self.N_TURNS]:
-            g.invoke({"messages": [HumanMessage(content=q)]}, config=cfg)
+            asyncio.run(g.ainvoke({"messages": [HumanMessage(content=q)]}, config=cfg))
 
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content=questions[self.N_TURNS])]}, config=cfg
-        )
+        ))
 
         assert "too long" in result["messages"][-1].content.lower()
 
@@ -338,11 +349,11 @@ class TestHistorySummarization:
         cfg = _config()
 
         for q in questions[: self.N_TURNS]:
-            g.invoke({"messages": [HumanMessage(content=q)]}, config=cfg)
+            asyncio.run(g.ainvoke({"messages": [HumanMessage(content=q)]}, config=cfg))
 
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content=questions[self.N_TURNS])]}, config=cfg
-        )
+        ))
 
         assert result["messages"][-1].content == final_response.content
 
@@ -354,9 +365,9 @@ class TestOutputRetryPath:
             AIMessage(content="A properly detailed final answer this time."),
         )
         g = build_graph(GraphDeps(llm=llm))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="is that right?")]}, config=_config()
-        )
+        ))
         assert (
             result["messages"][-1].content
             == "A properly detailed final answer this time."
@@ -389,10 +400,10 @@ class TestRetryExhaustedPath:
         )
         llm = _fake_llm(AIMessage(content=narration), AIMessage(content=narration))
         g = build_graph(GraphDeps(llm=llm))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="who works in engineering?")]},
             config=_config(),
-        )
+        ))
         assert "wasn't able to put together" in result["messages"][-1].content
         assert result["iterations"] == 2
         assert result["last_retry_reason"] == "deferred"
@@ -433,10 +444,10 @@ class TestRetryExhaustedPath:
         correct_but_uncited = "Ecorp's support hours are from 9am to 5pm on weekdays."
         llm = _fake_llm(AIMessage(content=correct_but_uncited))
         g = build_graph(GraphDeps(llm=llm, search_docs=fake_search_docs))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="what are the support hours?")]},
             config=_config(),
-        )
+        ))
         assert result["messages"][-1].content == (
             "Ecorp's support hours are from 9am to 5pm on weekdays [1]."
         )
@@ -486,10 +497,10 @@ class TestRetryExhaustedPath:
             AIMessage(content=correctly_cited),  # cited correctly -> success
         )
         g = build_graph(GraphDeps(llm=llm, search_docs=fake_search_docs))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="how does Qdrant's search work?")]},
             config=_config(),
-        )
+        ))
         assert result["messages"][-1].content == correctly_cited
         assert result["iterations"] == 3
 
@@ -505,9 +516,9 @@ class TestToolErrorRecovery:
             AIMessage(content="I couldn't compute that, sorry about it."),
         )
         g = build_graph(GraphDeps(llm=llm))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="what is nothing?")]}, config=_config()
-        )
+        ))
         assert (
             result["messages"][-1].content == "I couldn't compute that, sorry about it."
         )
@@ -532,9 +543,9 @@ class TestToolErrorRecovery:
             AIMessage(content="Sorry, that calculation timed out."),
         )
         g = build_graph(GraphDeps(llm=llm))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="what is 1+1?")]}, config=_config()
-        )
+        ))
         assert result["messages"][-1].content == "Sorry, that calculation timed out."
 
 
@@ -553,10 +564,10 @@ class TestToolCallBudgetPath:
             AIMessage(content="1 plus 1 equals 2, a proper final answer."),
         )
         g = build_graph(GraphDeps(llm=llm))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="add a bunch of stuff")]},
             config=_config(),
-        )
+        ))
         assert "equals 2" in result["messages"][-1].content
 
 
@@ -586,12 +597,12 @@ class TestInvalidToolCallGuardrail:
         g = build_graph(GraphDeps(llm=llm))
         config = _config()
 
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="list all tools available there")]},
             config=config,
-        )
+        ))
 
-        state = g.get_state(config)
+        state = asyncio.run(g.aget_state(config))
         assert not state.next, "must never pause at human_approval for a bogus tool name"
         assert "tools available" in result["messages"][-1].content
 
@@ -610,12 +621,12 @@ class TestInvalidToolCallGuardrail:
         g = build_graph(GraphDeps(llm=llm))
         config = _config()
 
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="do two things")]},
             config=config,
-        )
+        ))
 
-        state = g.get_state(config)
+        state = asyncio.run(g.aget_state(config))
         assert not state.next
         assert result["messages"][-1].content == "Let me try that again properly."
 
@@ -642,12 +653,12 @@ class TestUseSkillWithoutSearchGate:
         g = build_graph(GraphDeps(llm=llm))
         config = _config()
 
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="how do I build a good ai agent?")]},
             config=config,
-        )
+        ))
 
-        state = g.get_state(config)
+        state = asyncio.run(g.aget_state(config))
         assert not state.next, "use_skill is read_only, must never pause at human_approval"
         assert (
             result["messages"][-1].content
@@ -670,10 +681,10 @@ class TestUseSkillWithoutSearchGate:
         g = build_graph(GraphDeps(llm=llm))
         config = _config()
 
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="write an onboarding brief")]},
             config=config,
-        )
+        ))
 
         assert result["messages"][-1].content == "Here's the onboarding brief you asked for."
 
@@ -708,14 +719,14 @@ class TestMandatoryCapabilityGate:
         g = build_graph(GraphDeps(llm=llm))
         config = _config()
 
-        g.invoke(
+        asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="remember our refund policy")]},
             config=config,
-        )
-        state = g.get_state(config)
+        ))
+        state = asyncio.run(g.aget_state(config))
         assert state.next, "a mutating tool call must pause even without require_approval"
 
-        result = g.invoke(Command(resume=True), config=config)
+        result = asyncio.run(g.ainvoke(Command(resume=True), config=config))
         assert (
             result["messages"][-1].content
             == "I've added a note about the refund policy."
@@ -732,11 +743,11 @@ class TestMandatoryCapabilityGate:
         g = build_graph(GraphDeps(llm=llm))
         config = _config()
 
-        g.invoke(
+        asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="remember our refund policy")]},
             config=config,
-        )
-        result = g.invoke(Command(resume=False), config=config)
+        ))
+        result = asyncio.run(g.ainvoke(Command(resume=False), config=config))
         assert result["messages"][-1].content == "Okay, I won't save that."
 
 
@@ -790,10 +801,10 @@ class TestContextRetrievalDegradation:
             AIMessage(content="A general-knowledge answer, no context needed.")
         )
         g = build_graph(GraphDeps(llm=llm, search_docs=failing_search_docs))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="what is a checkpointer?")]},
             config=_config(),
-        )
+        ))
         assert (
             result["messages"][-1].content
             == "A general-knowledge answer, no context needed."
@@ -830,10 +841,10 @@ class TestCitations:
 
         llm = _fake_llm(AIMessage(content="Checkpointers persist state [1]."))
         g = build_graph(GraphDeps(llm=llm, search_docs=fake_search_docs))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="what is a checkpointer?")]},
             config=_config(),
-        )
+        ))
 
         assert result["citations"] == citations  # everything retrieved
         assert result["used_citations"] == [citations[0]]  # only what was cited
@@ -847,7 +858,7 @@ class TestModeration:
         the turn before retrieve_context/agent."""
         llm = _fake_llm()
         g = build_graph(GraphDeps(llm=llm))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {
                 "messages": [
                     HumanMessage(
@@ -856,16 +867,16 @@ class TestModeration:
                 ]
             },
             config=_config(),
-        )
+        ))
         assert "can't help" in result["messages"][-1].content.lower()
 
     def test_ordinary_message_reaches_the_llm_normally(self):
         llm = _fake_llm(AIMessage(content="A perfectly ordinary answer."))
         g = build_graph(GraphDeps(llm=llm))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="What is our refund policy?")]},
             config=_config(),
-        )
+        ))
         assert result["messages"][-1].content == "A perfectly ordinary answer."
 
 
@@ -884,10 +895,10 @@ class TestSemanticCache:
                 cache_get=lambda ctx, query: ("A cached answer [1].", cached_citations),
             )
         )
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="what is a checkpointer?")]},
             config=_config(),
-        )
+        ))
 
         assert result["messages"][-1].content == "A cached answer [1]."
         assert result["used_citations"] == cached_citations
@@ -905,10 +916,10 @@ class TestSemanticCache:
         g = build_graph(
             GraphDeps(llm=llm, cache_get=lambda ctx, query: None, cache_set=fake_cache_set)
         )
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="what is a checkpointer?")]},
             config=_config(),
-        )
+        ))
 
         assert result["messages"][-1].content == "A general-knowledge answer, no cache yet."
         assert written["query"] == "what is a checkpointer?"
@@ -926,10 +937,10 @@ class TestSemanticCache:
                 cache_set=fail_cache_set,
             )
         )
-        g.invoke(
+        asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="what is a checkpointer?")]},
             config=_config(),
-        )
+        ))
         # No assertion needed beyond "didn't raise" — fail_cache_set would
         # have raised AssertionError if it were ever called.
 
@@ -944,10 +955,10 @@ class TestUngroundedClaimsCount:
         llm = _fake_llm(AIMessage(content="Checkpointers persist state [1], see also [7]."))
         g = build_graph(GraphDeps(llm=llm, search_docs=fake_search_docs))
 
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="what is a checkpointer?")]},
             config=_config(),
-        )
+        ))
 
         assert result["ungrounded_claims_count"] == 1
         assert result["used_citations"] == citations  # [1] is real and used
@@ -961,10 +972,10 @@ class TestUngroundedClaimsCount:
         llm = _fake_llm(AIMessage(content="Checkpointers persist state [1]."))
         g = build_graph(GraphDeps(llm=llm, search_docs=fake_search_docs))
 
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="what is a checkpointer?")]},
             config=_config(),
-        )
+        ))
 
         assert result["ungrounded_claims_count"] == 0
 
@@ -990,13 +1001,13 @@ class TestClarification:
             ),
         )
         g = build_graph(GraphDeps(llm=llm))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="tell me about checkpointers")]},
             config=_config(),
-        )
+        ))
 
         # read_only: never pauses for human_approval (pattern 15).
-        assert not g.get_state(_config()).next
+        assert not asyncio.run(g.aget_state(_config())).next
         assert "1. The LangGraph checkpointer" in result["messages"][-1].content
 
     def test_ask_clarification_never_pauses_for_approval(self):
@@ -1005,9 +1016,9 @@ class TestClarification:
             AIMessage(content="Which one did you mean — A or B?"),
         )
         g = build_graph(GraphDeps(llm=llm))
-        g.invoke({"messages": [HumanMessage(content="tell me more")]}, config=_config())
+        asyncio.run(g.ainvoke({"messages": [HumanMessage(content="tell me more")]}, config=_config()))
 
-        assert not g.get_state(_config()).next
+        assert not asyncio.run(g.aget_state(_config())).next
 
 
 class TestFollowupSuggestions:
@@ -1022,10 +1033,10 @@ class TestFollowupSuggestions:
             AIMessage(content="What is a MemorySaver?\nHow do I resume a paused run?"),
         )
         g = build_graph(GraphDeps(llm=llm, search_docs=fake_search_docs))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="what is a checkpointer?")]},
             config=_config(),
-        )
+        ))
 
         assert result["followups"] == [
             "What is a MemorySaver?",
@@ -1038,10 +1049,10 @@ class TestFollowupSuggestions:
         StopIteration if suggest_followups tried to call the LLM again."""
         llm = _fake_llm(AIMessage(content="A general-knowledge answer, no sources needed."))
         g = build_graph(GraphDeps(llm=llm))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="what is 2+2?")]},
             config=_config(),
-        )
+        ))
 
         assert result["followups"] == []
 
@@ -1061,10 +1072,10 @@ class TestTokenBudgetPath:
         )
         llm = _fake_llm(big_usage_msg)
         g = build_graph(GraphDeps(llm=llm))
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="do something expensive")]},
             config=_config(),
-        )
+        ))
         assert result["total_tokens"] >= MAX_TOKENS_PER_TURN
         assert result["iterations"] == 1  # ended after one agent call, tool never ran
 
@@ -1092,10 +1103,10 @@ class TestCostCeilingPath:
         llm = _fake_llm(small_usage_msg)
         g = build_graph(GraphDeps(llm=llm))
 
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="do something expensive")]},
             config=_config(),
-        )
+        ))
 
         assert result["total_tokens"] == 10  # nowhere near MAX_TOKENS_PER_TURN
         assert result["total_cost_usd"] > 0
@@ -1108,8 +1119,8 @@ class TestCostCeilingPath:
         llm = _fake_llm(AIMessage(content="A perfectly ordinary local answer."))
         g = build_graph(GraphDeps(llm=llm))
 
-        result = g.invoke(
+        result = asyncio.run(g.ainvoke(
             {"messages": [HumanMessage(content="hello")]}, config=_config()
-        )
+        ))
 
         assert result["total_cost_usd"] == 0.0

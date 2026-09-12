@@ -17,13 +17,13 @@ TWO real, disclosed findings from actually running this, not assumed from
 deepeval's docs:
 
 1. **A naive `model_callback` breaks the instant the simulated user's
-   message causes a MUTATING tool call.** `graph.invoke()`'s returned
+   message causes a MUTATING tool call.** `asyncio.run(graph.ainvoke())`'s returned
    `messages[-1]` at that point is the tool-calling `AIMessage` itself —
    legitimately empty `.content` (LangGraph's `human_approval` interrupt,
    pattern 36, has paused the run for approval; the real answer doesn't
    exist yet). Reproduced 3/3 with `qwen2.5:3b` calling `remember`
    mid-conversation instead of answering directly. `model_callback` below
-   checks `graph.get_state(config).next` and auto-approves
+   checks `asyncio.run(graph.aget_state(config)).next` and auto-approves
    (`Command(resume=True)`) before reading the final answer — this is a
    real integration requirement for ANY external harness driving this
    graph across turns, not a deepeval-specific workaround.
@@ -51,6 +51,8 @@ a `reason` that was at least directionally coherent this time (unlike the
 flat self-contradictions seen in the single-turn probe) — still not
 something to trust as a clean pass/fail signal. Read the reasons by hand.
 """
+import asyncio
+
 import pytest
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
@@ -113,11 +115,11 @@ def test_multiturn_conversation_stays_grounded_and_in_role(deepeval_ollama):
 
     def model_callback(input: str, thread_id: str) -> Turn:
         config = {"configurable": {"thread_id": thread_id, "ctx": TEST_CTX}}
-        result = graph.invoke({"messages": [HumanMessage(content=input)]}, config=config)
+        result = asyncio.run(graph.ainvoke({"messages": [HumanMessage(content=input)]}, config=config))
         for _ in range(_MAX_APPROVAL_ROUNDS):
-            if not graph.get_state(config).next:
+            if not asyncio.run(graph.aget_state(config)).next:
                 break
-            result = graph.invoke(Command(resume=True), config=config)
+            result = asyncio.run(graph.ainvoke(Command(resume=True), config=config))
         return Turn(role="assistant", content=result["messages"][-1].content)
 
     judge = OllamaModel(

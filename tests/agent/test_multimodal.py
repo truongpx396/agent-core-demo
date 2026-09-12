@@ -5,7 +5,14 @@ text-only consumer — moderation, the semantic cache key, the retrieval
 query), app/agent/runtime.py's `_build_human_content` (constructing the multimodal
 content list actually sent to the model), and the routing/node-level call
 sites that had to switch from `.content` to these helpers.
+
+check_semantic_cache/retrieve_context/write_semantic_cache are `async def`
+(real Redis/Qdrant I/O — see their docstrings in app/agent/graph.py), so
+their calls below run through `asyncio.run(...)`, this repo's established
+pattern for exercising async code from a plain `def test_...`.
 """
+import asyncio
+
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -127,7 +134,7 @@ class TestSemanticCacheAndRetrievalUseTextOnly:
             "messages": [_multimodal("describe this photo", "https://example.com/x.png")],
             "ctx": TEST_CTX,
         }
-        check_semantic_cache(state)
+        asyncio.run(check_semantic_cache(state))
 
         assert captured["query"] == "describe this photo"
 
@@ -143,7 +150,7 @@ class TestSemanticCacheAndRetrievalUseTextOnly:
             "messages": [_multimodal("what company is this about?", "https://example.com/x.png")],
             "ctx": TEST_CTX,
         }
-        retrieve_context(state)
+        asyncio.run(retrieve_context(state))
 
         assert captured["query"] == "what company is this about?"
 
@@ -161,7 +168,7 @@ class TestSemanticCacheAndRetrievalUseTextOnly:
             ],
             "cache_hit": False,
         }
-        write_semantic_cache(state)
+        asyncio.run(write_semantic_cache(state))
 
         assert captured["query"] == "describe this photo"
 
@@ -204,13 +211,16 @@ class TestBuildHumanContent:
 
 
 class _RecordingFakeLLM:
+    """`ainvoke`, not `invoke` — the `agent` node calls `llm.ainvoke(...)`
+    now (see app/agent/graph.py's make_agent_node docstring)."""
+
     def __init__(self, response):
         self._inner = GenericFakeChatModel(messages=iter([response]))
         self.seen_messages: list = []
 
-    def invoke(self, messages, *args, **kwargs):
+    async def ainvoke(self, messages, *args, **kwargs):
         self.seen_messages = list(messages)
-        return self._inner.invoke(messages, *args, **kwargs)
+        return await self._inner.ainvoke(messages, *args, **kwargs)
 
 
 class TestAstreamEventsTurnBuildsMultimodalContent:

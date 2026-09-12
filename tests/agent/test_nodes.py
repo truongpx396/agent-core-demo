@@ -1,8 +1,16 @@
 """Node-level tests: each node in isolation, with its dependencies mocked.
 
 No LLM here — that's covered separately in test_agent_node.py, since `agent`
-is the only node that needs one.
+is the only node that needs one. `check_semantic_cache`/`retrieve_context`/
+`suggest_followups`/`write_semantic_cache` are `async def` (real I/O —
+Redis/Qdrant/LLM — see each node's own docstring in app/agent/graph.py), so
+their calls below run through `asyncio.run(...)`, this repo's established
+pattern for exercising async code from a plain `def test_...`. Every other
+node here (reject_*, moderate_input, context_window_exceeded) stays plain
+sync — nothing to await — so those calls are unchanged.
 """
+import asyncio
+
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent import graph, graph_hitl, graph_routing
@@ -79,7 +87,7 @@ class TestCheckSemanticCache:
             "messages": [HumanMessage(content="what is a checkpointer?")],
             "ctx": TEST_CTX,
         }
-        result = check_semantic_cache(state)
+        result = asyncio.run(check_semantic_cache(state))
 
         assert result["cache_hit"] is True
         assert result["citations"] == cached_citations
@@ -92,14 +100,14 @@ class TestCheckSemanticCache:
             "messages": [HumanMessage(content="what is a checkpointer?")],
             "ctx": TEST_CTX,
         }
-        assert check_semantic_cache(state) == {}
+        assert asyncio.run(check_semantic_cache(state)) == {}
 
     def test_no_human_message_skips_the_lookup(self):
         def fail_cache_get(ctx, query):
             raise AssertionError("cache_get should not be called")
 
         check_semantic_cache = graph.make_check_semantic_cache_node(fail_cache_get)
-        result = check_semantic_cache({"messages": [AIMessage(content="hi")]})
+        result = asyncio.run(check_semantic_cache({"messages": [AIMessage(content="hi")]}))
         assert result == {}
 
 
@@ -117,31 +125,31 @@ class TestSuggestFollowups:
         fake_llm = _fake_llm_returning("What is a MemorySaver?\nHow do I resume a run?")
         suggest_followups = graph.make_suggest_followups_node(fake_llm)
 
-        result = suggest_followups(self._state())
+        result = asyncio.run(suggest_followups(self._state()))
 
         assert result == {"followups": ["What is a MemorySaver?", "How do I resume a run?"]}
 
     def test_no_citations_means_no_followups_and_no_llm_call(self):
         def fail_llm(*a, **kw):
-            raise AssertionError("llm.invoke should not be called")
+            raise AssertionError("llm.ainvoke should not be called")
 
         suggest_followups = graph.make_suggest_followups_node(_FailingLLM())
 
-        result = suggest_followups(self._state(used_citations=[]))
+        result = asyncio.run(suggest_followups(self._state(used_citations=[])))
 
         assert result == {"followups": []}
 
     def test_cache_hit_skips_followup_generation_entirely(self):
         suggest_followups = graph.make_suggest_followups_node(_FailingLLM())
 
-        result = suggest_followups(self._state(cache_hit=True))
+        result = asyncio.run(suggest_followups(self._state(cache_hit=True)))
 
         assert result == {"followups": []}
 
     def test_llm_failure_degrades_to_no_followups(self):
         suggest_followups = graph.make_suggest_followups_node(_FailingLLM())
 
-        result = suggest_followups(self._state())
+        result = asyncio.run(suggest_followups(self._state()))
 
         assert result == {"followups": []}
 
@@ -149,19 +157,22 @@ class TestSuggestFollowups:
         fake_llm = _fake_llm_returning("Q1?\nQ2?\nQ3?\nQ4?\nQ5?")
         suggest_followups = graph.make_suggest_followups_node(fake_llm)
 
-        result = suggest_followups(self._state())
+        result = asyncio.run(suggest_followups(self._state()))
 
         assert len(result["followups"]) == 3
 
 
 class _FailingLLM:
-    def invoke(self, messages):
+    """`ainvoke`, not `invoke` — suggest_followups/compact_history/agent all
+    call `llm.ainvoke(...)` now (see their docstrings in app/agent/graph.py)."""
+
+    async def ainvoke(self, messages):
         raise RuntimeError("model unreachable")
 
 
 def _fake_llm_returning(content: str):
     class _FakeLLM:
-        def invoke(self, messages):
+        async def ainvoke(self, messages):
             return AIMessage(content=content)
 
     return _FakeLLM()
@@ -188,7 +199,7 @@ class TestWriteSemanticCache:
             "cache_hit": False,
         }
 
-        result = write_semantic_cache(state)
+        result = asyncio.run(write_semantic_cache(state))
 
         assert result == {}
         assert captured["query"] == "what is a checkpointer?"
@@ -214,7 +225,7 @@ class TestWriteSemanticCache:
             "cache_hit": True,
         }
 
-        assert write_semantic_cache(state) == {}
+        assert asyncio.run(write_semantic_cache(state)) == {}
 
 
 def test_retrieve_context_calls_search_docs_with_last_human_message_and_ctx():
@@ -231,7 +242,7 @@ def test_retrieve_context_calls_search_docs_with_last_human_message_and_ctx():
         "messages": [HumanMessage(content="what is a checkpointer?")],
         "ctx": TEST_CTX,
     }
-    result = retrieve_context(state)
+    result = asyncio.run(retrieve_context(state))
 
     assert captured["query"] == "what is a checkpointer?"
     assert captured["ctx"] == TEST_CTX
@@ -267,7 +278,7 @@ def test_retrieve_context_enriches_a_vague_followup_with_the_prior_question():
         ],
         "ctx": TEST_CTX,
     }
-    result = retrieve_context(state)
+    result = asyncio.run(retrieve_context(state))
 
     assert captured["query"] == (
         "how to build a good production grade ai agent? pls be more the detailed"
@@ -295,7 +306,7 @@ def test_retrieve_context_leaves_a_self_contained_followup_alone():
         ],
         "ctx": TEST_CTX,
     }
-    retrieve_context(state)
+    asyncio.run(retrieve_context(state))
 
     assert captured["query"] == "how does Qdrant's hybrid search actually work?"
 
@@ -306,7 +317,7 @@ def test_retrieve_context_no_human_message_skips_search():
 
     retrieve_context = graph.make_retrieve_context_node(fail_search_docs)
 
-    result = retrieve_context({"messages": [AIMessage(content="hi")]})
+    result = asyncio.run(retrieve_context({"messages": [AIMessage(content="hi")]}))
     assert result == {"context": "", "citations": [], "context_anchor_index": 0}
 
 
@@ -326,7 +337,7 @@ def test_retrieve_context_degrades_to_empty_when_search_docs_raises():
         "messages": [HumanMessage(content="what is a checkpointer?")],
         "ctx": TEST_CTX,
     }
-    result = retrieve_context(state)
+    result = asyncio.run(retrieve_context(state))
 
     assert result == {"context": "", "citations": [], "context_anchor_index": 0}
     assert metric_value(metrics.agent_context_retrieval_degraded_total) == before + 1

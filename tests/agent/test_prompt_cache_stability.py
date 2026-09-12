@@ -25,6 +25,8 @@ garbage in both cases; (2) alone wouldn't catch a *different* kind of
 instability (e.g. a timestamp) that isn't ctx-shaped. Together they're the
 actual guarantee GRAPH_PATTERNS.md documents.
 """
+import asyncio
+
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -37,15 +39,18 @@ CTX_B = {"tenant": "globex-inc", "principal": "bob", "claims": {"role": "viewer"
 class _RecordingFakeLLM:
     """Wraps GenericFakeChatModel and remembers every message list it was
     invoked with — see tests/agent/test_agent_node.py for why this is a plain
-    wrapper rather than a subclass."""
+    wrapper rather than a subclass.
+
+    Defines `ainvoke`, not `invoke` — `agent` calls `llm.ainvoke(...)` now
+    (see app/agent/graph.py's make_agent_node docstring)."""
 
     def __init__(self):
         self._inner = GenericFakeChatModel(messages=iter([AIMessage(content="answer")]))
         self.seen_messages: list = []
 
-    def invoke(self, messages, *args, **kwargs):
+    async def ainvoke(self, messages, *args, **kwargs):
         self.seen_messages = list(messages)
-        return self._inner.invoke(messages, *args, **kwargs)
+        return await self._inner.ainvoke(messages, *args, **kwargs)
 
 
 def _render(ctx: dict) -> list:
@@ -58,7 +63,7 @@ def _render(ctx: dict) -> list:
         "iterations": 0,
         "total_tokens": 0,
     }
-    agent(state)
+    asyncio.run(agent(state))
     return llm.seen_messages
 
 

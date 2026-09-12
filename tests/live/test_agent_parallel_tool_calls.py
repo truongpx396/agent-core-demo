@@ -21,6 +21,7 @@ approve/reject decision covers every call in the batch" behavior the removal
 comment documents as a deliberate trade-off, not just "the model can emit two
 tool_calls."
 """
+import asyncio
 import uuid
 
 import pytest
@@ -60,9 +61,9 @@ def _stub_add_note_io(monkeypatch):
 def _invoke_and_approve(text: str):
     graph = build_graph(GraphDeps())
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
-    graph.invoke({"messages": [HumanMessage(content=text)]}, config=config)
-    paused_state = graph.get_state(config)
-    result = graph.invoke(Command(resume=True), config=config)
+    asyncio.run(graph.ainvoke({"messages": [HumanMessage(content=text)]}, config=config))
+    paused_state = asyncio.run(graph.aget_state(config))
+    result = asyncio.run(graph.ainvoke(Command(resume=True), config=config))
     return graph, config, paused_state, result
 
 
@@ -100,4 +101,4 @@ def test_real_model_calls_two_tools_in_one_turn_and_both_run_after_approval():
         if tm.tool_call_id == next(tc["id"] for tc in first_ai.tool_calls if tc["name"] == "calculator")
     )
     assert "45" in calculator_result
-    assert not graph.get_state(config).next, "turn must finish cleanly, not leave a second pause dangling"
+    assert not asyncio.run(graph.aget_state(config)).next, "turn must finish cleanly, not leave a second pause dangling"
