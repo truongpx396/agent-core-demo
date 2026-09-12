@@ -1,0 +1,1358 @@
+{
+  "title": "Postgres — Top 15 + Slow Queries",
+  "uid": "agent-core-postgres-top10",
+  "description": "Curated from the ~360 raw postgres_exporter series under job=\"postgres\" (see Grafana Drilldown > Metrics — most of that count is static pg_settings_* config values and the exporter's own Go runtime stats, not operational signal) down to the 15 that DBA/ops teams actually watch: availability, connection saturation, transaction throughput, long-running/idle-in-transaction sessions, lock contention, cache effectiveness, storage growth, row-level I/O, error/rollback rate, deadlocks, checkpoint health, buffer-writer balance, and temp-file spillage — plus slow-query (pg_stat_statements) and missing-index-proxy (pg_stat_user_tables) panels at the bottom. The 10 panels backed by per-database metrics (langfuse/litellm/appdata/checkpointer/postgres) filter via the Database dropdown above; pg_up, Connection saturation, WAL size, Checkpoints/hour, and Buffers written are whole-instance metrics with no per-database breakdown to filter. The slow-query and missing-index panels only ever see appdata (postgres-exporter's DATA_SOURCE_NAME) — see that service's own comment in docker-compose.yml for why.",
+  "schemaVersion": 42,
+  "version": 1,
+  "editable": true,
+  "tags": [
+    "agent-core-demo",
+    "postgres"
+  ],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "database",
+        "label": "Database",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(pg_stat_database_numbackends, datname)",
+        "query": {
+          "query": "label_values(pg_stat_database_numbackends, datname)",
+          "refId": "PrometheusDatasource-VariableQuery"
+        },
+        "regex": "/^(?!template).*/",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [],
+        "hide": 0,
+        "skipUrlSync": false
+      }
+    ]
+  },
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Agent Core Infra →",
+      "tooltip": "",
+      "type": "link",
+      "url": "/d/agent-core-infra-logs"
+    },
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Agent Core Logs →",
+      "tooltip": "",
+      "type": "link",
+      "url": "/d/agent-core-logs"
+    },
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Redis Top 15 →",
+      "tooltip": "",
+      "type": "link",
+      "url": "/d/agent-core-redis-top10"
+    },
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Docker & System →",
+      "tooltip": "",
+      "type": "link",
+      "url": "/d/BiigkBu7k"
+    }
+  ],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Up",
+      "description": "pg_up — 1 if the exporter's last scrape reached Postgres, 0 otherwise. The single most basic health signal.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "pg_up",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1
+    },
+    {
+      "type": "timeseries",
+      "title": "Active connections by database",
+      "description": "pg_stat_database_numbackends — backends currently connected, broken out per database (langfuse, litellm, appdata, checkpointer, plus Postgres's own system DBs).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "pg_stat_database_numbackends{datname=~\"$database\"}",
+          "legendFormat": "{{datname}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "stacking": {
+              "mode": "none"
+            },
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 18,
+        "x": 6,
+        "y": 0
+      },
+      "id": 2
+    },
+    {
+      "id": 3,
+      "type": "row",
+      "title": "Connections & throughput",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Connection saturation",
+      "description": "100 * sum(pg_stat_database_numbackends) / pg_settings_max_connections (max_connections is 100 in this dev deployment) — headroom before new connections start failing outright. Computed with sum by (instance)(...) / on(instance) rather than a plain division: the raw sum() strips every label including instance/job, and Prometheus refuses to match a fully label-less vector against one that still carries them — the naive query silently returns no data instead of erroring.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "100 * sum by (instance) (pg_stat_database_numbackends) / on(instance) pg_settings_max_connections",
+          "legendFormat": "% of max_connections",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "none"
+            },
+            "spanNulls": true
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 7
+      },
+      "id": 14
+    },
+    {
+      "type": "timeseries",
+      "title": "Transactions/sec — commit & rollback",
+      "description": "sum(rate(pg_stat_database_xact_commit[5m])) / sum(rate(pg_stat_database_xact_rollback[5m])), scoped by the Database filter above — overall write throughput and, via the rollback series, an early read on application-level error/retry volume. Kept as one aggregate line per series (not split per-database) to avoid the dropdown's \"All\" view turning into a wall of lines; pick a specific database to see just its throughput.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(pg_stat_database_xact_commit{datname=~\"$database\"}[5m]))",
+          "legendFormat": "commits/sec",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(pg_stat_database_xact_rollback{datname=~\"$database\"}[5m]))",
+          "legendFormat": "rollbacks/sec",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "stacking": {
+              "mode": "none"
+            },
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 7
+      },
+      "id": 4
+    },
+    {
+      "id": 15,
+      "type": "row",
+      "title": "Locking & long transactions",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Longest open transaction",
+      "description": "max(pg_stat_activity_max_tx_duration) split by database and session state. A climbing \"active\" value usually means a slow query; a climbing \"idle in transaction\" value means a client opened a transaction and stopped talking to Postgres without committing/rolling back — both hold locks and block autovacuum from reclaiming dead rows. Split by database since this is fundamentally a \"which app is stuck\" panel.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (datname) (pg_stat_activity_max_tx_duration{state=\"active\", datname=~\"$database\"})",
+          "legendFormat": "{{datname}} active",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (datname) (pg_stat_activity_max_tx_duration{state=\"idle in transaction\", datname=~\"$database\"})",
+          "legendFormat": "{{datname}} idle in transaction",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "stacking": {
+              "mode": "none"
+            },
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "id": 16
+    },
+    {
+      "type": "timeseries",
+      "title": "Locks by mode",
+      "description": "sum(pg_locks_count) by lock mode, scoped by the Database filter above — contention indicator. RowExclusiveLock is normal background noise from writes; sustained ExclusiveLock/AccessExclusiveLock (schema changes, full-table locks) or a climbing total across the board is what to actually watch for. Grouped by mode rather than mode+database to keep this readable — narrow with the Database dropdown instead of adding another dimension to the legend.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (mode) (pg_locks_count{datname=~\"$database\"})",
+          "legendFormat": "{{mode}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "normal"
+            },
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "id": 17
+    },
+    {
+      "id": 5,
+      "type": "row",
+      "title": "Effectiveness & storage",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache hit ratio",
+      "description": "100 * sum(blks_hit) / (sum(blks_hit) + sum(blks_read)), broken out per database — the single most-watched Postgres health number: the share of block reads served from shared_buffers instead of disk. Sustained drops below ~99% usually mean shared_buffers is too small for that database's working set, not a query problem. Splitting by database (rather than one blended number) is what actually lets you tell which database is the one under memory pressure.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "100 * sum by (datname) (pg_stat_database_blks_hit{datname=~\"$database\"}) / (sum by (datname) (pg_stat_database_blks_hit{datname=~\"$database\"}) + sum by (datname) (pg_stat_database_blks_read{datname=~\"$database\"}))",
+          "legendFormat": "{{datname}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "none"
+            },
+            "spanNulls": true
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 90
+              },
+              {
+                "color": "green",
+                "value": 99
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
+      "id": 6
+    },
+    {
+      "type": "timeseries",
+      "title": "Database size",
+      "description": "pg_database_size_bytes per database — dataset growth trend; also the main driver of backup and restore time.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "pg_database_size_bytes{datname=~\"$database\"}",
+          "legendFormat": "{{datname}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "stacking": {
+              "mode": "none"
+            },
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
+      "id": 7
+    },
+    {
+      "id": 18,
+      "type": "row",
+      "title": "Storage & row activity",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "WAL size",
+      "description": "pg_wal_size_bytes — total size of the WAL directory. Grows between checkpoints by design; a steady upward trend that never drops back down after a checkpoint usually means replication or archiving can't keep up, or max_wal_size is undersized for the write rate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "pg_wal_size_bytes",
+          "legendFormat": "wal size",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "none"
+            },
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 34
+      },
+      "id": 19
+    },
+    {
+      "type": "timeseries",
+      "title": "Row I/O",
+      "description": "sum(rate(pg_stat_database_tup_{fetched,inserted,updated,deleted}[5m])), scoped by the Database filter above — row-level read/write activity. Fetched dominating (reads) vs inserted/updated/deleted (writes) shows at a glance whether this Postgres is serving a read-heavy or write-heavy workload right now. Kept as 4 aggregate lines rather than 4×database to stay readable — narrow with the Database dropdown to isolate one app's row activity.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(pg_stat_database_tup_fetched{datname=~\"$database\"}[5m]))",
+          "legendFormat": "fetched",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(pg_stat_database_tup_inserted{datname=~\"$database\"}[5m]))",
+          "legendFormat": "inserted",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(pg_stat_database_tup_updated{datname=~\"$database\"}[5m]))",
+          "legendFormat": "updated",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(pg_stat_database_tup_deleted{datname=~\"$database\"}[5m]))",
+          "legendFormat": "deleted",
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "stacking": {
+              "mode": "none"
+            },
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 34
+      },
+      "id": 20
+    },
+    {
+      "id": 8,
+      "type": "row",
+      "title": "Errors & maintenance",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Rollback ratio",
+      "description": "100 * rollbacks/sec / (commits/sec + rollbacks/sec), broken out per database — the share of transactions the application is aborting. A rising ratio points at app-level errors, constraint violations, or retry storms, not a Postgres problem per se; splitting by database points at which app is doing the aborting.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "100 * sum by (datname) (rate(pg_stat_database_xact_rollback{datname=~\"$database\"}[5m])) / (sum by (datname) (rate(pg_stat_database_xact_commit{datname=~\"$database\"}[5m])) + sum by (datname) (rate(pg_stat_database_xact_rollback{datname=~\"$database\"}[5m])))",
+          "legendFormat": "{{datname}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "none"
+            },
+            "spanNulls": true
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 20
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 43
+      },
+      "id": 9
+    },
+    {
+      "type": "timeseries",
+      "title": "Deadlocks/sec",
+      "description": "sum(rate(pg_stat_database_deadlocks[5m])), broken out per database — transactions Postgres killed to break a lock cycle. Any sustained value above 0 means real application contention, not a tuning nit; splitting by database points straight at which app is fighting itself.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (datname) (rate(pg_stat_database_deadlocks{datname=~\"$database\"}[5m]))",
+          "legendFormat": "{{datname}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "none"
+            },
+            "spanNulls": true
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 43
+      },
+      "id": 10
+    },
+    {
+      "id": 11,
+      "type": "row",
+      "title": "Durability & tuning",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 51
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Checkpoints/hour — timed vs requested",
+      "description": "increase(pg_stat_bgwriter_checkpoints_timed_total/_req_total[1h]) — timed checkpoints fire on schedule (checkpoint_timeout, 5m default → ~12/hour is normal, matches this deployment). Requested checkpoints mean WAL filled max_wal_size before the schedule caught up; a rising requested count is the signal to raise max_wal_size or checkpoint_timeout.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "increase(pg_stat_bgwriter_checkpoints_timed_total[1h])",
+          "legendFormat": "timed",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "increase(pg_stat_bgwriter_checkpoints_req_total[1h])",
+          "legendFormat": "requested",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "stacking": {
+              "mode": "none"
+            },
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 52
+      },
+      "id": 12
+    },
+    {
+      "type": "timeseries",
+      "title": "Temp file spillage",
+      "description": "sum(rate(pg_stat_database_temp_bytes[5m])), broken out per database — bytes/sec written to on-disk temp files because a sort/hash/join didn't fit in work_mem. Any sustained value above 0 is a direct work_mem tuning signal, not just background noise; splitting by database points at which app's queries need the tuning.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (datname) (rate(pg_stat_database_temp_bytes{datname=~\"$database\"}[5m]))",
+          "legendFormat": "{{datname}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "none"
+            },
+            "spanNulls": true
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 52
+      },
+      "id": 13
+    },
+    {
+      "id": 21,
+      "type": "row",
+      "title": "Buffer writers",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 60
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Buffers written — backend vs checkpointer vs bgwriter",
+      "description": "rate(pg_stat_bgwriter_buffers_{backend,checkpoint,clean}_total[5m]) — who is flushing dirty buffers to disk. Checkpointer and the routine bgwriter doing the work is healthy; a rising \"backend (forced)\" share means backends are being forced to write their own dirty buffers because bgwriter/checkpointer fell behind — a direct latency tax on whichever query triggered it.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(pg_stat_bgwriter_buffers_backend_total[5m])",
+          "legendFormat": "backend (forced)",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(pg_stat_bgwriter_buffers_checkpoint_total[5m])",
+          "legendFormat": "checkpointer",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(pg_stat_bgwriter_buffers_clean_total[5m])",
+          "legendFormat": "bgwriter (routine)",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "normal"
+            },
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 61
+      },
+      "id": 22
+    },
+    {
+      "id": 23,
+      "type": "row",
+      "title": "Slow queries (pg_stat_statements)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 69
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "table",
+      "title": "Top queries by average latency",
+      "description": "topk(10, pg_stat_statements_seconds_total / pg_stat_statements_calls_total), joined against pg_stat_statements_query_id (queryid → query text) via a joinByField transformation — the classic \"which single execution is slow\" ranking. Both sides of the division share the exact same {user, datname, queryid} label set, so no aggregation/label-mismatch is needed to make the division safe (unlike several earlier panels in this dashboard). Needs the postgres-exporter service's --collector.stat_statements flag AND the pg_stat_statements extension created in appdata (see docker-compose.yml's postgres/postgres-exporter services) — empty otherwise. The joined table may show a couple of extra raw columns (a second Time/Value pair from the lookup side); hide or reorder them from the panel's own field-organize UI if you want it tidier.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "topk(10, pg_stat_statements_seconds_total{datname=~\"$database\"} / pg_stat_statements_calls_total{datname=~\"$database\"})",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "pg_stat_statements_query_id",
+          "format": "table",
+          "instant": true,
+          "refId": "B"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "queryid",
+            "mode": "outer"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 70
+      },
+      "id": 24
+    },
+    {
+      "type": "table",
+      "title": "Top queries by total time",
+      "description": "topk(10, pg_stat_statements_seconds_total), same join as the panel to the left — \"which query costs the most aggregate server time\" (total_time = calls × mean_time, so this ranking answers a genuinely different question than average latency: a query can rank high here purely from call volume even if any single execution is fast). Comparing the two panels' rankings side by side is the point — a queryid near the top of both is a strong optimize-this-first candidate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "topk(10, pg_stat_statements_seconds_total{datname=~\"$database\"})",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "pg_stat_statements_query_id",
+          "format": "table",
+          "instant": true,
+          "refId": "B"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "queryid",
+            "mode": "outer"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 70
+      },
+      "id": 25
+    },
+    {
+      "id": 26,
+      "type": "row",
+      "title": "Missing-index proxy (pg_stat_user_tables)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 80
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "table",
+      "title": "Sequential-scan hotspots",
+      "description": "topk(10, pg_stat_user_tables_seq_tup_read) — tables ranked by cumulative rows read via sequential scan. This is the actionable \"cost of a missing index\" signal: a seq scan on a 10-row table is free, a seq scan reading millions of rows repeatedly is the one worth indexing. Only sees appdata (postgres-exporter's DATA_SOURCE_NAME) — verified directly that --auto-discover-databases does not route this collector to the other application databases on this exporter version, despite the exporter's own docs describing it that way; see docker-compose.yml's postgres-exporter service comment.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "topk(10, pg_stat_user_tables_seq_tup_read{datname=~\"$database\"})",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 81
+      },
+      "id": 27
+    },
+    {
+      "type": "table",
+      "title": "Sequential-scan ratio by table",
+      "description": "topk(10, 100 * seq_scan / (seq_scan + idx_scan)) — the share of all scans against a table that were sequential rather than index-based. Pair with the panel to the left: a high ratio on a table that's barely been scanned at all is noise (e.g. 100% of one single seq scan), a high ratio alongside a high seq_tup_read is the real missing-index candidate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "topk(10, 100 * pg_stat_user_tables_seq_scan{datname=~\"$database\"} / (pg_stat_user_tables_seq_scan{datname=~\"$database\"} + pg_stat_user_tables_idx_scan{datname=~\"$database\"}))",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 81
+      },
+      "id": 28
+    }
+  ]
+}

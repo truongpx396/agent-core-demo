@@ -1,0 +1,47 @@
+# Temporary override for loadtest/locustfile_queued.py runs — redirects
+# just the containerized app roles' OPENAI_API_BASE at
+# loadtest/fake_llm_server.py (host-native, :9009 — start it with
+# `make fake-llm` first) instead of the real litellm proxy, without
+# touching docker-compose.yml or stopping any container. Every other env
+# var (QDRANT_URL, REDIS_URL, ...) still comes from that file's own
+# x-app-env anchor — Compose merges `environment` maps key-by-key across
+# -f files, it doesn't replace the whole block.
+#
+# host.docker.internal is how a container reaches a host-native process —
+# the same bridge this project already uses elsewhere (see
+# docker-compose.yml's own comment on litellm-config.yaml's native Ollama).
+#
+# Use: `make loadtest-app-up` (wraps the compose invocation below).
+# Revert once you're done: `make up-app` (recreates these same services
+# from docker-compose.yml alone, back to real litellm).
+services:
+  api:
+    environment:
+      OPENAI_API_BASE: http://host.docker.internal:9009/v1
+
+  agent-worker:
+    environment:
+      OPENAI_API_BASE: http://host.docker.internal:9009/v1
+      # Raised from the defaults (10/10, app/core/config.py) only on this
+      # one replica to empirically test whether checkpoint-lock contention
+      # (AsyncPostgresSaver's per-instance asyncio.Lock, see
+      # app/agent/runtime.py::_open_checkpointer's docstring) caps
+      # in-process throughput even after both knobs are opened up.
+      AGENT_WORKER_MAX_CONCURRENCY: "50"
+      CHECKPOINTER_POOL_MAX_SIZE: "50"
+
+  agent-worker-support:
+    environment:
+      OPENAI_API_BASE: http://host.docker.internal:9009/v1
+
+  agent-worker-ops:
+    environment:
+      OPENAI_API_BASE: http://host.docker.internal:9009/v1
+
+  agent-worker-sales:
+    environment:
+      OPENAI_API_BASE: http://host.docker.internal:9009/v1
+
+  ingest-worker:
+    environment:
+      OPENAI_API_BASE: http://host.docker.internal:9009/v1

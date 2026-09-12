@@ -200,7 +200,29 @@ trivy-image:  ## Build the app image (see Dockerfile) and scan it for OS/library
 	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.74.0 image \
 		--severity HIGH,CRITICAL --ignore-unfixed agent-core-demo:trivy
 
-loadtest-queued:  ## Interactive Locust UI against the queued path (loadtest/locustfile_queued.py, the only HTTP chat path this app serves) — needs `make fake-llm` plus `make serve`/`make agent-worker` run with OPENAI_API_BASE pointed at it (see that file's docstring); measures app/turns/agent_worker.py's own concurrency, not native Ollama's
+loadtest-up:  ## The one command to run before `make loadtest-queued`/`-headless`: (re)starts loadtest/fake_llm_server.py as a backgrounded host process (var/fake-llm.log) and points the containerized api/agent-worker*/ingest-worker at it (`loadtest-app-up`). Safe to re-run any time — kills and waits out any already-running fake-llm first, same idempotent-restart idiom as `restart-all`. Counterpart: `make loadtest-down`.
+	pkill -f 'loadtest.fake_llm_server' 2>/dev/null || true
+	for i in $$(seq 1 20); do \
+		pgrep -f 'loadtest.fake_llm_server' >/dev/null 2>&1 || break; \
+		sleep 0.5; \
+	done
+	mkdir -p var
+	nohup $(MAKE) fake-llm > var/fake-llm.log 2>&1 &
+	for i in $$(seq 1 20); do \
+		curl -sf http://localhost:9009/health >/dev/null 2>&1 && break; \
+		sleep 0.5; \
+	done
+	$(MAKE) loadtest-app-up
+
+loadtest-down:  ## Counterpart to `make loadtest-up` — stops the backgrounded fake_llm_server.py and points api/agent-worker*/ingest-worker back at real litellm (`make up-app`).
+	pkill -f 'loadtest.fake_llm_server' 2>/dev/null || true
+	$(MAKE) up-app
+
+loadtest-app-up:  ## Point the ALREADY-RUNNING containerized api/agent-worker*/ingest-worker (`make up-app`) at loadtest/fake_llm_server.py instead of real litellm, via docker-compose.loadtest.yml's OPENAI_API_BASE-only override — every other container (Postgres, Redis, Grafana, cadvisor, ...) is untouched, so the Docker/cAdvisor dashboards keep reflecting the real load-testing containers too. Called by `loadtest-up` above, which also starts fake-llm itself — use this directly only if fake-llm is already running some other way.
+	docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up -d \
+		api agent-worker agent-worker-support agent-worker-ops agent-worker-sales ingest-worker
+
+loadtest-queued:  ## Interactive Locust UI against the queued path (loadtest/locustfile_queued.py, the only HTTP chat path this app serves) — needs `make loadtest-up` first (or the host-native equivalent from that file's own docstring); measures app/turns/agent_worker.py's own concurrency, not native Ollama's
 	locust -f loadtest/locustfile_queued.py --host http://localhost:8000
 
 loadtest-queued-headless:  ## Fixed 20-user, 2-minute headless run of the queued-path scenario above → CSV + HTML report under loadtest/results-queued/

@@ -61,3 +61,17 @@ scrape_configs:
   - job_name: redis
     static_configs:
       - targets: ["host.docker.internal:9121"]
+
+  # node-exporter / cadvisor — also co-located in docker-compose.yml (main
+  # stack). The imported community dashboard (grafana.com id 893, "Docker
+  # and system monitoring") that consumes these resolves its own $server
+  # variable via label_values(node_boot_time_seconds, instance) and never
+  # filters on job= directly (verified against its actual panel queries),
+  # so these job names are just for consistency with the jobs above.
+  - job_name: node
+    static_configs:
+      - targets: ["host.docker.internal:9100"]
+
+  - job_name: docker
+    static_configs:
+      - targets: ["host.docker.internal:8081"]

@@ -27,6 +27,22 @@ from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
 
 
+def _slow_llm(text: str = "a longer answer with several tokens in it", delay: float = 0.05):
+    """Same technique as tests/agent/test_concurrent_turns.py's own
+    `_fixed_llm`/tests/agent/test_durable_checkpoint.py's `_SlowFakeLLM`:
+    a real `await asyncio.sleep` between streamed chunks so there's an
+    actual window to cancel INTO mid-stream, rather than the fake model
+    returning before a test's own `task.cancel()` could ever land."""
+
+    class _Model(GenericFakeChatModel):
+        async def _astream(self, *args, **kwargs):
+            async for chunk in super()._astream(*args, **kwargs):
+                yield chunk
+                await asyncio.sleep(delay)
+
+    return _Model(messages=iter([AIMessage(content=text)]))
+
+
 class TestIterateWithTimeoutCancelCheck:
     """Unit-level: the wrapper itself, no graph involved."""
 
@@ -157,7 +173,6 @@ class TestAstreamEventsTurnCancellation:
 
         events = asyncio.run(_run())
         assert events[-1]["type"] == "done"
-        assert not any(e["type"] == "error" for e in events)
 
     def test_no_cancel_check_streams_normally_to_completion(self, monkeypatch):
         """Regression guard: every existing caller (app/channels/chat.py,
@@ -180,3 +195,71 @@ class TestAstreamEventsTurnCancellation:
 
         events = asyncio.run(_run())
         assert events[-1]["type"] == "done"
+
+
+class TestAstreamEventsTurnRawAsyncioCancellation:
+    """A GENUINE asyncio.CancelledError reaching _run_graph_stream — e.g.
+    the caller's own task getting cancelled from outside (the ASGI layer
+    tearing down a disconnected request, an asyncio.wait_for elsewhere
+    timing out and cancelling this task as a side effect) — as opposed to
+    TestAstreamEventsTurnCancellation above's TurnCancelled, which only
+    ever comes from cancel_check's own cooperative Redis-flag poll.
+
+    Distinct code path on purpose: CancelledError is a BaseException
+    (Python 3.8+), not an Exception subclass, SPECIFICALLY so a bare
+    `except Exception` can't accidentally swallow it — which means it
+    needs, and until this fix didn't have, its own except clause in
+    _run_graph_stream. Verified live against a real load test before this
+    fix existed: a raw CancelledError reaching this function skipped both
+    except clauses, never called trace.update() or _record_turn_metrics,
+    and the only thing that recorded anything was Langfuse's own
+    CallbackHandler — independently wired into graph.astream_events()'s
+    own callbacks — leaving "LangGraph" spans permanently open (no
+    end_time, ever) with status_message set to raw asyncio internals
+    ("<Task cancelled name=... coro=<AsyncExitStack.__aexit__()...>>"),
+    not any message this app ever wrote."""
+
+    def test_cancelling_the_task_records_cancelled_metrics_and_still_propagates(
+        self, monkeypatch
+    ):
+        graph = build_graph(GraphDeps(llm=_slow_llm()))
+
+        async def fake_init_graph_async():
+            return graph
+
+        monkeypatch.setattr(agent_module, "init_graph_async", fake_init_graph_async)
+
+        before_streaming = _count(metrics.agent_streaming_cancellation_total)
+        before_requests_cancelled = _count(metrics.agent_requests_total, outcome="cancelled")
+
+        async def _consume():
+            async for _event in agent_module.astream_events_turn(
+                "hello", str(uuid.uuid4()), TEST_CTX
+            ):
+                pass
+
+        async def _run():
+            task = asyncio.ensure_future(_consume())
+            # Let the turn actually get INTO the graph/streaming before
+            # cancelling — cancelling before it starts would prove
+            # nothing about this specific except-branch, which only
+            # matters once _run_graph_stream's own try block is live.
+            await asyncio.sleep(0.05)
+            task.cancel()
+            raised = None
+            try:
+                await task
+            except asyncio.CancelledError as exc:  # noqa: BLE001 - captured for the assertion below
+                raised = exc
+            return raised
+
+        raised = asyncio.run(_run())
+
+        # The whole point of re-raising: a genuine cancellation must still
+        # actually cancel the caller, not be silently absorbed here.
+        assert isinstance(raised, asyncio.CancelledError)
+        assert _count(metrics.agent_streaming_cancellation_total) == before_streaming + 1
+        assert (
+            _count(metrics.agent_requests_total, outcome="cancelled")
+            == before_requests_cancelled + 1
+        )

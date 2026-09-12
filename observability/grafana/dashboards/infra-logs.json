@@ -1,7 +1,7 @@
 {
-  "title": "Agent Core Infra & Logs",
+  "title": "Agent Core Infra",
   "uid": "agent-core-infra-logs",
-  "description": "Scrape-target health, Postgres/Redis exporter metrics, and a cross-service Loki log view.",
+  "description": "Scrape-target health and Postgres/Redis exporter metrics. Logs moved to the Agent Core Logs dashboard.",
   "schemaVersion": 39,
   "version": 1,
   "editable": true,
@@ -14,6 +14,56 @@
     "from": "now-6h",
     "to": "now"
   },
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Agent Core Logs →",
+      "tooltip": "",
+      "type": "link",
+      "url": "/d/agent-core-logs"
+    },
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Redis Top 15 →",
+      "tooltip": "",
+      "type": "link",
+      "url": "/d/agent-core-redis-top10"
+    },
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Postgres Top 15 →",
+      "tooltip": "",
+      "type": "link",
+      "url": "/d/agent-core-postgres-top10"
+    },
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Docker & System →",
+      "tooltip": "",
+      "type": "link",
+      "url": "/d/BiigkBu7k"
+    }
+  ],
   "panels": [
     {
       "id": 29,
@@ -410,51 +460,6 @@
         "y": 19
       },
       "id": 38
-    },
-    {
-      "id": 39,
-      "type": "row",
-      "title": "Logs (Loki)",
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 27
-      },
-      "collapsed": false,
-      "panels": []
-    },
-    {
-      "type": "logs",
-      "title": "Warnings & errors across all services",
-      "description": "Every container's stdout, parsed as JSON where possible (app/core/logging_config.py's structlog output) \u2014 see ../promtail/promtail-config.yaml.",
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "expr": "{job=\"docker\"} | json | level=~\"error|warn\"",
-          "refId": "A"
-        }
-      ],
-      "options": {
-        "showTime": true,
-        "showLabels": true,
-        "wrapLogMessage": true,
-        "sortOrder": "Descending"
-      },
-      "gridPos": {
-        "h": 10,
-        "w": 24,
-        "x": 0,
-        "y": 28
-      },
-      "id": 40
     }
   ]
 }
