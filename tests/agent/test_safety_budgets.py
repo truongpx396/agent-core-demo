@@ -8,6 +8,7 @@ services to observe meaningfully — `_iterate_with_timeout` itself is a
 thin wrapper over `asyncio.wait_for`, which is well-covered by asyncio's
 own test suite.
 """
+import asyncio
 import time
 
 import pytest
@@ -228,7 +229,7 @@ class TestCompactHistoryNode:
             ceiling=self._tripped_ceiling(messages),
             floor=1,
         )
-        result = compact_history({"messages": messages})
+        result = asyncio.run(compact_history({"messages": messages}))
 
         assert "messages" in result
         *removals, marker = result["messages"]
@@ -250,18 +251,18 @@ class TestCompactHistoryNode:
             ceiling=_estimate_tokens(messages) + 10,  # comfortably above
             floor=1,
         )
-        assert compact_history({"messages": messages}) == {}
+        assert asyncio.run(compact_history({"messages": messages})) == {}
 
     def test_degrades_to_trimming_without_a_summary_on_llm_failure(self):
         class _BoomLLM:
-            def invoke(self, messages):
+            async def ainvoke(self, messages):
                 raise RuntimeError("boom")
 
         messages = self._turns(3)
         compact_history = make_compact_history_node(
             _BoomLLM(), ceiling=self._tripped_ceiling(messages), floor=1
         )
-        result = compact_history({"messages": messages})
+        result = asyncio.run(compact_history({"messages": messages}))
 
         assert "messages" in result
         *removals, marker = result["messages"]
@@ -278,7 +279,7 @@ class TestCompactHistoryNode:
         captured = {}
 
         class _RecordingLLM:
-            def invoke(self, messages):
+            async def ainvoke(self, messages):
                 captured["prompt"] = messages[0].content
                 return AIMessage(content="an extended summary")
 
@@ -287,7 +288,7 @@ class TestCompactHistoryNode:
             _RecordingLLM(), ceiling=self._tripped_ceiling(messages), floor=1
         )
         state = {"messages": messages, "history_summary": "earlier summary text"}
-        result = compact_history(state)
+        result = asyncio.run(compact_history(state))
 
         assert "earlier summary text" in captured["prompt"]
         assert result["history_summary"] == "an extended summary"

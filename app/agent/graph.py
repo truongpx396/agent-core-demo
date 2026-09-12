@@ -51,6 +51,7 @@ factory (make_agent_node, make_retrieve_context_node) instead of being
 plain module-level functions — see GraphDeps and build_graph, and each
 factory's own docstring for why.
 """
+import asyncio
 import functools
 import logging
 import operator
@@ -718,7 +719,7 @@ def make_compact_history_node(
     content — no production caller passes anything but the defaults.
     """
 
-    def compact_history(state: State) -> dict:
+    async def compact_history(state: State) -> dict:
         """Whatever `_messages_to_trim` would discard gets folded into the
         running `history_summary` instead of just dropped — the trim
         itself (which ids get RemoveMessage'd) is unchanged from before;
@@ -736,6 +737,11 @@ def make_compact_history_node(
         transcript replay (app/agent/runtime.py::get_session_messages) can
         show that older turns were cut, not just silently show fewer turns
         than actually happened.
+
+        `async def`/`ainvoke` (not `.invoke()`), same reasoning as `agent`
+        below: a real LLM call is I/O, not CPU work, so it belongs on the
+        event loop, not tying up a thread in the shared default executor
+        every OTHER concurrent turn's nodes also queue behind.
         """
         to_summarize = _messages_to_trim(state["messages"], ceiling, floor)
         if not to_summarize:
@@ -756,7 +762,7 @@ def make_compact_history_node(
                 prior_clause=prior_clause,
                 turns_text=_format_turns_for_summary(to_summarize),
             )
-            response = llm.invoke([HumanMessage(content=prompt)])
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
             new_summary = (response.content or "").strip()
         except Exception as exc:  # noqa: BLE001 - never fail the turn over a summary
             logger.warning(
@@ -964,7 +970,7 @@ def make_check_semantic_cache_node(
     of monkeypatching app.retrieval.semantic_cache directly.
     """
 
-    def check_semantic_cache(state: State) -> dict:
+    async def check_semantic_cache(state: State) -> dict:
         """A hit short-circuits straight to a final AIMessage — no LLM
         call, no retrieval — which is the entire latency point of a
         semantic cache. `cache_hit` is threaded through so
@@ -977,11 +983,19 @@ def make_check_semantic_cache_node(
         outage; semantic_cache.get already swallows its own failures and
         returns None for both a real miss and a degraded lookup, so this
         node doesn't need its own try/except on top.
+
+        `cache_get` itself stays a plain sync `Callable` (its type in
+        GraphDeps/make_check_semantic_cache_node is unchanged) — real
+        implementations wrap a sync `redis.Redis` client with no async
+        equivalent in this app, and tests inject plain sync fakes. Only
+        this node is `async def`; the actual (embedding + Redis) work runs
+        via `asyncio.to_thread` so it can't block the event loop, same
+        pattern as retrieve_context/write_semantic_cache below.
         """
         last_human = _last_human_message(state["messages"])
         if last_human is None:
             return {}
-        hit = cache_get(state.get("ctx"), _human_text(last_human))
+        hit = await asyncio.to_thread(cache_get, state.get("ctx"), _human_text(last_human))
         if hit is None:
             return {}
         answer, citations = hit
@@ -1026,7 +1040,7 @@ def make_retrieve_context_node(
     monkeypatching a module global (see tests/agent/test_nodes.py).
     """
 
-    def retrieve_context(state: State) -> dict:
+    async def retrieve_context(state: State) -> dict:
         """Fetch relevant docs (and this principal's memories) *before* the
         agent reasons — and the citation records backing each numbered
         source in that text (GRAPH_PATTERNS.md pattern 20).
@@ -1041,6 +1055,15 @@ def make_retrieve_context_node(
         the whole turn — contrast with `agent`, where a failed LLM call has
         nothing to fall back to and gets a retry policy instead
         (AGENT_RETRY_POLICY).
+
+        `search` stays a plain sync `Callable` (same reasoning as
+        `check_semantic_cache`'s `cache_get` above) — `gather_context`'s
+        hybrid search is genuinely CPU-bound (local ONNX sparse-embedding +
+        cross-encoder rerank) on top of a sync `QdrantClient` call, so it
+        belongs in a thread either way; `asyncio.to_thread` here just keeps
+        that thread occupied for only the search itself, not this node's
+        surrounding (cheap, pure-Python) query-building/exception-handling
+        too.
         """
         last_human = _last_human_message(state["messages"])
         # The turn's opening question is, right now, the last message in
@@ -1057,7 +1080,7 @@ def make_retrieve_context_node(
             query = _retrieval_query(
                 _human_text(last_human), _previous_human_message(state["messages"], anchor)
             )
-            context, citations = search(query, state.get("ctx"))
+            context, citations = await asyncio.to_thread(search, query, state.get("ctx"))
             return {"context": context, "citations": citations, "context_anchor_index": anchor}
         except Exception as exc:  # noqa: BLE001 - degrade, never crash the turn
             logger.warning(
@@ -1089,13 +1112,30 @@ def make_agent_node(llm):
     from app.agent.graph_skills import _pending_skill_required_tool
     from app.agent.graph_tools import _current_turn_messages
 
-    def agent(state: State) -> dict:
+    async def agent(state: State) -> dict:
         """Call the LLM, injecting retrieved context as an extra SystemMessage.
 
         The *base* SYSTEM_PROMPT is seeded once per thread by
         app/agent/runtime.py::_ensure_seeded_async before the graph ever runs, so we don't
         repeat it here — we only add the per-turn retrieved context, which
         actually needs to reach the model on every agent step.
+
+        `async def`/`ainvoke` (not `.invoke()`): this is the dominant
+        per-turn cost (verified via a real Langfuse trace under a 50-
+        concurrent-turn burst — this node's own span ran ~3x longer than
+        the GENERATION call inside it) and a real HTTP call — it's I/O, not
+        CPU work, so it belongs on the event loop. Before this, every
+        concurrent turn's `agent` call held a thread in LangChain's shared,
+        process-wide default executor (`min(32, os.cpu_count()+4)`, 16 in
+        this deployment) for its ENTIRE duration, capping concurrent LLM
+        calls at that thread count regardless of AGENT_WORKER_MAX_CONCURRENCY
+        or how many are actually in flight against the model/proxy.
+        `langchain_openai.ChatOpenAI.ainvoke()` is a real async client
+        (httpx/openai's AsyncOpenAI under the hood), not `.invoke()` run in
+        a thread — GenericFakeChatModel (tests/agent/test_agent_node.py)
+        still works unchanged: langchain_core.language_models.BaseChatModel
+        provides a default `ainvoke` for any model that only implements the
+        sync path.
         """
         messages = list(state["messages"])
         anchor = state.get("context_anchor_index")
@@ -1230,7 +1270,7 @@ def make_agent_node(llm):
                 )
             )
 
-        response = llm.invoke(messages)
+        response = await llm.ainvoke(messages)
 
         # Token budget bookkeeping: usage_metadata is populated when the
         # underlying model/proxy reports it (not guaranteed — e.g. depends
@@ -1276,7 +1316,7 @@ def make_suggest_followups_node(llm):
     non-retry branch), so it never runs on an answer about to be retried.
     """
 
-    def suggest_followups(state: State) -> dict:
+    async def suggest_followups(state: State) -> dict:
         """Suggests follow-ups only for a GROUNDED answer (`used_citations`
         non-empty) — an answer with no citations has nothing derived to
         build follow-ups from, which naturally suppresses this for a
@@ -1294,6 +1334,8 @@ def make_suggest_followups_node(llm):
         enrichment on top of an already-complete answer, never something
         that should fail the turn (same reliability posture as
         retrieve_context/check_semantic_cache).
+
+        `async def`/`ainvoke`, same reasoning as `agent`/`compact_history`.
         """
         if state.get("cache_hit"):
             return {"followups": []}
@@ -1305,7 +1347,7 @@ def make_suggest_followups_node(llm):
         if not content:
             return {"followups": []}
         try:
-            response = llm.invoke(
+            response = await llm.ainvoke(
                 [HumanMessage(content=_FOLLOWUP_PROMPT.format(answer=content))]
             )
             lines = [
@@ -1330,7 +1372,7 @@ def make_write_semantic_cache_node(
 ):
     """Factory, same rationale as make_check_semantic_cache_node."""
 
-    def write_semantic_cache(state: State) -> dict:
+    async def write_semantic_cache(state: State) -> dict:
         """Only reached once a turn is confirmed final (route_after_check's
         non-retry branch) — never caches a rejected-too-short answer that's
         about to be retried.
@@ -1341,6 +1383,10 @@ def make_write_semantic_cache_node(
         work on what's supposed to be the FAST path (see
         check_semantic_cache's docstring). Only a genuine miss — a real
         agent turn that ran retrieve_context + the LLM — writes here.
+
+        `cache_set` stays sync (same reasoning as check_semantic_cache's
+        `cache_get`); only the actual write moves off the event loop via
+        `asyncio.to_thread`.
         """
         if state.get("cache_hit"):
             return {}
@@ -1349,7 +1395,9 @@ def make_write_semantic_cache_node(
         content = getattr(last, "content", "") or ""
         if last_human is None or not content:
             return {}
-        cache_set(state.get("ctx"), _human_text(last_human), content, state.get("used_citations") or [])
+        await asyncio.to_thread(
+            cache_set, state.get("ctx"), _human_text(last_human), content, state.get("used_citations") or []
+        )
         return {}
 
     return write_semantic_cache

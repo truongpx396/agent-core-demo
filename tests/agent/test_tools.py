@@ -9,7 +9,7 @@ nothing else calls them (add_note/remember are gated behind human_approval
 in every graph scenario, so a graph-level test would need to drive a full
 pause/resume cycle just to reach the implementation).
 """
-import time
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -727,15 +727,19 @@ class _RecordingFakeLLM:
     with, so a test can assert on what the NESTED agent's own system prompt
     actually contained. Composition over subclassing GenericFakeChatModel:
     that class is a pydantic BaseModel, and a subclass adding a plain `calls`
-    attribute would be misread as a new pydantic field."""
+    attribute would be misread as a new pydantic field.
+
+    Defines `ainvoke`, not `invoke` — the (sub)agent/compact_history/
+    suggest_followups nodes this drives all call `llm.ainvoke(...)` now
+    (see app/agent/graph.py)."""
 
     def __init__(self, *responses):
         self._inner = GenericFakeChatModel(messages=iter(responses))
         self.calls: list = []
 
-    def invoke(self, messages, *args, **kwargs):
+    async def ainvoke(self, messages, *args, **kwargs):
         self.calls.append(list(messages))
-        return self._inner.invoke(messages, *args, **kwargs)
+        return await self._inner.ainvoke(messages, *args, **kwargs)
 
 
 def _fake_subagent_record(name="researcher", tools_=("search_docs", "calculator"), model=None, domains_=None):
@@ -1067,8 +1071,8 @@ class TestRunSubagentImpl:
 
     def test_timeout_raises_and_is_recorded(self, monkeypatch):
         class _SlowLLM:
-            def invoke(self, messages, *a, **kw):
-                time.sleep(0.5)
+            async def ainvoke(self, messages, *a, **kw):
+                await asyncio.sleep(0.5)
                 return AIMessage(content="too slow")
 
         monkeypatch.setattr(subagent_tools, "SUBAGENT_TIMEOUT_SECONDS", 0.05)

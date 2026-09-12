@@ -10,6 +10,7 @@ these are global, process-wide counters shared across the whole test
 session/process — the exact same reasoning the old prometheus_client-based
 version of this file already relied on, just against a different registry.
 """
+import asyncio
 import uuid
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -85,7 +86,7 @@ class TestNodeLevelMetrics:
 
         retrieve_context = graph.make_retrieve_context_node(failing_search_docs)
         before = _count(metrics.agent_context_retrieval_degraded_total)
-        retrieve_context({"messages": [HumanMessage(content="hi")], "ctx": TEST_CTX})
+        asyncio.run(retrieve_context({"messages": [HumanMessage(content="hi")], "ctx": TEST_CTX}))
         assert _count(metrics.agent_context_retrieval_degraded_total) == before + 1
 
     def test_history_trim_increments_compacted_counter(self):
@@ -105,7 +106,7 @@ class TestNodeLevelMetrics:
             floor=1,
         )
         before = _count(metrics.agent_history_compacted_total)
-        compact_history({"messages": messages})
+        asyncio.run(compact_history({"messages": messages}))
         assert _count(metrics.agent_history_compacted_total) == before + 1
 
     def test_mandatory_gate_increments_capability_gate_counter(self):
@@ -167,8 +168,10 @@ class TestToolCallbackMetrics:
             )
         )
         g = build_graph(GraphDeps(llm=llm))
-        g.invoke(
-            {"messages": [HumanMessage(content="what is 2+2?")]}, config=_config()
+        asyncio.run(
+            g.ainvoke(
+                {"messages": [HumanMessage(content="what is 2+2?")]}, config=_config()
+            )
         )
         assert _count(metrics.agent_tool_calls_total, tool="calculator") == before + 1
 
@@ -184,8 +187,10 @@ class TestToolCallbackMetrics:
             )
         )
         g = build_graph(GraphDeps(llm=llm))
-        g.invoke(
-            {"messages": [HumanMessage(content="what is nothing?")]}, config=_config()
+        asyncio.run(
+            g.ainvoke(
+                {"messages": [HumanMessage(content="what is nothing?")]}, config=_config()
+            )
         )
         assert _count(metrics.agent_tool_errors_total) == before + 1
 
@@ -206,8 +211,10 @@ class TestToolCallAuditLog:
         )
         g = build_graph(GraphDeps(llm=llm))
         with caplog.at_level("INFO", logger="app.core.metrics"):
-            g.invoke(
-                {"messages": [HumanMessage(content="what is 2+2?")]}, config=_config()
+            asyncio.run(
+                g.ainvoke(
+                    {"messages": [HumanMessage(content="what is 2+2?")]}, config=_config()
+                )
             )
 
         called = [r for r in caplog.records if r.message == "tool_called"]
@@ -230,8 +237,10 @@ class TestToolCallAuditLog:
         )
         g = build_graph(GraphDeps(llm=llm))
         with caplog.at_level("INFO", logger="app.core.metrics"):
-            g.invoke(
-                {"messages": [HumanMessage(content="what is nothing?")]}, config=_config()
+            asyncio.run(
+                g.ainvoke(
+                    {"messages": [HumanMessage(content="what is nothing?")]}, config=_config()
+                )
             )
 
         called = [r for r in caplog.records if r.message == "tool_called"]
@@ -254,8 +263,10 @@ class TestToolCallAuditLog:
         )
         g = build_graph(GraphDeps(llm=llm))
         with caplog.at_level("INFO", logger="app.core.metrics"):
-            g.invoke(
-                {"messages": [HumanMessage(content="compute something")]}, config=_config()
+            asyncio.run(
+                g.ainvoke(
+                    {"messages": [HumanMessage(content="compute something")]}, config=_config()
+                )
             )
 
         for record in caplog.records:

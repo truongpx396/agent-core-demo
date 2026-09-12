@@ -31,6 +31,7 @@ answer, no expectation it remembers the last run.
 
 Run with: `python -m scripts.ops_investigate "why is latency high right now?"`
 """
+import asyncio
 import getpass
 import sys
 import uuid
@@ -53,7 +54,7 @@ _LOCAL_CTX: SecurityCtx = {
 }
 
 
-def investigate(question: str) -> str:
+async def investigate(question: str) -> str:
     graph = build_graph(manifest=OPS_MANIFEST, domain=OPS_DOMAIN_PLUGIN)
     config = {
         "configurable": {
@@ -61,7 +62,11 @@ def investigate(question: str) -> str:
             "ctx": _LOCAL_CTX,
         }
     }
-    result = graph.invoke(
+    # `ainvoke`, not `.invoke()` — the graph's `agent`/`retrieve_context`/etc.
+    # nodes are `async def` now (see app/agent/graph.py), and LangGraph's
+    # sync Pregel loop can't run an async-only node at all (raises "No
+    # synchronous function provided" the moment it reaches one).
+    result = await graph.ainvoke(
         {
             "messages": [
                 SystemMessage(content=OPS_MANIFEST.system_prompt),
@@ -82,4 +87,4 @@ def investigate(question: str) -> str:
 if __name__ == "__main__":
     configure_logging()
     question = " ".join(sys.argv[1:]) or "Is anything unusual right now?"
-    print(investigate(question))
+    print(asyncio.run(investigate(question)))

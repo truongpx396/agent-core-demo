@@ -41,6 +41,7 @@ whenever eval_runs/latest.json exists from a prior run); pass --no-compare
 or --no-save to opt out.
 """
 import argparse
+import asyncio
 import json
 import sys
 import time
@@ -157,7 +158,7 @@ class CaseResult:
     ungrounded_claims_count: int  # SUMMED across repetitions
 
 
-def _run_case_once(graph, case: GoldenCase) -> _Attempt:
+async def _run_case_once(graph, case: GoldenCase) -> _Attempt:
     config = {
         "configurable": {
             "thread_id": f"eval-{case.id}-{uuid.uuid4()}",
@@ -166,17 +167,22 @@ def _run_case_once(graph, case: GoldenCase) -> _Attempt:
     }
     start = time.monotonic()
 
-    result = graph.invoke(
+    # `ainvoke`/`aget_state`, not the sync `.invoke()`/`.get_state()` this
+    # used to be: the graph's `agent`/`retrieve_context`/etc. nodes are
+    # `async def` now (see app/agent/graph.py), and LangGraph's sync Pregel
+    # loop can't run an async-only node at all (raises "No synchronous
+    # function provided" the moment it reaches one).
+    result = await graph.ainvoke(
         {
             "messages": [HumanMessage(content=case.input)],
             "require_approval": case.require_approval,
         },
         config=config,
     )
-    state = graph.get_state(config)
+    state = await graph.aget_state(config)
     while state.next:  # paused at a human_approval interrupt
-        result = graph.invoke(Command(resume=case.auto_approve), config=config)
-        state = graph.get_state(config)
+        result = await graph.ainvoke(Command(resume=case.auto_approve), config=config)
+        state = await graph.aget_state(config)
 
     latency = time.monotonic() - start
     answer = result["messages"][-1].content
@@ -236,10 +242,10 @@ def _run_case_once(graph, case: GoldenCase) -> _Attempt:
     )
 
 
-def run_case(graph, case: GoldenCase, repetitions: int = EVAL_REPETITIONS) -> CaseResult:
+async def run_case(graph, case: GoldenCase, repetitions: int = EVAL_REPETITIONS) -> CaseResult:
     """Runs `case` `repetitions` times and aggregates — see module
     docstring for why this is a rate, not a single pass/fail."""
-    attempts = [_run_case_once(graph, case) for _ in range(repetitions)]
+    attempts = [await _run_case_once(graph, case) for _ in range(repetitions)]
     last = attempts[-1]
     pass_rate = sum(a.passed for a in attempts) / len(attempts)
     return CaseResult(
@@ -384,7 +390,19 @@ def main() -> None:
     previous = None if args.no_compare else load_previous_run()
 
     graph = build_graph()  # real LLM, real Qdrant/embeddings — needs `make up` + `make ingest`
-    results = [run_case(graph, case, repetitions=args.repetitions) for case in GOLDEN_CASES]
+
+    # run_case/_run_case_once call graph.ainvoke/aget_state (the graph's
+    # nodes are async def now — see app/agent/graph.py) — asyncio.run here
+    # is the one bridge point from this script's otherwise-sync main(),
+    # same idiom as every other CLI entry point in this repo without
+    # pytest-asyncio (see app/agent/graph_utils.py's `_instrumented`
+    # docstring).
+    async def _run_all() -> list[CaseResult]:
+        return [
+            await run_case(graph, case, repetitions=args.repetitions) for case in GOLDEN_CASES
+        ]
+
+    results = asyncio.run(_run_all())
 
     print_report(results)
     if previous is not None:

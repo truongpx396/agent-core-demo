@@ -1,6 +1,15 @@
 """Tests for the `agent` node in isolation, using a fake chat model instead
 of the real ChatOpenAI client — see `make_agent_node`'s docstring in
-app/agent/graph.py for why it's a factory."""
+app/agent/graph.py for why it's a factory.
+
+`agent` is `async def` (calls `llm.ainvoke`, not `.invoke` — see its own
+docstring), so every call below runs through `asyncio.run(...)` — this
+repo's established pattern for exercising async code from a plain
+`def test_...` (no pytest-asyncio configured; see app/agent/graph_utils.py's
+`_instrumented` docstring for why only the I/O-bound nodes are async at
+all)."""
+import asyncio
+
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
@@ -12,7 +21,11 @@ class _RecordingFakeLLM:
     invoked with, so tests can assert on exactly what would be sent to the
     real model. A plain wrapper rather than a subclass because
     GenericFakeChatModel is a Pydantic model and rejects arbitrary instance
-    attributes on subclasses."""
+    attributes on subclasses.
+
+    Defines `ainvoke` explicitly (not inherited — this wraps
+    GenericFakeChatModel rather than subclassing it) since `agent` now
+    calls `llm.ainvoke(...)`, never `.invoke()`."""
 
     def __init__(self, messages):
         self._inner = GenericFakeChatModel(messages=messages)
@@ -22,13 +35,17 @@ class _RecordingFakeLLM:
         self.seen_messages = list(messages)
         return self._inner.invoke(messages, *args, **kwargs)
 
+    async def ainvoke(self, messages, *args, **kwargs):
+        self.seen_messages = list(messages)
+        return await self._inner.ainvoke(messages, *args, **kwargs)
+
 
 def test_agent_invokes_llm_and_bumps_iterations():
     fake_llm = GenericFakeChatModel(messages=iter([AIMessage(content="42")]))
     agent = make_agent_node(fake_llm)
 
     state = {"messages": [HumanMessage(content="what is 21*2?")], "iterations": 3}
-    result = agent(state)
+    result = asyncio.run(agent(state))
 
     assert result["iterations"] == 4
     assert result["messages"][0].content == "42"
@@ -38,7 +55,7 @@ def test_agent_defaults_missing_iterations_to_zero_then_one():
     fake_llm = GenericFakeChatModel(messages=iter([AIMessage(content="hi")]))
     agent = make_agent_node(fake_llm)
 
-    result = agent({"messages": [HumanMessage(content="hi")]})
+    result = asyncio.run(agent({"messages": [HumanMessage(content="hi")]}))
     assert result["iterations"] == 1
 
 
@@ -50,7 +67,7 @@ def test_agent_injects_context_as_system_message_when_present():
         "messages": [HumanMessage(content="what is a checkpointer?")],
         "context": "doc: checkpointers persist graph state.",
     }
-    agent(state)
+    asyncio.run(agent(state))
 
     assert any(
         isinstance(m, SystemMessage) and "checkpointers persist" in m.content
@@ -62,7 +79,7 @@ def test_agent_skips_context_message_when_context_empty():
     fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
     agent = make_agent_node(fake_llm)
 
-    agent({"messages": [HumanMessage(content="hi")], "context": ""})
+    asyncio.run(agent({"messages": [HumanMessage(content="hi")], "context": ""}))
 
     assert not any(isinstance(m, SystemMessage) for m in fake_llm.seen_messages)
 
@@ -80,7 +97,7 @@ def test_agent_inserts_context_before_the_question_at_the_anchor():
         "context": "doc: checkpointers persist graph state.",
         "context_anchor_index": 0,
     }
-    agent(state)
+    asyncio.run(agent(state))
 
     assert [type(m).__name__ for m in fake_llm.seen_messages] == [
         "SystemMessage",
@@ -111,7 +128,7 @@ def test_agent_keeps_context_anchored_across_a_turns_own_tool_loop():
         "context": "doc: checkpointers persist graph state.",
         "context_anchor_index": 0,  # still the original question's index
     }
-    agent(state)
+    asyncio.run(agent(state))
 
     seen = fake_llm.seen_messages
     assert isinstance(seen[0], SystemMessage)
@@ -132,7 +149,7 @@ def test_agent_falls_back_to_appending_context_without_an_anchor():
 
     question = HumanMessage(content="what is a checkpointer?")
     state = {"messages": [question], "context": "doc: checkpointers persist graph state."}
-    agent(state)
+    asyncio.run(agent(state))
 
     assert fake_llm.seen_messages[0] is question
     assert isinstance(fake_llm.seen_messages[1], SystemMessage)
@@ -148,7 +165,7 @@ def test_agent_injects_history_summary_as_system_message_when_present():
         "messages": [HumanMessage(content="what did we discuss earlier?")],
         "history_summary": "Earlier, the user asked about refund policy.",
     }
-    agent(state)
+    asyncio.run(agent(state))
 
     assert any(
         isinstance(m, SystemMessage) and "refund policy" in m.content
@@ -174,7 +191,7 @@ def test_history_summary_injection_tells_the_model_not_to_restate_it_verbatim():
         "messages": [HumanMessage(content="what did we discuss earlier?")],
         "history_summary": "Earlier, the user asked about refund policy.",
     }
-    agent(state)
+    asyncio.run(agent(state))
 
     seen = fake_llm.seen_messages
     summary_idx = next(
@@ -205,7 +222,7 @@ def test_agent_anchors_history_summary_before_the_question_same_as_context():
         "context": "doc: checkpointers persist graph state.",
         "context_anchor_index": 0,
     }
-    agent(state)
+    asyncio.run(agent(state))
 
     seen = fake_llm.seen_messages
     assert "refund policy" in seen[0].content
@@ -232,7 +249,7 @@ def test_agent_keeps_history_summary_anchored_across_a_turns_own_tool_loop():
         "history_summary": "Earlier, the user asked about refund policy.",
         "context_anchor_index": 0,
     }
-    agent(state)
+    asyncio.run(agent(state))
 
     seen = fake_llm.seen_messages
     assert "refund policy" in seen[0].content
@@ -245,7 +262,7 @@ def test_agent_skips_history_summary_message_when_absent():
     fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
     agent = make_agent_node(fake_llm)
 
-    agent({"messages": [HumanMessage(content="hi")]})
+    asyncio.run(agent({"messages": [HumanMessage(content="hi")]}))
 
     assert not any(isinstance(m, SystemMessage) for m in fake_llm.seen_messages)
 
@@ -267,7 +284,7 @@ def test_agent_appends_a_citation_reminder_after_the_question():
         "context": "doc: checkpointers persist graph state.",
         "context_anchor_index": 0,
     }
-    agent(state)
+    asyncio.run(agent(state))
 
     seen = fake_llm.seen_messages
     assert isinstance(seen[-1], SystemMessage)
@@ -286,7 +303,7 @@ def test_agent_skips_the_citation_reminder_when_context_is_empty():
     fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
     agent = make_agent_node(fake_llm)
 
-    agent({"messages": [HumanMessage(content="what is 2+2?")], "context": ""})
+    asyncio.run(agent({"messages": [HumanMessage(content="what is 2+2?")], "context": ""}))
 
     assert not any(isinstance(m, SystemMessage) for m in fake_llm.seen_messages)
 
@@ -304,7 +321,7 @@ def test_citation_reminder_is_the_very_last_message_when_both_reminders_fire():
         "context": "doc: checkpointers persist graph state.",
         "context_anchor_index": 0,
     }
-    agent(state)
+    asyncio.run(agent(state))
 
     seen = fake_llm.seen_messages
     assert "do not restate" in seen[-2].content
@@ -334,7 +351,7 @@ def test_agent_appends_a_sandbox_reminder_after_a_sandbox_requiring_skill_loads(
             ),
         ],
     }
-    agent(state)
+    asyncio.run(agent(state))
 
     seen = fake_llm.seen_messages
     assert isinstance(seen[-1], SystemMessage)
@@ -361,7 +378,7 @@ def test_agent_skips_the_sandbox_reminder_once_the_tool_was_actually_called():
             ToolMessage(content="141862.50", tool_call_id="c2", name="run_python_in_sandbox"),
         ],
     }
-    agent(state)
+    asyncio.run(agent(state))
 
     assert not any(
         isinstance(m, SystemMessage) and "run_python_in_sandbox" in m.content
@@ -384,6 +401,6 @@ def test_agent_skips_the_sandbox_reminder_when_no_skill_mentions_the_tool():
             ),
         ],
     }
-    agent(state)
+    asyncio.run(agent(state))
 
     assert not any(isinstance(m, SystemMessage) for m in fake_llm.seen_messages)

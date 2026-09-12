@@ -251,6 +251,28 @@ class Settings(BaseSettings):
     # concurrent backend).
     agent_worker_max_concurrency: int = 10
 
+    # app/agent/runtime.py::_open_checkpointer's AsyncConnectionPool size.
+    # Env-configurable for the same load-testing reason as
+    # agent_worker_max_concurrency above, but raising this ALONE will not
+    # raise checkpoint throughput past a single connection's worth: LangGraph's
+    # own AsyncPostgresSaver (langgraph/checkpoint/postgres/aio.py) wraps
+    # EVERY checkpoint read/write in one `asyncio.Lock()` per saver instance
+    # that guards pool.connection() itself, not just the query after it —
+    # verified directly against that library's source, not assumed. So no
+    # matter how many idle connections this pool holds, only one turn's
+    # checkpoint I/O is ever actually in flight at a time, PER PROCESS. That
+    # lock is per-instance, not global across processes, though — genuine
+    # additional checkpoint throughput comes from running more
+    # agent_worker.py REPLICAS (`docker compose --profile app up -d --scale
+    # agent-worker=N`, GRAPH_PATTERNS.md pattern 43), each with its own
+    # independent saver/lock, not from raising either this or
+    # agent_worker_max_concurrency within one process. This still isn't
+    # wasted to raise, though: it bounds how many connections THIS process
+    # can hold open regardless of the lock, and matching it to
+    # agent_worker_max_concurrency keeps the two numbers from silently
+    # drifting apart.
+    checkpointer_pool_max_size: int = 10
+
     # Concurrent ingest jobs ONE app/ingestion/ingest_worker.py process will
     # run at once (asyncio.Semaphore-bounded, same shape as
     # agent_worker_max_concurrency above — see that module's own docstring
@@ -413,6 +435,7 @@ MINIO_BUCKET = settings.minio_bucket
 MINIO_SECURE = settings.minio_secure
 RATE_LIMIT_PER_MINUTE = settings.rate_limit_per_minute
 AGENT_WORKER_MAX_CONCURRENCY = settings.agent_worker_max_concurrency
+CHECKPOINTER_POOL_MAX_SIZE = settings.checkpointer_pool_max_size
 INGEST_WORKER_MAX_CONCURRENCY = settings.ingest_worker_max_concurrency
 REDIS_MAX_CONNECTIONS = settings.redis_max_connections
 CORS_ALLOWED_ORIGINS = settings.cors_allowed_origins

@@ -29,6 +29,7 @@ the monkeypatch would silently never take effect. `OPENAI_API_KEY` isn't
 currently patched anywhere, but is module-qualified too for consistency —
 cheap insurance against the same bug resurfacing if a future test needs to.
 """
+import asyncio
 import functools
 import logging
 import re
@@ -64,9 +65,68 @@ def _instrumented(node_name: str):
     `GraphBubbleUp`) to pause the run — that's normal control flow, not a
     failure, so it's logged as `node_paused` and re-raised untouched rather
     than caught as `node_failed`.
+
+    Async-aware: a handful of nodes (`agent`, `compact_history`,
+    `suggest_followups`, `check_semantic_cache`, `retrieve_context`,
+    `write_semantic_cache` — the ones that make a real LLM call or hit
+    Redis/Qdrant) are `async def`, so their real I/O waits on the event
+    loop instead of occupying a slot in LangChain's shared, process-wide
+    default executor (`langchain_core.runnables.config.run_in_executor`,
+    `min(32, os.cpu_count()+4)` threads total — verified directly against
+    that source, and directly measured here: raising this app's own
+    AGENT_WORKER_MAX_CONCURRENCY/CHECKPOINTER_POOL_MAX_SIZE to 50 barely
+    moved throughput on a 50-concurrent-turn burst until this was fixed,
+    because that shared executor was the next thing every turn queued
+    behind). Every other node stays plain sync `def` — deliberately, per
+    LangGraph's own guidance: they're pure in-memory/regex logic with
+    nothing to await, and forcing them async would just add executor-hop
+    overhead for zero benefit (`check_output`/`retry_output` in particular
+    are hit by ~100 existing direct-call unit tests each — see
+    tests/agent/test_nodes.py — that a real I/O node wouldn't have,
+    reinforcing that these were never the nodes worth converting). Detected
+    via `asyncio.iscoroutinefunction(fn)`, not a caller-supplied flag, so a
+    node's own definition (`def` vs `async def`) is the only place this
+    ever needs to be decided.
     """
 
     def decorator(fn):
+        if asyncio.iscoroutinefunction(fn):
+
+            @functools.wraps(fn)
+            async def async_wrapper(state, *args, **kwargs):
+                run_id = state.get("run_id", "-") if isinstance(state, dict) else "-"
+                logger.info("node_started", extra={"node": node_name, "run_id": run_id})
+                start = time.monotonic()
+                try:
+                    result = await fn(state, *args, **kwargs)
+                except GraphBubbleUp:
+                    logger.info(
+                        "node_paused", extra={"node": node_name, "run_id": run_id}
+                    )
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "node_failed",
+                        extra={
+                            "node": node_name,
+                            "run_id": run_id,
+                            "duration_ms": int((time.monotonic() - start) * 1000),
+                            "error_class": type(exc).__name__,
+                        },
+                    )
+                    raise
+                logger.info(
+                    "node_completed",
+                    extra={
+                        "node": node_name,
+                        "run_id": run_id,
+                        "duration_ms": int((time.monotonic() - start) * 1000),
+                    },
+                )
+                return result
+
+            return async_wrapper
+
         @functools.wraps(fn)
         def wrapper(state, *args, **kwargs):
             run_id = state.get("run_id", "-") if isinstance(state, dict) else "-"

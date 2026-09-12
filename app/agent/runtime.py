@@ -70,6 +70,7 @@ from app.core import metrics
 from app.core.config import (
     CHAT_MODEL,
     CHECKPOINTER_DATABASE_URL,
+    CHECKPOINTER_POOL_MAX_SIZE,
     MAX_COST_USD_PER_TENANT_PER_DAY,
     REQUEST_TIMEOUT_SECONDS,
 )
@@ -298,17 +299,34 @@ async def _open_checkpointer():
     psycopg/connection_async.py — so a single connection serializes
     concurrent callers regardless of how the caller above is written).
 
-    This still isn't full parallelism at the checkpoint layer:
-    `AsyncPostgresSaver` wraps its own cursor access in one `asyncio.Lock`
-    per saver instance regardless of `conn`'s type
-    (`langgraph/checkpoint/postgres/aio.py`'s `_cursor`), so two concurrent
-    turns' checkpoint reads/writes still serialize against each other. But
-    that lock is only held for one row read/write at a time, not for a
-    turn's whole duration — so the actually slow part of a turn (the LLM
-    call, tool execution) still runs fully concurrently; only the brief
-    "save/load this checkpoint row" moments queue, same as any single write
-    path into one Postgres row would. `min_size`/`max_size` mirror
-    app/agent/sql_store.py's own pool sizing for the appdata database.
+    Out of the box, `AsyncPostgresSaver` would still serialize every
+    checkpoint read/write behind one `asyncio.Lock` per saver instance,
+    regardless of `conn`'s type (`langgraph/checkpoint/postgres/aio.py`'s
+    `_cursor`: `async with self.lock, _ainternal.get_connection(self.conn)`)
+    — measured directly against this app (a real HTTP burst, 50 concurrent
+    turns) to serialize checkpoint I/O so hard that per-turn latency grew
+    ~5x from N=1 to N=50 while `pg_stat_activity` on the checkpointer DB
+    never showed more than 1 query actually active at a time, regardless of
+    `max_size`. That lock is only genuinely needed when `conn` is a single
+    shared `AsyncConnection` — the library's own comment on that line says
+    so ("a connection not in pipeline mode can only be used by one
+    thread/coroutine at a time") — but it's applied unconditionally even
+    when `conn` is an `AsyncConnectionPool`, whose whole job is safely
+    handing out independent connections to concurrent callers. This is a
+    confirmed, still-open upstream defect (langchain-ai/langgraph#7259,
+    verified against that project's own `main` branch on 2026-09-12 — not
+    fixed by upgrading `langgraph-checkpoint-postgres`), with a fix
+    (#7269, ~2.7x throughput in its own author's benchmark) written but
+    not yet merged. The `saver.lock = asyncio.Semaphore(...)` swap below is
+    the same workaround that issue's own commenters verified in production
+    (~4x reported) — `Semaphore` supports the same `async with` protocol as
+    `Lock`, so it's a same-shape drop-in, just capping concurrent
+    checkpoint I/O at the pool's real size instead of hard-serializing to
+    1. Remove this once #7269 (or equivalent) ships upstream — re-check
+    that issue before any langgraph-checkpoint-postgres version bump, since
+    this pokes a private, unversioned attribute of a third-party class.
+    `min_size` is fixed at 1 (app/agent/sql_store.py's own appdata pool is
+    a separate, differently-sized pool — this one doesn't mirror it).
 
     `saver.setup()` is idempotent (creates its checkpoints/checkpoint_blobs/
     checkpoint_writes tables on first run only) — safe to call on every
@@ -318,12 +336,18 @@ async def _open_checkpointer():
     pool = AsyncConnectionPool(
         CHECKPOINTER_DATABASE_URL,
         min_size=1,
-        max_size=10,
+        max_size=CHECKPOINTER_POOL_MAX_SIZE,
         kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
         open=False,
     )
     await pool.open(wait=True)
     saver = AsyncPostgresSaver(conn=pool)
+    if isinstance(saver.conn, AsyncConnectionPool):
+        # See this function's own docstring (langchain-ai/langgraph#7259):
+        # only the single-AsyncConnection case genuinely needs mutual
+        # exclusion here; a pool already hands out independent connections
+        # to concurrent callers safely on its own.
+        saver.lock = asyncio.Semaphore(CHECKPOINTER_POOL_MAX_SIZE)
     await saver.setup()
     _checkpointer_pool = pool
     return saver
