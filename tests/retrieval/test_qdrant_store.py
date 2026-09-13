@@ -6,7 +6,15 @@ dense+sparse+RRF+rerank+degrade pipeline. Every real Qdrant/embedding call
 is mocked; this only proves the right `collection_name` reaches the client,
 and that every existing call site (which omits `collection`) still targets
 the original `COLLECTION` unchanged.
+
+`hybrid_search` is `async def` now (it awaits `embeddings.rerank`, a real
+HTTP call to the ml-service container — see that function's own
+docstring), so every call below runs through `asyncio.run(...)`, this
+repo's established pattern for exercising async code from a plain
+`def test_...`. `embed_text`/`embed_sparse` mocks stay plain sync lambdas
+(those two legs are unchanged); `rerank` mocks are small `async def`s.
 """
+import asyncio
 from types import SimpleNamespace
 
 from app.core.config import COLLECTION
@@ -95,13 +103,13 @@ class TestHybridSearchCollection:
     def test_defaults_to_the_main_collection(self, monkeypatch):
         client = _fake_client(monkeypatch)
         self._mock_embeddings(monkeypatch)
-        qdrant_store.hybrid_search("query")
+        asyncio.run(qdrant_store.hybrid_search("query"))
         assert client.query_points_calls == [COLLECTION]
 
     def test_targets_a_different_collection_when_given(self, monkeypatch):
         client = _fake_client(monkeypatch)
         self._mock_embeddings(monkeypatch)
-        qdrant_store.hybrid_search("query", collection="skills")
+        asyncio.run(qdrant_store.hybrid_search("query", collection="skills"))
         assert client.query_points_calls == ["skills"]
 
     def test_dense_only_degrade_path_also_respects_collection(self, monkeypatch):
@@ -116,7 +124,7 @@ class TestHybridSearchCollection:
 
         monkeypatch.setattr(embeddings, "embed_sparse", broken_sparse)
 
-        qdrant_store.hybrid_search("query", collection="skills")
+        asyncio.run(qdrant_store.hybrid_search("query", collection="skills"))
 
         assert client.query_points_calls == ["skills"]
 
@@ -139,7 +147,11 @@ class TestHybridSearchRerankScore:
     def _mock_embeddings(self, monkeypatch, scores):
         monkeypatch.setattr(embeddings, "embed_text", lambda text: [0.1, 0.2])
         monkeypatch.setattr(embeddings, "embed_sparse", lambda text: ([1], [0.5]))
-        monkeypatch.setattr(embeddings, "rerank", lambda query, texts: scores)
+
+        async def fake_rerank(query, texts):
+            return scores
+
+        monkeypatch.setattr(embeddings, "rerank", fake_rerank)
 
     def _fake_points(self, n):
         return [
@@ -153,7 +165,7 @@ class TestHybridSearchRerankScore:
         client.query_points = lambda collection_name, **kw: SimpleNamespace(points=points)
         self._mock_embeddings(monkeypatch, scores=[-2.0, 6.5])
 
-        result = qdrant_store.hybrid_search("query")
+        result = asyncio.run(qdrant_store.hybrid_search("query"))
 
         # Reordered highest-reranker-score first, and `.score` now holds
         # that real cross-encoder value instead of the original RRF 0.5.
@@ -165,7 +177,7 @@ class TestHybridSearchRerankScore:
         client.query_points = lambda collection_name, **kw: SimpleNamespace(points=points)
         self._mock_embeddings(monkeypatch, scores=[-11.4, 6.7, -5.9])
 
-        result = qdrant_store.hybrid_search("query", min_score=-8.0)
+        result = asyncio.run(qdrant_store.hybrid_search("query", min_score=-8.0))
 
         assert [p.score for p in result] == [6.7, -5.9]
 
@@ -179,7 +191,9 @@ class TestHybridSearchRerankScore:
         client.query_points = lambda collection_name, **kw: SimpleNamespace(points=points)
         self._mock_embeddings(monkeypatch, scores=[-99.0, -99.0])
 
-        result = qdrant_store.hybrid_search("query", rerank_results=False, min_score=-8.0)
+        result = asyncio.run(
+            qdrant_store.hybrid_search("query", rerank_results=False, min_score=-8.0)
+        )
 
         assert len(result) == 2
 
@@ -190,11 +204,11 @@ class TestHybridSearchRerankScore:
         monkeypatch.setattr(embeddings, "embed_text", lambda text: [0.1, 0.2])
         monkeypatch.setattr(embeddings, "embed_sparse", lambda text: ([1], [0.5]))
 
-        def broken_rerank(query, texts):
+        async def broken_rerank(query, texts):
             raise RuntimeError("reranker model unavailable")
 
         monkeypatch.setattr(embeddings, "rerank", broken_rerank)
 
-        result = qdrant_store.hybrid_search("query", min_score=-8.0)
+        result = asyncio.run(qdrant_store.hybrid_search("query", min_score=-8.0))
 
         assert len(result) == 2

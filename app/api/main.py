@@ -4,7 +4,8 @@ Endpoints:
 - GET  /                  -> the built-in web UI (app/api/static/index.html)
 - GET  /health            -> liveness check (always 200 if the process is up)
 - GET  /health/ready      -> readiness check (200 only if Qdrant/Postgres/
-                              Redis are actually reachable, see app/api/health.py)
+                              Redis/the ml-service container are actually
+                              reachable, see app/api/health.py)
                               (metrics are pushed via OTLP, not pulled from an
                               endpoint here — see app/core/telemetry.py and
                               docker-compose.observability.yml)

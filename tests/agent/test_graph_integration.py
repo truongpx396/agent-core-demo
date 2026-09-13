@@ -438,7 +438,7 @@ class TestRetryExhaustedPath:
             }
         ]
 
-        def fake_search_docs(query, ctx):
+        async def fake_search_docs(query, ctx):
             return "[1] Ecorp support hours are 9am to 5pm on weekdays.", citations
 
         correct_but_uncited = "Ecorp's support hours are from 9am to 5pm on weekdays."
@@ -478,7 +478,7 @@ class TestRetryExhaustedPath:
             }
         ]
 
-        def fake_search_docs(query, ctx):
+        async def fake_search_docs(query, ctx):
             return "[1] Qdrant stores vectors with JSON payloads.", citations
 
         misattributed_answer = (
@@ -836,7 +836,7 @@ class TestCitations:
             },
         ]
 
-        def fake_search_docs(query, ctx):
+        async def fake_search_docs(query, ctx):
             return "[1] Checkpointers persist state.\n[2] unrelated", citations
 
         llm = _fake_llm(AIMessage(content="Checkpointers persist state [1]."))
@@ -949,7 +949,7 @@ class TestUngroundedClaimsCount:
     def test_an_invented_citation_is_counted_as_ungrounded(self):
         citations = [{"marker": "[1]", "doc_id": "d1", "title": "T", "text": "x", "score": 0.9}]
 
-        def fake_search_docs(query, ctx):
+        async def fake_search_docs(query, ctx):
             return "[1] Checkpointers persist state.", citations
 
         llm = _fake_llm(AIMessage(content="Checkpointers persist state [1], see also [7]."))
@@ -966,7 +966,7 @@ class TestUngroundedClaimsCount:
     def test_a_fully_grounded_answer_has_zero_ungrounded_claims(self):
         citations = [{"marker": "[1]", "doc_id": "d1", "title": "T", "text": "x", "score": 0.9}]
 
-        def fake_search_docs(query, ctx):
+        async def fake_search_docs(query, ctx):
             return "[1] Checkpointers persist state.", citations
 
         llm = _fake_llm(AIMessage(content="Checkpointers persist state [1]."))
@@ -1025,7 +1025,7 @@ class TestFollowupSuggestions:
     def test_a_grounded_answer_gets_followups(self):
         citations = [{"marker": "[1]", "doc_id": "d1", "title": "T", "text": "x", "score": 0.9}]
 
-        def fake_search_docs(query, ctx):
+        async def fake_search_docs(query, ctx):
             return "[1] Checkpointers persist state.", citations
 
         llm = _fake_llm(

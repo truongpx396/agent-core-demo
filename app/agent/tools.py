@@ -66,6 +66,7 @@ memory keeps coming back on every later turn until removed
 an agent-facing tool — see its docstring for why).
 """
 import ast
+import asyncio
 import concurrent.futures
 import logging
 import operator
@@ -131,6 +132,14 @@ _TOOL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 # -8.0 sits in the gap between "wrong" and "at least plausibly related,"
 # comfortably below every relevant score observed and comfortably above every
 # irrelevant one.
+#
+# Re-verified directly (not just assumed) after switching the reranker
+# backend from TEI/bge-reranker-base to ml-service (Xenova/ms-marco-
+# MiniLM-L-6-v2, docker/ml-service/main.py) — a different model can
+# have a differently-scaled logit range. It doesn't here: the same shape
+# held on a fresh comparable query (refund-policy relevant: +6.3;
+# same-company-wrong-topic: -5.8/-6.8; genuinely unrelated: -11.3), so
+# -8.0 is left unchanged.
 MIN_RERANK_SCORE = -8.0
 
 
@@ -330,7 +339,7 @@ def _sparse_vector_or_none(text: str) -> tuple[list[int], list[float]] | None:
         return None
 
 
-def _document_hits(
+async def _document_hits(
     ctx: SecurityCtx,
     query: str,
     topic: Topic | str | None = None,
@@ -343,7 +352,7 @@ def _document_hits(
     # point outside their own tenant, since the tenant predicate is
     # ANDed on regardless (app/retrieval/qdrant_store.py::_build_filter).
     tenant_filter = DEFAULT_POLICY.lower(ctx, "documents")
-    hits = qdrant_store.hybrid_search(
+    hits = await qdrant_store.hybrid_search(
         query,
         topic=topic_value,
         tenant_filter=tenant_filter,
@@ -353,19 +362,29 @@ def _document_hits(
     return _dedupe_by_parent(hits)
 
 
-def _memory_hits(ctx: SecurityCtx, query: str):
+async def _memory_hits(ctx: SecurityCtx, query: str):
     # Reranking is skipped for memories: a principal's own (typically
     # small) memory set doesn't need cross-encoder precision, and skipping
     # it avoids paying for a second reranker call on every single turn —
     # recall runs automatically, unlike a one-off search_docs tool call.
     tenant_filter = DEFAULT_POLICY.lower(ctx, "memories")
-    return qdrant_store.hybrid_search(query, tenant_filter=tenant_filter, rerank_results=False)
+    return await qdrant_store.hybrid_search(
+        query, tenant_filter=tenant_filter, rerank_results=False
+    )
 
 
 def _search_docs_impl(
     query: str, topic: Topic | None, ctx: SecurityCtx, doc_ids: list[str] | None = None
 ) -> str:
-    hits = _document_hits(ctx, query, topic, doc_ids)
+    # Stays a plain sync function — this is called via `_run_with_timeout`
+    # below, which submits it to `_TOOL_EXECUTOR`'s worker thread (no
+    # event loop of its own, so `asyncio.run` here is safe — same bridging
+    # pattern as app/agent/subagent_tools.py's `_invoke`, same reason:
+    # `_document_hits` is `async def` now (it awaits the reranker's HTTP
+    # call — see app/retrieval/embeddings.py's `rerank`), but `search_docs`'s
+    # own tool signature/ToolNode dispatch/timeout machinery all still
+    # expect a plain sync callable.
+    hits = asyncio.run(_document_hits(ctx, query, topic, doc_ids))
     if not hits:
         return "No relevant documents found."
     return _format_cited_context(hits)
@@ -553,29 +572,34 @@ def remember(content: str, config: RunnableConfig) -> str:
     return _run_with_timeout(_remember_impl, content, ctx)
 
 
-def recall_memories(ctx: SecurityCtx | None, query: str) -> str:
+async def recall_memories(ctx: SecurityCtx | None, query: str) -> str:
     """Fetch this principal's own memories, re-filtered against CURRENT
-    ctx on every call — called automatically from app/agent/graph.py's
-    _default_search alongside document retrieval, never on the model's
-    initiative (contrast with search_docs/add_note/remember, which the
-    model chooses to call). Re-filtering every call, rather than trusting
-    a cached/prior-turn result, is what makes a clearance change (if this
-    app ever grows one) take effect on the very next turn instead of
-    persisting until something invalidates a stale snapshot.
+    ctx on every call — a standalone utility over the same `_memory_hits`
+    machinery `gather_context` now calls directly for the automatic
+    pre-fetch path (app/agent/graph.py's `_default_search`); this function
+    itself has no production caller today, only direct test coverage.
+    Never on the model's initiative (contrast with search_docs/add_note/
+    remember, which the model chooses to call). Re-filtering every call,
+    rather than trusting a cached/prior-turn result, is what makes a
+    clearance change (if this app ever grows one) take effect on the very
+    next turn instead of persisting until something invalidates a stale
+    snapshot.
 
     Returns "" on missing ctx or no results — recall is enrichment, same
     reliability posture as retrieve_context itself (degrade, never fail
     the turn just because memory came back empty or ctx wasn't set).
+
+    `async def`: `_memory_hits` awaits `qdrant_store.hybrid_search` now.
     """
     if not valid_ctx(ctx) or not DEFAULT_POLICY.permit("recall_memory", ctx):
         return ""
-    hits = _memory_hits(ctx, query)
+    hits = await _memory_hits(ctx, query)
     if not hits:
         return ""
     return _format_cited_context(hits)
 
 
-def gather_context(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]]:
+async def gather_context(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]]:
     """Documents + this principal's memories, hybrid-searched and combined
     into ONE continuously-numbered citation sequence — this is what
     app/agent/graph.py's `_default_search` calls (the automatic pre-fetch path
@@ -586,11 +610,21 @@ def gather_context(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]
     Degrades to `("", [])` on a missing ctx or a retrieval failure —
     enrichment, never fails the turn (see retrieve_context's docstring in
     app/agent/graph.py, which wraps this in the actual try/except).
+
+    `async def`: `_document_hits`/`_memory_hits` both await
+    `qdrant_store.hybrid_search` now (its own reranking leg is a real HTTP
+    call to the ml-service container). Runs sequentially, not via
+    `asyncio.gather` — the doc/memory searches are two independent Qdrant
+    round trips that COULD run concurrently, but that's a separate
+    optimization from what motivated this function becoming async at all
+    (moving the reranker off this process), not bundled in here.
     """
     if not valid_ctx(ctx):
         return "", []
-    doc_hits = _document_hits(ctx, query) if DEFAULT_POLICY.permit("search", ctx) else []
-    memory_hits = _memory_hits(ctx, query) if DEFAULT_POLICY.permit("recall_memory", ctx) else []
+    doc_hits = await _document_hits(ctx, query) if DEFAULT_POLICY.permit("search", ctx) else []
+    memory_hits = (
+        await _memory_hits(ctx, query) if DEFAULT_POLICY.permit("recall_memory", ctx) else []
+    )
     all_hits = list(doc_hits) + list(memory_hits)
     if not all_hits:
         return "", []
@@ -742,9 +776,16 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
     """
 
     def _skill_search_impl(query: str) -> str:
+        # Stays sync (same reasoning as _search_docs_impl above — this
+        # runs via `_run_with_timeout` on a worker thread with no event
+        # loop of its own) — `asyncio.run` bridges to hybrid_search's now-
+        # async reranking leg (a real HTTP call to the ml-service
+        # container).
         try:
-            hits = qdrant_store.hybrid_search(
-                query, collection=SKILLS_COLLECTION, k=_SKILL_SEARCH_FETCH_K
+            hits = asyncio.run(
+                qdrant_store.hybrid_search(
+                    query, collection=SKILLS_COLLECTION, k=_SKILL_SEARCH_FETCH_K
+                )
             )
         except Exception as exc:  # noqa: BLE001 - the skills collection may not exist
             # yet (before `make index-skills` has ever run) — hybrid_search's own

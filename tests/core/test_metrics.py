@@ -81,7 +81,7 @@ class TestNodeLevelMetrics:
         assert _count(metrics.agent_tool_budget_exceeded_total) == before + 1
 
     def test_retrieve_context_failure_increments_degraded_counter(self):
-        def failing_search_docs(query, ctx):
+        async def failing_search_docs(query, ctx):
             raise RuntimeError("boom")
 
         retrieve_context = graph.make_retrieve_context_node(failing_search_docs)

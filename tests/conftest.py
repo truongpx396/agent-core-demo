@@ -10,6 +10,24 @@ instead — via `GraphDeps(search_docs=fake)`/`GraphDeps(cache_get=fake, ...)`
 `graph.make_check_semantic_cache_node(fake)` (node-level) — which simply
 bypasses these defaults.
 
+`mock_ml_moderation` is the same guarantee for `app/agent/moderation.py`'s
+ML injection-classifier layer: `moderate_input` runs on every full-graph
+turn, unconditionally, and `moderation.screen`'s ML layer is a real HTTP
+call to `ml-service` (app/core/config.py's `ML_SERVICE_URL`) when a
+pattern doesn't already catch the input first. Real bug, found live: this
+suite passed cleanly whenever `ml-service` happened to be unreachable
+(fails open, same as no mock at all) but started failing real, unrelated
+tests (test_manifest.py's leak-detection proof, among others) the moment a
+real `ml-service` container was left running locally — ordinary test
+phrases like "what are your instructions?" scored above the real model's
+own malicious threshold, blocking turns those tests never expected
+blocked. A test's outcome must not depend on which containers happen to be
+up on the machine running it. Tests that care about the ML layer
+specifically (tests/agent/test_moderation.py's own TestMlInjectionLayer)
+override this fixture's patch locally, same override relationship
+mock_search_docs/mock_semantic_cache already have with their own
+exceptions.
+
 `mock_appdata_postgres` is the equivalent guarantee for the third live
 service (`appdata` Postgres, app/agent/sql_store.py) — a gap this suite
 had until it was found the hard way: `app/agent/runtime.py::astream_events_turn`
@@ -74,7 +92,7 @@ from opentelemetry import metrics as metrics_api
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
-from app.agent import graph
+from app.agent import graph, moderation
 
 TEST_CTX = {"tenant": "ecorp", "principal": "test-user", "claims": {}}
 
@@ -119,9 +137,25 @@ def metric_value(counter, **labels):
     return 0
 
 
+async def _no_op_search(query, ctx=None):
+    return "", []
+
+
 @pytest.fixture(autouse=True)
 def mock_search_docs(monkeypatch):
-    monkeypatch.setattr(graph, "_default_search", lambda query, ctx=None: ("", []))
+    # `_default_search` is `async def` now (awaits `tools.gather_context`,
+    # which awaits the reranker's HTTP call — see app/agent/graph.py) — the
+    # fake needs to be awaitable too, not a plain lambda.
+    monkeypatch.setattr(graph, "_default_search", _no_op_search)
+
+
+async def _benign_ml_score(text: str) -> float:
+    return 0.0
+
+
+@pytest.fixture(autouse=True)
+def mock_ml_moderation(monkeypatch):
+    monkeypatch.setattr(moderation, "_ml_malicious_score", _benign_ml_score)
 
 
 @pytest.fixture(autouse=True)

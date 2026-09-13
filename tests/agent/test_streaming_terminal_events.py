@@ -74,9 +74,10 @@ class TestRejectPathsSurfaceTheirText:
     def test_moderation_block_streams_the_rejection_message(self, monkeypatch):
         llm = GenericFakeChatModel(messages=iter([]))
         graph_obj = build_graph(GraphDeps(llm=llm))
-        monkeypatch.setattr(
-            moderation, "screen", lambda text: type("R", (), {"allowed": False})()
-        )
+        async def fake_screen(text):
+            return type("R", (), {"allowed": False})()
+
+        monkeypatch.setattr(moderation, "screen", fake_screen)
 
         events = _events_for(graph_obj, "anything", monkeypatch=monkeypatch)
 
@@ -162,7 +163,7 @@ class TestFollowupsEventIsSurfaced:
     rendered as one undifferentiated blob instead."""
 
     def test_a_grounded_answer_streams_a_followups_event_before_done(self, monkeypatch):
-        def fake_search(query, ctx):
+        async def fake_search(query, ctx):
             cited = {
                 "marker": "[1]",
                 "doc_id": "d1",
@@ -206,7 +207,7 @@ class TestFollowupsEventIsSurfaced:
         their answer's last citation marker immediately followed by the
         raw follow-up questions text, no space, no newline, before the
         (correct, separate) "followups" event even fired."""
-        def fake_search(query, ctx):
+        async def fake_search(query, ctx):
             cited = {
                 "marker": "[1]",
                 "doc_id": "d1",
@@ -296,7 +297,7 @@ class TestRetryEventClearsTheStream:
         """
         source_text = "Checkpointers persist state across a thread's whole lifetime reliably."
 
-        def fake_search(query, ctx):
+        async def fake_search(query, ctx):
             cited = {
                 "marker": "[1]",
                 "doc_id": "d1",
@@ -439,7 +440,7 @@ class TestCheckOutputCitationAutoCorrectionStreaming:
     ):
         source_text = "Ecorp support hours are 9am to 5pm on weekdays."
 
-        def fake_search(query, ctx):
+        async def fake_search(query, ctx):
             cited = {
                 "marker": "[1]",
                 "doc_id": "d1",

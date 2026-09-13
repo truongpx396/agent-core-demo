@@ -212,7 +212,7 @@ class TestSearchDocsCtx:
     def test_applies_tenant_prefilter(self, monkeypatch):
         captured = {}
 
-        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
+        async def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
             captured["tenant_filter"] = tenant_filter
             return []
 
@@ -235,7 +235,7 @@ class TestSearchDocsCtx:
         actually buys."""
         seen_filters = []
 
-        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
+        async def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
             seen_filters.append(tenant_filter)
             return []
 
@@ -256,7 +256,7 @@ class TestSearchDocsCtx:
         _build_filter actually composes the two."""
         captured = {}
 
-        def fake_hybrid_search(
+        async def fake_hybrid_search(
             query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None,
             min_score=None,
         ):
@@ -329,19 +329,19 @@ class TestRememberImpl:
 
 class TestRecallMemories:
     def test_returns_empty_string_without_ctx(self):
-        assert recall_memories(None, "coffee") == ""
+        assert asyncio.run(recall_memories(None, "coffee")) == ""
 
     def test_scopes_to_tenant_and_owner(self, monkeypatch):
         captured = {}
 
-        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
+        async def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
             captured["tenant_filter"] = tenant_filter
             captured["rerank_results"] = rerank_results
             return []
 
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
-        recall_memories(TEST_CTX, "coffee")
+        asyncio.run(recall_memories(TEST_CTX, "coffee"))
 
         must = captured["tenant_filter"].must
         values = {c.key: c.match.value for c in must if c.match is not None}
@@ -358,15 +358,15 @@ class TestRecallMemories:
         must produce filters that scope to different owners."""
         seen_filters = []
 
-        def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
+        async def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
             seen_filters.append(tenant_filter)
             return []
 
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
         other_principal_same_tenant = {**TEST_CTX, "principal": "someone-else"}
-        recall_memories(TEST_CTX, "coffee")
-        recall_memories(other_principal_same_tenant, "coffee")
+        asyncio.run(recall_memories(TEST_CTX, "coffee"))
+        asyncio.run(recall_memories(other_principal_same_tenant, "coffee"))
 
         owners = [
             next(c.match.value for c in f.must if c.key == "owner") for f in seen_filters
@@ -533,14 +533,17 @@ class _FakeHit:
 class TestSkillSearch:
     def test_needs_no_ctx_it_is_a_bundled_capability_not_tenant_data(self, monkeypatch):
         # Same posture as calculator: no SecurityCtx at all, no config arg.
-        monkeypatch.setattr(qdrant_store, "hybrid_search", lambda *a, **k: [])
+        async def fake_hybrid_search(*a, **k):
+            return []
+
+        monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
         result = skill_search.invoke({"query": "anything"})
         assert "Refused" not in result
 
     def test_searches_the_dedicated_skills_collection(self, monkeypatch):
         captured = {}
 
-        def fake_hybrid_search(query_text, **kwargs):
+        async def fake_hybrid_search(query_text, **kwargs):
             captured["query_text"] = query_text
             captured["collection"] = kwargs.get("collection")
             return []
@@ -557,7 +560,10 @@ class TestSkillSearch:
             _FakeHit({"name": "onboarding-brief", "description": "Compose a new-hire brief."}),
             _FakeHit({"name": "expense-summary", "description": "Summarize expense line items."}),
         ]
-        monkeypatch.setattr(qdrant_store, "hybrid_search", lambda *a, **k: hits)
+        async def fake_hybrid_search(*a, **k):
+            return hits
+
+        monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
         monkeypatch.setattr(
             skills_module,
             "get_skills",
@@ -579,7 +585,10 @@ class TestSkillSearch:
         assert "- expense-summary: Summarize expense line items." in result
 
     def test_no_hits_tells_the_model_to_proceed_without_a_skill(self, monkeypatch):
-        monkeypatch.setattr(qdrant_store, "hybrid_search", lambda *a, **k: [])
+        async def fake_hybrid_search(*a, **k):
+            return []
+
+        monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
         result = skill_search.invoke({"query": "something with no matching skill"})
         assert "No matching skills" in result
 
@@ -669,7 +678,11 @@ class TestMakeSkillTools:
 
     def test_skill_search_hides_a_skill_tagged_to_another_domain(self, monkeypatch):
         hits = [_FakeHit({"name": "sales-only", "description": "a sales playbook"})]
-        monkeypatch.setattr(qdrant_store, "hybrid_search", lambda *a, **k: hits)
+
+        async def fake_hybrid_search(*a, **k):
+            return hits
+
+        monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
         monkeypatch.setattr(
             skills_module,
             "get_skills",
@@ -1053,7 +1066,7 @@ class TestRunSubagentImpl:
 
         source_text = "The sky is blue due to Rayleigh scattering."
 
-        def fake_default_search(query, ctx):
+        async def fake_default_search(query, ctx):
             return f"[1] {source_text}", [{"marker": "[1]", "text": source_text}]
 
         monkeypatch.setattr(graph_module, "_default_search", fake_default_search)
