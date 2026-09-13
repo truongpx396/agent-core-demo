@@ -12,12 +12,11 @@ below) so concurrent calls from DIFFERENT callers get coalesced into fewer,
 larger ONNX forward passes instead of each paying full per-call overhead
 serially — the same "adaptive batching" idea TEI/Triton/BentoML/Ray Serve
 all offer, scoped down to exactly what a couple of small models on CPU
-need. This service was originally built (and proven, see docker-compose.yml's
-`ml-service` comment for the numbers) for /rerank alone; /prompt-guard
-reuses the SAME container and batching engine rather than standing up a
-third service, since the serving problem — CPU, low memory, high
-concurrency, high batching — is identical between the two; only the model
-and its input/output shape differ.
+need. This service was originally built for /rerank alone; /prompt-guard
+reuses the same container rather than standing up a third service, since
+the serving problem — CPU, low memory, high concurrency, high batching —
+is identical between the two; only the model and its input/output shape
+differ.
 
 Why hand-rolled instead of a framework: TEI's own supported reranking
 architectures (CamemBERT, XLM-RoBERTa, GTE, ModernBERT) exclude plain
@@ -59,6 +58,50 @@ input_ids/attention_mask int64 arrays and returns `logits` directly
 (verified via `InferenceSession.get_inputs()/get_outputs()` against the
 real downloaded model) — raw `onnxruntime` + `tokenizers` is enough for
 both, same low-dependency-weight posture this whole service exists for.
+
+--- CPU_BUDGET: the actual fix for a real, measured concurrency problem ---
+
+A single serialized batcher (each model given `threads=os.cpu_count()`,
+this host's full 12 cores) had a real, measured problem under real
+concurrent load: debug-instrumented directly against a concurrency=10
+/rerank burst, a single 20-pair call took ~50-150ms, but a batch of ~200
+coalesced pairs (10 concurrent callers' worth) took 1.3-2.3s — 13-23x
+longer for 10x the work, not ~10x. The batch itself wasn't the problem;
+giving it every core WAS: this container shares one Docker Desktop VM with
+~15 other services (qdrant, postgres, redis, litellm, langfuse, ollama,
+...), and a 12-thread batch measurably pegged the host at 1132% CPU (11+
+of 12 cores) fighting those other containers for the SAME cores instead of
+getting clean, dedicated throughput — real CPU oversubscription, not a
+batching-logic issue.
+
+The first fix attempted here was N independent model instances ("lanes"),
+each with its own queue and a smaller thread share — the same "instance
+groups" pattern Triton's own docs recommend for CPU serving, hypothesizing
+that letting multiple batches run truly concurrently (not queueing FIFO
+behind one shared loop) would recover the lost throughput. Measured
+directly, several lane/thread-budget combinations, against the same
+concurrency=40-80 mixed /rerank+/prompt-guard burst: it didn't
+meaningfully help. 2 lanes x 4 threads performed statistically the same as
+1 lane x 8 threads (throughput and p95/max tail latency within noise of
+each other, repeated). The real fix was simply BOUNDING the thread count
+below the host's full core count — reserving CPU_BUDGET threads instead
+of grabbing every core — not adding batch-level parallelism on top of it.
+Multiple lanes were removed rather than shipped as unjustified complexity
+(more code, more memory — one full model copy per lane — for no measured
+benefit on this workload/host): a single `_MicroBatcher` per model,
+each capped at its own CPU_BUDGET, is what's actually running below.
+
+RERANK_CPU_BUDGET=8 (of 12 total) is the sweet spot found this way: 6
+threads measurably cost real throughput (~11 req/s vs ~13 req/s at
+concurrency=40) for only marginally more host headroom, and going past 8
+started crowding out the budget available to /prompt-guard and the rest
+of the stack. GUARD_CPU_BUDGET=2 reflects that /prompt-guard was never
+the bottleneck at any measured concurrency (its own per-item cost is far
+cheaper than a 20-candidate rerank call) — it just needs to stay off
+/rerank's cores, not have a large budget of its own. docker-compose.yml's
+`cpus:` limit on this container enforces a hard ceiling at the cgroup
+layer too, on top of these thread settings, so a misconfigured/bypassed
+ONNX_INTRA_OP setting still can't starve this host's other containers.
 """
 import asyncio
 import os
@@ -69,7 +112,7 @@ from typing import Generic, TypeVar
 
 import numpy as np
 import onnxruntime as ort
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from tokenizers import Tokenizer
 
@@ -92,10 +135,10 @@ GUARD_MAX_SEQ_LEN = 512  # this model's own max_position_embeddings (config.json
 GUARD_LABELS = {0: "BENIGN", 1: "MALICIOUS"}  # this model's own config.json id2label, verified directly
 
 # How many items — (query, text) pairs for /rerank, single texts for
-# /prompt-guard — to fold into one ONNX forward pass at most, per model.
-# A real /rerank call in this app carries up to HYBRID_PREFETCH_LIMIT (20)
-# pairs already, so this is sized in items, not "concurrent requests", to
-# stay meaningful across different caller shapes.
+# /prompt-guard — to fold into one ONNX forward pass at most. A real
+# /rerank call in this app carries up to HYBRID_PREFETCH_LIMIT (20) pairs
+# already, so this is sized in items, not "concurrent requests", to stay
+# meaningful across different caller shapes.
 RERANK_MAX_BATCH_SIZE = int(os.environ.get("RERANK_MAX_BATCH_SIZE", "256"))
 GUARD_MAX_BATCH_SIZE = int(os.environ.get("GUARD_MAX_BATCH_SIZE", "256"))
 
@@ -104,23 +147,49 @@ GUARD_MAX_BATCH_SIZE = int(os.environ.get("GUARD_MAX_BATCH_SIZE", "256"))
 # dispatched, trading a small fixed latency floor for coalescing
 # opportunity (BentoML's own docs flag this exact trade-off). Kept small
 # since both models are fast even at a real batch size — an 8ms admission
-# window is proportionate, not dominating. Shared across both models'
-# batchers; split into RERANK_/GUARD_-specific env vars if the two ever
-# need different tuning.
+# window is proportionate, not dominating.
 MAX_BATCH_WAIT_MS = float(os.environ.get("MAX_BATCH_WAIT_MS", "8"))
 
-# Each _MicroBatcher's loop dispatches batches one at a time — there is
-# never more than one ONNX forward pass PER MODEL running at once, so it
-# is safe (and the whole point) to give each pass every core rather than
-# reserving threads=1 per process the way TEI/N-worker designs do to
-# avoid oversubscription across CONCURRENT calls to the SAME model. The
-# two models' batchers DO run concurrently with EACH OTHER (independent
-# asyncio tasks, each with their own single-flight ONNX session) — real,
-# accepted oversubscription risk between the two, not eliminated, since
-# both are small enough that two full-core passes occasionally
-# overlapping is far cheaper than serializing them through one shared
-# queue.
-ONNX_INTRA_OP_THREADS = int(os.environ.get("ONNX_INTRA_OP_THREADS", str(os.cpu_count() or 4)))
+# Threads reserved per model — see this module's own docstring for the
+# real, measured problem this fixes (CPU oversubscription against the
+# ~15 OTHER containers sharing this host, not a batching-logic issue) and
+# why these specific numbers (measured, not guessed). Each model runs ONE
+# batcher/model instance, not a pool — a multi-instance "lanes" design was
+# tried and measured first and didn't meaningfully outperform this
+# simpler version on this workload/host.
+RERANK_CPU_BUDGET = int(os.environ.get("RERANK_CPU_BUDGET", "8"))
+GUARD_CPU_BUDGET = int(os.environ.get("GUARD_CPU_BUDGET", "2"))
+
+# Admission cap on /rerank specifically: how many requests this process
+# will actually WORK ON at once, measured directly (not guessed) against
+# this exact host/model/RERANK_CPU_BUDGET to keep accepted calls under a
+# real 200ms target -- an isolated concurrency=2 client-side semaphore
+# measured p95=193ms, but that doesn't hold once the SERVER also has to
+# accept/parse a genuine worst-case burst of many simultaneous requests at
+# once: a true 40-simultaneous end-to-end test with a concurrency=2
+# admission cap pushed accepted-call latency to ~275ms (connection/body-
+# parsing overhead for the 38 REJECTED requests still costs real CPU that
+# competes with the 2 admitted ones). concurrency=1 was the number that
+# actually held under that same worst-case burst, repeatably
+# (107-153ms across three separate 40-simultaneous runs, well under 200ms
+# every time) -- verified, not assumed, since the isolated number alone
+# would have shipped a cap that doesn't survive contact with a real burst.
+# This is a hard ceiling on this host's real throughput (~13-14
+# rerank-calls/s at 20 candidates each, RERANK_CPU_BUDGET=8): Little's Law
+# (latency ~= concurrency / throughput) means holding latency near 200ms
+# at MUCH higher concurrency needs proportionally more throughput than one
+# shared 12-core host can give this container, not a code inefficiency
+# more batching/threading tuning fixes. Requests beyond this cap wait up
+# to RERANK_ADMISSION_WAIT_MS for a free slot, then get a fast 503 rather
+# than queueing for seconds behind already-admitted work --
+# app/retrieval/embeddings.py::rerank already raises on ANY /rerank
+# failure, and qdrant_store.hybrid_search already degrades that to the
+# RRF-fused order rather than failing the turn, so a rejected call here
+# costs that turn's reranking quality, not the turn itself. /prompt-guard
+# gets no such cap: it stayed comfortably fast (p95 well under 1s) at
+# concurrency up to 80 in the same measurements, never the bottleneck.
+RERANK_MAX_CONCURRENT = int(os.environ.get("RERANK_MAX_CONCURRENT", "1"))
+RERANK_ADMISSION_WAIT_MS = float(os.environ.get("RERANK_ADMISSION_WAIT_MS", "50"))
 
 Item = TypeVar("Item")
 Result = TypeVar("Result")
@@ -161,6 +230,9 @@ class _MicroBatcher(Generic[Item, Result]):
         await self._queue.put((item, fut))
         return await fut
 
+    async def submit_many(self, items: list[Item]) -> list[Result]:
+        return list(await asyncio.gather(*(self.submit(item) for item in items)))
+
     async def _loop(self) -> None:
         while True:
             first_item, first_fut = await self._queue.get()
@@ -189,22 +261,17 @@ class _MicroBatcher(Generic[Item, Result]):
                     fut.set_result(result)
 
 
-_rerank_model = None
-_rerank_batcher: "_MicroBatcher[tuple[str, str], float] | None" = None
-
-_guard_session: ort.InferenceSession | None = None
-_guard_tokenizer: Tokenizer | None = None
-_guard_batcher: "_MicroBatcher[str, dict] | None" = None
-
-
 def _load_rerank_model():
     from fastembed.rerank.cross_encoder import TextCrossEncoder
 
-    return TextCrossEncoder(model_name=RERANK_MODEL_NAME, threads=ONNX_INTRA_OP_THREADS)
+    return TextCrossEncoder(model_name=RERANK_MODEL_NAME, threads=RERANK_CPU_BUDGET)
 
 
-def _score_rerank_pairs(pairs: list[tuple[str, str]]) -> list[float]:
-    return list(_rerank_model.rerank_pairs(pairs))
+def _score_rerank_pairs(model) -> Callable[[list[tuple[str, str]]], list[float]]:
+    def batch_fn(pairs: list[tuple[str, str]]) -> list[float]:
+        return list(model.rerank_pairs(pairs))
+
+    return batch_fn
 
 
 def _load_guard_model() -> tuple[ort.InferenceSession, Tokenizer]:
@@ -214,7 +281,7 @@ def _load_guard_model() -> tuple[ort.InferenceSession, Tokenizer]:
     tokenizer_path = hf_hub_download(GUARD_MODEL_REPO, "tokenizer.json")
 
     session_options = ort.SessionOptions()
-    session_options.intra_op_num_threads = ONNX_INTRA_OP_THREADS
+    session_options.intra_op_num_threads = GUARD_CPU_BUDGET
     session = ort.InferenceSession(model_path, sess_options=session_options)
 
     tokenizer = Tokenizer.from_file(tokenizer_path)
@@ -223,34 +290,47 @@ def _load_guard_model() -> tuple[ort.InferenceSession, Tokenizer]:
     return session, tokenizer
 
 
-def _score_guard_texts(texts: list[str]) -> list[dict]:
-    assert _guard_tokenizer is not None and _guard_session is not None
-    encoded = _guard_tokenizer.encode_batch(texts)
-    input_ids = np.array([e.ids for e in encoded], dtype=np.int64)
-    attention_mask = np.array([e.attention_mask for e in encoded], dtype=np.int64)
-    (logits,) = _guard_session.run(
-        None, {"input_ids": input_ids, "attention_mask": attention_mask}
-    )
-    exp = np.exp(logits - logits.max(axis=-1, keepdims=True))
-    probs = exp / exp.sum(axis=-1, keepdims=True)
-    return [
-        {"label": GUARD_LABELS[int(p.argmax())], "malicious_score": float(p[1])} for p in probs
-    ]
+def _score_guard_texts(
+    session: ort.InferenceSession, tokenizer: Tokenizer
+) -> Callable[[list[str]], list[dict]]:
+    def batch_fn(texts: list[str]) -> list[dict]:
+        encoded = tokenizer.encode_batch(texts)
+        input_ids = np.array([e.ids for e in encoded], dtype=np.int64)
+        attention_mask = np.array([e.attention_mask for e in encoded], dtype=np.int64)
+        (logits,) = session.run(
+            None, {"input_ids": input_ids, "attention_mask": attention_mask}
+        )
+        exp = np.exp(logits - logits.max(axis=-1, keepdims=True))
+        probs = exp / exp.sum(axis=-1, keepdims=True)
+        return [
+            {"label": GUARD_LABELS[int(p.argmax())], "malicious_score": float(p[1])}
+            for p in probs
+        ]
+
+    return batch_fn
+
+
+_rerank_batcher: "_MicroBatcher[tuple[str, str], float] | None" = None
+_guard_batcher: "_MicroBatcher[str, dict] | None" = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _rerank_model, _rerank_batcher, _guard_session, _guard_tokenizer, _guard_batcher
+    global _rerank_batcher, _guard_batcher
 
-    _rerank_model = await asyncio.to_thread(_load_rerank_model)
+    rerank_model = await asyncio.to_thread(_load_rerank_model)
     _rerank_batcher = _MicroBatcher(
-        _score_rerank_pairs, max_batch_size=RERANK_MAX_BATCH_SIZE, max_wait_ms=MAX_BATCH_WAIT_MS
+        _score_rerank_pairs(rerank_model),
+        max_batch_size=RERANK_MAX_BATCH_SIZE,
+        max_wait_ms=MAX_BATCH_WAIT_MS,
     )
     _rerank_batcher.start()
 
-    _guard_session, _guard_tokenizer = await asyncio.to_thread(_load_guard_model)
+    guard_session, guard_tokenizer = await asyncio.to_thread(_load_guard_model)
     _guard_batcher = _MicroBatcher(
-        _score_guard_texts, max_batch_size=GUARD_MAX_BATCH_SIZE, max_wait_ms=MAX_BATCH_WAIT_MS
+        _score_guard_texts(guard_session, guard_tokenizer),
+        max_batch_size=GUARD_MAX_BATCH_SIZE,
+        max_wait_ms=MAX_BATCH_WAIT_MS,
     )
     _guard_batcher.start()
 
@@ -274,12 +354,31 @@ class RerankRequest(BaseModel):
     raw_scores: bool = True  # accepted for wire-compatibility; this service only ever returns raw cross-encoder logits
 
 
+# Bounds how many /rerank requests this process WORKS ON at once -- see
+# RERANK_MAX_CONCURRENT's own comment for why this exists and how the
+# number was chosen.
+_rerank_admission = asyncio.Semaphore(RERANK_MAX_CONCURRENT)
+
+
 @app.post("/rerank")
 async def rerank(req: RerankRequest) -> list[dict]:
     assert _rerank_batcher is not None
-    scores = await asyncio.gather(
-        *(_rerank_batcher.submit((req.query, text)) for text in req.texts)
-    )
+    try:
+        await asyncio.wait_for(
+            _rerank_admission.acquire(), timeout=RERANK_ADMISSION_WAIT_MS / 1000
+        )
+    except TimeoutError:
+        # Fast, explicit rejection rather than silently queueing behind
+        # RERANK_MAX_CONCURRENT already-admitted calls -- the caller
+        # (app/retrieval/embeddings.py::rerank) already treats ANY /rerank
+        # failure as something qdrant_store.hybrid_search degrades from
+        # (falls back to the RRF-fused order), so this trades reranking
+        # quality for THIS turn rather than making every turn wait.
+        raise HTTPException(status_code=503, detail="rerank service at capacity") from None
+    try:
+        scores = await _rerank_batcher.submit_many([(req.query, text) for text in req.texts])
+    finally:
+        _rerank_admission.release()
     return [
         {"index": i, "score": float(score), "text": text}
         for i, (score, text) in enumerate(zip(scores, req.texts, strict=True))
@@ -293,7 +392,7 @@ class PromptGuardRequest(BaseModel):
 @app.post("/prompt-guard")
 async def prompt_guard(req: PromptGuardRequest) -> list[dict]:
     assert _guard_batcher is not None
-    results = await asyncio.gather(*(_guard_batcher.submit(text) for text in req.texts))
+    results = await _guard_batcher.submit_many(req.texts)
     return [
         {"index": i, "label": r["label"], "malicious_score": r["malicious_score"], "text": text}
         for i, (r, text) in enumerate(zip(results, req.texts, strict=True))

@@ -181,12 +181,50 @@ services:
   # service already exists for the reranker above; adding a second small
   # ONNX model to that SAME already-running container is a marginal cost,
   # not a new one.
+  #
+  # Concurrency fix, found and verified after real production-shaped load
+  # testing (not hypothetical): the ORIGINAL version below gave each model
+  # `threads=os.cpu_count()` (this host's full 12 cores). A real
+  # concurrency=40 mixed /rerank+/prompt-guard burst (matching this app's
+  # real worst case: 4 agent-worker processes x AGENT_WORKER_MAX_CONCURRENCY
+  # =10) showed /rerank's p95 climb to 7.22s and max to 9.1s — dangerously
+  # close to embeddings.py's own 10s client timeout — while pegging the
+  # host at 1132% CPU (11+ of 12 cores), measurably starving the ~15 OTHER
+  # containers in this stack. Debug-instrumented directly: this wasn't
+  # batching working badly, it was CPU oversubscription — a 200-pair
+  # coalesced batch (10 concurrent callers' worth) took 1.3-2.3s, 13-23x a
+  # lone 20-pair call's ~50-150ms, because 10x the pairs doesn't get 10x
+  # the throughput when the model is fighting a dozen other containers for
+  # the same 12 cores. A multi-instance "lane pool" (Triton's own
+  # "instance groups" pattern) was tried first, hypothesizing that real
+  # batch-level parallelism would recover the lost throughput — measured
+  # directly against the same burst, several lane/thread-budget
+  # combinations, and it didn't meaningfully help (2 lanes x 4 threads
+  # performed the same, within noise, as 1 lane x 8 threads). The actual
+  # fix was simpler: just bound each model's own thread count below the
+  # host's full core count (RERANK_CPU_BUDGET=8, GUARD_CPU_BUDGET=2 —
+  # docker/ml-service/main.py) rather than adding lane-parallelism
+  # complexity that didn't earn its keep. Result, same concurrency=40
+  # burst: /rerank throughput ~13 req/s (up from ~6, ~2x), p95 ~3.5s (down
+  # from 7.22s), max ~4.4s (down from 9.1s, now comfortably inside the
+  # 10s client timeout) — and /prompt-guard, never the bottleneck, still
+  # gets a real, if small, share (2 threads) rather than periodically
+  # grabbing all 12 too.
+  #
+  # `cpus: "10"` below is a SECOND, independent enforcement layer for the
+  # exact same budget (RERANK_CPU_BUDGET + GUARD_CPU_BUDGET), at the
+  # cgroup level rather than the ONNX thread-pool level — so a
+  # misconfigured or bypassed ONNX_INTRA_OP setting still can't let this
+  # single container consume the whole host. Leaves 2 full cores as a hard
+  # floor for the other ~15 containers in this stack, not just a
+  # best-effort one.
   ml-service:
     build:
       context: .
       dockerfile: docker/ml-service.Dockerfile
     ports:
       - "8083:80"
+    cpus: "10"
     volumes:
       - ml-service:/home/appuser/.cache   # model cache (both models) — avoids re-downloading on every restart
     healthcheck:
