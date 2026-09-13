@@ -15,19 +15,25 @@ tests/integration/ after a real CI run caught `openai.APIConnectionError`:
 an embedding API (`app/retrieval/embeddings.py`'s own docstring: "Dense
 stays routed through LiteLLM like every other model call in this app"),
 NOT the local fastembed model this file's own docstring originally, and
-incorrectly, assumed it was — only `embed_sparse`/`rerank` are local. The
-`test-integration` job deliberately provisions no LLM/embedding backend at
-all (that's the whole reason it's cheap), so this needs `tests/live/`'s
-`ollama_endpoint` fixture (a real `nomic-embed-text` model, sharing the same
-container `test_agent_tool_calling.py`'s chat model uses — see
+incorrectly, assumed it was — only `embed_sparse` is local now (`rerank`
+moved to a dedicated `ml-service` container — see that function's own
+docstring; this test's own `hybrid_search` calls below need it reachable
+at `ML_SERVICE_URL`, same as the real app). The `test-integration` job
+deliberately provisions no LLM/embedding backend at all (that's the whole
+reason it's cheap), so this needs `tests/live/`'s `ollama_endpoint` fixture
+(a real `nomic-embed-text` model, sharing the same container
+`test_agent_tool_calling.py`'s chat model uses — see
 tests/containers.py::ensure_ollama) alongside `ensure_qdrant()`.
 
 Uses the REAL `hybrid_search`/`ensure_collection`/`build_point`/`upsert` —
 not hand-rolled vectors bypassing them — deliberately: this is the one test
 in this suite that exercises the exact same code path `search_docs` runs in
 production, dense+sparse fusion and reranking included, rather than a mock
-proving only that the right arguments were passed.
+proving only that the right arguments were passed. `hybrid_search` is
+`async def` now, so both calls below run through `asyncio.run(...)`.
 """
+import asyncio
+
 import pytest
 from pydantic import SecretStr
 
@@ -77,8 +83,8 @@ def test_hybrid_search_round_trips_through_a_real_server():
     )
     qdrant_store.upsert([point], collection=collection)
 
-    results = qdrant_store.hybrid_search(
-        "what persists state in LangGraph?", collection=collection
+    results = asyncio.run(
+        qdrant_store.hybrid_search("what persists state in LangGraph?", collection=collection)
     )
 
     assert len(results) >= 1
@@ -110,7 +116,9 @@ def test_a_point_with_no_sparse_vector_is_still_found_via_the_dense_leg():
     )
     qdrant_store.upsert([point], collection=collection)
 
-    results = qdrant_store.hybrid_search("when is Ecorp support available?", collection=collection)
+    results = asyncio.run(
+        qdrant_store.hybrid_search("when is Ecorp support available?", collection=collection)
+    )
 
     assert len(results) >= 1
     assert "9am" in results[0].payload["text"]

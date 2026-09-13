@@ -22,10 +22,11 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
+import httpx
 import psycopg
 
 from app.agent import sql_store
-from app.core.config import CHECKPOINTER_DATABASE_URL
+from app.core.config import CHECKPOINTER_DATABASE_URL, ML_SERVICE_URL
 from app.retrieval import qdrant_store
 from app.turns import queue
 
@@ -56,6 +57,23 @@ def _check_qdrant() -> None:
 
 async def _check_redis() -> None:
     await queue.get_client().ping()
+
+
+async def _check_ml_service() -> None:
+    # Same "check it, but a turn still completes without it" posture as
+    # `redis` above: both of this container's consumers already degrade
+    # rather than fail the turn on its absence —
+    # app/retrieval/qdrant_store.py::hybrid_search degrades a reranker
+    # failure to the RRF-fused order (agent_retrieval_degraded_total
+    # {stage="rerank"} records it), and app/agent/moderation.py::screen
+    # fails open on its ML layer, falling back to the pattern-based result
+    # alone (agent_moderation_ml_degraded_total records it) — so this
+    # being down never makes readiness overall fail a turn's worth of
+    # traffic. Still worth surfacing here rather than silently absorbed,
+    # same reasoning.
+    async with httpx.AsyncClient(timeout=_CHECK_TIMEOUT_SECONDS) as client:
+        resp = await client.get(f"{ML_SERVICE_URL}/health")
+    resp.raise_for_status()
 
 
 async def _bounded(name: str, check: Callable[[], None | Awaitable[None]]) -> bool:
@@ -89,15 +107,17 @@ async def check_dependencies() -> dict[str, bool]:
     checking it unconditionally is cheap and its absence is still a real
     degradation worth surfacing rather than silently ignoring.
     """
-    qdrant_ok, appdata_ok, checkpointer_ok, redis_ok = await asyncio.gather(
+    qdrant_ok, appdata_ok, checkpointer_ok, redis_ok, ml_service_ok = await asyncio.gather(
         _bounded("qdrant", _check_qdrant),
         _bounded("appdata_postgres", _check_appdata_postgres),
         _bounded("checkpointer_postgres", _check_checkpointer_postgres),
         _bounded("redis", _check_redis),
+        _bounded("ml_service", _check_ml_service),
     )
     return {
         "qdrant": qdrant_ok,
         "appdata_postgres": appdata_ok,
         "checkpointer_postgres": checkpointer_ok,
         "redis": redis_ok,
+        "ml_service": ml_service_ok,
     }

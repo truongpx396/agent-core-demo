@@ -96,7 +96,7 @@ def _ctx(tenant: str, principal: str = "test-user") -> dict:
     return {"tenant": tenant, "principal": principal, "claims": {}}
 
 
-def _no_op_search(query: str, ctx) -> tuple[str, list[dict]]:
+async def _no_op_search(query: str, ctx) -> tuple[str, list[dict]]:
     """Stubs retrieval only — these tests are about concurrency isolation
     in the checkpointer/cache/queue, not retrieval quality, so this keeps
     the suite from needing a real Qdrant container too."""
@@ -290,7 +290,7 @@ def real_semantic_cache_redis(monkeypatch):
     yield
 
 
-def _real_search_docs(query: str, ctx) -> tuple[str, list[dict]]:
+async def _real_search_docs(query: str, ctx) -> tuple[str, list[dict]]:
     """The REAL retrieval path (app/agent/graph.py::_default_search's own
     wrapper over app/agent/tools.py::gather_context, reproduced here since
     that real default is exactly what tests/conftest.py's session-wide
@@ -298,8 +298,12 @@ def _real_search_docs(query: str, ctx) -> tuple[str, list[dict]]:
     docstring for the identical reasoning applied to the semantic cache).
     Parameter order matches `_default_search`'s own adaptation:
     `gather_context` takes `(ctx, query)`, reversed from what
-    `retrieve_context`/`GraphDeps.search_docs` call with."""
-    return tools_module.gather_context(ctx, query)
+    `retrieve_context`/`GraphDeps.search_docs` call with.
+
+    `async def`: `gather_context` awaits real I/O now (its reranking leg is
+    an HTTP call to the ml-service container) — this test exercises the
+    REAL retrieval chain end to end, so it genuinely reaches it."""
+    return await tools_module.gather_context(ctx, query)
 
 
 def _install_fake_graph(monkeypatch, llm, *, search_docs=_no_op_search) -> None:

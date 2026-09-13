@@ -68,8 +68,9 @@ def _instrumented(node_name: str):
 
     Async-aware: a handful of nodes (`agent`, `compact_history`,
     `suggest_followups`, `check_semantic_cache`, `retrieve_context`,
-    `write_semantic_cache` — the ones that make a real LLM call or hit
-    Redis/Qdrant) are `async def`, so their real I/O waits on the event
+    `write_semantic_cache`, `moderate_input` — the ones that make a real
+    LLM call or hit Redis/Qdrant/ml-service) are `async def`, so their real
+    I/O waits on the event
     loop instead of occupying a slot in LangChain's shared, process-wide
     default executor (`langchain_core.runnables.config.run_in_executor`,
     `min(32, os.cpu_count()+4)` threads total — verified directly against

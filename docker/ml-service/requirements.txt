@@ -1,0 +1,15 @@
+# Pinned to match this app's own requirements-lock.txt resolution for the
+# same packages (see /requirements-lock.txt) — not load-bearing for this
+# separate image, just avoids gratuitous drift for packages this repo
+# already tracks elsewhere. onnxruntime comes in transitively via
+# fastembed, same as app/retrieval/embeddings.py's own sparse-embedding
+# path; tokenizers/huggingface_hub/numpy are ALSO transitive via fastembed
+# but declared directly here since main.py now imports them by name for
+# the /prompt-guard model (raw onnxruntime + tokenizers, deliberately not
+# transformers/optimum — see main.py's own docstring for why).
+fastapi==0.141.1
+uvicorn==0.52.4
+fastembed==0.8.0
+tokenizers==0.23.2
+huggingface_hub==1.30.0
+numpy==2.5.3

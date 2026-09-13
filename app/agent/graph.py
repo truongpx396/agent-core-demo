@@ -58,7 +58,7 @@ import operator
 import os
 import subprocess
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict, cast
 
@@ -862,19 +862,23 @@ def route_after_validation(
 # --- Node: input moderation (GRAPH_PATTERNS.md pattern 25) — runs BEFORE
 # the semantic cache lookup or retrieval, so a screened-out input never
 # reaches either. ---
-def moderate_input(state: State) -> dict:
+async def moderate_input(state: State) -> dict:
     """Screens the TEXT portion only (`_human_text`) — this app's
-    moderation (app/agent/moderation.py) is a text-pattern screen (known
-    injection/jailbreak phrasings + a denylist); it has no way to inspect
+    moderation (app/agent/moderation.py) is a pattern screen + an ML
+    classifier layer over that same text; neither has any way to inspect
     an attached image's actual content. An image-only message (no text at
     all) is a `_human_text` of "", which `moderation.screen` allows
     through unblocked — a real, honestly-disclosed gap (GRAPH_PATTERNS.md
     pattern 44), not a silent one: this app screens WORDS, never PIXELS.
+
+    `async def`/`await`: `moderation.screen` awaits real I/O now (its ML
+    layer is an HTTP call to the `ml-service` container) — see that
+    function's own docstring.
     """
     last_human = _last_human_message(state["messages"])
     if last_human is None:
         return {"moderation_blocked": False}
-    result = moderation.screen(_human_text(last_human))
+    result = await moderation.screen(_human_text(last_human))
     return {"moderation_blocked": not result.allowed}
 
 
@@ -1012,12 +1016,12 @@ def route_after_cache(state: State) -> Literal["retrieve_context", "check_output
     return "check_output" if state.get("cache_hit") else "retrieve_context"
 
 
-def _default_search(query: str, ctx: SecurityCtx | None) -> tuple[str, list[dict]]:
+async def _default_search(query: str, ctx: SecurityCtx | None) -> tuple[str, list[dict]]:
     """Thin wrapper over `app.agent.tools.gather_context` matching the
-    `Callable[[str, SecurityCtx | None], tuple[str, list[dict]]]` shape
-    `make_retrieve_context_node` expects — isolates the real call to one
-    place so a fake passed to the factory in tests is just a plain
-    function.
+    `Callable[[str, SecurityCtx | None], Awaitable[tuple[str, list[dict]]]]`
+    shape `make_retrieve_context_node` expects — isolates the real call to
+    one place so a fake passed to the factory in tests is just a plain
+    (async) function.
 
     `ctx` flows straight through, the same value `search_docs`/`remember`
     read from `config["configurable"]["ctx"]` when the *model* calls them
@@ -1026,13 +1030,19 @@ def _default_search(query: str, ctx: SecurityCtx | None) -> tuple[str, list[dict
     (dense+sparse RRF, cross-encoder reranked, both with their own
     fallback layers) and cross-session memory recall both live inside
     `gather_context` — see app/agent/tools.py and GRAPH_PATTERNS.md pattern 20.
+
+    `async def`/`await`: `gather_context` awaits real I/O now (the
+    reranker leg is an HTTP call to the ml-service container, not
+    local ONNX compute) — see its own docstring.
     """
-    return tools.gather_context(ctx, query)
+    return await tools.gather_context(ctx, query)
 
 
 # --- Node: enrich context (multi-step pattern) ---
 def make_retrieve_context_node(
-    search: Callable[[str, "SecurityCtx | None"], tuple[str, list[dict]]] = _default_search,
+    search: Callable[
+        [str, "SecurityCtx | None"], Awaitable[tuple[str, list[dict]]]
+    ] = _default_search,
 ):
     """Factory, not a plain function, because retrieve_context needs a
     search client — same rationale as make_agent_node for `agent`. Tests
@@ -1056,14 +1066,18 @@ def make_retrieve_context_node(
         nothing to fall back to and gets a retry policy instead
         (AGENT_RETRY_POLICY).
 
-        `search` stays a plain sync `Callable` (same reasoning as
-        `check_semantic_cache`'s `cache_get` above) — `gather_context`'s
-        hybrid search is genuinely CPU-bound (local ONNX sparse-embedding +
-        cross-encoder rerank) on top of a sync `QdrantClient` call, so it
-        belongs in a thread either way; `asyncio.to_thread` here just keeps
-        that thread occupied for only the search itself, not this node's
-        surrounding (cheap, pure-Python) query-building/exception-handling
-        too.
+        `search` is an async `Callable` now — unlike `check_semantic_cache`'s
+        `cache_get`/`write_semantic_cache`'s `cache_set` above, which stay
+        plain sync callables wrapped in `asyncio.to_thread` because their
+        real implementations are local Redis calls with no async client.
+        `gather_context`'s hybrid search used to be genuinely CPU-bound
+        end to end (local ONNX sparse-embedding AND cross-encoder rerank),
+        which is why this used to `asyncio.to_thread` the whole thing —
+        but the rerank leg moved to a dedicated reranker container (see
+        app/retrieval/embeddings.py's `rerank`), a real HTTP call, so
+        `search` is `await`ed directly here now; the still-CPU-bound sparse
+        leg gets its own, narrower `asyncio.to_thread` inside
+        `qdrant_store.hybrid_search` instead of this whole call needing one.
         """
         last_human = _last_human_message(state["messages"])
         # The turn's opening question is, right now, the last message in
@@ -1080,7 +1094,7 @@ def make_retrieve_context_node(
             query = _retrieval_query(
                 _human_text(last_human), _previous_human_message(state["messages"], anchor)
             )
-            context, citations = await asyncio.to_thread(search, query, state.get("ctx"))
+            context, citations = await search(query, state.get("ctx"))
             return {"context": context, "citations": citations, "context_anchor_index": anchor}
         except Exception as exc:  # noqa: BLE001 - degrade, never crash the turn
             logger.warning(
@@ -1709,7 +1723,9 @@ class GraphDeps:
     """
 
     llm: Any = None
-    search_docs: Callable[[str, "SecurityCtx | None"], tuple[str, list[dict]]] | None = None
+    search_docs: (
+        Callable[[str, "SecurityCtx | None"], Awaitable[tuple[str, list[dict]]]] | None
+    ) = None
     cache_get: Callable[["SecurityCtx | None", str], tuple[str, list[dict]] | None] | None = None
     cache_set: Callable[["SecurityCtx | None", str, str, list[dict]], None] | None = None
 

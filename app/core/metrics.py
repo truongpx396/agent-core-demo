@@ -368,7 +368,19 @@ agent_moderation_total = Counter(
     "agent_moderation_total",
     "Input moderation screens by outcome (app/agent/moderation.py)",
     ["outcome"],
-)  # outcome: allowed | blocked_injection | blocked_denylist | error (degraded — treated as allowed)
+)  # outcome: allowed | blocked_injection | blocked_denylist | blocked_ml_injection |
+# error (degraded — treated as allowed)
+
+agent_moderation_ml_degraded_total = Counter(
+    "agent_moderation_ml_degraded_total",
+    "Turns where the ML injection-classifier layer (app/agent/moderation.py's "
+    "call to ml-service's /prompt-guard) couldn't be reached and the turn "
+    "proceeded on the pattern-based layer's result alone — same "
+    "degrade-don't-fail-the-turn posture as agent_retrieval_degraded_total, "
+    "counted separately from agent_moderation_total's own outcomes so a "
+    "network blip against ml-service is distinguishable from a genuine "
+    "'nothing flagged it' allow.",
+)
 
 agent_memory_deletion_total = Counter(
     "agent_memory_deletion_total",

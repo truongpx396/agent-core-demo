@@ -37,6 +37,7 @@ second collection built with this same dense+sparse schema — e.g.
 same fusion/rerank/degrade pipeline with zero duplicated logic. Every
 existing call site keeps working unchanged by simply omitting it.
 """
+import asyncio
 import logging
 from typing import cast
 from uuid import UUID
@@ -157,7 +158,7 @@ def _build_filter(
     return Filter(must=must) if must else None
 
 
-def hybrid_search(
+async def hybrid_search(
     query_text: str,
     topic: str | None = None,
     k: int | None = None,
@@ -192,6 +193,17 @@ def hybrid_search(
     strong one) is the only scale `min_score` is meaningful against — RRF
     fusion scores are rank-derived and NOT comparable to it, so this is a
     no-op whenever `rerank_results=False` or reranking degrades.
+
+    `async def`: `embeddings.rerank` is now a real HTTP call to the
+    `ml-service` container (see that function's own docstring), so this
+    needs to `await` it. `embed_text` (dense, already an HTTP call to
+    LiteLLM/Ollama) and the Qdrant `query_points` calls below stay
+    plain sync/blocking for now — a real, deliberately separate scope
+    decision from moving reranking off this process (see this repo's own
+    "properly fix it, but be precise about scope" pattern elsewhere), not
+    an oversight. `embed_sparse` (local ONNX/CPU) still runs via
+    `asyncio.to_thread` — unchanged from why `retrieve_context`
+    (app/agent/graph.py) already did this before reranking moved out.
     """
     # deferred: avoids importing fastembed at module load
     from app.retrieval import embeddings
@@ -202,7 +214,9 @@ def hybrid_search(
     dense_vector = embeddings.embed_text(query_text)
 
     try:
-        sparse_indices, sparse_values = embeddings.embed_sparse(query_text)
+        sparse_indices, sparse_values = await asyncio.to_thread(
+            embeddings.embed_sparse, query_text
+        )
         response = get_client().query_points(
             collection_name=coll,
             prefetch=[
@@ -246,7 +260,7 @@ def hybrid_search(
 
     try:
         texts = [(p.payload or {}).get("text", "") for p in points]
-        scores = embeddings.rerank(query_text, texts)
+        scores = await embeddings.rerank(query_text, texts)
         # Overwrite the RRF fusion score (rank-derived, not a relevance
         # measure) with the cross-encoder's own raw logit score, so callers
         # that read `.score` (e.g. app/agent/tools.py's relevance floor) see

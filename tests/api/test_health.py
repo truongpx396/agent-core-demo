@@ -59,11 +59,38 @@ class _FakeRedisClient:
         return True
 
 
+class _FakeMlServiceResponse:
+    def raise_for_status(self):
+        pass
+
+
+class _FakeMlServiceClient:
+    """Stands in for `httpx.AsyncClient` — matching this file's own
+    "patch the low-level client constructor, not the check function"
+    pattern (see `sql_store.get_connection`/`health.psycopg.connect`
+    above)."""
+
+    def __init__(self, *, fails=False):
+        self._fails = fails
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url):
+        if self._fails:
+            raise ConnectionError("ml-service unreachable")
+        return _FakeMlServiceResponse()
+
+
 def _patch_all_healthy(monkeypatch):
     monkeypatch.setattr(sql_store, "get_connection", lambda: _FakeConnection())
     monkeypatch.setattr(health.psycopg, "connect", lambda *a, **k: _FakeConnection())
     monkeypatch.setattr(qdrant_store, "get_client", lambda: _FakeQdrantClient())
     monkeypatch.setattr(queue, "get_client", lambda: _FakeRedisClient())
+    monkeypatch.setattr(health.httpx, "AsyncClient", lambda **kw: _FakeMlServiceClient())
 
 
 class TestCheckDependencies:
@@ -75,6 +102,7 @@ class TestCheckDependencies:
             "appdata_postgres": True,
             "checkpointer_postgres": True,
             "redis": True,
+            "ml_service": True,
         }
 
     def test_one_dependency_down_reports_only_that_one_as_false(self, monkeypatch):
@@ -85,6 +113,7 @@ class TestCheckDependencies:
         assert result["appdata_postgres"] is True
         assert result["checkpointer_postgres"] is True
         assert result["redis"] is True
+        assert result["ml_service"] is True
 
     def test_every_dependency_down(self, monkeypatch):
         monkeypatch.setattr(
@@ -95,6 +124,7 @@ class TestCheckDependencies:
         )
         monkeypatch.setattr(qdrant_store, "get_client", lambda: _FakeQdrantClient(fails=True))
         monkeypatch.setattr(queue, "get_client", lambda: _FakeRedisClient(fails=True))
+        monkeypatch.setattr(health.httpx, "AsyncClient", lambda **kw: _FakeMlServiceClient(fails=True))
         result = asyncio.run(health.check_dependencies())
         assert not any(result.values())
 

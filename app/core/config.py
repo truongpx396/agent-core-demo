@@ -56,11 +56,43 @@ class Settings(BaseSettings):
 
     # Hybrid retrieval (app/retrieval/embeddings.py, app/retrieval/qdrant_store.py) — sparse
     # (BM25) + dense, fused server-side, then cross-encoder reranked.
-    # Both models run locally via fastembed/ONNX — no network call, no
-    # LiteLLM route, downloaded once and cached (same "offline after first
-    # pull" shape as the Ollama models). See GRAPH_PATTERNS.md pattern 20.
+    # See GRAPH_PATTERNS.md pattern 20.
+    #
+    # Sparse (BM25) still runs locally via fastembed/ONNX — no network call,
+    # downloaded once and cached, same "offline after first pull" shape as
+    # the Ollama models. It's lexical scoring, not a neural model, so there
+    # was never a serving-infra question for it.
     sparse_model: str = "Qdrant/bm25"
-    rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    # Reranking is a real ONNX cross-encoder, and unlike sparse, it was a
+    # measured concurrency bottleneck: running it in-process (fastembed,
+    # same as sparse) meant every concurrent turn's rerank call held a slot
+    # in this process's own thread pool for the call's full duration, and
+    # ONNX Runtime's own default thread settings (unset here) meant each
+    # call ALSO tried to grab every CPU core for itself — real, measured
+    # cost under a 50-concurrent-turn burst. Moved to a dedicated
+    # inference container instead (docker-compose.yml's `ml-service`,
+    # docker/ml-service/main.py) — genuinely gets this compute off
+    # agent-worker's own process/GIL entirely, not just onto a different
+    # thread of the same one.
+    #
+    # That service is a small hand-rolled FastAPI + onnxruntime app,
+    # originally reranker-only (Xenova/ms-marco-MiniLM-L-6-v2, with its own
+    # async micro-batching queue coalescing concurrent /rerank calls'
+    # pairs into one ONNX forward pass), not text-embeddings-inference
+    # (TEI) — TEI was tried first (BAAI/bge-reranker-base) and measured
+    # directly against this exact workload before being replaced: TEI's
+    # own admission queue rejected ~94% of a genuine 100-simultaneous
+    # burst outright, needed ~84s to sustainably serve 100 requests, and
+    # idled at 2.26GiB — this service handles that same burst in full with
+    # zero rejections, ~14s sustainably, at ~200-420MiB. Now also hosts a
+    # second small ONNX model (Llama Prompt Guard 2, app/agent/
+    # moderation.py's ML injection-detection layer) in the SAME container,
+    # hence the generic name — see docker/ml-service/main.py's own
+    # docstring for the full reasoning (including why a framework —
+    # BentoML/Ray Serve/Triton — wasn't used either) and
+    # docker-compose.yml's `ml-service` comment for the measured numbers
+    # in full.
+    ml_service_url: str = "http://localhost:8083"
     hybrid_prefetch_limit: int = 20  # candidates pulled per leg (dense, sparse) before fusion
     rerank_top_k: int = 5            # final results returned after rerank
 
@@ -408,7 +440,7 @@ LANGFUSE_PUBLIC_KEY = settings.langfuse_public_key
 LANGFUSE_SECRET_KEY = settings.langfuse_secret_key
 CHECKPOINTER_DATABASE_URL = settings.checkpointer_database_url
 SPARSE_MODEL = settings.sparse_model
-RERANK_MODEL = settings.rerank_model
+ML_SERVICE_URL = settings.ml_service_url
 HYBRID_PREFETCH_LIMIT = settings.hybrid_prefetch_limit
 RERANK_TOP_K = settings.rerank_top_k
 SKILLS_DIR = settings.skills_dir
