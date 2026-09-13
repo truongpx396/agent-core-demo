@@ -112,7 +112,7 @@ from typing import Generic, TypeVar
 
 import numpy as np
 import onnxruntime as ort
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from tokenizers import Tokenizer
 
@@ -159,6 +159,37 @@ MAX_BATCH_WAIT_MS = float(os.environ.get("MAX_BATCH_WAIT_MS", "8"))
 # simpler version on this workload/host.
 RERANK_CPU_BUDGET = int(os.environ.get("RERANK_CPU_BUDGET", "8"))
 GUARD_CPU_BUDGET = int(os.environ.get("GUARD_CPU_BUDGET", "2"))
+
+# Admission cap on /rerank specifically: how many requests this process
+# will actually WORK ON at once, measured directly (not guessed) against
+# this exact host/model/RERANK_CPU_BUDGET to keep accepted calls under a
+# real 200ms target -- an isolated concurrency=2 client-side semaphore
+# measured p95=193ms, but that doesn't hold once the SERVER also has to
+# accept/parse a genuine worst-case burst of many simultaneous requests at
+# once: a true 40-simultaneous end-to-end test with a concurrency=2
+# admission cap pushed accepted-call latency to ~275ms (connection/body-
+# parsing overhead for the 38 REJECTED requests still costs real CPU that
+# competes with the 2 admitted ones). concurrency=1 was the number that
+# actually held under that same worst-case burst, repeatably
+# (107-153ms across three separate 40-simultaneous runs, well under 200ms
+# every time) -- verified, not assumed, since the isolated number alone
+# would have shipped a cap that doesn't survive contact with a real burst.
+# This is a hard ceiling on this host's real throughput (~13-14
+# rerank-calls/s at 20 candidates each, RERANK_CPU_BUDGET=8): Little's Law
+# (latency ~= concurrency / throughput) means holding latency near 200ms
+# at MUCH higher concurrency needs proportionally more throughput than one
+# shared 12-core host can give this container, not a code inefficiency
+# more batching/threading tuning fixes. Requests beyond this cap wait up
+# to RERANK_ADMISSION_WAIT_MS for a free slot, then get a fast 503 rather
+# than queueing for seconds behind already-admitted work --
+# app/retrieval/embeddings.py::rerank already raises on ANY /rerank
+# failure, and qdrant_store.hybrid_search already degrades that to the
+# RRF-fused order rather than failing the turn, so a rejected call here
+# costs that turn's reranking quality, not the turn itself. /prompt-guard
+# gets no such cap: it stayed comfortably fast (p95 well under 1s) at
+# concurrency up to 80 in the same measurements, never the bottleneck.
+RERANK_MAX_CONCURRENT = int(os.environ.get("RERANK_MAX_CONCURRENT", "1"))
+RERANK_ADMISSION_WAIT_MS = float(os.environ.get("RERANK_ADMISSION_WAIT_MS", "50"))
 
 Item = TypeVar("Item")
 Result = TypeVar("Result")
@@ -323,10 +354,31 @@ class RerankRequest(BaseModel):
     raw_scores: bool = True  # accepted for wire-compatibility; this service only ever returns raw cross-encoder logits
 
 
+# Bounds how many /rerank requests this process WORKS ON at once -- see
+# RERANK_MAX_CONCURRENT's own comment for why this exists and how the
+# number was chosen.
+_rerank_admission = asyncio.Semaphore(RERANK_MAX_CONCURRENT)
+
+
 @app.post("/rerank")
 async def rerank(req: RerankRequest) -> list[dict]:
     assert _rerank_batcher is not None
-    scores = await _rerank_batcher.submit_many([(req.query, text) for text in req.texts])
+    try:
+        await asyncio.wait_for(
+            _rerank_admission.acquire(), timeout=RERANK_ADMISSION_WAIT_MS / 1000
+        )
+    except TimeoutError:
+        # Fast, explicit rejection rather than silently queueing behind
+        # RERANK_MAX_CONCURRENT already-admitted calls -- the caller
+        # (app/retrieval/embeddings.py::rerank) already treats ANY /rerank
+        # failure as something qdrant_store.hybrid_search degrades from
+        # (falls back to the RRF-fused order), so this trades reranking
+        # quality for THIS turn rather than making every turn wait.
+        raise HTTPException(status_code=503, detail="rerank service at capacity") from None
+    try:
+        scores = await _rerank_batcher.submit_many([(req.query, text) for text in req.texts])
+    finally:
+        _rerank_admission.release()
     return [
         {"index": i, "score": float(score), "text": text}
         for i, (score, text) in enumerate(zip(scores, req.texts, strict=True))
