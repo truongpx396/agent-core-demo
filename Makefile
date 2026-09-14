@@ -127,13 +127,13 @@ followup-sweep:  ## Run the sales concierge's one-shot due-follow-up sweep, draf
 test:  ## Run the graph test suite in parallel (no live services needed — fake LLM, no Qdrant)
 	pytest -n auto -q
 
-test-integration:  ## Real Postgres/Redis/Qdrant via testcontainers (no LLM) — needs Docker, no `make up` required (GRAPH_PATTERNS.md pattern 48)
+test-integration:  ## Real Postgres/Redis/Qdrant/ml-service via testcontainers (no LLM) — needs Docker, no `make up` required (GRAPH_PATTERNS.md pattern 48)
 	# --dist=loadgroup: tests/integration/test_worker_scaling.py's own
 	# xdist_group marker needs this to actually take effect (plain `load`
 	# ignores it) — see that module's own comment for why.
 	pytest -n auto -m integration -q --dist=loadgroup
 
-test-live:  ## Real small Ollama model + full app/agent-worker stack via testcontainers, incl. Playwright browser E2E and real crawl4ai renders — needs Docker (pattern 48/50)
+test-live:  ## Real small Ollama model + ml-service + full app/agent-worker stack via testcontainers, incl. Playwright browser E2E and real crawl4ai renders — needs Docker (pattern 48/50)
 	playwright install --with-deps chromium
 	pytest -n auto -m "llm or e2e or crawl" -q
 

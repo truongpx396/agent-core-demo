@@ -12,7 +12,13 @@
 # just a much smaller, single-purpose requirements.txt.
 FROM python:3.13-slim AS base
 
-RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 curl \
+# `apt-get upgrade -y` before the install — same base image as the root
+# Dockerfile, same reasoning: picks up security patches for packages
+# already in the `python:3.13-slim` layer, not just what this line
+# explicitly installs. See that file's own comment for the real CVE this
+# caught.
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends libgomp1 curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 1000 appuser

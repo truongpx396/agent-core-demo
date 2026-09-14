@@ -62,7 +62,12 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from app.retrieval import qdrant_store
-from tests.containers import ensure_postgres, ensure_qdrant, ensure_redis
+from tests.containers import (
+    ensure_ml_service,
+    ensure_postgres,
+    ensure_qdrant,
+    ensure_redis,
+)
 
 # `xdist_group` forces every test in this module onto the SAME xdist
 # worker — needed because `scaled_stack` below is only `scope="module"`,
@@ -162,6 +167,7 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
     postgres = ensure_postgres()
     redis = ensure_redis()
     qdrant = ensure_qdrant()
+    ml_service = ensure_ml_service()
 
     # The collection must exist before any subprocess turn tries to read
     # or write it — Qdrant does NOT auto-create one on first use (verified
@@ -208,6 +214,11 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
         # succeed.
         "QDRANT_URL": qdrant["qdrant_url"],
         "COLLECTION": qdrant_collection,
+        # Same "must be real, purely to satisfy /health/ready" reasoning as
+        # QDRANT_URL above — added once that endpoint started checking
+        # ml_service too (app/api/health.py); no test assertion here
+        # depends on real reranking/prompt-guard output either.
+        "ML_SERVICE_URL": ml_service["ml_service_url"],
         "OPENAI_API_BASE": f"http://127.0.0.1:{fake_llm_port}/v1",
         "OPENAI_API_KEY": "sk-not-checked-by-the-fake-server",
         "CHAT_MODEL": "fake-llm",

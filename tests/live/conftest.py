@@ -70,7 +70,13 @@ from pathlib import Path
 import httpx
 import pytest
 
-from tests.containers import ensure_ollama, ensure_postgres, ensure_qdrant, ensure_redis
+from tests.containers import (
+    ensure_ml_service,
+    ensure_ollama,
+    ensure_postgres,
+    ensure_qdrant,
+    ensure_redis,
+)
 
 TEST_LLM_MODEL = os.environ.get("TEST_LLM_MODEL", "qwen2.5:1.5b")
 # Separate from TEST_LLM_MODEL, deliberately: the `deepeval`-marked tests
@@ -105,6 +111,7 @@ def real_stack() -> Iterator[str]:
     redis = ensure_redis()
     qdrant = ensure_qdrant()
     ollama = ensure_ollama(TEST_LLM_MODEL)
+    ml_service = ensure_ml_service()
 
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}"
@@ -114,6 +121,11 @@ def real_stack() -> Iterator[str]:
         "APPDATA_DATABASE_URL": postgres["appdata_database_url"],
         "REDIS_URL": redis["redis_url"],
         "QDRANT_URL": qdrant["qdrant_url"],
+        # Real, purely to satisfy /health/ready's own `ml_service` check
+        # (app/api/health.py) — added once that endpoint started checking
+        # it; neither test using this fixture depends on real reranking/
+        # prompt-guard output (see tests/containers.py::ensure_ml_service).
+        "ML_SERVICE_URL": ml_service["ml_service_url"],
         "OPENAI_API_BASE": ollama["openai_api_base"],
         "OPENAI_API_KEY": "sk-not-checked-by-ollama",
         "CHAT_MODEL": ollama["model"],
