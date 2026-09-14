@@ -11,7 +11,7 @@ A single chunk size is fighting two different jobs with one number:
   embeds and matches a specific query far more precisely than a page-long
   block where the one relevant sentence is diluted by nine irrelevant ones.
 - **Answer quality** wants enough SURROUNDING context for the model to
-  actually understand what it retrieved — a 300-character fragment often
+  actually understand what it retrieved — a 600-character fragment often
   reads as an isolated, ambiguous sentence.
 
 So: only the small **child** chunk is embedded (both dense and sparse —
@@ -38,8 +38,16 @@ import uuid
 from dataclasses import dataclass, field
 
 DEFAULT_PARENT_CHARS = 1200
-DEFAULT_CHILD_CHARS = 300
-DEFAULT_CHILD_OVERLAP = 75
+# Kept at 1200, NOT doubled alongside the child settings below: `parent_text`
+# (not `text`) is what `app/agent/tools.py::_display_text` actually injects
+# into the LLM's prompt per citation, and up to `RERANK_TOP_K` (5) distinct
+# parents can be cited in one turn — doubling this would risk pushing a
+# retrieval-heavy turn's prompt into the ~2300-2800 token range
+# GRAPH_PATTERNS.md pattern 13 directly measured `qwen2.5:3b` (this app's
+# own CHAT_MODEL) dropping a mandatory system-prompt instruction in —
+# notably, that instruction was this exact citation format (pattern 20).
+DEFAULT_CHILD_CHARS = 600
+DEFAULT_CHILD_OVERLAP = 150
 
 
 @dataclass

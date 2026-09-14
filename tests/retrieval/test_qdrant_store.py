@@ -17,6 +17,8 @@ repo's established pattern for exercising async code from a plain
 import asyncio
 from types import SimpleNamespace
 
+from qdrant_client.models import Modifier
+
 from app.core.config import COLLECTION
 from app.retrieval import embeddings, qdrant_store
 
@@ -24,12 +26,14 @@ from app.retrieval import embeddings, qdrant_store
 class _FakeClient:
     def __init__(self):
         self.recreate_calls: list[str] = []
+        self.recreate_kwargs: list[dict] = []
         self.upsert_calls: list[str] = []
         self.upsert_batch_sizes: list[int] = []
         self.query_points_calls: list[str] = []
 
     def recreate_collection(self, collection_name, **kwargs):
         self.recreate_calls.append(collection_name)
+        self.recreate_kwargs.append(kwargs)
 
     def upsert(self, collection_name, points):
         self.upsert_calls.append(collection_name)
@@ -56,6 +60,18 @@ class TestEnsureCollection:
         client = _fake_client(monkeypatch)
         qdrant_store.ensure_collection(dim=4, collection="skills")
         assert client.recreate_calls == ["skills"]
+
+    def test_sparse_vector_config_requests_idf_scoring(self, monkeypatch):
+        """The fastembed `Qdrant/bm25` model (app/retrieval/embeddings.py)
+        only computes the term-frequency half of BM25 locally and expects
+        Qdrant to supply the IDF half via this modifier — omitting it
+        silently downgrades the sparse leg to a plain TF dot product,
+        no IDF weighting at all."""
+        client = _fake_client(monkeypatch)
+        qdrant_store.ensure_collection(dim=4)
+        sparse_config = client.recreate_kwargs[0]["sparse_vectors_config"]
+        modifier = sparse_config[qdrant_store.SPARSE_VECTOR_NAME].modifier
+        assert modifier == Modifier.IDF
 
 
 class TestUpsert:
