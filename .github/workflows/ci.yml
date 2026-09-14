@@ -303,6 +303,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # infra/terraform excluded below: Checkov (the `checkov` job,
+      # .checkov.yaml) owns IaC misconfig scanning for that directory —
+      # verified directly this exclusion is needed, not preemptive: Trivy's
+      # own DigitalOcean firewall policies (DIG-0001/DIG-0003) flag ANY
+      # 0.0.0.0/0 rule as CRITICAL with no way to distinguish a public web
+      # app's necessary 80/443 ingress + broad egress (GHCR, apt, Let's
+      # Encrypt, the LLM API, ...) from an actually-dangerous open SSH/DB
+      # port, unlike Checkov which has no equivalent blanket check here
+      # (confirmed empirically: a real checkov run against this exact
+      # firewall resource passes clean).
       - name: Trivy fs — hard gate (fixable CRITICAL vulns + secrets + IaC misconfig)
         uses: aquasecurity/trivy-action@v0.36.0
         env:
@@ -314,7 +324,7 @@ jobs:
           severity: CRITICAL
           ignore-unfixed: true
           exit-code: "1"
-          skip-dirs: .venv,node_modules,.mypy_cache,.ruff_cache,.pytest_cache
+          skip-dirs: .venv,node_modules,.mypy_cache,.ruff_cache,.pytest_cache,infra/terraform
 
       - name: Trivy fs — full report (HIGH+CRITICAL, incl. unfixed) → SARIF
         if: always()
@@ -329,7 +339,7 @@ jobs:
           format: sarif
           output: trivy-fs-results.sarif
           exit-code: "0"
-          skip-dirs: .venv,node_modules,.mypy_cache,.ruff_cache,.pytest_cache
+          skip-dirs: .venv,node_modules,.mypy_cache,.ruff_cache,.pytest_cache,infra/terraform
           skip-setup-trivy: true
 
       - name: Upload fs report to the Security tab

@@ -190,10 +190,15 @@ trivy:  ## Scan dependencies/Dockerfile+compose/secrets for known vulns (aquasec
 	# fixable CVEs on first run here, including an RCE in langgraph-checkpoint
 	# (CVE-2025-64439); see this repo's own disclosed pin-compatibility
 	# constraints (garak/requirements-garak.txt) before bumping it.
+	# infra/terraform excluded — Checkov (`make checkov`) owns that
+	# directory's IaC scanning; see CI's `trivy` job for why (Trivy's own
+	# DigitalOcean firewall policies flag this repo's necessary public
+	# 80/443 ingress + broad egress as CRITICAL with no way to distinguish
+	# it from an actually-dangerous open port).
 	docker run --rm -v $(PWD):/repo aquasec/trivy:0.74.0 fs \
 		--scanners vuln,secret,misconfig --severity HIGH,CRITICAL --ignore-unfixed \
 		--file-patterns 'pip:requirements-lock\.txt$$' \
-		--skip-dirs .venv,node_modules,.git,.mypy_cache,.ruff_cache,.pytest_cache /repo
+		--skip-dirs .venv,node_modules,.git,.mypy_cache,.ruff_cache,.pytest_cache,infra/terraform /repo
 
 trivy-image:  ## Build the app image (see Dockerfile) and scan it for OS/library vulnerabilities
 	docker build -t agent-core-demo:trivy .
