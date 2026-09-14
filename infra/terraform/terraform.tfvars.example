@@ -1,0 +1,28 @@
+# Copy to terraform.tfvars (gitignored) and fill in, OR skip this file
+# entirely and export TF_VAR_* / DIGITALOCEAN_TOKEN env vars instead
+# (preferred if you ever run `terraform plan` in CI — see infra/README.md).
+
+do_token = "" # https://cloud.digitalocean.com/account/api/tokens — scope: read+write
+
+ssh_key_fingerprints = [
+  # `doctl compute ssh-key list`, or upload one first:
+  # doctl compute ssh-key create my-key --public-key-file ~/.ssh/id_ed25519.pub
+  "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99",
+]
+
+# Your own IP(s) only — curl -s ifconfig.me
+admin_ip_cidrs = ["203.0.113.4/32"]
+
+# Public half of a SEPARATE key pair dedicated to CI deploys (don't reuse
+# your personal key here) — the private half goes in the DEPLOY_SSH_KEY
+# GitHub Actions secret. Generate with:
+#   ssh-keygen -t ed25519 -f ./deploy_key -C "agent-core-demo-ci" -N ""
+deploy_ssh_public_key = "ssh-ed25519 AAAA... agent-core-demo-ci"
+
+region       = "nyc3"
+droplet_size = "s-4vcpu-8gb"
+
+# Optional, informational only (this module's `app_url` output) — the
+# droplet's actual DOMAIN_NAME is set independently in its own .env, see
+# infra/README.md.
+domain_name = ""

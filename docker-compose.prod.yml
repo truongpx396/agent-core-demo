@@ -1,0 +1,232 @@
+# Lean production stack for the Digital Ocean droplet provisioned by
+# infra/terraform (see infra/README.md for the full deploy runbook). A
+# deliberately SMALLER set of services than docker-compose.yml's local dev
+# stack — no Ollama (litellm-config.prod.yaml points at a real hosted
+# OpenAI-compatible endpoint instead), no Langfuse/open-webui/observability
+# stack, no self-hosted MinIO (object storage instead points at DigitalOcean
+# Spaces, S3-compatible — see MINIO_* in .env.prod.example; the `minio`
+# Python client this app already uses talks to any S3-compatible endpoint,
+# not just the literal MinIO server). Fronted by Caddy for TLS.
+#
+# Deployed by .github/workflows/deploy.yml: builds+pushes the app image
+# (root Dockerfile) and the ml-service image (docker/ml-service.Dockerfile)
+# to GHCR, rsyncs this file + Caddyfile + litellm-config.prod.yaml +
+# postgres-init/ to /opt/agent-core-demo on the droplet, then runs
+# `docker compose -f docker-compose.prod.yml pull && up -d` over SSH —
+# api/agent-worker/ingest-worker/ml-service below all reference `image:`,
+# never `build:`, so the droplet only ever pulls layers, it never compiles
+# onnxruntime's dependency chain itself. The droplet's own
+# /opt/agent-core-demo/.env is created once by hand (copy
+# .env.prod.example, fill in real secrets) and never touched by CI; see
+# infra/README.md's first-time-setup section.
+name: agent-core-demo
+
+x-app-env: &app-env
+  OPENAI_API_BASE: http://litellm:4000/v1
+  OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
+  CHAT_MODEL: chat
+  EMBED_MODEL: embed
+  QDRANT_URL: http://qdrant:6333
+  ML_SERVICE_URL: http://ml-service:80
+  CHECKPOINTER_DATABASE_URL: postgresql://langfuse:${POSTGRES_PASSWORD}@postgres:5432/checkpointer
+  APPDATA_DATABASE_URL: postgresql://langfuse:${POSTGRES_PASSWORD}@postgres:5432/appdata
+  REDIS_URL: redis://redis:6379
+  # S3-compatible object storage — DigitalOcean Spaces by default in prod
+  # (no self-hosted MinIO container here; see this file's header). Works
+  # unmodified against real MinIO too if you'd rather self-host: just point
+  # these at a MinIO you run yourself and set MINIO_SECURE=false.
+  MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+  MINIO_BUCKET: ${MINIO_BUCKET}
+  MINIO_SECURE: ${MINIO_SECURE:-true}
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
+  RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-30}
+  MAX_COST_USD_PER_TURN: ${MAX_COST_USD_PER_TURN:-0.50}
+  MAX_COST_USD_PER_TENANT_PER_DAY: ${MAX_COST_USD_PER_TENANT_PER_DAY:-20.0}
+  # Left unset (empty) unless the operator opts into these — same
+  # degrade-gracefully posture app/core/config.py already documents for
+  # each: no Langfuse tracing, no crawl4ai/OpenSandbox tool surfaces, no
+  # Slack notifications, no Telegram channel, no push-based OTel metrics
+  # unless a collector endpoint is actually reachable from this droplet.
+  LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+  LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+  LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+  SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+  TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  CRAWL4AI_SERVER_URL: ${CRAWL4AI_SERVER_URL:-}
+  CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
+  OPENSANDBOX_MCP_DOMAIN: ${OPENSANDBOX_MCP_DOMAIN:-}
+  OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:-}
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
+    environment:
+      # Username stays "langfuse" to match postgres-init/*.sql's hardcoded
+      # `OWNER langfuse` clauses unmodified (those scripts are shared
+      # verbatim with docker-compose.yml's dev stack) — only the PASSWORD
+      # changes from that file's demo default. No `langfuse` DATABASE runs
+      # here (this stack ships no Langfuse container), just the role name.
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: appdata
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis/redis-stack-server:latest
+    restart: unless-stopped
+    volumes:
+      - redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    volumes:
+      - qdrant:/qdrant/storage
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    restart: unless-stopped
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    volumes:
+      - ./litellm-config.prod.yaml:/app/config.yaml:ro
+    environment:
+      LLM_API_BASE: ${LLM_API_BASE}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_CHAT_MODEL: ${LLM_CHAT_MODEL}
+      LLM_EMBED_MODEL: ${LLM_EMBED_MODEL}
+      DATABASE_URL: postgresql://langfuse:${POSTGRES_PASSWORD}@postgres:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      UI_USERNAME: ${LITELLM_UI_USERNAME}
+      UI_PASSWORD: ${LITELLM_UI_PASSWORD}
+      # No LANGFUSE_* here (unlike docker-compose.yml's litellm service) —
+      # this stack ships no Langfuse container; litellm-config.prod.yaml's
+      # success/failure_callback list is trimmed to match (prometheus only).
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Reranker + prompt-injection classifier — see docker-compose.yml's
+  # `ml-service` for the full design writeup. CPU budgets and the hard
+  # `cpus` cgroup ceiling are both scaled down from the dev defaults
+  # (RERANK_CPU_BUDGET=8, cpus: "10") to fit a 4-vCPU droplet
+  # (infra/terraform's default droplet_size) without starving
+  # postgres/redis/qdrant/litellm/api/workers sharing the same box — 3
+  # full cores to this container, 1 left as a floor for everything else,
+  # same "hard ceiling as a second enforcement layer" reasoning as that
+  # file's own comment. Bump both together if you size the droplet up.
+  ml-service:
+    # Prebuilt in CI (.github/workflows/deploy.yml) and pulled here, not
+    # `build:` on the droplet — a small droplet building onnxruntime's
+    # dependency chain on every deploy would be slow and compete with the
+    # very services this box needs CPU for; ML_IMAGE/IMAGE_TAG are set in
+    # .env (stable per-repo) and by the deploy workflow (per-deploy sha)
+    # respectively — see .env.prod.example.
+    image: ${ML_IMAGE}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    cpus: "3"
+    environment:
+      RERANK_CPU_BUDGET: "2"
+      GUARD_CPU_BUDGET: "1"
+    volumes:
+      - ml-service:/home/appuser/.cache
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:80/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+
+  # api/agent-worker/ingest-worker below all run the SAME image (one build,
+  # three commands — see the root Dockerfile's own header for why), built
+  # in CI and pulled here rather than `build: .` on the droplet, same
+  # reasoning as ml-service above: APP_IMAGE is set once in .env,
+  # IMAGE_TAG per deploy by .github/workflows/deploy.yml.
+  api:
+    image: ${APP_IMAGE}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  agent-worker:
+    image: ${APP_IMAGE}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    command: ["python", "-m", "app.turns.agent_worker"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Scale independently once real traffic warrants it (GRAPH_PATTERNS.md
+    # pattern 43): docker compose -f docker-compose.prod.yml up -d --scale agent-worker=3
+
+  ingest-worker:
+    image: ${APP_IMAGE}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    command: ["python", "-m", "app.ingestion.ingest_worker"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Reverse proxy + TLS termination — the only service with a host port
+  # published on 80/443 (see infra/terraform's firewall). Automatic
+  # Let's Encrypt when DOMAIN_NAME is set (Caddyfile), otherwise serves
+  # plain HTTP over the droplet's reserved IP — see Caddyfile's own
+  # comment for that fallback's exact behavior.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Resolved to a real value HERE, at the compose layer, not passed
+      # through raw for Caddy's own {$VAR:default} placeholder to resolve —
+      # verified directly that placeholder's default only fires on a
+      # completely UNSET env var, not one set-but-empty (which is exactly
+      # what .env's `DOMAIN_NAME=` line produces): it would otherwise leave
+      # Caddy with an empty site address entirely, corrupting the site
+      # block into an invalid global-options block. Compose's own `:-`
+      # substitution, unlike Caddy's, does treat empty-and-unset the same
+      # (verified), so branching here instead sidesteps that quirk.
+      CADDY_SITE_ADDRESS: ${DOMAIN_NAME:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+
+volumes:
+  postgres:
+  redis:
+  qdrant:
+  ml-service:
+  caddy_data:
+  caddy_config:

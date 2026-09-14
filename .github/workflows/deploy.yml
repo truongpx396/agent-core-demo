@@ -1,0 +1,135 @@
+name: Deploy
+
+# Automated CD to the Digital Ocean droplet infra/terraform provisions —
+# triggered by the CI workflow's own completion on main (`workflow_run`),
+# not directly by `push`, so a deploy can never start on a commit CI hasn't
+# actually passed for. Terraform itself (creating/destroying the droplet)
+# is NOT run here — that stays a deliberate, human-run `terraform apply`
+# (infra/README.md), same "maintainer runs this deliberately" framing this
+# repo already uses for garak/strix/eval; this workflow only ever updates
+# what's running on a droplet that already exists.
+#
+# Needs these repo secrets (infra/README.md has the full setup):
+#   DROPLET_HOST  — infra/terraform's reserved_ip output
+#   DEPLOY_SSH_KEY — private half of terraform.tfvars' deploy_ssh_public_key
+# GHCR auth uses the workflow's own GITHUB_TOKEN (packages: write below) —
+# no separate registry secret needed.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  build-and-push:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_tag: ${{ steps.tag.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - id: tag
+        run: echo "value=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      # App image — same one Dockerfile/image api, agent-worker, and
+      # ingest-worker all share in docker-compose.prod.yml (just a
+      # different `command:` each), see that Dockerfile's own header.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/agent-core-demo:${{ steps.tag.outputs.value }}
+            ghcr.io/${{ github.repository_owner }}/agent-core-demo:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/ml-service.Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/agent-core-demo-ml-service:${{ steps.tag.outputs.value }}
+            ghcr.io/${{ github.repository_owner }}/agent-core-demo-ml-service:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    # contents: read is required here too (not just packages: read) —
+    # specifying ANY permissions: block sets every UNLISTED scope to
+    # `none`, which would otherwise silently break actions/checkout below.
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install SSH key
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.DROPLET_HOST }}" >> ~/.ssh/known_hosts
+
+      # GHCR packages pushed with the workflow's own GITHUB_TOKEN default to
+      # private, linked to this repo — the droplet needs its own login to
+      # `docker compose pull` them. Uses this JOB's own short-lived
+      # GITHUB_TOKEN (expires when the job ends), not a long-lived PAT
+      # secret: `packages: read` above is enough to pull, nothing is
+      # persisted on the droplet beyond Docker's own credential store.
+      - name: Log the droplet in to GHCR
+        run: |
+          ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts \
+            deploy@${{ secrets.DROPLET_HOST }} \
+            "echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u ${{ github.actor }} --password-stdin"
+
+      # Config/compose files only — never .env (see docker-compose.prod.yml's
+      # own header: secrets live only on the droplet, created once by hand).
+      # --delete is scoped to postgres-init/ specifically, not the whole
+      # target dir, so it can't ever touch the operator-managed .env
+      # sitting alongside these files in /opt/agent-core-demo.
+      - name: Sync compose/config files to the droplet
+        run: |
+          rsync -az -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
+            docker-compose.prod.yml Caddyfile litellm-config.prod.yaml \
+            deploy@${{ secrets.DROPLET_HOST }}:/opt/agent-core-demo/
+          rsync -az --delete -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
+            postgres-init/ \
+            deploy@${{ secrets.DROPLET_HOST }}:/opt/agent-core-demo/postgres-init/
+
+      - name: Pull new images and restart
+        env:
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts \
+            deploy@${{ secrets.DROPLET_HOST }} \
+            "cd /opt/agent-core-demo && \
+             IMAGE_TAG=$IMAGE_TAG docker compose -f docker-compose.prod.yml pull && \
+             IMAGE_TAG=$IMAGE_TAG docker compose -f docker-compose.prod.yml up -d --remove-orphans && \
+             docker image prune -f"
+
+      - name: Wait for /health/ready
+        run: |
+          ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts \
+            deploy@${{ secrets.DROPLET_HOST }} \
+            "timeout 90 bash -c 'until curl -sf http://localhost:8000/health/ready; do sleep 3; done'"

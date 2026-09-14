@@ -51,6 +51,39 @@ name: CI
 # placement, since a workflow_dispatch job can't accidentally run on
 # somebody else's PR the way a `push`/`pull_request` trigger could.
 #
+# `semgrep` (SAST over this app's own Python/Dockerfile source) and
+# `checkov` (IaC misconfiguration scanning over infra/terraform/**) are per-
+# push jobs, same reasoning as `trivy`: no live services, deterministic
+# given a commit, cheap enough to gate every push rather than needing a
+# human to trigger them. Each hard-gates on any finding — both were run
+# against this exact repo state before being wired up here (not guessed):
+# semgrep found one real, since-annotated finding (app/api/main.py's
+# env-gated CORS wildcard — see its own `nosemgrep` comment for why it's a
+# deliberate false positive, not a fix); checkov's only finding
+# (CKV_DIO_2, "droplet specifies an SSH key") is a verified static-analysis
+# limitation against a required Terraform variable with no default — see
+# .checkov.yaml's own comment. Neither job re-scans what `trivy` above
+# already covers (Dockerfile/docker-compose misconfig, dependency CVEs,
+# secrets) — semgrep's rulesets target source-code patterns trivy's
+# scanners don't parse at all, and checkov here is scoped to
+# infra/terraform only (see .checkov.yaml), the one IaC surface trivy's
+# own filesystem walk has nothing meaningful to say about beyond generic
+# misconfig heuristics.
+#
+# `sonarqube` (self-hosted Community Edition, not SonarCloud — see
+# docker-compose.yml's `quality` profile for the same image used
+# persistently outside CI) runs its own ephemeral server as a job step
+# (same explicit `docker run` sidecar shape this file's `promptfoo`/
+# `test-live` jobs already use for Ollama/crawl4ai, not GH Actions'
+# `services:` block — this server needs to be healthy and have ingested
+# the scanner's report before the quality-gate poll makes sense, which a
+# plain step-ordered `docker run` guarantees more simply here than
+# coordinating around `services:`' own startup-before-any-step ordering).
+# Ephemeral means no cross-run history/trend dashboards — a real
+# always-on SonarQube server would need its own persistent deployment,
+# out of scope here (see infra/README.md) — but static analysis + the
+# quality gate itself are still fully real and still hard-gate the build.
+#
 # All jobs below are independent (no `needs:` edges) and run fully in
 # parallel — the point of this whole file's own existence being fast CI, not
 # just correct CI.
@@ -270,6 +303,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # infra/terraform excluded below: Checkov (the `checkov` job,
+      # .checkov.yaml) owns IaC misconfig scanning for that directory —
+      # verified directly this exclusion is needed, not preemptive: Trivy's
+      # own DigitalOcean firewall policies (DIG-0001/DIG-0003) flag ANY
+      # 0.0.0.0/0 rule as CRITICAL with no way to distinguish a public web
+      # app's necessary 80/443 ingress + broad egress (GHCR, apt, Let's
+      # Encrypt, the LLM API, ...) from an actually-dangerous open SSH/DB
+      # port, unlike Checkov which has no equivalent blanket check here
+      # (confirmed empirically: a real checkov run against this exact
+      # firewall resource passes clean).
       - name: Trivy fs — hard gate (fixable CRITICAL vulns + secrets + IaC misconfig)
         uses: aquasecurity/trivy-action@v0.36.0
         env:
@@ -281,7 +324,7 @@ jobs:
           severity: CRITICAL
           ignore-unfixed: true
           exit-code: "1"
-          skip-dirs: .venv,node_modules,.mypy_cache,.ruff_cache,.pytest_cache
+          skip-dirs: .venv,node_modules,.mypy_cache,.ruff_cache,.pytest_cache,infra/terraform
 
       - name: Trivy fs — full report (HIGH+CRITICAL, incl. unfixed) → SARIF
         if: always()
@@ -296,7 +339,7 @@ jobs:
           format: sarif
           output: trivy-fs-results.sarif
           exit-code: "0"
-          skip-dirs: .venv,node_modules,.mypy_cache,.ruff_cache,.pytest_cache
+          skip-dirs: .venv,node_modules,.mypy_cache,.ruff_cache,.pytest_cache,infra/terraform
           skip-setup-trivy: true
 
       - name: Upload fs report to the Security tab
@@ -347,3 +390,132 @@ jobs:
           sarif_file: trivy-image-results.sarif
           category: trivy-image
         continue-on-error: true
+
+  semgrep:
+    # See this file's own header comment for the "distinct, non-redundant
+    # with trivy" reasoning. Rulesets are Semgrep's free, no-login registry
+    # configs (`p/security-audit`, `p/secrets`, `p/python`, `p/dockerfile`)
+    # — verified directly these need no `semgrep login`/SEMGREP_APP_TOKEN.
+    # `--error` is what actually makes a blocking finding fail the step;
+    # verified directly semgrep's own default exit code is 0 even WITH
+    # findings otherwise. A second, always-run pass emits SARIF regardless
+    # of whether the gate step failed, same "gate + always-report" shape as
+    # the `trivy` job above.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install semgrep==1.177.0
+
+      - name: Semgrep — hard gate
+        run: >
+          semgrep scan --error --metrics=off
+          --config p/security-audit --config p/secrets --config p/python --config p/dockerfile
+          app/ scripts/ docker/ Dockerfile
+
+      - name: Semgrep — SARIF report
+        if: always()
+        run: >
+          semgrep scan --metrics=off
+          --config p/security-audit --config p/secrets --config p/python --config p/dockerfile
+          --sarif --output semgrep-results.sarif
+          app/ scripts/ docker/ Dockerfile
+
+      - name: Upload report to the Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
+        continue-on-error: true
+
+  checkov:
+    # Scoped to infra/terraform only — see .checkov.yaml's own header on why
+    # this doesn't re-cover Dockerfile/docker-compose (trivy's job already
+    # does). .checkov.yaml's one skip-check (CKV_DIO_2) is a verified false
+    # positive, not a suppressed real finding — see that file's comment.
+    # Checkov's own default exit code already fails on any un-skipped
+    # failed check, so no extra `--hard-fail-on` flag is needed for the
+    # gate; SARIF still gets uploaded on failure via `if: always()`.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install checkov==3.3.17
+
+      - name: Checkov — hard gate
+        run: checkov --config-file .checkov.yaml
+
+      - name: Checkov — SARIF report
+        if: always()
+        run: checkov --config-file .checkov.yaml --output sarif --output-file-path . --soft-fail
+
+      - name: Upload report to the Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results_sarif.sarif
+          category: checkov
+        continue-on-error: true
+
+  sonarqube:
+    # Self-hosted SonarQube Community Edition (not SonarCloud) — an
+    # EPHEMERAL server started as a job step, same explicit `docker run`
+    # sidecar shape this file's `test-live`/`promptfoo` jobs already use for
+    # Ollama/crawl4ai (not GH Actions' `services:` block — this server needs
+    # to be healthy, and later have ingested the scan report, before the
+    # next step touches it, which a plain step-ordered `docker run`
+    # guarantees more simply than coordinating around `services:`' own
+    # start-before-any-step ordering). Ephemeral means no cross-run
+    # history/trend dashboards — a persistent server is a separate,
+    # deliberately out-of-scope deployment (see infra/README.md) — but the
+    # static analysis and quality gate below are still fully real and still
+    # hard-gate the build.
+    #
+    # Every command below was verified directly against a real SonarQube
+    # 26.x Community Edition container before being wired up here, not
+    # assumed from docs: the default admin/admin credentials DO work for
+    # token generation + analysis submission with no forced password-reset
+    # blocking it (only the web UI nags about it); `-Dsonar.qualitygate.wait
+    # =true` makes the scanner's OWN process block on and fail on a failed
+    # gate (confirmed both a PASSED run's exit 0 and that the flag isn't a
+    # no-op) — no extra polling script or third-party Action needed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the SCM Publisher sensor wants real git blame history, not a shallow clone
+
+      - run: docker run -d --name sonarqube -p 9000:9000 sonarqube:community # 26.x Community Edition — the version this job's whole recipe was verified against
+
+      - name: Wait for SonarQube to be ready
+        run: >
+          timeout 120 bash -c
+          'until curl -sf http://localhost:9000/api/system/status | grep -q "\"status\":\"UP\""; do sleep 5; done'
+
+      - name: Generate a scanner token
+        run: |
+          token=$(curl -sf -u admin:admin -X POST "http://localhost:9000/api/user_tokens/generate" -d "name=ci-${GITHUB_RUN_ID}" \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['token'])")
+          echo "::add-mask::$token"
+          echo "SONAR_TOKEN=$token" >> "$GITHUB_ENV"
+
+      - name: Scan and wait for the quality gate
+        env:
+          SONAR_HOST_URL: http://localhost:9000
+        run: >
+          docker run --rm --network host
+          -e SONAR_HOST_URL -e SONAR_TOKEN
+          -v ${{ github.workspace }}:/usr/src -w /usr/src
+          sonarsource/sonar-scanner-cli@sha256:23ca0f137965d9dff2198074043fd48d386280bc5d0ccac8c8349cea4cf096a9
+          -Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300

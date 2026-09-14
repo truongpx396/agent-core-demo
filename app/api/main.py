@@ -223,9 +223,11 @@ app.add_middleware(TenantRateLimitMiddleware)
 # "*" (the default, CORS_ALLOWED_ORIGINS) is fine for a local demo with no
 # other frontend pointed at this API — app/api/static/index.html is
 # same-origin and never touches CORS at all. A real multi-origin
-# deployment sets CORS_ALLOWED_ORIGINS to a comma-separated allowlist.
+# deployment sets CORS_ALLOWED_ORIGINS to a comma-separated allowlist —
+# see .env.prod.example, which does exactly that (not "*").
 app.add_middleware(
     CORSMiddleware,
+    # nosemgrep: python.fastapi.security.wildcard-cors.wildcard-cors -- gated behind CORS_ALLOWED_ORIGINS, not a hardcoded wildcard; see comment above.
     allow_origins=["*"] if CORS_ALLOWED_ORIGINS == "*" else CORS_ALLOWED_ORIGINS.split(","),
     allow_methods=["*"],
     allow_headers=["*"],
