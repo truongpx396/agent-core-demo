@@ -1,0 +1,22 @@
+# Checkov IaC scan config — see .github/workflows/ci.yml's `checkov` job and
+# `make checkov`. Scoped to infra/terraform: the only Terraform in this repo,
+# and deliberately NOT re-scanning Dockerfile/docker-compose*.yml here —
+# ci.yml's existing `trivy` job's misconfig scanner already covers those
+# (see that job's own header comment), so this stays non-redundant with it.
+directory:
+  - infra/terraform
+framework:
+  - terraform
+compact: true
+quiet: true
+download-external-modules: false
+skip-check:
+  # False positive, verified locally by actually running checkov against
+  # this config (not guessed): main.tf's digitalocean_droplet.app sets
+  # `ssh_keys = var.ssh_key_fingerprints`, and variables.tf's
+  # ssh_key_fingerprints has NO default plus a `validation` block requiring
+  # length > 0 — so an apply with an empty/unset value fails before any
+  # droplet is created. Checkov's static graph can't resolve a required
+  # variable with no default to a concrete value, so it conservatively
+  # flags the droplet as if ssh_keys were never set at all.
+  - CKV_DIO_2

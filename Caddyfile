@@ -1,0 +1,40 @@
+# Reverse proxy + TLS termination for the `api` service (docker-compose.prod.yml).
+#
+# No explicit `email` global option for Let's Encrypt registration — Let's
+# Encrypt issues certs fine without one, you just don't get
+# renewal-problem notices.
+#
+# CADDY_SITE_ADDRESS (docker-compose.prod.yml) is already resolved to a
+# real, non-empty value before it gets here — NOT `{$DOMAIN_NAME:-:80}`
+# resolved by Caddy's own placeholder syntax: verified directly that its
+# default only fires on a completely UNSET env var, not one set-but-empty
+# (exactly what `DOMAIN_NAME=` in .env produces), which would otherwise
+# leave the site address blank and corrupt this whole block into an
+# invalid global-options block instead of a site block. See that file's
+# own comment for the fix (compose's `:-`, unlike Caddy's, treats
+# empty-and-unset the same). Net effect unchanged: a real DOMAIN_NAME gets
+# a real Let's Encrypt certificate (needs its DNS A/AAAA record already
+# pointed at infra/terraform's reserved_ip output, and ports 80/443
+# reachable from the internet — both already true per that module's
+# firewall); empty means plain HTTP on `:80` for any hostname/IP — no cert
+# to issue for a bare IP, so this is the deliberate fallback, not a bug:
+# verified against Caddy's own docs that ACME can't issue a cert for an IP
+# address at all.
+{$CADDY_SITE_ADDRESS} {
+	reverse_proxy api:8000 {
+		# SSE (POST /chat/stream/queued) needs the proxy to not buffer/
+		# chunk-coalesce the response — Caddy streams by default, but
+		# flush_interval -1 makes that explicit rather than relying on
+		# the default heuristic. (X-Forwarded-For for
+		# app/api/rate_limit.py's per-tenant limiter needs no directive
+		# here — Caddy's reverse_proxy sets it automatically.)
+		flush_interval -1
+	}
+
+	encode gzip
+
+	log {
+		output stdout
+		format json
+	}
+}

@@ -1,4 +1,4 @@
-.PHONY: help up up-app sandbox-up sandbox-build pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
+.PHONY: help up up-app sandbox-up sandbox-build pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -199,6 +199,33 @@ trivy-image:  ## Build the app image (see Dockerfile) and scan it for OS/library
 	docker build -t agent-core-demo:trivy .
 	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.74.0 image \
 		--severity HIGH,CRITICAL --ignore-unfixed agent-core-demo:trivy
+
+semgrep:  ## Static analysis (SAST) over app/scripts/docker/Dockerfile via Docker (no local install) — same rulesets and hard gate as CI's `semgrep` job; see that job's own comment for why these `p/*` configs need no `semgrep login`
+	docker run --rm -v $(PWD):/src -w /src semgrep/semgrep:1.177.0 semgrep scan --error --metrics=off \
+		--config p/security-audit --config p/secrets --config p/python --config p/dockerfile \
+		app/ scripts/ docker/ Dockerfile
+
+checkov:  ## Scan infra/terraform for IaC misconfigurations — same config/gate as CI's `checkov` job. pip install, not Docker: verified directly bridgecrewio/checkov's Docker Hub image no longer pulls ("repository does not exist"), unlike every other Docker-based scanner target in this file
+	pip install -q checkov==3.3.17
+	checkov --config-file .checkov.yaml
+
+sonar-up:  ## Start a PERSISTENT self-hosted SonarQube (Community Edition) at http://localhost:9002 — opt-in `quality` profile (see docker-compose.yml's own comment on why 9002, not 9000/9001, and why this is separate from CI's ephemeral `sonarqube` job). First login: admin/admin, then change the password before running `make sonar-scan` for real (a throwaway local instance can skip that, same as CI's own ephemeral one).
+	docker compose --profile quality up -d sonarqube-db sonarqube
+
+sonar-down:  ## Stop the persistent SonarQube server (keeps its volumes — history/trends survive)
+	docker compose --profile quality stop sonarqube sonarqube-db
+
+sonar-scan:  ## Run a scan against the persistent `make sonar-up` server (needs SONAR_TOKEN — generate one under My Account -> Security in the UI first). The very first baseline scan of this repo found ~90 pre-existing issues (2 BLOCKER, 10 CRITICAL) that the default "clean new code" quality gate does NOT block on — see the dashboard to triage them; that gate only fails a scan when NEW code introduces a new issue.
+	@test -n "$$SONAR_TOKEN" || (echo "SONAR_TOKEN is required — generate one in the SonarQube UI (My Account -> Security)" && exit 1)
+	# Joins docker-compose.yml's own network and talks to the `sonarqube`
+	# service by its in-network name/port (9000, not the 9002 host
+	# publish) — NOT `--network host` (what CI's ephemeral job uses, see
+	# that job's own comment): host networking is Linux-only-reliable and
+	# this target needs to work the same on a Mac dev machine too.
+	docker run --rm --network agent-core-demo_default \
+		-e SONAR_HOST_URL=http://sonarqube:9000 -e SONAR_TOKEN=$$SONAR_TOKEN \
+		-v $(PWD):/usr/src -w /usr/src \
+		sonarsource/sonar-scanner-cli@sha256:23ca0f137965d9dff2198074043fd48d386280bc5d0ccac8c8349cea4cf096a9
 
 loadtest-up:  ## The one command to run before `make loadtest-queued`/`-headless`: (re)starts loadtest/fake_llm_server.py as a backgrounded host process (var/fake-llm.log) and points the containerized api/agent-worker*/ingest-worker at it (`loadtest-app-up`). Safe to re-run any time — kills and waits out any already-running fake-llm first, same idempotent-restart idiom as `restart-all`. Counterpart: `make loadtest-down`.
 	pkill -f 'loadtest.fake_llm_server' 2>/dev/null || true

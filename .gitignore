@@ -35,3 +35,24 @@ loadtest/results-queued/
 # repo entirely, nothing to ignore for that part
 strix_runs/
 
+# sonar-scanner (make sonar-scan / CI's `sonarqube` job) — local scan
+# working files, regenerated every run
+.scannerwork/
+.sonar/
+
+# Terraform (infra/terraform, see infra/README.md) — local state and any
+# real tfvars; terraform.tfvars.example and .terraform.lock.hcl (both
+# meant to be committed) are unaffected since neither matches these globs.
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/terraform/*.tfplan
+infra/terraform/terraform.tfvars
+infra/terraform/*.auto.tfvars
+infra/terraform/crash.log
+
+# Production secrets — must exist only on the droplet itself, never in this
+# repo (see docker-compose.prod.yml's own header comment); .env.prod.example
+# is the committed template and stays unaffected by this glob.
+.env.prod
+

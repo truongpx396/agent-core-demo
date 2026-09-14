@@ -1,0 +1,33 @@
+name: Terraform validate
+
+# Structural correctness only (fmt + validate) — deliberately NOT `terraform
+# plan`: infra/terraform's backend defaults to local state (see
+# infra/terraform/versions.tf's own comment), which this runner has no
+# access to, so a `plan` here would show "create everything from scratch"
+# rather than a real diff against the actual droplet. IaC misconfiguration
+# scanning for this same directory lives in .github/workflows/ci.yml's
+# `checkov` job instead (runs on every push, not just infra changes — see
+# that file's own header). See infra/README.md for the real, human-run
+# `terraform plan`/`apply` workflow.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "infra/terraform/**"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - run: terraform fmt -check -diff -recursive
+      - run: terraform init -backend=false
+      - run: terraform validate

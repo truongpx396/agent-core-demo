@@ -460,6 +460,62 @@ services:
       # releases refuse to start in non-interactive mode without one.
       OPENSANDBOX_SERVER_API_KEY: ${OPENSANDBOX_API_KEY}
 
+  # --- Self-hosted SonarQube Community Edition (`make sonar-up` / `docker
+  # compose --profile quality up -d`) — a PERSISTENT server, unlike
+  # .github/workflows/ci.yml's own ephemeral per-run `sonarqube` job (see
+  # that job's own comment for why CI doesn't just point at this one: a
+  # local dev server isn't reachable from a GH-hosted runner). Running
+  # this gets you the thing the CI job explicitly can't: cross-run
+  # history, trend graphs, and a real dashboard to triage the 90-ish
+  # pre-existing issues (2 BLOCKER) the first baseline scan found in this
+  # repo — see `make sonar-scan`'s own comment. Opt-in like `sandbox`/
+  # `app` above: real memory cost (SonarQube's own docs: 2GB+ heap) not
+  # every `make up` session needs.
+  #
+  # Its own dedicated Postgres, not this stack's shared `postgres` service
+  # — SonarQube owns and migrates its own schema on a version upgrade, and
+  # that lifecycle shouldn't couple to appdata/checkpointer/litellm's (same
+  # "separate database per owner" reasoning as postgres-init/05-checkpointer-db.sql).
+  sonarqube-db:
+    image: postgres:16
+    profiles: ["quality"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sonarqube
+      POSTGRES_PASSWORD: sonarqube
+      POSTGRES_DB: sonarqube
+    volumes:
+      - sonarqube-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonarqube"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  sonarqube:
+    image: sonarqube:community
+    profiles: ["quality"]
+    restart: unless-stopped
+    ports:
+      - "9002:9000"   # not 9000/9001 — this stack's own minio already binds both of those host ports
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://sonarqube-db:5432/sonarqube
+      SONAR_JDBC_USERNAME: sonarqube
+      SONAR_JDBC_PASSWORD: sonarqube
+    volumes:
+      - sonarqube-data:/opt/sonarqube/data
+      - sonarqube-extensions:/opt/sonarqube/extensions
+      - sonarqube-logs:/opt/sonarqube/logs
+    depends_on:
+      sonarqube-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/api/system/status | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
   # --- Containerized app roles (opt-in, NOT started by `make up`) ---
   #
   # Everyday dev/demo still runs `make serve`/`make agent-worker`/
@@ -586,3 +642,7 @@ volumes:
   opensandbox-data:
   textfile_collector:
   ml-service:
+  sonarqube-db:
+  sonarqube-data:
+  sonarqube-extensions:
+  sonarqube-logs:

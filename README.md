@@ -694,12 +694,65 @@ promptfoo/garak/`scripts/eval.py` are complementary rather than redundant):
 
 ## Security scanning & load testing
 
-Three more tools, each answering a question the six testing tiers above
-don't: are the pinned dependencies/Dockerfile/compose files themselves
-carrying known CVEs or secrets (Trivy), does the running app hold up as an
-autonomous attacker actively pokes at it rather than a fixed probe list
-(Strix), and does it hold up under concurrent load rather than one turn at a
-time (Locust)?
+Six more tools, each answering a question the six testing tiers above don't:
+are the pinned dependencies/Dockerfile/compose files themselves carrying
+known CVEs or secrets (Trivy), does the *source code itself* carry known
+insecure patterns (Semgrep) or quality/security issues with a real gate
+(SonarQube), is the Terraform that provisions production infra itself
+misconfigured (Checkov), does the running app hold up as an autonomous
+attacker actively pokes at it rather than a fixed probe list (Strix), and
+does it hold up under concurrent load rather than one turn at a time
+(Locust)?
+
+**[Semgrep](https://semgrep.dev/)** — static analysis (SAST) over
+`app/`/`scripts/`/`docker/`/`Dockerfile`, via `semgrep/semgrep` in CI and
+locally (no local install needed either way):
+- `make semgrep` — `p/security-audit` + `p/secrets` + `p/python` +
+  `p/dockerfile`, Semgrep's own free registry rulesets (verified directly:
+  none need `semgrep login`/a `SEMGREP_APP_TOKEN`).
+- CI's `semgrep` job hard-gates on any blocking finding (`--error` — verified
+  directly Semgrep's own default exit code is 0 even *with* findings
+  otherwise) and uploads a full SARIF report to the Security tab regardless.
+- **Disclosed finding, not hypothetical**: this surfaced one real finding on
+  first run — `app/api/main.py`'s CORS middleware pattern-matches Semgrep's
+  FastAPI-aware `wildcard-cors` rule even though `allow_origins` is gated
+  behind `CORS_ALLOWED_ORIGINS` (only wildcard when that's left at its local-
+  demo default) — see the `nosemgrep` comment right above it for the
+  reasoning, and `.env.prod.example` for the actual production setting.
+
+**[Checkov](https://www.checkov.io/)** — IaC misconfiguration scanning,
+scoped to `infra/terraform/**` (the one IaC surface Trivy's own misconfig
+scanner, above, has little to say about — see `.checkov.yaml`'s own header
+for why this doesn't re-cover Dockerfile/compose, which Trivy already does):
+- `make checkov` — pip install, not Docker: verified directly
+  `bridgecrewio/checkov`'s Docker Hub image no longer pulls ("repository
+  does not exist"), unlike every other Docker-based tool on this list.
+- CI's `checkov` job hard-gates on any un-skipped failed check.
+  `.checkov.yaml`'s one skip (`CKV_DIO_2`, "droplet specifies an SSH key")
+  is a verified false positive — `infra/terraform/variables.tf`'s
+  `ssh_key_fingerprints` has no default plus a `validation` block requiring
+  it non-empty, which Checkov's static graph can't resolve through, not an
+  actual missing key.
+
+**[SonarQube](https://www.sonarsource.com/products/sonarqube/)** (self-hosted
+Community Edition, not SonarCloud) — static analysis + a real quality gate:
+- CI's `sonarqube` job starts an **ephemeral** server as a job step (same
+  `docker run` sidecar shape `test-live`/`promptfoo` already use for
+  Ollama/crawl4ai), scans, and blocks on `-Dsonar.qualitygate.wait=true`
+  (verified directly: the scanner's own process fails on a failed gate, no
+  extra polling script or GitHub Action needed). Ephemeral means no cross-run
+  history/trend dashboard.
+- `make sonar-up` starts a **persistent** self-hosted instance instead
+  (`docker-compose.yml`'s opt-in `quality` profile, own dedicated Postgres,
+  http://localhost:9002) for exactly that history — `make sonar-scan` runs
+  against it (needs `SONAR_TOKEN` from its UI).
+- **Disclosed finding, not hypothetical**: the very first baseline scan of
+  this repo (`app`/`scripts`/`docker/ml-service` + `tests`) found ~90
+  pre-existing issues, including 2 BLOCKER and 10 CRITICAL — and still
+  **passed** the default quality gate, because that gate only evaluates
+  *new* code, not the full pre-existing history (SonarQube's own "clean as
+  you code" model). Worth a look in the dashboard (`make sonar-up`), not a
+  regression this change introduced.
 
 **[Trivy](https://github.com/aquasecurity/trivy)** — dependency/secret/IaC
 misconfiguration scanning, via `aquasecurity/trivy-action` in CI and plain
@@ -781,6 +834,24 @@ agent-worker` first, and ideally `make ingest` for real retrieval hits:
   `-np 1` serialization — see the locustfile's own module docstring for the
   full reasoning.
 
+## Deploying to production
+
+`infra/terraform/` provisions a Digital Ocean droplet running a **lean**
+production subset of this stack (`docker-compose.prod.yml`: api +
+agent-worker + ingest-worker + postgres + redis + qdrant + litellm +
+ml-service, fronted by Caddy for TLS) — deliberately not the full local dev
+stack above (no Ollama/Langfuse/open-webui/observability/self-hosted MinIO;
+see that compose file's own header for what's swapped in instead, e.g.
+DigitalOcean Spaces for object storage). `.github/workflows/deploy.yml`
+builds+pushes images to GHCR and redeploys automatically once `CI` passes on
+`main`; provisioning the droplet itself stays a deliberate, human-run
+`terraform apply`.
+
+See **[infra/README.md](infra/README.md)** for the full one-time setup and
+day-2 operations (scaling, backups, rollback, destroying the droplet). The
+Checkov/Semgrep/SonarQube/Trivy tools above all gate what gets built and
+shipped here — see that file's own closing section for how they line up.
+
 ## Make targets
 
 | Target            | Description |
@@ -813,6 +884,11 @@ agent-worker` first, and ideally `make ingest` for real retrieval hits:
 | `make deepeval`   | LLM-judged RAG quality + a multi-turn conversation simulation against the real graph (manual — read the reasons by hand, see GRAPH_PATTERNS.md pattern 48) |
 | `make trivy`      | Scan dependencies/Dockerfile+compose/secrets for known vulns (Docker, no local trivy install needed) |
 | `make trivy-image`| Build the app image and scan it for OS/library vulnerabilities |
+| `make semgrep`    | SAST over `app`/`scripts`/`docker`/`Dockerfile` (Docker, no local semgrep install needed) |
+| `make checkov`    | IaC misconfiguration scan of `infra/terraform/**` |
+| `make sonar-up`   | Start a persistent self-hosted SonarQube (http://localhost:9002, opt-in `quality` profile) |
+| `make sonar-down` | Stop the persistent SonarQube server (keeps its volumes) |
+| `make sonar-scan` | Scan against the persistent `make sonar-up` server (needs `SONAR_TOKEN`) |
 | `make strix`      | Autonomous AI pentest of this repo's source (static) — needs `pipx install strix-agent` + a cloud LLM key (see "Security scanning & load testing") |
 | `make strix-app`  | Same, but black-box against the running app + its OpenAPI spec (needs `make up` + `make serve`/`make up-app`) |
 | `make strix-view` | Open the local dashboard for the most recent `make strix`/`make strix-app` run |
