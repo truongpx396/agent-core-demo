@@ -341,6 +341,66 @@ def ensure_qdrant() -> dict[str, str]:
     return _acquire("qdrant", _start)
 
 
+def ensure_ml_service() -> dict[str, str]:
+    """Real reranker + prompt-injection-classifier service — the same
+    image docker-compose.yml's own `ml-service` builds from
+    docker/ml-service.Dockerfile. Needed purely to satisfy
+    `GET /health/ready`'s `ml_service` check (app/api/health.py), added
+    once that endpoint started checking it: the same "a real instance, not
+    a stub, even though this test's own assertions don't depend on it"
+    reasoning `ensure_qdrant()` above already documents for retrieval
+    quality — `_wait_until_ready`-style polling loops in
+    tests/integration/test_worker_scaling.py and tests/live/conftest.py
+    block on this exact endpoint returning 200, which it never will while
+    ANY checked dependency stays unreachable.
+
+    No first-party testcontainers module (this is this repo's own image,
+    not a published one) and no pre-built public tag to pull — built once
+    here via the `docker` SDK directly, then driven through the generic
+    `DockerContainer` API like `ensure_qdrant()`. Both ONNX models this
+    service loads (~22M params each, docker/ml-service/main.py) are small
+    enough that a cold download inside the container's own healthcheck-
+    covered startup stays cheap — unlike `ensure_ollama()`'s multi-GB chat
+    model, no extra host-side model cache/`actions/cache` step is needed
+    here. Returns `ml_service_url`.
+    """
+    _require_docker("a real reranker/prompt-guard ml-service")
+
+    def _start() -> dict[str, Any]:
+        import httpx
+        from testcontainers.core.container import DockerContainer
+
+        import docker
+
+        tag = "agent-core-demo-ml-service:test"
+        docker.from_env().images.build(
+            path=str(_REPO_ROOT), dockerfile="docker/ml-service.Dockerfile", tag=tag
+        )
+        container = DockerContainer(tag).with_exposed_ports(80)
+        container.start()
+        host = container.get_container_host_ip()
+        port = int(container.get_exposed_port(80))
+        url = f"http://{host}:{port}"
+        # Generous retry budget, mirroring docker-compose.yml's own
+        # ml-service healthcheck `start_period` comment: covers a cold
+        # pull of BOTH models on first startup.
+        for attempt in range(90):
+            try:
+                if httpx.get(f"{url}/health", timeout=2).status_code == 200:
+                    break
+            except Exception:  # noqa: BLE001,S110 - retry until the timeout below (same idiom as ensure_qdrant/ensure_postgres above, just checked outside the except since a non-200 response here doesn't raise)
+                pass
+            if attempt == 89:
+                raise RuntimeError(f"ml-service never became healthy: {url}/health")
+            time.sleep(1)
+        return {
+            "container_id": container.get_wrapped_container().id,
+            "ml_service_url": url,
+        }
+
+    return _acquire("ml-service", _start)
+
+
 _OLLAMA_HOME = Path.home() / ".cache" / "agent-core-demo-ollama-models"
 
 

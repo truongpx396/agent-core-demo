@@ -25,7 +25,17 @@ FROM python:3.13-slim AS base
 # in its own dockerized server (docker-compose.yml's `crawl4ai` service,
 # GRAPH_PATTERNS.md pattern 50); app/ingestion/web_crawler.py talks to it
 # over HTTP, so this image never launches a browser itself.
-RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+#
+# `apt-get upgrade -y` before the install: pulls security patches for
+# packages already baked into the `python:3.13-slim` base layer (perl-base,
+# not anything this Dockerfile itself installs) — CI's `trivy` job scans
+# the built image's actual OS layer, not just this Dockerfile's own
+# instructions, and caught a real fixed-CRITICAL CVE here
+# (CVE-2026-13221) that a plain `apt-get install` alone never touches,
+# since it only ever installs/upgrades the packages named on its own
+# command line.
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 1000 appuser
