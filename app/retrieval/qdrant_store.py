@@ -53,6 +53,7 @@ from qdrant_client.models import (
     FusionQuery,
     HasIdCondition,
     MatchValue,
+    Modifier,
     PointStruct,
     Prefetch,
     SparseVector,
@@ -83,11 +84,22 @@ def ensure_collection(dim: int, collection: str | None = None) -> None:
     `SKILLS_COLLECTION` (app/core/config.py) to (re)create a SEPARATE
     collection with the same dense+sparse schema, as scripts/index_skills.py
     does. Every call site keeps working unchanged by omitting it."""
+    # `Modifier.IDF` is required here, not optional tuning: fastembed's
+    # `Qdrant/bm25` sparse model (app/retrieval/embeddings.py) only computes
+    # the term-frequency half of the BM25 formula locally — its own docs
+    # state the IDF half is expected to be computed by Qdrant, via this
+    # exact modifier, from the collection's indexed document frequencies.
+    # Without it, Qdrant scores the sparse leg as a plain dot product over
+    # TF-only values — no IDF weighting at all, so common/uninformative
+    # terms score the same as rare/distinctive ones and the "BM25" leg of
+    # hybrid search isn't actually BM25.
     client = get_client()
     client.recreate_collection(
         collection_name=collection or COLLECTION,
         vectors_config={DENSE_VECTOR_NAME: VectorParams(size=dim, distance=Distance.COSINE)},
-        sparse_vectors_config={SPARSE_VECTOR_NAME: SparseVectorParams()},
+        sparse_vectors_config={
+            SPARSE_VECTOR_NAME: SparseVectorParams(modifier=Modifier.IDF)
+        },
     )
 
 
