@@ -694,15 +694,19 @@ promptfoo/garak/`scripts/eval.py` are complementary rather than redundant):
 
 ## Security scanning & load testing
 
-Six more tools, each answering a question the six testing tiers above don't:
-are the pinned dependencies/Dockerfile/compose files themselves carrying
-known CVEs or secrets (Trivy), does the *source code itself* carry known
-insecure patterns (Semgrep) or quality/security issues with a real gate
-(SonarQube), is the Terraform that provisions production infra itself
+Eight more tools, each answering a question the six testing tiers above
+don't: are the pinned dependencies/Dockerfile/compose files themselves
+carrying known CVEs or secrets (Trivy), does the *source code itself* carry
+known insecure patterns (Semgrep) or quality/security issues with a real
+gate (SonarQube), is the Terraform that provisions production infra itself
 misconfigured (Checkov), does the running app hold up as an autonomous
-attacker actively pokes at it rather than a fixed probe list (Strix), and
-does it hold up under concurrent load rather than one turn at a time
-(Locust)?
+attacker actively pokes at it rather than a fixed probe list (Strix), does
+its live HTTP surface show the standard OWASP-catalogued web/API weaknesses
+a well-known open scanner checks for rather than whatever an LLM agent
+happens to try (ZAP), does it hold up under concurrent load rather than one
+turn at a time (Locust), and once all of the above produce findings, where
+do they get deduplicated and triaged over time instead of re-read from
+scratch on every run (DefectDojo)?
 
 **[Semgrep](https://semgrep.dev/)** — static analysis (SAST) over
 `app/`/`scripts/`/`docker/`/`Dockerfile`, via `semgrep/semgrep` in CI and
@@ -814,6 +818,38 @@ above), and reports real proof-of-concept reproductions.
   is exactly that case; nothing here is set up to point it at anyone else's
   system.
 
+**[OWASP ZAP](https://github.com/zaproxy/zaproxy)** — the standard
+open-source DAST scanner: unlike Strix's autonomous agent above (which
+decides what to try), ZAP runs OWASP's own fixed, well-known catalog of
+web/API checks against the live app, via `zaproxy/zap-stable` (no local ZAP
+install needed, in CI or locally):
+- `make zap-baseline` — spider + **passive** scan only (no attacks, safe
+  against anything you merely have read access to) against a running
+  target (`make serve`/`make up-app`), default. Reports land under
+  `zap_reports/` (gitignored) as HTML + XML.
+- `make zap-api-scan` — drives ZAP's **active** scanner against every
+  endpoint in the app's own auto-generated OpenAPI spec
+  (`http://localhost:8000/openapi.json`) — the one that actually attacks
+  input handling, same "dynamic pass against the live app" tier as `make
+  strix-app`, just OWASP's standard scanner instead of an autonomous agent.
+- `make zap-view` — opens the most recent HTML report.
+- `.github/workflows/zap.yml` runs either mode in CI, but
+  **`workflow_dispatch` only**, same reasoning as `strix.yml`: it needs a
+  reachable, running target (this repo's CI has no live deployment of its
+  own to point at by default — see infra/README.md) and `api-scan` mode
+  actively attacks whatever URL you give it. If `DEFECTDOJO_URL` (repo
+  variable) + `DEFECTDOJO_API_KEY` (repo secret) are configured, the
+  resulting report is also pushed into DefectDojo (below) — skipped, not
+  failed, when unset.
+- **Disclosed finding, not hypothetical**: the XML report format
+  (`-x`), not the JSON one ZAP can also emit (`-J`), is what DefectDojo's
+  own ZAP parser actually accepts — verified directly against a real
+  DefectDojo instance while wiring this up (`make zap-baseline`'s own XML
+  output exists specifically because of this); `scripts/defectdojo_import.py`'s
+  own docstring has the full disclosed detail.
+- **Only ever point `zap-api-scan`/`mode: api-scan` at a target you own or
+  have explicit permission to test** — same rule Strix states for itself.
+
 **[Locust](https://locust.io/)** — load testing against the running FastAPI
 service's queued chat path (`loadtest/locustfile_queued.py`, the only HTTP
 chat path this app serves); needs `make up` + `make serve` + `make
@@ -833,6 +869,48 @@ agent-worker` first, and ideally `make ingest` for real retrieval hits:
   instead of native Ollama to isolate that concurrency from Ollama's own
   `-np 1` serialization — see the locustfile's own module docstring for the
   full reasoning.
+
+**[DefectDojo](https://github.com/DefectDojo/django-DefectDojo)** — every
+tool above writes its own report in its own format; DefectDojo is where
+they land to get deduplicated and tracked across runs instead of re-read
+from scratch on every scan, the same role a real security team's triage
+dashboard plays over a pile of one-off CI logs:
+- `make defectdojo-up` — starts a **persistent** self-hosted instance
+  (http://localhost:8080) — same "opt-in, persistent, cross-run history"
+  role `make sonar-up` plays for SonarQube above, not vendored into this
+  repo's own `docker-compose.yml` the way SonarQube's two official-image
+  services are: DefectDojo is a 6-container app with its own release
+  cadence, so this instead clones a **pinned release** (currently `3.3.100`
+  — verified directly both `defectdojo/defectdojo-django:3.3.100` and
+  `defectdojo/defectdojo-nginx:3.3.100` exist on Docker Hub) into
+  `~/.cache/agent-core-demo-defectdojo` on first run and starts it from
+  there — the same "external tool, own lifecycle, outside this repo
+  entirely" treatment `make strix` already gives `pipx`-installed
+  strix-agent. Prints the initializer's one-time admin password; generate
+  an API v2 Key from the UI (My Account) afterward.
+- `make defectdojo-down` — stops it (keeps its volumes — findings/history
+  survive).
+- `make defectdojo-import` — pushes one report in
+  (`scripts/defectdojo_import.py`, needs `DEFECTDOJO_API_KEY`):
+  ```
+  DEFECTDOJO_API_KEY=... make defectdojo-import \
+    REPORT=zap_reports/baseline-report.xml SCAN_TYPE="ZAP Scan"
+  ```
+  Auto-creates the Product/Engagement on first import (DefectDojo's own
+  `auto_create_context`) — no manual UI setup needed. `SCAN_TYPE` is
+  DefectDojo's own vocabulary, not this repo's — e.g. `"ZAP Scan"`, `"Trivy
+  Scan"`, `"Semgrep JSON Report"`, `"Checkov Scan"` — so any of the
+  scanners above can land in the same dashboard, not just ZAP.
+- `.github/workflows/zap.yml` imports its own report automatically when
+  `DEFECTDOJO_URL`/`DEFECTDOJO_API_KEY` are configured as repo
+  variable/secret (see ZAP above) — otherwise that step is skipped, not
+  failed.
+- **Disclosed finding, not hypothetical**: `auto_create_context` needs
+  BOTH a `product_type_name` and a `product_name` to create a new Product —
+  passing only the latter for a Product that doesn't exist yet fails with a
+  clear `400` (verified directly against a real instance, not assumed from
+  docs); `scripts/defectdojo_import.py` defaults both so a first import
+  needs zero manual setup.
 
 ## Deploying to production
 
@@ -892,6 +970,12 @@ shipped here — see that file's own closing section for how they line up.
 | `make strix`      | Autonomous AI pentest of this repo's source (static) — needs `pipx install strix-agent` + a cloud LLM key (see "Security scanning & load testing") |
 | `make strix-app`  | Same, but black-box against the running app + its OpenAPI spec (needs `make up` + `make serve`/`make up-app`) |
 | `make strix-view` | Open the local dashboard for the most recent `make strix`/`make strix-app` run |
+| `make zap-baseline` | OWASP ZAP passive DAST scan (spider + scan, no attacks) against a running target (Docker, no local ZAP install) |
+| `make zap-api-scan` | OWASP ZAP active scan driven by the app's own OpenAPI spec (needs `make serve`/`make up-app`) |
+| `make zap-view` | Open the most recent ZAP HTML report |
+| `make defectdojo-up` | Start a persistent self-hosted DefectDojo (http://localhost:8080) for triaging scan findings over time |
+| `make defectdojo-down` | Stop the persistent DefectDojo server (keeps its volumes) |
+| `make defectdojo-import` | Push one scan report (ZAP/Trivy/Semgrep/Checkov/...) into `make defectdojo-up` (needs `DEFECTDOJO_API_KEY`, `REPORT=`, `SCAN_TYPE=`) |
 | `make loadtest-queued` | Interactive Locust UI (http://localhost:8089) against the running API's queued chat path |
 | `make loadtest-queued-headless` | Fixed 20-user, 2-minute headless Locust run → CSV + HTML report |
 | `make logs`       | Tail service logs |
@@ -976,6 +1060,7 @@ from the library/service code in `app/`.
 | `scripts/ops_digest.py`    | Cron-callable ops metrics digest (`make ops-digest`) — a fixed pipeline, not an agent turn (see "Example domains" above) |
 | `scripts/ops_investigate.py` | Ad-hoc ops question via a one-shot ops-domain agent run (`python -m scripts.ops_investigate "..."`) |
 | `scripts/followup_sweep.py` | Cron-callable CRM follow-up sweep, drafting nudges for human review (`make followup-sweep`) |
+| `scripts/defectdojo_import.py` | Pushes one scan report (ZAP/Trivy/Semgrep/Checkov/...) into a running DefectDojo instance via its import-scan API (`make defectdojo-import`) — see "Security scanning & load testing" |
 | `tests/`               | pytest suite, mirroring `app/`'s subpackages one-for-one (`tests/agent/`, `tests/api/`, ...) — routing/node/graph/tool/checkpointer/sql_store/mcp_server/mcp_client/ingestor/chunking/moderation/api tests against a fake LLM and mocked stores (`make test`, no live services) |
 | `tests/containers.py`  | Shared testcontainers helpers (real Postgres/Redis/Qdrant/Ollama, cross-`pytest -n auto`-worker-shared — pattern 48) |
 | `tests/integration/`   | Real Postgres/Redis/Qdrant tests, no LLM (`make test-integration`) |

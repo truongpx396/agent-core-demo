@@ -35,6 +35,14 @@ loadtest/results-queued/
 # repo entirely, nothing to ignore for that part
 strix_runs/
 
+# ZAP (see `make zap-baseline`/`make zap-api-scan`, .github/workflows/zap.yml)
+# — HTML/XML scan reports, regenerated per run, not source. DefectDojo
+# itself (`make defectdojo-up`/`make defectdojo-import`) is a plain git
+# clone into ~/.cache/agent-core-demo-defectdojo, entirely outside this
+# repo — same "external tool, own lifecycle" treatment as strix above —
+# so there's nothing under this repo's own tree to ignore for that part.
+zap_reports/
+
 # sonar-scanner (make sonar-scan / CI's `sonarqube` job) — local scan
 # working files, regenerated every run
 .scannerwork/
