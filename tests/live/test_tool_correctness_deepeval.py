@@ -359,7 +359,21 @@ def _require_crawl4ai_server():
     contract tests/live/test_web_crawler_live.py's own autouse fixture of a
     similar name already uses (`docker-compose.yml`'s `crawl4ai` service,
     part of the default `make up` profile) — skip cleanly rather than fail
-    with an inscrutable connection error when it isn't running."""
+    with an inscrutable connection error when it isn't running.
+
+    Deliberately NOT `@pytest.mark.crawl` on the test below, unlike every
+    other real-crawl4ai test in this repo — a real, disclosed CI ordering
+    bug, not an oversight: this file's module-level `pytestmark =
+    pytest.mark.deepeval` already applies to every test here, so adding
+    `crawl` on top made this ONE test match BOTH `-m deepeval` (this file's
+    real home) AND test-live's own `-m "llm or e2e or crawl"` selection —
+    and test-live's job never installs the `deepeval` package, so
+    `deepeval_judge` fixture setup failed there with a hard
+    `ModuleNotFoundError`, not a graceful skip (caught directly in a real
+    CI run of this exact combination). `.github/workflows/ci.yml`'s
+    `deepeval` job now runs its own crawl4ai sidecar (same
+    docker-run-and-health-check shape as test-live's) specifically so this
+    test still gets a REAL run in CI despite dropping the `crawl` mark."""
     import httpx
 
     from app.core.config import CRAWL4AI_SERVER_URL
@@ -372,7 +386,7 @@ def _require_crawl4ai_server():
         pytest.skip(f"crawl4ai server not reachable at {CRAWL4AI_SERVER_URL} — run `docker compose up -d crawl4ai`")
 
 
-@pytest.mark.crawl
+
 def test_fetch_external_reference_tool_call_is_correct_and_well_argued(
     deepeval_ollama, deepeval_judge, _require_crawl4ai_server
 ):

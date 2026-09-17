@@ -359,6 +359,24 @@ jobs:
           key: ollama-models-${{ runner.os }}-${{ env.DEEPEVAL_MODEL }}
         env:
           DEEPEVAL_MODEL: qwen2.5:3b
+      # Real crawl4ai server, same explicit-`docker run`-sidecar shape the
+      # `test-live` job above already uses for its own `crawl`-marked tests
+      # — added specifically for
+      # test_tool_correctness_deepeval.py::test_fetch_external_reference_tool_call_is_correct_and_well_argued,
+      # this job's only test that needs one (see that file's own
+      # `_require_crawl4ai_server` fixture docstring for why it deliberately
+      # does NOT carry `@pytest.mark.crawl`, unlike every other real-crawl4ai
+      # test in this repo — that mark would pull it into test-live's own
+      # selection instead, a real CI job this test can't run under since
+      # test-live never installs the `deepeval` package). Every other test
+      # this job runs neither needs nor uses this container; that fixture's
+      # own reachability check is what scopes it to just the one test.
+      - run: |
+          export CRAWL4AI_API_TOKEN="$(openssl rand -hex 32)"
+          echo "CRAWL4AI_API_TOKEN=$CRAWL4AI_API_TOKEN" >> "$GITHUB_ENV"
+          docker run -d --name crawl4ai -p 11235:11235 --shm-size=1g \
+            -e CRAWL4AI_API_TOKEN="$CRAWL4AI_API_TOKEN" unclecode/crawl4ai:0.9.3
+      - run: timeout 60 bash -c 'until curl -sf http://localhost:11235/health; do sleep 2; done'
       # `-v` on top of this file's usual `-q -s`: deepeval's own per-metric
       # score/reason text only prints with -s (no capture) regardless, but
       # -v makes sure the test's own pass/fail line isn't swallowed by -q's
