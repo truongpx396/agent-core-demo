@@ -31,20 +31,20 @@ judge's own stated verdict; `AnswerRelevancyMetric` scored a good, on-topic
 answer and a deliberately bad, off-topic one THE SAME (0.5 for both),
 failing to discriminate the one thing it exists to measure.
 
-JUDGE MODEL (2026-09-16): the judge is now `deepeval_judge`
-(tests/deepeval/conftest.py, `DEEPEVAL_JUDGE_MODEL`, default Groq's
-`openai/gpt-oss-120b`) — a SEPARATE knob from `deepeval_ollama`/
+JUDGE MODEL (2026-09-16, then 2026-09-17): the judge is now `deepeval_judge`
+(tests/deepeval/conftest.py, `DEEPEVAL_JUDGE_MODEL`, default
+`gemini-3.1-flash-lite`) — a SEPARATE knob from `deepeval_ollama`/
 `DEEPEVAL_MODEL`, which still drives the TARGET (`graph_module.CHAT_MODEL`
 below) and stays local. Bumping the target's own model to `qwen2.5:3b`
 already helped some (see `DEEPEVAL_MODEL`'s own comment in conftest.py) but
 still needed the manual/read-the-reason-by-hand caveat above; moving the
-JUDGE specifically to a real 70B model is the same lever promptfoo's
+JUDGE specifically to a real hosted model is the same lever promptfoo's
 `redteam.provider` already pulled (Gemini 3.1 Flash-Lite) for the identical
 reason — a stronger grader is worth a deliberate, disclosed exception to
-this suite's otherwise-local posture. `compound` (Groq's agentic
-tool-using system) was deliberately NOT used here — it autonomously
-invokes web search/code execution mid-request, a bad fit for a judge that
-needs one predictable structured verdict, not an agentic loop.
+this suite's otherwise-local posture. Briefly Groq's `openai/gpt-oss-120b`
+(2026-09-16) before settling on the SAME model+key `redteam.provider`
+already uses (2026-09-17, see conftest.py's own `DEEPEVAL_JUDGE_MODEL`
+comment for why) — one shared offline-by-default exception instead of two.
 
 CI WIRING (2026-09-16): `LLMTestCase(..., flaky=True)` below is deepeval's
 own first-class mechanism for exactly this unreliability — confirmed

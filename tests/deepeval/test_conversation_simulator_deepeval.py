@@ -51,12 +51,13 @@ a `reason` that was at least directionally coherent this time (unlike the
 flat self-contradictions seen in the single-turn probe) — still not
 something to trust as a clean pass/fail signal. Read the reasons by hand.
 
-JUDGE MODEL (2026-09-16): `judge` below is now `deepeval_judge`
-(tests/deepeval/conftest.py, Groq's `openai/gpt-oss-120b` by default),
-the same target/judge split `test_rag_quality_deepeval.py` got — see that
-file's own JUDGE MODEL paragraph for the full reasoning (a stronger
-grader, `compound` deliberately avoided as agentic/unpredictable for a
-verdict-only role). Applies to BOTH of `judge`'s roles in this file:
+JUDGE MODEL (2026-09-16, then 2026-09-17): `judge` below is now
+`deepeval_judge` (tests/deepeval/conftest.py, `gemini-3.1-flash-lite` by
+default — Groq's `openai/gpt-oss-120b` for one day before that), the same
+target/judge split `test_rag_quality_deepeval.py` got — see that file's own
+JUDGE MODEL paragraph for the full reasoning (a stronger grader, and why
+Gemini specifically: the SAME model+key `promptfoo/redteam.yaml`'s
+`redteam.provider` already uses). Applies to BOTH of `judge`'s roles in this file:
 simulating the customer persona (`simulator_model=judge` below) and
 grading the two metrics — this file already reused one model for both
 roles before this change, so the fix preserves that shape rather than
@@ -181,7 +182,7 @@ def test_multiturn_conversation_stays_grounded_and_in_role(deepeval_ollama, deep
 
     # Same `judge` object for BOTH roles below (simulating the persona's
     # turns AND grading the metrics) — preserves this file's own original
-    # double-duty shape, just pointed at deepeval_judge (Groq) instead of
+    # double-duty shape, just pointed at deepeval_judge (Gemini) instead of
     # the local target model; see tests/deepeval/conftest.py's
     # DEEPEVAL_JUDGE_MODEL comment for why this is a separate knob from the
     # target now, not a new third role.

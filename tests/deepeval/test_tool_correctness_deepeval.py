@@ -24,12 +24,14 @@ deepeval's own installed source, not assumed from the class names:
   (`measure()` -> `self._generate_verdicts(...)`, the same per-claim
   verdict pattern `FaithfulnessMetric` uses) — does the search QUERY this
   agent actually generated make sense for the question asked, not just
-  "was search_docs called." This is the metric that needed the Groq judge
-  fix (tests/deepeval/conftest.py's `deepeval_judge`) to be worth trusting at
-  all; on the small local judge this suite used before that fix, a
-  judgment call like "is this query well-formed" is exactly the kind of
-  question that produced self-contradictory scores elsewhere in this
-  pattern's own disclosed findings.
+  "was search_docs called." This is the metric that needed the stronger-judge
+  fix (tests/deepeval/conftest.py's `deepeval_judge`, now Gemini
+  3.1 Flash-Lite — the same model+key `promptfoo/redteam.yaml`'s
+  `redteam.provider` already uses) to be worth trusting at all; on the small
+  local judge this suite used before that fix, a judgment call like "is this
+  query well-formed" is exactly the kind of question that produced
+  self-contradictory scores elsewhere in this pattern's own disclosed
+  findings.
 
 Six cases now, not three — two groups:
 - `search_docs`/`calculator`/`query_employees`: one per tool this domain's

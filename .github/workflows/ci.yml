@@ -308,12 +308,20 @@ jobs:
     # full reasoning (the same target/judge split, and same "the local
     # judge was unreliable, a stronger one elsewhere fixes it" pattern,
     # `promptfoo/redteam.yaml`'s move to Gemini already established).
-    # Needs a `GROQ_API_KEY` repo secret (Settings > Secrets and variables >
-    # Actions) — the `deepeval_judge` fixture itself fails with a clear
-    # message if it's missing, so no separate pre-check step here the way
-    # `.github/workflows/redteam.yml` needed one (that job's failure mode
-    # would otherwise be an opaque crash deep inside `npx`, not a pytest
-    # fixture that can just say why).
+    #
+    # UPDATE 2026-09-17: moved again, from Groq to `gemini-3.1-flash-lite`
+    # via deepeval's own native `GeminiModel` — the SAME model+key
+    # `promptfoo/redteam.yaml`'s `redteam.provider` already uses, so this
+    # job now reuses the `GOOGLE_API_KEY` repo secret `redteam.yml` already
+    # needs (Settings > Secrets and variables > Actions) instead of a
+    # second, Groq-only one. `google-genai` isn't a `deepeval==4.2.0`
+    # dependency (same shape as `OllamaModel`'s own `ollama` package below —
+    # deepeval declares support for a provider without requiring its SDK),
+    # so it's installed as its own step; the `deepeval_judge` fixture
+    # itself still fails with a clear message if the key is missing, so no
+    # separate pre-check step here the way `.github/workflows/redteam.yml`
+    # needed one (that job's failure mode would otherwise be an opaque
+    # crash deep inside `npx`, not a pytest fixture that can just say why).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -348,6 +356,25 @@ jobs:
       # from this same lockfile.
       - run: pip install --no-deps deepeval==4.2.0
       - run: pip install nest_asyncio posthog pyfiglet pytest-asyncio pytest-repeat pytest-rerunfailures pytest-xdist questionary "tabulate<0.10.0"
+      # `deepeval_judge`'s GeminiModel (tests/deepeval/conftest.py) needs
+      # google-genai — same "--no-deps, add the one real transitive dep by
+      # hand" shape as deepeval==4.2.0 above, and the SAME conflict class:
+      # google-genai==2.24.0 declares `websockets<17.0`, this lockfile pins
+      # `websockets==17.1`. Verified directly this is another false alarm,
+      # not a real break: GeminiModel.generate()/a_generate() only ever
+      # call client.models.generate_content()/client.aio.models.generate_content()
+      # (a plain HTTPS request), never the Live API — the only thing in the
+      # SDK that actually touches the websockets package. A clean `import
+      # google.genai` plus `genai.Client(api_key=...)` both succeed against
+      # this exact websockets==17.1 in an isolated venv. google-auth is the
+      # one real runtime dep --no-deps skips (needed at import time, not
+      # just for Vertex AI auth) — installed with its own normal resolver
+      # pass since, unlike google-genai, it has no version conflict against
+      # this lockfile (its only non-extra requirements, pyasn1-modules and
+      # cryptography>=38.0.3, are either already satisfied or newly added
+      # with no downgrade needed).
+      - run: pip install --no-deps google-genai==2.24.0
+      - run: pip install google-auth==2.58.0
       - uses: actions/cache@v4
         with:
           path: ~/.cache/agent-core-demo-ollama-models
@@ -411,7 +438,7 @@ jobs:
         env:
           DEEPEVAL_MODEL: qwen2.5:3b
           DEEPEVAL_TELEMETRY_OPT_OUT: "1"
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       - name: Upload deepeval results (score/reason fields, read by hand — same posture as redteam.yml's own artifact)
         if: always()
         uses: actions/upload-artifact@v4
