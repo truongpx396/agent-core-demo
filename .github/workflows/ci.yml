@@ -378,7 +378,36 @@ jobs:
       # assumed) so pytest's real exit code still propagates through the
       # pipe to `tee` — this job still fails on a genuine crash, same as
       # before this step existed.
-      - run: pytest -m deepeval -q -s -v 2>&1 | tee deepeval-results.log
+      #
+      # `tests/deepeval` (2026-09-17) — a real, disclosed noise finding,
+      # not a style preference: without a path argument, `-m deepeval`
+      # still COLLECTS (imports) every file under `testpaths = ["tests"]`
+      # before filtering by marker, and `tests/api/test_api.py`/
+      # `test_health.py`/`test_rate_limit.py`/`tests/agent/test_multimodal.py`
+      # import `app.api.main` at module level — which calls
+      # `configure_logging()` UNCONDITIONALLY at import time (unlike
+      # `app/turns/agent_worker.py`'s/`app/channels/telegram.py`'s own
+      # `if __name__ == "__main__":`-gated calls, deliberately different
+      # since uvicorn imports `app.api.main:app` without ever hitting
+      # `__main__` — see that module's own comment). That installs a real
+      # INFO-level structlog JSON handler on the ROOT logger for the rest
+      # of this single, non-`-n auto` process — verified directly: `import
+      # app.api.main` alone in a fresh interpreter flips
+      # `logging.getLogger().handlers` from `[]` to a live handler and the
+      # level from WARNING to INFO, with zero such effect from importing
+      # only `app.agent.graph_build`/`app.ingestion.web_crawler`/
+      # `tests.conftest` (everything the deepeval tests themselves actually
+      # need). With `-s` disabling capture, every one of this app's own
+      # per-node `logger.info(...)` calls (and the `openai` SDK's own
+      # internal retry-logging, silent by default at the stdlib root
+      # logger's normal WARNING level) then floods stdout for all ~5+
+      # minutes of every real graph turn, in ten tests. Restricting
+      # collection to `tests/deepeval` — the package these three files
+      # actually live in since today's reorg — avoids ever importing the
+      # unrelated api/multimodal test modules in the first place; verified
+      # this still collects the identical 10 tests (`--collect-only -q -m
+      # deepeval tests/deepeval`).
+      - run: pytest -m deepeval -q -s -v tests/deepeval 2>&1 | tee deepeval-results.log
         env:
           DEEPEVAL_MODEL: qwen2.5:3b
           DEEPEVAL_TELEMETRY_OPT_OUT: "1"
