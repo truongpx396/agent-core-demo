@@ -325,11 +325,34 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: >
-          pip install -r requirements-lock.txt
-          "testcontainers[postgres,redis,ollama]==4.9.0"
-          deepeval==4.2.0
-          ollama==0.6.2
+      - run: pip install -r requirements-lock.txt "testcontainers[postgres,redis,ollama]==4.9.0" ollama==0.6.2
+      # deepeval==4.2.0 itself, `--no-deps`: the same click conflict
+      # requirements-dev.txt's own comment already discloses for local dev
+      # (deepeval declares `click<8.4.0`; huggingface-hub — a real
+      # transitive dep via fastembed — declares `click>=8.4.2`), but a HARD
+      # one here rather than the "false alarm" that comment describes.
+      # requirements-dev.txt gets away with a plain, undecorated `pip
+      # install` because it layers onto the UNPINNED requirements.txt,
+      # where pip's resolver is free to downgrade huggingface-hub itself to
+      # something older that doesn't need click>=8.4.2 at all. This job
+      # layers onto requirements-lock.txt instead (like every other job in
+      # this file, for reproducibility) — huggingface-hub==1.30.0 there is
+      # a hard pin, so no click version can satisfy both sides at once
+      # (confirmed directly with `pip install --dry-run` against this exact
+      # lockfile). `rich` has the same shape of conflict (deepeval wants
+      # <15.0.0, this app is pinned to rich==15.0.0). `--no-deps` skips
+      # deepeval's own dependency resolution entirely, so the line below
+      # installs ONLY the deepeval-specific packages requirements-lock.txt
+      # doesn't already provide (checked by hand against deepeval 4.2.0's
+      # full requires_dist) — click/rich/tabulate stay at THIS APP's newer
+      # pinned versions rather than deepeval's older declared caps.
+      # Verified for real, not assumed: a clean `import deepeval` (plus
+      # every deepeval symbol this repo's own tests/live/*_deepeval.py
+      # files import) and a full `pytest -m deepeval --collect-only` both
+      # succeed against this exact combination in an isolated venv built
+      # from this same lockfile.
+      - run: pip install --no-deps deepeval==4.2.0
+      - run: pip install nest_asyncio posthog pyfiglet pytest-asyncio pytest-repeat pytest-rerunfailures pytest-xdist questionary "tabulate<0.10.0"
       - uses: actions/cache@v4
         with:
           path: ~/.cache/agent-core-demo-ollama-models

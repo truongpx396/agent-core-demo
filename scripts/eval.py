@@ -166,9 +166,10 @@ class CaseResult:
 
 
 async def _run_case_once(graph, case: GoldenCase) -> _Attempt:
+    thread_id = f"eval-{case.id}-{uuid.uuid4()}"
     config = {
         "configurable": {
-            "thread_id": f"eval-{case.id}-{uuid.uuid4()}",
+            "thread_id": thread_id,
             "ctx": _EVAL_CTX,
         }
     }
@@ -185,7 +186,7 @@ async def _run_case_once(graph, case: GoldenCase) -> _Attempt:
     # un-guided agent from what real users actually get. Reuses the exact
     # production function rather than re-deriving the seeding logic, so
     # this can never drift out of sync with real behavior.
-    await _ensure_seeded_async(graph, config["configurable"]["thread_id"])
+    await _ensure_seeded_async(graph, thread_id)
 
     # `ainvoke`/`aget_state`, not the sync `.invoke()`/`.get_state()` this
     # used to be: the graph's `agent`/`retrieve_context`/etc. nodes are
