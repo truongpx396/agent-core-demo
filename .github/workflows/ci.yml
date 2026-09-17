@@ -484,7 +484,35 @@ jobs:
       # unrelated api/multimodal test modules in the first place; verified
       # this still collects the identical 10 tests (`--collect-only -q -m
       # deepeval tests/deepeval`).
-      - run: pytest -m deepeval -q -s -v tests/deepeval 2>&1 | tee deepeval-results.log
+      #
+      # `--reruns 2 --reruns-delay 10 --only-rerun ...` (2026-09-18): added
+      # after run 35257765470 (PR #41, right after the `shell: bash` fix
+      # above started actually surfacing real failures) turned red on
+      # `google.genai.errors.ServerError: 503 UNAVAILABLE ... currently
+      # experiencing high demand` — transient free-tier overload, the same
+      # class of variability `.github/workflows/redteam.yml`'s own header
+      # comment already discloses for this exact model, not a code defect.
+      # `pytest-rerunfailures` was already installed (see the pip install
+      # above) but never actually invoked until now. Deliberately scoped
+      # with `--only-rerun` rather than a blanket "retry any failure" —
+      # blindly retrying would blur this job's own stated promise ("CAN
+      # still fail red... on a genuine crash"): a REAL crash (a broken
+      # `build_graph()`, an auth failure, the Gemini schema bug fixed
+      # above if it ever regressed) should still turn the job red on the
+      # first try, not get silently swallowed by burning through retries
+      # first. The regex only matches known-transient server/rate-limit
+      # signatures from either judge SDK: Gemini's own
+      # `google.genai.errors.ServerError`/`UNAVAILABLE`/
+      # `RESOURCE_EXHAUSTED`/`DEADLINE_EXCEEDED`, and the `openai` SDK
+      # Groq's `LocalModel` uses (`RateLimitError`/`APITimeoutError`/
+      # `APIConnectionError`/`InternalServerError`) — matched against each
+      # failure's own exception text, confirmed directly in
+      # pytest-rerunfailures==16.6's own `--help` output for what
+      # `--only-rerun` matches against.
+      - run: >
+          pytest -m deepeval -q -s -v --reruns 2 --reruns-delay 10
+          --only-rerun "(ServerError|UNAVAILABLE|RESOURCE_EXHAUSTED|DEADLINE_EXCEEDED|RateLimitError|APITimeoutError|APIConnectionError|InternalServerError)"
+          tests/deepeval 2>&1 | tee deepeval-results.log
         shell: bash
         env:
           DEEPEVAL_MODEL: qwen2.5:3b
