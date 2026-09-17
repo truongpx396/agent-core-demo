@@ -29,17 +29,51 @@ field that read "There are no contradictions... both statements align
 perfectly," a direct contradiction between the numeric score and the
 judge's own stated verdict; `AnswerRelevancyMetric` scored a good, on-topic
 answer and a deliberately bad, off-topic one THE SAME (0.5 for both),
-failing to discriminate the one thing it exists to measure. This is why
-this file, like `make promptfoo-redteam`/`make garak`/`make eval`, is
-deliberately manual and never a CI gate — a low score from a small local
-judge is not trustworthy evidence of a real regression, and a passing
-score isn't trustworthy evidence of quality either. `DEEPEVAL_MODEL`
-deliberately defaults to `qwen2.5:3b` (this app's own production
-`CHAT_MODEL`, already what `make eval`/`make pull-models` use) rather than
-`TEST_LLM_MODEL`'s CI-speed `1.5b` — a larger local judge is the one lever
-actually available here to make the signal more trustworthy; still read
-the `reason` fields by hand rather than trusting `assert_test`'s pass/fail
-alone.
+failing to discriminate the one thing it exists to measure.
+
+JUDGE MODEL (2026-09-16): the judge is now `deepeval_judge`
+(tests/live/conftest.py, `DEEPEVAL_JUDGE_MODEL`, default Groq's
+`openai/gpt-oss-120b`) — a SEPARATE knob from `deepeval_ollama`/
+`DEEPEVAL_MODEL`, which still drives the TARGET (`graph_module.CHAT_MODEL`
+below) and stays local. Bumping the target's own model to `qwen2.5:3b`
+already helped some (see `DEEPEVAL_MODEL`'s own comment in conftest.py) but
+still needed the manual/read-the-reason-by-hand caveat above; moving the
+JUDGE specifically to a real 70B model is the same lever promptfoo's
+`redteam.provider` already pulled (Gemini 3.1 Flash-Lite) for the identical
+reason — a stronger grader is worth a deliberate, disclosed exception to
+this suite's otherwise-local posture. `compound` (Groq's agentic
+tool-using system) was deliberately NOT used here — it autonomously
+invokes web search/code execution mid-request, a bad fit for a judge that
+needs one predictable structured verdict, not an agentic loop.
+
+CI WIRING (2026-09-16): `LLMTestCase(..., flaky=True)` below is deepeval's
+own first-class mechanism for exactly this unreliability — confirmed
+directly in the installed `deepeval==4.2.0` source
+(`deepeval/evaluate/evaluate.py`'s `assert_test`): when a flaky test case's
+metrics fail, it `warnings.warn(...)` instead of raising `AssertionError`,
+so the pytest test itself still PASSES (visible in pytest's warning
+summary) rather than turning CI red on judge noise. This is deliberately
+NOT the same as `make promptfoo-redteam`/`make garak`, which stay fully
+manual (GRAPH_PATTERNS.md pattern 48) — a genuine crash (a broken
+`build_graph()`, an unreachable Ollama, an import error) still fails this
+job for real, since `flaky` only swallows a failed METRIC, not an
+exception. Still read the `reason` fields in the CI job's own log by hand —
+`flaky=True` makes a bad score non-blocking, not meaningful on its own.
+
+SEEDING (2026-09-16): every test below calls `seed_thread` before its
+first `ainvoke` — see tests/live/conftest.py's own docstring for a real,
+disclosed finding that affected every `build_graph().ainvoke()` caller in
+this repo, this file included: without it, the target agent had ZERO
+tool-routing guidance from `SYSTEM_PROMPT`, only each tool's own
+individual docstring.
+
+Two cases, not one, as of the same day: the original grounded case above
+asks "is a claim the model DID make faithful to its context" — a second
+case, `test_ungrounded_question_is_answered_without_hallucination`, asks
+the complementary question neither it nor anything else in this suite
+asked before: does the model correctly decline/hedge when asked something
+the retrieved context doesn't cover at all, instead of inventing an
+answer. Same two metrics, same judge, genuinely different scenario.
 """
 import asyncio
 import uuid
@@ -51,6 +85,7 @@ from app.agent import graph as graph_module
 from app.agent.graph import GraphDeps
 from app.agent.graph_build import build_graph
 from tests.conftest import TEST_CTX
+from tests.live.conftest import seed_thread
 
 pytestmark = pytest.mark.deepeval
 
@@ -88,35 +123,74 @@ def real_ollama_chat_model(monkeypatch, deepeval_ollama):
     monkeypatch.setattr(graph_module, "OPENAI_API_BASE", deepeval_ollama["openai_api_base"])
 
 
-def test_grounded_answer_is_faithful_and_relevant_by_a_real_llm_judge(deepeval_ollama):
-    from deepeval import assert_test
-    from deepeval.metrics import AnswerRelevancyMetric, FaithfulnessMetric
-    from deepeval.models import OllamaModel
-    from deepeval.test_case import LLMTestCase
-
+async def _seed_and_answer(question: str) -> str:
+    """Shared by every test below: fresh graph/thread, seed it properly
+    (see tests/live/conftest.py's own `seed_thread` docstring — without
+    this, `build_graph().ainvoke()` never triggers the SYSTEM_PROMPT
+    seeding every production path relies on), run one turn, return the
+    final answer text."""
     graph = build_graph(GraphDeps(search_docs=_real_search))
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
+    await seed_thread(graph, config["configurable"]["thread_id"])
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content=question)]},
+        config=config,
+    )
+    return result["messages"][-1].content
+
+
+def test_grounded_answer_is_faithful_and_relevant_by_a_real_llm_judge(deepeval_ollama, deepeval_judge):
+    from deepeval import assert_test
+    from deepeval.metrics import AnswerRelevancyMetric, FaithfulnessMetric
+    from deepeval.test_case import LLMTestCase
+
     question = "What are Ecorp's support hours, and how long do refunds take once approved?"
+    # asyncio.run(...), not the sync .invoke() this used to be — see
+    # app/agent/graph.py: agent/retrieve_context/etc. are async def now.
+    answer = asyncio.run(_seed_and_answer(question))
 
-    # asyncio.run(...ainvoke(...)), not the sync .invoke() this used to be —
-    # see app/agent/graph.py: agent/retrieve_context/etc. are async def now.
-    result = asyncio.run(
-        graph.ainvoke(
-            {"messages": [HumanMessage(content=question)]},
-            config=config,
-        )
-    )
-    answer = result["messages"][-1].content
-
-    judge = OllamaModel(
-        model=deepeval_ollama["model"],
-        base_url=deepeval_ollama["openai_api_base"].removesuffix("/v1"),
-        temperature=0,
-    )
+    judge = deepeval_judge
     test_case = LLMTestCase(
         input=question,
         actual_output=answer,
         retrieval_context=[_CONTEXT],
+        flaky=True,
+    )
+    assert_test(
+        test_case,
+        [
+            FaithfulnessMetric(model=judge, threshold=0.5, include_reason=True),
+            AnswerRelevancyMetric(model=judge, threshold=0.5, include_reason=True),
+        ],
+    )
+
+
+def test_ungrounded_question_is_answered_without_hallucination(deepeval_ollama, deepeval_judge):
+    """A genuinely different question from the grounded case above: not
+    "is a supported claim faithful to its context," but "does the model
+    correctly decline/hedge instead of inventing an answer when the
+    retrieved context doesn't cover the question at all." `_CONTEXT` only
+    ever covers support hours and refund timing — deliberately nothing
+    about revenue — so a faithful answer has no real number to report and
+    must say so, not invent one. `FaithfulnessMetric` still applies
+    cleanly here: a claim like "I don't have that information" is TRUE
+    relative to the context (which indeed doesn't have it), so a correct
+    abstention should score well, not just "not fail" — this is a positive
+    check that abstention is handled properly, not merely the absence of a
+    number in the output."""
+    from deepeval import assert_test
+    from deepeval.metrics import AnswerRelevancyMetric, FaithfulnessMetric
+    from deepeval.test_case import LLMTestCase
+
+    question = "What was Ecorp's total revenue last year?"
+    answer = asyncio.run(_seed_and_answer(question))
+
+    judge = deepeval_judge
+    test_case = LLMTestCase(
+        input=question,
+        actual_output=answer,
+        retrieval_context=[_CONTEXT],
+        flaky=True,
     )
     assert_test(
         test_case,

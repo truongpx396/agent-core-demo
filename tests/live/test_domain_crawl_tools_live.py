@@ -18,6 +18,13 @@ crawl-and-return, unlike e.g. sales's `enrich_lead_from_website`, which
 also needs a real lead row — left to a hermetic, mocked-store test instead
 since covering that combination live would need a real Postgres too, for
 comparatively little extra proof over what this file already establishes).
+
+Deliberately NOT using tests/live/conftest.py's `seed_thread` (unlike this
+suite's other `build_graph().ainvoke()` callers — see that helper's own
+docstring for the general finding): `GenericFakeChatModel` returns
+pre-scripted responses from a fixed `iter(...)`, never actually reading
+the system prompt to decide anything — seeding here would add a call that
+provably can't change this file's behavior, not close a real gap.
 """
 import asyncio
 

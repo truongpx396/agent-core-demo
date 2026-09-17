@@ -1,0 +1,97 @@
+name: Redteam
+
+# Scheduled, NOT push/PR-triggered — a deliberately different tradeoff from
+# ci.yml's own `promptfoo` job (a small CI-speed model, cheap enough for
+# every push) and from promptfoo's own documented CI/CD pattern (a fast
+# per-PR check + a comprehensive scan on a schedule, not one job doing
+# both — see https://www.promptfoo.dev/docs/integrations/ci-cd/). This job
+# runs promptfoo/{redteam,sales-redteam,ops-redteam}.yaml against the REAL
+# target model (qwen2.5:3b, this app's own production CHAT_MODEL — not the
+# CI-speed 1.5b `promptfoo`/`test-live` use), generated+graded by Gemini
+# 3.1 Flash-Lite (redteam.provider — see promptfoo/redteam.yaml's own
+# UPDATE paragraph for why that's the one deliberate exception to this
+# project's offline-by-default commitment). Needs a repo secret,
+# GOOGLE_API_KEY (Settings -> Secrets and variables -> Actions) — the job
+# skips cleanly with a clear message if it's missing, rather than failing
+# opaquely deep inside `make`.
+#
+# NON-BLOCKING BY CONSTRUCTION, not via `continue-on-error` — `make
+# promptfoo-redteam`'s own recipe lines are already prefixed with `-`
+# (GRAPH_PATTERNS.md pattern 48: a real finding here is the point of
+# running this, not a bug in the target), so the `make` step itself exits 0
+# even when real findings turn up. This workflow can still turn red for a
+# genuine reason: `pip`/`npm install` failing, Ollama unreachable, or
+# GOOGLE_API_KEY missing — infrastructure problems, not judged verdicts.
+# Findings are surfaced via the uploaded artifact below, meant to be read
+# by a human (promptfoo's own local-grading caveats still apply — see
+# promptfoo/redteam.yaml's header), never via this workflow's own pass/fail
+# color.
+#
+# Cadence is a one-line change (the cron below) if daily turns out to be
+# more or less than you want to spend from a free-tier Gemini quota —
+# verified empirically this session that a full three-domain run costs
+# roughly 60-75 Gemini calls, comfortably inside a four-figure daily quota,
+# but published free-tier numbers are known to vary by account (this
+# project's own observed RPM already differs from Google's generally
+# published number for this exact model) so keep an eye on it after the
+# first few real runs rather than trusting this comment forever.
+on:
+  schedule:
+    - cron: "0 6 * * *" # 06:00 UTC daily
+  workflow_dispatch: {} # manual "Run workflow" button, same job either way
+
+jobs:
+  promptfoo-redteam:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check GOOGLE_API_KEY is configured
+        run: |
+          if [ -z "${{ secrets.GOOGLE_API_KEY }}" ]; then
+            echo "::error::GOOGLE_API_KEY repo secret is not set — Settings > Secrets and variables > Actions. Skipping the run instead of failing deep inside npx."
+            exit 1
+          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # Same Ollama-sidecar-for-the-TARGET shape as ci.yml's own `promptfoo`
+      # job (a `docker run` step, not GH Actions' `services:` block — see
+      # that job's own comment for why: service containers start before
+      # any step runs, which would make the cache restore below powerless).
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/agent-core-demo-ollama-models
+          key: ollama-models-${{ runner.os }}-${{ env.PROMPTFOO_MODEL }}
+        env:
+          PROMPTFOO_MODEL: qwen2.5:3b
+      - run: mkdir -p ~/.cache/agent-core-demo-ollama-models
+      - run: >
+          docker run -d --name ollama -p 11434:11434
+          -v ${HOME}/.cache/agent-core-demo-ollama-models:/root/.ollama
+          ollama/ollama:latest
+      - run: >
+          timeout 60 bash -c 'until docker exec ollama ollama list >/dev/null 2>&1; do sleep 1; done'
+      - run: docker exec ollama ollama pull "$PROMPTFOO_MODEL"
+        env:
+          PROMPTFOO_MODEL: qwen2.5:3b
+      - run: pip install -r requirements-lock.txt
+      - run: make promptfoo-redteam
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          PROMPTFOO_MODEL: qwen2.5:3b
+      - name: Upload redteam results (generated+graded test suites, read by hand)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: promptfoo-redteam-results-${{ github.run_id }}
+          path: promptfoo/.*-redteam-run-scratch.yaml
+          # upload-artifact silently drops dotfiles by default (verified
+          # against its own README, not assumed) — every scratch file here
+          # is one (.support-redteam-run-scratch.yaml etc.), so without
+          # this the artifact step would succeed and upload nothing.
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: warn

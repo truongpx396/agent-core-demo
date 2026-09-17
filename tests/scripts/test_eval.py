@@ -19,18 +19,35 @@ from langchain_core.messages import AIMessage
 from scripts.eval import CaseResult, GoldenCase, grounded_claims_ratio, run_case
 
 
+class _FakeManifest:
+    system_prompt = "fake system prompt"
+
+
 class _FakeState:
     def __init__(self):
         self.next = ()  # never paused
+        # `.values["messages"]` — `_ensure_seeded_async` (app/agent/runtime.py)
+        # reads this to decide whether the thread's already seeded; empty
+        # here means it always takes the (no-op against this fake) seed path.
+        self.values = {"messages": []}
 
 
 class _FakeGraph:
     """A graph whose .ainvoke() returns a pre-scripted sequence of result
     dicts, one per call — enough to drive run_case's repetition loop
-    without a real LLM."""
+    without a real LLM. Also fakes just enough of the seeding interface
+    (`.manifest`, `.aupdate_state`) for `_run_case_once`'s own
+    `_ensure_seeded_async(graph, ...)` call (added 2026-09-16 — see
+    tests/live/conftest.py's `seed_thread` docstring for the real finding
+    that motivated it) to run without erroring, since this fake otherwise
+    has no checkpointer at all."""
 
     def __init__(self, results):
         self._results = iter(results)
+        self.manifest = _FakeManifest()
+
+    async def aupdate_state(self, config, values):
+        pass
 
     async def ainvoke(self, input_, config):
         return next(self._results)

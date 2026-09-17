@@ -103,10 +103,69 @@ from app.agent import tools
 
 logger = logging.getLogger(__name__)
 
+# SYSTEM_PROMPT's search_docs/query_employees disambiguation (and the
+# matching clauses on each tool's own docstring, app/agent/tools.py) was
+# tightened 2026-09-16 after a real, disclosed finding from
+# tests/live/test_tool_correctness_deepeval.py: "What are Ecorp's support
+# hours?" reliably (10/10, cache-cleared between every real run to rule out
+# a false signal from this app's own semantic cache) called query_employees
+# instead of search_docs — a plain word collision between "support hours"
+# and the Department.support enum value query_employees actually accepts,
+# not an adversarial prompt. Fixed at the prompt level (naming the exact
+# failure mode, not a vague "be careful") since that's where the ambiguity
+# actually lives — both tools' schemas were already correct.
+#
+# Re-verified live after that fix, not just inspected for plausibility —
+# and the first attempt introduced a NEW regression, caught the same way:
+# the possessive phrasing ("Ecorp's support hours") started correctly
+# calling search_docs 5/5, but the non-possessive phrasing ("Ecorp support
+# hours" — scripts/eval.py's own `retrieval_company_topic_filter` golden
+# case wording) started calling calculator 5/5 instead, computing nonsense
+# like '8 * 24'. Root cause: the first fix's own wording put "hours" right
+# next to "Use the calculator tool for math" — the same class of surface
+# word-collision as the original bug, just relocated by the fix itself.
+# Second pass moved the calculator instruction earlier, scoped it to "a
+# literal arithmetic expression" instead of generic "math", and moved
+# "hours" away from it entirely.
+#
+# THIRD, unrelated finding from the SAME re-verification effort, live
+# 2026-09-17: even with tool selection fully fixed, "What are Ecorp's
+# support hours?" still hit a generic "I wasn't able to put together a
+# full answer" fallback in roughly HALF of real runs. Traced (not
+# guessed) to a specific, existing safety net: check_output's
+# `_defers_instead_of_acting` correctly flagging the model's own answer,
+# which reliably appended a permission-seeking closer ("...Would you like
+# more details on any of these points?") after an otherwise complete,
+# correctly cited answer — a pattern this SAME prompt already explicitly
+# forbids ("do not add your own suggested follow-up questions or ask
+# 'would you like to know more'"), just not reliably followed right after
+# a tool result specifically. `MAX_CONSECUTIVE_SAME_RETRY_REASON = 2`
+# means two such closers in a row (the model's own one correction attempt
+# also failing) gives up fast. Fixed by repeating a SHORTER, more
+# specific version of the existing rule at the exact point of failure —
+# immediately after the citation-marker instructions, not just once,
+# earlier, in a general style paragraph — same "proximity matters for a
+# small model" lesson the calculator fix above already established.
+# Live-verified after this third pass: the SAME 12-run comparison (both
+# phrasings, 6x each, cache cleared before every run) that previously hit
+# the fallback in roughly half of runs dropped to 1/12 — a real,
+# dramatic, but NOT perfect improvement, honestly reported as such rather
+# than rounded up. A calculator regression control (6x) stayed clean at
+# 0/6, confirming this pass didn't reintroduce the second pass's own
+# mistake.
 SYSTEM_PROMPT = (
-    "You are a helpful assistant. Use the search_docs tool to answer questions "
-    "about LangGraph, Qdrant, or Ecorp. Use the calculator tool for math. "
-    "Use the query_employees tool for questions about Ecorp staff. "
+    "You are a helpful assistant. Use the calculator tool only to evaluate a "
+    "literal arithmetic expression the user actually wrote out, like '21 * 2'. "
+    "Use the search_docs tool to answer questions "
+    "about LangGraph, Qdrant, or Ecorp — including company facts like "
+    "business hours, policies, and procedures, even when the wording happens "
+    "to mention a department by name ('support hours' is a company-facts "
+    "question, not a staff question, even though 'Support' is also a "
+    "department). "
+    "Use the query_employees tool ONLY for "
+    "questions actually about WHO works somewhere — a specific person, a "
+    "roster, or headcount by department — never for a general fact that "
+    "merely mentions a department-sounding word. "
     "For a task that might have packaged, multi-step instructions (like "
     "producing a specific kind of report or brief), call skill_search "
     "first; if it returns a good match, call use_skill with that exact "
@@ -144,7 +203,13 @@ SYSTEM_PROMPT = (
     "question's wording is unclear, contains a typo, or you want to note "
     "the typo before answering. Only cite markers that actually appear in "
     "the retrieved content — never invent one. Don't cite anything for "
-    "facts you already knew or that came from the calculator.\n\n"
+    "facts you already knew or that came from the calculator. "
+    "Stop as soon as every retrieved fact relevant to the question is "
+    "stated and cited — do not add an offer to look up more information, "
+    "a suggestion to 'refer to the knowledge base' for anything else, or "
+    "a closing question asking whether the user wants more details; if "
+    "the retrieved content answers the question, the answer is already "
+    "complete.\n\n"
     "If a question is ambiguous in a way that would materially change your "
     "answer (not just slightly), call ask_clarification with 2-4 concrete "
     "interpretations instead of guessing. Use this rarely — most questions "

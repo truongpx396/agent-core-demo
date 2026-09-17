@@ -397,7 +397,14 @@ def search_docs(
     topic: Topic | None = None,
     doc_ids: list[str] | None = None,
 ) -> str:
-    """Search the knowledge base for relevant documents."""
+    """Search the knowledge base for company facts — hours, policies,
+    procedures, product/service information, and similar. Use this for
+    ANY general company-facts question, including one whose wording
+    happens to overlap with a department name (e.g. "support hours" is a
+    knowledge-base fact about business hours, not a staff lookup, even
+    though "Support" is also a department query_employees can filter by).
+    Only use query_employees instead when the question is actually asking
+    WHO works somewhere — a specific person, a roster, or headcount."""
     ctx = _ctx_or_refuse(config, "search")
     if ctx is None:
         return _NO_CTX_REFUSAL
@@ -692,7 +699,12 @@ def query_employees(
     information, never requires confirmation first, and there is nothing
     to ask permission for. A fixed, structured-data query — not a database
     the model can ask arbitrary questions of; department and name_contains
-    are the only two ways to narrow the result set."""
+    are the only two ways to narrow the result set. NOT for a general
+    company-facts question (hours, policies, procedures) just because it
+    mentions a department-sounding word — "support hours" asks about
+    business hours, not who's on the Support team; that belongs to
+    search_docs instead. This tool only answers "who works here", never
+    "what are the hours/policies"."""
     ctx = _ctx_or_refuse(config, "query_structured_data")
     if ctx is None:
         return _NO_CTX_REFUSAL

@@ -13,10 +13,18 @@ var/
 node_modules/
 .promptfoo/
 promptfoo/prompts/
-# `make promptfoo-redteam`'s working copy — `redteam run` rewrites its
-# --config file in place, so this is a throwaway copy of redteam.yaml, never
-# the source of truth.
-promptfoo/.redteam-run-scratch.yaml
+# `make promptfoo-redteam`'s working copies (one per domain: support/sales/
+# ops) — `redteam run` rewrites its --config file in place, so these are
+# throwaway copies of redteam.yaml/sales-redteam.yaml/ops-redteam.yaml,
+# never the source of truth.
+promptfoo/.support-redteam-run-scratch.yaml
+promptfoo/.sales-redteam-run-scratch.yaml
+promptfoo/.ops-redteam-run-scratch.yaml
+
+# deepeval's own local cache dir (tests/live/test_*_deepeval.py, `make
+# deepeval`) — also where a Confident AI API key would land if `deepeval
+# login` were ever run locally; never committed either way.
+.deepeval/
 
 # garak (see garak/) scan reports/state — regenerated per run, not source
 garak/.garak/
