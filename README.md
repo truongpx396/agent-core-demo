@@ -949,8 +949,8 @@ shipped here — see that file's own closing section for how they line up.
 | `make ops-digest`       | One-shot ops metrics digest → team channel (meant for real cron; see "Example domains") |
 | `make followup-sweep`   | One-shot CRM due-follow-up sweep → drafted nudges (meant for real cron) |
 | `make test`       | Run the pytest suite in parallel (fake LLM, no live services needed) |
-| `make test-integration` | Real Postgres/Redis/Qdrant via testcontainers, no LLM (needs Docker, not `make up`) |
-| `make test-live`  | Real small Ollama model + full app/agent-worker stack, incl. a Playwright browser E2E and real crawl4ai renders against the `crawl4ai` container (needs Docker) |
+| `make test-integration` | Real Postgres/Redis/Qdrant/crawl4ai via testcontainers, no LLM (needs Docker, not `make up`) |
+| `make test-live`  | Real small Ollama model + full app/agent-worker stack, incl. a Playwright browser E2E and a real crawl4ai render dispatched through the real ops/support graphs (needs Docker) |
 | `make test-sandbox` | Real `opensandbox-mcp` round trip (needs `make sandbox-up` running + `opensandbox-mcp` installed; self-skips otherwise) — manual only, like `make deepeval`/`garak` |
 | `make lint`       | `ruff check .` — see `pyproject.toml`'s `[tool.ruff]` |
 | `make typecheck`  | `mypy` over `app/` and `scripts/` — see `pyproject.toml`'s `[tool.mypy]` |
@@ -1062,9 +1062,9 @@ from the library/service code in `app/`.
 | `scripts/followup_sweep.py` | Cron-callable CRM follow-up sweep, drafting nudges for human review (`make followup-sweep`) |
 | `scripts/defectdojo_import.py` | Pushes one scan report (ZAP/Trivy/Semgrep/Checkov/...) into a running DefectDojo instance via its import-scan API (`make defectdojo-import`) — see "Security scanning & load testing" |
 | `tests/`               | pytest suite, mirroring `app/`'s subpackages one-for-one (`tests/agent/`, `tests/api/`, ...) — routing/node/graph/tool/checkpointer/sql_store/mcp_server/mcp_client/ingestor/chunking/moderation/api tests against a fake LLM and mocked stores (`make test`, no live services) |
-| `tests/containers.py`  | Shared testcontainers helpers (real Postgres/Redis/Qdrant/Ollama, cross-`pytest -n auto`-worker-shared — pattern 48) |
-| `tests/integration/`   | Real Postgres/Redis/Qdrant tests, no LLM (`make test-integration`) |
-| `tests/live/`          | Real small-Ollama-model tests + a Playwright browser E2E against the built-in web UI, plus real crawl4ai renders against the `crawl4ai` container — through `web_crawler.py` directly and through the real ops/support graphs (`make test-live`, pattern 50) |
+| `tests/containers.py`  | Shared testcontainers helpers (real Postgres/Redis/Qdrant/crawl4ai/Ollama, cross-`pytest -n auto`-worker-shared — pattern 48/50) |
+| `tests/integration/`   | Real Postgres/Redis/Qdrant tests, plus a real crawl4ai render through `web_crawler.py` directly, no LLM (`make test-integration`, pattern 50) |
+| `tests/live/`          | Real small-Ollama-model tests + a Playwright browser E2E against the built-in web UI, plus a real crawl4ai render dispatched through the real ops/support graphs (`make test-live`, pattern 50) |
 | `tests/live/test_opensandbox_mcp_live.py` | Real `opensandbox-mcp` tool-catalog round trip (`make test-sandbox`, pattern 50) — deliberately separate from `make test-live`'s sweep since it needs `make sandbox-up`'s containerized `opensandbox-server` running, a prerequisite this repo doesn't auto-provision |
 | `tests/live/test_sandbox_session_live.py` | Real round trip for `app/domains/sandbox_session.py`'s own shared lifecycle logic (`make test-sandbox`, pattern 50) — hard-asserts success (the earlier real client-side timing bug behind a softer "succeeds or fails cleanly" contract is fixed, see GRAPH_PATTERNS.md pattern 50) |
 | `promptfoo/`           | Prompt-level regression + adversarial checks for the domain system prompts against a real Ollama (`make promptfoo`/`make promptfoo-redteam` — pattern 48) |

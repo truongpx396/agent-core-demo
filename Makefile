@@ -140,7 +140,7 @@ followup-sweep:  ## Run the sales concierge's one-shot due-follow-up sweep, draf
 test:  ## Run the graph test suite in parallel (no live services needed — fake LLM, no Qdrant)
 	pytest -n auto -q
 
-test-integration:  ## Real Postgres/Redis/Qdrant/ml-service via testcontainers (no LLM) — needs Docker, no `make up` required (GRAPH_PATTERNS.md pattern 48)
+test-integration:  ## Real Postgres/Redis/Qdrant/ml-service/crawl4ai via testcontainers (no LLM) — needs Docker, no `make up` required (GRAPH_PATTERNS.md pattern 48/50)
 	# --dist=loadgroup: tests/integration/test_worker_scaling.py's own
 	# xdist_group marker needs this to actually take effect (plain `load`
 	# ignores it) — see that module's own comment for why.
@@ -212,7 +212,7 @@ promptfoo-redteam:  ## Adversarial variants of the support/sales/ops prompts (pr
 	-cp promptfoo/ops-redteam.yaml promptfoo/.ops-redteam-run-scratch.yaml
 	-PROMPTFOO_DISABLE_REMOTE_GENERATION=true npx promptfoo redteam run --config promptfoo/.ops-redteam-run-scratch.yaml --output promptfoo/.ops-redteam-run-scratch.yaml --max-concurrency 1 --delay 2100
 
-deepeval:  ## LLM-judged RAG quality (test_rag_quality_deepeval.py) + a multi-turn conversation simulation (test_conversation_simulator_deepeval.py) + tool-call trajectory correctness (test_tool_correctness_deepeval.py) against the real graph — needs Docker + GROQ_API_KEY (see .env.example, tests/live/conftest.py's deepeval_judge fixture); read the printed reasons by hand, don't trust pass/fail alone (see those files' own disclosed judge-reliability findings, GRAPH_PATTERNS.md pattern 48). Same command CI's own `deepeval` job runs; every file's test cases are `flaky=True` there so a bad score can't fail the build.
+deepeval:  ## LLM-judged RAG quality (tests/deepeval/test_rag_quality_deepeval.py) + a multi-turn conversation simulation (test_conversation_simulator_deepeval.py) + tool-call trajectory correctness (test_tool_correctness_deepeval.py) against the real graph — needs Docker + GROQ_API_KEY (see .env.example, tests/deepeval/conftest.py's deepeval_judge fixture); read the printed reasons by hand, don't trust pass/fail alone (see those files' own disclosed judge-reliability findings, GRAPH_PATTERNS.md pattern 48). Same command CI's own `deepeval` job runs; every file's test cases are `flaky=True` there so a bad score can't fail the build.
 	DEEPEVAL_TELEMETRY_OPT_OUT=1 pytest -m deepeval -q -s
 
 garak:  ## Fast, curated probe subset scanning the real model for known jailbreak/injection patterns — needs `make up`/a native Ollama AND a SEPARATE Python environment, never this repo's own .venv (installing garak here upgrades langgraph-checkpoint past what this app's own pin allows — see garak/requirements-garak.txt)

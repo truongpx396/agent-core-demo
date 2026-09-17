@@ -38,7 +38,7 @@ from app.agent import tools as tools_module
 from app.agent.graph import GraphDeps
 from app.agent.graph_build import build_graph
 from tests.conftest import TEST_CTX
-from tests.live.conftest import seed_thread
+from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.llm
 
@@ -124,7 +124,7 @@ def test_real_model_does_not_comply_with_an_instruction_injected_into_retrieved_
         # assuming the test's own passing assertions meant it was testing
         # anything real. Without this, `build_graph().ainvoke()` never
         # triggers the seeding every production path relies on (see
-        # tests/live/conftest.py's own `seed_thread` docstring) — meaning
+        # tests/seeding.py's own `seed_thread` docstring) — meaning
         # the model never actually KNEW "You are a helpful assistant..."
         # was its own system prompt in the first place, so the leakage
         # assertion below could only ever pass vacuously (nothing to

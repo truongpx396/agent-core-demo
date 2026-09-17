@@ -341,6 +341,75 @@ def ensure_qdrant() -> dict[str, str]:
     return _acquire("qdrant", _start)
 
 
+def ensure_crawl4ai() -> dict[str, str]:
+    """Real crawl4ai server (same image docker-compose.yml's own `crawl4ai`
+    service uses) — the real headless-Chromium rendering backend behind
+    `app/ingestion/web_crawler.py` (GRAPH_PATTERNS.md pattern 50), driven
+    through the generic `DockerContainer` API like `ensure_qdrant()` above
+    (no first-party testcontainers module for it either).
+
+    A fresh, random `CRAWL4AI_API_TOKEN` per container start (`secrets.
+    token_hex`, not a fixed test value) — same requirement docker-compose.
+    yml's own `crawl4ai` service comment discloses: crawl4ai 0.9.0+ is
+    secure-by-default, and without this env var the server binds
+    loopback-only INSIDE its own container, so the published port below
+    would just connection-reset. `shm_size="1g"` (`with_kwargs`, the one
+    docker-run option `DockerContainer` has no dedicated builder method
+    for) — Chromium needs real `/dev/shm`, crawl4ai's own docker-run docs.
+    Readiness is a real `GET /health` poll (needs no auth per crawl4ai's own
+    docs), same retry-loop shape `ensure_ml_service()` above uses, budgeted
+    to 60s — the same real-world margin `.github/workflows/ci.yml`'s own
+    prior `docker run` + `timeout 60 ... curl` sidecar steps used before
+    this fixture replaced them (crawl4ai's own docs only promise "up to
+    40s").
+
+    Callers monkeypatch this into `app.ingestion.web_crawler`'s own
+    `CRAWL4AI_SERVER_URL`/`CRAWL4AI_API_TOKEN` module globals (the same
+    `monkeypatch.setattr(some_module, "SOME_CONSTANT", ...)` shape
+    `tests/live/conftest.py`'s `real_ollama_chat_model`-style fixtures
+    already use for `graph_module.CHAT_MODEL`) rather than exporting an env
+    var: the token is only known at container-start time, well after
+    `app/core/config.py`'s pydantic-settings module-level constants have
+    already been read once at import time. Returns `crawl4ai_server_url`/
+    `crawl4ai_api_token`.
+    """
+    _require_docker("a real crawl4ai server")
+
+    def _start() -> dict[str, Any]:
+        import secrets
+
+        import httpx
+        from testcontainers.core.container import DockerContainer
+
+        token = secrets.token_hex(32)
+        container = (
+            DockerContainer("unclecode/crawl4ai:0.9.3")
+            .with_exposed_ports(11235)
+            .with_env("CRAWL4AI_API_TOKEN", token)
+            .with_kwargs(shm_size="1g")
+        )
+        container.start()
+        host = container.get_container_host_ip()
+        port = int(container.get_exposed_port(11235))
+        url = f"http://{host}:{port}"
+        for attempt in range(60):
+            try:
+                if httpx.get(f"{url}/health", timeout=2).status_code == 200:
+                    break
+            except Exception:  # noqa: BLE001,S110 - retry until the timeout below (same idiom as ensure_ml_service above)
+                pass
+            if attempt == 59:
+                raise RuntimeError(f"crawl4ai never became healthy: {url}/health")
+            time.sleep(1)
+        return {
+            "container_id": container.get_wrapped_container().id,
+            "crawl4ai_server_url": url,
+            "crawl4ai_api_token": token,
+        }
+
+    return _acquire("crawl4ai", _start)
+
+
 def ensure_ml_service() -> dict[str, str]:
     """Real reranker + prompt-injection-classifier service — the same
     image docker-compose.yml's own `ml-service` builds from

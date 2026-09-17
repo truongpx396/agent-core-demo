@@ -52,7 +52,7 @@ flat self-contradictions seen in the single-turn probe) — still not
 something to trust as a clean pass/fail signal. Read the reasons by hand.
 
 JUDGE MODEL (2026-09-16): `judge` below is now `deepeval_judge`
-(tests/live/conftest.py, Groq's `openai/gpt-oss-120b` by default),
+(tests/deepeval/conftest.py, Groq's `openai/gpt-oss-120b` by default),
 the same target/judge split `test_rag_quality_deepeval.py` got — see that
 file's own JUDGE MODEL paragraph for the full reasoning (a stronger
 grader, `compound` deliberately avoided as agentic/unpredictable for a
@@ -73,7 +73,7 @@ the CI job for real — `flaky` only swallows a failed METRIC score, never
 an exception.
 
 SEEDING (2026-09-16): `model_callback` now seeds the system prompt before
-each turn — see tests/live/conftest.py's own docstring for a real,
+each turn — see tests/seeding.py's own docstring for a real,
 disclosed finding that affected every `build_graph().ainvoke()` caller in
 this repo, this file included: without it, the target agent had ZERO
 tool-routing guidance from `SYSTEM_PROMPT`, only each tool's own
@@ -99,7 +99,7 @@ from app.agent import graph as graph_module
 from app.agent.graph import GraphDeps
 from app.agent.graph_build import build_graph
 from tests.conftest import TEST_CTX
-from tests.live.conftest import seed_thread
+from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.deepeval
 
@@ -145,7 +145,7 @@ def real_ollama_chat_model(monkeypatch, deepeval_ollama):
 def _make_model_callback(graph):
     """Shared by every scenario below — see this file's own docstring
     (finding #1) for why the human_approval-interrupt handling is
-    required at all, and tests/live/conftest.py's `seed_thread` docstring
+    required at all, and tests/seeding.py's `seed_thread` docstring
     for why seeding is required before the first real turn on a thread.
     `seed_thread` is called on EVERY turn, not just the first: it's
     idempotent/cheap (checks an in-process set, then the thread's actual
@@ -182,7 +182,7 @@ def test_multiturn_conversation_stays_grounded_and_in_role(deepeval_ollama, deep
     # Same `judge` object for BOTH roles below (simulating the persona's
     # turns AND grading the metrics) — preserves this file's own original
     # double-duty shape, just pointed at deepeval_judge (Groq) instead of
-    # the local target model; see tests/live/conftest.py's
+    # the local target model; see tests/deepeval/conftest.py's
     # DEEPEVAL_JUDGE_MODEL comment for why this is a separate knob from the
     # target now, not a new third role.
     judge = deepeval_judge

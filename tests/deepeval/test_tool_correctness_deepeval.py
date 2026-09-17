@@ -25,7 +25,7 @@ deepeval's own installed source, not assumed from the class names:
   verdict pattern `FaithfulnessMetric` uses) — does the search QUERY this
   agent actually generated make sense for the question asked, not just
   "was search_docs called." This is the metric that needed the Groq judge
-  fix (tests/live/conftest.py's `deepeval_judge`) to be worth trusting at
+  fix (tests/deepeval/conftest.py's `deepeval_judge`) to be worth trusting at
   all; on the small local judge this suite used before that fix, a
   judgment call like "is this query well-formed" is exactly the kind of
   question that produced self-contradictory scores elsewhere in this
@@ -69,7 +69,7 @@ every production path relies on, so the agent was reasoning with ZERO
 tool-routing guidance — not "the fix doesn't work," but "the fix was never
 being tested." This file (and every sibling `build_graph().ainvoke()`
 caller in this repo, `scripts/eval.py` included — see
-tests/live/conftest.py's own `seed_thread` docstring for the full list)
+tests/seeding.py's own `seed_thread` docstring for the full list)
 now seeds properly before asserting anything. `scripts/eval.py`'s own
 `retrieval_company_topic_filter` case was never actually a "proven"
 baseline the way earlier comments here assumed — it has the identical gap
@@ -84,8 +84,9 @@ from langchain_core.messages import AIMessage, HumanMessage
 from app.agent import graph as graph_module
 from app.agent.graph import GraphDeps
 from app.agent.graph_build import build_graph
+from app.ingestion import web_crawler
 from tests.conftest import TEST_CTX
-from tests.live.conftest import seed_thread
+from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.deepeval
 
@@ -116,7 +117,7 @@ def real_ollama_chat_model(monkeypatch, deepeval_ollama):
 
 async def _run_and_get_tool_calls(question: str, manifest=None, domain=None, auto_approve: bool = False):
     """Shared by every test below: build a fresh graph/thread, seed it
-    properly (see tests/live/conftest.py's own `seed_thread` docstring —
+    properly (see tests/seeding.py's own `seed_thread` docstring —
     this is exactly the test file that surfaced why that matters), run one
     turn, and extract (answer, tools_called) in the shape `ToolCall` needs.
     Same extraction shape scripts/eval.py's own `tool_calls` field already
@@ -169,7 +170,7 @@ def test_search_docs_tool_call_is_correct_and_well_argued(deepeval_ollama, deepe
     surfaced (fixed in app/agent/graph.py's SYSTEM_PROMPT and
     app/agent/tools.py's docstrings) and the seeding-bug finding this same
     test then went on to surface after that first fix (fixed across 9
-    files — see tests/live/conftest.py)."""
+    files — see tests/seeding.py)."""
     from deepeval import assert_test
     from deepeval.metrics import ArgumentCorrectnessMetric, ToolCorrectnessMetric
     from deepeval.test_case import LLMTestCase, ToolCall
@@ -353,13 +354,17 @@ def test_subagent_delegation_is_correct_and_well_argued(deepeval_ollama, deepeva
 
 
 @pytest.fixture
-def _require_crawl4ai_server():
+def _use_crawl4ai_server(monkeypatch, crawl4ai_server):
     """NOT autouse — only `test_fetch_external_reference_tool_call_is_correct_and_well_argued`
-    below needs it, unlike every other test in this file. Same reachability
-    contract tests/live/test_web_crawler_live.py's own autouse fixture of a
-    similar name already uses (`docker-compose.yml`'s `crawl4ai` service,
-    part of the default `make up` profile) — skip cleanly rather than fail
-    with an inscrutable connection error when it isn't running.
+    below needs it, unlike every other test in this file. `crawl4ai_server`
+    (tests/deepeval/conftest.py, `tests/containers.py::ensure_crawl4ai()`)
+    starts its own ephemeral container and this fixture points
+    `app.ingestion.web_crawler`'s own `CRAWL4AI_SERVER_URL`/
+    `CRAWL4AI_API_TOKEN` module globals at it (see that helper's own
+    docstring for why a monkeypatch, not an env var) — same shape
+    tests/integration/test_web_crawler_live.py's own fixture uses (2026-09-17;
+    previously a plain reachability probe against an already-running
+    `docker compose up -d crawl4ai`, skipped cleanly if not up).
 
     Deliberately NOT `@pytest.mark.crawl` on the test below, unlike every
     other real-crawl4ai test in this repo — a real, disclosed CI ordering
@@ -371,24 +376,16 @@ def _require_crawl4ai_server():
     `deepeval_judge` fixture setup failed there with a hard
     `ModuleNotFoundError`, not a graceful skip (caught directly in a real
     CI run of this exact combination). `.github/workflows/ci.yml`'s
-    `deepeval` job now runs its own crawl4ai sidecar (same
-    docker-run-and-health-check shape as test-live's) specifically so this
-    test still gets a REAL run in CI despite dropping the `crawl` mark."""
-    import httpx
-
-    from app.core.config import CRAWL4AI_SERVER_URL
-
-    try:
-        reachable = httpx.get(f"{CRAWL4AI_SERVER_URL}/health", timeout=3).status_code == 200
-    except httpx.HTTPError:
-        reachable = False
-    if not reachable:
-        pytest.skip(f"crawl4ai server not reachable at {CRAWL4AI_SERVER_URL} — run `docker compose up -d crawl4ai`")
-
+    `deepeval` job used to run its own crawl4ai `docker run` sidecar for
+    exactly this reason; `ensure_crawl4ai()`'s self-provisioning replaced
+    it (2026-09-17), so this test still gets a REAL run in CI despite
+    dropping the `crawl` mark, with no separate sidecar step needed."""
+    monkeypatch.setattr(web_crawler, "CRAWL4AI_SERVER_URL", crawl4ai_server["crawl4ai_server_url"])
+    monkeypatch.setattr(web_crawler, "CRAWL4AI_API_TOKEN", crawl4ai_server["crawl4ai_api_token"])
 
 
 def test_fetch_external_reference_tool_call_is_correct_and_well_argued(
-    deepeval_ollama, deepeval_judge, _require_crawl4ai_server
+    deepeval_ollama, deepeval_judge, _use_crawl4ai_server
 ):
     """The fourth tool-mechanism gap this file closes: a REAL crawl4ai
     round trip through a REAL model's tool-selection judgment, not the

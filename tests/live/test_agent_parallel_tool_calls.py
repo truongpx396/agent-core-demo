@@ -32,7 +32,7 @@ from app.agent import graph as graph_module
 from app.agent.graph import GraphDeps
 from app.agent.graph_build import build_graph
 from tests.conftest import TEST_CTX
-from tests.live.conftest import seed_thread
+from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.llm
 
@@ -63,7 +63,7 @@ async def _invoke_and_approve_async(text: str):
     graph = build_graph(GraphDeps())
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
     # Seed the system prompt before the first real turn — see
-    # tests/live/conftest.py's own `seed_thread` docstring; a test calling
+    # tests/seeding.py's own `seed_thread` docstring; a test calling
     # build_graph().ainvoke() directly never triggers the seeding every
     # production path relies on otherwise.
     await seed_thread(graph, config["configurable"]["thread_id"])
