@@ -51,17 +51,27 @@ a `reason` that was at least directionally coherent this time (unlike the
 flat self-contradictions seen in the single-turn probe) — still not
 something to trust as a clean pass/fail signal. Read the reasons by hand.
 
-JUDGE MODEL (2026-09-16, then 2026-09-17): `judge` below is now
-`deepeval_judge` (tests/deepeval/conftest.py, `gemini-3.1-flash-lite` by
-default — Groq's `openai/gpt-oss-120b` for one day before that), the same
-target/judge split `test_rag_quality_deepeval.py` got — see that file's own
-JUDGE MODEL paragraph for the full reasoning (a stronger grader, and why
-Gemini specifically: the SAME model+key `promptfoo/redteam.yaml`'s
-`redteam.provider` already uses). Applies to BOTH of `judge`'s roles in this file:
-simulating the customer persona (`simulator_model=judge` below) and
-grading the two metrics — this file already reused one model for both
-roles before this change, so the fix preserves that shape rather than
-introducing a third separate knob nobody asked for.
+JUDGE MODEL (2026-09-16, then 2026-09-17, then 2026-09-18): `judge` below
+is `deepeval_conversation_judge` (tests/deepeval/conftest.py), Groq's
+`openai/gpt-oss-120b` — the same target/judge split
+`test_rag_quality_deepeval.py` got, see that file's own JUDGE MODEL
+paragraph for the "stronger grader" reasoning. UNLIKE that file, this one
+did NOT move to Gemini on 2026-09-17: real run 35230147154 (PR #41) hit a
+hard `google.genai.errors.ClientError: 400 INVALID_ARGUMENT ...
+"additional_properties"` on both tests below — `KnowledgeRetentionMetric`
+unconditionally requests a Dict-typed structured-output schema
+(`deepeval.metrics.knowledge_retention.schema.Knowledge.data`), and
+Gemini's `response_schema` doesn't support that JSON Schema keyword at
+all, for any Gemini model — confirmed by reading deepeval's own schema
+class, not guessed from the error text. So this file keeps its own
+separate `deepeval_conversation_judge` fixture (`GROQ_API_KEY`) rather
+than sharing `deepeval_judge` (Gemini) with the other two deepeval files —
+see tests/deepeval/conftest.py's own module docstring for the full
+writeup. Applies to BOTH of `judge`'s roles in this file: simulating the
+customer persona (`simulator_model=judge` below) and grading the two
+metrics — this file already reused one model for both roles before any of
+this, so the fixture swap preserves that shape rather than introducing a
+third separate knob nobody asked for.
 
 CI WIRING (2026-09-16): `test_case.flaky = True` below is the same
 mechanism `test_rag_quality_deepeval.py` uses — see that file's own
@@ -171,7 +181,7 @@ def _make_model_callback(graph):
     return model_callback
 
 
-def test_multiturn_conversation_stays_grounded_and_in_role(deepeval_ollama, deepeval_judge):
+def test_multiturn_conversation_stays_grounded_and_in_role(deepeval_ollama, deepeval_conversation_judge):
     from deepeval import assert_test
     from deepeval.dataset import ConversationalGolden, Persona
     from deepeval.metrics import KnowledgeRetentionMetric, RoleAdherenceMetric
@@ -182,11 +192,12 @@ def test_multiturn_conversation_stays_grounded_and_in_role(deepeval_ollama, deep
 
     # Same `judge` object for BOTH roles below (simulating the persona's
     # turns AND grading the metrics) — preserves this file's own original
-    # double-duty shape, just pointed at deepeval_judge (Gemini) instead of
-    # the local target model; see tests/deepeval/conftest.py's
-    # DEEPEVAL_JUDGE_MODEL comment for why this is a separate knob from the
-    # target now, not a new third role.
-    judge = deepeval_judge
+    # double-duty shape, just pointed at deepeval_conversation_judge (Groq)
+    # instead of the local target model; see tests/deepeval/conftest.py's
+    # DEEPEVAL_CONVERSATION_JUDGE_MODEL comment for why this file needs its
+    # own separate judge fixture rather than sharing deepeval_judge
+    # (Gemini) with the other two deepeval files.
+    judge = deepeval_conversation_judge
 
     golden = ConversationalGolden(
         scenario=(
@@ -229,7 +240,7 @@ def test_multiturn_conversation_stays_grounded_and_in_role(deepeval_ollama, deep
     )
 
 
-def test_conversation_resists_off_topic_persona_pressure(deepeval_ollama, deepeval_judge):
+def test_conversation_resists_off_topic_persona_pressure(deepeval_ollama, deepeval_conversation_judge):
     """A genuinely different stress from the scenario above, not a second
     copy of it: that one tests whether the assistant RECALLS its own
     earlier answer across turns (knowledge retention, on-topic the whole
@@ -247,7 +258,7 @@ def test_conversation_resists_off_topic_persona_pressure(deepeval_ollama, deepev
 
     graph = build_graph(GraphDeps(search_docs=_real_search))
     model_callback = _make_model_callback(graph)
-    judge = deepeval_judge
+    judge = deepeval_conversation_judge
 
     golden = ConversationalGolden(
         scenario=(

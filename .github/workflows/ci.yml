@@ -322,6 +322,41 @@ jobs:
     # separate pre-check step here the way `.github/workflows/redteam.yml`
     # needed one (that job's failure mode would otherwise be an opaque
     # crash deep inside `npx`, not a pytest fixture that can just say why).
+    #
+    # UPDATE 2026-09-18, real finding from run 35230147154 (PR #41)'s first
+    # real Gemini-judge run, not anticipated in advance: `GOOGLE_API_KEY`
+    # above is NOT the only judge key this job needs anymore.
+    # `test_conversation_simulator_deepeval.py`'s two tests hard-crashed —
+    # `google.genai.errors.ClientError: 400 INVALID_ARGUMENT ... Unknown
+    # name "additional_properties" at 'generation_config.response_schema'`
+    # — because `KnowledgeRetentionMetric` (deepeval's own
+    # `knowledge_retention/schema.py::Knowledge.data:
+    # Optional[Dict[str, Union[str, List[str]]]]`) unconditionally requests
+    # a Dict-typed structured-output schema, and Gemini's `response_schema`
+    # (a restricted OpenAPI-3.0 subset) rejects the `additionalProperties`
+    # keyword Pydantic emits for any open-ended `Dict[...]` field —
+    # confirmed directly by reading that schema class, not guessed from the
+    # error text alone. Not fixable by a generation_kwargs tweak or a
+    # smaller/different Gemini model — the Gemini API itself doesn't
+    # support this JSON Schema keyword, full stop. So
+    # `test_conversation_simulator_deepeval.py` alone keeps its own
+    # separate `deepeval_conversation_judge` fixture (Groq's
+    # `openai/gpt-oss-120b` again, the SAME provider `deepeval_judge` used
+    # before this whole Gemini migration — see that fixture's own
+    # docstring in tests/deepeval/conftest.py) for BOTH of its roles
+    # (simulating the persona AND grading `KnowledgeRetentionMetric`/
+    # `RoleAdherenceMetric`), needing `GROQ_API_KEY` below again — while
+    # `test_rag_quality_deepeval.py`/`test_tool_correctness_deepeval.py`
+    # stay on Gemini via the shared `deepeval_judge` fixture, since neither
+    # of those files' metrics touch a Dict-typed schema. Two judge keys
+    # instead of one, but for a real, structural reason, not a preference.
+    #
+    # UPDATE 2026-09-18, also from that same first real run: the pytest
+    # step below used to have NO `shell:` key and a comment here claimed
+    # GH Actions' default shell already sets `pipefail` — WRONG, see that
+    # step's own comment for the full correction. That bug is why the two
+    # crashes above didn't already turn this job red in run 35230147154;
+    # `shell: bash` there is the fix, verified against GitHub's own docs.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -400,11 +435,26 @@ jobs:
       # -v makes sure the test's own pass/fail line isn't swallowed by -q's
       # one-dot-per-test default in the saved log below. `tee`, not a plain
       # redirect — still shows live in the job's own log too, not hidden
-      # until the artifact is downloaded. GH Actions' default `run:` shell
-      # already sets `pipefail` (confirmed against its own docs, not
-      # assumed) so pytest's real exit code still propagates through the
-      # pipe to `tee` — this job still fails on a genuine crash, same as
-      # before this step existed.
+      # until the artifact is downloaded.
+      #
+      # FIX 2026-09-18, a real bug caught by a real run, not a hypothetical:
+      # this step used to have NO `shell:` key, and a comment here claimed
+      # GH Actions' default `run:` shell already sets `pipefail`. That claim
+      # was wrong — checked directly against GitHub's own docs (Workflow
+      # syntax > "Exit codes and error action preference"): an UNSPECIFIED
+      # shell on Linux runs `bash -e {0}`, NOT `bash --noprofile --norc -eo
+      # pipefail {0}` — pipefail is only added when a step spells out
+      # `shell: bash` explicitly, which this one never did. Caught live in
+      # run 35230147154 (PR #41): pytest itself printed "3 failed, 7
+      # passed" in this exact step's own log, yet the step — and the whole
+      # job — reported success, because `tee`'s exit code (0), not
+      # pytest's, is what an `-e`-only shell without pipefail propagates.
+      # That silently defeated this job's own stated design (see this job's
+      # top-level comment: "CAN still fail red... on a genuine crash").
+      # `shell: bash` below is the actual fix — not a manual `set -o
+      # pipefail` line, which would work too but only by accident of this
+      # being the first command in the step; `shell: bash` is what GitHub's
+      # own docs name as the supported way to opt into pipefail at all.
       #
       # `tests/deepeval` (2026-09-17) — a real, disclosed noise finding,
       # not a style preference: without a path argument, `-m deepeval`
@@ -435,10 +485,12 @@ jobs:
       # this still collects the identical 10 tests (`--collect-only -q -m
       # deepeval tests/deepeval`).
       - run: pytest -m deepeval -q -s -v tests/deepeval 2>&1 | tee deepeval-results.log
+        shell: bash
         env:
           DEEPEVAL_MODEL: qwen2.5:3b
           DEEPEVAL_TELEMETRY_OPT_OUT: "1"
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       - name: Upload deepeval results (score/reason fields, read by hand — same posture as redteam.yml's own artifact)
         if: always()
         uses: actions/upload-artifact@v4
