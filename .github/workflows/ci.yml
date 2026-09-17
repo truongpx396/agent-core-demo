@@ -73,9 +73,9 @@ name: CI
 # `sonarqube` (self-hosted Community Edition, not SonarCloud — see
 # docker-compose.yml's `quality` profile for the same image used
 # persistently outside CI) runs its own ephemeral server as a job step
-# (same explicit `docker run` sidecar shape this file's `promptfoo`/
-# `test-live` jobs already use for Ollama/crawl4ai, not GH Actions'
-# `services:` block — this server needs to be healthy and have ingested
+# (same explicit `docker run` sidecar shape this file's `promptfoo` job
+# already uses for its own Ollama, not GH Actions' `services:` block or
+# testcontainers-python — this server needs to be healthy and have ingested
 # the scanner's report before the quality-gate poll makes sense, which a
 # plain step-ordered `docker run` guarantees more simply here than
 # coordinating around `services:`' own startup-before-any-step ordering).
@@ -152,11 +152,14 @@ jobs:
     # Real small Ollama model + the full app/agent-worker stack, incl. a
     # Playwright browser E2E (tests/live/, GRAPH_PATTERNS.md pattern 50)
     # and real crawl4ai renders against a real `unclecode/crawl4ai`
-    # container (the `crawl` marker) — the expensive job, so its
-    # Ollama model pull is cached across runs (see tests/containers.py's
-    # own ensure_ollama docstring for why `ollama_home` makes this possible
-    # at all: a stable HOST directory bind-mounted into a fresh container
-    # each run).
+    # container (the `crawl` marker, self-provisioned via
+    # tests/containers.py::ensure_crawl4ai() same as every other
+    # testcontainers-managed dependency in this job, 2026-09-17 —
+    # previously its own explicit `docker run` sidecar step below) — the
+    # expensive job, so its Ollama model pull is cached across runs (see
+    # tests/containers.py's own ensure_ollama docstring for why
+    # `ollama_home` makes this possible at all: a stable HOST directory
+    # bind-mounted into a fresh container each run).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -169,18 +172,10 @@ jobs:
           "testcontainers[postgres,redis,ollama]==4.9.0"
           pytest-playwright==0.7.1
       # For this job's OWN `e2e` browser tests (pytest-playwright driving
-      # the built-in web UI) — unrelated to crawl4ai now that it runs
-      # server-side (below), but this job still needs a real browser itself.
+      # the built-in web UI) — unrelated to crawl4ai (self-provisioned via
+      # testcontainers, see above), but this job still needs a real browser
+      # itself.
       - run: playwright install --with-deps chromium
-      # Real crawl4ai server for the `crawl` marker's tests — same
-      # explicit-`docker run`-sidecar shape the `promptfoo` job below
-      # already uses for its own Ollama, not GH Actions' `services:` block.
-      - run: |
-          export CRAWL4AI_API_TOKEN="$(openssl rand -hex 32)"
-          echo "CRAWL4AI_API_TOKEN=$CRAWL4AI_API_TOKEN" >> "$GITHUB_ENV"
-          docker run -d --name crawl4ai -p 11235:11235 --shm-size=1g \
-            -e CRAWL4AI_API_TOKEN="$CRAWL4AI_API_TOKEN" unclecode/crawl4ai:0.9.3
-      - run: timeout 60 bash -c 'until curl -sf http://localhost:11235/health; do sleep 2; done'
       - uses: actions/cache@v4
         with:
           path: ~/.cache/agent-core-demo-ollama-models
@@ -275,7 +270,7 @@ jobs:
 
   deepeval:
     # LLM-judged RAG quality + multi-turn conversation simulation + tool-
-    # call trajectory correctness (tests/live/test_rag_quality_deepeval.py,
+    # call trajectory correctness (tests/deepeval/test_rag_quality_deepeval.py,
     # test_conversation_simulator_deepeval.py,
     # test_tool_correctness_deepeval.py, `@pytest.mark.deepeval`) — added
     # 2026-09-16 as a NON-BLOCKING CI signal, not a gate. Every file's
@@ -293,7 +288,7 @@ jobs:
     #
     # Testcontainers-python (tests/containers.py's `ensure_ollama`), not the
     # `promptfoo` job's own manual `docker run` sidecar above — these tests
-    # go through the `deepeval_ollama` fixture (tests/live/conftest.py),
+    # go through the `deepeval_ollama` fixture (tests/deepeval/conftest.py),
     # which already drives Ollama that way; same shape `test-live` already
     # uses for its own Ollama fixture, minus the Postgres/Redis/crawl4ai
     # services those tests need but these don't (`build_graph()` with no
@@ -302,14 +297,14 @@ jobs:
     #
     # `DEEPEVAL_MODEL` stays `qwen2.5:3b` here, NOT `TEST_LLM_MODEL`'s
     # CI-speed `1.5b` — this is `make deepeval`'s own local default (see
-    # tests/live/conftest.py), kept as-is rather than downgraded for CI
+    # tests/deepeval/conftest.py), kept as-is rather than downgraded for CI
     # speed: it's the TARGET, and a finding needs to be about the model this
     # app actually deploys, not a smaller stand-in (GRAPH_PATTERNS.md
     # pattern 48).
     #
     # UPDATE 2026-09-16: the JUDGE (a separate concern from the target
     # above) moved to Groq's `openai/gpt-oss-120b` — see
-    # tests/live/conftest.py's own `DEEPEVAL_JUDGE_MODEL` comment for the
+    # tests/deepeval/conftest.py's own `DEEPEVAL_JUDGE_MODEL` comment for the
     # full reasoning (the same target/judge split, and same "the local
     # judge was unreliable, a stronger one elsewhere fixes it" pattern,
     # `promptfoo/redteam.yaml`'s move to Gemini already established).
@@ -347,7 +342,7 @@ jobs:
       # full requires_dist) — click/rich/tabulate stay at THIS APP's newer
       # pinned versions rather than deepeval's older declared caps.
       # Verified for real, not assumed: a clean `import deepeval` (plus
-      # every deepeval symbol this repo's own tests/live/*_deepeval.py
+      # every deepeval symbol this repo's own tests/deepeval/*.py
       # files import) and a full `pytest -m deepeval --collect-only` both
       # succeed against this exact combination in an isolated venv built
       # from this same lockfile.
@@ -359,24 +354,20 @@ jobs:
           key: ollama-models-${{ runner.os }}-${{ env.DEEPEVAL_MODEL }}
         env:
           DEEPEVAL_MODEL: qwen2.5:3b
-      # Real crawl4ai server, same explicit-`docker run`-sidecar shape the
-      # `test-live` job above already uses for its own `crawl`-marked tests
-      # — added specifically for
-      # test_tool_correctness_deepeval.py::test_fetch_external_reference_tool_call_is_correct_and_well_argued,
-      # this job's only test that needs one (see that file's own
-      # `_require_crawl4ai_server` fixture docstring for why it deliberately
-      # does NOT carry `@pytest.mark.crawl`, unlike every other real-crawl4ai
-      # test in this repo — that mark would pull it into test-live's own
-      # selection instead, a real CI job this test can't run under since
-      # test-live never installs the `deepeval` package). Every other test
-      # this job runs neither needs nor uses this container; that fixture's
-      # own reachability check is what scopes it to just the one test.
-      - run: |
-          export CRAWL4AI_API_TOKEN="$(openssl rand -hex 32)"
-          echo "CRAWL4AI_API_TOKEN=$CRAWL4AI_API_TOKEN" >> "$GITHUB_ENV"
-          docker run -d --name crawl4ai -p 11235:11235 --shm-size=1g \
-            -e CRAWL4AI_API_TOKEN="$CRAWL4AI_API_TOKEN" unclecode/crawl4ai:0.9.3
-      - run: timeout 60 bash -c 'until curl -sf http://localhost:11235/health; do sleep 2; done'
+      # test_tool_correctness_deepeval.py::test_fetch_external_reference_tool_call_is_correct_and_well_argued
+      # is this job's only test that needs a real crawl4ai server — its own
+      # `_use_crawl4ai_server` fixture self-provisions one via
+      # tests/containers.py::ensure_crawl4ai() (2026-09-17, same
+      # testcontainers-managed pattern `test-live` uses above, replacing
+      # what used to be this job's own explicit `docker run` sidecar step)
+      # — see that fixture's own docstring for why the test deliberately
+      # does NOT carry `@pytest.mark.crawl`, unlike every other
+      # real-crawl4ai test in this repo (that mark would pull it into
+      # test-live's own selection instead, a real CI job this test can't
+      # run under since test-live never installs the `deepeval` package).
+      # Every other test this job runs neither needs nor starts this
+      # container — `ensure_crawl4ai()` is only called when that one
+      # fixture is actually requested.
       # `-v` on top of this file's usual `-q -s`: deepeval's own per-metric
       # score/reason text only prints with -s (no capture) regardless, but
       # -v makes sure the test's own pass/fail line isn't swallowed by -q's
@@ -607,8 +598,8 @@ jobs:
     # Self-hosted SonarQube Community Edition (not SonarCloud) — an
     # EPHEMERAL server started as a job step, same explicit `docker run`
     # sidecar shape this file's `test-live`/`promptfoo` jobs already use for
-    # Ollama/crawl4ai (not GH Actions' `services:` block — this server needs
-    # to be healthy, and later have ingested the scan report, before the
+    # Ollama (not GH Actions' `services:` block or testcontainers-python —
+    # this server needs to be healthy, and later have ingested the scan report, before the
     # next step touches it, which a plain step-ordered `docker run`
     # guarantees more simply than coordinating around `services:`' own
     # start-before-any-step ordering). Ephemeral means no cross-run

@@ -99,7 +99,7 @@ GOLDEN_CASES: list[GoldenCase] = [
     # expect_tool="search_docs") and `calculator_basic` ("what is 21 * 2?",
     # expect_tool="calculator") retired 2026-09-16 — a deliberate decision,
     # not silent drift: both scenarios are now covered more richly by
-    # tests/live/test_tool_correctness_deepeval.py's
+    # tests/deepeval/test_tool_correctness_deepeval.py's
     # `test_search_docs_tool_call_is_correct_and_well_argued` (the
     # near-identical "Ecorp's support hours" question) and
     # `test_calculator_tool_call_is_correct_and_well_argued` — real

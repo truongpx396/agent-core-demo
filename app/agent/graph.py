@@ -106,7 +106,7 @@ logger = logging.getLogger(__name__)
 # SYSTEM_PROMPT's search_docs/query_employees disambiguation (and the
 # matching clauses on each tool's own docstring, app/agent/tools.py) was
 # tightened 2026-09-16 after a real, disclosed finding from
-# tests/live/test_tool_correctness_deepeval.py: "What are Ecorp's support
+# tests/deepeval/test_tool_correctness_deepeval.py: "What are Ecorp's support
 # hours?" reliably (10/10, cache-cleared between every real run to rule out
 # a false signal from this app's own semantic cache) called query_employees
 # instead of search_docs — a plain word collision between "support hours"

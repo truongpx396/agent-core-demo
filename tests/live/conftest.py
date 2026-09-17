@@ -3,29 +3,13 @@ Ollama model (`@pytest.mark.llm`, `@pytest.mark.e2e`; see GRAPH_PATTERNS.md
 pattern 48 for the full design writeup). Two session fixtures, deliberately
 different weights for deliberately different needs:
 
-`seed_thread(graph, thread_id)` (2026-09-16) — call this before the FIRST
-`graph.ainvoke()`/`.astream()` on any thread this file's tests build
-themselves via `build_graph()` directly. A real, disclosed finding from
-actually running one of these tests, not assumed: `app/agent/graph.py`'s
-own `agent()` node docstring says the base SYSTEM_PROMPT "is seeded once
-per thread by app/agent/runtime.py::_ensure_seeded_async before the graph
-ever runs, so we don't repeat it here" — every production path (API,
-Telegram, agent-worker) goes through that seeding via `runtime.py`'s own
-`astream_events_turn`/`_unattended`, but a test that calls
-`build_graph().ainvoke()` directly, bypassing `runtime.py` entirely, never
-triggers it. Caught live: a test asking "What are Ecorp support hours?"
-against a graph built this way got an EMPTY first response, a synthetic
-retry nudge, then a tool call computing `24 * 7 = 168` and a fabricated
-"Ecorp is open 24/7, 168 support hours a week" answer — the model had ZERO
-tool-routing guidance, only each tool's own individual docstring (which
-LangChain always sends regardless of SystemMessage presence). This means
-every test in this file, and `scripts/eval.py`'s own release-gating golden
-dataset, had been exercising an UN-GUIDED agent this whole time, not the
-one real users actually get — reused `app.agent.runtime._ensure_seeded_async`
-directly rather than re-deriving the seeding logic (it reads
-`graph.manifest.system_prompt`, the correct prompt for whatever domain
-`graph` was actually built for, and is safe/idempotent to call before
-every turn, not just the first).
+`seed_thread` moved to `tests/seeding.py` (2026-09-16, alongside the
+`deepeval`-marked tests moving to their own `tests/deepeval/` package) —
+see that module's own docstring for the full seeding rationale. Still
+imported directly by this file's own tests that build a graph themselves
+via `build_graph()` (`from tests.seeding import seed_thread`); this
+conftest no longer needs to define or re-export it since nothing here
+calls it internally.
 
 `ollama_endpoint` — just `tests/containers.py::ensure_ollama()`, which pulls
 both a real CHAT model and a real embedding model (`nomic-embed-text`,
@@ -43,6 +27,17 @@ network call, not local fastembed — see that file's own docstring for how
 this was caught: it started out in tests/integration/, which provisions no
 LLM at all, and a real CI run surfaced the `openai.APIConnectionError` that
 proved it belonged here instead).
+
+`crawl4ai_server` — just `tests/containers.py::ensure_crawl4ai()`, a real
+crawl4ai server for `test_domain_crawl_tools_live.py` (2026-09-17,
+replacing what had been no reachability handling of its own at all — see
+that helper's own docstring for the full writeup). `test_web_crawler_live.py`
+used to share this same fixture but moved to `tests/integration/`
+(`@pytest.mark.integration`, its own copy of this fixture there) the same
+day, once self-provisioning removed the one thing that had made it
+`tests/live/`-shaped in the first place — it has no LLM/graph dependency
+of its own, unlike `test_domain_crawl_tools_live.py`, which stays here
+since it drives the real graph through a `human_approval` interrupt.
 
 `real_stack` — the full backing stack (Postgres + Redis + Qdrant + Ollama)
 PLUS a real `uvicorn app.api.main:app` and one real `python -m
@@ -94,8 +89,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from app.agent.runtime import _ensure_seeded_async
 from tests.containers import (
+    ensure_crawl4ai,
     ensure_ml_service,
     ensure_ollama,
     ensure_postgres,
@@ -104,54 +99,7 @@ from tests.containers import (
 )
 
 TEST_LLM_MODEL = os.environ.get("TEST_LLM_MODEL", "qwen2.5:1.5b")
-# Separate from TEST_LLM_MODEL, deliberately: the `deepeval`-marked tests
-# (test_rag_quality_deepeval.py, test_conversation_simulator_deepeval.py)
-# are manual-only, unlike this file's CI-speed 1.5b. DEEPEVAL_MODEL drives
-# the TARGET only (the real graph's own CHAT_MODEL, monkeypatched in) — it
-# stays local/offline, same reasoning as promptfoo's PROMPTFOO_MODEL: a
-# finding needs to be about the model this app actually deploys.
-DEEPEVAL_MODEL = os.environ.get("DEEPEVAL_MODEL", "qwen2.5:3b")
-
-# The JUDGE, a SEPARATE knob from DEEPEVAL_MODEL above — same
-# target/judge split as promptfoo's PROMPTFOO_MODEL/PROMPTFOO_REDTEAM_MODEL
-# (GRAPH_PATTERNS.md pattern 48), fixed 2026-09-16 for the identical reason:
-# strengthening the grader shouldn't require also changing what's under
-# test. Originally just a bigger LOCAL model (qwen2.5:3b doing double duty
-# as both target and judge) — real, verified finding from that setup:
-# FaithfulnessMetric scored a hand-verified good answer 0.0 with a `reason`
-# that contradicted its own score outright. Moved to Groq's
-# `openai/gpt-oss-120b` (a plain instruct model, not `compound` —
-# `compound` autonomously invokes web search/code execution mid-request,
-# up to 10 tool calls per call, a bad fit for a judge that needs one
-# predictable structured verdict, not an agentic loop) for the same reason
-# promptfoo's redteam.provider moved to Gemini: a stronger judge is worth
-# more than staying local for a MANUAL, occasional, non-target role. Needs
-# GROQ_API_KEY (.env.example). `llama-3.3-70b-versatile` (the original
-# choice here) doesn't exist on Groq's current API at all — caught by
-# actually hitting GET /v1/models rather than trusting the web search
-# results that suggested it. This account's real limits for the actual
-# model, read off its own `x-ratelimit-*` response headers across several
-# rapid real calls, not guessed: ~8,000 TPM (the token bucket refills back
-# to full within about a second), and 1,000 RPD — NOT RPM — that refills
-# continuously afterward (`reset-requests` grew +86.4s per call across 3
-# back-to-back requests; 86.4s * 1000 = 24h exactly). Comfortably above
-# this suite's low call volume (a couple of test files, not a
-# redteam-scale sweep) either way, so no extra pacing/concurrency limiting
-# was added here the way `make promptfoo-redteam` needed for its much
-# higher volume.
-DEEPEVAL_JUDGE_MODEL = os.environ.get("DEEPEVAL_JUDGE_MODEL", "openai/gpt-oss-120b")
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-
-
-async def seed_thread(graph, thread_id: str) -> None:
-    """Seed `thread_id` with `graph`'s own system prompt before the first
-    real turn — see this module's own docstring for why this is required
-    for a test that calls `build_graph().ainvoke()`/`.astream()` directly.
-    Thin wrapper, not a reimplementation: delegates straight to
-    `app.agent.runtime._ensure_seeded_async`, the exact function every
-    production path already relies on, so this can never drift out of
-    sync with what real users actually get."""
-    await _ensure_seeded_async(graph, thread_id)
 
 
 def _free_port() -> int:
@@ -166,37 +114,19 @@ def ollama_endpoint() -> dict[str, str]:
 
 
 @pytest.fixture(scope="session")
-def deepeval_ollama() -> dict[str, str]:
-    return ensure_ollama(DEEPEVAL_MODEL)
-
-
-@pytest.fixture(scope="session")
-def deepeval_judge():
-    """The GRADER, pointed at Groq — see DEEPEVAL_JUDGE_MODEL's own module
-    comment for why this is separate from `deepeval_ollama` (the TARGET).
-    `deepeval.models.LocalModel` is a plain OpenAI-SDK client under a
-    generic name (confirmed by reading its own source, not assumed from
-    the name) — any OpenAI-compatible `base_url` works, same shape this
-    app's own `OllamaModel` usage and its production LiteLLM proxy already
-    take, just pointed at Groq's real endpoint instead of a local one.
-    Fails fast with a clear message if GROQ_API_KEY isn't set, rather than
-    an opaque 401 mid-test.
-    """
-    from deepeval.models import LocalModel
-
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        pytest.fail(
-            "GROQ_API_KEY is not set — required for the deepeval judge "
-            "(DEEPEVAL_JUDGE_MODEL, see tests/live/conftest.py). Get one at "
-            "https://console.groq.com/keys and set it in .env."
-        )
-    return LocalModel(
-        model=DEEPEVAL_JUDGE_MODEL,
-        api_key=api_key,
-        base_url="https://api.groq.com/openai/v1",
-        temperature=0,
-    )
+def crawl4ai_server() -> dict[str, str]:
+    """`tests/containers.py::ensure_crawl4ai()` (2026-09-17) — used by
+    test_domain_crawl_tools_live.py, which monkeypatches this fixture's
+    `crawl4ai_server_url`/`crawl4ai_api_token` into
+    `app.ingestion.web_crawler`'s own module globals itself (see that
+    helper's own docstring for why this fixture only returns connection
+    info rather than doing the monkeypatching itself — same division of
+    labor `ollama_endpoint` above and the deepeval files'
+    `real_ollama_chat_model` fixtures already use). `test_web_crawler_live.py`
+    used to share this fixture too but moved to `tests/integration/`
+    (own copy there) the same day this fixture was added — see this
+    module's own docstring for why."""
+    return ensure_crawl4ai()
 
 
 @pytest.fixture(scope="session")

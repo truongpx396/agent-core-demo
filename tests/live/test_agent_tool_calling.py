@@ -15,7 +15,7 @@ not a quality gate on how well it answers.
 
 (`scripts/eval.py`'s own `calculator_basic` — the golden case this file's
 own comment below used to point at by name — was retired 2026-09-16,
-folded into tests/live/test_tool_correctness_deepeval.py's own
+folded into tests/deepeval/test_tool_correctness_deepeval.py's own
 `test_calculator_tool_call_is_correct_and_well_argued` instead; this
 file's own smoke-test role is unaffected, since it's testing something
 that golden case never was: a deliberately SMALL, CI-speed model, not
@@ -40,7 +40,7 @@ from app.agent import graph as graph_module
 from app.agent.graph import GraphDeps
 from app.agent.graph_build import build_graph
 from tests.conftest import TEST_CTX
-from tests.live.conftest import seed_thread
+from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.llm
 
@@ -64,7 +64,7 @@ async def _invoke_async(text: str) -> dict:
     graph = build_graph(GraphDeps())
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
     # Seed the system prompt before the first real turn — see
-    # tests/live/conftest.py's own `seed_thread` docstring for why this is
+    # tests/seeding.py's own `seed_thread` docstring for why this is
     # required for a test that calls `build_graph().ainvoke()` directly,
     # bypassing app/agent/runtime.py's own seeding every production path
     # relies on. Real, disclosed finding: this file's own docstring above

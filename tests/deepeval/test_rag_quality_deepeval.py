@@ -32,7 +32,7 @@ answer and a deliberately bad, off-topic one THE SAME (0.5 for both),
 failing to discriminate the one thing it exists to measure.
 
 JUDGE MODEL (2026-09-16): the judge is now `deepeval_judge`
-(tests/live/conftest.py, `DEEPEVAL_JUDGE_MODEL`, default Groq's
+(tests/deepeval/conftest.py, `DEEPEVAL_JUDGE_MODEL`, default Groq's
 `openai/gpt-oss-120b`) — a SEPARATE knob from `deepeval_ollama`/
 `DEEPEVAL_MODEL`, which still drives the TARGET (`graph_module.CHAT_MODEL`
 below) and stays local. Bumping the target's own model to `qwen2.5:3b`
@@ -61,7 +61,7 @@ exception. Still read the `reason` fields in the CI job's own log by hand —
 `flaky=True` makes a bad score non-blocking, not meaningful on its own.
 
 SEEDING (2026-09-16): every test below calls `seed_thread` before its
-first `ainvoke` — see tests/live/conftest.py's own docstring for a real,
+first `ainvoke` — see tests/seeding.py's own docstring for a real,
 disclosed finding that affected every `build_graph().ainvoke()` caller in
 this repo, this file included: without it, the target agent had ZERO
 tool-routing guidance from `SYSTEM_PROMPT`, only each tool's own
@@ -85,7 +85,7 @@ from app.agent import graph as graph_module
 from app.agent.graph import GraphDeps
 from app.agent.graph_build import build_graph
 from tests.conftest import TEST_CTX
-from tests.live.conftest import seed_thread
+from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.deepeval
 
@@ -125,7 +125,7 @@ def real_ollama_chat_model(monkeypatch, deepeval_ollama):
 
 async def _seed_and_answer(question: str) -> str:
     """Shared by every test below: fresh graph/thread, seed it properly
-    (see tests/live/conftest.py's own `seed_thread` docstring — without
+    (see tests/seeding.py's own `seed_thread` docstring — without
     this, `build_graph().ainvoke()` never triggers the SYSTEM_PROMPT
     seeding every production path relies on), run one turn, return the
     final answer text."""

@@ -19,12 +19,26 @@ also needs a real lead row — left to a hermetic, mocked-store test instead
 since covering that combination live would need a real Postgres too, for
 comparatively little extra proof over what this file already establishes).
 
-Deliberately NOT using tests/live/conftest.py's `seed_thread` (unlike this
+Deliberately NOT using tests/seeding.py's `seed_thread` (unlike this
 suite's other `build_graph().ainvoke()` callers — see that helper's own
 docstring for the general finding): `GenericFakeChatModel` returns
 pre-scripted responses from a fixed `iter(...)`, never actually reading
 the system prompt to decide anything — seeding here would add a call that
 provably can't change this file's behavior, not close a real gap.
+
+`_use_crawl4ai_server` (2026-09-17) — both tools here bottom out in
+`app.ingestion.web_crawler.render_url_to_markdown`, same as
+test_web_crawler_live.py, so it needs the same `crawl4ai_server`
+fixture + monkeypatch shape (see that file's own fixture docstring) —
+its own copy, from `tests/live/conftest.py` rather than
+`tests/integration/conftest.py`'s, since this file stayed in `tests/live/`
+(it drives the real graph through a `human_approval` interrupt,
+test_web_crawler_live.py doesn't) even after moving to a
+testcontainers-managed crawl4ai stopped being the thing that made
+test_web_crawler_live.py `tests/live/`-shaped. This file previously had no
+such fixture at all and just relied on a `docker compose up -d crawl4ai`
+server already sitting at the app's own config default, which
+`ensure_crawl4ai()`'s self-provisioning now replaces.
 """
 import asyncio
 
@@ -37,9 +51,16 @@ from app.agent.graph import GraphDeps
 from app.agent.graph_build import build_graph
 from app.domains.ops.domain import OPS_DOMAIN_PLUGIN, OPS_MANIFEST
 from app.domains.support.domain import SUPPORT_DOMAIN_PLUGIN, SUPPORT_MANIFEST
+from app.ingestion import web_crawler
 from tests.conftest import TEST_CTX
 
 pytestmark = pytest.mark.crawl
+
+
+@pytest.fixture(autouse=True)
+def _use_crawl4ai_server(monkeypatch, crawl4ai_server):
+    monkeypatch.setattr(web_crawler, "CRAWL4AI_SERVER_URL", crawl4ai_server["crawl4ai_server_url"])
+    monkeypatch.setattr(web_crawler, "CRAWL4AI_API_TOKEN", crawl4ai_server["crawl4ai_api_token"])
 
 
 def _tool_call(name, args, call_id="c1"):
