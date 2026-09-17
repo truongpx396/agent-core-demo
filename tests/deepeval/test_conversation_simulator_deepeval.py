@@ -132,7 +132,7 @@ _CITATIONS = [
 _MAX_APPROVAL_ROUNDS = 3
 
 
-def _real_search(query: str, ctx=None) -> tuple[str, list[dict]]:
+async def _real_search(query: str, ctx=None) -> tuple[str, list[dict]]:
     return _CONTEXT, _CITATIONS
 
 
