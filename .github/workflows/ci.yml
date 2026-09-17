@@ -238,7 +238,14 @@ jobs:
           ollama/ollama:latest
       - run: >
           timeout 60 bash -c 'until docker exec ollama ollama list >/dev/null 2>&1; do sleep 1; done'
-      - run: docker exec ollama ollama pull qwen2.5:1.5b
+      # `$PROMPTFOO_MODEL`, not a hardcoded tag — this step used to pull a
+      # literal `qwen2.5:1.5b` regardless of what the cache-key/eval-step
+      # `env:` blocks below actually asked for, a silent drift trap if the
+      # model tag is ever bumped in one of those but not here (Ollama would
+      # have the OLD model cached while promptfoo asks for the NEW tag).
+      - run: docker exec ollama ollama pull "$PROMPTFOO_MODEL"
+        env:
+          PROMPTFOO_MODEL: qwen2.5:1.5b
       - run: pip install -r requirements-lock.txt
       # `npm install`, not `npm ci`: package-lock.json's optional-dependency
       # entries (native platform bindings — promptfoo transitively depends
@@ -265,6 +272,93 @@ jobs:
           done
         env:
           PROMPTFOO_MODEL: qwen2.5:1.5b
+
+  deepeval:
+    # LLM-judged RAG quality + multi-turn conversation simulation + tool-
+    # call trajectory correctness (tests/live/test_rag_quality_deepeval.py,
+    # test_conversation_simulator_deepeval.py,
+    # test_tool_correctness_deepeval.py, `@pytest.mark.deepeval`) — added
+    # 2026-09-16 as a NON-BLOCKING CI signal, not a gate. Every file's
+    # `LLMTestCase`/`ConversationalTestCase` are constructed with
+    # `flaky=True` (deepeval's own mechanism, confirmed directly in the
+    # installed `deepeval==4.2.0` source: a flaky test case's failed metric
+    # prints a `warnings.warn(...)` instead of raising `AssertionError`, so
+    # the pytest test itself still passes). That's deliberately different
+    # from `promptfoo redteam`/`garak`, which stay fully manual
+    # (GRAPH_PATTERNS.md pattern 48) — this job CAN still fail red, just
+    # only on a genuine crash (an unreachable Ollama, a broken
+    # `build_graph()`, an import error), never on the judge disagreeing
+    # with itself. Read this job's own log for the printed `reason` fields
+    # — a clean pass here is "nothing crashed," not "the judge approved."
+    #
+    # Testcontainers-python (tests/containers.py's `ensure_ollama`), not the
+    # `promptfoo` job's own manual `docker run` sidecar above — these tests
+    # go through the `deepeval_ollama` fixture (tests/live/conftest.py),
+    # which already drives Ollama that way; same shape `test-live` already
+    # uses for its own Ollama fixture, minus the Postgres/Redis/crawl4ai
+    # services those tests need but these don't (`build_graph()` with no
+    # `checkpointer` argument — both files' own construction — defaults to
+    # an in-memory `MemorySaver`, see app/agent/graph_build.py).
+    #
+    # `DEEPEVAL_MODEL` stays `qwen2.5:3b` here, NOT `TEST_LLM_MODEL`'s
+    # CI-speed `1.5b` — this is `make deepeval`'s own local default (see
+    # tests/live/conftest.py), kept as-is rather than downgraded for CI
+    # speed: it's the TARGET, and a finding needs to be about the model this
+    # app actually deploys, not a smaller stand-in (GRAPH_PATTERNS.md
+    # pattern 48).
+    #
+    # UPDATE 2026-09-16: the JUDGE (a separate concern from the target
+    # above) moved to Groq's `openai/gpt-oss-120b` — see
+    # tests/live/conftest.py's own `DEEPEVAL_JUDGE_MODEL` comment for the
+    # full reasoning (the same target/judge split, and same "the local
+    # judge was unreliable, a stronger one elsewhere fixes it" pattern,
+    # `promptfoo/redteam.yaml`'s move to Gemini already established).
+    # Needs a `GROQ_API_KEY` repo secret (Settings > Secrets and variables >
+    # Actions) — the `deepeval_judge` fixture itself fails with a clear
+    # message if it's missing, so no separate pre-check step here the way
+    # `.github/workflows/redteam.yml` needed one (that job's failure mode
+    # would otherwise be an opaque crash deep inside `npx`, not a pytest
+    # fixture that can just say why).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: >
+          pip install -r requirements-lock.txt
+          "testcontainers[postgres,redis,ollama]==4.9.0"
+          deepeval==4.2.0
+          ollama==0.6.2
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/agent-core-demo-ollama-models
+          key: ollama-models-${{ runner.os }}-${{ env.DEEPEVAL_MODEL }}
+        env:
+          DEEPEVAL_MODEL: qwen2.5:3b
+      # `-v` on top of this file's usual `-q -s`: deepeval's own per-metric
+      # score/reason text only prints with -s (no capture) regardless, but
+      # -v makes sure the test's own pass/fail line isn't swallowed by -q's
+      # one-dot-per-test default in the saved log below. `tee`, not a plain
+      # redirect — still shows live in the job's own log too, not hidden
+      # until the artifact is downloaded. GH Actions' default `run:` shell
+      # already sets `pipefail` (confirmed against its own docs, not
+      # assumed) so pytest's real exit code still propagates through the
+      # pipe to `tee` — this job still fails on a genuine crash, same as
+      # before this step existed.
+      - run: pytest -m deepeval -q -s -v 2>&1 | tee deepeval-results.log
+        env:
+          DEEPEVAL_MODEL: qwen2.5:3b
+          DEEPEVAL_TELEMETRY_OPT_OUT: "1"
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      - name: Upload deepeval results (score/reason fields, read by hand — same posture as redteam.yml's own artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepeval-results-${{ github.run_id }}
+          path: deepeval-results.log
+          retention-days: 30
+          if-no-files-found: warn
 
   docker-build:
     runs-on: ubuntu-latest

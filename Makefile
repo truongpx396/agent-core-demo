@@ -169,19 +169,50 @@ promptfoo:  ## Prompt-level regression checks for the domain system prompts agai
 		npx promptfoo eval --config promptfoo/$$domain.yaml || exit 1; \
 	done
 
-promptfoo-redteam:  ## Adversarial variants of the support prompt (prompt injection, policy violations), generated+graded locally by Ollama — see promptfoo/redteam.yaml's own comments for real, disclosed limits on how far that local generation/grading can be trusted
+promptfoo-redteam:  ## Adversarial variants of the support/sales/ops prompts (prompt injection, policy violations, sandbox misuse) against the real local target, generated+graded by Gemini 3.1 Flash-Lite (needs GOOGLE_API_KEY, see .env.example) — see promptfoo/redteam.yaml's own comments for why redteam.provider is the one deliberate exception to this project's offline commitment
 	npm install --include=optional
 	python -m promptfoo.dump_prompts
-	# `redteam run` REWRITES its --config file in place with the generated+
-	# graded test suite baked in (confirmed directly: it clobbered the
-	# checked-in redteam.yaml twice during development) — copying to a
-	# scratch file first (same directory, so redteam.yaml's own
-	# `file://prompts/support.json` still resolves) keeps the hand-authored
-	# source under version control intact across repeated runs.
-	cp promptfoo/redteam.yaml promptfoo/.redteam-run-scratch.yaml
-	PROMPTFOO_DISABLE_REMOTE_GENERATION=true npx promptfoo redteam run --config promptfoo/.redteam-run-scratch.yaml
+	# `--max-concurrency 1 --delay 2100`: keeps every domain's redteam.provider
+	# calls serial with >2s between them, safely under the free Gemini tier's
+	# 30 req/min this was built against (see redteam.yaml's own RATE LIMIT
+	# paragraph) — raise only alongside a paid tier/higher quota.
+	# `redteam run`'s generated+graded test suite is written to `-o`/
+	# `--output`, which DEFAULTS to a HARDCODED `redteam.yaml` in the
+	# --config file's own DIRECTORY — not to the --config file itself,
+	# regardless of what it's named (confirmed directly in promptfoo's own
+	# installed source, node_modules/promptfoo/dist/src/main.js:
+	# `redteamPath = path.join(configDir, "redteam.yaml")`). Copying each
+	# domain's config to its own scratch file first does NOT protect the
+	# hand-authored sources on its own — every scratch file already lives in
+	# THIS SAME `promptfoo/` directory, so all three would silently default
+	# to overwriting `promptfoo/redteam.yaml` (support's own hand-authored
+	# file) regardless of which domain actually ran. An explicit `-o`
+	# pointed back at each stanza's own scratch file is what actually keeps
+	# them isolated — verified the hard way: an early version of this target
+	# without it clobbered the checked-in `redteam.yaml` from a run against
+	# an unrelated scratch config. Three explicit stanzas, not a
+	# `for domain in ...` loop like the `promptfoo` target above — support's
+	# file is `redteam.yaml` (no domain prefix, predates the sales/ops
+	# siblings), so the source filename isn't uniform across domains the way
+	# `promptfoo/$$domain.yaml` already is.
+	#
+	# Leading `-` on each `redteam run` line: promptfoo's OWN exit code is
+	# nonzero (a hardcoded 100 by default) the moment ANY test case fails —
+	# confirmed directly in its installed source (`process.exitCode =
+	# failedTestExitCode ?? 100`), verified the hard way when a real Gemini
+	# run found a genuine finding in `sales-redteam` and `make` aborted
+	# right there, never reaching `ops-redteam` at all. That's the opposite
+	# of what a MANUAL, read-it-by-hand target wants — a finding here isn't
+	# a bug in this target, it's the entire point of running it — so `-`
+	# tells `make` to keep going to the next domain regardless.
+	-cp promptfoo/redteam.yaml promptfoo/.support-redteam-run-scratch.yaml
+	-PROMPTFOO_DISABLE_REMOTE_GENERATION=true npx promptfoo redteam run --config promptfoo/.support-redteam-run-scratch.yaml --output promptfoo/.support-redteam-run-scratch.yaml --max-concurrency 1 --delay 2100
+	-cp promptfoo/sales-redteam.yaml promptfoo/.sales-redteam-run-scratch.yaml
+	-PROMPTFOO_DISABLE_REMOTE_GENERATION=true npx promptfoo redteam run --config promptfoo/.sales-redteam-run-scratch.yaml --output promptfoo/.sales-redteam-run-scratch.yaml --max-concurrency 1 --delay 2100
+	-cp promptfoo/ops-redteam.yaml promptfoo/.ops-redteam-run-scratch.yaml
+	-PROMPTFOO_DISABLE_REMOTE_GENERATION=true npx promptfoo redteam run --config promptfoo/.ops-redteam-run-scratch.yaml --output promptfoo/.ops-redteam-run-scratch.yaml --max-concurrency 1 --delay 2100
 
-deepeval:  ## LLM-judged RAG quality (tests/live/test_rag_quality_deepeval.py) + a multi-turn conversation simulation (test_conversation_simulator_deepeval.py) against the real graph — needs Docker; read the printed reasons by hand, don't trust pass/fail alone (see those files' own disclosed judge-reliability findings, GRAPH_PATTERNS.md pattern 48)
+deepeval:  ## LLM-judged RAG quality (test_rag_quality_deepeval.py) + a multi-turn conversation simulation (test_conversation_simulator_deepeval.py) + tool-call trajectory correctness (test_tool_correctness_deepeval.py) against the real graph — needs Docker + GROQ_API_KEY (see .env.example, tests/live/conftest.py's deepeval_judge fixture); read the printed reasons by hand, don't trust pass/fail alone (see those files' own disclosed judge-reliability findings, GRAPH_PATTERNS.md pattern 48). Same command CI's own `deepeval` job runs; every file's test cases are `flaky=True` there so a bad score can't fail the build.
 	DEEPEVAL_TELEMETRY_OPT_OUT=1 pytest -m deepeval -q -s
 
 garak:  ## Fast, curated probe subset scanning the real model for known jailbreak/injection patterns — needs `make up`/a native Ollama AND a SEPARATE Python environment, never this repo's own .venv (installing garak here upgrades langgraph-checkpoint past what this app's own pin allows — see garak/requirements-garak.txt)

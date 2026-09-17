@@ -54,6 +54,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
 from app.agent.graph_build import build_graph
+from app.agent.runtime import _ensure_seeded_async
 from app.core.config import DEFAULT_TENANT
 from app.core.security import SecurityCtx
 
@@ -94,19 +95,25 @@ GOLDEN_CASES: list[GoldenCase] = [
         expect_keywords=["checkpointer", "thread_id", "memory", "persist"],
         min_answer_length=20,
     ),
-    GoldenCase(
-        id="retrieval_company_topic_filter",
-        input="What are Ecorp support hours?",
-        expect_tool="search_docs",
-        expect_keywords=["9am", "9 am", "9:00", "weekday", "5pm", "5 pm"],
-        min_answer_length=10,
-    ),
-    GoldenCase(
-        id="calculator_basic",
-        input="what is 21 * 2?",
-        expect_tool="calculator",
-        expect_keywords=["42"],
-    ),
+    # `retrieval_company_topic_filter` ("What are Ecorp support hours?",
+    # expect_tool="search_docs") and `calculator_basic` ("what is 21 * 2?",
+    # expect_tool="calculator") retired 2026-09-16 — a deliberate decision,
+    # not silent drift: both scenarios are now covered more richly by
+    # tests/live/test_tool_correctness_deepeval.py's
+    # `test_search_docs_tool_call_is_correct_and_well_argued` (the
+    # near-identical "Ecorp's support hours" question) and
+    # `test_calculator_tool_call_is_correct_and_well_argued` — real
+    # tool-call SET/argument checks via deepeval's `ToolCorrectnessMetric`/
+    # `ArgumentCorrectnessMetric`, not just "was the tool called" plus a
+    # keyword grep. What stays HERE, deliberately, is what deepeval
+    # structurally can't replace: this file's own N-repetition statistical
+    # gate and its DETERMINISTIC grounded-claims-ratio check (never an
+    # LLM's opinion of itself) — see this module's own docstring. Kept
+    # `retrieval_langgraph_checkpointer`/`calculator_with_human_approval`/
+    # `general_knowledge_no_tool_needed` below precisely because none of
+    # them have a deepeval equivalent yet (a different question, the HITL
+    # approval flow as the actual subject under test, and "correctly does
+    # NOT reach for a tool," respectively).
     GoldenCase(
         id="calculator_with_human_approval",
         input="what is 12 * 7?",
@@ -166,6 +173,19 @@ async def _run_case_once(graph, case: GoldenCase) -> _Attempt:
         }
     }
     start = time.monotonic()
+
+    # Seed the system prompt BEFORE the first real turn — a real, disclosed
+    # finding from actually running this, not assumed: `build_graph()` +
+    # `.ainvoke()` directly, bypassing app/agent/runtime.py entirely, never
+    # triggers the seeding every production path (API/Telegram/agent-worker)
+    # relies on (see app/agent/graph.py's own `agent()` node docstring).
+    # Without this, every golden case here was running the agent with ZERO
+    # tool-routing guidance — only each tool's own individual docstring,
+    # which LangChain always sends regardless — a materially different,
+    # un-guided agent from what real users actually get. Reuses the exact
+    # production function rather than re-deriving the seeding logic, so
+    # this can never drift out of sync with real behavior.
+    await _ensure_seeded_async(graph, config["configurable"]["thread_id"])
 
     # `ainvoke`/`aget_state`, not the sync `.invoke()`/`.get_state()` this
     # used to be: the graph's `agent`/`retrieve_context`/etc. nodes are

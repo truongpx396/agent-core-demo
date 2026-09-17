@@ -4,14 +4,22 @@ every other test in this suite (`GenericFakeChatModel`, hand-scripted
 responses) structurally cannot prove, because a fake model's tool calls are
 authored by the test, not actually reasoned by anything. Deliberately the
 release-gating counterpart's fast, cheap sibling, not a replacement for it:
-`scripts/eval.py` runs this exact `calculator_basic` scenario (and several
-harder ones) `EVAL_REPETITIONS` times each against the REAL, full-size
-`CHAT_MODEL` this deployment actually ships, gated by a statistical pass
-threshold — deliberately kept OUT of CI (see .github/workflows/ci.yml's own
-comment) because that's real, maintainer-run, pre-release scanning. This
-file runs ONE repetition of the simplest case against a deliberately SMALL
-model, in CI, on every push — a smoke test that the real model/graph
-integration hasn't broken, not a quality gate on how well it answers.
+`scripts/eval.py` runs its own (harder) golden cases `EVAL_REPETITIONS`
+times each against the REAL, full-size `CHAT_MODEL` this deployment
+actually ships, gated by a statistical pass threshold — deliberately kept
+OUT of CI (see .github/workflows/ci.yml's own comment) because that's
+real, maintainer-run, pre-release scanning. This file runs ONE repetition
+of the simplest case against a deliberately SMALL model, in CI, on every
+push — a smoke test that the real model/graph integration hasn't broken,
+not a quality gate on how well it answers.
+
+(`scripts/eval.py`'s own `calculator_basic` — the golden case this file's
+own comment below used to point at by name — was retired 2026-09-16,
+folded into tests/live/test_tool_correctness_deepeval.py's own
+`test_calculator_tool_call_is_correct_and_well_argued` instead; this
+file's own smoke-test role is unaffected, since it's testing something
+that golden case never was: a deliberately SMALL, CI-speed model, not
+`scripts/eval.py`'s full-size production one.)
 
 `build_graph()` is called directly — no `app.agent.runtime` wrapper, no
 Postgres/Redis/Qdrant needed at all (only `ollama_endpoint`, the cheapest of
@@ -32,6 +40,7 @@ from app.agent import graph as graph_module
 from app.agent.graph import GraphDeps
 from app.agent.graph_build import build_graph
 from tests.conftest import TEST_CTX
+from tests.live.conftest import seed_thread
 
 pytestmark = pytest.mark.llm
 
@@ -51,20 +60,35 @@ def real_ollama_chat_model(monkeypatch, ollama_endpoint):
     monkeypatch.setattr(graph_module, "OPENAI_API_BASE", ollama_endpoint["openai_api_base"])
 
 
-def _invoke(text: str) -> dict:
+async def _invoke_async(text: str) -> dict:
     graph = build_graph(GraphDeps())
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
-    # asyncio.run(...ainvoke(...)), not the sync .invoke() this used to be:
-    # the graph's agent/retrieve_context/etc. nodes are async def now (real
-    # LLM/Redis/Qdrant I/O — see app/agent/graph.py), and LangGraph's sync
-    # Pregel loop can't run an async-only node at all.
-    return asyncio.run(
-        graph.ainvoke({"messages": [HumanMessage(content=text)]}, config=config)
-    )
+    # Seed the system prompt before the first real turn — see
+    # tests/live/conftest.py's own `seed_thread` docstring for why this is
+    # required for a test that calls `build_graph().ainvoke()` directly,
+    # bypassing app/agent/runtime.py's own seeding every production path
+    # relies on. Real, disclosed finding: this file's own docstring above
+    # frames "no app.agent.runtime wrapper" as a deliberate minimal-deps
+    # choice, but never accounted for that wrapper also being what seeds
+    # the model's tool-routing guidance in real usage.
+    await seed_thread(graph, config["configurable"]["thread_id"])
+    return await graph.ainvoke({"messages": [HumanMessage(content=text)]}, config=config)
+
+
+def _invoke(text: str) -> dict:
+    # asyncio.run(...), not the sync .invoke() this used to be: the graph's
+    # agent/retrieve_context/etc. nodes are async def now (real LLM/Redis/
+    # Qdrant I/O — see app/agent/graph.py), and LangGraph's sync Pregel loop
+    # can't run an async-only node at all.
+    return asyncio.run(_invoke_async(text))
 
 
 def test_real_model_uses_the_calculator_tool_and_returns_the_right_answer():
-    """Mirrors scripts/eval.py's GOLDEN_CASES `calculator_basic` case."""
+    """Used to mirror scripts/eval.py's GOLDEN_CASES `calculator_basic`
+    case, retired from there 2026-09-16 (see this file's own module
+    docstring) — this smoke test stays regardless, since it's testing a
+    different thing (the CI-speed model, on every push) than that golden
+    case ever was."""
     from langchain_core.messages import AIMessage
 
     result = _invoke("what is 21 * 2? Use the calculator tool.")

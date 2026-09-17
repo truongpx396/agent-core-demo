@@ -32,6 +32,7 @@ from app.agent import graph as graph_module
 from app.agent.graph import GraphDeps
 from app.agent.graph_build import build_graph
 from tests.conftest import TEST_CTX
+from tests.live.conftest import seed_thread
 
 pytestmark = pytest.mark.llm
 
@@ -58,13 +59,22 @@ def _stub_add_note_io(monkeypatch):
     monkeypatch.setattr(qdrant_store, "upsert", lambda points: None)
 
 
-def _invoke_and_approve(text: str):
+async def _invoke_and_approve_async(text: str):
     graph = build_graph(GraphDeps())
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
-    asyncio.run(graph.ainvoke({"messages": [HumanMessage(content=text)]}, config=config))
-    paused_state = asyncio.run(graph.aget_state(config))
-    result = asyncio.run(graph.ainvoke(Command(resume=True), config=config))
+    # Seed the system prompt before the first real turn — see
+    # tests/live/conftest.py's own `seed_thread` docstring; a test calling
+    # build_graph().ainvoke() directly never triggers the seeding every
+    # production path relies on otherwise.
+    await seed_thread(graph, config["configurable"]["thread_id"])
+    await graph.ainvoke({"messages": [HumanMessage(content=text)]}, config=config)
+    paused_state = await graph.aget_state(config)
+    result = await graph.ainvoke(Command(resume=True), config=config)
     return graph, config, paused_state, result
+
+
+def _invoke_and_approve(text: str):
+    return asyncio.run(_invoke_and_approve_async(text))
 
 
 def test_real_model_calls_two_tools_in_one_turn_and_both_run_after_approval():
