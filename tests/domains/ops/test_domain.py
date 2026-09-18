@@ -116,10 +116,11 @@ class TestDomainScopedSubagent:
     async def test_never_pauses_it_is_read_only(self, monkeypatch):
         from app.agent import subagent_tools as agent_tools_module
 
+        async def fake_run_subagent_impl(*a, **k):
+            return agent_tools_module.SubagentResult("found it", 0, 0.0)
+
         monkeypatch.setattr(
-            agent_tools_module,
-            "_run_subagent_impl",
-            lambda *a, **k: agent_tools_module.SubagentResult("found it", 0, 0.0),
+            agent_tools_module, "_run_subagent_impl", fake_run_subagent_impl
         )
         llm = _fake_llm_returning(
             _tool_call(
@@ -138,7 +139,10 @@ class TestDomainScopedSubagent:
 async def test_fetch_metrics_summary_is_read_only_and_never_pauses(monkeypatch):
     from app.domains.ops import metrics_client
 
-    monkeypatch.setattr(metrics_client, "fetch_readings", lambda: {})
+    async def fake_fetch_readings():
+        return {}
+
+    monkeypatch.setattr(metrics_client, "fetch_readings", fake_fetch_readings)
     llm = _fake_llm_returning(
         _tool_call("fetch_metrics_summary", {}),
         AIMessage(content="Everything looks normal."),
@@ -341,9 +345,11 @@ async def test_approving_check_vendor_status_page_runs_it_and_finishes(monkeypat
 
 async def test_approving_post_to_team_channel_runs_it_and_finishes(monkeypatch):
     posted = {}
-    monkeypatch.setattr(
-        notify, "post_to_team_channel", lambda channel, message: posted.setdefault(channel, message)
-    )
+
+    async def fake_post_to_team_channel(channel, message):
+        posted.setdefault(channel, message)
+
+    monkeypatch.setattr(notify, "post_to_team_channel", fake_post_to_team_channel)
 
     llm = _fake_llm_returning(
         _tool_call("post_to_team_channel", {"channel": "ops-digest", "message": "all clear"}),

@@ -35,7 +35,12 @@ async def test_refuses_without_tenant_or_principal():
 
 async def test_invalid_department_returns_a_friendly_error(monkeypatch):
     called = []
-    monkeypatch.setattr(sql_store, "query_employees", lambda **kw: called.append(kw) or [])
+
+    async def fake_query_employees(**kw):
+        called.append(kw)
+        return []
+
+    monkeypatch.setattr(sql_store, "query_employees", fake_query_employees)
 
     result = await _call(
         "query_employees",

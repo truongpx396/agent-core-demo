@@ -188,7 +188,11 @@ class TestAddNoteImpl:
 
     async def test_refuses_without_ctx(self, monkeypatch):
         upserted = []
-        monkeypatch.setattr(qdrant_store, "upsert", lambda points: upserted.append(points))
+
+        async def fake_upsert(points):
+            upserted.append(points)
+
+        monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
         result = await add_note.ainvoke({"title": "T", "content": "C", "topic": "langgraph"})
 
@@ -341,7 +345,11 @@ class TestRememberImpl:
 
     async def test_refuses_without_ctx(self, monkeypatch):
         upserted = []
-        monkeypatch.setattr(qdrant_store, "upsert", lambda points: upserted.append(points))
+
+        async def fake_upsert(points):
+            upserted.append(points)
+
+        monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
         result = await remember.ainvoke({"content": "likes dark roast coffee"})
 

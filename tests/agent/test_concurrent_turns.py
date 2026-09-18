@@ -230,7 +230,7 @@ async def run_with_checkpointer_cleanup(coro_fn):
     return await _wrapped()
 
 
-def _fake_embed_text(text: str) -> list[float]:
+async def _fake_embed_text(text: str) -> list[float]:
     """Deterministic, network-free stand-in for the REAL embed_text
     (app/retrieval/embeddings.py), which needs a reachable OpenAI-compatible
     endpoint (OPENAI_API_BASE) — fine on a dev machine with `make up`
@@ -257,7 +257,7 @@ def _fake_embed_text(text: str) -> list[float]:
 
 
 @pytest.fixture(autouse=True)
-def real_semantic_cache_redis(monkeypatch):
+async def real_semantic_cache_redis(monkeypatch):
     """Points the REAL app/retrieval/semantic_cache.py module (not stubbed
     via GraphDeps.cache_get/cache_set — isolation under concurrency is
     exactly what TestSemanticCacheIsolationUnderConcurrency exists to
@@ -286,7 +286,7 @@ def real_semantic_cache_redis(monkeypatch):
     monkeypatch.setattr(semantic_cache, "_client", None)
     monkeypatch.setattr(semantic_cache, "_index_ready", False)
     monkeypatch.setattr(semantic_cache, "embed_text", _fake_embed_text)
-    semantic_cache._get_client().flushall()
+    await semantic_cache._get_client().flushall()
     yield
 
 
@@ -349,7 +349,7 @@ _FAKE_EMBED_DIM = 32  # len(hashlib.sha256(...).digest()) — see _fake_embed_te
 
 
 @pytest.fixture
-def real_qdrant(monkeypatch):
+async def real_qdrant(monkeypatch):
     """Points every real Qdrant read/write path this app has
     (app/agent/tools.py's remember/add_note/search_docs, all the way down
     through app/retrieval/qdrant_store.py) at a real, ephemeral Qdrant
@@ -387,7 +387,7 @@ def real_qdrant(monkeypatch):
     monkeypatch.setattr(qdrant_store, "COLLECTION", f"test-concurrent-turns-{uuid.uuid4().hex}")
     monkeypatch.setattr(tools_module, "embed_text", _fake_embed_text)
     monkeypatch.setattr(embeddings_module, "embed_text", _fake_embed_text)
-    qdrant_store.ensure_collection(dim=_FAKE_EMBED_DIM)
+    await qdrant_store.ensure_collection(dim=_FAKE_EMBED_DIM)
     yield
 
 
@@ -714,7 +714,7 @@ class TestHITLApprovalUnderConcurrency:
         # memory, owned by the right principal, with the right text.
         for i in range(n):
             principal = f"user-{i}"
-            points, _ = qdrant_store.get_client().scroll(
+            points, _ = await qdrant_store.get_client().scroll(
                 collection_name=qdrant_store.COLLECTION,
                 scroll_filter=Filter(
                     must=[
@@ -877,7 +877,7 @@ class TestQdrantReadWriteUnderConcurrency:
             text = f"distinguishing content {i}"
             point = qdrant_store.build_point(
                 point_id=str(uuid.uuid4()),
-                dense_vector=_fake_embed_text(text),
+                dense_vector=await _fake_embed_text(text),
                 payload={
                     "text": text,
                     "topic": "company",
@@ -886,7 +886,7 @@ class TestQdrantReadWriteUnderConcurrency:
                     "tenant": f"tenant-{i}",
                 },
             )
-            qdrant_store.upsert([point])
+            await qdrant_store.upsert([point])
 
         _install_fake_graph(monkeypatch, _fixed_llm(), search_docs=_real_search_docs)
 

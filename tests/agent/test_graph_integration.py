@@ -20,7 +20,7 @@ these graphs use the default in-memory MemorySaver (no event-loop-bound
 state — contrast with `AsyncPostgresSaver`'s per-instance `asyncio.Lock`,
 see app/agent/runtime.py's module docstring).
 """
-import time
+import asyncio
 import uuid
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -531,8 +531,8 @@ class TestToolErrorRecovery:
 
         monkeypatch.setattr(tools_module, "TOOL_TIMEOUT_SECONDS", 0.05)
 
-        def slow_calculator_impl(expression):
-            time.sleep(0.5)
+        async def slow_calculator_impl(expression):
+            await asyncio.sleep(0.5)
             return "too slow"
 
         monkeypatch.setattr(tools_module, "_calculator_impl", slow_calculator_impl)
@@ -705,8 +705,14 @@ class TestMandatoryCapabilityGate:
         from app.agent import tools
         from app.retrieval import qdrant_store
 
-        monkeypatch.setattr(tools, "embed_text", lambda text: [0.0])
-        monkeypatch.setattr(qdrant_store, "upsert", lambda points: None)
+        async def fake_embed_text(text):
+            return [0.0]
+
+        async def fake_upsert(points):
+            return None
+
+        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
+        monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
         llm = _fake_llm(
             _tool_call_message(

@@ -189,7 +189,11 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
     previous_collection = qdrant_store.COLLECTION
     qdrant_store.QDRANT_URL = qdrant["qdrant_url"]
     qdrant_store.COLLECTION = qdrant_collection
-    qdrant_store.ensure_collection(dim=FAKE_EMBED_DIM)
+    # This fixture is module-scoped and does plain sync subprocess
+    # management throughout, so `ensure_collection` (async now) is driven
+    # with its own short-lived event loop rather than making the whole
+    # fixture async.
+    asyncio.run(qdrant_store.ensure_collection(dim=FAKE_EMBED_DIM))
 
     fake_llm_port = _free_port()
     api_port = _free_port()

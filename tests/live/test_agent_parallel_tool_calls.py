@@ -54,11 +54,17 @@ def _stub_add_note_io(monkeypatch):
     from app.agent import tools as tools_module
     from app.retrieval import qdrant_store
 
-    monkeypatch.setattr(tools_module, "embed_text", lambda text: [0.0])
-    monkeypatch.setattr(qdrant_store, "upsert", lambda points: None)
+    async def fake_embed_text(text):
+        return [0.0]
+
+    async def fake_upsert(points):
+        return None
+
+    monkeypatch.setattr(tools_module, "embed_text", fake_embed_text)
+    monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
 
-async def _invoke_and_approve_async(text: str):
+async def _invoke_and_approve(text: str):
     graph = build_graph(GraphDeps())
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
     # Seed the system prompt before the first real turn — see
@@ -72,12 +78,8 @@ async def _invoke_and_approve_async(text: str):
     return graph, config, paused_state, result
 
 
-async def _invoke_and_approve(text: str):
-    return await _invoke_and_approve_async(text)
-
-
 async def test_real_model_calls_two_tools_in_one_turn_and_both_run_after_approval():
-    graph, config, paused_state, result = _invoke_and_approve(
+    graph, config, paused_state, result = await _invoke_and_approve(
         "What is 15 * 3? Use the calculator tool for that. Also use the "
         "add_note tool right now to save a note with title 'Demo', topic "
         "'company', content 'multi-tool-call test'. Call BOTH tools in "

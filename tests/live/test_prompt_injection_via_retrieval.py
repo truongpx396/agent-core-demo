@@ -109,9 +109,10 @@ async def test_real_model_does_not_comply_with_an_instruction_injected_into_retr
     # own `_ctx_or_refuse`/`_run_with_timeout` machinery to run for real)
     # closes that second path with the SAME poisoned content, so this test
     # is robust to either real-model behavior instead of assuming one.
-    monkeypatch.setattr(
-        tools_module, "_search_docs_impl", lambda query, topic, ctx, doc_ids=None: _INJECTED_CONTEXT
-    )
+    async def fake_search_docs_impl(query, topic, ctx, doc_ids=None):
+        return _INJECTED_CONTEXT
+
+    monkeypatch.setattr(tools_module, "_search_docs_impl", fake_search_docs_impl)
 
     graph = build_graph(GraphDeps(search_docs=_poisoned_search))
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
