@@ -54,6 +54,23 @@ pytest-playwright==0.7.1
 # fine with the resulting click 8.3.x pip actually installs.
 deepeval==4.2.0
 ollama==0.6.2
+# `deepeval_judge`'s GeminiModel (tests/deepeval/conftest.py) — deepeval
+# doesn't pull in a provider SDK it merely supports, same shape `ollama`
+# above already takes for OllamaModel. Note for whoever next runs a plain
+# combined `pip install -r requirements-dev.txt`: pip's resolver WILL flag
+# google-genai==2.24.0's `websockets<17.0` against this app's pinned
+# `websockets==17.1` (requirements-lock.txt) — verified directly this is a
+# false alarm, not a real break, the same way this file's own deepeval/
+# click conflict above is: GeminiModel only ever calls
+# client.models.generate_content() (a plain HTTPS request), never Gemini's
+# Live API, the only thing in the SDK that actually touches websockets.
+# `.github/workflows/ci.yml`'s `deepeval` job installs it `--no-deps`
+# instead, for a real resolver-conflict-free install; not done that way
+# here since, like deepeval's own click/rich conflict above, this file
+# layers onto the UNPINNED requirements.txt where the resolver is free to
+# settle on a mutually-compatible websockets version instead.
+google-genai==2.24.0
+google-auth==2.58.0
 
 # Load testing against the running FastAPI service's queued chat path
 # (loadtest/locustfile_queued.py, `make loadtest-queued`/`make
