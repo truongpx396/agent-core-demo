@@ -451,7 +451,7 @@ async def chat_session_messages(
 
 
 @app.get("/usage", response_model=UsageResponse)
-def usage(ctx: SecurityCtx = Depends(get_ctx)) -> UsageResponse:
+async def usage(ctx: SecurityCtx = Depends(get_ctx)) -> UsageResponse:
     """This caller's own tenant usage (app/agent/meter.py) — the read path that
     was already there (`usage_summary`), just not reachable over HTTP
     before now, so a caller had no way to see how close they were to
@@ -459,9 +459,9 @@ def usage(ctx: SecurityCtx = Depends(get_ctx)) -> UsageResponse:
     app/agent/runtime.py::_tenant_over_daily_budget first. Tenant-scoped only,
     same as `usage_summary` itself — no way to query another tenant's
     spend through this."""
-    all_time = meter.usage_summary(ctx["tenant"])
+    all_time = await meter.usage_summary(ctx["tenant"])
     since = datetime.now(UTC) - timedelta(hours=24)
-    last_24h = meter.usage_summary(ctx["tenant"], since=since)
+    last_24h = await meter.usage_summary(ctx["tenant"], since=since)
     return UsageResponse(
         total_tokens=all_time["total_tokens"],
         total_cost_usd=all_time["total_cost_usd"],

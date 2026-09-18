@@ -518,7 +518,7 @@ async def _run_subagent_impl(
         )
         outcome = "budget_exceeded"
 
-    record_usage(ctx, nested_thread_id, record.model or CHAT_MODEL, total_tokens)
+    await record_usage(ctx, nested_thread_id, record.model or CHAT_MODEL, total_tokens)
 
     metrics.agent_subagent_run_total.labels(subagent=record.name, outcome=outcome).inc()
     metrics.agent_subagent_duration_seconds.labels(subagent=record.name).observe(duration)

@@ -87,7 +87,7 @@ class TestCheckSemanticCache:
     async def test_hit_short_circuits_with_the_cached_answer_and_citations(self):
         cached_citations = [{"marker": "[1]", "text": "cached fact"}]
 
-        def fake_cache_get(ctx, query):
+        async def fake_cache_get(ctx, query):
             return "A cached answer [1].", cached_citations
 
         check_semantic_cache = graph.make_check_semantic_cache_node(fake_cache_get)
@@ -103,7 +103,10 @@ class TestCheckSemanticCache:
         assert result["messages"][0].content == "A cached answer [1]."
 
     async def test_miss_returns_no_state_change(self):
-        check_semantic_cache = graph.make_check_semantic_cache_node(lambda ctx, query: None)
+        async def fake_cache_get(ctx, query):
+            return None
+
+        check_semantic_cache = graph.make_check_semantic_cache_node(fake_cache_get)
         state = {
             "messages": [HumanMessage(content="what is a checkpointer?")],
             "ctx": TEST_CTX,
@@ -111,7 +114,7 @@ class TestCheckSemanticCache:
         assert await check_semantic_cache(state) == {}
 
     async def test_no_human_message_skips_the_lookup(self):
-        def fail_cache_get(ctx, query):
+        async def fail_cache_get(ctx, query):
             raise AssertionError("cache_get should not be called")
 
         check_semantic_cache = graph.make_check_semantic_cache_node(fail_cache_get)
@@ -190,7 +193,7 @@ class TestWriteSemanticCache:
     async def test_writes_the_final_answer_and_used_citations_on_a_miss(self):
         captured = {}
 
-        def fake_cache_set(ctx, query, answer, citations):
+        async def fake_cache_set(ctx, query, answer, citations):
             captured["ctx"] = ctx
             captured["query"] = query
             captured["answer"] = answer
@@ -219,7 +222,7 @@ class TestWriteSemanticCache:
         and re-writing the same answer would just waste work on what's
         supposed to be the fast path (see the node's own docstring)."""
 
-        def fail_cache_set(ctx, query, answer, citations):
+        async def fail_cache_set(ctx, query, answer, citations):
             raise AssertionError("cache_set should not be called on a cache hit")
 
         write_semantic_cache = graph.make_write_semantic_cache_node(fail_cache_set)

@@ -1141,7 +1141,7 @@ class TestRunSubagentImpl:
 
         captured = {}
 
-        def fake_record_usage(ctx, thread_id, model_alias, total_tokens):
+        async def fake_record_usage(ctx, thread_id, model_alias, total_tokens):
             captured["ctx"] = ctx
             captured["thread_id"] = thread_id
 

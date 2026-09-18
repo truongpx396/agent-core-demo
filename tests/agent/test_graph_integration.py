@@ -888,12 +888,11 @@ class TestSemanticCache:
     async def test_cache_hit_never_calls_the_llm_and_returns_the_cached_answer(self):
         llm = _fake_llm()  # would raise StopIteration if .invoke() were ever called
         cached_citations = [{"marker": "[1]", "text": "cached fact"}]
-        g = build_graph(
-            GraphDeps(
-                llm=llm,
-                cache_get=lambda ctx, query: ("A cached answer [1].", cached_citations),
-            )
-        )
+
+        async def fake_cache_get(ctx, query):
+            return "A cached answer [1].", cached_citations
+
+        g = build_graph(GraphDeps(llm=llm, cache_get=fake_cache_get))
         result = await g.ainvoke(
             {"messages": [HumanMessage(content="what is a checkpointer?")]},
             config=_config(),
@@ -905,16 +904,17 @@ class TestSemanticCache:
     async def test_cache_miss_runs_the_full_turn_and_writes_the_result_back(self):
         written = {}
 
-        def fake_cache_set(ctx, query, answer, citations):
+        async def fake_cache_set(ctx, query, answer, citations):
             written["ctx"] = ctx
             written["query"] = query
             written["answer"] = answer
             written["citations"] = citations
 
+        async def fake_cache_get(ctx, query):
+            return None
+
         llm = _fake_llm(AIMessage(content="A general-knowledge answer, no cache yet."))
-        g = build_graph(
-            GraphDeps(llm=llm, cache_get=lambda ctx, query: None, cache_set=fake_cache_set)
-        )
+        g = build_graph(GraphDeps(llm=llm, cache_get=fake_cache_get, cache_set=fake_cache_set))
         result = await g.ainvoke(
             {"messages": [HumanMessage(content="what is a checkpointer?")]},
             config=_config(),
@@ -925,17 +925,14 @@ class TestSemanticCache:
         assert written["answer"] == "A general-knowledge answer, no cache yet."
 
     async def test_cache_hit_does_not_re_write_itself_back_to_the_cache(self):
-        def fail_cache_set(ctx, query, answer, citations):
+        async def fail_cache_set(ctx, query, answer, citations):
             raise AssertionError("a cache hit must not re-write itself")
 
+        async def fake_cache_get(ctx, query):
+            return "A cached answer.", []
+
         llm = _fake_llm()
-        g = build_graph(
-            GraphDeps(
-                llm=llm,
-                cache_get=lambda ctx, query: ("A cached answer.", []),
-                cache_set=fail_cache_set,
-            )
-        )
+        g = build_graph(GraphDeps(llm=llm, cache_get=fake_cache_get, cache_set=fail_cache_set))
         await g.ainvoke(
             {"messages": [HumanMessage(content="what is a checkpointer?")]},
             config=_config(),

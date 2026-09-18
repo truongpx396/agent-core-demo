@@ -38,7 +38,7 @@ PRICE_PER_1K_TOKENS_USD: dict[str, float] = {
 }
 
 
-def record_usage(
+async def record_usage(
     ctx: SecurityCtx | None, thread_id: str, model_alias: str, total_tokens: int
 ) -> None:
     """Best-effort write-through after a turn completes (app/agent/runtime.py's
@@ -58,8 +58,8 @@ def record_usage(
     # unreachable, alias unknown); never blocks the write.
     resolved_model = resolve_model(model_alias)
     try:
-        with get_connection() as conn:
-            conn.execute(
+        async with get_connection() as conn:
+            await conn.execute(
                 "INSERT INTO usage_ledger "
                 "(tenant, principal, thread_id, model_alias, total_tokens, cost_usd, resolved_model) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s)",
@@ -80,7 +80,7 @@ def record_usage(
         )
 
 
-def usage_summary(
+async def usage_summary(
     tenant: str, principal: str | None = None, since: datetime | None = None
 ) -> dict:
     """Real read path proving the ledger isn't write-only: total tokens
@@ -107,7 +107,7 @@ def usage_summary(
         "SELECT COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0) "
         f"FROM usage_ledger WHERE {' AND '.join(where)}"
     )
-    with get_connection() as conn:
-        cur = conn.execute(sql, params)
-        total_tokens, total_cost = cur.fetchone()
+    async with get_connection() as conn:
+        cur = await conn.execute(sql, params)
+        total_tokens, total_cost = await cur.fetchone()
     return {"total_tokens": int(total_tokens), "total_cost_usd": float(total_cost)}

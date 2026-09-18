@@ -60,10 +60,10 @@ class TestUsage:
     called once all-time and once scoped to the rolling 24h window
     app/agent/runtime.py::_tenant_over_daily_budget itself checks."""
 
-    def test_reports_all_time_and_rolling_24h_figures(self, monkeypatch):
+    async def test_reports_all_time_and_rolling_24h_figures(self, monkeypatch):
         calls = []
 
-        def fake_usage_summary(tenant, principal=None, since=None):
+        async def fake_usage_summary(tenant, principal=None, since=None):
             calls.append({"tenant": tenant, "since": since})
             if since is None:
                 return {"total_tokens": 5000, "total_cost_usd": 3.5}
@@ -72,7 +72,7 @@ class TestUsage:
         monkeypatch.setattr(api.meter, "usage_summary", fake_usage_summary)
         monkeypatch.setattr(api, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
 
-        result = api.usage(ctx=TEST_CTX)
+        result = await api.usage(ctx=TEST_CTX)
 
         assert result.total_tokens == 5000
         assert result.total_cost_usd == 3.5

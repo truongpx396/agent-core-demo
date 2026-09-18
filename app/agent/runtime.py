@@ -120,7 +120,7 @@ _seeded: set[str] = set()
 RECURSION_LIMIT = MAX_ITERATIONS * 2 + 15
 
 
-def _record_turn_metrics(
+async def _record_turn_metrics(
     elapsed: float,
     outcome: str,
     state: dict | None = None,
@@ -144,13 +144,13 @@ def _record_turn_metrics(
             if ctx is not None and thread_id is not None:
                 from app.agent import meter
 
-                meter.record_usage(ctx, thread_id, CHAT_MODEL, total_tokens)
+                await meter.record_usage(ctx, thread_id, CHAT_MODEL, total_tokens)
 
 
 _TENANT_BUDGET_WARNING_FRACTION = 0.8  # log/count once a tenant crosses 80% of its daily cap
 
 
-def _tenant_over_daily_budget(ctx: SecurityCtx | None) -> bool:
+async def _tenant_over_daily_budget(ctx: SecurityCtx | None) -> bool:
     """True if `ctx`'s tenant has already spent >= MAX_COST_USD_PER_TENANT_PER_DAY
     over the last rolling 24 hours (app/agent/meter.py's usage_ledger) — checked
     BEFORE a turn starts (astream_events_turn), so an
@@ -173,7 +173,7 @@ def _tenant_over_daily_budget(ctx: SecurityCtx | None) -> bool:
 
     try:
         since = datetime.now(UTC) - timedelta(hours=24)
-        spent = meter.usage_summary(ctx["tenant"], since=since)["total_cost_usd"]
+        spent = (await meter.usage_summary(ctx["tenant"], since=since))["total_cost_usd"]
     except Exception as exc:  # noqa: BLE001 - a ledger read failing must not also block every turn
         logger.warning(
             "tenant_budget_check_failed", extra={"error_class": type(exc).__name__}
@@ -818,7 +818,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
             trace.update(
                 output="".join(final_answer) + " [cancelled by user]", level="WARNING"
             )
-        _record_turn_metrics(time.monotonic() - start, "cancelled")
+        await _record_turn_metrics(time.monotonic() - start, "cancelled")
         metrics.agent_streaming_cancellation_total.inc()
         envelope = ErrorEnvelope(code=ErrorCode.CANCELLED, message="Cancelled by user.")
         terminal_event = {"type": "error", "content": envelope.message, **envelope.to_dict()}
@@ -852,14 +852,14 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 output="".join(final_answer) + " [cancelled: task cancelled]",
                 level="WARNING",
             )
-        _record_turn_metrics(time.monotonic() - start, "cancelled")
+        await _record_turn_metrics(time.monotonic() - start, "cancelled")
         metrics.agent_streaming_cancellation_total.inc()
         raise
     except Exception as exc:  # noqa: BLE001
         if trace:
             trace.update(output=f"error: {exc}", level="ERROR")
         outcome = "timeout" if isinstance(exc, TimeoutError) else "error"
-        _record_turn_metrics(time.monotonic() - start, outcome)
+        await _record_turn_metrics(time.monotonic() - start, outcome)
         # asyncio.wait_for's OWN internal timeout (inside
         # _iterate_with_timeout, when a single step — not the overall
         # deadline check — runs out of remaining budget) raises a bare
@@ -940,7 +940,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                     yield {"type": "token", "content": skipped_text}
             if trace:
                 trace.update(output="".join(final_answer))
-            _record_turn_metrics(
+            await _record_turn_metrics(
                 time.monotonic() - start,
                 _turn_outcome(state.values),
                 state.values,
@@ -1006,7 +1006,7 @@ async def astream_events_turn(
     tenant's rolling 24h spend already reached
     MAX_COST_USD_PER_TENANT_PER_DAY — see `_tenant_over_daily_budget`.
     """
-    if _tenant_over_daily_budget(ctx):
+    if await _tenant_over_daily_budget(ctx):
         metrics.agent_requests_total.labels(outcome="rejected").inc()
         envelope = _tenant_budget_envelope()
         yield {"type": "error", "content": envelope.message, **envelope.to_dict()}
@@ -1302,7 +1302,7 @@ async def astream_events_turn_ctx(text: str, thread_id: str, ctx: SecurityCtx):
             if trace:
                 trace.update(output=f"error: {exc}", level="ERROR")
             outcome = "timeout" if isinstance(exc, TimeoutError) else "error"
-            _record_turn_metrics(time.monotonic() - start, outcome)
+            await _record_turn_metrics(time.monotonic() - start, outcome)
             # See _run_graph_stream's matching comment: a bare
             # asyncio.wait_for timeout has an empty str(exc).
             message = (
@@ -1322,7 +1322,7 @@ async def astream_events_turn_ctx(text: str, thread_id: str, ctx: SecurityCtx):
         # aget_state, not get_state — see _run_graph_stream's matching
         # comment: this runs on the checkpointer's own event loop.
         final_state = (await graph.aget_state(cfg)).values
-        _record_turn_metrics(
+        await _record_turn_metrics(
             time.monotonic() - start, _turn_outcome(final_state), final_state
         )
 

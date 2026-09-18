@@ -24,6 +24,7 @@ crm_followups.status) so a re-run of this same script doesn't redraft the
 same nudge tomorrow — a missed follow-up doesn't get lost, it's just
 handled once, at whichever run first sees it past its due_at.
 """
+import asyncio
 from datetime import UTC, datetime
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -61,12 +62,12 @@ def build_followup_prompt(lead_name: str, contact: str, note: str) -> str:
     )
 
 
-def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm=None) -> list[str]:
+async def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm=None) -> list[str]:
     """Sweep every due follow-up for `tenant`, draft a nudge for each, post
     it to the team channel, mark it done. Returns the list of drafted
     texts (empty if nothing was due). `llm` is DI for tests, same pattern
     as scripts/ops_digest.py::run_digest."""
-    due = store.due_followups(tenant, datetime.now(UTC))
+    due = await store.due_followups(tenant, datetime.now(UTC))
     if not due:
         return []
 
@@ -81,7 +82,7 @@ def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm=None) -> list[str]:
     drafts = []
     for item in due:
         human_prompt = build_followup_prompt(item["lead_name"], item["contact"], item["note"])
-        response = chat.invoke(
+        response = await chat.ainvoke(
             [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
         )
         draft = response.content if isinstance(response.content, str) else str(response.content)
@@ -89,13 +90,13 @@ def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm=None) -> list[str]:
         usage = getattr(response, "usage_metadata", None) or {}
         total_tokens = usage.get("total_tokens", 0)
         if total_tokens:
-            record_usage(_CRON_CTX, f"followup-sweep:{item['id']}", CHAT_MODEL, total_tokens)
+            await record_usage(_CRON_CTX, f"followup-sweep:{item['id']}", CHAT_MODEL, total_tokens)
 
-        notify.post_to_team_channel(
+        await notify.post_to_team_channel(
             "sales-followups",
             f"Draft nudge for {item['lead_name']} ({item['contact']}):\n{draft}",
         )
-        store.mark_followup_done(tenant, item["id"])
+        await store.mark_followup_done(tenant, item["id"])
         drafts.append(draft)
 
     return drafts
@@ -103,5 +104,5 @@ def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm=None) -> list[str]:
 
 if __name__ == "__main__":
     configure_logging()
-    drafts = run_followup_sweep()
+    drafts = asyncio.run(run_followup_sweep())
     print(f"Drafted {len(drafts)} follow-up nudge(s)." if drafts else "No follow-ups due.")

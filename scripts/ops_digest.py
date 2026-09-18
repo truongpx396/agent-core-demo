@@ -28,6 +28,7 @@ Idempotent and side-effect-bounded to one team-channel post per run — safe
 to re-run by hand (`make ops-digest` / `python -m scripts.ops_digest`) or
 after a missed cron tick.
 """
+import asyncio
 from datetime import UTC, datetime
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -71,13 +72,13 @@ def build_digest_prompt(readings: dict[str, float | None], anomalies: list[str])
     return "\n".join(lines)
 
 
-def run_digest(llm=None) -> str:
+async def run_digest(llm=None) -> str:
     """Fetch → summarize → post. Returns the posted summary text. `llm` is
     DI for tests (mirrors app/agent/tools.py::_run_subagent_impl's own
     `llm` override) — defaults to a real ChatOpenAI client via the LiteLLM
     proxy, no tools bound (a plain completion, not a tool-calling turn —
     see this module's docstring for why)."""
-    readings = metrics_client.fetch_readings()
+    readings = await metrics_client.fetch_readings()
     anomalies = metrics_client.detect_anomalies(readings)
     human_prompt = build_digest_prompt(readings, anomalies)
 
@@ -87,7 +88,7 @@ def run_digest(llm=None) -> str:
         api_key=SecretStr(OPENAI_API_KEY),
         temperature=0,
     )
-    response = chat.invoke(
+    response = await chat.ainvoke(
         [SystemMessage(content=_DIGEST_SYSTEM_PROMPT), HumanMessage(content=human_prompt)]
     )
     summary = response.content if isinstance(response.content, str) else str(response.content)
@@ -96,12 +97,12 @@ def run_digest(llm=None) -> str:
     total_tokens = usage.get("total_tokens", 0)
     if total_tokens:
         thread_id = f"ops-digest:{datetime.now(UTC).date().isoformat()}"
-        record_usage(_CRON_CTX, thread_id, CHAT_MODEL, total_tokens)
+        await record_usage(_CRON_CTX, thread_id, CHAT_MODEL, total_tokens)
 
-    notify.post_to_team_channel("ops-digest", summary)
+    await notify.post_to_team_channel("ops-digest", summary)
     return summary
 
 
 if __name__ == "__main__":
     configure_logging()
-    print(run_digest())
+    print(asyncio.run(run_digest()))

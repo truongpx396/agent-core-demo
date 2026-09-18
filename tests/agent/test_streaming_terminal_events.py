@@ -89,7 +89,7 @@ class TestSemanticCacheHitStreamsTheCachedAnswer:
     async def test_cache_hit_streams_the_cached_text_not_just_done(self, monkeypatch):
         llm = GenericFakeChatModel(messages=iter([]))  # would raise if ever invoked
 
-        def fake_cache_get(ctx, query):
+        async def fake_cache_get(ctx, query):
             return "A cached answer, not freshly generated.", [{"marker": "[1]", "text": "..."}]
 
         graph_obj = build_graph(GraphDeps(llm=llm, cache_get=fake_cache_get))
@@ -128,7 +128,7 @@ class TestTraceOutputMatchesWhatTheClientActuallySaw:
         monkeypatch.setattr(agent_module, "_open_trace", lambda *a, **k: (fake_trace, []))
         llm = GenericFakeChatModel(messages=iter([]))  # would raise if ever invoked
 
-        def fake_cache_get(ctx, query):
+        async def fake_cache_get(ctx, query):
             return "A cached answer, not freshly generated.", [{"marker": "[1]", "text": "..."}]
 
         graph_obj = build_graph(GraphDeps(llm=llm, cache_get=fake_cache_get))

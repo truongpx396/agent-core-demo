@@ -127,7 +127,7 @@ class TestSemanticCacheAndRetrievalUseTextOnly:
     async def test_check_semantic_cache_queries_with_text_only(self):
         captured = {}
 
-        def fake_cache_get(ctx, query):
+        async def fake_cache_get(ctx, query):
             captured["query"] = query
             return None
 
@@ -159,7 +159,7 @@ class TestSemanticCacheAndRetrievalUseTextOnly:
     async def test_write_semantic_cache_keys_with_text_only(self):
         captured = {}
 
-        def fake_cache_set(ctx, query, answer, citations):
+        async def fake_cache_set(ctx, query, answer, citations):
             captured["query"] = query
 
         write_semantic_cache = graph.make_write_semantic_cache_node(fake_cache_set)
