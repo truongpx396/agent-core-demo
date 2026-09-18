@@ -75,7 +75,6 @@ asked before: does the model correctly decline/hedge when asked something
 the retrieved context doesn't cover at all, instead of inventing an
 answer. Same two metrics, same judge, genuinely different scenario.
 """
-import asyncio
 import uuid
 
 import pytest
@@ -139,7 +138,7 @@ async def _seed_and_answer(question: str) -> str:
     return result["messages"][-1].content
 
 
-def test_grounded_answer_is_faithful_and_relevant_by_a_real_llm_judge(deepeval_ollama, deepeval_judge):
+async def test_grounded_answer_is_faithful_and_relevant_by_a_real_llm_judge(deepeval_ollama, deepeval_judge):
     from deepeval import assert_test
     from deepeval.metrics import AnswerRelevancyMetric, FaithfulnessMetric
     from deepeval.test_case import LLMTestCase
@@ -147,7 +146,7 @@ def test_grounded_answer_is_faithful_and_relevant_by_a_real_llm_judge(deepeval_o
     question = "What are Ecorp's support hours, and how long do refunds take once approved?"
     # asyncio.run(...), not the sync .invoke() this used to be — see
     # app/agent/graph.py: agent/retrieve_context/etc. are async def now.
-    answer = asyncio.run(_seed_and_answer(question))
+    answer = await _seed_and_answer(question)
 
     judge = deepeval_judge
     test_case = LLMTestCase(
@@ -165,7 +164,7 @@ def test_grounded_answer_is_faithful_and_relevant_by_a_real_llm_judge(deepeval_o
     )
 
 
-def test_ungrounded_question_is_answered_without_hallucination(deepeval_ollama, deepeval_judge):
+async def test_ungrounded_question_is_answered_without_hallucination(deepeval_ollama, deepeval_judge):
     """A genuinely different question from the grounded case above: not
     "is a supported claim faithful to its context," but "does the model
     correctly decline/hedge instead of inventing an answer when the
@@ -183,7 +182,7 @@ def test_ungrounded_question_is_answered_without_hallucination(deepeval_ollama, 
     from deepeval.test_case import LLMTestCase
 
     question = "What was Ecorp's total revenue last year?"
-    answer = asyncio.run(_seed_and_answer(question))
+    answer = await _seed_and_answer(question)
 
     judge = deepeval_judge
     test_case = LLMTestCase(

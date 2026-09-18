@@ -13,6 +13,7 @@ deliberately a plain threshold comparison, not a learned/statistical
 model: "anomaly" here literally means "one of this app's own alert rules
 would be firing right now."
 """
+import asyncio
 from dataclasses import dataclass
 
 import httpx
@@ -91,7 +92,7 @@ CHECKS: tuple[MetricCheck, ...] = (
 )
 
 
-def _query_one(expr: str) -> float | None:
+async def _query_one(expr: str) -> float | None:
     """A single Prometheus instant query. Returns None on any failure
     (Prometheus/otel stack not running, a malformed response, an empty
     result vector because that metric has never fired) rather than
@@ -100,11 +101,10 @@ def _query_one(expr: str) -> float | None:
     app/retrieval/semantic_cache.py/app/agent/moderation.py already take
     on their own optional dependencies)."""
     try:
-        resp = httpx.get(
-            f"{PROMETHEUS_URL}/api/v1/query",
-            params={"query": expr},
-            timeout=_QUERY_TIMEOUT_SECONDS,
-        )
+        async with httpx.AsyncClient(timeout=_QUERY_TIMEOUT_SECONDS) as client:
+            resp = await client.get(
+                f"{PROMETHEUS_URL}/api/v1/query", params={"query": expr}
+            )
         resp.raise_for_status()
         result = resp.json()["data"]["result"]
         if not result:
@@ -114,12 +114,15 @@ def _query_one(expr: str) -> float | None:
         return None
 
 
-def fetch_readings() -> dict[str, float | None]:
+async def fetch_readings() -> dict[str, float | None]:
     """{check_name: value | None} for every check in CHECKS — one HTTP
-    call per check (Prometheus has no documented batch-query endpoint;
-    this is a handful of calls, run once a day or on demand, not a hot
-    path)."""
-    return {check.name: _query_one(check.expr) for check in CHECKS}
+    call per check (Prometheus has no documented batch-query endpoint),
+    all run CONCURRENTLY via asyncio.gather rather than one-at-a-time —
+    a real latency win now that each query awaits real I/O instead of
+    blocking sequentially, same "independent checks run concurrently"
+    shape app/api/health.py::check_dependencies already uses."""
+    values = await asyncio.gather(*(_query_one(check.expr) for check in CHECKS))
+    return dict(zip((check.name for check in CHECKS), values, strict=True))
 
 
 def detect_anomalies(readings: dict[str, float | None]) -> list[str]:

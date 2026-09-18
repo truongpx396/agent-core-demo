@@ -204,7 +204,7 @@ async def lifespan(app: FastAPI):
     # exit with a "couldn't stop thread... within 5.0 seconds" warning.
     # A no-op if nothing in this process ever queried query_employees or
     # wrote to the usage ledger (the pool was never opened).
-    sql_store.close_pool()
+    await sql_store.close_pool()
     # Same reasoning for the checkpointer's own pool (app/agent/runtime.py) —
     # init_graph_async() above always opens it, so this is never a no-op here.
     await close_checkpointer_pool()
@@ -417,7 +417,7 @@ async def chat_cancel(
 
 
 @app.get("/chat/sessions", response_model=list[SessionSummary])
-def chat_sessions(
+async def chat_sessions(
     ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> list[SessionSummary]:
     """This caller's own past conversation threads (app/agent/sessions.py),
@@ -429,7 +429,7 @@ def chat_sessions(
     too, via the same `X-Domain` header the queued chat endpoints read
     (`get_domain`), so switching domains in the web UI also switches which
     sessions the switcher lists."""
-    return sessions.list_sessions(ctx, domain)  # type: ignore[return-value]  # response_model coerces dict -> SessionSummary at the HTTP boundary; a direct Python call (see tests/api/test_api.py) intentionally gets the raw dicts back
+    return await sessions.list_sessions(ctx, domain)  # type: ignore[return-value]  # response_model coerces dict -> SessionSummary at the HTTP boundary; a direct Python call (see tests/api/test_api.py) intentionally gets the raw dicts back
 
 
 @app.get("/chat/sessions/{thread_id}/messages", response_model=list[SessionMessage])
@@ -445,7 +445,7 @@ async def chat_session_messages(
     `domain` to match too means a thread opened under a different domain
     404s here exactly like a different tenant's/principal's thread already
     did — not a new failure mode, the same one extended to a third axis."""
-    if not sessions.session_belongs_to(ctx, thread_id, domain):
+    if not await sessions.session_belongs_to(ctx, thread_id, domain):
         raise HTTPException(status_code=404, detail="session not found")
     return await get_session_messages(thread_id)  # type: ignore[return-value]  # same response_model coercion note as chat_sessions above
 

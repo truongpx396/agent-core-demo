@@ -32,7 +32,7 @@ from app.retrieval import qdrant_store
 logger = logging.getLogger(__name__)
 
 
-def delete_memories(
+async def delete_memories(
     ctx: SecurityCtx,
     *,
     memory_id: str | None = None,
@@ -96,8 +96,8 @@ def delete_memories(
     # race (a concurrent write between the count and the delete) as a
     # demo-scope tradeoff — a strictly exact count would need Qdrant to
     # return deleted ids directly, which its delete API doesn't offer.
-    count = qdrant_store.count_by_filter(selector)
-    qdrant_store.delete_by_filter(selector)
+    count = await qdrant_store.count_by_filter(selector)
+    await qdrant_store.delete_by_filter(selector)
 
     logger.info(
         "memory_deleted",

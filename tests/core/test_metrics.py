@@ -10,7 +10,6 @@ these are global, process-wide counters shared across the whole test
 session/process — the exact same reasoning the old prometheus_client-based
 version of this file already relied on, just against a different registry.
 """
-import asyncio
 import uuid
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -80,16 +79,16 @@ class TestNodeLevelMetrics:
         too_many_tool_calls({"messages": [ai]})
         assert _count(metrics.agent_tool_budget_exceeded_total) == before + 1
 
-    def test_retrieve_context_failure_increments_degraded_counter(self):
+    async def test_retrieve_context_failure_increments_degraded_counter(self):
         async def failing_search_docs(query, ctx):
             raise RuntimeError("boom")
 
         retrieve_context = graph.make_retrieve_context_node(failing_search_docs)
         before = _count(metrics.agent_context_retrieval_degraded_total)
-        asyncio.run(retrieve_context({"messages": [HumanMessage(content="hi")], "ctx": TEST_CTX}))
+        await retrieve_context({"messages": [HumanMessage(content="hi")], "ctx": TEST_CTX})
         assert _count(metrics.agent_context_retrieval_degraded_total) == before + 1
 
-    def test_history_trim_increments_compacted_counter(self):
+    async def test_history_trim_increments_compacted_counter(self):
         from app.agent.graph import _estimate_tokens
 
         messages = [
@@ -106,7 +105,7 @@ class TestNodeLevelMetrics:
             floor=1,
         )
         before = _count(metrics.agent_history_compacted_total)
-        asyncio.run(compact_history({"messages": messages}))
+        await compact_history({"messages": messages})
         assert _count(metrics.agent_history_compacted_total) == before + 1
 
     def test_mandatory_gate_increments_capability_gate_counter(self):
@@ -157,7 +156,7 @@ class TestToolCallbackMetrics:
     inside ToolNode's real tool execution, so these run through the whole
     compiled graph rather than calling a node function directly."""
 
-    def test_tool_call_via_graph_increments_tool_calls_and_label(self):
+    async def test_tool_call_via_graph_increments_tool_calls_and_label(self):
         before = _count(metrics.agent_tool_calls_total, tool="calculator")
         llm = GenericFakeChatModel(
             messages=iter(
@@ -168,14 +167,12 @@ class TestToolCallbackMetrics:
             )
         )
         g = build_graph(GraphDeps(llm=llm))
-        asyncio.run(
-            g.ainvoke(
+        await g.ainvoke(
                 {"messages": [HumanMessage(content="what is 2+2?")]}, config=_config()
             )
-        )
         assert _count(metrics.agent_tool_calls_total, tool="calculator") == before + 1
 
-    def test_tool_error_via_graph_increments_error_counter(self):
+    async def test_tool_error_via_graph_increments_error_counter(self):
         before = _count(metrics.agent_tool_errors_total)
         llm = GenericFakeChatModel(
             messages=iter(
@@ -187,11 +184,9 @@ class TestToolCallbackMetrics:
             )
         )
         g = build_graph(GraphDeps(llm=llm))
-        asyncio.run(
-            g.ainvoke(
+        await g.ainvoke(
                 {"messages": [HumanMessage(content="what is nothing?")]}, config=_config()
             )
-        )
         assert _count(metrics.agent_tool_errors_total) == before + 1
 
 
@@ -200,7 +195,7 @@ class TestToolCallAuditLog:
     call, correlated by LangChain's own run_id, never carrying raw
     args/result content (only a fingerprint)."""
 
-    def test_successful_tool_call_logs_a_correlated_start_and_success_line(self, caplog):
+    async def test_successful_tool_call_logs_a_correlated_start_and_success_line(self, caplog):
         llm = GenericFakeChatModel(
             messages=iter(
                 [
@@ -211,11 +206,9 @@ class TestToolCallAuditLog:
         )
         g = build_graph(GraphDeps(llm=llm))
         with caplog.at_level("INFO", logger="app.core.metrics"):
-            asyncio.run(
-                g.ainvoke(
+            await g.ainvoke(
                     {"messages": [HumanMessage(content="what is 2+2?")]}, config=_config()
                 )
-            )
 
         called = [r for r in caplog.records if r.message == "tool_called"]
         succeeded = [r for r in caplog.records if r.message == "tool_succeeded"]
@@ -226,7 +219,7 @@ class TestToolCallAuditLog:
         assert called[0].args_fingerprint  # a fingerprint, not raw args
         assert succeeded[0].result_fingerprint  # a fingerprint, not the raw result
 
-    def test_failed_tool_call_logs_a_correlated_start_and_failure_line(self, caplog):
+    async def test_failed_tool_call_logs_a_correlated_start_and_failure_line(self, caplog):
         llm = GenericFakeChatModel(
             messages=iter(
                 [
@@ -237,11 +230,9 @@ class TestToolCallAuditLog:
         )
         g = build_graph(GraphDeps(llm=llm))
         with caplog.at_level("INFO", logger="app.core.metrics"):
-            asyncio.run(
-                g.ainvoke(
+            await g.ainvoke(
                     {"messages": [HumanMessage(content="what is nothing?")]}, config=_config()
                 )
-            )
 
         called = [r for r in caplog.records if r.message == "tool_called"]
         failed = [r for r in caplog.records if r.message == "tool_failed"]
@@ -250,7 +241,7 @@ class TestToolCallAuditLog:
         assert called[0].run_id == failed[0].run_id
         assert failed[0].error_class
 
-    def test_audit_log_never_carries_raw_tool_args_or_result(self, caplog):
+    async def test_audit_log_never_carries_raw_tool_args_or_result(self, caplog):
         """The fingerprint, not the argument/result text itself — a
         secret-looking expression must never appear verbatim in the log."""
         llm = GenericFakeChatModel(
@@ -263,11 +254,9 @@ class TestToolCallAuditLog:
         )
         g = build_graph(GraphDeps(llm=llm))
         with caplog.at_level("INFO", logger="app.core.metrics"):
-            asyncio.run(
-                g.ainvoke(
+            await g.ainvoke(
                     {"messages": [HumanMessage(content="compute something")]}, config=_config()
                 )
-            )
 
         for record in caplog.records:
             assert "31337" not in str(record.__dict__)

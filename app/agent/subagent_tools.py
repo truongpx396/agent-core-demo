@@ -31,7 +31,6 @@ still deterministically triggers this module to load and append
 `run_subagent` onto the SAME shared `TOOLS` list object, regardless of
 which module a caller (chiefly `graph.py`) imports `TOOLS` from.
 """
-import asyncio
 import time
 import uuid
 from collections.abc import Mapping
@@ -51,8 +50,8 @@ from app.agent.tools import (
     _NO_CTX_REFUSAL,
     TOOL_CAPABILITIES,
     TOOLS,
+    _arun_with_timeout,
     _ctx_from_config,
-    _run_with_timeout,
     logger,
 )
 from app.core import metrics
@@ -274,7 +273,7 @@ class SubagentResult:
     total_cost_usd: float
 
 
-def _run_subagent_impl(
+async def _run_subagent_impl(
     subagent_name: str,
     task: str,
     config: RunnableConfig,
@@ -448,46 +447,37 @@ def _run_subagent_impl(
         "recursion_limit": MAX_SUBAGENT_ITERATIONS * 2 + 15,
     }
 
-    def _invoke():
-        # The base system prompt isn't auto-seeded the way
-        # app/agent/runtime.py::_ensure_seeded_async seeds it for a durable,
-        # multi-turn thread — that machinery exists to avoid RE-seeding on
-        # every subsequent turn, which doesn't apply here: this graph is
-        # invoked exactly once, so the system prompt is just the first
-        # message in this one-shot call.
-        #
-        # `asyncio.run(nested_graph.ainvoke(...))`, not the sync
-        # `nested_graph.invoke(...)` this used to be: the shared node
-        # factories this graph is built from (`agent`, `compact_history`,
-        # `check_semantic_cache`, `retrieve_context`, `write_semantic_cache`
-        # — see app/agent/graph.py) are `async def` now, and LangGraph's own
-        # sync Pregel loop can't run an async-only node at all — it raises
-        # "No synchronous function provided" the moment it reaches one
-        # (verified directly against langgraph/utils/runnable.py's
-        # RunnableCallable.invoke()), regardless of what thread calls it.
-        # `asyncio.run` is safe here specifically because `_invoke` always
-        # runs on one of `_TOOL_EXECUTOR`'s worker threads (via
-        # `_run_with_timeout` below) — a plain thread with no event loop of
-        # its own to conflict with, unlike the graph's OWN checkpointer/loop
-        # (see app/agent/runtime.py's module docstring on why THAT loop
-        # binding matters) which this nested, one-shot MemorySaver-backed
-        # graph doesn't share or touch.
-        return asyncio.run(
-            nested_graph.ainvoke(
-                {
-                    "messages": [
-                        SystemMessage(content=nested_system_prompt),
-                        HumanMessage(content=task),
-                    ],
-                    "require_approval": False,
-                },
-                config=nested_config,
-            )
-        )
-
+    # The base system prompt isn't auto-seeded the way
+    # app/agent/runtime.py::_ensure_seeded_async seeds it for a durable,
+    # multi-turn thread — that machinery exists to avoid RE-seeding on every
+    # subsequent turn, which doesn't apply here: this graph is invoked
+    # exactly once, so the system prompt is just the first message in this
+    # one-shot call.
+    #
+    # `nested_graph.ainvoke` awaited directly via `_arun_with_timeout`, not
+    # wrapped in its own `asyncio.run(...)` the way this used to need to be:
+    # `_run_subagent_impl` is `async def` now, called directly on the SAME
+    # loop the top-level graph's own `agent`/`tools` nodes already run on
+    # (no more nested worker-thread bridge), so there's no risk of
+    # LangGraph's sync Pregel loop ever seeing one of this graph's
+    # `async def`-only node factories (`agent`, `compact_history`,
+    # `check_semantic_cache`, `retrieve_context`, `write_semantic_cache` —
+    # see app/agent/graph.py) the way a plain `.invoke()` would've raised
+    # "No synchronous function provided" against.
     started = time.monotonic()
     try:
-        result_state = _run_with_timeout(_invoke, _timeout_seconds=SUBAGENT_TIMEOUT_SECONDS)
+        result_state = await _arun_with_timeout(
+            nested_graph.ainvoke,
+            {
+                "messages": [
+                    SystemMessage(content=nested_system_prompt),
+                    HumanMessage(content=task),
+                ],
+                "require_approval": False,
+            },
+            config=nested_config,
+            _timeout_seconds=SUBAGENT_TIMEOUT_SECONDS,
+        )
     except TimeoutError:
         metrics.agent_subagent_run_total.labels(subagent=record.name, outcome="timeout").inc()
         metrics.agent_subagent_duration_seconds.labels(subagent=record.name).observe(
@@ -604,7 +594,7 @@ if _SUBAGENT_REGISTRY:
             return v
 
     @tool(args_schema=RunSubagentArgs)
-    def run_subagent(
+    async def run_subagent(
         subagent_name: SubagentName,
         task: str,
         config: RunnableConfig,
@@ -618,7 +608,9 @@ if _SUBAGENT_REGISTRY:
         matches a subagent's specific focus better than doing it yourself.
         Every subagent is restricted to read_only tools, so calling this
         never needs human approval."""
-        result = _run_subagent_impl(subagent_name.value, task, config, domain="ecorp", use_cache=True)
+        result = await _run_subagent_impl(
+            subagent_name.value, task, config, domain="ecorp", use_cache=True
+        )
         return Command(
             update={
                 "messages": [ToolMessage(content=result.answer, tool_call_id=tool_call_id)],
@@ -709,7 +701,7 @@ def make_domain_subagent_tool(
             return v
 
     @tool(args_schema=_RunSubagentArgs)
-    def run_subagent(
+    async def run_subagent(
         subagent_name: domain_subagent_name,
         task: str,
         config: RunnableConfig,
@@ -723,7 +715,7 @@ def make_domain_subagent_tool(
         matches a subagent's specific focus better than doing it yourself.
         Every subagent is restricted to read_only tools, so calling this
         never needs human approval."""
-        result = _run_subagent_impl(
+        result = await _run_subagent_impl(
             subagent_name.value,
             task,
             config,

@@ -1,7 +1,14 @@
 """Tests for app/domains/support/store.py's query construction — same
 "assert the SQL text/params, no live Postgres" approach as
 tests/agent/test_sql_store.py.
+
+Every function here is `async def` now (a real `AsyncConnectionPool`, see
+app/agent/sql_store.py's own docstring), so every call below runs through
+`asyncio.run(...)`, this repo's established pattern for exercising async
+code from a plain `def test_...`.
 """
+from contextlib import asynccontextmanager
+
 from app.domains.support import store
 
 
@@ -21,10 +28,10 @@ class _FakeCursor:
             )
         ]
 
-    def fetchone(self):
+    async def fetchone(self):
         return self._row
 
-    def fetchall(self):
+    async def fetchall(self):
         return self._rows
 
 
@@ -36,93 +43,95 @@ class _FakeConnection:
         self._rowcount = rowcount
         self._columns = columns
 
-    def execute(self, sql, params):
+    async def execute(self, sql, params):
         self.captured["sql"] = sql
         self.captured["params"] = list(params)
         return _FakeCursor(self._row, self._rows, self._rowcount, self._columns)
 
-    def __enter__(self):
-        return self
 
-    def __exit__(self, *exc):
-        return False
+def _fake_get_connection(fake):
+    @asynccontextmanager
+    async def get_connection():
+        yield fake
+
+    return get_connection
 
 
-def test_create_ticket_always_scopes_to_tenant_and_returns_the_new_id(monkeypatch):
+async def test_create_ticket_always_scopes_to_tenant_and_returns_the_new_id(monkeypatch):
     fake = _FakeConnection(row=(42,))
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    ticket_id = store.create_ticket("ecorp", "alice", "Login broken", "Can't log in", "high")
+    ticket_id = await store.create_ticket("ecorp", "alice", "Login broken", "Can't log in", "high")
 
     assert ticket_id == 42
     assert "tenant" in fake.captured["sql"]
     assert fake.captured["params"][0] == "ecorp"
 
 
-def test_get_ticket_scopes_to_tenant_and_id(monkeypatch):
+async def test_get_ticket_scopes_to_tenant_and_id(monkeypatch):
     fake = _FakeConnection(row=(1, "ecorp", "alice", "s", "d", "normal", "open", None, None, "t", "t"))
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    ticket = store.get_ticket("ecorp", 1)
+    ticket = await store.get_ticket("ecorp", 1)
 
     assert ticket["id"] == 1
     assert fake.captured["params"] == ["ecorp", 1]
 
 
-def test_get_ticket_returns_none_for_no_match(monkeypatch):
+async def test_get_ticket_returns_none_for_no_match(monkeypatch):
     fake = _FakeConnection(row=None)
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    assert store.get_ticket("ecorp", 999) is None
+    assert await store.get_ticket("ecorp", 999) is None
 
 
-def test_escalate_ticket_returns_false_when_no_row_updated(monkeypatch):
+async def test_escalate_ticket_returns_false_when_no_row_updated(monkeypatch):
     fake = _FakeConnection(rowcount=0)
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    assert store.escalate_ticket("ecorp", 999, "reason") is False
+    assert await store.escalate_ticket("ecorp", 999, "reason") is False
 
 
-def test_escalate_ticket_returns_true_and_scopes_to_tenant(monkeypatch):
+async def test_escalate_ticket_returns_true_and_scopes_to_tenant(monkeypatch):
     fake = _FakeConnection(rowcount=1)
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    assert store.escalate_ticket("ecorp", 1, "billing issue") is True
+    assert await store.escalate_ticket("ecorp", 1, "billing issue") is True
     assert fake.captured["params"] == ["billing issue", "ecorp", 1]
 
 
-def test_list_tickets_for_requester_scopes_to_tenant_and_requester(monkeypatch):
+async def test_list_tickets_for_requester_scopes_to_tenant_and_requester(monkeypatch):
     fake = _FakeConnection(
         rows=[(1, "Login broken", "high", "open", "t")],
         columns=("id", "subject", "priority", "status", "created_at"),
     )
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    tickets = store.list_tickets_for_requester("ecorp", "alice")
+    tickets = await store.list_tickets_for_requester("ecorp", "alice")
 
     assert tickets[0]["subject"] == "Login broken"
     assert fake.captured["params"][:2] == ["ecorp", "alice"]
 
 
-def test_list_tickets_for_requester_respects_the_limit_param(monkeypatch):
+async def test_list_tickets_for_requester_respects_the_limit_param(monkeypatch):
     fake = _FakeConnection(rows=[], columns=("id", "subject", "priority", "status", "created_at"))
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    store.list_tickets_for_requester("ecorp", "alice", limit=3)
+    await store.list_tickets_for_requester("ecorp", "alice", limit=3)
 
     assert fake.captured["params"] == ["ecorp", "alice", 3]
 
 
-def test_add_comment_returns_false_when_no_row_updated(monkeypatch):
+async def test_add_comment_returns_false_when_no_row_updated(monkeypatch):
     fake = _FakeConnection(rowcount=0)
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    assert store.add_comment("ecorp", 999, "still broken") is False
+    assert await store.add_comment("ecorp", 999, "still broken") is False
 
 
-def test_add_comment_returns_true_and_scopes_to_tenant(monkeypatch):
+async def test_add_comment_returns_true_and_scopes_to_tenant(monkeypatch):
     fake = _FakeConnection(rowcount=1)
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    assert store.add_comment("ecorp", 1, "still broken") is True
+    assert await store.add_comment("ecorp", 1, "still broken") is True
     assert fake.captured["params"] == ["still broken", "ecorp", 1]

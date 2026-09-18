@@ -25,7 +25,6 @@ garbage in both cases; (2) alone wouldn't catch a *different* kind of
 instability (e.g. a timestamp) that isn't ctx-shaped. Together they're the
 actual guarantee GRAPH_PATTERNS.md documents.
 """
-import asyncio
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
@@ -53,7 +52,7 @@ class _RecordingFakeLLM:
         return await self._inner.ainvoke(messages, *args, **kwargs)
 
 
-def _render(ctx: dict) -> list:
+async def _render(ctx: dict) -> list:
     llm = _RecordingFakeLLM()
     agent = make_agent_node(llm)
     state = {
@@ -63,14 +62,14 @@ def _render(ctx: dict) -> list:
         "iterations": 0,
         "total_tokens": 0,
     }
-    asyncio.run(agent(state))
+    await agent(state)
     return llm.seen_messages
 
 
 class TestPrefixIdenticalAcrossPrincipals:
-    def test_identical_message_list_for_two_different_ctx_values(self):
-        rendered_a = _render(CTX_A)
-        rendered_b = _render(CTX_B)
+    async def test_identical_message_list_for_two_different_ctx_values(self):
+        rendered_a = await _render(CTX_A)
+        rendered_b = await _render(CTX_B)
 
         assert len(rendered_a) == len(rendered_b)
         for msg_a, msg_b in zip(rendered_a, rendered_b, strict=True):
@@ -90,12 +89,12 @@ class TestPrefixIdenticalAcrossPrincipals:
 
 
 class TestNoCtxLeakIntoMessageContent:
-    def test_neither_ctxs_tenant_or_principal_appears_in_rendered_messages(self):
+    async def test_neither_ctxs_tenant_or_principal_appears_in_rendered_messages(self):
         """Leak-detection sweep: even if the two message lists happened to
         match by coincidence, this independently proves neither ctx's
         identity strings made it into the text sent to the model."""
         for ctx in (CTX_A, CTX_B):
-            rendered = _render(ctx)
+            rendered = await _render(ctx)
             blob = "\n".join(
                 m.content for m in rendered if isinstance(m.content, str)
             )
@@ -105,9 +104,9 @@ class TestNoCtxLeakIntoMessageContent:
                     f"ctx value {sentinel!r} leaked into a message sent to the LLM"
                 )
 
-    def test_claims_dict_never_leaks_into_message_content(self):
+    async def test_claims_dict_never_leaks_into_message_content(self):
         """`claims` is the opaque, domain-specific bag (app/core/security.py) —
         nothing in app/agent/graph.py should ever stringify it into a prompt."""
-        rendered = _render(CTX_A)
+        rendered = await _render(CTX_A)
         blob = "\n".join(m.content for m in rendered if isinstance(m.content, str))
         assert "admin" not in blob

@@ -9,7 +9,7 @@ same database.
 from app.agent.sql_store import get_connection
 
 
-def create_ticket(
+async def create_ticket(
     tenant: str, requester: str, subject: str, description: str, priority: str
 ) -> int:
     """Insert one new ticket, always `status='open'` — the only way a
@@ -20,13 +20,13 @@ def create_ticket(
         "INSERT INTO support_tickets (tenant, requester, subject, description, priority) "
         "VALUES (%s, %s, %s, %s, %s) RETURNING id"
     )
-    with get_connection() as conn:
-        cur = conn.execute(sql, [tenant, requester, subject, description, priority])
-        (ticket_id,) = cur.fetchone()
+    async with get_connection() as conn:
+        cur = await conn.execute(sql, [tenant, requester, subject, description, priority])
+        (ticket_id,) = await cur.fetchone()
         return int(ticket_id)
 
 
-def get_ticket(tenant: str, ticket_id: int) -> dict | None:
+async def get_ticket(tenant: str, ticket_id: int) -> dict | None:
     """One ticket, scoped to `tenant` — a ticket id from another tenant
     returns None, never that tenant's row (the same "narrows, never
     widens" boundary app/core/security.py's doc_ids scoping already
@@ -36,14 +36,14 @@ def get_ticket(tenant: str, ticket_id: int) -> dict | None:
         "escalation_reason, notes, created_at, updated_at FROM support_tickets "
         "WHERE tenant = %s AND id = %s"
     )
-    with get_connection() as conn:
-        cur = conn.execute(sql, [tenant, ticket_id])
+    async with get_connection() as conn:
+        cur = await conn.execute(sql, [tenant, ticket_id])
         columns = [desc.name for desc in cur.description]
-        row = cur.fetchone()
+        row = await cur.fetchone()
         return dict(zip(columns, row, strict=True)) if row else None
 
 
-def list_tickets_for_requester(tenant: str, requester: str, limit: int = 10) -> list[dict]:
+async def list_tickets_for_requester(tenant: str, requester: str, limit: int = 10) -> list[dict]:
     """A customer's own tickets, most recent first — what `list_my_tickets`
     shows so a customer doesn't have to already know a ticket number to ask
     "what's the status of my stuff." Scoped to `tenant` AND `requester`:
@@ -53,13 +53,14 @@ def list_tickets_for_requester(tenant: str, requester: str, limit: int = 10) -> 
         "SELECT id, subject, priority, status, created_at FROM support_tickets "
         "WHERE tenant = %s AND requester = %s ORDER BY created_at DESC LIMIT %s"
     )
-    with get_connection() as conn:
-        cur = conn.execute(sql, [tenant, requester, limit])
+    async with get_connection() as conn:
+        cur = await conn.execute(sql, [tenant, requester, limit])
         columns = [desc.name for desc in cur.description]
-        return [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
+        rows = await cur.fetchall()
+        return [dict(zip(columns, row, strict=True)) for row in rows]
 
 
-def escalate_ticket(tenant: str, ticket_id: int, reason: str) -> bool:
+async def escalate_ticket(tenant: str, ticket_id: int, reason: str) -> bool:
     """Marks a ticket escalated — returns False (no update applied) if no
     ticket with that id exists for this tenant, so the tool impl can tell
     the model "no such ticket" instead of silently no-op-ing."""
@@ -67,12 +68,12 @@ def escalate_ticket(tenant: str, ticket_id: int, reason: str) -> bool:
         "UPDATE support_tickets SET status = 'escalated', escalation_reason = %s, "
         "updated_at = now() WHERE tenant = %s AND id = %s"
     )
-    with get_connection() as conn:
-        cur = conn.execute(sql, [reason, tenant, ticket_id])
+    async with get_connection() as conn:
+        cur = await conn.execute(sql, [reason, tenant, ticket_id])
         return cur.rowcount > 0
 
 
-def add_comment(tenant: str, ticket_id: int, comment: str) -> bool:
+async def add_comment(tenant: str, ticket_id: int, comment: str) -> bool:
     """Appends a customer follow-up to `notes` — a running log, newest
     last, same `COALESCE(notes, '') || E'\\n' || ...` append shape
     `crm_leads.notes` uses (postgres-init/08-crm.sql). Returns False (no
@@ -82,6 +83,6 @@ def add_comment(tenant: str, ticket_id: int, comment: str) -> bool:
         "UPDATE support_tickets SET notes = COALESCE(notes || E'\\n', '') || %s, "
         "updated_at = now() WHERE tenant = %s AND id = %s"
     )
-    with get_connection() as conn:
-        cur = conn.execute(sql, [comment, tenant, ticket_id])
+    async with get_connection() as conn:
+        cur = await conn.execute(sql, [comment, tenant, ticket_id])
         return cur.rowcount > 0

@@ -17,6 +17,18 @@ from tests.turns.test_queue import FakeRedis
 TEST_CTX = {"tenant": "ecorp", "principal": "p1", "claims": {}}
 
 
+def _async_ingest_text_returning(chunk_count):
+    """`ingestor.ingest_text` is `async def` now (awaited directly by
+    process_job, no more `asyncio.to_thread` bridge) — a plain sync
+    lambda standing in for it would make `await ingestor.ingest_text(...)`
+    try to await a bare int and raise `TypeError`."""
+
+    async def fake_ingest_text(*a, **kw):
+        return chunk_count
+
+    return fake_ingest_text
+
+
 def _entry(job_id="j1", filename="report.pdf", object_key="ecorp/abc-report.pdf", topic=None, ctx=None):
     payload = json.dumps(
         {
@@ -32,7 +44,7 @@ def _entry(job_id="j1", filename="report.pdf", object_key="ecorp/abc-report.pdf"
 
 
 class TestProcessJob:
-    def test_happy_path_downloads_extracts_ingests_and_publishes_done(self, monkeypatch):
+    async def test_happy_path_downloads_extracts_ingests_and_publishes_done(self, monkeypatch):
         captured = {}
 
         monkeypatch.setattr(
@@ -45,7 +57,7 @@ class TestProcessJob:
 
         monkeypatch.setitem(ingest_worker.EXTRACTORS_BY_SUFFIX, ".pdf", fake_extract_pdf)
 
-        def fake_ingest_text(text, title, ctx, source, topic=None, on_progress=None):
+        async def fake_ingest_text(text, title, ctx, source, topic=None, on_progress=None):
             captured.update(text=text, title=title, ctx=ctx, source=source, topic=topic)
             return 3
 
@@ -54,7 +66,7 @@ class TestProcessJob:
         client = FakeRedis()
         entry_id, fields = _entry(job_id="j1", filename="report.pdf", topic="company")
 
-        asyncio.run(ingest_worker.process_job(client, entry_id, fields))
+        await ingest_worker.process_job(client, entry_id, fields)
 
         assert captured["key"] == "ecorp/abc-report.pdf"
         assert captured["extracted_from"] == b"pdf-bytes"
@@ -68,18 +80,21 @@ class TestProcessJob:
         assert events == [{"type": "started"}, {"type": "done", "chunks": 3}]
         assert client.acked == [entry_id]
 
-    def test_ingest_texts_progress_callback_publishes_progress_events_in_order(self, monkeypatch):
-        """The actual point of running ingest_text via asyncio.to_thread —
-        proves progress events reach the results stream WHILE ingest_text
-        is still "running" (simulated here by calling on_progress twice
+    async def test_ingest_texts_progress_callback_publishes_progress_events_in_order(self, monkeypatch):
+        """Proves progress events reach the results stream WHILE ingest_text
+        is still "running" (simulated here by awaiting on_progress twice
         before returning), in order, before the terminal `done` event, not
-        collected and only visible afterward."""
+        collected and only visible afterward — on_progress publishes
+        directly via Redis I/O awaited in place (no more
+        asyncio.run_coroutine_threadsafe bridge; see _make_progress_reporter's
+        own docstring for why that bridge is gone now that ingest_text
+        itself is native async instead of running via asyncio.to_thread)."""
         monkeypatch.setattr(ingest_worker.object_store, "download_bytes", lambda key: b"pdf-bytes")
         monkeypatch.setitem(ingest_worker.EXTRACTORS_BY_SUFFIX, ".pdf", lambda data: "text")
 
-        def fake_ingest_text(text, title, ctx, source, topic=None, on_progress=None):
-            on_progress(200, 570)
-            on_progress(570, 570)
+        async def fake_ingest_text(text, title, ctx, source, topic=None, on_progress=None):
+            await on_progress(200, 570)
+            await on_progress(570, 570)
             return 570
 
         monkeypatch.setattr(ingest_worker.ingestor, "ingest_text", fake_ingest_text)
@@ -87,7 +102,7 @@ class TestProcessJob:
         client = FakeRedis()
         entry_id, fields = _entry(job_id="j8")
 
-        asyncio.run(ingest_worker.process_job(client, entry_id, fields))
+        await ingest_worker.process_job(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j8")]]
         assert events == [
@@ -97,26 +112,26 @@ class TestProcessJob:
             {"type": "done", "chunks": 570},
         ]
 
-    def test_docx_dispatches_to_the_docx_extractor(self, monkeypatch):
+    async def test_docx_dispatches_to_the_docx_extractor(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(ingest_worker.object_store, "download_bytes", lambda key: b"docx-bytes")
         monkeypatch.setitem(
             ingest_worker.EXTRACTORS_BY_SUFFIX, ".docx", lambda data: captured.setdefault("called", True) or "text"
         )
-        monkeypatch.setattr(ingest_worker.ingestor, "ingest_text", lambda *a, **kw: 1)
+        monkeypatch.setattr(ingest_worker.ingestor, "ingest_text", _async_ingest_text_returning(1))
 
         client = FakeRedis()
         entry_id, fields = _entry(job_id="j2", filename="notes.docx", object_key="ecorp/xyz-notes.docx")
 
-        asyncio.run(ingest_worker.process_job(client, entry_id, fields))
+        await ingest_worker.process_job(client, entry_id, fields)
 
         assert captured.get("called") is True
 
-    def test_unsupported_file_type_publishes_an_error_and_acks(self, monkeypatch):
+    async def test_unsupported_file_type_publishes_an_error_and_acks(self, monkeypatch):
         client = FakeRedis()
         entry_id, fields = _entry(job_id="j3", filename="spreadsheet.xlsx", object_key="k")
 
-        asyncio.run(ingest_worker.process_job(client, entry_id, fields))
+        await ingest_worker.process_job(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j3")]]
         assert events[0] == {"type": "started"}
@@ -124,7 +139,7 @@ class TestProcessJob:
         assert ".xlsx" in events[1]["content"]
         assert client.acked == [entry_id]
 
-    def test_a_download_failure_publishes_an_error_and_still_acks(self, monkeypatch):
+    async def test_a_download_failure_publishes_an_error_and_still_acks(self, monkeypatch):
         def failing_download(key):
             raise RuntimeError("MinIO unreachable")
 
@@ -133,13 +148,13 @@ class TestProcessJob:
         client = FakeRedis()
         entry_id, fields = _entry(job_id="j4")
 
-        asyncio.run(ingest_worker.process_job(client, entry_id, fields))
+        await ingest_worker.process_job(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j4")]]
         assert events[-1] == {"type": "error", "content": "MinIO unreachable"}
         assert client.acked == [entry_id]
 
-    def test_an_extraction_failure_publishes_an_error_and_still_acks(self, monkeypatch):
+    async def test_an_extraction_failure_publishes_an_error_and_still_acks(self, monkeypatch):
         from app.ingestion.extractors import ExtractionFailed
 
         monkeypatch.setattr(ingest_worker.object_store, "download_bytes", lambda key: b"garbage")
@@ -152,14 +167,14 @@ class TestProcessJob:
         client = FakeRedis()
         entry_id, fields = _entry(job_id="j5")
 
-        asyncio.run(ingest_worker.process_job(client, entry_id, fields))
+        await ingest_worker.process_job(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j5")]]
         assert events[-1]["type"] == "error"
         assert "could not parse PDF" in events[-1]["content"]
         assert client.acked == [entry_id]
 
-    def test_an_ingest_refusal_publishes_an_error_and_still_acks(self, monkeypatch):
+    async def test_an_ingest_refusal_publishes_an_error_and_still_acks(self, monkeypatch):
         """ingest_text itself refuses (e.g. an invalid ctx, though that
         shouldn't happen given this worker always forwards a real one) —
         the SAME "report as an error, still ack" contract applies
@@ -177,7 +192,7 @@ class TestProcessJob:
         client = FakeRedis()
         entry_id, fields = _entry(job_id="j6")
 
-        asyncio.run(ingest_worker.process_job(client, entry_id, fields))
+        await ingest_worker.process_job(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j6")]]
         assert events[-1]["type"] == "error"
@@ -185,10 +200,10 @@ class TestProcessJob:
 
 
 class TestRunLoop:
-    def test_processes_one_job_end_to_end_via_the_consumer_group(self, monkeypatch):
+    async def test_processes_one_job_end_to_end_via_the_consumer_group(self, monkeypatch):
         monkeypatch.setattr(ingest_worker.object_store, "download_bytes", lambda key: b"pdf-bytes")
         monkeypatch.setitem(ingest_worker.EXTRACTORS_BY_SUFFIX, ".pdf", lambda data: "text")
-        monkeypatch.setattr(ingest_worker.ingestor, "ingest_text", lambda *a, **kw: 5)
+        monkeypatch.setattr(ingest_worker.ingestor, "ingest_text", _async_ingest_text_returning(5))
         client = FakeRedis()
         monkeypatch.setattr(ingest_worker, "get_client", lambda: client)
 
@@ -206,12 +221,12 @@ class TestRunLoop:
             for eid, f in entries:
                 await ingest_worker.process_job(client, eid, f)
 
-        asyncio.run(_run_one_iteration())
+        await _run_one_iteration()
 
         events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j7")]]
         assert events == [{"type": "started"}, {"type": "done", "chunks": 5}]
 
-    def test_sizes_the_default_executor_to_max_concurrency(self, monkeypatch):
+    async def test_sizes_the_default_executor_to_max_concurrency(self, monkeypatch):
         """The loop's default executor (what asyncio.to_thread borrows from)
         has no relationship to _MAX_CONCURRENCY out of the box — Python's own
         default is min(32, cpu_count+4), unrelated to this app's own
@@ -257,7 +272,7 @@ class TestRunLoop:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
-        asyncio.run(_run_briefly())
+        await _run_briefly()
 
         assert captured["max_workers"] == ingest_worker._MAX_CONCURRENCY
 
@@ -270,7 +285,7 @@ class TestConcurrentDispatch:
     app/turns/agent_worker.py::TestConcurrentDispatch — this replicates that
     exact acquire-then-dispatch pattern against several ingest jobs at once."""
 
-    def test_bounds_concurrency_and_actually_overlaps(self, monkeypatch):
+    async def test_bounds_concurrency_and_actually_overlaps(self, monkeypatch):
         max_concurrency = 2
         num_jobs = 5
         current = 0
@@ -295,7 +310,7 @@ class TestConcurrentDispatch:
 
         monkeypatch.setattr(ingest_worker.object_store, "download_bytes", slow_download)
         monkeypatch.setitem(ingest_worker.EXTRACTORS_BY_SUFFIX, ".pdf", lambda data: "text")
-        monkeypatch.setattr(ingest_worker.ingestor, "ingest_text", lambda *a, **kw: 1)
+        monkeypatch.setattr(ingest_worker.ingestor, "ingest_text", _async_ingest_text_returning(1))
 
         client = FakeRedis()
         semaphore = asyncio.Semaphore(max_concurrency)
@@ -311,7 +326,7 @@ class TestConcurrentDispatch:
                 tasks.append(task)
             await asyncio.gather(*tasks)
 
-        asyncio.run(_dispatch_all())
+        await _dispatch_all()
 
         # Never exceeded the cap...
         assert peak <= max_concurrency

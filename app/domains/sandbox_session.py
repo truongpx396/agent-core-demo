@@ -128,7 +128,7 @@ class SandboxCallFailed(Exception):
 _raw_sandbox_tools_cache: dict[str, BaseTool] = {}
 
 
-def load_raw_sandbox_tools() -> dict[str, BaseTool]:
+async def load_raw_sandbox_tools() -> dict[str, BaseTool]:
     """OpenSandbox's raw MCP tool catalog as a {name: tool} lookup, empty
     if opensandbox-mcp isn't installed/reachable (see
     app/domains/sandbox_tools.py's own docstring for why that degrade is
@@ -161,23 +161,28 @@ def load_raw_sandbox_tools() -> dict[str, BaseTool]:
     here ever does)."""
     global _raw_sandbox_tools_cache
     if not _raw_sandbox_tools_cache:
-        raw_tools, _capabilities = load_sandbox_tools()
+        raw_tools, _capabilities = await load_sandbox_tools()
         _raw_sandbox_tools_cache = {t.name: t for t in raw_tools}
     return _raw_sandbox_tools_cache
 
 
-def _call_raw_tool(raw: dict[str, BaseTool], name: str, **kwargs) -> dict:
+async def _call_raw_tool(raw: dict[str, BaseTool], name: str, **kwargs) -> dict:
     """Calls one of OpenSandbox's raw MCP tools by name and parses its
-    result into a dict. `.invoke(...)` (the standard Runnable interface
-    every BaseTool implements), not the StructuredTool-specific `.func` —
-    load_sandbox_tools() only promises BaseTool, and this goes through the
-    tool's normal invocation path (args_schema validation included)
-    rather than assuming a particular subclass's escape hatch. Raises
-    SandboxCallFailed on a remote tool error (app/mcp/client.py's own
-    `"Remote tool error: ..."` prefix) or on a success response that isn't
-    the JSON object this module expects — never silently returns a
+    result into a dict. `.ainvoke(...)` (the standard Runnable interface
+    every BaseTool implements), not the StructuredTool-specific `.func`/
+    `.coroutine` — load_sandbox_tools() only promises BaseTool, and this
+    goes through the tool's normal invocation path (args_schema validation
+    included) rather than assuming a particular subclass's escape hatch.
+    `.ainvoke` specifically (not `.invoke`): app/mcp/client.py's
+    `_wrap_remote_tool` gives every one of these tools a native `coroutine`
+    (a real async MCP client session, not a sync-bridged one), and every
+    caller of this module is `async def` now, so awaiting that coroutine
+    directly is both correct and the only path that still needs no thread.
+    Raises SandboxCallFailed on a remote tool error (app/mcp/client.py's
+    own `"Remote tool error: ..."` prefix) or on a success response that
+    isn't the JSON object this module expects — never silently returns a
     partial/wrong shape."""
-    raw_text = raw[name].invoke(kwargs)
+    raw_text = await raw[name].ainvoke(kwargs)
     if raw_text.startswith("Remote tool error:"):
         raise SandboxCallFailed(raw_text)
     try:
@@ -211,14 +216,14 @@ def _sanitize_thread_id_for_metadata(thread_id: str) -> str:
     return sanitized or "thread"
 
 
-def _find_existing_sandbox_id(raw: dict[str, BaseTool], sandbox_metadata_value: str) -> str | None:
+async def _find_existing_sandbox_id(raw: dict[str, BaseTool], sandbox_metadata_value: str) -> str | None:
     """Looks up a RUNNING sandbox already tagged for this thread — see
     module docstring for why this is a server-side sandbox_list metadata
     filter, not a local cache. Returns None (not found, or the lookup
     itself failed) rather than raising: a failed lookup should fall
     through to creating a fresh sandbox, not abort the whole call."""
     try:
-        result = _call_raw_tool(
+        result = await _call_raw_tool(
             raw,
             "sandbox_list",
             filter={"metadata": {SANDBOX_METADATA_KEY: sandbox_metadata_value}, "states": ["RUNNING"]},
@@ -232,7 +237,7 @@ def _find_existing_sandbox_id(raw: dict[str, BaseTool], sandbox_metadata_value: 
     return infos[0].get("id")
 
 
-def get_or_create_sandbox_id(raw: dict[str, BaseTool], thread_id: str) -> str:
+async def get_or_create_sandbox_id(raw: dict[str, BaseTool], thread_id: str) -> str:
     """The one lifecycle decision every tool in this module makes before
     anything else: reuse this thread's existing sandbox if sandbox_list
     finds one, otherwise create a fresh one tagged for this thread. Raises
@@ -240,10 +245,10 @@ def get_or_create_sandbox_id(raw: dict[str, BaseTool], thread_id: str) -> str:
     unreachable or misconfigured — see GRAPH_PATTERNS.md pattern 50) —
     there's nothing to fall back to at that point."""
     sandbox_metadata_value = _sanitize_thread_id_for_metadata(thread_id)
-    existing = _find_existing_sandbox_id(raw, sandbox_metadata_value)
+    existing = await _find_existing_sandbox_id(raw, sandbox_metadata_value)
     if existing:
         return existing
-    created = _call_raw_tool(
+    created = await _call_raw_tool(
         raw,
         "sandbox_create",
         image=SANDBOX_IMAGE,
@@ -274,9 +279,11 @@ def _format_execution(execution: dict) -> str:
     return "\n".join(lines)
 
 
-def run_command_in_sandbox_impl(command: str, thread_id: str, raw: dict[str, BaseTool]) -> str:
-    sandbox_id = get_or_create_sandbox_id(raw, thread_id)
-    execution = _call_raw_tool(raw, "command_run", sandbox_id=sandbox_id, command=command, connect_if_missing=True)
+async def run_command_in_sandbox_impl(command: str, thread_id: str, raw: dict[str, BaseTool]) -> str:
+    sandbox_id = await get_or_create_sandbox_id(raw, thread_id)
+    execution = await _call_raw_tool(
+        raw, "command_run", sandbox_id=sandbox_id, command=command, connect_if_missing=True
+    )
     return _format_execution(execution)
 
 
@@ -320,7 +327,7 @@ def _strip_markdown_fence(script: str) -> str:
     return body
 
 
-def run_python_in_sandbox_impl(script: str, thread_id: str, raw: dict[str, BaseTool]) -> str:
+async def run_python_in_sandbox_impl(script: str, thread_id: str, raw: dict[str, BaseTool]) -> str:
     """Writes `script` to a file in this thread's sandbox, then runs it
     with `python3 <path>` — see run_python_in_sandbox's own tool
     docstring (app/domains/{ops,support,sales}/tools.py) for WHY this
@@ -334,8 +341,8 @@ def run_python_in_sandbox_impl(script: str, thread_id: str, raw: dict[str, BaseT
     shell's), confirmed via repeated real Langfuse traces, not a
     one-off."""
     script = _strip_markdown_fence(script)
-    sandbox_id = get_or_create_sandbox_id(raw, thread_id)
-    _call_raw_tool(
+    sandbox_id = await get_or_create_sandbox_id(raw, thread_id)
+    await _call_raw_tool(
         raw,
         "file_write",
         sandbox_id=sandbox_id,
@@ -343,7 +350,7 @@ def run_python_in_sandbox_impl(script: str, thread_id: str, raw: dict[str, BaseT
         content=script,
         connect_if_missing=True,
     )
-    execution = _call_raw_tool(
+    execution = await _call_raw_tool(
         raw,
         "command_run",
         sandbox_id=sandbox_id,
@@ -353,7 +360,7 @@ def run_python_in_sandbox_impl(script: str, thread_id: str, raw: dict[str, BaseT
     return _format_execution(execution)
 
 
-def read_sandbox_file_impl(path: str, thread_id: str, raw: dict[str, BaseTool]) -> str:
+async def read_sandbox_file_impl(path: str, thread_id: str, raw: dict[str, BaseTool]) -> str:
     # DISCLOSED, PRE-EXISTING third-party gap, found live while adding
     # sandbox tools to two more domains — not introduced by that work, and
     # not something this app's own code can fix: `file_read` reliably
@@ -368,12 +375,14 @@ def read_sandbox_file_impl(path: str, thread_id: str, raw: dict[str, BaseTool]) 
     # Workaround, not a fix: every domain's own `run_command_in_sandbox`
     # docstring now tells the model to use `cat <path>` instead of this
     # tool when it needs a file's contents back.
-    sandbox_id = get_or_create_sandbox_id(raw, thread_id)
-    result = _call_raw_tool(raw, "file_read", sandbox_id=sandbox_id, path=path, connect_if_missing=True)
+    sandbox_id = await get_or_create_sandbox_id(raw, thread_id)
+    result = await _call_raw_tool(raw, "file_read", sandbox_id=sandbox_id, path=path, connect_if_missing=True)
     return result.get("content", "")
 
 
-def write_sandbox_file_impl(path: str, content: str, thread_id: str, raw: dict[str, BaseTool]) -> str:
-    sandbox_id = get_or_create_sandbox_id(raw, thread_id)
-    _call_raw_tool(raw, "file_write", sandbox_id=sandbox_id, path=path, content=content, connect_if_missing=True)
+async def write_sandbox_file_impl(path: str, content: str, thread_id: str, raw: dict[str, BaseTool]) -> str:
+    sandbox_id = await get_or_create_sandbox_id(raw, thread_id)
+    await _call_raw_tool(
+        raw, "file_write", sandbox_id=sandbox_id, path=path, content=content, connect_if_missing=True
+    )
     return f"Wrote {path!r} to the sandbox."

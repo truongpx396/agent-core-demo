@@ -68,9 +68,7 @@ first line before it ever reaches a tool result/prompt, both to keep the
 result readable and to avoid leaking crawl4ai server-side paths to the
 model.
 """
-import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor
 
 from crawl4ai import CacheMode, CrawlerRunConfig
 from crawl4ai.docker_client import ConnectionError as Crawl4aiConnectionError
@@ -138,7 +136,7 @@ async def _crawl(url: str) -> str:
     return str(result.markdown or "")
 
 
-def render_url_to_markdown(url: str) -> str:
+async def render_url_to_markdown(url: str) -> str:
     """SSRF-guard `url`, render it with a real headless browser, and return
     clean Markdown — truncated to _MAX_MARKDOWN_CHARS, marked when it is.
 
@@ -149,27 +147,15 @@ def render_url_to_markdown(url: str) -> str:
     isn't an "ingest" (nothing here writes to Qdrant), so there's no
     ingest-specific refusal type for it to become; the calling tool's
     normal exception handling is enough (see CrawlFailed's own docstring).
+
+    `async def`, awaiting `_crawl` directly — every caller (the
+    support/sales/ops domain tools this backs) is `async def` itself now,
+    so there's no sync/async boundary left for this module to bridge; the
+    old `_run_crawl_sync` (an `asyncio.run(...)`-or-worker-thread bridge,
+    needed when this was called from a plain sync tool function) is gone.
     """
     assert_safe_url(url)
-    text = _run_crawl_sync(url)
+    text = await _crawl(url)
     if len(text) > _MAX_MARKDOWN_CHARS:
         text = text[:_MAX_MARKDOWN_CHARS] + "\n\n[truncated: page content exceeds the fetch limit]"
     return text
-
-
-def _run_crawl_sync(url: str) -> str:
-    """`asyncio.run(_crawl(url))`, except also correct when the CALLING
-    thread already has a running event loop — verified directly this is a
-    real case, not theoretical: CI hit `RuntimeError: asyncio.run() cannot
-    be called from a running event loop` here (some other async work
-    sharing this pytest-xdist worker's thread, not this function's own
-    fault — `asyncio.run()` checks for a running loop before it ever
-    touches `_crawl` at all). The fast, common path (no loop already
-    running) is unchanged; the fallback runs `_crawl` in its own thread
-    with a fresh loop instead of fighting over the calling thread's."""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(_crawl(url))
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, _crawl(url)).result()

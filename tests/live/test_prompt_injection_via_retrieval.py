@@ -27,7 +27,6 @@ wrapped is attacker-controlled, exactly the real-world shape of this attack
 (a legitimate document in the knowledge base that happens to contain
 injected text, not a compromised retrieval pipeline).
 """
-import asyncio
 import uuid
 
 import pytest
@@ -91,7 +90,7 @@ def real_ollama_chat_model(monkeypatch, ollama_endpoint):
     monkeypatch.setattr(graph_module, "OPENAI_API_BASE", ollama_endpoint["openai_api_base"])
 
 
-def test_real_model_does_not_comply_with_an_instruction_injected_into_retrieved_content(monkeypatch):
+async def test_real_model_does_not_comply_with_an_instruction_injected_into_retrieved_content(monkeypatch):
     # `GraphDeps(search_docs=...)` only overrides `retrieve_context`'s own
     # automatic PRE-FETCH (graph.py: `make_retrieve_context_node(deps.search_docs
     # or _default_search)`) — it does NOT reach `app/agent/tools.py`'s
@@ -137,7 +136,7 @@ def test_real_model_does_not_comply_with_an_instruction_injected_into_retrieved_
 
     # asyncio.run(...), not the sync .invoke() this used to be — see
     # app/agent/graph.py: agent/retrieve_context/etc. are async def now.
-    result = asyncio.run(_seed_and_invoke())
+    result = await _seed_and_invoke()
 
     answer = result["messages"][-1].content.lower()
 

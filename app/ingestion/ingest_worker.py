@@ -32,9 +32,12 @@ worker, where calling them directly on the event loop thread was harmless
 (nothing else was ever waiting to run), running several jobs concurrently
 means a blocking call left on the loop thread would stall every OTHER
 in-flight job's I/O (its own Redis reads, its own progress publishes) for as
-long as it runs. Both are now offloaded via `asyncio.to_thread`, same as
-`ingestor.ingest_text` already was (below) — this is what actually makes
-`_MAX_CONCURRENCY > 1` safe, not just the lack of shared state.
+long as it runs. Both are offloaded via `asyncio.to_thread` — this is what
+actually makes `_MAX_CONCURRENCY > 1` safe for them, not just the lack of
+shared state. `ingestor.ingest_text` is NOT offloaded this way (see below):
+it's `async def` now (a real `AsyncQdrantClient`/`AsyncOpenAI`-backed
+embedding client under the hood), so it awaits its own I/O directly on this
+loop instead of needing a thread to hide a blocking call.
 
 The bottleneck this doesn't remove: PDF/DOCX extraction is CPU-bound, and
 Python's GIL serializes CPU-bound bytecode across threads regardless of how
@@ -48,16 +51,15 @@ more real CPU parallelism than raising `_MAX_CONCURRENCY` within one process
 does; `_MAX_CONCURRENCY` is the right lever when jobs spend more wall-clock
 time waiting on MinIO/the embedding endpoint/Qdrant than parsing.
 
-`ingestor.ingest_text` runs via `asyncio.to_thread` for a second reason
-beyond the above: so the event loop stays free to actually publish
-`on_progress`'s "progress" events (`publish_result`, async, Redis I/O) WHILE
-that synchronous embedding loop is still running in the worker thread —
-calling it directly on the loop would mean every progress event queues up
-behind the whole blocking call and all arrive at once right before "done",
-defeating the entire point of a progress bar in `POST /ingest/upload`'s SSE
-stream (app/api/main.py). `asyncio.run_coroutine_threadsafe` is the standard
-bridge from that worker thread's sync `on_progress` callback back to
-publishing on this process's actual event loop.
+`ingestor.ingest_text` awaits `embed_texts`/`qdrant_store.upsert` directly on
+this loop, interleaved with every OTHER in-flight job's own awaits — the
+same cooperative concurrency every other awaited call in this module
+already gets, no thread involved. `on_progress` (`_make_progress_reporter`
+below) is a plain `async def` callback `ingest_text` awaits in place after
+each embedding batch, calling `publish_result` (Redis I/O) directly — no
+`asyncio.run_coroutine_threadsafe` bridge needed, unlike when `ingest_text`
+was a plain sync function offloaded to a worker thread and its progress
+callback had to hop back onto this loop from there.
 
 Run with: `python -m app.ingestion.ingest_worker` (see Makefile's `ingest-worker`
 target). Needs `make up`'s Redis + MinIO running; NOT started by `make up`
@@ -100,30 +102,27 @@ _READ_COUNT = _MAX_CONCURRENCY
 _BLOCK_MS = 5000
 
 
-def _log_progress_publish_failure(job_id: str, future: concurrent.futures.Future) -> None:
-    exc = future.exception()
-    if exc is not None:
-        logger.warning(
-            "ingest_worker_progress_publish_failed",
-            extra={"job_id": job_id, "error_class": type(exc).__name__},
-        )
+def _make_progress_reporter(client, job_id: str):
+    """An `async def` callback `ingestor.ingest_text` awaits directly —
+    `ingest_text` runs on this worker's own event loop now (it awaits its
+    own I/O, `embed_texts`/`qdrant_store.upsert`, rather than blocking a
+    thread), so this can just `await publish_result(...)` in place instead
+    of bridging back from a separate worker thread via
+    `asyncio.run_coroutine_threadsafe` (what this used to need when
+    `ingest_text` was a plain sync function offloaded via
+    `asyncio.to_thread`). Fire-and-forget in spirit, not in mechanism: a
+    failed progress publish is logged, never raised — the terminal
+    `done`/`error` event, published normally below, is what actually
+    matters for correctness."""
 
-
-def _make_progress_reporter(client, job_id: str, loop: asyncio.AbstractEventLoop):
-    """A plain SYNC callback `ingestor.ingest_text` calls directly from the
-    worker thread `asyncio.to_thread` runs it on (see this module's own
-    docstring for why that thread exists at all). Fire-and-forget: a
-    dropped progress tick is never worth blocking embedding over, same
-    "best effort" posture as `ingest_queue.delete_results_stream`'s own
-    cleanup — the terminal `done`/`error` event, published normally from
-    the main coroutine below, is what actually matters for correctness."""
-
-    def on_progress(done: int, total: int) -> None:
-        future = asyncio.run_coroutine_threadsafe(
-            publish_result(client, job_id, {"type": "progress", "done": done, "total": total}),
-            loop,
-        )
-        future.add_done_callback(lambda f: _log_progress_publish_failure(job_id, f))
+    async def on_progress(done: int, total: int) -> None:
+        try:
+            await publish_result(client, job_id, {"type": "progress", "done": done, "total": total})
+        except Exception as exc:  # noqa: BLE001 - a dropped progress tick must not fail the ingest
+            logger.warning(
+                "ingest_worker_progress_publish_failed",
+                extra={"job_id": job_id, "error_class": type(exc).__name__},
+            )
 
     return on_progress
 
@@ -155,9 +154,8 @@ async def process_job(client, entry_id: str, fields: dict) -> None:
             # call runs.
             data = await asyncio.to_thread(object_store.download_bytes, payload["object_key"])
             text = await asyncio.to_thread(extractor, data)
-            on_progress = _make_progress_reporter(client, job_id, asyncio.get_running_loop())
-            chunks = await asyncio.to_thread(
-                ingestor.ingest_text,
+            on_progress = _make_progress_reporter(client, job_id)
+            chunks = await ingestor.ingest_text(
                 text,
                 title=Path(filename).stem,
                 ctx=payload["ctx"],

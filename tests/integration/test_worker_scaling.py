@@ -322,7 +322,7 @@ def _parse_final_answer(sse_text: str) -> str:
 
 
 class TestScaledWorkersAbsorbConcurrentLoad:
-    def test_250_concurrent_calculator_turns_all_succeed_with_correct_answers(self, scaled_stack):
+    async def test_250_concurrent_calculator_turns_all_succeed_with_correct_answers(self, scaled_stack):
         base_url = scaled_stack
         n = _TOTAL_REQUESTS
 
@@ -349,7 +349,7 @@ class TestScaledWorkersAbsorbConcurrentLoad:
         async def _run_all():
             return await asyncio.gather(*(_one_turn(i) for i in range(n)))
 
-        results = asyncio.run(_run_all())
+        results = await _run_all()
 
         statuses = [status for status, _, _ in results]
         succeeded = statuses.count(200)
@@ -397,7 +397,7 @@ class TestScaledWorkersHandleHITLAndSubagentDelegation:
     class's job is proving the same mechanisms hold at real
     process/network scale, not re-deriving that proof a second time."""
 
-    def test_concurrent_hitl_pauses_and_resumes_all_succeed_and_write_to_qdrant(
+    async def test_concurrent_hitl_pauses_and_resumes_all_succeed_and_write_to_qdrant(
         self, scaled_stack, qdrant_url, qdrant_collection
     ):
         base_url = scaled_stack
@@ -436,7 +436,7 @@ class TestScaledWorkersHandleHITLAndSubagentDelegation:
         async def _run_all():
             return await asyncio.gather(*(_one_turn(i) for i in range(n)))
 
-        results = asyncio.run(_run_all())
+        results = await _run_all()
 
         statuses = [status for status, _, _ in results]
         succeeded = statuses.count(200)
@@ -477,7 +477,7 @@ class TestScaledWorkersHandleHITLAndSubagentDelegation:
             memory_text = points[0].payload["text"]
             assert f"distinguishing fact {i}" in memory_text, memory_text
 
-    def test_concurrent_subagent_delegations_all_succeed(self, scaled_stack):
+    async def test_concurrent_subagent_delegations_all_succeed(self, scaled_stack):
         base_url = scaled_stack
         n = 40
 
@@ -498,7 +498,7 @@ class TestScaledWorkersHandleHITLAndSubagentDelegation:
         async def _run_all():
             return await asyncio.gather(*(_one_turn(i) for i in range(n)))
 
-        results = asyncio.run(_run_all())
+        results = await _run_all()
 
         statuses = [status for status, _, _ in results]
         succeeded = statuses.count(200)

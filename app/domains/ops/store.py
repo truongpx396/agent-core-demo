@@ -13,7 +13,7 @@ to inherit.
 from app.agent.sql_store import get_connection
 
 
-def log_incident(opened_by: str, summary: str, detail: str | None) -> int:
+async def log_incident(opened_by: str, summary: str, detail: str | None) -> int:
     """Insert one new incident, always `status='open'` — the only way an
     incident comes into existence, mirroring
     app/domains/support/store.py::create_ticket's "a fresh id, never a
@@ -22,13 +22,13 @@ def log_incident(opened_by: str, summary: str, detail: str | None) -> int:
         "INSERT INTO ops_incidents (opened_by, summary, detail) "
         "VALUES (%s, %s, %s) RETURNING id"
     )
-    with get_connection() as conn:
-        cur = conn.execute(sql, [opened_by, summary, detail])
-        (incident_id,) = cur.fetchone()
+    async with get_connection() as conn:
+        cur = await conn.execute(sql, [opened_by, summary, detail])
+        (incident_id,) = await cur.fetchone()
         return int(incident_id)
 
 
-def list_recent_incidents(limit: int = 10, status: str | None = None) -> list[dict]:
+async def list_recent_incidents(limit: int = 10, status: str | None = None) -> list[dict]:
     """Most recent incidents first, optionally narrowed to one `status`
     ('open'/'resolved') — what `list_recent_incidents` shows so an
     investigation can check "has this happened before?" without a human
@@ -43,13 +43,14 @@ def list_recent_incidents(limit: int = 10, status: str | None = None) -> list[di
         params.append(status)
     sql += " ORDER BY created_at DESC LIMIT %s"
     params.append(limit)
-    with get_connection() as conn:
-        cur = conn.execute(sql, params)
+    async with get_connection() as conn:
+        cur = await conn.execute(sql, params)
         columns = [desc.name for desc in cur.description]
-        return [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
+        rows = await cur.fetchall()
+        return [dict(zip(columns, row, strict=True)) for row in rows]
 
 
-def resolve_incident(incident_id: int, resolution: str) -> bool:
+async def resolve_incident(incident_id: int, resolution: str) -> bool:
     """Marks an incident resolved — returns False (no update applied) if no
     incident with that id exists, so the tool impl can tell the model "no
     such incident" instead of silently no-op-ing, same contract as
@@ -58,6 +59,6 @@ def resolve_incident(incident_id: int, resolution: str) -> bool:
         "UPDATE ops_incidents SET status = 'resolved', resolution = %s, resolved_at = now() "
         "WHERE id = %s"
     )
-    with get_connection() as conn:
-        cur = conn.execute(sql, [resolution, incident_id])
+    async with get_connection() as conn:
+        cur = await conn.execute(sql, [resolution, incident_id])
         return cur.rowcount > 0

@@ -8,6 +8,11 @@ piece of this module's own logic that isn't already covered by
 tests/domains/ops/test_domain.py's live-environment-dependent assertions
 (see that file's own comment on why it can't hardcode an exact sandbox
 tool set).
+
+`load_sandbox_tools` is `async def` now (awaits `mcp_client.load_remote_tools`
+via `_arun_with_timeout` — see that module's own docstring), so every call
+below runs through `asyncio.run(...)`, this repo's established pattern for
+exercising async code from a plain `def test_...`.
 """
 import sys
 
@@ -15,16 +20,16 @@ from app.domains import sandbox_tools
 from app.mcp import client as mcp_client
 
 
-def test_passes_the_configured_domain_protocol_and_api_key_to_the_bridge(monkeypatch):
+async def test_passes_the_configured_domain_protocol_and_api_key_to_the_bridge(monkeypatch):
     captured = {}
 
-    def fake_load_remote_tools(**kwargs):
+    async def fake_load_remote_tools(**kwargs):
         captured.update(kwargs)
         return [], {}
 
     monkeypatch.setattr(mcp_client, "load_remote_tools", fake_load_remote_tools)
 
-    sandbox_tools.load_sandbox_tools()
+    await sandbox_tools.load_sandbox_tools()
 
     # sys.executable + scripts/opensandbox_mcp_bridge.py, NOT the packaged
     # `opensandbox-mcp` binary directly — see sandbox_tools.py's own
@@ -39,63 +44,66 @@ def test_passes_the_configured_domain_protocol_and_api_key_to_the_bridge(monkeyp
     ]
 
 
-def test_never_supplies_capability_overrides_so_every_tool_defaults_to_outward(monkeypatch):
+async def test_never_supplies_capability_overrides_so_every_tool_defaults_to_outward(monkeypatch):
     """No override means load_remote_tools's own fail-closed default
     applies (app/mcp/client.py: unlisted -> "outward") — this module must
     never narrow that on OpenSandbox's behalf."""
     captured = {}
 
-    def fake_load_remote_tools(**kwargs):
+    async def fake_load_remote_tools(**kwargs):
         captured.update(kwargs)
         return [], {}
 
     monkeypatch.setattr(mcp_client, "load_remote_tools", fake_load_remote_tools)
 
-    sandbox_tools.load_sandbox_tools()
+    await sandbox_tools.load_sandbox_tools()
 
     assert captured["capability_overrides"] == {}
 
 
-def test_returns_the_real_tools_and_capabilities_on_success(monkeypatch):
+async def test_returns_the_real_tools_and_capabilities_on_success(monkeypatch):
     fake_tools = ["sandbox_create", "command_run"]
     fake_caps = {"sandbox_create": "outward", "command_run": "outward"}
-    monkeypatch.setattr(
-        mcp_client, "load_remote_tools", lambda **kwargs: (fake_tools, fake_caps)
-    )
 
-    tools, caps = sandbox_tools.load_sandbox_tools()
+    async def fake_load_remote_tools(**kwargs):
+        return fake_tools, fake_caps
+
+    monkeypatch.setattr(mcp_client, "load_remote_tools", fake_load_remote_tools)
+
+    tools, caps = await sandbox_tools.load_sandbox_tools()
 
     assert tools == fake_tools
     assert caps == fake_caps
 
 
-def test_degrades_to_empty_when_the_bridge_is_not_installed(monkeypatch):
-    def raise_not_found(**kwargs):
+async def test_degrades_to_empty_when_the_bridge_is_not_installed(monkeypatch):
+    async def raise_not_found(**kwargs):
         raise FileNotFoundError("opensandbox-mcp not found on PATH")
 
     monkeypatch.setattr(mcp_client, "load_remote_tools", raise_not_found)
 
-    tools, caps = sandbox_tools.load_sandbox_tools()
+    tools, caps = await sandbox_tools.load_sandbox_tools()
 
     assert (tools, caps) == ([], {})
 
 
-def test_degrades_to_empty_on_any_other_connection_failure(monkeypatch):
-    def raise_connection_error(**kwargs):
+async def test_degrades_to_empty_on_any_other_connection_failure(monkeypatch):
+    async def raise_connection_error(**kwargs):
         raise ConnectionRefusedError("could not reach the sandbox server")
 
     monkeypatch.setattr(mcp_client, "load_remote_tools", raise_connection_error)
 
-    tools, caps = sandbox_tools.load_sandbox_tools()
+    tools, caps = await sandbox_tools.load_sandbox_tools()
 
     assert (tools, caps) == ([], {})
 
 
-def test_degraded_result_never_raises_even_when_logging(monkeypatch, caplog):
-    monkeypatch.setattr(
-        mcp_client, "load_remote_tools", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
-    )
+async def test_degraded_result_never_raises_even_when_logging(monkeypatch, caplog):
+    async def raise_boom(**kwargs):
+        raise RuntimeError("boom")
 
-    tools, caps = sandbox_tools.load_sandbox_tools()
+    monkeypatch.setattr(mcp_client, "load_remote_tools", raise_boom)
+
+    tools, caps = await sandbox_tools.load_sandbox_tools()
 
     assert (tools, caps) == ([], {})

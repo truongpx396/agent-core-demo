@@ -32,7 +32,6 @@ production, dense+sparse fusion and reranking included, rather than a mock
 proving only that the right arguments were passed. `hybrid_search` is
 `async def` now, so both calls below run through `asyncio.run(...)`.
 """
-import asyncio
 
 import pytest
 from pydantic import SecretStr
@@ -67,7 +66,7 @@ def real_qdrant_and_embeddings(monkeypatch, ollama_endpoint):
     monkeypatch.setattr(embeddings, "embeddings", real_embeddings)
 
 
-def test_hybrid_search_round_trips_through_a_real_server():
+async def test_hybrid_search_round_trips_through_a_real_server():
     collection = "integration-test-docs"
     dense_vector = embeddings.embed_text("checkpointers persist LangGraph state")
     qdrant_store.ensure_collection(dim=len(dense_vector), collection=collection)
@@ -83,15 +82,13 @@ def test_hybrid_search_round_trips_through_a_real_server():
     )
     qdrant_store.upsert([point], collection=collection)
 
-    results = asyncio.run(
-        qdrant_store.hybrid_search("what persists state in LangGraph?", collection=collection)
-    )
+    results = await qdrant_store.hybrid_search("what persists state in LangGraph?", collection=collection)
 
     assert len(results) >= 1
     assert "checkpointer" in results[0].payload["text"].lower()
 
 
-def test_a_point_with_no_sparse_vector_is_still_found_via_the_dense_leg():
+async def test_a_point_with_no_sparse_vector_is_still_found_via_the_dense_leg():
     """`build_point(sparse_vector=None)` is real and supported — "a caller
     whose sparse embedding failed can still write a point" per its own
     docstring — so a point stored that way has NO entry in Qdrant's sparse
@@ -116,9 +113,7 @@ def test_a_point_with_no_sparse_vector_is_still_found_via_the_dense_leg():
     )
     qdrant_store.upsert([point], collection=collection)
 
-    results = asyncio.run(
-        qdrant_store.hybrid_search("when is Ecorp support available?", collection=collection)
-    )
+    results = await qdrant_store.hybrid_search("when is Ecorp support available?", collection=collection)
 
     assert len(results) >= 1
     assert "9am" in results[0].payload["text"]

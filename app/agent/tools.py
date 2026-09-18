@@ -143,12 +143,28 @@ _TOOL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 MIN_RERANK_SCORE = -8.0
 
 
-def _run_with_timeout(func, *args, _timeout_seconds: float | None = None, **kwargs):
-    """Run `func` in a worker thread and stop waiting after
+async def _arun_with_timeout(func, *args, _timeout_seconds: float | None = None, **kwargs):
+    """Await `func(*args, **kwargs)` (an `async def`) and stop waiting after
     `_timeout_seconds` (TOOL_TIMEOUT_SECONDS by default). The raised
     TimeoutError is caught by ToolNode's `handle_tool_errors=_friendly_tool_error`
     in app/agent/graph.py and turned into a message the agent sees on its next
     turn, same as any other tool exception.
+
+    Every tool call in this app runs through this now, not `_run_with_timeout`
+    below — search_docs/add_note/remember await a real `AsyncQdrantClient`,
+    query_employees an `AsyncConnectionPool`, the domain tools (support/
+    sales/ops) their own now-async store/notify/crawl/sandbox clients — so
+    this wraps a genuine coroutine call with `asyncio.wait_for` rather than
+    dispatching a plain sync function to a worker thread. `_run_with_timeout`
+    still exists, unchanged, for the one case that structurally CAN'T use
+    this: a caller with no running event loop to `await` anything on at all
+    (see its own docstring). Kept as a `func(*args, **kwargs)` wrapper, not
+    `_arun_with_timeout(some_call(...))` taking an already-built coroutine,
+    specifically so every one of this module's and every domain's existing
+    `_run_with_timeout(_impl, a, b, c)` call sites only needed `_impl` marked
+    `async def`, `_run_with_timeout` swapped for `_arun_with_timeout`, and
+    `await` added at the call site — not rebuilt around a differently-shaped
+    helper.
 
     `_timeout_seconds` is keyword-only with a leading underscore so it can
     never collide with a wrapped function's own keyword argument — every
@@ -164,9 +180,13 @@ def _run_with_timeout(func, *args, _timeout_seconds: float | None = None, **kwar
     multi-step agent run legitimately needs more wall-clock time than a
     single Qdrant query or arithmetic eval.
 
-    Soft timeout: Python can't forcibly kill the worker thread, so this
-    bounds how long the *graph* waits, not how long the call actually runs
-    in the background.
+    Soft timeout, same as before: `asyncio.wait_for` cancels the AWAITING
+    task, not necessarily whatever `func` was itself awaiting underneath —
+    a cancellation only takes effect at `func`'s own next `await` point, so
+    a call stuck in a single non-cancellable operation (e.g. a C-extension
+    call with no cancellation support) can still outlive this timeout in
+    the background. This bounds how long the *graph* waits, not an
+    unconditional guarantee the call stops running.
 
     The result is scrubbed (app/core/scrubbing.py, GRAPH_PATTERNS.md pattern
     32) before it reaches the caller — the one chokepoint every read/write
@@ -176,6 +196,37 @@ def _run_with_timeout(func, *args, _timeout_seconds: float | None = None, **kwar
     `run_subagent` returns a state dict here (scrubbing skips non-str
     results, same as always) and applies its own explicit scrub() to the
     extracted answer text afterward instead — see its own docstring.
+    """
+    timeout = _timeout_seconds if _timeout_seconds is not None else TOOL_TIMEOUT_SECONDS
+    try:
+        result = await asyncio.wait_for(func(*args, **kwargs), timeout=timeout)
+    except TimeoutError as exc:
+        raise TimeoutError(f"Tool call exceeded the {timeout}s timeout.") from exc
+    return scrub(result) if isinstance(result, str) else result
+
+
+def _run_with_timeout(func, *args, _timeout_seconds: float | None = None, **kwargs):
+    """The one deliberately-kept SYNC survivor of `_arun_with_timeout`'s
+    predecessor, still running `func` in a worker thread bounded by
+    `concurrent.futures`, not `asyncio.wait_for` — because its one caller,
+    `app/domains/sandbox_tools.py::load_sandbox_tools`, runs at plain
+    Python IMPORT time (eager domain composition, e.g.
+    `_OpsDomainPlugin.tools()` — see that module's own docstring for why
+    that's deliberate), before any event loop exists for `_arun_with_timeout`
+    to schedule a task on at all. `mcp_client.load_remote_tools` (what it
+    wraps) is itself a plain sync function that opens its OWN throwaway
+    event loop internally via `asyncio.run(...)` — this dispatches that
+    whole call to a worker thread and bounds it with a real wall-clock
+    `future.result(timeout=...)`, the same shape every tool call in this
+    app used before the rest of this module went async. Every other
+    caller of the old `_run_with_timeout` has moved to `_arun_with_timeout`
+    above; keep this one specifically for callers with no running loop to
+    await anything on, not as a general-purpose alternative to it.
+
+    Same soft-timeout caveat as ever: Python can't forcibly kill the
+    worker thread, so this bounds how long the CALLER waits, not how long
+    `func` actually keeps running in the background. Same scrub()
+    chokepoint too, for the same reason `_arun_with_timeout` keeps it.
     """
     timeout = _timeout_seconds if _timeout_seconds is not None else TOOL_TIMEOUT_SECONDS
     future = _TOOL_EXECUTOR.submit(func, *args, **kwargs)
@@ -373,25 +424,17 @@ async def _memory_hits(ctx: SecurityCtx, query: str):
     )
 
 
-def _search_docs_impl(
+async def _search_docs_impl(
     query: str, topic: Topic | None, ctx: SecurityCtx, doc_ids: list[str] | None = None
 ) -> str:
-    # Stays a plain sync function — this is called via `_run_with_timeout`
-    # below, which submits it to `_TOOL_EXECUTOR`'s worker thread (no
-    # event loop of its own, so `asyncio.run` here is safe — same bridging
-    # pattern as app/agent/subagent_tools.py's `_invoke`, same reason:
-    # `_document_hits` is `async def` now (it awaits the reranker's HTTP
-    # call — see app/retrieval/embeddings.py's `rerank`), but `search_docs`'s
-    # own tool signature/ToolNode dispatch/timeout machinery all still
-    # expect a plain sync callable.
-    hits = asyncio.run(_document_hits(ctx, query, topic, doc_ids))
+    hits = await _document_hits(ctx, query, topic, doc_ids)
     if not hits:
         return "No relevant documents found."
     return _format_cited_context(hits)
 
 
 @tool(args_schema=SearchDocsArgs)
-def search_docs(
+async def search_docs(
     query: str,
     config: RunnableConfig,
     topic: Topic | None = None,
@@ -408,10 +451,10 @@ def search_docs(
     ctx = _ctx_or_refuse(config, "search")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_search_docs_impl, query, topic, ctx, doc_ids)
+    return await _arun_with_timeout(_search_docs_impl, query, topic, ctx, doc_ids)
 
 
-def _calculator_impl(expression: str) -> str:
+async def _calculator_impl(expression: str) -> str:
     try:
         return str(_safe_eval(ast.parse(expression, mode="eval").body))
     except Exception:  # noqa: BLE001
@@ -419,9 +462,9 @@ def _calculator_impl(expression: str) -> str:
 
 
 @tool(args_schema=CalculatorArgs)
-def calculator(expression: str) -> str:
+async def calculator(expression: str) -> str:
     """Evaluate a basic arithmetic expression, e.g. '21 * 2'."""
-    return _run_with_timeout(_calculator_impl, expression)
+    return await _arun_with_timeout(_calculator_impl, expression)
 
 
 class AskClarificationArgs(BaseModel):
@@ -437,7 +480,7 @@ class AskClarificationArgs(BaseModel):
     )
 
 
-def _ask_clarification_impl(question: str, options: list[str]) -> str:
+async def _ask_clarification_impl(question: str, options: list[str]) -> str:
     numbered = "\n".join(f"{i + 1}. {opt}" for i, opt in enumerate(options))
     return (
         f"{question}\n{numbered}\n\n"
@@ -446,7 +489,7 @@ def _ask_clarification_impl(question: str, options: list[str]) -> str:
 
 
 @tool(args_schema=AskClarificationArgs)
-def ask_clarification(question: str, options: list[str]) -> str:
+async def ask_clarification(question: str, options: list[str]) -> str:
     """Use this ONLY when a question is ambiguous in a way that would
     materially change the answer — offer 2-4 concrete interpretations
     instead of guessing. Deliberately NOT special-cased in the graph
@@ -458,7 +501,7 @@ def ask_clarification(question: str, options: list[str]) -> str:
     node, no new routing — the existing agent -> tools -> agent loop
     already does exactly what this needs.
     """
-    return _run_with_timeout(_ask_clarification_impl, question, options)
+    return await _arun_with_timeout(_ask_clarification_impl, question, options)
 
 
 class AddNoteArgs(BaseModel):
@@ -476,7 +519,7 @@ class AddNoteArgs(BaseModel):
         return v
 
 
-def _add_note_impl(title: str, content: str, topic: Topic, ctx: SecurityCtx) -> str:
+async def _add_note_impl(title: str, content: str, topic: Topic, ctx: SecurityCtx) -> str:
     """Embed and upsert one new point into the knowledge base.
 
     A fixed, single-purpose write: the only variables are the three typed
@@ -490,7 +533,7 @@ def _add_note_impl(title: str, content: str, topic: Topic, ctx: SecurityCtx) -> 
     text = f"{title}: {content}"
     point = qdrant_store.build_point(
         point_id=str(uuid.uuid4()),
-        dense_vector=embed_text(text),
+        dense_vector=await embed_text(text),
         sparse_vector=_sparse_vector_or_none(text),
         payload={
             "text": text,
@@ -500,12 +543,12 @@ def _add_note_impl(title: str, content: str, topic: Topic, ctx: SecurityCtx) -> 
             "tenant": ctx["tenant"],
         },
     )
-    qdrant_store.upsert([point])
+    await qdrant_store.upsert([point])
     return f"Note '{title}' added to the {topic.value} knowledge base."
 
 
 @tool(args_schema=AddNoteArgs)
-def add_note(
+async def add_note(
     title: str, content: str, topic: Topic, config: RunnableConfig
 ) -> str:
     """Add a new note to the knowledge base so future searches can find it.
@@ -519,7 +562,7 @@ def add_note(
     ctx = _ctx_or_refuse(config, "write_note")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_add_note_impl, title, content, topic, ctx)
+    return await _arun_with_timeout(_add_note_impl, title, content, topic, ctx)
 
 
 class RememberArgs(BaseModel):
@@ -535,7 +578,7 @@ class RememberArgs(BaseModel):
         return v
 
 
-def _remember_impl(content: str, ctx: SecurityCtx) -> str:
+async def _remember_impl(content: str, ctx: SecurityCtx) -> str:
     """Embed and upsert one memory, owned by ctx["principal"] within
     ctx["tenant"] — see the module docstring's "Cross-session memory"
     section for why this is the *only* place a memory gets written.
@@ -547,7 +590,7 @@ def _remember_impl(content: str, ctx: SecurityCtx) -> str:
     """
     point = qdrant_store.build_point(
         point_id=str(uuid.uuid4()),
-        dense_vector=embed_text(content),
+        dense_vector=await embed_text(content),
         sparse_vector=_sparse_vector_or_none(content),
         payload={
             "text": content,
@@ -557,12 +600,12 @@ def _remember_impl(content: str, ctx: SecurityCtx) -> str:
             "created_at": datetime.now(UTC).isoformat(),
         },
     )
-    qdrant_store.upsert([point])
+    await qdrant_store.upsert([point])
     return "Remembered."
 
 
 @tool(args_schema=RememberArgs)
-def remember(content: str, config: RunnableConfig) -> str:
+async def remember(content: str, config: RunnableConfig) -> str:
     """Save a fact about this user/conversation for future turns and
     sessions to recall — e.g. a stated preference or a piece of context
     they'll likely reference again.
@@ -576,7 +619,7 @@ def remember(content: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "write_memory")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_remember_impl, content, ctx)
+    return await _arun_with_timeout(_remember_impl, content, ctx)
 
 
 async def recall_memories(ctx: SecurityCtx | None, query: str) -> str:
@@ -657,13 +700,13 @@ class QueryEmployeesArgs(BaseModel):
     )
 
 
-def _query_employees_impl(
+async def _query_employees_impl(
     department: Department | None, name_contains: str | None, ctx: SecurityCtx
 ) -> str:
     from app.agent import sql_store
 
     cap = TOOL_RESULT_CAPS["query_employees"]
-    rows = sql_store.query_employees(
+    rows = await sql_store.query_employees(
         tenant=ctx["tenant"],
         department=department.value if isinstance(department, Department) else department,
         name_contains=name_contains,
@@ -688,7 +731,7 @@ def _query_employees_impl(
 
 
 @tool(args_schema=QueryEmployeesArgs)
-def query_employees(
+async def query_employees(
     config: RunnableConfig,
     department: Department | None = None,
     name_contains: str | None = None,
@@ -708,7 +751,7 @@ def query_employees(
     ctx = _ctx_or_refuse(config, "query_structured_data")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_query_employees_impl, department, name_contains, ctx)
+    return await _arun_with_timeout(_query_employees_impl, department, name_contains, ctx)
 
 
 class SkillSearchArgs(BaseModel):
@@ -787,17 +830,10 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
     handful of skills.
     """
 
-    def _skill_search_impl(query: str) -> str:
-        # Stays sync (same reasoning as _search_docs_impl above — this
-        # runs via `_run_with_timeout` on a worker thread with no event
-        # loop of its own) — `asyncio.run` bridges to hybrid_search's now-
-        # async reranking leg (a real HTTP call to the ml-service
-        # container).
+    async def _skill_search_impl(query: str) -> str:
         try:
-            hits = asyncio.run(
-                qdrant_store.hybrid_search(
-                    query, collection=SKILLS_COLLECTION, k=_SKILL_SEARCH_FETCH_K
-                )
+            hits = await qdrant_store.hybrid_search(
+                query, collection=SKILLS_COLLECTION, k=_SKILL_SEARCH_FETCH_K
             )
         except Exception as exc:  # noqa: BLE001 - the skills collection may not exist
             # yet (before `make index-skills` has ever run) — hybrid_search's own
@@ -815,16 +851,16 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
         return _format_skill_hits(visible[:SKILLS_SEARCH_TOP_K])
 
     @tool(args_schema=SkillSearchArgs)
-    def skill_search(query: str) -> str:
+    async def skill_search(query: str) -> str:
         """Search the catalog of available skills — packaged, multi-step
         instructions for specific kinds of tasks (e.g. producing a particular
         report format). Returns candidate skill names and descriptions; call
         use_skill with the best match's exact name to load its full
         instructions before proceeding. If nothing matches well, just proceed
         with your other tools directly — not every task has a packaged skill."""
-        return _run_with_timeout(_skill_search_impl, query)
+        return await _arun_with_timeout(_skill_search_impl, query)
 
-    def _use_skill_impl(name: str) -> str:
+    async def _use_skill_impl(name: str) -> str:
         record = skills_module.get_skills().get(name)
         if record is None or not _skill_visible_to_domain(record, domain):
             return (
@@ -854,11 +890,11 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
         return body
 
     @tool(args_schema=UseSkillArgs)
-    def use_skill(name: str) -> str:
+    async def use_skill(name: str) -> str:
         """Load one skill's full instructions by its exact name (from
         skill_search's results). Follow the returned instructions using your
         other tools to complete the task."""
-        return _run_with_timeout(_use_skill_impl, name)
+        return await _arun_with_timeout(_use_skill_impl, name)
 
     return skill_search, use_skill
 

@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 TITLE_MAX_CHARS = 60
 
 
-def upsert_session(
+async def upsert_session(
     ctx: SecurityCtx | None, thread_id: str, title: str | None = None, domain: str = "ecorp"
 ) -> None:
     """Best-effort write-through at the start of every turn (app/agent/runtime.py's
@@ -64,8 +64,8 @@ def upsert_session(
     if len(display_title) > TITLE_MAX_CHARS:
         display_title = display_title[:TITLE_MAX_CHARS].rstrip() + "…"
     try:
-        with get_connection() as conn:
-            conn.execute(
+        async with get_connection() as conn:
+            await conn.execute(
                 "INSERT INTO chat_sessions (thread_id, tenant, principal, title, domain) "
                 "VALUES (%s, %s, %s, %s, %s) "
                 "ON CONFLICT (thread_id) DO UPDATE SET last_active_at = now()",
@@ -78,7 +78,7 @@ def upsert_session(
         )
 
 
-def list_sessions(ctx: SecurityCtx | None, domain: str = "ecorp") -> list[dict]:
+async def list_sessions(ctx: SecurityCtx | None, domain: str = "ecorp") -> list[dict]:
     """Every session belonging to ctx's tenant+principal AND `domain`, most
     recently active first. Never scoped to tenant alone — a session
     belongs to whoever started it, the same owner-level isolation
@@ -89,17 +89,18 @@ def list_sessions(ctx: SecurityCtx | None, domain: str = "ecorp") -> list[dict]:
     other's switcher."""
     if not valid_ctx(ctx):
         return []
-    with get_connection() as conn:
-        cur = conn.execute(
+    async with get_connection() as conn:
+        cur = await conn.execute(
             "SELECT thread_id, title, created_at, last_active_at FROM chat_sessions "
             "WHERE tenant = %s AND principal = %s AND domain = %s ORDER BY last_active_at DESC",
             (ctx["tenant"], ctx["principal"], domain),
         )
         columns = [desc.name for desc in cur.description]
-        return [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
+        rows = await cur.fetchall()
+        return [dict(zip(columns, row, strict=True)) for row in rows]
 
 
-def session_belongs_to(ctx: SecurityCtx | None, thread_id: str, domain: str = "ecorp") -> bool:
+async def session_belongs_to(ctx: SecurityCtx | None, thread_id: str, domain: str = "ecorp") -> bool:
     """Ownership check for GET /chat/sessions/{thread_id}/messages —
     app/agent/runtime.py::get_session_messages reads the shared Postgres
     checkpointer directly, which carries no tenant/principal (or domain) of
@@ -114,10 +115,10 @@ def session_belongs_to(ctx: SecurityCtx | None, thread_id: str, domain: str = "e
     it doesn't belong to THIS domain context, whoever owns it."""
     if not valid_ctx(ctx) or not thread_id:
         return False
-    with get_connection() as conn:
-        cur = conn.execute(
+    async with get_connection() as conn:
+        cur = await conn.execute(
             "SELECT 1 FROM chat_sessions WHERE thread_id = %s AND tenant = %s "
             "AND principal = %s AND domain = %s",
             (thread_id, ctx["tenant"], ctx["principal"], domain),
         )
-        return cur.fetchone() is not None
+        return await cur.fetchone() is not None

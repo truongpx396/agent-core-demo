@@ -6,39 +6,38 @@ these stay hermetic like the rest of the suite by mocking
 app.agent.sql_store.query_employees, same boundary test_tools.py's
 TestQueryEmployees mocks at).
 
-No pytest-asyncio in this project (see tests/agent/test_durable_checkpoint.py) —
-`call_tool`/`list_tools` are async, so each test wraps its call in
-asyncio.run(), same pattern used there.
+`call_tool`/`list_tools` are async, so every test here is `async def` too
+(pytest-asyncio's `asyncio_mode = "auto"`, pyproject.toml — no
+`@pytest.mark.asyncio` needed on each one).
 """
-import asyncio
 
 from app.agent import sql_store
 from app.mcp import server as mcp_server
 
 
-def _call(name, arguments):
+async def _call(name, arguments):
     """FastMCP.call_tool returns (content_blocks, structured_result) in
     this SDK version — verified empirically; tests only care about the
     string result, which lives in structured_result["result"]."""
-    _, structured = asyncio.run(mcp_server.mcp.call_tool(name, arguments))
+    _, structured = await mcp_server.mcp.call_tool(name, arguments)
     return structured["result"]
 
 
-def test_lists_query_employees_tool():
-    tools = asyncio.run(mcp_server.mcp.list_tools())
+async def test_lists_query_employees_tool():
+    tools = await mcp_server.mcp.list_tools()
     assert "query_employees" in {t.name for t in tools}
 
 
-def test_refuses_without_tenant_or_principal():
-    result = _call("query_employees", {"tenant": "", "principal": ""})
+async def test_refuses_without_tenant_or_principal():
+    result = await _call("query_employees", {"tenant": "", "principal": ""})
     assert "Refused" in result
 
 
-def test_invalid_department_returns_a_friendly_error(monkeypatch):
+async def test_invalid_department_returns_a_friendly_error(monkeypatch):
     called = []
     monkeypatch.setattr(sql_store, "query_employees", lambda **kw: called.append(kw) or [])
 
-    result = _call(
+    result = await _call(
         "query_employees",
         {"tenant": "ecorp", "principal": "p", "department": "NotADept"},
     )
@@ -48,17 +47,17 @@ def test_invalid_department_returns_a_friendly_error(monkeypatch):
     assert called == []  # never reached sql_store with a bad filter
 
 
-def test_valid_department_passes_through_as_the_enum_value(monkeypatch):
+async def test_valid_department_passes_through_as_the_enum_value(monkeypatch):
     captured = {}
 
-    def fake_query_employees(tenant, department=None, name_contains=None, limit=None):
+    async def fake_query_employees(tenant, department=None, name_contains=None, limit=None):
         captured["tenant"] = tenant
         captured["department"] = department
         return []
 
     monkeypatch.setattr(sql_store, "query_employees", fake_query_employees)
 
-    _call(
+    await _call(
         "query_employees",
         {"tenant": "ecorp", "principal": "p", "department": "Engineering"},
     )
@@ -67,15 +66,16 @@ def test_valid_department_passes_through_as_the_enum_value(monkeypatch):
     assert captured["department"] == "Engineering"
 
 
-def test_two_different_tenants_get_different_tenant_param(monkeypatch):
+async def test_two_different_tenants_get_different_tenant_param(monkeypatch):
     seen = []
-    monkeypatch.setattr(
-        sql_store,
-        "query_employees",
-        lambda tenant, department=None, name_contains=None, limit=None: seen.append(tenant) or [],
-    )
 
-    _call("query_employees", {"tenant": "ecorp", "principal": "p"})
-    _call("query_employees", {"tenant": "other-co", "principal": "p"})
+    async def fake_query_employees(tenant, department=None, name_contains=None, limit=None):
+        seen.append(tenant)
+        return []
+
+    monkeypatch.setattr(sql_store, "query_employees", fake_query_employees)
+
+    await _call("query_employees", {"tenant": "ecorp", "principal": "p"})
+    await _call("query_employees", {"tenant": "other-co", "principal": "p"})
 
     assert seen[0] != seen[1]

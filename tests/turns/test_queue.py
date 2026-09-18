@@ -4,12 +4,10 @@ SSE-serving process and app/turns/agent_worker.py's agent workers
 a real Redis Stream (no live Redis needed), matching the rest of this
 suite's hermetic discipline.
 
-No pytest-asyncio plugin is installed in this project (see
-tests/agent/test_durable_checkpoint.py) — async behavior is driven the same
-established way: a plain sync `def test_...` wrapping an inner `async def`
-closure via `asyncio.run(...)`.
+Every test that drives async queue calls is `async def` (pytest-asyncio's
+`asyncio_mode = "auto"`, pyproject.toml) and awaits directly, instead of
+each wrapping its own call in `asyncio.run(...)`.
 """
-import asyncio
 import json
 
 from redis.exceptions import ResponseError
@@ -124,36 +122,34 @@ class TestGetClient:
 
 
 class TestEnsureConsumerGroup:
-    def test_creates_the_group_on_first_call(self):
+    async def test_creates_the_group_on_first_call(self):
         client = FakeRedis()
-        asyncio.run(queue.ensure_consumer_group(client))
+        await queue.ensure_consumer_group(client)
         assert queue.CONSUMER_GROUP in client.groups[queue.requests_stream_key("ecorp")]
 
-    def test_a_different_domain_gets_its_own_group_on_its_own_stream(self):
+    async def test_a_different_domain_gets_its_own_group_on_its_own_stream(self):
         client = FakeRedis()
-        asyncio.run(queue.ensure_consumer_group(client, "support"))
+        await queue.ensure_consumer_group(client, "support")
         assert queue.CONSUMER_GROUP in client.groups[queue.requests_stream_key("support")]
         # Never touched Ecorp's own stream/group at all.
         assert queue.requests_stream_key("ecorp") not in client.groups
 
-    def test_is_idempotent_a_second_call_does_not_raise(self):
+    async def test_is_idempotent_a_second_call_does_not_raise(self):
         client = FakeRedis()
-        asyncio.run(queue.ensure_consumer_group(client))
-        asyncio.run(queue.ensure_consumer_group(client))  # must not raise BUSYGROUP
+        await queue.ensure_consumer_group(client)
+        await queue.ensure_consumer_group(client)  # must not raise BUSYGROUP
 
 
 class TestPublishRequest:
-    def test_enqueues_a_json_payload_with_every_field(self):
+    async def test_enqueues_a_json_payload_with_every_field(self):
         client = FakeRedis()
-        asyncio.run(
-            queue.publish_request(
-                client,
-                request_id="r1",
-                text="hello",
-                thread_id="t1",
-                ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
-                require_approval=True,
-            )
+        await queue.publish_request(
+            client,
+            request_id="r1",
+            text="hello",
+            thread_id="t1",
+            ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
+            require_approval=True,
         )
         entries = client.streams[queue.requests_stream_key("ecorp")]
         assert len(entries) == 1
@@ -168,32 +164,28 @@ class TestPublishRequest:
             "images": [],
         }
 
-    def test_carries_images_when_attached(self):
+    async def test_carries_images_when_attached(self):
         client = FakeRedis()
-        asyncio.run(
-            queue.publish_request(
-                client,
-                request_id="r2",
-                text="what is in this image?",
-                thread_id="t1",
-                ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
-                images=["data:image/png;base64,abc123"],
-            )
+        await queue.publish_request(
+            client,
+            request_id="r2",
+            text="what is in this image?",
+            thread_id="t1",
+            ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
+            images=["data:image/png;base64,abc123"],
         )
         payload = json.loads(client.streams[queue.requests_stream_key("ecorp")][0][1]["payload"])
         assert payload["images"] == ["data:image/png;base64,abc123"]
 
-    def test_a_non_default_domain_lands_on_its_own_stream_not_ecorps(self):
+    async def test_a_non_default_domain_lands_on_its_own_stream_not_ecorps(self):
         client = FakeRedis()
-        asyncio.run(
-            queue.publish_request(
-                client,
-                request_id="r3",
-                text="my order hasn't shipped",
-                thread_id="t1",
-                ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
-                domain="support",
-            )
+        await queue.publish_request(
+            client,
+            request_id="r3",
+            text="my order hasn't shipped",
+            thread_id="t1",
+            ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
+            domain="support",
         )
         assert queue.requests_stream_key("ecorp") not in client.streams
         entries = client.streams[queue.requests_stream_key("support")]
@@ -202,19 +194,17 @@ class TestPublishRequest:
 
 
 class TestPublishResumeRequest:
-    def test_enqueues_a_resume_job_onto_the_same_stream(self):
+    async def test_enqueues_a_resume_job_onto_the_same_stream(self):
         """Same domain's requests stream as a new turn — one consumer
         group, one dispatch-by-kind in app/turns/agent_worker.py, not a
         second queue."""
         client = FakeRedis()
-        asyncio.run(
-            queue.publish_resume_request(
-                client,
-                request_id="r1",
-                thread_id="t1",
-                approved=True,
-                ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
-            )
+        await queue.publish_resume_request(
+            client,
+            request_id="r1",
+            thread_id="t1",
+            approved=True,
+            ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
         )
         entries = client.streams[queue.requests_stream_key("ecorp")]
         assert len(entries) == 1
@@ -229,15 +219,13 @@ class TestPublishResumeRequest:
 
 
 class TestPublishCancelRequest:
-    def test_enqueues_a_cancel_job_onto_the_same_stream(self):
+    async def test_enqueues_a_cancel_job_onto_the_same_stream(self):
         client = FakeRedis()
-        asyncio.run(
-            queue.publish_cancel_request(
-                client,
-                request_id="r1",
-                thread_id="t1",
-                ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
-            )
+        await queue.publish_cancel_request(
+            client,
+            request_id="r1",
+            thread_id="t1",
+            ctx={"tenant": "ecorp", "principal": "p1", "claims": {}},
         )
         entries = client.streams[queue.requests_stream_key("ecorp")]
         assert len(entries) == 1
@@ -255,70 +243,51 @@ class TestCancelFlag:
     /chat/cancel uses to stop an ACTIVELY STREAMING turn — see
     app/turns/agent_worker.py's cancel_check wiring."""
 
-    def test_is_cancelled_false_before_anything_is_set(self):
+    async def test_is_cancelled_false_before_anything_is_set(self):
         client = FakeRedis()
-        assert asyncio.run(queue.is_cancelled(client, "t1")) is False
+        assert await queue.is_cancelled(client, "t1") is False
 
-    def test_set_then_is_cancelled_true(self):
+    async def test_set_then_is_cancelled_true(self):
         client = FakeRedis()
+        await queue.set_cancel_flag(client, "t1")
+        assert await queue.is_cancelled(client, "t1") is True
 
-        async def _run():
-            await queue.set_cancel_flag(client, "t1")
-            return await queue.is_cancelled(client, "t1")
-
-        assert asyncio.run(_run()) is True
-
-    def test_set_flag_is_scoped_to_its_own_thread_id(self):
+    async def test_set_flag_is_scoped_to_its_own_thread_id(self):
         client = FakeRedis()
+        await queue.set_cancel_flag(client, "t1")
+        assert await queue.is_cancelled(client, "t2") is False
 
-        async def _run():
-            await queue.set_cancel_flag(client, "t1")
-            return await queue.is_cancelled(client, "t2")
-
-        assert asyncio.run(_run()) is False
-
-    def test_clear_removes_the_flag(self):
+    async def test_clear_removes_the_flag(self):
         client = FakeRedis()
+        await queue.set_cancel_flag(client, "t1")
+        await queue.clear_cancel_flag(client, "t1")
+        assert await queue.is_cancelled(client, "t1") is False
 
-        async def _run():
-            await queue.set_cancel_flag(client, "t1")
-            await queue.clear_cancel_flag(client, "t1")
-            return await queue.is_cancelled(client, "t1")
-
-        assert asyncio.run(_run()) is False
-
-    def test_clear_on_a_never_set_thread_id_does_not_raise(self):
+    async def test_clear_on_a_never_set_thread_id_does_not_raise(self):
         client = FakeRedis()
-        asyncio.run(queue.clear_cancel_flag(client, "never-set"))  # must not raise
+        await queue.clear_cancel_flag(client, "never-set")  # must not raise
 
 
 class TestPublishResultAndReadResults:
-    def test_read_results_yields_events_in_order_and_stops_at_done(self):
+    async def test_read_results_yields_events_in_order_and_stops_at_done(self):
         client = FakeRedis()
-
-        async def _run():
-            await queue.publish_result(client, "r1", {"type": "token", "content": "Hel"})
-            await queue.publish_result(client, "r1", {"type": "token", "content": "lo"})
-            await queue.publish_result(client, "r1", {"type": "done"})
-            return [event async for event in queue.read_results(client, "r1")]
-
-        events = asyncio.run(_run())
+        await queue.publish_result(client, "r1", {"type": "token", "content": "Hel"})
+        await queue.publish_result(client, "r1", {"type": "token", "content": "lo"})
+        await queue.publish_result(client, "r1", {"type": "done"})
+        events = [event async for event in queue.read_results(client, "r1")]
         assert events == [
             {"type": "token", "content": "Hel"},
             {"type": "token", "content": "lo"},
             {"type": "done"},
         ]
 
-    def test_read_results_stops_at_an_error_event_too(self):
+    async def test_read_results_stops_at_an_error_event_too(self):
         client = FakeRedis()
+        await queue.publish_result(client, "r1", {"type": "error", "content": "boom"})
+        events = [event async for event in queue.read_results(client, "r1")]
+        assert events == [{"type": "error", "content": "boom"}]
 
-        async def _run():
-            await queue.publish_result(client, "r1", {"type": "error", "content": "boom"})
-            return [event async for event in queue.read_results(client, "r1")]
-
-        assert asyncio.run(_run()) == [{"type": "error", "content": "boom"}]
-
-    def test_read_results_stops_at_approval_required_too(self):
+    async def test_read_results_stops_at_approval_required_too(self):
         """approval_required is the last event a "turn" job's worker ever
         publishes for a paused turn (app/agent/runtime.py::_run_graph_stream never
         yields anything after it) — without treating it as terminal here,
@@ -326,47 +295,40 @@ class TestPublishResultAndReadResults:
         that will never come on THIS results stream (resuming is a
         separate job with its own — see publish_resume_request above)."""
         client = FakeRedis()
-
-        async def _run():
-            await queue.publish_result(client, "r1", {"type": "token", "content": "hi"})
-            await queue.publish_result(
-                client, "r1", {"type": "approval_required", "tool_calls": []}
-            )
-            return [event async for event in queue.read_results(client, "r1")]
-
-        events = asyncio.run(_run())
+        await queue.publish_result(client, "r1", {"type": "token", "content": "hi"})
+        await queue.publish_result(
+            client, "r1", {"type": "approval_required", "tool_calls": []}
+        )
+        events = [event async for event in queue.read_results(client, "r1")]
         assert events == [
             {"type": "token", "content": "hi"},
             {"type": "approval_required", "tool_calls": []},
         ]
 
-    def test_read_results_ignores_events_from_a_different_request(self):
+    async def test_read_results_ignores_events_from_a_different_request(self):
         client = FakeRedis()
+        await queue.publish_result(client, "other", {"type": "token", "content": "nope"})
+        await queue.publish_result(client, "r1", {"type": "done"})
+        events = [event async for event in queue.read_results(client, "r1")]
+        assert events == [{"type": "done"}]
 
-        async def _run():
-            await queue.publish_result(client, "other", {"type": "token", "content": "nope"})
-            await queue.publish_result(client, "r1", {"type": "done"})
-            return [event async for event in queue.read_results(client, "r1")]
-
-        assert asyncio.run(_run()) == [{"type": "done"}]
-
-    def test_publish_result_refreshes_the_ttl_on_every_write(self):
+    async def test_publish_result_refreshes_the_ttl_on_every_write(self):
         client = FakeRedis()
-        asyncio.run(queue.publish_result(client, "r1", {"type": "token", "content": "a"}))
-        asyncio.run(queue.publish_result(client, "r1", {"type": "done"}))
+        await queue.publish_result(client, "r1", {"type": "token", "content": "a"})
+        await queue.publish_result(client, "r1", {"type": "done"})
         assert client.expiries[queue.results_stream_key("r1")] == queue.RESULTS_STREAM_TTL_SECONDS
 
 
 class TestDeleteResultsStream:
-    def test_deletes_the_key(self):
+    async def test_deletes_the_key(self):
         client = FakeRedis()
-        asyncio.run(queue.publish_result(client, "r1", {"type": "done"}))
-        asyncio.run(queue.delete_results_stream(client, "r1"))
+        await queue.publish_result(client, "r1", {"type": "done"})
+        await queue.delete_results_stream(client, "r1")
         assert queue.results_stream_key("r1") in client.deleted
 
-    def test_never_raises_even_if_the_client_errors(self):
+    async def test_never_raises_even_if_the_client_errors(self):
         class _RaisingClient(FakeRedis):
             async def delete(self, key):
                 raise RuntimeError("connection reset")
 
-        asyncio.run(queue.delete_results_stream(_RaisingClient(), "r1"))  # must not raise
+        await queue.delete_results_stream(_RaisingClient(), "r1")  # must not raise

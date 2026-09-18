@@ -54,7 +54,7 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-def fetch_metrics_summary(principal: str) -> str:
+async def fetch_metrics_summary(principal: str) -> str:
     """Fetch this app's current operational metrics (turn error rate,
     latency, tool error rate, moderation blocks, rate limiting, retrieval
     degradation, checkpoint issues) and flag anything past its
@@ -63,17 +63,17 @@ def fetch_metrics_summary(principal: str) -> str:
     ctx: SecurityCtx = {"tenant": DEFAULT_TENANT, "principal": principal, "claims": {}}
     if not OPS_POLICY.permit("fetch_metrics", ctx):
         return "Refused: principal is required."
-    return _fetch_metrics_summary_impl()
+    return await _fetch_metrics_summary_impl()
 
 
 @mcp.tool()
-def list_recent_incidents(principal: str, status: str | None = None) -> str:
+async def list_recent_incidents(principal: str, status: str | None = None) -> str:
     """List recently logged incidents, most recent first — optionally
     filtered to 'open' or 'resolved'. Read-only — changes nothing."""
     ctx: SecurityCtx = {"tenant": DEFAULT_TENANT, "principal": principal, "claims": {}}
     if not OPS_POLICY.permit("list_recent_incidents", ctx):
         return "Refused: principal is required."
-    return _list_recent_incidents_impl(status)
+    return await _list_recent_incidents_impl(status)
 
 
 if __name__ == "__main__":

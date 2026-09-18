@@ -89,7 +89,6 @@ Tier-1 support copilot when the persona tries to steer it into an
 unrelated request after a real answer, rather than just staying on-topic
 because the conversation itself never left the topic.
 """
-import asyncio
 
 import pytest
 from langchain_core.messages import HumanMessage
@@ -158,13 +157,13 @@ def _make_model_callback(graph):
         await seed_thread(graph, config["configurable"]["thread_id"])
         return await graph.ainvoke({"messages": [HumanMessage(content=human_content)]}, config=config)
 
-    def model_callback(input: str, thread_id: str) -> Turn:
+    async def model_callback(input: str, thread_id: str) -> Turn:
         config = {"configurable": {"thread_id": thread_id, "ctx": TEST_CTX}}
-        result = asyncio.run(_seed_and_invoke(config, input))
+        result = await _seed_and_invoke(config, input)
         for _ in range(_MAX_APPROVAL_ROUNDS):
-            if not asyncio.run(graph.aget_state(config)).next:
+            if not (await graph.aget_state(config)).next:
                 break
-            result = asyncio.run(graph.ainvoke(Command(resume=True), config=config))
+            result = await graph.ainvoke(Command(resume=True), config=config)
         return Turn(role="assistant", content=result["messages"][-1].content)
 
     return model_callback

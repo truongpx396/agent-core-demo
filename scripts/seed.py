@@ -11,6 +11,8 @@ exactly one parent chunk with one child (see app/ingestion/chunking.py) — chun
 is a no-op for content this small, not a special case this module has to
 work around.
 """
+import asyncio
+
 from app.core.config import DEFAULT_TENANT
 from app.core.security import SecurityCtx
 from app.ingestion import ingestor
@@ -27,18 +29,18 @@ from scripts.sample_docs import DOCS
 _INGEST_CTX: SecurityCtx = {"tenant": DEFAULT_TENANT, "principal": "make-ingest", "claims": {}}
 
 
-def main() -> None:
+async def main() -> None:
     try:
         # ensure_collection recreates the collection (destructive — see its
         # docstring), so it's called explicitly, exactly once, here — never
         # implicitly inside ingest_text, which would wipe prior ingests on
         # every single call. `dim` comes from a real embed call, same as
         # app/retrieval/semantic_cache.py's index-dimension lookup, never hardcoded.
-        qdrant_store.ensure_collection(dim=len(embed_text("dimension probe")))
+        await qdrant_store.ensure_collection(dim=len(await embed_text("dimension probe")))
 
         total_chunks = 0
         for doc in DOCS:
-            total_chunks += ingestor.ingest_text(
+            total_chunks += await ingestor.ingest_text(
                 doc["text"],
                 title=doc["title"],
                 ctx=_INGEST_CTX,
@@ -58,4 +60,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

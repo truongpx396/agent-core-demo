@@ -35,24 +35,26 @@ logger = logging.getLogger(__name__)
 _CHECK_TIMEOUT_SECONDS = 2.0
 
 
-def _check_appdata_postgres() -> None:
-    with sql_store.get_connection() as conn:
-        conn.execute("SELECT 1")
+async def _check_appdata_postgres() -> None:
+    async with sql_store.get_connection() as conn:
+        await conn.execute("SELECT 1")
 
 
-def _check_checkpointer_postgres() -> None:
+async def _check_checkpointer_postgres() -> None:
     # A separate, throwaway connection — not the graph's own
     # AsyncPostgresSaver (app/agent/runtime.py), which may not even be open on
     # THIS event loop yet when this is checked (see that module's own
     # docstring on why the checkpointer is tied to a specific loop).
     # Reachability of the DATABASE is what matters for readiness,
     # independent of whether the graph singleton has been initialized.
-    with psycopg.connect(CHECKPOINTER_DATABASE_URL, connect_timeout=2) as conn:
-        conn.execute("SELECT 1")
+    async with await psycopg.AsyncConnection.connect(
+        CHECKPOINTER_DATABASE_URL, connect_timeout=2
+    ) as conn:
+        await conn.execute("SELECT 1")
 
 
-def _check_qdrant() -> None:
-    qdrant_store.get_client().get_collections()
+async def _check_qdrant() -> None:
+    await qdrant_store.get_client().get_collections()
 
 
 async def _check_redis() -> None:

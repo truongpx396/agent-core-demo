@@ -215,7 +215,7 @@ def _text_content(content) -> str:
     return content
 
 
-def _upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> None:
+async def _upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> None:
     """Record/refresh this thread_id in the session directory (item #9's
     switcher, app/agent/sessions.py) — called at the START of every turn
     (astream_events_turn, right after seeding), unlike
@@ -238,7 +238,7 @@ def _upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> None:
     turn."""
     from app.agent import sessions
 
-    sessions.upsert_session(ctx, thread_id, text, domain=_domain_name)
+    await sessions.upsert_session(ctx, thread_id, text, domain=_domain_name)
 
 
 def _turn_outcome(state: dict) -> str:
@@ -1013,7 +1013,7 @@ async def astream_events_turn(
         return
     graph = await init_graph_async()
     await _ensure_seeded_async(graph, thread_id)
-    _upsert_session(ctx, thread_id, text)
+    await _upsert_session(ctx, thread_id, text)
     trace, callbacks = _open_trace("chat-turn-stream", thread_id, text)
     cfg = {
         "configurable": {"thread_id": thread_id, "ctx": ctx},

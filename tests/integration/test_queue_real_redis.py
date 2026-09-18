@@ -16,7 +16,6 @@ proving the two real Redis Streams primitives this whole queue is built on
 actually round-trip against a real server, not just this app's own
 in-memory model of them.
 """
-import asyncio
 import json
 import uuid
 
@@ -60,7 +59,7 @@ def real_redis(monkeypatch):
     queue._client = None
 
 
-def test_a_turn_request_round_trips_from_producer_through_a_real_consumer_group():
+async def test_a_turn_request_round_trips_from_producer_through_a_real_consumer_group():
     async def _run():
         client = queue.get_client()
         await queue.ensure_consumer_group(client)
@@ -102,12 +101,12 @@ def test_a_turn_request_round_trips_from_producer_through_a_real_consumer_group(
         events = [event async for event in queue.read_results(client, request_id)]
         return events
 
-    events = asyncio.run(_run())
+    events = await _run()
 
     assert events == [{"type": "token", "content": "42"}, {"type": "done"}]
 
 
-def test_a_second_worker_in_the_same_group_never_gets_a_message_already_delivered():
+async def test_a_second_worker_in_the_same_group_never_gets_a_message_already_delivered():
     """The whole reason this queue uses a Redis Streams CONSUMER GROUP (not
     a plain stream every worker reads independently) — "Redis's own group
     semantics guarantee each request is delivered to exactly one worker, so
@@ -130,7 +129,7 @@ def test_a_second_worker_in_the_same_group_never_gets_a_message_already_delivere
         )
         return first, second
 
-    first, second = asyncio.run(_run())
+    first, second = await _run()
 
     assert first and first[0][1]  # worker-a got the one message
     assert second == [] or second[0][1] == []  # worker-b got nothing new

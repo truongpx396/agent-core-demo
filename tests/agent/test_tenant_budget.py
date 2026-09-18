@@ -9,7 +9,6 @@ itself to True/False and asserting it never even calls init_graph_async()
 when over budget — proving the short-circuit happens BEFORE any real graph
 work, not just that it returns the right shape.
 """
-import asyncio
 
 from app.agent import runtime as agent
 from app.core import errors, metrics
@@ -111,20 +110,20 @@ def _forbid_graph_access(monkeypatch):
 
 
 class TestEntryPointsRefuseBeforeTouchingTheGraph:
-    def test_astream_events_turn_short_circuits(self, monkeypatch):
+    async def test_astream_events_turn_short_circuits(self, monkeypatch):
         monkeypatch.setattr(agent, "_tenant_over_daily_budget", lambda ctx: True)
         _forbid_graph_access(monkeypatch)
 
         async def _collect():
             return [event async for event in agent.astream_events_turn("hi", "t1", TEST_CTX)]
 
-        events = asyncio.run(_collect())
+        events = await _collect()
 
         assert len(events) == 1
         assert events[0]["type"] == "error"
         assert events[0]["code"] == errors.ErrorCode.TENANT_BUDGET_EXCEEDED.value
 
-    def test_under_budget_does_not_short_circuit(self, monkeypatch):
+    async def test_under_budget_does_not_short_circuit(self, monkeypatch):
         """The False path must actually reach graph work — proving the
         check isn't accidentally unconditional."""
         monkeypatch.setattr(agent, "_tenant_over_daily_budget", lambda ctx: False)
@@ -134,7 +133,7 @@ class TestEntryPointsRefuseBeforeTouchingTheGraph:
             return [event async for event in agent.astream_events_turn("hi", "t1", TEST_CTX)]
 
         try:
-            asyncio.run(_collect())
+            await _collect()
         except _GraphTouchedError:
             pass  # expected — proves init_graph_async() WAS reached this time
         else:

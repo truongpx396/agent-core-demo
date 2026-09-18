@@ -10,7 +10,6 @@ tests/agent/test_durable_checkpoint.py) — async behavior here is driven the sa
 established way: a plain sync `def test_...` wrapping an inner `async def`
 closure via `asyncio.run(...)`.
 """
-import asyncio
 
 import pytest
 
@@ -86,27 +85,27 @@ class TestFormatReply:
 
 
 class TestSendMessage:
-    def test_short_message_sent_as_a_single_post(self):
+    async def test_short_message_sent_as_a_single_post(self):
         client = _FakeAsyncClient()
-        asyncio.run(telegram_channel._send_message(client, 1, "short reply"))
+        await telegram_channel._send_message(client, 1, "short reply")
         assert len(client.posts) == 1
         assert client.posts[0][1]["text"] == "short reply"
         assert client.posts[0][1]["chat_id"] == 1
 
-    def test_long_message_is_split_across_multiple_sends(self):
+    async def test_long_message_is_split_across_multiple_sends(self):
         client = _FakeAsyncClient()
         long_text = "x" * (telegram_channel._MESSAGE_CHAR_LIMIT + 500)
-        asyncio.run(telegram_channel._send_message(client, 1, long_text))
+        await telegram_channel._send_message(client, 1, long_text)
         assert len(client.posts) == 2
         assert sum(len(p[1]["text"]) for p in client.posts) == len(long_text)
 
-    def test_a_failed_send_is_swallowed_not_raised(self):
+    async def test_a_failed_send_is_swallowed_not_raised(self):
         class _RaisingClient(_FakeAsyncClient):
             async def post(self, url, json=None):
                 raise RuntimeError("network down")
 
         # Must not raise — a bad chat_id can't be allowed to kill the poll loop.
-        asyncio.run(telegram_channel._send_message(_RaisingClient(), 1, "hi"))
+        await telegram_channel._send_message(_RaisingClient(), 1, "hi")
 
 
 def _fake_astream(events):
@@ -124,16 +123,14 @@ def _fake_astream(events):
 
 
 class TestHandleMessage:
-    def test_calls_astream_events_turn_unattended_with_the_scoped_thread_and_ctx_and_replies(
+    async def test_calls_astream_events_turn_unattended_with_the_scoped_thread_and_ctx_and_replies(
         self, monkeypatch
     ):
         fake, captured = _fake_astream([{"type": "token", "content": "the answer"}])
         monkeypatch.setattr(telegram_channel, "astream_events_turn_unattended", fake)
         client = _FakeAsyncClient()
 
-        asyncio.run(
-            telegram_channel.handle_message(client, _message(text="hi", chat_id=7, user_id=42))
-        )
+        await telegram_channel.handle_message(client, _message(text="hi", chat_id=7, user_id=42))
 
         text, thread_id, ctx = captured["args"]
         assert text == "hi"
@@ -142,7 +139,7 @@ class TestHandleMessage:
         # sendChatAction + sendMessage
         assert any("sendMessage" in url and body["text"] == "the answer" for url, body in client.posts)
 
-    def test_reply_includes_citations_footer(self, monkeypatch):
+    async def test_reply_includes_citations_footer(self, monkeypatch):
         cited = [{"marker": "[1]", "title": "Refund Policy", "doc_id": "d1"}]
         fake, _ = _fake_astream(
             [
@@ -153,12 +150,12 @@ class TestHandleMessage:
         monkeypatch.setattr(telegram_channel, "astream_events_turn_unattended", fake)
         client = _FakeAsyncClient()
 
-        asyncio.run(telegram_channel.handle_message(client, _message()))
+        await telegram_channel.handle_message(client, _message())
 
         sent = next(body["text"] for url, body in client.posts if "sendMessage" in url)
         assert "Sources:" in sent
 
-    def test_non_text_message_is_skipped_without_calling_astream_events_turn_unattended(self, monkeypatch):
+    async def test_non_text_message_is_skipped_without_calling_astream_events_turn_unattended(self, monkeypatch):
         called = []
 
         def fake(*a, **kw):
@@ -168,14 +165,12 @@ class TestHandleMessage:
         monkeypatch.setattr(telegram_channel, "astream_events_turn_unattended", fake)
         client = _FakeAsyncClient()
 
-        asyncio.run(
-            telegram_channel.handle_message(client, {"chat": {"id": 1}, "from": {"id": 1}})
-        )
+        await telegram_channel.handle_message(client, {"chat": {"id": 1}, "from": {"id": 1}})
 
         assert called == []
         assert client.posts == []
 
-    def test_an_error_envelope_still_produces_a_reply_not_a_crash(self, monkeypatch):
+    async def test_an_error_envelope_still_produces_a_reply_not_a_crash(self, monkeypatch):
         """astream_events_turn_unattended's `error` event already carries a
         real message text (see _run_graph_stream's docstring) — this just
         proves the channel doesn't need any special-casing for that; it
@@ -185,19 +180,19 @@ class TestHandleMessage:
         monkeypatch.setattr(telegram_channel, "astream_events_turn_unattended", fake)
         client = _FakeAsyncClient()
 
-        asyncio.run(telegram_channel.handle_message(client, _message()))
+        await telegram_channel.handle_message(client, _message())
 
         sent = next(body["text"] for url, body in client.posts if "sendMessage" in url)
         assert sent == "Sorry, that took too long."
 
 
 class TestRun:
-    def test_refuses_to_start_without_a_bot_token(self, monkeypatch):
+    async def test_refuses_to_start_without_a_bot_token(self, monkeypatch):
         monkeypatch.setattr(telegram_channel, "TELEGRAM_BOT_TOKEN", "")
         with pytest.raises(RuntimeError, match="TELEGRAM_BOT_TOKEN"):
-            asyncio.run(telegram_channel.run())
+            await telegram_channel.run()
 
-    def test_resolves_agent_domain_and_primes_the_singleton_before_polling(self, monkeypatch):
+    async def test_resolves_agent_domain_and_primes_the_singleton_before_polling(self, monkeypatch):
         """AGENT_DOMAIN (app/core/config.py) must be resolved and passed
         into init_graph_async BEFORE the poll loop starts — this generalized
         gateway is what app/domains/support|sales/ run behind (see
@@ -240,7 +235,7 @@ class TestRun:
         monkeypatch.setattr(telegram_channel.httpx, "AsyncClient", _RaisingAsyncClient)
 
         with pytest.raises(_StopHere):
-            asyncio.run(telegram_channel.run())
+            await telegram_channel.run()
 
         assert resolved_with["name"] == "support"
         assert primed_with == {"manifest": fake_manifest, "domain": "fake-domain"}

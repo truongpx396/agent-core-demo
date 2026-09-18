@@ -19,7 +19,6 @@ a monkeypatched `init_graph_async` (bypassing the real durable
 checkpointer — already covered separately by tests/agent/test_durable_checkpoint.py)
 since only the EVENT SHAPE is under test here.
 """
-import asyncio
 import uuid
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -32,7 +31,7 @@ from app.agent.graph_build import build_graph
 from tests.conftest import TEST_CTX
 
 
-def _events_for(graph_obj, text, thread_id=None, ctx=TEST_CTX, monkeypatch=None):
+async def _events_for(graph_obj, text, thread_id=None, ctx=TEST_CTX, monkeypatch=None):
     async def fake_init_graph_async():
         return graph_obj
 
@@ -46,32 +45,32 @@ def _events_for(graph_obj, text, thread_id=None, ctx=TEST_CTX, monkeypatch=None)
             )
         ]
 
-    return asyncio.run(_run())
+    return await _run()
 
 
 class TestRejectPathsSurfaceTheirText:
-    def test_empty_input_streams_the_rejection_message(self, monkeypatch):
+    async def test_empty_input_streams_the_rejection_message(self, monkeypatch):
         llm = GenericFakeChatModel(messages=iter([]))  # would raise if ever invoked
         graph_obj = build_graph(GraphDeps(llm=llm))
 
-        events = _events_for(graph_obj, "", monkeypatch=monkeypatch)
+        events = await _events_for(graph_obj, "", monkeypatch=monkeypatch)
 
         token_events = [e for e in events if e["type"] == "token"]
         assert len(token_events) == 1
         assert "didn't receive a question" in token_events[0]["content"]
         assert events[-1] == {"type": "done"}
 
-    def test_missing_ctx_streams_the_rejection_message(self, monkeypatch):
+    async def test_missing_ctx_streams_the_rejection_message(self, monkeypatch):
         llm = GenericFakeChatModel(messages=iter([]))
         graph_obj = build_graph(GraphDeps(llm=llm))
 
-        events = _events_for(graph_obj, "hello", ctx=None, monkeypatch=monkeypatch)
+        events = await _events_for(graph_obj, "hello", ctx=None, monkeypatch=monkeypatch)
 
         token_events = [e for e in events if e["type"] == "token"]
         assert len(token_events) == 1
         assert "couldn't verify who's asking" in token_events[0]["content"]
 
-    def test_moderation_block_streams_the_rejection_message(self, monkeypatch):
+    async def test_moderation_block_streams_the_rejection_message(self, monkeypatch):
         llm = GenericFakeChatModel(messages=iter([]))
         graph_obj = build_graph(GraphDeps(llm=llm))
         async def fake_screen(text):
@@ -79,7 +78,7 @@ class TestRejectPathsSurfaceTheirText:
 
         monkeypatch.setattr(moderation, "screen", fake_screen)
 
-        events = _events_for(graph_obj, "anything", monkeypatch=monkeypatch)
+        events = await _events_for(graph_obj, "anything", monkeypatch=monkeypatch)
 
         token_events = [e for e in events if e["type"] == "token"]
         assert len(token_events) == 1
@@ -87,7 +86,7 @@ class TestRejectPathsSurfaceTheirText:
 
 
 class TestSemanticCacheHitStreamsTheCachedAnswer:
-    def test_cache_hit_streams_the_cached_text_not_just_done(self, monkeypatch):
+    async def test_cache_hit_streams_the_cached_text_not_just_done(self, monkeypatch):
         llm = GenericFakeChatModel(messages=iter([]))  # would raise if ever invoked
 
         def fake_cache_get(ctx, query):
@@ -95,7 +94,7 @@ class TestSemanticCacheHitStreamsTheCachedAnswer:
 
         graph_obj = build_graph(GraphDeps(llm=llm, cache_get=fake_cache_get))
 
-        events = _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
+        events = await _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
 
         token_events = [e for e in events if e["type"] == "token"]
         assert len(token_events) == 1
@@ -124,7 +123,7 @@ class TestTraceOutputMatchesWhatTheClientActuallySaw:
     fallback text into `final_answer` itself, so the recorded output
     always matches the client-visible one."""
 
-    def test_a_cache_hit_records_the_cached_text_on_the_trace_not_a_blank(self, monkeypatch):
+    async def test_a_cache_hit_records_the_cached_text_on_the_trace_not_a_blank(self, monkeypatch):
         fake_trace = _FakeTrace()
         monkeypatch.setattr(agent_module, "_open_trace", lambda *a, **k: (fake_trace, []))
         llm = GenericFakeChatModel(messages=iter([]))  # would raise if ever invoked
@@ -134,11 +133,11 @@ class TestTraceOutputMatchesWhatTheClientActuallySaw:
 
         graph_obj = build_graph(GraphDeps(llm=llm, cache_get=fake_cache_get))
 
-        _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
+        await _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
 
         assert fake_trace.updates == [{"output": "A cached answer, not freshly generated."}]
 
-    def test_a_normally_streamed_answer_still_records_correctly(self, monkeypatch):
+    async def test_a_normally_streamed_answer_still_records_correctly(self, monkeypatch):
         """Guards the fix against a regression in the common case: a turn
         that DID stream real tokens must still record exactly that text,
         not a duplicate or an empty one."""
@@ -149,7 +148,7 @@ class TestTraceOutputMatchesWhatTheClientActuallySaw:
         )
         graph_obj = build_graph(GraphDeps(llm=llm))
 
-        _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
+        await _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
 
         assert fake_trace.updates == [{"output": "A normal, freshly generated answer."}]
 
@@ -162,7 +161,7 @@ class TestFollowupsEventIsSurfaced:
     but had no event to populate it from, and the raw model text got
     rendered as one undifferentiated blob instead."""
 
-    def test_a_grounded_answer_streams_a_followups_event_before_done(self, monkeypatch):
+    async def test_a_grounded_answer_streams_a_followups_event_before_done(self, monkeypatch):
         async def fake_search(query, ctx):
             cited = {
                 "marker": "[1]",
@@ -183,7 +182,7 @@ class TestFollowupsEventIsSurfaced:
         )
         graph_obj = build_graph(GraphDeps(llm=llm, search_docs=fake_search))
 
-        events = _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
+        events = await _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
 
         followup_events = [e for e in events if e["type"] == "followups"]
         assert len(followup_events) == 1
@@ -196,7 +195,7 @@ class TestFollowupsEventIsSurfaced:
         assert types_in_order.index("followups") > types_in_order.index("citations")
         assert types_in_order[-1] == "done"
 
-    def test_followups_own_llm_call_never_leaks_into_the_token_stream(self, monkeypatch):
+    async def test_followups_own_llm_call_never_leaks_into_the_token_stream(self, monkeypatch):
         """Real bug, caught live via Langfuse: astream_events emits
         on_chat_model_stream for EVERY chat-model call in the graph, not
         just the main answer's. suggest_followups makes its own SEPARATE
@@ -227,7 +226,7 @@ class TestFollowupsEventIsSurfaced:
         )
         graph_obj = build_graph(GraphDeps(llm=llm, search_docs=fake_search))
 
-        events = _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
+        events = await _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
 
         token_events = [e for e in events if e["type"] == "token"]
         streamed_text = "".join(e["content"] for e in token_events)
@@ -235,7 +234,7 @@ class TestFollowupsEventIsSurfaced:
         assert "MemorySaver" not in streamed_text
         assert "How do I resume a run" not in streamed_text
 
-    def test_an_uncited_answer_streams_no_followups_event(self, monkeypatch):
+    async def test_an_uncited_answer_streams_no_followups_event(self, monkeypatch):
         """suggest_followups itself skips an uncited answer (nothing to
         derive follow-ups from) — this just proves the streaming layer
         doesn't invent one on top."""
@@ -244,7 +243,7 @@ class TestFollowupsEventIsSurfaced:
         )
         graph_obj = build_graph(GraphDeps(llm=llm))
 
-        events = _events_for(graph_obj, "what is the capital of France?", monkeypatch=monkeypatch)
+        events = await _events_for(graph_obj, "what is the capital of France?", monkeypatch=monkeypatch)
 
         assert not any(e["type"] == "followups" for e in events)
 
@@ -261,7 +260,7 @@ class TestRetryEventClearsTheStream:
     docstring) whenever retry_output runs, so a client knows to clear its
     buffer before the next round's tokens arrive."""
 
-    def test_a_too_short_answer_retry_emits_a_retry_event_between_the_two_answers(
+    async def test_a_too_short_answer_retry_emits_a_retry_event_between_the_two_answers(
         self, monkeypatch
     ):
         llm = GenericFakeChatModel(
@@ -274,7 +273,7 @@ class TestRetryEventClearsTheStream:
         )
         graph_obj = build_graph(GraphDeps(llm=llm))
 
-        events = _events_for(graph_obj, "is this true?", monkeypatch=monkeypatch)
+        events = await _events_for(graph_obj, "is this true?", monkeypatch=monkeypatch)
 
         types_in_order = [e["type"] for e in events]
         assert types_in_order.count("retry") == 1
@@ -284,7 +283,7 @@ class TestRetryEventClearsTheStream:
         assert "".join(before) == "Yes."
         assert "".join(after) == "Here is a sufficiently long final answer now."
 
-    def test_a_likely_misattributed_answer_retry_also_emits_a_retry_event(self, monkeypatch):
+    async def test_a_likely_misattributed_answer_retry_also_emits_a_retry_event(self, monkeypatch):
         """Was an "uncited" scenario; a genuinely uncited-but-matching
         answer now gets fixed in place by check_output's own citation
         auto-correction on the SAME round (see
@@ -318,17 +317,17 @@ class TestRetryEventClearsTheStream:
         )
         graph_obj = build_graph(GraphDeps(llm=llm, search_docs=fake_search))
 
-        events = _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
+        events = await _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
 
         assert sum(1 for e in events if e["type"] == "retry") == 1
 
-    def test_normal_streaming_with_no_retry_never_emits_a_retry_event(self, monkeypatch):
+    async def test_normal_streaming_with_no_retry_never_emits_a_retry_event(self, monkeypatch):
         llm = GenericFakeChatModel(
             messages=iter([AIMessage(content="A normal, freshly generated answer.")])
         )
         graph_obj = build_graph(GraphDeps(llm=llm))
 
-        events = _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
+        events = await _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
 
         assert not any(e["type"] == "retry" for e in events)
 
@@ -346,7 +345,7 @@ class TestRetryExhaustedReplacesAlreadyStreamedContent:
     full, TWICE (once per retry round), with the honest fallback the
     checkpointed state correctly held never actually reaching them."""
 
-    def test_client_sees_the_honest_fallback_not_the_repeatedly_rejected_text(
+    async def test_client_sees_the_honest_fallback_not_the_repeatedly_rejected_text(
         self, monkeypatch
     ):
         # deferred_instead_of_acting — one of the two NOT trust-content
@@ -361,7 +360,7 @@ class TestRetryExhaustedReplacesAlreadyStreamedContent:
         )
         graph_obj = build_graph(GraphDeps(llm=llm))
 
-        events = _events_for(graph_obj, "who works in engineering?", monkeypatch=monkeypatch)
+        events = await _events_for(graph_obj, "who works in engineering?", monkeypatch=monkeypatch)
 
         token_events = [e for e in events if e["type"] == "token"]
         streamed_text = "".join(e["content"] for e in token_events)
@@ -393,7 +392,7 @@ class TestRetryExhaustedTrustsAttributionOnlyFailures:
     auto-correction fixes it directly on round 1, before a real retry
     round is even needed."""
 
-    def test_no_spurious_retry_when_too_short_content_is_trusted_on_exhaustion(
+    async def test_no_spurious_retry_when_too_short_content_is_trusted_on_exhaustion(
         self, monkeypatch
     ):
         llm = GenericFakeChatModel(
@@ -401,7 +400,7 @@ class TestRetryExhaustedTrustsAttributionOnlyFailures:
         )
         graph_obj = build_graph(GraphDeps(llm=llm))
 
-        events = _events_for(graph_obj, "is this true?", monkeypatch=monkeypatch)
+        events = await _events_for(graph_obj, "is this true?", monkeypatch=monkeypatch)
 
         types_in_order = [e["type"] for e in events]
         # Exactly one retry — round 1's rejection by retry_output. NONE
@@ -435,7 +434,7 @@ class TestCheckOutputCitationAutoCorrectionStreaming:
     so a live-streaming client needs telling too, not just the
     checkpointed state."""
 
-    def test_streamed_answer_is_corrected_with_a_retry_and_replacement_token(
+    async def test_streamed_answer_is_corrected_with_a_retry_and_replacement_token(
         self, monkeypatch
     ):
         source_text = "Ecorp support hours are 9am to 5pm on weekdays."
@@ -459,7 +458,7 @@ class TestCheckOutputCitationAutoCorrectionStreaming:
         llm = GenericFakeChatModel(messages=iter([AIMessage(content=correct_but_uncited)]))
         graph_obj = build_graph(GraphDeps(llm=llm, search_docs=fake_search))
 
-        events = _events_for(graph_obj, "what are the support hours?", monkeypatch=monkeypatch)
+        events = await _events_for(graph_obj, "what are the support hours?", monkeypatch=monkeypatch)
 
         types_in_order = [e["type"] for e in events]
         assert types_in_order.count("retry") == 1
@@ -486,7 +485,7 @@ class TestCompactedEventSignalsHistoryTrimming:
     actually trimmed something, so a UI can show a transient status
     instead (see _run_graph_stream's own docstring)."""
 
-    def test_a_compacting_turn_emits_exactly_one_compacted_event(self, monkeypatch):
+    async def test_a_compacting_turn_emits_exactly_one_compacted_event(self, monkeypatch):
         # Same ceiling/floor derivation tests/agent/test_graph_integration.py's
         # TestHistorySummarization uses: real turns driven through the
         # graph (not a hand-poked aupdate_state, which LangGraph rejects
@@ -530,23 +529,23 @@ class TestCompactedEventSignalsHistoryTrimming:
                 )
             ]
 
-        events = asyncio.run(_run())
+        events = await _run()
 
         assert sum(1 for e in events if e["type"] == "compacted") == 1
 
-    def test_a_turn_within_budget_never_emits_a_compacted_event(self, monkeypatch):
+    async def test_a_turn_within_budget_never_emits_a_compacted_event(self, monkeypatch):
         llm = GenericFakeChatModel(
             messages=iter([AIMessage(content="A normal, freshly generated answer.")])
         )
         graph_obj = build_graph(GraphDeps(llm=llm))
 
-        events = _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
+        events = await _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
 
         assert not any(e["type"] == "compacted" for e in events)
 
 
 class TestNormalStreamingIsUnaffected:
-    def test_a_real_llm_answer_still_streams_token_by_token_with_no_extra_synthetic_event(
+    async def test_a_real_llm_answer_still_streams_token_by_token_with_no_extra_synthetic_event(
         self, monkeypatch
     ):
         """Guards against double-answering: a turn that DID stream
@@ -556,7 +555,7 @@ class TestNormalStreamingIsUnaffected:
         )
         graph_obj = build_graph(GraphDeps(llm=llm))
 
-        events = _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
+        events = await _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
 
         token_events = [e for e in events if e["type"] == "token"]
         assert "".join(e["content"] for e in token_events) == "A normal, freshly generated answer."
@@ -626,7 +625,7 @@ def _tool_event(kind, tool_name, *, subagent_name=None):
     return {"event": kind, "run_id": "fake-run", "name": tool_name, "metadata": metadata, "data": data}
 
 
-def _stream_events(fake_events, final_messages):
+async def _stream_events(fake_events, final_messages):
     async def _run():
         graph_obj = _FakeStreamGraph(fake_events, final_messages)
         cfg = {"configurable": {"thread_id": "fake-thread", "ctx": TEST_CTX}}
@@ -635,7 +634,7 @@ def _stream_events(fake_events, final_messages):
             async for event in agent_module._run_graph_stream(graph_obj, {}, cfg, trace=None)
         ]
 
-    return asyncio.run(_run())
+    return await _run()
 
 
 class TestSubagentEventsDontLeakIntoTheMainStream:
@@ -649,8 +648,8 @@ class TestSubagentEventsDontLeakIntoTheMainStream:
     the existing `langgraph_node == "agent"` check too and leak into the
     client's main answer stream, indistinguishable from the real answer."""
 
-    def test_nested_reasoning_tokens_never_appear_in_the_token_stream(self):
-        events = _stream_events(
+    async def test_nested_reasoning_tokens_never_appear_in_the_token_stream(self):
+        events = await _stream_events(
             [
                 _chat_stream_event(
                     "Nested subagent reasoning that must never leak.",
@@ -666,13 +665,13 @@ class TestSubagentEventsDontLeakIntoTheMainStream:
         assert streamed_text == "Delegation complete, here is the final answer."
         assert "Nested subagent reasoning" not in streamed_text
 
-    def test_the_subagents_own_tool_activity_is_surfaced_and_tagged(self):
+    async def test_the_subagents_own_tool_activity_is_surfaced_and_tagged(self):
         """The other half of the same fix: unlike raw reasoning tokens,
         the subagent's own internal tool_start/tool_end SHOULD reach the
         client (instead of a silent ~45s black box for the whole
         delegation) — tagged with which subagent they came from, distinct
         from the top-level run_subagent call itself, which carries no tag."""
-        events = _stream_events(
+        events = await _stream_events(
             [
                 _tool_event("on_tool_start", "run_subagent"),
                 _tool_event("on_tool_start", "calculator", subagent_name="researcher"),

@@ -283,7 +283,7 @@ async def run() -> None:
     # app/agent/meter.py::record_usage) — leaving it open past process exit is
     # what produces the "couldn't stop thread... within 5.0 seconds" warning
     # documented there. A no-op if this worker never touched it.
-    sql_store.close_pool()
+    await sql_store.close_pool()
     # Same reasoning for the checkpointer's own pool (app/agent/runtime.py) —
     # init_graph_async() above always opens it, so this is never a no-op here.
     await close_checkpointer_pool()

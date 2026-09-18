@@ -42,7 +42,7 @@ import logging
 from typing import cast
 from uuid import UUID
 
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Condition,
     Distance,
@@ -70,11 +70,11 @@ DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "sparse"
 
 
-def get_client() -> QdrantClient:
-    return QdrantClient(url=QDRANT_URL)
+def get_client() -> AsyncQdrantClient:
+    return AsyncQdrantClient(url=QDRANT_URL)
 
 
-def ensure_collection(dim: int, collection: str | None = None) -> None:
+async def ensure_collection(dim: int, collection: str | None = None) -> None:
     """(Re)create the collection with a named dense vector (cosine) and a
     named sparse vector (BM25). Recreating changes the schema — a
     collection built before hybrid search (a single unnamed dense vector)
@@ -94,7 +94,7 @@ def ensure_collection(dim: int, collection: str | None = None) -> None:
     # terms score the same as rare/distinctive ones and the "BM25" leg of
     # hybrid search isn't actually BM25.
     client = get_client()
-    client.recreate_collection(
+    await client.recreate_collection(
         collection_name=collection or COLLECTION,
         vectors_config={DENSE_VECTOR_NAME: VectorParams(size=dim, distance=Distance.COSINE)},
         sparse_vectors_config={
@@ -142,12 +142,12 @@ def build_point(
 _MAX_POINTS_PER_UPSERT_BATCH = 300
 
 
-def upsert(points: list[PointStruct], collection: str | None = None) -> None:
+async def upsert(points: list[PointStruct], collection: str | None = None) -> None:
     client = get_client()
     name = collection or COLLECTION
     for start in range(0, len(points), _MAX_POINTS_PER_UPSERT_BATCH):
         batch = points[start : start + _MAX_POINTS_PER_UPSERT_BATCH]
-        client.upsert(collection_name=name, points=batch)
+        await client.upsert(collection_name=name, points=batch)
 
 
 def _build_filter(
@@ -206,16 +206,14 @@ async def hybrid_search(
     fusion scores are rank-derived and NOT comparable to it, so this is a
     no-op whenever `rerank_results=False` or reranking degrades.
 
-    `async def`: `embeddings.rerank` is now a real HTTP call to the
-    `ml-service` container (see that function's own docstring), so this
-    needs to `await` it. `embed_text` (dense, already an HTTP call to
-    LiteLLM/Ollama) and the Qdrant `query_points` calls below stay
-    plain sync/blocking for now — a real, deliberately separate scope
-    decision from moving reranking off this process (see this repo's own
-    "properly fix it, but be precise about scope" pattern elsewhere), not
-    an oversight. `embed_sparse` (local ONNX/CPU) still runs via
-    `asyncio.to_thread` — unchanged from why `retrieve_context`
-    (app/agent/graph.py) already did this before reranking moved out.
+    `async def`: every leg here is real I/O now — `embeddings.embed_text`
+    (dense, an HTTP call to LiteLLM/Ollama) and `embeddings.rerank` (an
+    HTTP call to the `ml-service` container) are both awaited directly;
+    the Qdrant `query_points` calls run against `AsyncQdrantClient`, also
+    awaited. `embed_sparse` is the one exception — it's local ONNX/CPU
+    compute, not I/O, so it still runs via `asyncio.to_thread` rather than
+    a plain `await` (unchanged from why `retrieve_context`,
+    app/agent/graph.py, already did this before reranking moved out).
     """
     # deferred: avoids importing fastembed at module load
     from app.retrieval import embeddings
@@ -223,13 +221,13 @@ async def hybrid_search(
     k = k or RERANK_TOP_K
     coll = collection or COLLECTION
     query_filter = _build_filter(topic, tenant_filter, doc_ids)
-    dense_vector = embeddings.embed_text(query_text)
+    dense_vector = await embeddings.embed_text(query_text)
 
     try:
         sparse_indices, sparse_values = await asyncio.to_thread(
             embeddings.embed_sparse, query_text
         )
-        response = get_client().query_points(
+        response = await get_client().query_points(
             collection_name=coll,
             prefetch=[
                 Prefetch(
@@ -255,7 +253,7 @@ async def hybrid_search(
             extra={"error_class": type(exc).__name__},
         )
         metrics.agent_retrieval_degraded_total.labels(stage="sparse").inc()
-        response = get_client().query_points(
+        response = await get_client().query_points(
             collection_name=coll,
             query=dense_vector,
             using=DENSE_VECTOR_NAME,
@@ -293,7 +291,7 @@ async def hybrid_search(
         return points[:k]
 
 
-def delete_by_filter(delete_filter: Filter) -> None:
+async def delete_by_filter(delete_filter: Filter) -> None:
     """Support function for the "a memory must be removable" requirement
     (see app/agent/tools.py's remember/MemoryService note) — a scoped, auditable
     delete, e.g. every point with `owner == <principal>`.
@@ -307,15 +305,16 @@ def delete_by_filter(delete_filter: Filter) -> None:
     would call directly — the removability guarantee exists; wiring it to
     an autonomous decision-maker is a deliberate non-goal here.
     """
-    get_client().delete(
+    await get_client().delete(
         collection_name=COLLECTION, points_selector=FilterSelector(filter=delete_filter)
     )
 
 
-def count_by_filter(count_filter: Filter) -> int:
+async def count_by_filter(count_filter: Filter) -> int:
     """How many points currently match `count_filter` — used by
     app/agent/memory.py::delete_memories to report how many memories a
     deletion actually removed (Qdrant's own `delete` call doesn't return
     a row count, so this is called immediately BEFORE deleting the same
     filter — see that function's docstring for the accepted race)."""
-    return get_client().count(collection_name=COLLECTION, count_filter=count_filter).count
+    result = await get_client().count(collection_name=COLLECTION, count_filter=count_filter)
+    return result.count

@@ -15,6 +15,7 @@ skill's full instruction body is never written to Qdrant at all (see
 app/agent/skills.py's docstring for why: disk stays the one source of
 truth for content, Qdrant is only the search index over metadata).
 """
+import asyncio
 import uuid
 
 from app.agent import skills as skills_module
@@ -23,7 +24,7 @@ from app.retrieval import qdrant_store
 from app.retrieval.embeddings import embed_sparse, embed_text
 
 
-def main() -> None:
+async def main() -> None:
     try:
         skills_module.reload_skills()
         catalog = skills_module.get_skills()
@@ -33,8 +34,8 @@ def main() -> None:
             )
 
         # dim comes from a real embed call, same as scripts/seed.py — never hardcoded.
-        qdrant_store.ensure_collection(
-            dim=len(embed_text("dimension probe")), collection=SKILLS_COLLECTION
+        await qdrant_store.ensure_collection(
+            dim=len(await embed_text("dimension probe")), collection=SKILLS_COLLECTION
         )
 
         points = []
@@ -47,12 +48,12 @@ def main() -> None:
             points.append(
                 qdrant_store.build_point(
                     point_id=str(uuid.uuid4()),
-                    dense_vector=embed_text(text),
+                    dense_vector=await embed_text(text),
                     sparse_vector=sparse,
                     payload={"text": text, "name": record.name, "description": record.description},
                 )
             )
-        qdrant_store.upsert(points, collection=SKILLS_COLLECTION)
+        await qdrant_store.upsert(points, collection=SKILLS_COLLECTION)
     except Exception as exc:  # noqa: BLE001
         raise SystemExit(
             f"Failed to index skills: {exc}\n"
@@ -66,4 +67,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
