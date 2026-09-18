@@ -569,14 +569,21 @@ class TestResumabilityErrorRejectsAnActivelyRunningThread:
         # would hit the real Redis-backed semantic cache
         # (app/retrieval/semantic_cache.py), irrelevant to what's under test here.
         llm = self._SlowFakeLLM(messages=iter([AIMessage(content="one two three four five")]))
+
+        async def fake_cache_get(ctx, query):
+            return None
+
+        async def fake_cache_set(ctx, query, answer, citations):
+            return None
+
         monkeypatch.setattr(
             agent_module,
             "build_graph",
             lambda checkpointer=None, manifest=None, domain=None: build_graph(
                 GraphDeps(
                     llm=llm,
-                    cache_get=lambda ctx, query: None,
-                    cache_set=lambda ctx, query, answer, citations: None,
+                    cache_get=fake_cache_get,
+                    cache_set=fake_cache_set,
                 ),
                 checkpointer=checkpointer,
             ),

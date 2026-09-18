@@ -42,8 +42,8 @@ def _require_opensandbox_mcp():
         pytest.skip("opensandbox_mcp not installed — `pip install opensandbox-mcp` (already in requirements.txt)")
 
 
-def test_lists_the_real_opensandbox_tool_catalog():
-    tools, _capabilities = sandbox_tools.load_sandbox_tools()
+async def test_lists_the_real_opensandbox_tool_catalog():
+    tools, _capabilities = await sandbox_tools.load_sandbox_tools()
 
     names = {t.name for t in tools}
     assert "sandbox_create" in names
@@ -52,8 +52,8 @@ def test_lists_the_real_opensandbox_tool_catalog():
     assert "file_write" in names
 
 
-def test_every_real_tool_is_capped_at_outward():
-    tools, capabilities = sandbox_tools.load_sandbox_tools()
+async def test_every_real_tool_is_capped_at_outward():
+    tools, capabilities = await sandbox_tools.load_sandbox_tools()
 
     assert tools  # the skip fixture above already ruled out "bridge missing"
     for tool in tools:

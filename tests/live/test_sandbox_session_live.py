@@ -45,16 +45,16 @@ def _require_opensandbox_mcp():
         pytest.skip("opensandbox_mcp not installed — `pip install opensandbox-mcp` (already in requirements.txt)")
 
 
-def test_reaches_the_real_bridge_and_creates_a_real_sandbox():
-    raw = sandbox_session.load_raw_sandbox_tools()
+async def test_reaches_the_real_bridge_and_creates_a_real_sandbox():
+    raw = await sandbox_session.load_raw_sandbox_tools()
     assert raw, "opensandbox-mcp's catalog should list even with no server reachable (see module docstring)"
 
-    sandbox_id = sandbox_session.get_or_create_sandbox_id(raw, "live-verify-thread")
+    sandbox_id = await sandbox_session.get_or_create_sandbox_id(raw, "live-verify-thread")
     assert isinstance(sandbox_id, str) and sandbox_id
 
 
-def test_a_second_call_reuses_the_same_sandbox():
-    raw = sandbox_session.load_raw_sandbox_tools()
-    first_id = sandbox_session.get_or_create_sandbox_id(raw, "live-verify-reuse-thread")
-    second_id = sandbox_session.get_or_create_sandbox_id(raw, "live-verify-reuse-thread")
+async def test_a_second_call_reuses_the_same_sandbox():
+    raw = await sandbox_session.load_raw_sandbox_tools()
+    first_id = await sandbox_session.get_or_create_sandbox_id(raw, "live-verify-reuse-thread")
+    second_id = await sandbox_session.get_or_create_sandbox_id(raw, "live-verify-reuse-thread")
     assert second_id == first_id

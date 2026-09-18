@@ -59,7 +59,7 @@ def _use_crawl4ai_server(monkeypatch, crawl4ai_server):
     monkeypatch.setattr(web_crawler, "CRAWL4AI_API_TOKEN", crawl4ai_server["crawl4ai_api_token"])
 
 
-def test_renders_a_real_page_to_markdown():
-    result = web_crawler.render_url_to_markdown("https://example.com")
+async def test_renders_a_real_page_to_markdown():
+    result = await web_crawler.render_url_to_markdown("https://example.com")
 
     assert "Example Domain" in result
