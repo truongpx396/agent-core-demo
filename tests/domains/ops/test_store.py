@@ -5,7 +5,14 @@ Unlike those, this table carries no `tenant` column (see
 postgres-init/10-ops-incidents.sql's own comment for why), so there's no
 tenant-scoping assertion to make here — only `opened_by` attribution and
 the status/limit filtering.
+
+Every function here is `async def` now (a real `AsyncConnectionPool`, see
+app/agent/sql_store.py's own docstring), so every call below runs through
+`asyncio.run(...)`, this repo's established pattern for exercising async
+code from a plain `def test_...`.
 """
+from contextlib import asynccontextmanager
+
 from app.domains.ops import store
 
 _INCIDENT_COLUMNS = (
@@ -20,10 +27,10 @@ class _FakeCursor:
         self.rowcount = rowcount
         self.description = [type("Col", (), {"name": c}) for c in columns]
 
-    def fetchone(self):
+    async def fetchone(self):
         return self._row
 
-    def fetchall(self):
+    async def fetchall(self):
         return self._rows
 
 
@@ -35,62 +42,64 @@ class _FakeConnection:
         self._rowcount = rowcount
         self._columns = columns
 
-    def execute(self, sql, params):
+    async def execute(self, sql, params):
         self.captured["sql"] = sql
         self.captured["params"] = list(params)
         return _FakeCursor(self._row, self._rows, self._rowcount, self._columns)
 
-    def __enter__(self):
-        return self
 
-    def __exit__(self, *exc):
-        return False
+def _fake_get_connection(fake):
+    @asynccontextmanager
+    async def get_connection():
+        yield fake
+
+    return get_connection
 
 
-def test_log_incident_returns_the_new_id(monkeypatch):
+async def test_log_incident_returns_the_new_id(monkeypatch):
     fake = _FakeConnection(row=(1,))
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    incident_id = store.log_incident("ops-user", "latency spike", "p95 at 45s")
+    incident_id = await store.log_incident("ops-user", "latency spike", "p95 at 45s")
 
     assert incident_id == 1
     assert fake.captured["params"] == ["ops-user", "latency spike", "p95 at 45s"]
 
 
-def test_list_recent_incidents_defaults_to_no_status_filter(monkeypatch):
+async def test_list_recent_incidents_defaults_to_no_status_filter(monkeypatch):
     fake = _FakeConnection(
         rows=[(1, "ops-user", "latency spike", None, "open", None, "t", None)],
         columns=_INCIDENT_COLUMNS,
     )
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    incidents = store.list_recent_incidents()
+    incidents = await store.list_recent_incidents()
 
     assert incidents[0]["summary"] == "latency spike"
     assert fake.captured["params"] == [10]
     assert "WHERE" not in fake.captured["sql"]
 
 
-def test_list_recent_incidents_filters_by_status_when_given(monkeypatch):
+async def test_list_recent_incidents_filters_by_status_when_given(monkeypatch):
     fake = _FakeConnection(rows=[], columns=_INCIDENT_COLUMNS)
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    store.list_recent_incidents(limit=5, status="open")
+    await store.list_recent_incidents(limit=5, status="open")
 
     assert fake.captured["params"] == ["open", 5]
     assert "WHERE status = %s" in fake.captured["sql"]
 
 
-def test_resolve_incident_returns_false_when_no_row_updated(monkeypatch):
+async def test_resolve_incident_returns_false_when_no_row_updated(monkeypatch):
     fake = _FakeConnection(rowcount=0)
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    assert store.resolve_incident(999, "fixed") is False
+    assert await store.resolve_incident(999, "fixed") is False
 
 
-def test_resolve_incident_returns_true_and_sets_resolution(monkeypatch):
+async def test_resolve_incident_returns_true_and_sets_resolution(monkeypatch):
     fake = _FakeConnection(rowcount=1)
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    assert store.resolve_incident(1, "restarted the worker") is True
+    assert await store.resolve_incident(1, "restarted the worker") is True
     assert fake.captured["params"] == ["restarted the worker", 1]

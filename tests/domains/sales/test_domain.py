@@ -14,7 +14,6 @@ this domain's graphs use the default in-memory MemorySaver (no event-loop-
 bound state — contrast with `AsyncPostgresSaver`'s per-instance
 `asyncio.Lock`, see app/agent/runtime.py's module docstring).
 """
-import asyncio
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
@@ -113,13 +112,14 @@ class TestDomainScopedSubagent:
         enum_def = next(iter(schema["$defs"].values()))
         assert enum_def["enum"] == ["lead-researcher"]
 
-    def test_never_pauses_it_is_read_only(self, monkeypatch):
+    async def test_never_pauses_it_is_read_only(self, monkeypatch):
         from app.agent import subagent_tools as agent_tools_module
 
+        async def fake_run_subagent_impl(*a, **k):
+            return agent_tools_module.SubagentResult("found it", 0, 0.0)
+
         monkeypatch.setattr(
-            agent_tools_module,
-            "_run_subagent_impl",
-            lambda *a, **k: agent_tools_module.SubagentResult("found it", 0, 0.0),
+            agent_tools_module, "_run_subagent_impl", fake_run_subagent_impl
         )
         llm = _fake_llm_returning(
             _tool_call(
@@ -129,14 +129,14 @@ class TestDomainScopedSubagent:
             AIMessage(content="Here's what the subagent found out for you."),
         )
         g = _build(llm)
-        asyncio.run(g.ainvoke(
+        await g.ainvoke(
             {"messages": [HumanMessage(content="look into jordan for me")]}, config=_config()
-        ))
-        assert not asyncio.run(g.aget_state(_config())).next  # never paused
+        )
+        assert not (await g.aget_state(_config())).next  # never paused
 
 
 class TestMandatoryApprovalGate:
-    def test_log_lead_interaction_pauses_for_approval(self):
+    async def test_log_lead_interaction_pauses_for_approval(self):
         llm = _fake_llm_returning(
             _tool_call(
                 "log_lead_interaction",
@@ -144,13 +144,16 @@ class TestMandatoryApprovalGate:
             )
         )
         g = _build(llm)
-        asyncio.run(g.ainvoke(
+        await g.ainvoke(
             {"messages": [HumanMessage(content="Hi, what does this cost?")]}, config=_config()
-        ))
-        assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
+        )
+        assert (await g.aget_state(_config())).next  # paused, not finished
 
-    def test_approving_runs_log_lead_interaction_and_finishes(self, monkeypatch):
-        monkeypatch.setattr(store, "find_or_create_lead", lambda tenant, name, contact, note: 3)
+    async def test_approving_runs_log_lead_interaction_and_finishes(self, monkeypatch):
+        async def fake_find_or_create_lead(tenant, name, contact, note):
+            return 3
+
+        monkeypatch.setattr(store, "find_or_create_lead", fake_find_or_create_lead)
 
         llm = _fake_llm_returning(
             _tool_call(
@@ -160,33 +163,39 @@ class TestMandatoryApprovalGate:
             AIMessage(content="Got it, I've logged that."),
         )
         g = _build(llm)
-        asyncio.run(g.ainvoke(
+        await g.ainvoke(
             {"messages": [HumanMessage(content="Hi, what does this cost?")]}, config=_config()
-        ))
-        result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
+        )
+        result = await g.ainvoke(Command(resume=True), config=_config())
 
-        assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
+        assert not (await g.aget_state(_config())).next  # finished, not paused
         tool_messages = [m for m in result["messages"] if m.type == "tool"]
         assert any("Logged interaction for lead #3" in m.content for m in tool_messages)
 
 
 class TestListPendingFollowupsAndMarkLeadLost:
-    def test_list_pending_followups_is_read_only_and_never_pauses(self, monkeypatch):
-        monkeypatch.setattr(store, "list_pending_followups", lambda tenant, contact=None: [])
+    async def test_list_pending_followups_is_read_only_and_never_pauses(self, monkeypatch):
+        async def fake_list_pending_followups(tenant, contact=None):
+            return []
+
+        monkeypatch.setattr(store, "list_pending_followups", fake_list_pending_followups)
         llm = _fake_llm_returning(
             _tool_call("list_pending_followups", {}),
             AIMessage(content="No pending follow-ups."),
         )
         g = _build(llm)
-        result = asyncio.run(g.ainvoke(
+        result = await g.ainvoke(
             {"messages": [HumanMessage(content="what follow-ups are coming up?")]},
             config=_config(),
-        ))
-        assert not asyncio.run(g.aget_state(_config())).next  # never paused
+        )
+        assert not (await g.aget_state(_config())).next  # never paused
         assert result["messages"][-1].content == "No pending follow-ups."
 
-    def test_mark_lead_lost_pauses_for_approval_and_runs_once_approved(self, monkeypatch):
-        monkeypatch.setattr(store, "mark_lead_lost", lambda tenant, contact, reason: True)
+    async def test_mark_lead_lost_pauses_for_approval_and_runs_once_approved(self, monkeypatch):
+        async def fake_mark_lead_lost(tenant, contact, reason):
+            return True
+
+        monkeypatch.setattr(store, "mark_lead_lost", fake_mark_lead_lost)
 
         llm = _fake_llm_returning(
             _tool_call(
@@ -196,19 +205,19 @@ class TestListPendingFollowupsAndMarkLeadLost:
             AIMessage(content="Marked that lead lost."),
         )
         g = _build(llm)
-        asyncio.run(g.ainvoke(
+        await g.ainvoke(
             {"messages": [HumanMessage(content="jordan went with a competitor")]},
             config=_config(),
-        ))
-        assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
+        )
+        assert (await g.aget_state(_config())).next  # paused, not finished
 
-        result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
-        assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
+        result = await g.ainvoke(Command(resume=True), config=_config())
+        assert not (await g.aget_state(_config())).next  # finished, not paused
         tool_messages = [m for m in result["messages"] if m.type == "tool"]
         assert any("marked lost" in m.content.lower() for m in tool_messages)
 
 
-def test_enrich_lead_from_website_pauses_for_approval_as_an_outward_tool():
+async def test_enrich_lead_from_website_pauses_for_approval_as_an_outward_tool():
     llm = _fake_llm_returning(
         _tool_call(
             "enrich_lead_from_website",
@@ -216,23 +225,30 @@ def test_enrich_lead_from_website_pauses_for_approval_as_an_outward_tool():
         )
     )
     g = _build(llm)
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="jordan's company site is ecorp-lead.example.com")]},
         config=_config(),
-    ))
-    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
+    )
+    assert (await g.aget_state(_config())).next  # paused, not finished
 
 
-def test_approving_enrich_lead_from_website_runs_it_and_finishes(monkeypatch):
+async def test_approving_enrich_lead_from_website_runs_it_and_finishes(monkeypatch):
     from app.domains.sales import tools as sales_tools
 
-    monkeypatch.setattr(
-        store, "get_lead", lambda tenant, contact: {"name": "Jordan", "contact": contact}
-    )
-    monkeypatch.setattr(store, "append_lead_note", lambda tenant, contact, note: True)
-    monkeypatch.setattr(
-        sales_tools, "render_url_to_markdown", lambda url: "Ecorp Lead Co — mid-market SaaS."
-    )
+    async def fake_get_lead(tenant, contact):
+        return {"name": "Jordan", "contact": contact}
+
+    monkeypatch.setattr(store, "get_lead", fake_get_lead)
+
+    async def fake_append_lead_note(tenant, contact, note):
+        return True
+
+    monkeypatch.setattr(store, "append_lead_note", fake_append_lead_note)
+
+    async def fake_render_url_to_markdown(url):
+        return "Ecorp Lead Co — mid-market SaaS."
+
+    monkeypatch.setattr(sales_tools, "render_url_to_markdown", fake_render_url_to_markdown)
 
     llm = _fake_llm_returning(
         _tool_call(
@@ -242,31 +258,36 @@ def test_approving_enrich_lead_from_website_runs_it_and_finishes(monkeypatch):
         AIMessage(content="Added research on Jordan's company to their notes."),
     )
     g = _build(llm)
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="jordan's company site is ecorp-lead.example.com")]},
         config=_config(),
-    ))
-    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
+    )
+    result = await g.ainvoke(Command(resume=True), config=_config())
 
-    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
+    assert not (await g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("Ecorp Lead Co" in m.content for m in tool_messages)
 
 
-def test_handoff_to_human_notifies_the_team_channel(monkeypatch):
+async def test_handoff_to_human_notifies_the_team_channel(monkeypatch):
     """handoff_to_human's own side effect (app/domains/sales/tools.py) —
     unit-level, same shape as
     tests/domains/support/test_domain.py::test_escalate_to_human_notifies_the_team_channel."""
     from app.domains import notify
     from app.domains.sales.tools import _handoff_to_human_impl
 
-    monkeypatch.setattr(store, "set_lead_status", lambda tenant, contact, status: True)
-    posted = {}
-    monkeypatch.setattr(
-        notify, "post_to_team_channel", lambda channel, message: posted.setdefault(channel, message)
-    )
+    async def fake_set_lead_status(tenant, contact, status):
+        return True
 
-    result = _handoff_to_human_impl(
+    monkeypatch.setattr(store, "set_lead_status", fake_set_lead_status)
+    posted = {}
+
+    async def fake_post_to_team_channel(channel, message):
+        posted.setdefault(channel, message)
+
+    monkeypatch.setattr(notify, "post_to_team_channel", fake_post_to_team_channel)
+
+    result = await _handoff_to_human_impl(
         "jordan@example.com", "Asked for pricing and a demo", "ready to buy", TEST_CTX
     )
 
@@ -275,18 +296,25 @@ def test_handoff_to_human_notifies_the_team_channel(monkeypatch):
     assert "ready to buy" in posted["sales-handoffs"]
 
 
-def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monkeypatch):
+async def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monkeypatch):
     """Same shape as app/domains/ops/test_domain.py's own version of this
     test — the sandbox trio is always present now, but its impl still
     calls load_raw_sandbox_tools() fresh on every real call, so stub that
     out too, not just run_command_in_sandbox_impl."""
     from app.domains.sales import tools as sales_tools
 
-    monkeypatch.setattr(sales_tools.sandbox_session, "load_raw_sandbox_tools", lambda: {"command_run": object()})
+    async def fake_load_raw_sandbox_tools():
+        return {"command_run": object()}
+
+    monkeypatch.setattr(sales_tools.sandbox_session, "load_raw_sandbox_tools", fake_load_raw_sandbox_tools)
+
+    async def fake_run_command_in_sandbox_impl(command, thread_id, raw):
+        return "exit code: 0\nstdout:\n3-year total: 142575.00\n"
+
     monkeypatch.setattr(
         sales_tools.sandbox_session,
         "run_command_in_sandbox_impl",
-        lambda command, thread_id, raw: "exit code: 0\nstdout:\n3-year total: 142575.00\n",
+        fake_run_command_in_sandbox_impl,
     )
 
     llm = _fake_llm_returning(
@@ -294,19 +322,19 @@ def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monke
         AIMessage(content="The 3-year deal value is $142,575.00."),
     )
     g = _build(llm)
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="what's this 3-year deal worth with the discount")]},
         config=_config(),
-    ))
-    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
+    )
+    assert (await g.aget_state(_config())).next  # paused, not finished
 
-    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
-    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
+    result = await g.ainvoke(Command(resume=True), config=_config())
+    assert not (await g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("142575.00" in m.content for m in tool_messages)
 
 
-def test_run_python_in_sandbox_pauses_for_approval_and_runs_once_approved(monkeypatch):
+async def test_run_python_in_sandbox_pauses_for_approval_and_runs_once_approved(monkeypatch):
     """Same shape as run_command_in_sandbox's own version of this test —
     run_python_in_sandbox exists specifically so a deal-economics script
     (dict literals, f-strings) can go straight into a real script
@@ -314,11 +342,16 @@ def test_run_python_in_sandbox_pauses_for_approval_and_runs_once_approved(monkey
     (a real, repeatedly-observed failure mode)."""
     from app.domains.sales import tools as sales_tools
 
-    monkeypatch.setattr(sales_tools.sandbox_session, "load_raw_sandbox_tools", lambda: {"command_run": object()})
+    async def fake_load_raw_sandbox_tools():
+        return {"command_run": object()}
+
+    monkeypatch.setattr(sales_tools.sandbox_session, "load_raw_sandbox_tools", fake_load_raw_sandbox_tools)
+
+    async def fake_run_python_in_sandbox_impl(script, thread_id, raw):
+        return "exit code: 0\nstdout:\n3-year total: 142575.00\n"
+
     monkeypatch.setattr(
-        sales_tools.sandbox_session,
-        "run_python_in_sandbox_impl",
-        lambda script, thread_id, raw: "exit code: 0\nstdout:\n3-year total: 142575.00\n",
+        sales_tools.sandbox_session, "run_python_in_sandbox_impl", fake_run_python_in_sandbox_impl
     )
 
     llm = _fake_llm_returning(
@@ -326,13 +359,13 @@ def test_run_python_in_sandbox_pauses_for_approval_and_runs_once_approved(monkey
         AIMessage(content="The 3-year deal value is $142,575.00."),
     )
     g = _build(llm)
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="what's this 3-year deal worth with the discount")]},
         config=_config(),
-    ))
-    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
+    )
+    assert (await g.aget_state(_config())).next  # paused, not finished
 
-    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
-    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
+    result = await g.ainvoke(Command(resume=True), config=_config())
+    assert not (await g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("142575.00" in m.content for m in tool_messages)

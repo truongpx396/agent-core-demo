@@ -1,9 +1,12 @@
 """Tests for app/domains/ops/metrics_client.py. `detect_anomalies`/
 `format_readings` are pure functions, tested directly against synthetic
-readings — no network. `_query_one`/`fetch_readings` mock `httpx.get`
-(same convention as tests/agent/test_model_resolver.py::_FakeResponse) so
-these stay hermetic (no live Prometheus).
+readings — no network. `_query_one`/`fetch_readings` mock
+`httpx.AsyncClient` (same "patch the low-level client constructor"
+convention as tests/api/test_health.py) so these stay hermetic (no live
+Prometheus). Both are `async def` now, so calls run through
+`asyncio.run(...)`.
 """
+
 from app.domains.ops import metrics_client
 
 
@@ -18,6 +21,23 @@ class _FakeResponse:
 
     def json(self):
         return self._json_data
+
+
+class _FakeAsyncClient:
+    def __init__(self, response=None, raise_on_get=None):
+        self._response = response
+        self._raise_on_get = raise_on_get
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url, params=None):
+        if self._raise_on_get:
+            raise self._raise_on_get
+        return self._response
 
 
 class TestDetectAnomalies:
@@ -55,36 +75,32 @@ class TestFormatReadings:
 
 
 class TestQueryOne:
-    def test_returns_the_value_on_a_successful_query(self, monkeypatch):
+    async def test_returns_the_value_on_a_successful_query(self, monkeypatch):
+        response = _FakeResponse({"data": {"result": [{"metric": {}, "value": [0, "0.5"]}]}})
+        monkeypatch.setattr(
+            metrics_client.httpx, "AsyncClient", lambda **kw: _FakeAsyncClient(response)
+        )
+        assert await metrics_client._query_one("some_expr") == 0.5
+
+    async def test_returns_none_on_an_empty_result_vector(self, monkeypatch):
+        response = _FakeResponse({"data": {"result": []}})
+        monkeypatch.setattr(
+            metrics_client.httpx, "AsyncClient", lambda **kw: _FakeAsyncClient(response)
+        )
+        assert await metrics_client._query_one("some_expr") is None
+
+    async def test_returns_none_on_a_connection_failure(self, monkeypatch):
         monkeypatch.setattr(
             metrics_client.httpx,
-            "get",
-            lambda *a, **kw: _FakeResponse(
-                {"data": {"result": [{"metric": {}, "value": [0, "0.5"]}]}}
-            ),
+            "AsyncClient",
+            lambda **kw: _FakeAsyncClient(raise_on_get=RuntimeError("connection refused")),
         )
-        assert metrics_client._query_one("some_expr") == 0.5
+        assert await metrics_client._query_one("some_expr") is None
 
-    def test_returns_none_on_an_empty_result_vector(self, monkeypatch):
+    async def test_fetch_readings_covers_every_check(self, monkeypatch):
+        response = _FakeResponse({"data": {"result": []}})
         monkeypatch.setattr(
-            metrics_client.httpx,
-            "get",
-            lambda *a, **kw: _FakeResponse({"data": {"result": []}}),
+            metrics_client.httpx, "AsyncClient", lambda **kw: _FakeAsyncClient(response)
         )
-        assert metrics_client._query_one("some_expr") is None
-
-    def test_returns_none_on_a_connection_failure(self, monkeypatch):
-        def _raise(*a, **kw):
-            raise RuntimeError("connection refused")
-
-        monkeypatch.setattr(metrics_client.httpx, "get", _raise)
-        assert metrics_client._query_one("some_expr") is None
-
-    def test_fetch_readings_covers_every_check(self, monkeypatch):
-        monkeypatch.setattr(
-            metrics_client.httpx,
-            "get",
-            lambda *a, **kw: _FakeResponse({"data": {"result": []}}),
-        )
-        readings = metrics_client.fetch_readings()
+        readings = await metrics_client.fetch_readings()
         assert set(readings) == {check.name for check in metrics_client.CHECKS}

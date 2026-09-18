@@ -29,12 +29,18 @@ _LOG_PATH = Path("var/team_channel.log")
 _POST_TIMEOUT_SECONDS = 5
 
 
-def post_to_team_channel(channel: str, message: str) -> str:
+async def post_to_team_channel(channel: str, message: str) -> str:
     """Best-effort notify — never raises. `channel` is a free-text label
     (e.g. "support-escalations", "sales-handoffs", "ops-digest"), not a
     real Slack channel id: this demo has no workspace to address, so it's
     folded into the logged/written line instead of a routing parameter a
     real integration would use.
+
+    The local log sink (below) stays a plain synchronous file append —
+    a few bytes to `var/team_channel.log`, fast enough not to need
+    isolating off the event loop, same "trivial work stays inline" posture
+    app/agent/tools.py's calculator/use_skill take. Only the Slack webhook
+    POST, genuine network I/O, is actually awaited.
     """
     timestamp = datetime.now(UTC).isoformat()
     line = f"[{timestamp}] [{channel}] {message}"
@@ -57,11 +63,11 @@ def post_to_team_channel(channel: str, message: str) -> str:
 
     if SLACK_WEBHOOK_URL:
         try:
-            httpx.post(
-                SLACK_WEBHOOK_URL,
-                json={"text": f"*[{channel}]* {message}"},
-                timeout=_POST_TIMEOUT_SECONDS,
-            ).raise_for_status()
+            async with httpx.AsyncClient(timeout=_POST_TIMEOUT_SECONDS) as client:
+                response = await client.post(
+                    SLACK_WEBHOOK_URL, json={"text": f"*[{channel}]* {message}"}
+                )
+            response.raise_for_status()
         except Exception as exc:  # noqa: BLE001 - additive sink, never blocks the caller
             logger.warning(
                 "team_channel_slack_post_failed",

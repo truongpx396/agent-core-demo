@@ -163,9 +163,21 @@ def mock_semantic_cache(monkeypatch):
     # Always a miss, and writes are a no-op — a live embedding/Redis call
     # per graph turn would defeat this suite's "no live services" guarantee
     # (see e.g. test_graph_integration.py's module docstring) just as
-    # surely as an unmocked search_docs call would.
-    monkeypatch.setattr(graph, "_default_cache_get", lambda ctx, query: None)
-    monkeypatch.setattr(graph, "_default_cache_set", lambda ctx, query, answer, citations: None)
+    # surely as an unmocked search_docs call would. Both are `async def`
+    # now — check_semantic_cache/write_semantic_cache await `cache_get`/
+    # `cache_set` directly (app/retrieval/semantic_cache.py's real
+    # implementations await a real `redis.asyncio.Redis` client), so a
+    # plain sync lambda here would raise "NoneType can't be used in
+    # 'await' expression" the instant any graph test actually reached
+    # either node.
+    async def fake_cache_get(ctx, query):
+        return None
+
+    async def fake_cache_set(ctx, query, answer, citations):
+        return None
+
+    monkeypatch.setattr(graph, "_default_cache_get", fake_cache_get)
+    monkeypatch.setattr(graph, "_default_cache_set", fake_cache_set)
 
 
 @pytest.fixture(autouse=True)

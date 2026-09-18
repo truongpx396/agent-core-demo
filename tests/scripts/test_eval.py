@@ -11,7 +11,6 @@ see scripts/eval.py), so every call below runs through `asyncio.run(...)`,
 this repo's established pattern for exercising async code from a plain
 `def test_...` (no pytest-asyncio configured).
 """
-import asyncio
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -78,16 +77,16 @@ def _case_result(**overrides):
 
 
 class TestRunCaseAggregation:
-    def test_all_repetitions_passing_gives_100_percent_pass_rate(self):
+    async def test_all_repetitions_passing_gives_100_percent_pass_rate(self):
         case = GoldenCase(id="c1", input="hi", expect_keywords=["hello"])
         graph = _FakeGraph([_result("hello there") for _ in range(5)])
 
-        result = asyncio.run(run_case(graph, case, repetitions=5))
+        result = await run_case(graph, case, repetitions=5)
 
         assert result.pass_rate == 1.0
         assert result.passed is True
 
-    def test_below_threshold_pass_rate_fails_the_case(self):
+    async def test_below_threshold_pass_rate_fails_the_case(self):
         case = GoldenCase(id="c1", input="hi", expect_keywords=["hello"])
         # 2 of 5 pass -> 40%, below REPETITION_PASS_THRESHOLD (80%)
         graph = _FakeGraph(
@@ -100,12 +99,12 @@ class TestRunCaseAggregation:
             ]
         )
 
-        result = asyncio.run(run_case(graph, case, repetitions=5))
+        result = await run_case(graph, case, repetitions=5)
 
         assert result.pass_rate == 0.4
         assert result.passed is False
 
-    def test_at_threshold_pass_rate_passes_the_case(self):
+    async def test_at_threshold_pass_rate_passes_the_case(self):
         case = GoldenCase(id="c1", input="hi", expect_keywords=["hello"])
         # 4 of 5 -> exactly 80%, the threshold itself.
         graph = _FakeGraph(
@@ -118,12 +117,12 @@ class TestRunCaseAggregation:
             ]
         )
 
-        result = asyncio.run(run_case(graph, case, repetitions=5))
+        result = await run_case(graph, case, repetitions=5)
 
         assert result.pass_rate == 0.8
         assert result.passed is True
 
-    def test_tokens_and_cost_are_summed_across_repetitions_not_averaged(self):
+    async def test_tokens_and_cost_are_summed_across_repetitions_not_averaged(self):
         case = GoldenCase(id="c1", input="hi")
         graph = _FakeGraph(
             [
@@ -132,12 +131,12 @@ class TestRunCaseAggregation:
             ]
         )
 
-        result = asyncio.run(run_case(graph, case, repetitions=2))
+        result = await run_case(graph, case, repetitions=2)
 
         assert result.total_tokens == 300
         assert result.total_cost_usd == pytest.approx(0.03)
 
-    def test_grounding_counts_are_summed_across_repetitions(self):
+    async def test_grounding_counts_are_summed_across_repetitions(self):
         case = GoldenCase(id="c1", input="hi")
         graph = _FakeGraph(
             [
@@ -146,16 +145,16 @@ class TestRunCaseAggregation:
             ]
         )
 
-        result = asyncio.run(run_case(graph, case, repetitions=2))
+        result = await run_case(graph, case, repetitions=2)
 
         assert result.used_citations_count == 3
         assert result.ungrounded_claims_count == 1
 
-    def test_checks_and_answer_come_from_the_last_repetition(self):
+    async def test_checks_and_answer_come_from_the_last_repetition(self):
         case = GoldenCase(id="c1", input="hi", expect_keywords=["hello"])
         graph = _FakeGraph([_result("hello there"), _result("the final one")])
 
-        result = asyncio.run(run_case(graph, case, repetitions=2))
+        result = await run_case(graph, case, repetitions=2)
 
         assert result.answer == "the final one"
 

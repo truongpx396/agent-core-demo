@@ -7,6 +7,7 @@ checkpointer setup, since `_resolve_domain_name` is a pure function of its
 mocked out, the same "test the function, not the graph" scope
 tests/agent/test_multimodal.py and friends already keep for this module.
 """
+
 from app.agent import runtime
 from app.agent.manifest import AgentManifest
 from tests.conftest import TEST_CTX
@@ -22,10 +23,10 @@ class TestResolveDomainName:
 
 
 class TestUpsertSessionStampsTheCurrentDomain:
-    def test_passes_the_process_wide_domain_name_through(self, monkeypatch):
+    async def test_passes_the_process_wide_domain_name_through(self, monkeypatch):
         captured = {}
 
-        def fake_upsert_session(ctx, thread_id, title, domain):
+        async def fake_upsert_session(ctx, thread_id, title, domain):
             captured.update(ctx=ctx, thread_id=thread_id, title=title, domain=domain)
 
         # _upsert_session does `from app.agent import sessions` lazily inside
@@ -37,7 +38,7 @@ class TestUpsertSessionStampsTheCurrentDomain:
         monkeypatch.setattr(sessions_module, "upsert_session", fake_upsert_session)
         monkeypatch.setattr(runtime, "_domain_name", "ops")
 
-        runtime._upsert_session(TEST_CTX, "t1", "did anything break overnight?")
+        await runtime._upsert_session(TEST_CTX, "t1", "did anything break overnight?")
 
         assert captured == {
             "ctx": TEST_CTX,
@@ -46,15 +47,16 @@ class TestUpsertSessionStampsTheCurrentDomain:
             "domain": "ops",
         }
 
-    def test_defaults_to_ecorp_when_no_process_ever_set_a_different_domain(self, monkeypatch):
+    async def test_defaults_to_ecorp_when_no_process_ever_set_a_different_domain(self, monkeypatch):
         captured = {}
         import app.agent.sessions as sessions_module
 
-        monkeypatch.setattr(
-            sessions_module, "upsert_session", lambda ctx, thread_id, title, domain: captured.update(domain=domain)
-        )
+        async def fake_upsert_session(ctx, thread_id, title, domain):
+            captured.update(domain=domain)
+
+        monkeypatch.setattr(sessions_module, "upsert_session", fake_upsert_session)
         monkeypatch.setattr(runtime, "_domain_name", "ecorp")
 
-        runtime._upsert_session(TEST_CTX, "t1", "hello")
+        await runtime._upsert_session(TEST_CTX, "t1", "hello")
 
         assert captured["domain"] == "ecorp"

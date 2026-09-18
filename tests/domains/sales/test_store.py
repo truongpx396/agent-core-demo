@@ -6,7 +6,14 @@ tests/agent/test_sql_store.py / tests/domains/support/test_store.py.
 then their own — so those two are tested with `get_lead` itself
 monkeypatched (a real, public function this module already exposes)
 rather than juggling a multi-call fake connection.
+
+Every function here is `async def` now (a real `AsyncConnectionPool`, see
+app/agent/sql_store.py's own docstring), so every call below runs through
+`asyncio.run(...)`, this repo's established pattern for exercising async
+code from a plain `def test_...`.
 """
+from contextlib import asynccontextmanager
+
 from app.domains.sales import store
 
 
@@ -17,10 +24,10 @@ class _FakeCursor:
         self.rowcount = rowcount
         self.description = [type("Col", (), {"name": c}) for c in columns]
 
-    def fetchone(self):
+    async def fetchone(self):
         return self._row
 
-    def fetchall(self):
+    async def fetchall(self):
         return self._rows
 
 
@@ -32,99 +39,109 @@ class _FakeConnection:
         self._rowcount = rowcount
         self._columns = columns
 
-    def execute(self, sql, params):
+    async def execute(self, sql, params):
         self.captured["sql"] = sql
         self.captured["params"] = list(params)
         return _FakeCursor(self._row, self._rows, self._rowcount, self._columns)
 
-    def __enter__(self):
-        return self
 
-    def __exit__(self, *exc):
-        return False
+def _fake_get_connection(fake):
+    @asynccontextmanager
+    async def get_connection():
+        yield fake
+
+    return get_connection
+
+
+def _fake_get_lead(result):
+    async def get_lead(tenant, contact):
+        return result
+
+    return get_lead
 
 
 _LEAD_COLUMNS = ("id", "tenant", "name", "contact", "status", "notes", "created_at", "updated_at")
 
 
-def test_find_or_create_lead_always_scopes_to_tenant(monkeypatch):
+async def test_find_or_create_lead_always_scopes_to_tenant(monkeypatch):
     fake = _FakeConnection(row=(1,))
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    lead_id = store.find_or_create_lead("ecorp", "Jordan", "jordan@example.com", "asked about pricing")
+    lead_id = await store.find_or_create_lead("ecorp", "Jordan", "jordan@example.com", "asked about pricing")
 
     assert lead_id == 1
     assert fake.captured["params"][0] == "ecorp"
 
 
-def test_get_lead_scopes_to_tenant_and_contact(monkeypatch):
+async def test_get_lead_scopes_to_tenant_and_contact(monkeypatch):
     fake = _FakeConnection(
         row=(1, "ecorp", "Jordan", "jordan@example.com", "new", "notes", "t", "t"),
         columns=_LEAD_COLUMNS,
     )
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    lead = store.get_lead("ecorp", "jordan@example.com")
+    lead = await store.get_lead("ecorp", "jordan@example.com")
 
     assert lead["contact"] == "jordan@example.com"
     assert fake.captured["params"] == ["ecorp", "jordan@example.com"]
 
 
-def test_get_lead_returns_none_for_no_match(monkeypatch):
+async def test_get_lead_returns_none_for_no_match(monkeypatch):
     fake = _FakeConnection(row=None, columns=_LEAD_COLUMNS)
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    assert store.get_lead("ecorp", "nobody@example.com") is None
+    assert await store.get_lead("ecorp", "nobody@example.com") is None
 
 
-def test_add_followup_returns_none_when_no_lead_exists(monkeypatch):
-    monkeypatch.setattr(store, "get_lead", lambda tenant, contact: None)
+async def test_add_followup_returns_none_when_no_lead_exists(monkeypatch):
+    monkeypatch.setattr(store, "get_lead", _fake_get_lead(None))
 
-    followup_id = store.add_followup("ecorp", "nobody@example.com", "2099-01-01", "nudge", "rep-1")
+    followup_id = await store.add_followup("ecorp", "nobody@example.com", "2099-01-01", "nudge", "rep-1")
 
     assert followup_id is None
 
 
-def test_add_followup_scopes_to_tenant_and_the_leads_id(monkeypatch):
-    monkeypatch.setattr(store, "get_lead", lambda tenant, contact: {"id": 5})
+async def test_add_followup_scopes_to_tenant_and_the_leads_id(monkeypatch):
+    monkeypatch.setattr(store, "get_lead", _fake_get_lead({"id": 5}))
     fake = _FakeConnection(row=(9,))
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    followup_id = store.add_followup("ecorp", "jordan@example.com", "2099-01-01", "nudge", "rep-1")
+    followup_id = await store.add_followup("ecorp", "jordan@example.com", "2099-01-01", "nudge", "rep-1")
 
     assert followup_id == 9
     assert fake.captured["params"][:2] == ["ecorp", 5]
 
 
-def test_due_followups_scopes_to_tenant_and_pending_status(monkeypatch):
+async def test_due_followups_scopes_to_tenant_and_pending_status(monkeypatch):
     fake = _FakeConnection(
         rows=[(1, "2099-01-01", "nudge", "jordan@example.com", "Jordan")],
         columns=("id", "due_at", "note", "contact", "lead_name"),
     )
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    due = store.due_followups("ecorp", "2099-01-02")
+    due = await store.due_followups("ecorp", "2099-01-02")
 
     assert due[0]["contact"] == "jordan@example.com"
     assert fake.captured["params"][0] == "ecorp"
 
 
-def test_lead_history_returns_none_when_no_lead_exists(monkeypatch):
-    monkeypatch.setattr(store, "get_lead", lambda tenant, contact: None)
+async def test_lead_history_returns_none_when_no_lead_exists(monkeypatch):
+    monkeypatch.setattr(store, "get_lead", _fake_get_lead(None))
 
-    assert store.lead_history("ecorp", "nobody@example.com") is None
+    assert await store.lead_history("ecorp", "nobody@example.com") is None
 
 
-def test_lead_history_includes_followups(monkeypatch):
-    monkeypatch.setattr(
-        store, "get_lead", lambda tenant, contact: {"id": 5, "contact": contact, "name": "Jordan"}
-    )
+async def test_lead_history_includes_followups(monkeypatch):
+    async def get_lead(tenant, contact):
+        return {"id": 5, "contact": contact, "name": "Jordan"}
+
+    monkeypatch.setattr(store, "get_lead", get_lead)
     fake = _FakeConnection(
         rows=[(1, "2099-01-01", "nudge", "pending")], columns=("id", "due_at", "note", "status")
     )
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    history = store.lead_history("ecorp", "jordan@example.com")
+    history = await store.lead_history("ecorp", "jordan@example.com")
 
     assert history["name"] == "Jordan"
     assert len(history["followups"]) == 1
@@ -134,50 +151,50 @@ def test_lead_history_includes_followups(monkeypatch):
 _PENDING_FOLLOWUP_COLUMNS = ("id", "due_at", "note", "contact", "lead_name")
 
 
-def test_list_pending_followups_scopes_to_tenant_and_pending_status(monkeypatch):
+async def test_list_pending_followups_scopes_to_tenant_and_pending_status(monkeypatch):
     fake = _FakeConnection(
         rows=[(1, "2099-01-01", "nudge", "jordan@example.com", "Jordan")],
         columns=_PENDING_FOLLOWUP_COLUMNS,
     )
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    followups = store.list_pending_followups("ecorp")
+    followups = await store.list_pending_followups("ecorp")
 
     assert followups[0]["lead_name"] == "Jordan"
     assert fake.captured["params"] == ["ecorp"]
     assert "status = 'pending'" in fake.captured["sql"]
 
 
-def test_list_pending_followups_filters_by_contact_when_given(monkeypatch):
+async def test_list_pending_followups_filters_by_contact_when_given(monkeypatch):
     fake = _FakeConnection(rows=[], columns=_PENDING_FOLLOWUP_COLUMNS)
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    store.list_pending_followups("ecorp", "jordan@example.com")
+    await store.list_pending_followups("ecorp", "jordan@example.com")
 
     assert fake.captured["params"] == ["ecorp", "jordan@example.com"]
     assert "l.contact = %s" in fake.captured["sql"]
 
 
-def test_mark_lead_lost_returns_false_when_no_lead_exists(monkeypatch):
-    monkeypatch.setattr(store, "get_lead", lambda tenant, contact: None)
+async def test_mark_lead_lost_returns_false_when_no_lead_exists(monkeypatch):
+    monkeypatch.setattr(store, "get_lead", _fake_get_lead(None))
 
-    assert store.mark_lead_lost("ecorp", "nobody@example.com", "unresponsive") is False
+    assert await store.mark_lead_lost("ecorp", "nobody@example.com", "unresponsive") is False
 
 
-def test_mark_lead_lost_updates_status_and_cancels_pending_followups(monkeypatch):
-    monkeypatch.setattr(store, "get_lead", lambda tenant, contact: {"id": 5})
+async def test_mark_lead_lost_updates_status_and_cancels_pending_followups(monkeypatch):
+    monkeypatch.setattr(store, "get_lead", _fake_get_lead({"id": 5}))
     fake = _FakeConnection()
     executed = []
     original_execute = fake.execute
 
-    def _record_execute(sql, params):
+    async def _record_execute(sql, params):
         executed.append((sql, list(params)))
-        return original_execute(sql, params)
+        return await original_execute(sql, params)
 
     fake.execute = _record_execute
-    monkeypatch.setattr(store, "get_connection", lambda: fake)
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
-    result = store.mark_lead_lost("ecorp", "jordan@example.com", "went with a competitor")
+    result = await store.mark_lead_lost("ecorp", "jordan@example.com", "went with a competitor")
 
     assert result is True
     assert len(executed) == 2

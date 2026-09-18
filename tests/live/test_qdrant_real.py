@@ -29,10 +29,12 @@ Uses the REAL `hybrid_search`/`ensure_collection`/`build_point`/`upsert` —
 not hand-rolled vectors bypassing them — deliberately: this is the one test
 in this suite that exercises the exact same code path `search_docs` runs in
 production, dense+sparse fusion and reranking included, rather than a mock
-proving only that the right arguments were passed. `hybrid_search` is
-`async def` now, so both calls below run through `asyncio.run(...)`.
+proving only that the right arguments were passed. `embed_text`/
+`ensure_collection`/`upsert`/`hybrid_search` are all `async def` now, so
+both tests below are `async def` themselves and await each real I/O call
+directly (`embed_sparse` stays sync — a local fastembed model, CPU-bound,
+correctly never converted).
 """
-import asyncio
 
 import pytest
 from pydantic import SecretStr
@@ -67,10 +69,10 @@ def real_qdrant_and_embeddings(monkeypatch, ollama_endpoint):
     monkeypatch.setattr(embeddings, "embeddings", real_embeddings)
 
 
-def test_hybrid_search_round_trips_through_a_real_server():
+async def test_hybrid_search_round_trips_through_a_real_server():
     collection = "integration-test-docs"
-    dense_vector = embeddings.embed_text("checkpointers persist LangGraph state")
-    qdrant_store.ensure_collection(dim=len(dense_vector), collection=collection)
+    dense_vector = await embeddings.embed_text("checkpointers persist LangGraph state")
+    await qdrant_store.ensure_collection(dim=len(dense_vector), collection=collection)
 
     sparse_indices, sparse_values = embeddings.embed_sparse(
         "checkpointers persist LangGraph state"
@@ -81,17 +83,15 @@ def test_hybrid_search_round_trips_through_a_real_server():
         payload={"text": "A checkpointer persists LangGraph state across turns.", "tenant": "ecorp"},
         sparse_vector=(sparse_indices, sparse_values),
     )
-    qdrant_store.upsert([point], collection=collection)
+    await qdrant_store.upsert([point], collection=collection)
 
-    results = asyncio.run(
-        qdrant_store.hybrid_search("what persists state in LangGraph?", collection=collection)
-    )
+    results = await qdrant_store.hybrid_search("what persists state in LangGraph?", collection=collection)
 
     assert len(results) >= 1
     assert "checkpointer" in results[0].payload["text"].lower()
 
 
-def test_a_point_with_no_sparse_vector_is_still_found_via_the_dense_leg():
+async def test_a_point_with_no_sparse_vector_is_still_found_via_the_dense_leg():
     """`build_point(sparse_vector=None)` is real and supported — "a caller
     whose sparse embedding failed can still write a point" per its own
     docstring — so a point stored that way has NO entry in Qdrant's sparse
@@ -105,8 +105,8 @@ def test_a_point_with_no_sparse_vector_is_still_found_via_the_dense_leg():
     `query_points` to just return `[]` and asserts on the call args) can
     exercise."""
     collection = "integration-test-docs-dense-only"
-    dense_vector = embeddings.embed_text("Ecorp support hours are 9am to 5pm weekdays")
-    qdrant_store.ensure_collection(dim=len(dense_vector), collection=collection)
+    dense_vector = await embeddings.embed_text("Ecorp support hours are 9am to 5pm weekdays")
+    await qdrant_store.ensure_collection(dim=len(dense_vector), collection=collection)
 
     point = qdrant_store.build_point(
         point_id=1,
@@ -114,11 +114,9 @@ def test_a_point_with_no_sparse_vector_is_still_found_via_the_dense_leg():
         payload={"text": "Ecorp support hours are 9am to 5pm on weekdays.", "tenant": "ecorp"},
         sparse_vector=None,
     )
-    qdrant_store.upsert([point], collection=collection)
+    await qdrant_store.upsert([point], collection=collection)
 
-    results = asyncio.run(
-        qdrant_store.hybrid_search("when is Ecorp support available?", collection=collection)
-    )
+    results = await qdrant_store.hybrid_search("when is Ecorp support available?", collection=collection)
 
     assert len(results) >= 1
     assert "9am" in results[0].payload["text"]

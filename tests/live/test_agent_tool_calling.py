@@ -30,7 +30,6 @@ the semantic cache are already mocked for every test in this whole suite by
 tests/conftest.py's autouse fixtures; nothing here needs them anyway, since
 neither scenario below calls search_docs.
 """
-import asyncio
 import uuid
 
 import pytest
@@ -75,15 +74,15 @@ async def _invoke_async(text: str) -> dict:
     return await graph.ainvoke({"messages": [HumanMessage(content=text)]}, config=config)
 
 
-def _invoke(text: str) -> dict:
+async def _invoke(text: str) -> dict:
     # asyncio.run(...), not the sync .invoke() this used to be: the graph's
     # agent/retrieve_context/etc. nodes are async def now (real LLM/Redis/
     # Qdrant I/O — see app/agent/graph.py), and LangGraph's sync Pregel loop
     # can't run an async-only node at all.
-    return asyncio.run(_invoke_async(text))
+    return await _invoke_async(text)
 
 
-def test_real_model_uses_the_calculator_tool_and_returns_the_right_answer():
+async def test_real_model_uses_the_calculator_tool_and_returns_the_right_answer():
     """Used to mirror scripts/eval.py's GOLDEN_CASES `calculator_basic`
     case, retired from there 2026-09-16 (see this file's own module
     docstring) — this smoke test stays regardless, since it's testing a
@@ -91,7 +90,7 @@ def test_real_model_uses_the_calculator_tool_and_returns_the_right_answer():
     case ever was."""
     from langchain_core.messages import AIMessage
 
-    result = _invoke("what is 21 * 2? Use the calculator tool.")
+    result = await _invoke("what is 21 * 2? Use the calculator tool.")
 
     tool_calls_made = {
         tc["name"]
@@ -105,11 +104,11 @@ def test_real_model_uses_the_calculator_tool_and_returns_the_right_answer():
     assert "42" in answer, f"expected '42' in the final answer; got: {answer!r}"
 
 
-def test_real_model_answers_a_plain_question_without_a_tool_call():
+async def test_real_model_answers_a_plain_question_without_a_tool_call():
     """Mirrors scripts/eval.py's GOLDEN_CASES `general_knowledge_no_tool_needed`
     case — proves the real model doesn't reach for a tool it doesn't need,
     not just that it CAN call one when it does."""
-    result = _invoke("In one sentence, what is the capital of France?")
+    result = await _invoke("In one sentence, what is the capital of France?")
 
     answer = result["messages"][-1].content
 

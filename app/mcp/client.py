@@ -44,7 +44,6 @@ per-call latency — an honest, disclosed tradeoff for a demo, not a
 hidden one; a production integration reaching a remote server on every
 single turn would likely want a persistent, reconnecting session instead.
 """
-import asyncio
 import logging
 
 from langchain_core.tools import StructuredTool
@@ -84,19 +83,10 @@ def _wrap_remote_tool(params: StdioServerParameters, remote_tool) -> StructuredT
     name = remote_tool.name
     description = remote_tool.description or f"Remote MCP tool {name!r}."
 
-    def sync_call(**kwargs) -> str:
-        # ToolNode dispatches sync tools from graph.invoke()'s call stack,
-        # which has no event loop of its own to reuse.
-        return asyncio.run(_call_remote_tool(params, name, kwargs))
-
     async def async_call(**kwargs) -> str:
-        # Used instead of sync_call when the graph runs via
-        # astream_events/ainvoke — that path is already inside a running
-        # event loop, and asyncio.run() cannot nest inside one.
         return await _call_remote_tool(params, name, kwargs)
 
     return StructuredTool.from_function(
-        func=sync_call,
         coroutine=async_call,
         name=name,
         description=description,
@@ -107,7 +97,7 @@ def _wrap_remote_tool(params: StdioServerParameters, remote_tool) -> StructuredT
     )
 
 
-def load_remote_tools(
+async def load_remote_tools(
     command: str,
     args: list[str] | None = None,
     capability_overrides: dict[str, str] | None = None,
@@ -120,11 +110,20 @@ def load_remote_tools(
     mapping (see module docstring: an unlisted remote tool's capability
     defaults to `"outward"`, never inferred from the remote's own
     annotations).
+
+    `async def`, awaiting `_list_remote_tools` directly — this module's own
+    `mcp` SDK client (`ClientSession`/`stdio_client`) is async-native, and
+    this function's one real caller
+    (`app/domains/sandbox_tools.py::load_sandbox_tools`) is `async def`
+    now too, so there's no sync/async boundary left here to bridge with an
+    inner `asyncio.run(...)`. Every wrapped remote tool this returns is
+    `coroutine`-only (no sync `func`) for the same reason — see
+    `_wrap_remote_tool` above.
     """
     capability_overrides = capability_overrides or {}
     params = StdioServerParameters(command=command, args=args or [], env=env, cwd=cwd)
 
-    remote_tools = asyncio.run(_list_remote_tools(params))
+    remote_tools = await _list_remote_tools(params)
 
     langchain_tools = [_wrap_remote_tool(params, t) for t in remote_tools]
     tool_capabilities = {

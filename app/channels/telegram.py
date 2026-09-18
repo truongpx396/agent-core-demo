@@ -237,7 +237,7 @@ async def run() -> None:
     # astream_events_turn_unattended runs the full graph, which may have
     # opened app/agent/sql_store.py's connection pool (query_employees,
     # app/agent/meter.py::record_usage). A no-op if this process never touched it.
-    sql_store.close_pool()
+    await sql_store.close_pool()
     # Same reasoning for the checkpointer's own pool (app/agent/runtime.py) —
     # init_graph_async() above always opens it, so this is never a no-op here.
     await close_checkpointer_pool()

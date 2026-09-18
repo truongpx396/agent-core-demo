@@ -15,7 +15,6 @@ this domain's graphs use the default in-memory MemorySaver (no event-loop-
 bound state — contrast with `AsyncPostgresSaver`'s per-instance
 `asyncio.Lock`, see app/agent/runtime.py's module docstring).
 """
-import asyncio
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
@@ -114,13 +113,14 @@ class TestDomainScopedSubagent:
         enum_def = next(iter(schema["$defs"].values()))
         assert set(enum_def["enum"]) == {"metrics-researcher", "vendor-history-researcher"}
 
-    def test_never_pauses_it_is_read_only(self, monkeypatch):
+    async def test_never_pauses_it_is_read_only(self, monkeypatch):
         from app.agent import subagent_tools as agent_tools_module
 
+        async def fake_run_subagent_impl(*a, **k):
+            return agent_tools_module.SubagentResult("found it", 0, 0.0)
+
         monkeypatch.setattr(
-            agent_tools_module,
-            "_run_subagent_impl",
-            lambda *a, **k: agent_tools_module.SubagentResult("found it", 0, 0.0),
+            agent_tools_module, "_run_subagent_impl", fake_run_subagent_impl
         )
         llm = _fake_llm_returning(
             _tool_call(
@@ -130,77 +130,86 @@ class TestDomainScopedSubagent:
             AIMessage(content="Here's what the subagent found out for you."),
         )
         g = _build(llm)
-        asyncio.run(g.ainvoke(
+        await g.ainvoke(
             {"messages": [HumanMessage(content="has this happened before?")]}, config=_config()
-        ))
-        assert not asyncio.run(g.aget_state(_config())).next  # never paused
+        )
+        assert not (await g.aget_state(_config())).next  # never paused
 
 
-def test_fetch_metrics_summary_is_read_only_and_never_pauses(monkeypatch):
+async def test_fetch_metrics_summary_is_read_only_and_never_pauses(monkeypatch):
     from app.domains.ops import metrics_client
 
-    monkeypatch.setattr(metrics_client, "fetch_readings", lambda: {})
+    async def fake_fetch_readings():
+        return {}
+
+    monkeypatch.setattr(metrics_client, "fetch_readings", fake_fetch_readings)
     llm = _fake_llm_returning(
         _tool_call("fetch_metrics_summary", {}),
         AIMessage(content="Everything looks normal."),
     )
     g = _build(llm)
-    result = asyncio.run(g.ainvoke(
+    result = await g.ainvoke(
         {"messages": [HumanMessage(content="is everything ok?")]}, config=_config()
-    ))
-    assert not asyncio.run(g.aget_state(_config())).next  # never paused
+    )
+    assert not (await g.aget_state(_config())).next  # never paused
     assert result["messages"][-1].content == "Everything looks normal."
 
 
-def test_post_to_team_channel_pauses_for_approval_as_an_outward_tool():
+async def test_post_to_team_channel_pauses_for_approval_as_an_outward_tool():
     llm = _fake_llm_returning(
         _tool_call("post_to_team_channel", {"channel": "ops-digest", "message": "all clear"})
     )
     g = _build(llm)
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="post an update to the team")]}, config=_config()
-    ))
-    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
+    )
+    assert (await g.aget_state(_config())).next  # paused, not finished
 
 
-def test_list_recent_incidents_is_read_only_and_never_pauses(monkeypatch):
+async def test_list_recent_incidents_is_read_only_and_never_pauses(monkeypatch):
     from app.domains.ops import store
 
-    monkeypatch.setattr(store, "list_recent_incidents", lambda limit=10, status=None: [])
+    async def fake_list_recent_incidents(limit=10, status=None):
+        return []
+
+    monkeypatch.setattr(store, "list_recent_incidents", fake_list_recent_incidents)
     llm = _fake_llm_returning(
         _tool_call("list_recent_incidents", {}),
         AIMessage(content="No incidents on record."),
     )
     g = _build(llm)
-    result = asyncio.run(g.ainvoke(
+    result = await g.ainvoke(
         {"messages": [HumanMessage(content="has this happened before?")]}, config=_config()
-    ))
-    assert not asyncio.run(g.aget_state(_config())).next  # never paused
+    )
+    assert not (await g.aget_state(_config())).next  # never paused
     assert result["messages"][-1].content == "No incidents on record."
 
 
-def test_log_incident_pauses_for_approval_and_runs_once_approved(monkeypatch):
+async def test_log_incident_pauses_for_approval_and_runs_once_approved(monkeypatch):
     from app.domains.ops import store
 
-    monkeypatch.setattr(store, "log_incident", lambda opened_by, summary, detail: 3)
+    async def fake_log_incident(opened_by, summary, detail):
+        return 3
+
+    monkeypatch.setattr(store, "log_incident", fake_log_incident)
 
     llm = _fake_llm_returning(
         _tool_call("log_incident", {"summary": "latency spike", "detail": "p95 at 45s"}),
         AIMessage(content="Logged incident #3."),
     )
     g = _build(llm)
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="latency looks bad, log it")]}, config=_config()
-    ))
-    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
+    )
+    assert (await g.aget_state(_config())).next  # paused, not finished
 
-    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
-    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
+    result = await g.ainvoke(Command(resume=True), config=_config())
+    assert not (await g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("Incident #3 logged" in m.content for m in tool_messages)
 
 
-def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monkeypatch):
+async def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monkeypatch):
     """The sandbox trio is always present now (see
     test_sandbox_tools_are_always_present_as_a_fixed_set above), but its
     impl still calls load_raw_sandbox_tools() fresh on every real call —
@@ -208,11 +217,16 @@ def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monke
     doesn't depend on opensandbox-mcp actually being reachable."""
     from app.domains.ops import tools as ops_tools
 
-    monkeypatch.setattr(ops_tools.sandbox_session, "load_raw_sandbox_tools", lambda: {"command_run": object()})
+    async def fake_load_raw_sandbox_tools():
+        return {"command_run": object()}
+
+    monkeypatch.setattr(ops_tools.sandbox_session, "load_raw_sandbox_tools", fake_load_raw_sandbox_tools)
+
+    async def fake_run_command_in_sandbox_impl(command, thread_id, raw):
+        return "exit code: 0\nstdout:\n42.75\n"
+
     monkeypatch.setattr(
-        ops_tools.sandbox_session,
-        "run_command_in_sandbox_impl",
-        lambda command, thread_id, raw: "exit code: 0\nstdout:\n42.75\n",
+        ops_tools.sandbox_session, "run_command_in_sandbox_impl", fake_run_command_in_sandbox_impl
     )
 
     llm = _fake_llm_returning(
@@ -220,19 +234,19 @@ def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monke
         AIMessage(content="The 95th percentile is 42.75."),
     )
     g = _build(llm)
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="compute the 95th percentile of these numbers")]},
         config=_config(),
-    ))
-    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
+    )
+    assert (await g.aget_state(_config())).next  # paused, not finished
 
-    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
-    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
+    result = await g.ainvoke(Command(resume=True), config=_config())
+    assert not (await g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("42.75" in m.content for m in tool_messages)
 
 
-def test_run_python_in_sandbox_pauses_for_approval_and_runs_once_approved(monkeypatch):
+async def test_run_python_in_sandbox_pauses_for_approval_and_runs_once_approved(monkeypatch):
     """Same shape as run_command_in_sandbox's own version of this test —
     run_python_in_sandbox exists specifically so the model can pass a
     real multi-line script (quotes, apostrophes, f-strings all fine) as
@@ -240,11 +254,16 @@ def test_run_python_in_sandbox_pauses_for_approval_and_runs_once_approved(monkey
     `python -c '...'` (a real, repeatedly-observed failure mode)."""
     from app.domains.ops import tools as ops_tools
 
-    monkeypatch.setattr(ops_tools.sandbox_session, "load_raw_sandbox_tools", lambda: {"command_run": object()})
+    async def fake_load_raw_sandbox_tools():
+        return {"command_run": object()}
+
+    monkeypatch.setattr(ops_tools.sandbox_session, "load_raw_sandbox_tools", fake_load_raw_sandbox_tools)
+
+    async def fake_run_python_in_sandbox_impl(script, thread_id, raw):
+        return "exit code: 0\nstdout:\n42.75\n"
+
     monkeypatch.setattr(
-        ops_tools.sandbox_session,
-        "run_python_in_sandbox_impl",
-        lambda script, thread_id, raw: "exit code: 0\nstdout:\n42.75\n",
+        ops_tools.sandbox_session, "run_python_in_sandbox_impl", fake_run_python_in_sandbox_impl
     )
 
     llm = _fake_llm_returning(
@@ -252,90 +271,96 @@ def test_run_python_in_sandbox_pauses_for_approval_and_runs_once_approved(monkey
         AIMessage(content="The 95th percentile is 42.75."),
     )
     g = _build(llm)
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="compute the 95th percentile of these numbers")]},
         config=_config(),
-    ))
-    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
+    )
+    assert (await g.aget_state(_config())).next  # paused, not finished
 
-    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
-    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
+    result = await g.ainvoke(Command(resume=True), config=_config())
+    assert not (await g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("42.75" in m.content for m in tool_messages)
 
 
-def test_resolve_incident_pauses_for_approval_and_runs_once_approved(monkeypatch):
+async def test_resolve_incident_pauses_for_approval_and_runs_once_approved(monkeypatch):
     from app.domains.ops import store
 
-    monkeypatch.setattr(store, "resolve_incident", lambda incident_id, resolution: True)
+    async def fake_resolve_incident(incident_id, resolution):
+        return True
+
+    monkeypatch.setattr(store, "resolve_incident", fake_resolve_incident)
 
     llm = _fake_llm_returning(
         _tool_call("resolve_incident", {"incident_id": 3, "resolution": "restarted the worker"}),
         AIMessage(content="Resolved incident #3."),
     )
     g = _build(llm)
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="incident 3 is fixed now")]}, config=_config()
-    ))
-    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
+    )
+    assert (await g.aget_state(_config())).next  # paused, not finished
 
-    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
-    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
+    result = await g.ainvoke(Command(resume=True), config=_config())
+    assert not (await g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("Incident #3 resolved" in m.content for m in tool_messages)
 
 
-def test_check_vendor_status_page_pauses_for_approval_as_an_outward_tool():
+async def test_check_vendor_status_page_pauses_for_approval_as_an_outward_tool():
     llm = _fake_llm_returning(
         _tool_call("check_vendor_status_page", {"url": "https://status.example.com"})
     )
     g = _build(llm)
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="is our payment processor having an outage?")]},
         config=_config(),
-    ))
-    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
+    )
+    assert (await g.aget_state(_config())).next  # paused, not finished
 
 
-def test_approving_check_vendor_status_page_runs_it_and_finishes(monkeypatch):
+async def test_approving_check_vendor_status_page_runs_it_and_finishes(monkeypatch):
     from app.domains.ops import tools as ops_tools
 
-    monkeypatch.setattr(
-        ops_tools, "render_url_to_markdown", lambda url: "All systems operational."
-    )
+    async def fake_render_url_to_markdown(url):
+        return "All systems operational."
+
+    monkeypatch.setattr(ops_tools, "render_url_to_markdown", fake_render_url_to_markdown)
 
     llm = _fake_llm_returning(
         _tool_call("check_vendor_status_page", {"url": "https://status.example.com"}),
         AIMessage(content="Their status page shows no ongoing incident."),
     )
     g = _build(llm)
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="is our payment processor having an outage?")]},
         config=_config(),
-    ))
-    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
+    )
+    result = await g.ainvoke(Command(resume=True), config=_config())
 
-    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
+    assert not (await g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("All systems operational." in m.content for m in tool_messages)
 
 
-def test_approving_post_to_team_channel_runs_it_and_finishes(monkeypatch):
+async def test_approving_post_to_team_channel_runs_it_and_finishes(monkeypatch):
     posted = {}
-    monkeypatch.setattr(
-        notify, "post_to_team_channel", lambda channel, message: posted.setdefault(channel, message)
-    )
+
+    async def fake_post_to_team_channel(channel, message):
+        posted.setdefault(channel, message)
+
+    monkeypatch.setattr(notify, "post_to_team_channel", fake_post_to_team_channel)
 
     llm = _fake_llm_returning(
         _tool_call("post_to_team_channel", {"channel": "ops-digest", "message": "all clear"}),
         AIMessage(content="Posted the update to the team channel."),
     )
     g = _build(llm)
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="post an update to the team")]}, config=_config()
-    ))
-    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
+    )
+    result = await g.ainvoke(Command(resume=True), config=_config())
 
-    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
+    assert not (await g.aget_state(_config())).next  # finished, not paused
     assert posted.get("ops-digest") == "all clear"
     assert result["messages"][-1].content == "Posted the update to the team channel."

@@ -21,7 +21,6 @@ approve/reject decision covers every call in the batch" behavior the removal
 comment documents as a deliberate trade-off, not just "the model can emit two
 tool_calls."
 """
-import asyncio
 import uuid
 
 import pytest
@@ -55,11 +54,17 @@ def _stub_add_note_io(monkeypatch):
     from app.agent import tools as tools_module
     from app.retrieval import qdrant_store
 
-    monkeypatch.setattr(tools_module, "embed_text", lambda text: [0.0])
-    monkeypatch.setattr(qdrant_store, "upsert", lambda points: None)
+    async def fake_embed_text(text):
+        return [0.0]
+
+    async def fake_upsert(points):
+        return None
+
+    monkeypatch.setattr(tools_module, "embed_text", fake_embed_text)
+    monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
 
-async def _invoke_and_approve_async(text: str):
+async def _invoke_and_approve(text: str):
     graph = build_graph(GraphDeps())
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
     # Seed the system prompt before the first real turn — see
@@ -68,17 +73,13 @@ async def _invoke_and_approve_async(text: str):
     # production path relies on otherwise.
     await seed_thread(graph, config["configurable"]["thread_id"])
     await graph.ainvoke({"messages": [HumanMessage(content=text)]}, config=config)
-    paused_state = await graph.aget_state(config)
+    paused_state = (await graph.aget_state(config))
     result = await graph.ainvoke(Command(resume=True), config=config)
     return graph, config, paused_state, result
 
 
-def _invoke_and_approve(text: str):
-    return asyncio.run(_invoke_and_approve_async(text))
-
-
-def test_real_model_calls_two_tools_in_one_turn_and_both_run_after_approval():
-    graph, config, paused_state, result = _invoke_and_approve(
+async def test_real_model_calls_two_tools_in_one_turn_and_both_run_after_approval():
+    graph, config, paused_state, result = await _invoke_and_approve(
         "What is 15 * 3? Use the calculator tool for that. Also use the "
         "add_note tool right now to save a note with title 'Demo', topic "
         "'company', content 'multi-tool-call test'. Call BOTH tools in "
@@ -111,4 +112,4 @@ def test_real_model_calls_two_tools_in_one_turn_and_both_run_after_approval():
         if tm.tool_call_id == next(tc["id"] for tc in first_ai.tool_calls if tc["name"] == "calculator")
     )
     assert "45" in calculator_result
-    assert not asyncio.run(graph.aget_state(config)).next, "turn must finish cleanly, not leave a second pause dangling"
+    assert not (await graph.aget_state(config)).next, "turn must finish cleanly, not leave a second pause dangling"

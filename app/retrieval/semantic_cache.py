@@ -28,7 +28,7 @@ import uuid
 from typing import cast
 
 import numpy as np
-import redis
+import redis.asyncio as redis
 from redis.commands.search.field import TagField, TextField, VectorField
 from redis.commands.search.index_definition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
@@ -74,7 +74,7 @@ def _get_client() -> redis.Redis:
     return _client
 
 
-def _ensure_index(client: redis.Redis) -> None:
+async def _ensure_index(client: redis.Redis) -> None:
     """Idempotent: creates the index on first use, in whichever process
     reaches it first. Dimension is derived from a real embed_text() call,
     never hardcoded — the same approach scripts/seed.py uses for Qdrant's
@@ -84,7 +84,7 @@ def _ensure_index(client: redis.Redis) -> None:
     global _index_ready
     if _index_ready:
         return
-    dim = len(embed_text("dimension probe"))
+    dim = len(await embed_text("dimension probe"))
     schema = [
         TagField("$.tenant", as_name="tenant"),
         TagField("$.principal", as_name="principal"),
@@ -103,16 +103,16 @@ def _ensure_index(client: redis.Redis) -> None:
         ),
     ]
     try:
-        client.ft(INDEX_NAME).create_index(
+        await client.ft(INDEX_NAME).create_index(
             schema, definition=IndexDefinition(prefix=[KEY_PREFIX], index_type=IndexType.JSON)
         )
-    except redis.exceptions.ResponseError as exc:
+    except redis.ResponseError as exc:
         if "already exists" not in str(exc).lower():
             raise
     _index_ready = True
 
 
-def get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
+async def get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
     """Look up a near-identical past query, scoped to ctx's tenant AND
     principal (never just tenant — a cached answer can carry citations to
     that principal's own memories, so this is at least as narrow as
@@ -125,8 +125,8 @@ def get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
         return None
     try:
         client = _get_client()
-        _ensure_index(client)
-        vector = np.array(embed_text(query), dtype=np.float32).tobytes()
+        await _ensure_index(client)
+        vector = np.array(await embed_text(query), dtype=np.float32).tobytes()
         q = (
             Query(
                 f"(@tenant:{{{_escape_tag(ctx['tenant'])}}} "
@@ -137,7 +137,7 @@ def get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
             .return_fields("answer", "citations", "dist")
             .dialect(2)
         )
-        result = client.ft(INDEX_NAME).search(q, query_params={"vec": vector})
+        result = await client.ft(INDEX_NAME).search(q, query_params={"vec": vector})
         if not result.docs or float(result.docs[0].dist) > _MAX_DISTANCE:
             metrics.agent_semantic_cache_total.labels(outcome="miss").inc()
             return None
@@ -150,7 +150,7 @@ def get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
         return None
 
 
-def set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict]) -> None:
+async def set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict]) -> None:
     """Best-effort write-through after a turn completes (app/agent/graph.py's
     write_semantic_cache node, only on the miss path — see its docstring
     for why a hit never re-writes). Swallows every failure: a cache write
@@ -159,10 +159,10 @@ def set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict])
         return
     try:
         client = _get_client()
-        _ensure_index(client)
-        vector = embed_text(query)
+        await _ensure_index(client)
+        vector = await embed_text(query)
         key = f"{KEY_PREFIX}{uuid.uuid4().hex}"
-        client.json().set(
+        await client.json().set(
             key,
             "$",
             {
@@ -174,7 +174,7 @@ def set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict])
                 "embedding": cast(list, vector),
             },
         )
-        client.expire(key, SEMANTIC_CACHE_TTL_SECONDS)
+        await client.expire(key, SEMANTIC_CACHE_TTL_SECONDS)
     except Exception:  # noqa: BLE001 - see get()'s matching note
         logger.warning("semantic cache write failed; continuing without caching", exc_info=True)
         metrics.agent_semantic_cache_total.labels(outcome="error").inc()

@@ -8,7 +8,6 @@ services to observe meaningfully — `_iterate_with_timeout` itself is a
 thin wrapper over `asyncio.wait_for`, which is well-covered by asyncio's
 own test suite.
 """
-import asyncio
 import time
 
 import pytest
@@ -221,7 +220,7 @@ class TestCompactHistoryNode:
         """A ceiling guaranteed to already be exceeded by `messages`."""
         return _estimate_tokens([m for m in messages if not isinstance(m, SystemMessage)]) - 1
 
-    def test_applies_the_trim_and_increments_metric(self):
+    async def test_applies_the_trim_and_increments_metric(self):
         before = metric_value(metrics.agent_history_compacted_total)
         messages = self._turns(3)
         compact_history = make_compact_history_node(
@@ -229,7 +228,7 @@ class TestCompactHistoryNode:
             ceiling=self._tripped_ceiling(messages),
             floor=1,
         )
-        result = asyncio.run(compact_history({"messages": messages}))
+        result = await compact_history({"messages": messages})
 
         assert "messages" in result
         *removals, marker = result["messages"]
@@ -244,16 +243,16 @@ class TestCompactHistoryNode:
         assert result["history_summary"] == "a summary"
         assert metric_value(metrics.agent_history_compacted_total) == before + 1
 
-    def test_returns_nothing_when_within_budget(self):
+    async def test_returns_nothing_when_within_budget(self):
         messages = self._turns(1)
         compact_history = make_compact_history_node(
             GenericFakeChatModel(messages=iter([])),
             ceiling=_estimate_tokens(messages) + 10,  # comfortably above
             floor=1,
         )
-        assert asyncio.run(compact_history({"messages": messages})) == {}
+        assert await compact_history({"messages": messages}) == {}
 
-    def test_degrades_to_trimming_without_a_summary_on_llm_failure(self):
+    async def test_degrades_to_trimming_without_a_summary_on_llm_failure(self):
         class _BoomLLM:
             async def ainvoke(self, messages):
                 raise RuntimeError("boom")
@@ -262,7 +261,7 @@ class TestCompactHistoryNode:
         compact_history = make_compact_history_node(
             _BoomLLM(), ceiling=self._tripped_ceiling(messages), floor=1
         )
-        result = asyncio.run(compact_history({"messages": messages}))
+        result = await compact_history({"messages": messages})
 
         assert "messages" in result
         *removals, marker = result["messages"]
@@ -275,7 +274,7 @@ class TestCompactHistoryNode:
         assert "dropped" in marker.content
         assert "history_summary" not in result
 
-    def test_extends_a_prior_summary_rather_than_replacing_it(self):
+    async def test_extends_a_prior_summary_rather_than_replacing_it(self):
         captured = {}
 
         class _RecordingLLM:
@@ -288,7 +287,7 @@ class TestCompactHistoryNode:
             _RecordingLLM(), ceiling=self._tripped_ceiling(messages), floor=1
         )
         state = {"messages": messages, "history_summary": "earlier summary text"}
-        result = asyncio.run(compact_history(state))
+        result = await compact_history(state)
 
         assert "earlier summary text" in captured["prompt"]
         assert result["history_summary"] == "an extended summary"

@@ -40,7 +40,6 @@ such fixture at all and just relied on a `docker compose up -d crawl4ai`
 server already sitting at the app's own config default, which
 `ensure_crawl4ai()`'s self-provisioning now replaces.
 """
-import asyncio
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -75,7 +74,7 @@ def _fake_llm_returning(*responses):
     return GenericFakeChatModel(messages=iter(responses))
 
 
-def test_check_vendor_status_page_actually_crawls_once_approved():
+async def test_check_vendor_status_page_actually_crawls_once_approved():
     llm = _fake_llm_returning(
         _tool_call("check_vendor_status_page", {"url": "https://example.com"}),
         AIMessage(content="Their status page shows no ongoing incident."),
@@ -83,19 +82,19 @@ def test_check_vendor_status_page_actually_crawls_once_approved():
     g = build_graph(GraphDeps(llm=llm), manifest=OPS_MANIFEST, domain=OPS_DOMAIN_PLUGIN)
     config = _config("live-crawl-ops-thread")
 
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="is our vendor having an outage?")]}, config=config
-    ))
-    assert asyncio.run(g.aget_state(config)).next  # paused for approval, not finished
+    )
+    assert (await g.aget_state(config)).next  # paused for approval, not finished
 
-    result = asyncio.run(g.ainvoke(Command(resume=True), config=config))
-    assert not asyncio.run(g.aget_state(config)).next  # finished, not paused
+    result = await g.ainvoke(Command(resume=True), config=config)
+    assert not (await g.aget_state(config)).next  # finished, not paused
 
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("Example Domain" in m.content for m in tool_messages)
 
 
-def test_fetch_external_reference_actually_crawls_once_approved():
+async def test_fetch_external_reference_actually_crawls_once_approved():
     llm = _fake_llm_returning(
         _tool_call("fetch_external_reference", {"url": "https://example.com"}),
         AIMessage(content="Here's what that page says."),
@@ -103,14 +102,14 @@ def test_fetch_external_reference_actually_crawls_once_approved():
     g = build_graph(GraphDeps(llm=llm), manifest=SUPPORT_MANIFEST, domain=SUPPORT_DOMAIN_PLUGIN)
     config = _config("live-crawl-support-thread")
 
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="can you check this page the customer linked?")]},
         config=config,
-    ))
-    assert asyncio.run(g.aget_state(config)).next  # paused for approval, not finished
+    )
+    assert (await g.aget_state(config)).next  # paused for approval, not finished
 
-    result = asyncio.run(g.ainvoke(Command(resume=True), config=config))
-    assert not asyncio.run(g.aget_state(config)).next  # finished, not paused
+    result = await g.ainvoke(Command(resume=True), config=config)
+    assert not (await g.aget_state(config)).next  # finished, not paused
 
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("Example Domain" in m.content for m in tool_messages)

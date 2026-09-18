@@ -7,7 +7,6 @@ suite calls the handler functions directly instead, the same "test the
 function, not the framework wiring" approach the rest of this codebase
 already takes for graph nodes (see tests/agent/test_nodes.py's module docstring).
 """
-import asyncio
 import io
 import json
 
@@ -29,27 +28,27 @@ class TestHealthReady:
     check_dependencies() itself; this just checks the HTTP-shape mapping
     (status code + body) on top of it."""
 
-    def test_200_and_ready_when_every_dependency_is_up(self, monkeypatch):
+    async def test_200_and_ready_when_every_dependency_is_up(self, monkeypatch):
         async def fake_check_dependencies():
             return {"qdrant": True, "appdata_postgres": True, "checkpointer_postgres": True, "redis": True}
 
         monkeypatch.setattr(api.health_checks, "check_dependencies", fake_check_dependencies)
         response = Response()
 
-        result = asyncio.run(api.health_ready(response))
+        result = await api.health_ready(response)
 
         assert response.status_code == 200
         assert result.status == "ready"
         assert result.checks["qdrant"] is True
 
-    def test_503_and_degraded_when_any_dependency_is_down(self, monkeypatch):
+    async def test_503_and_degraded_when_any_dependency_is_down(self, monkeypatch):
         async def fake_check_dependencies():
             return {"qdrant": False, "appdata_postgres": True, "checkpointer_postgres": True, "redis": True}
 
         monkeypatch.setattr(api.health_checks, "check_dependencies", fake_check_dependencies)
         response = Response()
 
-        result = asyncio.run(api.health_ready(response))
+        result = await api.health_ready(response)
 
         assert response.status_code == 503
         assert result.status == "degraded"
@@ -61,10 +60,10 @@ class TestUsage:
     called once all-time and once scoped to the rolling 24h window
     app/agent/runtime.py::_tenant_over_daily_budget itself checks."""
 
-    def test_reports_all_time_and_rolling_24h_figures(self, monkeypatch):
+    async def test_reports_all_time_and_rolling_24h_figures(self, monkeypatch):
         calls = []
 
-        def fake_usage_summary(tenant, principal=None, since=None):
+        async def fake_usage_summary(tenant, principal=None, since=None):
             calls.append({"tenant": tenant, "since": since})
             if since is None:
                 return {"total_tokens": 5000, "total_cost_usd": 3.5}
@@ -73,7 +72,7 @@ class TestUsage:
         monkeypatch.setattr(api.meter, "usage_summary", fake_usage_summary)
         monkeypatch.setattr(api, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
 
-        result = api.usage(ctx=TEST_CTX)
+        result = await api.usage(ctx=TEST_CTX)
 
         assert result.total_tokens == 5000
         assert result.total_cost_usd == 3.5
@@ -123,12 +122,12 @@ class TestGetDomain:
     suite's "call the handler directly" style (see this module's own
     docstring)."""
 
-    def test_passes_through_a_known_domain(self):
-        assert asyncio.run(api.get_domain(x_domain="support")) == "support"
+    async def test_passes_through_a_known_domain(self):
+        assert await api.get_domain(x_domain="support") == "support"
 
-    def test_rejects_an_unknown_domain_with_422(self):
+    async def test_rejects_an_unknown_domain_with_422(self):
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(api.get_domain(x_domain="not-a-real-domain"))
+            await api.get_domain(x_domain="not-a-real-domain")
         assert exc_info.value.status_code == 422
         assert "not-a-real-domain" in exc_info.value.detail
 
@@ -141,7 +140,7 @@ class TestChatStreamQueued:
     graph, results have to be published "by hand" to simulate what a
     separate app/turns/agent_worker.py process would otherwise do."""
 
-    def test_publishes_a_request_then_streams_back_whatever_a_worker_publishes(
+    async def test_publishes_a_request_then_streams_back_whatever_a_worker_publishes(
         self, monkeypatch
     ):
         client = FakeRedis()
@@ -170,12 +169,12 @@ class TestChatStreamQueued:
             chunks = [chunk async for chunk in response.body_iterator]
             return chunks, request_id
 
-        chunks, request_id = asyncio.run(_run())
+        chunks, request_id = await _run()
 
         assert any('"type": "token"' in c and '"content": "hi"' in c for c in chunks)
         assert any('"type": "done"' in c for c in chunks)
 
-    def test_deletes_the_results_stream_once_a_terminal_event_is_seen(self, monkeypatch):
+    async def test_deletes_the_results_stream_once_a_terminal_event_is_seen(self, monkeypatch):
         client = FakeRedis()
         monkeypatch.setattr(queue, "get_client", lambda: client)
 
@@ -190,10 +189,10 @@ class TestChatStreamQueued:
                 pass
             return request_id
 
-        request_id = asyncio.run(_run())
+        request_id = await _run()
         assert queue.results_stream_key(request_id) in client.deleted
 
-    def test_publishes_attached_images_onto_the_request(self, monkeypatch):
+    async def test_publishes_attached_images_onto_the_request(self, monkeypatch):
         """GRAPH_PATTERNS.md pattern 44 — images ride the same request
         payload all the way to app/turns/agent_worker.py."""
         client = FakeRedis()
@@ -211,10 +210,10 @@ class TestChatStreamQueued:
                 pass
             return payload
 
-        payload = asyncio.run(_run())
+        payload = await _run()
         assert payload["images"] == ["https://example.com/cat.png"]
 
-    def test_a_non_ecorp_domain_publishes_onto_its_own_stream(self, monkeypatch):
+    async def test_a_non_ecorp_domain_publishes_onto_its_own_stream(self, monkeypatch):
         """The whole point of threading `domain` through — an X-Domain:
         support turn must land where ONLY an `AGENT_DOMAIN=support`
         app/turns/agent_worker.py pool is listening, never on Ecorp's own
@@ -226,7 +225,7 @@ class TestChatStreamQueued:
             req = ChatRequest(message="where is my order?", thread_id="t4")
             await api.chat_stream_queued(req, ctx=TEST_CTX, domain="support")
 
-        asyncio.run(_run())
+        await _run()
         assert queue.requests_stream_key("ecorp") not in client.streams
         published = client.streams[queue.requests_stream_key("support")]
         assert len(published) == 1
@@ -238,7 +237,7 @@ class TestChatResume:
     not a separate queue; app/turns/agent_worker.py dispatches on
     `payload["kind"]`."""
 
-    def test_publishes_a_resume_job_with_approved_and_thread_id(self, monkeypatch):
+    async def test_publishes_a_resume_job_with_approved_and_thread_id(self, monkeypatch):
         client = FakeRedis()
         monkeypatch.setattr(queue, "get_client", lambda: client)
 
@@ -258,10 +257,10 @@ class TestChatResume:
             await queue.publish_result(client, request_id, {"type": "done"})
             return [chunk async for chunk in response.body_iterator]
 
-        chunks = asyncio.run(_run())
+        chunks = await _run()
         assert any('"type": "done"' in c for c in chunks)
 
-    def test_a_rejection_carries_approved_false(self, monkeypatch):
+    async def test_a_rejection_carries_approved_false(self, monkeypatch):
         client = FakeRedis()
         monkeypatch.setattr(queue, "get_client", lambda: client)
 
@@ -270,7 +269,7 @@ class TestChatResume:
             await api.chat_resume(req, ctx=TEST_CTX, domain="ecorp")
             return json.loads(client.streams[queue.requests_stream_key("ecorp")][0][1]["payload"])
 
-        payload = asyncio.run(_run())
+        payload = await _run()
         assert payload["approved"] is False
 
 
@@ -279,7 +278,7 @@ class TestChatCancel:
     (app/api/main.py's own docstring): a Redis cancel-flag AND a `"cancel"` job
     published onto the same queue."""
 
-    def test_sets_the_cancel_flag_and_publishes_a_cancel_job(self, monkeypatch):
+    async def test_sets_the_cancel_flag_and_publishes_a_cancel_job(self, monkeypatch):
         client = FakeRedis()
         monkeypatch.setattr(queue, "get_client", lambda: client)
 
@@ -300,7 +299,7 @@ class TestChatCancel:
             await queue.publish_result(client, request_id, {"type": "done"})
             return [chunk async for chunk in response.body_iterator]
 
-        chunks = asyncio.run(_run())
+        chunks = await _run()
         assert any('"type": "done"' in c for c in chunks)
 
 
@@ -309,7 +308,7 @@ class TestChatSessions:
     scoped by whatever ctx get_ctx resolved (not a caller-supplied field)
     AND by the X-Domain-derived `domain` (GRAPH_PATTERNS.md pattern 49)."""
 
-    def test_returns_whatever_list_sessions_reports(self, monkeypatch):
+    async def test_returns_whatever_list_sessions_reports(self, monkeypatch):
         rows = [
             {
                 "thread_id": "t1",
@@ -320,14 +319,14 @@ class TestChatSessions:
         ]
         captured = {}
 
-        def fake_list_sessions(ctx, domain):
+        async def fake_list_sessions(ctx, domain):
             captured["ctx"] = ctx
             captured["domain"] = domain
             return rows
 
         monkeypatch.setattr(sessions, "list_sessions", fake_list_sessions)
 
-        result = api.chat_sessions(ctx=TEST_CTX, domain="ecorp")
+        result = await api.chat_sessions(ctx=TEST_CTX, domain="ecorp")
 
         # Calling the handler directly (this file's established
         # convention) bypasses FastAPI's response_model coercion — that
@@ -338,13 +337,16 @@ class TestChatSessions:
         assert [r["thread_id"] for r in result] == ["t1"]
         assert result[0]["title"] == "Refund question"
 
-    def test_a_different_domain_is_passed_through_too(self, monkeypatch):
+    async def test_a_different_domain_is_passed_through_too(self, monkeypatch):
         captured = {}
-        monkeypatch.setattr(
-            sessions, "list_sessions", lambda ctx, domain: captured.setdefault("domain", domain) or []
-        )
 
-        api.chat_sessions(ctx=TEST_CTX, domain="support")
+        async def fake_list_sessions(ctx, domain):
+            captured["domain"] = domain
+            return []
+
+        monkeypatch.setattr(sessions, "list_sessions", fake_list_sessions)
+
+        await api.chat_sessions(ctx=TEST_CTX, domain="support")
 
         assert captured["domain"] == "support"
 
@@ -354,8 +356,11 @@ class TestChatSessionMessages:
     ENTIRE authorization boundary (the shared checkpointer
     get_session_messages reads has no tenant/principal/domain of its own)."""
 
-    def test_returns_the_transcript_when_owned(self, monkeypatch):
-        monkeypatch.setattr(sessions, "session_belongs_to", lambda ctx, thread_id, domain: True)
+    async def test_returns_the_transcript_when_owned(self, monkeypatch):
+        async def fake_session_belongs_to(ctx, thread_id, domain):
+            return True
+
+        monkeypatch.setattr(sessions, "session_belongs_to", fake_session_belongs_to)
 
         async def fake_get_session_messages(thread_id):
             assert thread_id == "t1"
@@ -363,18 +368,21 @@ class TestChatSessionMessages:
 
         monkeypatch.setattr(api, "get_session_messages", fake_get_session_messages)
 
-        result = asyncio.run(api.chat_session_messages("t1", ctx=TEST_CTX, domain="ecorp"))
+        result = await api.chat_session_messages("t1", ctx=TEST_CTX, domain="ecorp")
 
         # Same note as TestChatSessions above — raw dicts, not
         # response_model-coerced Pydantic objects, when called directly.
         assert [m["role"] for m in result] == ["user", "assistant"]
         assert result[0]["text"] == "hi"
 
-    def test_404s_when_not_owned_never_reading_the_transcript(self, monkeypatch):
+    async def test_404s_when_not_owned_never_reading_the_transcript(self, monkeypatch):
         import pytest
         from fastapi import HTTPException
 
-        monkeypatch.setattr(sessions, "session_belongs_to", lambda ctx, thread_id, domain: False)
+        async def fake_session_belongs_to(ctx, thread_id, domain):
+            return False
+
+        monkeypatch.setattr(sessions, "session_belongs_to", fake_session_belongs_to)
 
         async def fail_if_called(thread_id):
             raise AssertionError("get_session_messages should not be called")
@@ -382,11 +390,11 @@ class TestChatSessionMessages:
         monkeypatch.setattr(api, "get_session_messages", fail_if_called)
 
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(api.chat_session_messages("someone-elses-thread", ctx=TEST_CTX, domain="ecorp"))
+            await api.chat_session_messages("someone-elses-thread", ctx=TEST_CTX, domain="ecorp")
 
         assert exc_info.value.status_code == 404
 
-    def test_404s_when_owned_by_a_different_domain(self, monkeypatch):
+    async def test_404s_when_owned_by_a_different_domain(self, monkeypatch):
         """The exact scenario this pattern exists to prevent: a thread
         opened under "support" must not be readable while "sales" is the
         selected domain, even for its own owner."""
@@ -395,7 +403,7 @@ class TestChatSessionMessages:
 
         captured = {}
 
-        def fake_session_belongs_to(ctx, thread_id, domain):
+        async def fake_session_belongs_to(ctx, thread_id, domain):
             captured["domain"] = domain
             return False
 
@@ -407,7 +415,7 @@ class TestChatSessionMessages:
         monkeypatch.setattr(api, "get_session_messages", fail_if_called)
 
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(api.chat_session_messages("t1", ctx=TEST_CTX, domain="sales"))
+            await api.chat_session_messages("t1", ctx=TEST_CTX, domain="sales")
 
         assert exc_info.value.status_code == 404
         assert captured["domain"] == "sales"
@@ -429,7 +437,7 @@ class TestIngestUpload:
     monkeypatched, matching this file's "test the function, not live
     services" convention."""
 
-    def test_uploads_to_minio_and_publishes_a_job_per_file(self, monkeypatch):
+    async def test_uploads_to_minio_and_publishes_a_job_per_file(self, monkeypatch):
         uploaded = []
         published = []
 
@@ -457,7 +465,7 @@ class TestIngestUpload:
 
         files = [_upload_file("report.pdf", b"pdf-bytes", "application/pdf")]
 
-        result = asyncio.run(api.ingest_upload(files=files, topic="company", ctx=TEST_CTX))
+        result = await api.ingest_upload(files=files, topic="company", ctx=TEST_CTX)
 
         assert len(uploaded) == 1
         key, data, content_type = uploaded[0]
@@ -476,7 +484,7 @@ class TestIngestUpload:
         assert result[0].filename == "report.pdf"
         assert result[0].job_id == published[0]["job_id"]
 
-    def test_multiple_files_each_get_their_own_job(self, monkeypatch):
+    async def test_multiple_files_each_get_their_own_job(self, monkeypatch):
         monkeypatch.setattr(api.object_store, "upload_bytes", lambda *a, **kw: None)
 
         async def fake_publish(client, **kw):
@@ -494,24 +502,24 @@ class TestIngestUpload:
             ),
         ]
 
-        result = asyncio.run(api.ingest_upload(files=files, topic=None, ctx=TEST_CTX))
+        result = await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
 
         assert [r.filename for r in result] == ["report.pdf", "notes.docx"]
         assert result[0].job_id != result[1].job_id
 
-    def test_an_unsupported_extension_is_rejected_before_any_upload(self, monkeypatch):
+    async def test_an_unsupported_extension_is_rejected_before_any_upload(self, monkeypatch):
         uploaded = []
         monkeypatch.setattr(api.object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
 
         files = [_upload_file("spreadsheet.xlsx", b"data", "application/vnd.ms-excel")]
 
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(api.ingest_upload(files=files, topic=None, ctx=TEST_CTX))
+            await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
 
         assert exc_info.value.status_code == 400
         assert uploaded == []  # never reached MinIO
 
-    def test_a_path_component_in_the_filename_is_stripped(self, monkeypatch):
+    async def test_a_path_component_in_the_filename_is_stripped(self, monkeypatch):
         """A client-supplied filename is untrusted input — the object key
         it feeds into must never carry a caller-controlled directory
         component, even though S3-style object keys aren't literal
@@ -527,12 +535,12 @@ class TestIngestUpload:
         monkeypatch.setattr(queue, "get_client", lambda: FakeRedis())
 
         files = [_upload_file("../../etc/passwd.pdf", b"x", "application/pdf")]
-        asyncio.run(api.ingest_upload(files=files, topic=None, ctx=TEST_CTX))
+        await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
 
         assert "../" not in uploaded[0]
         assert uploaded[0].endswith("-passwd.pdf")
 
-    def test_too_many_files_in_one_request_is_rejected_before_any_upload(self, monkeypatch):
+    async def test_too_many_files_in_one_request_is_rejected_before_any_upload(self, monkeypatch):
         """MAX_UPLOAD_FILES_PER_REQUEST (app/core/config.py) — a per-request
         batch-size guard, distinct from app/ingestion/ingest_worker.py's own
         concurrency setting (see WORKER_CONCURRENCY.md): this caps how many
@@ -550,12 +558,12 @@ class TestIngestUpload:
         ]
 
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(api.ingest_upload(files=files, topic=None, ctx=TEST_CTX))
+            await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
 
         assert exc_info.value.status_code == 400
         assert uploaded == []  # never reached MinIO, not even the first two
 
-    def test_a_file_over_the_size_cap_is_rejected_before_any_upload(self, monkeypatch):
+    async def test_a_file_over_the_size_cap_is_rejected_before_any_upload(self, monkeypatch):
         """_read_bounded (app/api/main.py) checks the running total WHILE
         reading, not after — this only has to prove the outcome (413,
         never reaches MinIO), not the memory-bounding mechanism itself."""
@@ -567,12 +575,12 @@ class TestIngestUpload:
         files = [_upload_file("report.pdf", b"x" * 100, "application/pdf")]
 
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(api.ingest_upload(files=files, topic=None, ctx=TEST_CTX))
+            await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
 
         assert exc_info.value.status_code == 413
         assert uploaded == []  # never reached MinIO
 
-    def test_a_file_within_the_size_cap_still_uploads(self, monkeypatch):
+    async def test_a_file_within_the_size_cap_still_uploads(self, monkeypatch):
         monkeypatch.setattr(api, "_MAX_UPLOAD_BYTES", 1000)
         uploaded = []
         monkeypatch.setattr(
@@ -586,13 +594,13 @@ class TestIngestUpload:
         monkeypatch.setattr(queue, "get_client", lambda: FakeRedis())
 
         files = [_upload_file("report.pdf", b"x" * 100, "application/pdf")]
-        asyncio.run(api.ingest_upload(files=files, topic=None, ctx=TEST_CTX))
+        await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
 
         assert uploaded == [b"x" * 100]
 
 
 class TestIngestStream:
-    def test_streams_back_whatever_a_worker_publishes(self, monkeypatch):
+    async def test_streams_back_whatever_a_worker_publishes(self, monkeypatch):
         client = FakeRedis()
         monkeypatch.setattr(ingest_queue, "get_client", lambda: client)
 
@@ -602,11 +610,11 @@ class TestIngestStream:
             await ingest_queue.publish_result(client, "j1", {"type": "done", "chunks": 4})
             return [chunk async for chunk in response.body_iterator]
 
-        chunks = asyncio.run(_run())
+        chunks = await _run()
         assert any('"type": "started"' in c for c in chunks)
         assert any('"type": "done"' in c and '"chunks": 4' in c for c in chunks)
 
-    def test_deletes_the_results_stream_once_terminal(self, monkeypatch):
+    async def test_deletes_the_results_stream_once_terminal(self, monkeypatch):
         client = FakeRedis()
         monkeypatch.setattr(ingest_queue, "get_client", lambda: client)
 
@@ -616,5 +624,5 @@ class TestIngestStream:
             async for _ in response.body_iterator:
                 pass
 
-        asyncio.run(_run())
+        await _run()
         assert ingest_queue.results_stream_key("j2") in client.deleted

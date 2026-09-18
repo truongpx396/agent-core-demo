@@ -21,12 +21,18 @@ a check that happens to have nothing to scope here. `log_incident`/
 `resolve_incident` stamp `opened_by`/attribution from `ctx["principal"]`
 even though the incident row itself carries no tenant column — see
 app/domains/ops/store.py's own docstring.
+
+Every tool is `async def` now — `store`'s queries await a real
+`AsyncConnectionPool`, `metrics_client`/`notify`/`render_url_to_markdown`
+await real HTTP clients, and the sandbox tools await a real MCP client
+session (app/domains/sandbox_session.py) — matching app/agent/tools.py's
+own async-first design.
 """
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field, field_validator
 
-from app.agent.tools import _run_with_timeout
+from app.agent.tools import _arun_with_timeout
 from app.core.security import SecurityCtx, valid_ctx
 from app.domains import notify, sandbox_session
 from app.domains.ops import metrics_client, store
@@ -74,8 +80,8 @@ class FetchMetricsSummaryArgs(BaseModel):
     pass
 
 
-def _fetch_metrics_summary_impl() -> str:
-    readings = metrics_client.fetch_readings()
+async def _fetch_metrics_summary_impl() -> str:
+    readings = await metrics_client.fetch_readings()
     anomalies = metrics_client.detect_anomalies(readings)
     lines = [metrics_client.format_readings(readings)]
     if anomalies:
@@ -87,7 +93,7 @@ def _fetch_metrics_summary_impl() -> str:
 
 
 @tool(args_schema=FetchMetricsSummaryArgs)
-def fetch_metrics_summary(config: RunnableConfig) -> str:
+async def fetch_metrics_summary(config: RunnableConfig) -> str:
     """Fetch this app's current operational metrics (turn error rate,
     latency, tool error rate, moderation blocks, rate limiting, retrieval
     degradation, checkpoint issues) and flag anything past its
@@ -96,7 +102,7 @@ def fetch_metrics_summary(config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "fetch_metrics")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_fetch_metrics_summary_impl)
+    return await _arun_with_timeout(_fetch_metrics_summary_impl)
 
 
 class PostToTeamChannelArgs(BaseModel):
@@ -111,12 +117,12 @@ class PostToTeamChannelArgs(BaseModel):
         return v
 
 
-def _post_to_team_channel_impl(channel: str, message: str) -> str:
-    return notify.post_to_team_channel(channel, message)
+async def _post_to_team_channel_impl(channel: str, message: str) -> str:
+    return await notify.post_to_team_channel(channel, message)
 
 
 @tool(args_schema=PostToTeamChannelArgs)
-def post_to_team_channel(channel: str, message: str, config: RunnableConfig) -> str:
+async def post_to_team_channel(channel: str, message: str, config: RunnableConfig) -> str:
     """Post a message to a team channel — e.g. a metrics digest or an
     anomaly you found during an investigation. This reaches OUTSIDE this
     app's own corpus (a real deployment would post to Slack), unlike the
@@ -126,7 +132,7 @@ def post_to_team_channel(channel: str, message: str, config: RunnableConfig) -> 
     ctx = _ctx_or_refuse(config, "post_to_channel")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_post_to_team_channel_impl, channel, message)
+    return await _arun_with_timeout(_post_to_team_channel_impl, channel, message)
 
 
 class LogIncidentArgs(BaseModel):
@@ -143,20 +149,20 @@ class LogIncidentArgs(BaseModel):
         return v
 
 
-def _log_incident_impl(summary: str, detail: str | None, ctx: SecurityCtx) -> str:
-    incident_id = store.log_incident(ctx["principal"], summary, detail)
+async def _log_incident_impl(summary: str, detail: str | None, ctx: SecurityCtx) -> str:
+    incident_id = await store.log_incident(ctx["principal"], summary, detail)
     return f"Incident #{incident_id} logged: {summary}"
 
 
 @tool(args_schema=LogIncidentArgs)
-def log_incident(summary: str, config: RunnableConfig, detail: str | None = None) -> str:
+async def log_incident(summary: str, config: RunnableConfig, detail: str | None = None) -> str:
     """Record a real anomaly found during an investigation as a durable
     incident — use this once you've confirmed something is actually wrong
     (past its alert-matching threshold), not for every routine check."""
     ctx = _ctx_or_refuse(config, "log_incident")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_log_incident_impl, summary, detail, ctx)
+    return await _arun_with_timeout(_log_incident_impl, summary, detail, ctx)
 
 
 class ListRecentIncidentsArgs(BaseModel):
@@ -165,8 +171,8 @@ class ListRecentIncidentsArgs(BaseModel):
     )
 
 
-def _list_recent_incidents_impl(status: str | None) -> str:
-    incidents = store.list_recent_incidents(status=status)
+async def _list_recent_incidents_impl(status: str | None) -> str:
+    incidents = await store.list_recent_incidents(status=status)
     if not incidents:
         return "No incidents on record."
     lines = [
@@ -177,14 +183,14 @@ def _list_recent_incidents_impl(status: str | None) -> str:
 
 
 @tool(args_schema=ListRecentIncidentsArgs)
-def list_recent_incidents(config: RunnableConfig, status: str | None = None) -> str:
+async def list_recent_incidents(config: RunnableConfig, status: str | None = None) -> str:
     """List recently logged incidents, most recent first — use this to
     check whether something happening now has happened before. Read-only —
     changes nothing."""
     ctx = _ctx_or_refuse(config, "list_recent_incidents")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_list_recent_incidents_impl, status)
+    return await _arun_with_timeout(_list_recent_incidents_impl, status)
 
 
 class ResolveIncidentArgs(BaseModel):
@@ -199,33 +205,33 @@ class ResolveIncidentArgs(BaseModel):
         return v
 
 
-def _resolve_incident_impl(incident_id: int, resolution: str, ctx: SecurityCtx) -> str:
-    updated = store.resolve_incident(incident_id, resolution)
+async def _resolve_incident_impl(incident_id: int, resolution: str, ctx: SecurityCtx) -> str:
+    updated = await store.resolve_incident(incident_id, resolution)
     if not updated:
         return f"No incident #{incident_id} found to resolve."
     return f"Incident #{incident_id} resolved: {resolution}"
 
 
 @tool(args_schema=ResolveIncidentArgs)
-def resolve_incident(incident_id: int, resolution: str, config: RunnableConfig) -> str:
+async def resolve_incident(incident_id: int, resolution: str, config: RunnableConfig) -> str:
     """Mark a previously logged incident resolved, with what fixed it or
     why it's no longer a concern."""
     ctx = _ctx_or_refuse(config, "resolve_incident")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_resolve_incident_impl, incident_id, resolution, ctx)
+    return await _arun_with_timeout(_resolve_incident_impl, incident_id, resolution, ctx)
 
 
 class CheckVendorStatusPageArgs(BaseModel):
     url: str = Field(..., description="A vendor/dependency's public status page (https:// only).")
 
 
-def _check_vendor_status_page_impl(url: str) -> str:
-    return render_url_to_markdown(url)
+async def _check_vendor_status_page_impl(url: str) -> str:
+    return await render_url_to_markdown(url)
 
 
 @tool(args_schema=CheckVendorStatusPageArgs)
-def check_vendor_status_page(url: str, config: RunnableConfig) -> str:
+async def check_vendor_status_page(url: str, config: RunnableConfig) -> str:
     """Read a vendor/upstream-dependency's public status page LIVE (real
     headless-browser render) — use this to check whether an anomaly you
     found via fetch_metrics_summary correlates with a known incident on
@@ -251,7 +257,7 @@ def check_vendor_status_page(url: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "check_vendor_status")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(
+    return await _arun_with_timeout(
         _check_vendor_status_page_impl, url, _timeout_seconds=CRAWL_TOOL_TIMEOUT_SECONDS
     )
 
@@ -302,8 +308,8 @@ class RunCommandInSandboxArgs(BaseModel):
         return v
 
 
-def _raw_sandbox_tools_or_raise() -> dict:
-    raw = sandbox_session.load_raw_sandbox_tools()
+async def _raw_sandbox_tools_or_raise() -> dict:
+    raw = await sandbox_session.load_raw_sandbox_tools()
     if not raw:
         raise sandbox_session.SandboxCallFailed(
             "OpenSandbox is not reachable right now (opensandbox-mcp/opensandbox-server may still be "
@@ -312,12 +318,14 @@ def _raw_sandbox_tools_or_raise() -> dict:
     return raw
 
 
-def _run_command_in_sandbox_impl(command: str, thread_id: str, ctx: SecurityCtx) -> str:
-    return sandbox_session.run_command_in_sandbox_impl(command, thread_id, _raw_sandbox_tools_or_raise())
+async def _run_command_in_sandbox_impl(command: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return await sandbox_session.run_command_in_sandbox_impl(
+        command, thread_id, await _raw_sandbox_tools_or_raise()
+    )
 
 
 @tool(args_schema=RunCommandInSandboxArgs)
-def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
+async def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
     """Run a shell command inside an isolated, disposable sandbox —
     use this for grep/diff/cat and other plain shell tasks (diffing two
     configs, reading a file with `cat <path>`). For actual PYTHON
@@ -344,7 +352,7 @@ def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "run_command_in_sandbox")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(
+    return await _arun_with_timeout(
         _run_command_in_sandbox_impl,
         command,
         _thread_id_from_config(config),
@@ -364,12 +372,14 @@ class RunPythonInSandboxArgs(BaseModel):
         return v
 
 
-def _run_python_in_sandbox_impl(script: str, thread_id: str, ctx: SecurityCtx) -> str:
-    return sandbox_session.run_python_in_sandbox_impl(script, thread_id, _raw_sandbox_tools_or_raise())
+async def _run_python_in_sandbox_impl(script: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return await sandbox_session.run_python_in_sandbox_impl(
+        script, thread_id, await _raw_sandbox_tools_or_raise()
+    )
 
 
 @tool(args_schema=RunPythonInSandboxArgs)
-def run_python_in_sandbox(script: str, config: RunnableConfig) -> str:
+async def run_python_in_sandbox(script: str, config: RunnableConfig) -> str:
     """Run real Python computation calculator's plain arithmetic can't
     do (recomputing a statistic from raw readings, parsing a pasted log
     dump, diffing two configs) — use this, not run_command_in_sandbox,
@@ -395,7 +405,7 @@ def run_python_in_sandbox(script: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "run_python_in_sandbox")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(
+    return await _arun_with_timeout(
         _run_python_in_sandbox_impl,
         script,
         _thread_id_from_config(config),
@@ -408,12 +418,14 @@ class ReadSandboxFileArgs(BaseModel):
     path: str = Field(..., description="Path of the file to read inside the sandbox.")
 
 
-def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -> str:
-    return sandbox_session.read_sandbox_file_impl(path, thread_id, _raw_sandbox_tools_or_raise())
+async def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return await sandbox_session.read_sandbox_file_impl(
+        path, thread_id, await _raw_sandbox_tools_or_raise()
+    )
 
 
 @tool(args_schema=ReadSandboxFileArgs)
-def read_sandbox_file(path: str, config: RunnableConfig) -> str:
+async def read_sandbox_file(path: str, config: RunnableConfig) -> str:
     """Read a text file from this investigation's sandbox (e.g. a
     script's output written to disk, or a file written earlier with
     write_sandbox_file). Same auto-created, per-investigation sandbox
@@ -426,7 +438,7 @@ def read_sandbox_file(path: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "read_sandbox_file")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(
+    return await _arun_with_timeout(
         _read_sandbox_file_impl,
         path,
         _thread_id_from_config(config),
@@ -440,12 +452,14 @@ class WriteSandboxFileArgs(BaseModel):
     content: str = Field(..., description="The file's full text content.")
 
 
-def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx: SecurityCtx) -> str:
-    return sandbox_session.write_sandbox_file_impl(path, content, thread_id, _raw_sandbox_tools_or_raise())
+async def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return await sandbox_session.write_sandbox_file_impl(
+        path, content, thread_id, await _raw_sandbox_tools_or_raise()
+    )
 
 
 @tool(args_schema=WriteSandboxFileArgs)
-def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
+async def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
     """Write a text file into this investigation's sandbox (e.g. stage
     a script before running it with run_command_in_sandbox, or a log
     dump/config to diff). Same auto-created, per-investigation sandbox
@@ -454,7 +468,7 @@ def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "write_sandbox_file")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(
+    return await _arun_with_timeout(
         _write_sandbox_file_impl,
         path,
         content,

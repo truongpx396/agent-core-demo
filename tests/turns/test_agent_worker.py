@@ -55,7 +55,7 @@ def _entry(
 
 
 class TestProcessRequestTurn:
-    def test_publishes_every_yielded_event_and_acks(self, monkeypatch):
+    async def test_publishes_every_yielded_event_and_acks(self, monkeypatch):
         async def fake_turn(text, thread_id, ctx, require_approval=False, images=None, cancel_check=None):
             yield {"type": "token", "content": "Hel"}
             yield {"type": "token", "content": "lo"}
@@ -65,7 +65,7 @@ class TestProcessRequestTurn:
         client = FakeRedis()
         entry_id, fields = _entry(request_id="r1")
 
-        asyncio.run(agent_worker.process_request(client, entry_id, fields))
+        await agent_worker.process_request(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r1")]]
         assert events == [
@@ -75,7 +75,7 @@ class TestProcessRequestTurn:
         ]
         assert client.acked == [entry_id]
 
-    def test_a_missing_kind_field_defaults_to_turn(self, monkeypatch):
+    async def test_a_missing_kind_field_defaults_to_turn(self, monkeypatch):
         """Backward compatibility: any payload published before `kind`
         existed (or any future producer that forgets it) is still a
         `"turn"` job, not a dispatch error."""
@@ -97,12 +97,12 @@ class TestProcessRequestTurn:
             }
         )
 
-        asyncio.run(agent_worker.process_request(client, entry_id, fields))
+        await agent_worker.process_request(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r1")]]
         assert events == [{"type": "done"}]
 
-    def test_clears_any_stale_cancel_flag_before_starting(self, monkeypatch):
+    async def test_clears_any_stale_cancel_flag_before_starting(self, monkeypatch):
         """A flag left over from a PRIOR turn on this thread_id (e.g.
         /chat/cancel raced with that turn already finishing on its own)
         must not spuriously cancel this brand-new one. Captures the
@@ -129,11 +129,11 @@ class TestProcessRequestTurn:
 
         # Also confirm the flag reads back False directly, independent of
         # what the fake turn observed.
-        still_cancelled_after = asyncio.run(_run())
+        still_cancelled_after = await _run()
         assert seen_cancelled == [False]
         assert still_cancelled_after is False
 
-    def test_passes_a_working_cancel_check_bound_to_the_thread_id(self, monkeypatch):
+    async def test_passes_a_working_cancel_check_bound_to_the_thread_id(self, monkeypatch):
         from app.turns.queue import set_cancel_flag
 
         captured = {}
@@ -153,9 +153,9 @@ class TestProcessRequestTurn:
             await set_cancel_flag(client, "t1")
             return await captured["cancel_check"]()
 
-        assert asyncio.run(_run()) is True
+        assert await _run() is True
 
-    def test_passes_the_decoded_payload_fields_through(self, monkeypatch):
+    async def test_passes_the_decoded_payload_fields_through(self, monkeypatch):
         captured = {}
 
         async def fake_turn(text, thread_id, ctx, require_approval=False, images=None, cancel_check=None):
@@ -167,7 +167,7 @@ class TestProcessRequestTurn:
         ctx = {"tenant": "ecorp", "principal": "p9", "claims": {}}
         entry_id, fields = _entry(text="what is 2+2?", thread_id="t9", ctx=ctx, require_approval=True)
 
-        asyncio.run(agent_worker.process_request(client, entry_id, fields))
+        await agent_worker.process_request(client, entry_id, fields)
 
         assert captured == {
             "text": "what is 2+2?",
@@ -176,7 +176,7 @@ class TestProcessRequestTurn:
             "require_approval": True,
         }
 
-    def test_passes_images_through_when_attached(self, monkeypatch):
+    async def test_passes_images_through_when_attached(self, monkeypatch):
         captured = {}
 
         async def fake_turn(text, thread_id, ctx, require_approval=False, images=None, cancel_check=None):
@@ -187,11 +187,11 @@ class TestProcessRequestTurn:
         client = FakeRedis()
         entry_id, fields = _entry(request_id="r4", images=["https://example.com/cat.png"])
 
-        asyncio.run(agent_worker.process_request(client, entry_id, fields))
+        await agent_worker.process_request(client, entry_id, fields)
 
         assert captured["images"] == ["https://example.com/cat.png"]
 
-    def test_no_images_attached_passes_none_not_an_empty_list(self, monkeypatch):
+    async def test_no_images_attached_passes_none_not_an_empty_list(self, monkeypatch):
         """_build_human_content (app/agent/runtime.py) treats an empty list the
         same as None, but keeping the distinction here means a future
         reader can tell "no image was ever attached" from "an empty list
@@ -206,11 +206,11 @@ class TestProcessRequestTurn:
         client = FakeRedis()
         entry_id, fields = _entry(request_id="r5")
 
-        asyncio.run(agent_worker.process_request(client, entry_id, fields))
+        await agent_worker.process_request(client, entry_id, fields)
 
         assert captured["images"] is None
 
-    def test_a_failure_publishes_an_error_event_and_still_acks(self, monkeypatch):
+    async def test_a_failure_publishes_an_error_event_and_still_acks(self, monkeypatch):
         async def failing_turn(text, thread_id, ctx, require_approval=False, images=None, cancel_check=None):
             raise RuntimeError("graph blew up")
             yield  # pragma: no cover - unreachable, makes this a generator
@@ -219,7 +219,7 @@ class TestProcessRequestTurn:
         client = FakeRedis()
         entry_id, fields = _entry(request_id="r2")
 
-        asyncio.run(agent_worker.process_request(client, entry_id, fields))
+        await agent_worker.process_request(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r2")]]
         assert events == [{"type": "error", "content": "graph blew up"}]
@@ -227,7 +227,7 @@ class TestProcessRequestTurn:
 
 
 class TestProcessRequestResume:
-    def test_dispatches_to_astream_events_resume_with_the_right_args(self, monkeypatch):
+    async def test_dispatches_to_astream_events_resume_with_the_right_args(self, monkeypatch):
         captured = {}
 
         async def fake_resume(thread_id, approved, ctx):
@@ -239,14 +239,14 @@ class TestProcessRequestResume:
         ctx = {"tenant": "ecorp", "principal": "p1", "claims": {}}
         entry_id, fields = _entry(kind="resume", request_id="r6", thread_id="t6", ctx=ctx, approved=False)
 
-        asyncio.run(agent_worker.process_request(client, entry_id, fields))
+        await agent_worker.process_request(client, entry_id, fields)
 
         assert captured == {"thread_id": "t6", "approved": False, "ctx": ctx}
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r6")]]
         assert events == [{"type": "done"}]
         assert client.acked == [entry_id]
 
-    def test_a_resume_failure_publishes_an_error_and_still_acks(self, monkeypatch):
+    async def test_a_resume_failure_publishes_an_error_and_still_acks(self, monkeypatch):
         async def failing_resume(thread_id, approved, ctx):
             raise RuntimeError("checkpoint gone")
             yield  # pragma: no cover
@@ -255,7 +255,7 @@ class TestProcessRequestResume:
         client = FakeRedis()
         entry_id, fields = _entry(kind="resume", request_id="r7")
 
-        asyncio.run(agent_worker.process_request(client, entry_id, fields))
+        await agent_worker.process_request(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r7")]]
         assert events == [{"type": "error", "content": "checkpoint gone"}]
@@ -263,7 +263,7 @@ class TestProcessRequestResume:
 
 
 class TestProcessRequestCancel:
-    def test_a_successful_cancel_publishes_a_cancelled_error_event(self, monkeypatch):
+    async def test_a_successful_cancel_publishes_a_cancelled_error_event(self, monkeypatch):
         captured = {}
 
         async def fake_cancel_run(thread_id, ctx):
@@ -275,7 +275,7 @@ class TestProcessRequestCancel:
         ctx = {"tenant": "ecorp", "principal": "p1", "claims": {}}
         entry_id, fields = _entry(kind="cancel", request_id="r8", thread_id="t8", ctx=ctx)
 
-        asyncio.run(agent_worker.process_request(client, entry_id, fields))
+        await agent_worker.process_request(client, entry_id, fields)
 
         assert captured == {"thread_id": "t8", "ctx": ctx}
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r8")]]
@@ -284,7 +284,7 @@ class TestProcessRequestCancel:
         assert events[0]["code"] == "cancelled"
         assert client.acked == [entry_id]
 
-    def test_nothing_to_cancel_publishes_a_plain_done(self, monkeypatch):
+    async def test_nothing_to_cancel_publishes_a_plain_done(self, monkeypatch):
         """cancel_run returns False when nothing was paused (e.g. the
         thread is actively streaming instead, handled by the separate
         cancel-flag mechanism, not this job) — reported as a quiet "done,"
@@ -297,7 +297,7 @@ class TestProcessRequestCancel:
         client = FakeRedis()
         entry_id, fields = _entry(kind="cancel", request_id="r9")
 
-        asyncio.run(agent_worker.process_request(client, entry_id, fields))
+        await agent_worker.process_request(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r9")]]
         assert events == [{"type": "done"}]
@@ -305,14 +305,14 @@ class TestProcessRequestCancel:
 
 
 class TestProcessRequestUnknownKind:
-    def test_unknown_kind_publishes_an_error_and_still_acks(self):
+    async def test_unknown_kind_publishes_an_error_and_still_acks(self):
         """A malformed/future-version payload must not silently hang or
         crash the worker loop — same "always ack, publish an error"
         contract as any other processing failure."""
         client = FakeRedis()
         entry_id, fields = _entry(kind="not-a-real-kind", request_id="r10")
 
-        asyncio.run(agent_worker.process_request(client, entry_id, fields))
+        await agent_worker.process_request(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r10")]]
         assert len(events) == 1
@@ -322,7 +322,7 @@ class TestProcessRequestUnknownKind:
 
 
 class TestRunLoop:
-    def test_processes_one_request_end_to_end_via_the_consumer_group(self, monkeypatch):
+    async def test_processes_one_request_end_to_end_via_the_consumer_group(self, monkeypatch):
         """A thin proof that run()'s xreadgroup wiring actually delivers a
         published request to process_request — not a re-test of
         FakeRedis's own semantics (see tests/turns/test_queue.py for those)."""
@@ -348,7 +348,7 @@ class TestRunLoop:
             for eid, f in entries:
                 await agent_worker.process_request(client, eid, f)
 
-        asyncio.run(_run_one_iteration())
+        await _run_one_iteration()
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r3")]]
         assert events == [{"type": "done"}]
@@ -363,7 +363,7 @@ class TestConcurrentDispatch:
     "thin proof of the real wiring" spirit as TestRunLoop above, extended to
     the concurrency behavior specifically."""
 
-    def test_bounds_concurrency_and_actually_overlaps(self, monkeypatch):
+    async def test_bounds_concurrency_and_actually_overlaps(self, monkeypatch):
         max_concurrency = 2
         num_jobs = 5
         current = 0
@@ -395,7 +395,7 @@ class TestConcurrentDispatch:
                 tasks.append(task)
             await asyncio.gather(*tasks)
 
-        asyncio.run(_dispatch_all())
+        await _dispatch_all()
 
         # Never exceeded the cap...
         assert peak <= max_concurrency

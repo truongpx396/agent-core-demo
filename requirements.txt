@@ -50,6 +50,13 @@ uvicorn>=0.29,<1
 
 # Dev/test — graph unit + integration tests (fake LLM, no live services)
 pytest>=8.0,<9
+# asyncio_mode = "auto" (pyproject.toml) — every `async def test_...`/
+# `async def` fixture is collected and run automatically, no
+# `@pytest.mark.asyncio` needed on each one. Was present locally only as
+# some other package's transitive dependency, never declared here — CI's
+# clean install had no plugin at all and every async test failed with
+# "async def functions are not natively supported."
+pytest-asyncio>=1.0,<2
 
 # Observability — structured JSON logging (app/core/logging_config.py) and
 # OpenTelemetry metrics pushed via OTLP/HTTP to a shared otel-collector

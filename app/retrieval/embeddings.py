@@ -45,8 +45,8 @@ embeddings = OpenAIEmbeddings(
 )
 
 
-def embed_text(text: str) -> list[float]:
-    return embeddings.embed_query(text)
+async def embed_text(text: str) -> list[float]:
+    return await embeddings.aembed_query(text)
 
 
 # `OpenAIEmbeddings.embed_documents` sub-batches internally at `chunk_size`
@@ -70,7 +70,7 @@ def embed_text(text: str) -> list[float]:
 EMBED_BATCH_SIZE = 200
 
 
-def embed_texts(texts: list[str]) -> list[list[float]]:
+async def embed_texts(texts: list[str]) -> list[list[float]]:
     """Dense embeddings for MANY texts in one batched round trip — the
     bulk-ingest counterpart to `embed_text`'s single-query call
     (`app/ingestion/ingestor.py::ingest_text`, which embeds every chunk of
@@ -85,7 +85,7 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     LiteLLM proxy hop + Ollama request handling), not model compute. A
     real ~9.7MB PDF's 5700 chunks were taking ~13 minutes under the old
     per-chunk loop."""
-    return embeddings.embed_documents(texts, chunk_size=EMBED_BATCH_SIZE)
+    return await embeddings.aembed_documents(texts, chunk_size=EMBED_BATCH_SIZE)
 
 
 _sparse_model = None

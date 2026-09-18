@@ -51,7 +51,7 @@ from raw metric readings, grep a pasted log dump for an error signature,
 diff two JSON configs) and the ops bot writes a short script and runs it
 inside a sandbox instead.
 
-## Fail-soft loading, called eagerly like every other domain composition step
+## Fail-soft loading, called lazily and cached by its one real caller
 
 Verified empirically: `opensandbox-mcp`'s tool CATALOG is served from its
 own static tool definitions, not proxied to the backend sandbox server —
@@ -59,17 +59,20 @@ own static tool definitions, not proxied to the backend sandbox server —
 with NO `opensandbox-server` running at all (only actually CALLING a tool
 like `sandbox_create` needs the backend reachable, and that failure surfaces
 normally through app/agent/graph.py's handle_tool_errors like any other tool
-error). So this is called eagerly from `_OpsDomainPlugin.tools()`
-(app/domains/ops/domain.py), the exact same shape every other eager
-domain-composition step already uses (e.g. app/agent/tools.py's
-`_SUBAGENT_REGISTRY`) — no special-casing needed.
+error). Its one real caller is
+`app/domains/sandbox_session.py::load_raw_sandbox_tools` — called lazily,
+FRESH on every sandbox tool invocation across every domain (support/sales/
+ops all share it), self-caching there once it returns a non-empty catalog
+(see that function's own docstring for why cache-once-successfully beats
+either "never cache" or "cache forever," including a real live bug the
+latter caused). Nothing calls this at plain import time.
 
 What still MUST degrade rather than crash: `opensandbox-mcp` not being
 installed/on PATH at all (a real, legitimate case — not every deployment
 of this app wants the sandbox feature), or the bridge process hanging
 instead of failing fast. `load_sandbox_tools()` wraps the connection
-attempt in `app/agent/tools.py::_run_with_timeout` (a bounded budget, same
-tool this module's own sibling domain `tools.py` files already reuse for
+attempt in `app/agent/tools.py::_arun_with_timeout` (a bounded budget, same
+helper this module's own sibling domain `tools.py` files already reuse for
 their own timeout needs) and catches every exception, degrading to
 `([], {})` with a logged warning — mirroring
 app/agent/tools.py::make_domain_subagent_tool's "resolves to nothing
@@ -92,7 +95,7 @@ from pathlib import Path
 
 from langchain_core.tools import BaseTool
 
-from app.agent.tools import _run_with_timeout
+from app.agent.tools import _arun_with_timeout
 from app.core.config import OPENSANDBOX_API_KEY, OPENSANDBOX_MCP_DOMAIN
 from app.mcp import client as mcp_client
 
@@ -115,7 +118,7 @@ _SANDBOX_LIST_TIMEOUT_SECONDS = 10  # bounds the one-time catalog-listing
 _BRIDGE_SCRIPT = str(Path(__file__).resolve().parent.parent.parent / "scripts" / "opensandbox_mcp_bridge.py")
 
 
-def load_sandbox_tools() -> tuple[list[BaseTool], dict[str, str]]:
+async def load_sandbox_tools() -> tuple[list[BaseTool], dict[str, str]]:
     """Connects to `opensandbox-mcp` (the stdio bridge; the containerized
     `opensandbox-server`, `make sandbox-up`, is only needed once a tool is
     actually CALLED, not for this listing step — see module docstring) and
@@ -124,9 +127,17 @@ def load_sandbox_tools() -> tuple[list[BaseTool], dict[str, str]]:
     — if the bridge isn't installed/reachable or hangs past
     `_SANDBOX_LIST_TIMEOUT_SECONDS`, so a domain merging this in still
     builds and runs with every OTHER tool intact.
+
+    `async def`, via `_arun_with_timeout` — this function's own caller,
+    `app/domains/sandbox_session.py::load_raw_sandbox_tools`, is `async def`
+    now too (called from each domain's now-async sandbox tool impls,
+    already running on the graph's own event loop), so this can await
+    `mcp_client.load_remote_tools` directly instead of dispatching it to a
+    worker thread (which would otherwise block that loop for up to
+    `_SANDBOX_LIST_TIMEOUT_SECONDS` on every cache-miss call).
     """
     try:
-        return _run_with_timeout(
+        return await _arun_with_timeout(
             mcp_client.load_remote_tools,
             command=sys.executable,
             args=[

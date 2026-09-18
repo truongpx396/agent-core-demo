@@ -46,7 +46,7 @@ def _slow_llm(text: str = "a longer answer with several tokens in it", delay: fl
 class TestIterateWithTimeoutCancelCheck:
     """Unit-level: the wrapper itself, no graph involved."""
 
-    def test_raises_turn_cancelled_when_cancel_check_returns_true(self):
+    async def test_raises_turn_cancelled_when_cancel_check_returns_true(self):
         async def aiter():
             yield 1
             yield 2
@@ -66,11 +66,11 @@ class TestIterateWithTimeoutCancelCheck:
                 raised = exc
             return events, raised
 
-        events, raised = asyncio.run(_run())
+        events, raised = await _run()
         assert events == []
         assert isinstance(raised, agent_module.TurnCancelled)
 
-    def test_no_cancel_check_behaves_exactly_as_before(self):
+    async def test_no_cancel_check_behaves_exactly_as_before(self):
         """Regression guard: every existing caller passes nothing here —
         must be unaffected by this parameter's addition."""
 
@@ -81,9 +81,9 @@ class TestIterateWithTimeoutCancelCheck:
         async def _run():
             return [e async for e in agent_module._iterate_with_timeout(aiter(), 60)]
 
-        assert asyncio.run(_run()) == [1, 2]
+        assert await _run() == [1, 2]
 
-    def test_cancel_check_returning_false_does_not_interrupt_iteration(self):
+    async def test_cancel_check_returning_false_does_not_interrupt_iteration(self):
         async def aiter():
             yield "a"
             yield "b"
@@ -99,7 +99,7 @@ class TestIterateWithTimeoutCancelCheck:
                 )
             ]
 
-        assert asyncio.run(_run()) == ["a", "b"]
+        assert await _run() == ["a", "b"]
 
 
 def _fake_llm_multi_token_answer():
@@ -115,7 +115,7 @@ class TestAstreamEventsTurnCancellation:
     envelope like any other (GRAPH_PATTERNS.md pattern 30), not a separate
     SSE event type — and never reach a normal "done"."""
 
-    def test_cancel_mid_stream_yields_a_cancelled_error_event_not_done(self, monkeypatch):
+    async def test_cancel_mid_stream_yields_a_cancelled_error_event_not_done(self, monkeypatch):
         graph = build_graph(GraphDeps(llm=_fake_llm_multi_token_answer()))
 
         async def fake_init_graph_async():
@@ -142,14 +142,14 @@ class TestAstreamEventsTurnCancellation:
                 )
             ]
 
-        events = asyncio.run(_run())
+        events = await _run()
 
         assert events[-1]["type"] == "error"
         assert events[-1]["code"] == ErrorCode.CANCELLED.value
         assert not any(e["type"] == "done" for e in events)
         assert _count(metrics.agent_streaming_cancellation_total) == before + 1
 
-    def test_cancel_check_that_never_fires_streams_normally_to_completion(self, monkeypatch):
+    async def test_cancel_check_that_never_fires_streams_normally_to_completion(self, monkeypatch):
         """A cancel_check present but always False must not change
         behavior — proves the mechanism is additive, not a new source of
         flakiness for the common (not cancelled) case."""
@@ -171,10 +171,10 @@ class TestAstreamEventsTurnCancellation:
                 )
             ]
 
-        events = asyncio.run(_run())
+        events = await _run()
         assert events[-1]["type"] == "done"
 
-    def test_no_cancel_check_streams_normally_to_completion(self, monkeypatch):
+    async def test_no_cancel_check_streams_normally_to_completion(self, monkeypatch):
         """Regression guard: every existing caller (app/channels/chat.py,
         app/channels/telegram.py) passes no cancel_check at all — must
         behave exactly as before this feature existed."""
@@ -193,7 +193,7 @@ class TestAstreamEventsTurnCancellation:
                 )
             ]
 
-        events = asyncio.run(_run())
+        events = await _run()
         assert events[-1]["type"] == "done"
 
 
@@ -219,7 +219,7 @@ class TestAstreamEventsTurnRawAsyncioCancellation:
     ("<Task cancelled name=... coro=<AsyncExitStack.__aexit__()...>>"),
     not any message this app ever wrote."""
 
-    def test_cancelling_the_task_records_cancelled_metrics_and_still_propagates(
+    async def test_cancelling_the_task_records_cancelled_metrics_and_still_propagates(
         self, monkeypatch
     ):
         graph = build_graph(GraphDeps(llm=_slow_llm()))
@@ -253,7 +253,7 @@ class TestAstreamEventsTurnRawAsyncioCancellation:
                 raised = exc
             return raised
 
-        raised = asyncio.run(_run())
+        raised = await _run()
 
         # The whole point of re-raising: a genuine cancellation must still
         # actually cancel the caller, not be silently absorbed here.

@@ -207,7 +207,7 @@ def reset_agent_singleton(monkeypatch):
     subagent_tools.reset_subagent_graph_cache()
 
 
-def run_with_checkpointer_cleanup(coro_fn):
+async def run_with_checkpointer_cleanup(coro_fn):
     """`asyncio.run(coro_fn())`, but closes the checkpointer pool INSIDE
     that same event loop, right before it returns — not afterward, e.g. in
     a fixture teardown's own separate `asyncio.run()` call. Verified
@@ -227,10 +227,10 @@ def run_with_checkpointer_cleanup(coro_fn):
         finally:
             await agent_module.close_checkpointer_pool()
 
-    return asyncio.run(_wrapped())
+    return await _wrapped()
 
 
-def _fake_embed_text(text: str) -> list[float]:
+async def _fake_embed_text(text: str) -> list[float]:
     """Deterministic, network-free stand-in for the REAL embed_text
     (app/retrieval/embeddings.py), which needs a reachable OpenAI-compatible
     endpoint (OPENAI_API_BASE) — fine on a dev machine with `make up`
@@ -257,7 +257,7 @@ def _fake_embed_text(text: str) -> list[float]:
 
 
 @pytest.fixture(autouse=True)
-def real_semantic_cache_redis(monkeypatch):
+async def real_semantic_cache_redis(monkeypatch):
     """Points the REAL app/retrieval/semantic_cache.py module (not stubbed
     via GraphDeps.cache_get/cache_set — isolation under concurrency is
     exactly what TestSemanticCacheIsolationUnderConcurrency exists to
@@ -286,7 +286,7 @@ def real_semantic_cache_redis(monkeypatch):
     monkeypatch.setattr(semantic_cache, "_client", None)
     monkeypatch.setattr(semantic_cache, "_index_ready", False)
     monkeypatch.setattr(semantic_cache, "embed_text", _fake_embed_text)
-    semantic_cache._get_client().flushall()
+    await semantic_cache._get_client().flushall()
     yield
 
 
@@ -349,7 +349,7 @@ _FAKE_EMBED_DIM = 32  # len(hashlib.sha256(...).digest()) — see _fake_embed_te
 
 
 @pytest.fixture
-def real_qdrant(monkeypatch):
+async def real_qdrant(monkeypatch):
     """Points every real Qdrant read/write path this app has
     (app/agent/tools.py's remember/add_note/search_docs, all the way down
     through app/retrieval/qdrant_store.py) at a real, ephemeral Qdrant
@@ -387,7 +387,7 @@ def real_qdrant(monkeypatch):
     monkeypatch.setattr(qdrant_store, "COLLECTION", f"test-concurrent-turns-{uuid.uuid4().hex}")
     monkeypatch.setattr(tools_module, "embed_text", _fake_embed_text)
     monkeypatch.setattr(embeddings_module, "embed_text", _fake_embed_text)
-    qdrant_store.ensure_collection(dim=_FAKE_EMBED_DIM)
+    await qdrant_store.ensure_collection(dim=_FAKE_EMBED_DIM)
     yield
 
 
@@ -400,7 +400,7 @@ class TestNoCrossContaminationUnderConcurrency:
     concurrently, each thread's checkpointed history must end up
     containing ONLY its own message."""
 
-    def test_n_concurrent_turns_on_different_threads_keep_separate_checkpointed_state(
+    async def test_n_concurrent_turns_on_different_threads_keep_separate_checkpointed_state(
         self, monkeypatch
     ):
         n = 8
@@ -422,7 +422,7 @@ class TestNoCrossContaminationUnderConcurrency:
                 await graph.aget_state({"configurable": {"thread_id": tid}}) for tid in thread_ids
             ]
 
-        states = run_with_checkpointer_cleanup(_run)
+        states = await run_with_checkpointer_cleanup(_run)
 
         for i, state in enumerate(states):
             human_texts = [m.content for m in state.values["messages"] if isinstance(m, HumanMessage)]
@@ -444,7 +444,7 @@ class TestSemanticCacheIsolationUnderConcurrency:
     at the same real moment, the only way to actually exercise the TAG
     filter under concurrency rather than trusting it in isolation."""
 
-    def test_a_different_tenants_first_ask_never_hits_another_tenants_cached_entry(
+    async def test_a_different_tenants_first_ask_never_hits_another_tenants_cached_entry(
         self, monkeypatch
     ):
         _install_fake_graph(monkeypatch, _fixed_llm())
@@ -471,7 +471,7 @@ class TestSemanticCacheIsolationUnderConcurrency:
             )
             return hits_before, misses_before
 
-        hits_before, misses_before = run_with_checkpointer_cleanup(_run)
+        hits_before, misses_before = await run_with_checkpointer_cleanup(_run)
 
         assert _count(metrics.agent_semantic_cache_total, outcome="hit") == hits_before + 1, (
             "tenant-a's repeat query should have hit its own cached entry — if this "
@@ -522,7 +522,7 @@ class TestWorkerConcurrencyAgainstTheRealQueue:
         yield
         queue._client = None
 
-    def test_n_queued_turns_run_concurrently_not_back_to_back(self, monkeypatch):
+    async def test_n_queued_turns_run_concurrently_not_back_to_back(self, monkeypatch):
         n = 5
         per_chunk_delay = 0.2  # "one two three four five" -> 5 chunks -> ~1s if run alone
         _install_fake_graph(monkeypatch, _fixed_llm("one two three four five", delay=per_chunk_delay))
@@ -580,7 +580,7 @@ class TestWorkerConcurrencyAgainstTheRealQueue:
             ]
             return elapsed, results
 
-        elapsed, results = run_with_checkpointer_cleanup(_run)
+        elapsed, results = await run_with_checkpointer_cleanup(_run)
 
         for events in results:
             assert events[-1]["type"] == "done", events
@@ -637,7 +637,7 @@ class TestHITLApprovalUnderConcurrency:
     and streams fine — the same reason every OTHER test in this file
     streams without issue."""
 
-    def test_n_concurrent_pauses_and_resumes_stay_matched_to_their_own_thread(
+    async def test_n_concurrent_pauses_and_resumes_stay_matched_to_their_own_thread(
         self, monkeypatch, real_qdrant
     ):
         n = 6
@@ -695,7 +695,7 @@ class TestHITLApprovalUnderConcurrency:
             )
             return resumed
 
-        resumed = run_with_checkpointer_cleanup(_run)
+        resumed = await run_with_checkpointer_cleanup(_run)
 
         for i, events in enumerate(resumed):
             assert events[-1]["type"] == "done", events
@@ -714,7 +714,7 @@ class TestHITLApprovalUnderConcurrency:
         # memory, owned by the right principal, with the right text.
         for i in range(n):
             principal = f"user-{i}"
-            points, _ = qdrant_store.get_client().scroll(
+            points, _ = await qdrant_store.get_client().scroll(
                 collection_name=qdrant_store.COLLECTION,
                 scroll_filter=Filter(
                     must=[
@@ -752,7 +752,7 @@ class TestSubagentCallUnderConcurrency:
     here — the whole turn (tool call, nested run, final synthesis) goes
     through `ainvoke()` in one shot."""
 
-    def test_n_concurrent_subagent_delegations_never_cross_wire(self, monkeypatch):
+    async def test_n_concurrent_subagent_delegations_never_cross_wire(self, monkeypatch):
         n = 6
 
         def _nested_respond(messages: list[BaseMessage]) -> AIMessage:
@@ -796,7 +796,7 @@ class TestSubagentCallUnderConcurrency:
             graph = await agent_module.init_graph_async()
             return await asyncio.gather(*(drive(i, graph) for i in range(n)))
 
-        answers = run_with_checkpointer_cleanup(_run)
+        answers = await run_with_checkpointer_cleanup(_run)
 
         for i, answer in enumerate(answers):
             assert f"delegate task {i}" in answer, (
@@ -809,7 +809,7 @@ class TestSubagentCallUnderConcurrency:
                         f"thread {i}'s answer leaked thread {j}'s delegated task: {answer!r}"
                     )
 
-    def test_two_parallel_subagent_calls_in_one_turn_both_land_in_subagent_spend(
+    async def test_two_parallel_subagent_calls_in_one_turn_both_land_in_subagent_spend(
         self, monkeypatch
     ):
         """Different axis than the test above: THAT one proves N separate
@@ -852,7 +852,7 @@ class TestSubagentCallUnderConcurrency:
                 {"messages": [HumanMessage(content="delegate two lookups")]}, config=cfg
             )
 
-        result = run_with_checkpointer_cleanup(_run)
+        result = await run_with_checkpointer_cleanup(_run)
 
         assert len(result["subagent_spend"]) == 2
 
@@ -869,7 +869,7 @@ class TestQdrantReadWriteUnderConcurrency:
     specifics — the filter narrows the CANDIDATE SET itself, at the query
     level, not just the final ranking."""
 
-    def test_n_tenants_concurrent_search_never_crosses_into_a_siblings_documents(
+    async def test_n_tenants_concurrent_search_never_crosses_into_a_siblings_documents(
         self, monkeypatch, real_qdrant
     ):
         n = 6
@@ -877,7 +877,7 @@ class TestQdrantReadWriteUnderConcurrency:
             text = f"distinguishing content {i}"
             point = qdrant_store.build_point(
                 point_id=str(uuid.uuid4()),
-                dense_vector=_fake_embed_text(text),
+                dense_vector=await _fake_embed_text(text),
                 payload={
                     "text": text,
                     "topic": "company",
@@ -886,7 +886,7 @@ class TestQdrantReadWriteUnderConcurrency:
                     "tenant": f"tenant-{i}",
                 },
             )
-            qdrant_store.upsert([point])
+            await qdrant_store.upsert([point])
 
         _install_fake_graph(monkeypatch, _fixed_llm(), search_docs=_real_search_docs)
 
@@ -903,7 +903,7 @@ class TestQdrantReadWriteUnderConcurrency:
             graph = await agent_module.init_graph_async()
             return await asyncio.gather(*(drive(i, graph) for i in range(n)))
 
-        all_citations = run_with_checkpointer_cleanup(_run)
+        all_citations = await run_with_checkpointer_cleanup(_run)
 
         for i, citations in enumerate(all_citations):
             assert citations, f"tenant-{i} got no citations at all from its own real Qdrant search"

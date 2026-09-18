@@ -9,9 +9,13 @@ domain.py's own docstring for why that's the literal meaning of
 
 Same conventions as app/agent/tools.py throughout: an explicit Pydantic
 `args_schema`, `config: RunnableConfig` for ctx (auto-excluded from the
-schema the LLM sees), `_run_with_timeout` (reused, not reimplemented) for
+schema the LLM sees), `_arun_with_timeout` (reused, not reimplemented) for
 the shared timeout budget + output scrubbing, and a fail-closed ctx check
-before touching Postgres.
+before touching Postgres. Every tool is `async def` now — `store`'s
+queries await a real `AsyncConnectionPool`, `notify`/`render_url_to_markdown`
+await real HTTP clients, and the sandbox tools await a real MCP client
+session (app/domains/sandbox_session.py) — matching app/agent/tools.py's
+own async-first design.
 """
 from enum import Enum
 
@@ -19,7 +23,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field, field_validator
 
-from app.agent.tools import _run_with_timeout
+from app.agent.tools import _arun_with_timeout
 from app.core.security import SecurityCtx, valid_ctx
 from app.domains import notify, sandbox_session
 from app.domains.policy import ActionAllowlistPolicy
@@ -83,10 +87,10 @@ class CreateTicketArgs(BaseModel):
         return v
 
 
-def _create_ticket_impl(
+async def _create_ticket_impl(
     subject: str, description: str, priority: TicketPriority, ctx: SecurityCtx
 ) -> str:
-    ticket_id = store.create_ticket(
+    ticket_id = await store.create_ticket(
         tenant=ctx["tenant"],
         requester=ctx["principal"],
         subject=subject,
@@ -97,7 +101,7 @@ def _create_ticket_impl(
 
 
 @tool(args_schema=CreateTicketArgs)
-def create_ticket(
+async def create_ticket(
     subject: str, description: str, config: RunnableConfig, priority: TicketPriority = TicketPriority.normal
 ) -> str:
     """Open a new Tier-1 support ticket for the current customer. Use this
@@ -106,15 +110,15 @@ def create_ticket(
     ctx = _ctx_or_refuse(config, "create_ticket")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_create_ticket_impl, subject, description, priority, ctx)
+    return await _arun_with_timeout(_create_ticket_impl, subject, description, priority, ctx)
 
 
 class CheckTicketStatusArgs(BaseModel):
     ticket_id: int = Field(..., description="The ticket number to look up.")
 
 
-def _check_ticket_status_impl(ticket_id: int, ctx: SecurityCtx) -> str:
-    ticket = store.get_ticket(ctx["tenant"], ticket_id)
+async def _check_ticket_status_impl(ticket_id: int, ctx: SecurityCtx) -> str:
+    ticket = await store.get_ticket(ctx["tenant"], ticket_id)
     if ticket is None:
         return f"No ticket #{ticket_id} found."
     line = f"Ticket #{ticket['id']} — {ticket['status']} ({ticket['priority']} priority): {ticket['subject']}"
@@ -126,12 +130,12 @@ def _check_ticket_status_impl(ticket_id: int, ctx: SecurityCtx) -> str:
 
 
 @tool(args_schema=CheckTicketStatusArgs)
-def check_ticket_status(ticket_id: int, config: RunnableConfig) -> str:
+async def check_ticket_status(ticket_id: int, config: RunnableConfig) -> str:
     """Look up an existing support ticket's current status by its number."""
     ctx = _ctx_or_refuse(config, "check_ticket_status")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_check_ticket_status_impl, ticket_id, ctx)
+    return await _arun_with_timeout(_check_ticket_status_impl, ticket_id, ctx)
 
 
 class EscalateToHumanArgs(BaseModel):
@@ -146,11 +150,11 @@ class EscalateToHumanArgs(BaseModel):
         return v
 
 
-def _escalate_to_human_impl(ticket_id: int, reason: str, ctx: SecurityCtx) -> str:
-    updated = store.escalate_ticket(ctx["tenant"], ticket_id, reason)
+async def _escalate_to_human_impl(ticket_id: int, reason: str, ctx: SecurityCtx) -> str:
+    updated = await store.escalate_ticket(ctx["tenant"], ticket_id, reason)
     if not updated:
         return f"No ticket #{ticket_id} found to escalate."
-    notify.post_to_team_channel(
+    await notify.post_to_team_channel(
         "support-escalations",
         f"[{ctx['tenant']}] Ticket #{ticket_id} escalated by {ctx['principal']}: {reason}",
     )
@@ -158,7 +162,7 @@ def _escalate_to_human_impl(ticket_id: int, reason: str, ctx: SecurityCtx) -> st
 
 
 @tool(args_schema=EscalateToHumanArgs)
-def escalate_to_human(ticket_id: int, reason: str, config: RunnableConfig) -> str:
+async def escalate_to_human(ticket_id: int, reason: str, config: RunnableConfig) -> str:
     """Hand an existing ticket off to a human agent — use this for anything
     outside Tier-1 scope (refunds, account changes, anything the knowledge
     base doesn't cover, or a customer explicitly asking for a person).
@@ -167,15 +171,15 @@ def escalate_to_human(ticket_id: int, reason: str, config: RunnableConfig) -> st
     ctx = _ctx_or_refuse(config, "escalate_to_human")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_escalate_to_human_impl, ticket_id, reason, ctx)
+    return await _arun_with_timeout(_escalate_to_human_impl, ticket_id, reason, ctx)
 
 
 class ListMyTicketsArgs(BaseModel):
     pass
 
 
-def _list_my_tickets_impl(ctx: SecurityCtx) -> str:
-    tickets = store.list_tickets_for_requester(ctx["tenant"], ctx["principal"])
+async def _list_my_tickets_impl(ctx: SecurityCtx) -> str:
+    tickets = await store.list_tickets_for_requester(ctx["tenant"], ctx["principal"])
     if not tickets:
         return "You have no support tickets on file."
     lines = [
@@ -186,14 +190,14 @@ def _list_my_tickets_impl(ctx: SecurityCtx) -> str:
 
 
 @tool(args_schema=ListMyTicketsArgs)
-def list_my_tickets(config: RunnableConfig) -> str:
+async def list_my_tickets(config: RunnableConfig) -> str:
     """List the current customer's own support tickets, most recent first.
     Use this when a customer asks about "my tickets" or "what have I
     reported" without naming a specific ticket number."""
     ctx = _ctx_or_refuse(config, "list_my_tickets")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_list_my_tickets_impl, ctx)
+    return await _arun_with_timeout(_list_my_tickets_impl, ctx)
 
 
 class AddTicketCommentArgs(BaseModel):
@@ -208,22 +212,22 @@ class AddTicketCommentArgs(BaseModel):
         return v
 
 
-def _add_ticket_comment_impl(ticket_id: int, comment: str, ctx: SecurityCtx) -> str:
-    updated = store.add_comment(ctx["tenant"], ticket_id, comment)
+async def _add_ticket_comment_impl(ticket_id: int, comment: str, ctx: SecurityCtx) -> str:
+    updated = await store.add_comment(ctx["tenant"], ticket_id, comment)
     if not updated:
         return f"No ticket #{ticket_id} found to add a comment to."
     return f"Added your follow-up to ticket #{ticket_id}."
 
 
 @tool(args_schema=AddTicketCommentArgs)
-def add_ticket_comment(ticket_id: int, comment: str, config: RunnableConfig) -> str:
+async def add_ticket_comment(ticket_id: int, comment: str, config: RunnableConfig) -> str:
     """Add more detail to an existing ticket the customer already opened —
     use this when they follow up with extra information rather than
     opening a duplicate ticket for the same issue."""
     ctx = _ctx_or_refuse(config, "add_ticket_comment")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_add_ticket_comment_impl, ticket_id, comment, ctx)
+    return await _arun_with_timeout(_add_ticket_comment_impl, ticket_id, comment, ctx)
 
 
 class FetchExternalReferenceArgs(BaseModel):
@@ -232,12 +236,12 @@ class FetchExternalReferenceArgs(BaseModel):
     )
 
 
-def _fetch_external_reference_impl(url: str) -> str:
-    return render_url_to_markdown(url)
+async def _fetch_external_reference_impl(url: str) -> str:
+    return await render_url_to_markdown(url)
 
 
 @tool(args_schema=FetchExternalReferenceArgs)
-def fetch_external_reference(url: str, config: RunnableConfig) -> str:
+async def fetch_external_reference(url: str, config: RunnableConfig) -> str:
     """Read a customer-linked or otherwise relevant third-party page LIVE
     (real headless-browser render) for THIS turn's answer — e.g. the
     customer links the API/webhook doc that doesn't match what they're
@@ -250,7 +254,7 @@ def fetch_external_reference(url: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "fetch_external_reference")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(
+    return await _arun_with_timeout(
         _fetch_external_reference_impl, url, _timeout_seconds=CRAWL_TOOL_TIMEOUT_SECONDS
     )
 
@@ -290,8 +294,8 @@ class RunCommandInSandboxArgs(BaseModel):
         return v
 
 
-def _raw_sandbox_tools_or_raise() -> dict:
-    raw = sandbox_session.load_raw_sandbox_tools()
+async def _raw_sandbox_tools_or_raise() -> dict:
+    raw = await sandbox_session.load_raw_sandbox_tools()
     if not raw:
         raise sandbox_session.SandboxCallFailed(
             "OpenSandbox is not reachable right now (opensandbox-mcp/opensandbox-server may still be "
@@ -300,12 +304,14 @@ def _raw_sandbox_tools_or_raise() -> dict:
     return raw
 
 
-def _run_command_in_sandbox_impl(command: str, thread_id: str, ctx: SecurityCtx) -> str:
-    return sandbox_session.run_command_in_sandbox_impl(command, thread_id, _raw_sandbox_tools_or_raise())
+async def _run_command_in_sandbox_impl(command: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return await sandbox_session.run_command_in_sandbox_impl(
+        command, thread_id, await _raw_sandbox_tools_or_raise()
+    )
 
 
 @tool(args_schema=RunCommandInSandboxArgs)
-def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
+async def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
     """Run a shell command inside an isolated, disposable sandbox —
     use this for plain shell tasks (grep/diff, reading a file with
     `cat <path>`), NOT for Python computation — for actually PARSING a
@@ -327,7 +333,7 @@ def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "run_command_in_sandbox")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(
+    return await _arun_with_timeout(
         _run_command_in_sandbox_impl,
         command,
         _thread_id_from_config(config),
@@ -347,12 +353,14 @@ class RunPythonInSandboxArgs(BaseModel):
         return v
 
 
-def _run_python_in_sandbox_impl(script: str, thread_id: str, ctx: SecurityCtx) -> str:
-    return sandbox_session.run_python_in_sandbox_impl(script, thread_id, _raw_sandbox_tools_or_raise())
+async def _run_python_in_sandbox_impl(script: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return await sandbox_session.run_python_in_sandbox_impl(
+        script, thread_id, await _raw_sandbox_tools_or_raise()
+    )
 
 
 @tool(args_schema=RunPythonInSandboxArgs)
-def run_python_in_sandbox(script: str, config: RunnableConfig) -> str:
+async def run_python_in_sandbox(script: str, config: RunnableConfig) -> str:
     """Run real Python computation to actually PARSE a customer-pasted
     error log, stack trace, or webhook/JSON payload (count occurrences
     of an error code, pull out the real exception type, validate the
@@ -382,7 +390,7 @@ def run_python_in_sandbox(script: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "run_python_in_sandbox")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(
+    return await _arun_with_timeout(
         _run_python_in_sandbox_impl,
         script,
         _thread_id_from_config(config),
@@ -395,12 +403,14 @@ class ReadSandboxFileArgs(BaseModel):
     path: str = Field(..., description="Path of the file to read inside the sandbox.")
 
 
-def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -> str:
-    return sandbox_session.read_sandbox_file_impl(path, thread_id, _raw_sandbox_tools_or_raise())
+async def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return await sandbox_session.read_sandbox_file_impl(
+        path, thread_id, await _raw_sandbox_tools_or_raise()
+    )
 
 
 @tool(args_schema=ReadSandboxFileArgs)
-def read_sandbox_file(path: str, config: RunnableConfig) -> str:
+async def read_sandbox_file(path: str, config: RunnableConfig) -> str:
     """Read a text file from this conversation's sandbox (e.g. a
     script's output written to disk, or a file written earlier with
     write_sandbox_file). Same auto-created sandbox as
@@ -413,7 +423,7 @@ def read_sandbox_file(path: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "read_sandbox_file")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(
+    return await _arun_with_timeout(
         _read_sandbox_file_impl,
         path,
         _thread_id_from_config(config),
@@ -427,12 +437,14 @@ class WriteSandboxFileArgs(BaseModel):
     content: str = Field(..., description="The file's full text content.")
 
 
-def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx: SecurityCtx) -> str:
-    return sandbox_session.write_sandbox_file_impl(path, content, thread_id, _raw_sandbox_tools_or_raise())
+async def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return await sandbox_session.write_sandbox_file_impl(
+        path, content, thread_id, await _raw_sandbox_tools_or_raise()
+    )
 
 
 @tool(args_schema=WriteSandboxFileArgs)
-def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
+async def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
     """Write a text file into this conversation's sandbox (e.g. stage
     a big pasted log dump before parsing it with run_command_in_sandbox,
     rather than passing all of it inline in a command string). Same
@@ -442,7 +454,7 @@ def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "write_sandbox_file")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(
+    return await _arun_with_timeout(
         _write_sandbox_file_impl,
         path,
         content,

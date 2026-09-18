@@ -17,54 +17,83 @@ caller-supplied text — the same pre-filter discipline
 app/retrieval/qdrant_store.py's hybrid_search already applies, just against a
 relational store instead of a vector one.
 """
-from psycopg_pool import ConnectionPool
+from contextlib import asynccontextmanager
+
+from psycopg_pool import AsyncConnectionPool
 
 from app.core.config import APPDATA_DATABASE_URL
 
 # One pool for the process lifetime — every caller (query_employees below,
-# app/agent/meter.py's usage_ledger reads/writes) shares it via get_connection(),
-# rather than each paying a fresh TCP+auth handshake per call the way a
-# bare `psycopg.connect()` per call did before. Opened lazily (on first
-# get_connection() call, not at import time) so importing this module
-# never implies a network dependency — matches app/retrieval/qdrant_store.py's
-# get_client() and app/retrieval/semantic_cache.py's _get_client() doing the same
-# for their own stores.
-_pool: ConnectionPool | None = None
+# app/agent/meter.py's usage_ledger reads/writes) shares it via
+# get_connection(), rather than each paying a fresh TCP+auth handshake per
+# call the way a bare `psycopg.connect()` per call did before. Opened
+# lazily (on first get_connection() call, not at import time) so importing
+# this module never implies a network dependency — matches
+# app/retrieval/qdrant_store.py's get_client() and
+# app/retrieval/semantic_cache.py's _get_client() doing the same for their
+# own stores.
+#
+# `AsyncConnectionPool`, same loop-affinity constraint app/agent/runtime.py's
+# `_open_checkpointer` documents for `AsyncPostgresSaver`'s own pool: once
+# opened, this pool is bound to whichever event loop was running at that
+# first call, and every later `get_connection()` must be awaited from that
+# SAME loop. Fine in every real long-lived process this app runs (uvicorn's
+# own loop, app/turns/agent_worker.py's main loop, the CLI's one
+# `asyncio.run(main())`) — each holds exactly one loop for its whole
+# lifetime, and nothing left in this codebase nests a second `asyncio.run()`
+# inside an already-running one anymore (see app/agent/subagent_tools.py's
+# `run_subagent`, the one caller that used to). Unlike the checkpointer,
+# this pool is NOT given its own explicit `init_*_async()` call wired into
+# each process's startup — a disclosed, deliberate gap: every real caller
+# here already runs deep inside the graph's own already-open loop by the
+# time it first queries, so lazy-on-first-use lands on the right loop in
+# practice. A test or script that opens its OWN fresh `asyncio.run()` per
+# call (this repo's own test convention, see tests/agent/test_graph*.py)
+# must not share a real instance of this pool across more than one such
+# call — every existing test instead mocks this module's own functions
+# rather than opening a real pool, so this has never actually bitten.
+_pool: AsyncConnectionPool | None = None
 
 
-def _get_pool() -> ConnectionPool:
+async def _get_pool() -> AsyncConnectionPool:
     global _pool
     if _pool is None:
-        _pool = ConnectionPool(APPDATA_DATABASE_URL, min_size=1, max_size=10, open=True)
+        pool = AsyncConnectionPool(APPDATA_DATABASE_URL, min_size=1, max_size=10, open=False)
+        await pool.open(wait=True)
+        _pool = pool
     return _pool
 
 
-def get_connection():
-    """A pooled connection, checked out for the caller's `with` block and
-    returned to the pool (not closed) on exit — verified empirically that
-    `pool.connection()`'s context manager commits on normal exit exactly
-    like a bare `psycopg.connect(...)` block does (the property
-    app/agent/meter.py::record_usage's `with get_connection() as conn:
-    conn.execute(...)` already depends on), so no caller needed to change
-    when this became pooled."""
-    return _get_pool().connection()
+@asynccontextmanager
+async def get_connection():
+    """A pooled connection, checked out for the caller's `async with` block
+    and returned to the pool (not closed) on exit — same `pool.connection()`
+    contract as the sync version this replaced (commits on normal exit,
+    the property app/agent/meter.py::record_usage's `async with
+    get_connection() as conn: await conn.execute(...)` depends on), just
+    awaited, and wrapped in its own `@asynccontextmanager` so the pool
+    itself is only ever looked up (and lazily opened) from inside a real
+    `async with` block, never before one."""
+    pool = await _get_pool()
+    async with pool.connection() as conn:
+        yield conn
 
 
-def close_pool() -> None:
-    """Shut the pool's background worker threads down cleanly. A pool
-    that's never explicitly closed leaves those threads still running at
-    process exit — harmless for a short-lived script/CLI invocation, but
-    verified empirically to print a "couldn't stop thread... within 5.0
-    seconds" warning otherwise. `app/api/main.py`'s `lifespan` calls this on
-    shutdown; a no-op if the pool was never opened (nothing queried
+async def close_pool() -> None:
+    """Shut the pool down cleanly. A pool that's never explicitly closed
+    leaves its background worker asyncio tasks still running at process
+    exit — harmless for a short-lived script/CLI invocation, but the same
+    "leaked pool" concern the sync version's own docstring already
+    disclosed. `app/api/main.py`'s `lifespan` calls this on shutdown; a
+    no-op if the pool was never opened (nothing queried
     `query_employees`/wrote to the usage ledger this process)."""
     global _pool
     if _pool is not None:
-        _pool.close()
+        await _pool.close()
         _pool = None
 
 
-def query_employees(
+async def query_employees(
     tenant: str,
     department: str | None = None,
     name_contains: str | None = None,
@@ -105,7 +134,8 @@ def query_employees(
         sql += " LIMIT %s"
         params.append(limit)
 
-    with get_connection() as conn:
-        cur = conn.execute(sql, params)
+    async with get_connection() as conn:
+        cur = await conn.execute(sql, params)
         columns = [desc.name for desc in cur.description]
-        return [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
+        rows = await cur.fetchall()
+        return [dict(zip(columns, row, strict=True)) for row in rows]

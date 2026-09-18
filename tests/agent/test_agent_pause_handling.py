@@ -9,7 +9,6 @@ astream_events_resume round trip — so when a turn pauses at human_approval
 auto-decline rather than leave the checkpoint paused forever or silently
 run an unreviewed tool call. See app/agent/runtime.py's matching docstring.
 """
-import asyncio
 
 from app.agent import runtime as agent_module
 from app.core import metrics
@@ -29,7 +28,7 @@ class TestAstreamEventsTurnUnattended:
     graph/checkpointer machinery those two already have their own coverage
     for (tests/agent/test_durable_checkpoint.py)."""
 
-    def test_forwards_every_event_unchanged_when_never_paused(self, monkeypatch):
+    async def test_forwards_every_event_unchanged_when_never_paused(self, monkeypatch):
         async def fake_turn(text, thread_id, ctx, require_approval=False, images=None):
             yield {"type": "token", "content": "hi"}
             yield {"type": "done"}
@@ -44,10 +43,10 @@ class TestAstreamEventsTurnUnattended:
                 )
             ]
 
-        events = asyncio.run(_run())
+        events = await _run()
         assert events == [{"type": "token", "content": "hi"}, {"type": "done"}]
 
-    def test_swallows_approval_required_and_forwards_the_auto_decline_resume(
+    async def test_swallows_approval_required_and_forwards_the_auto_decline_resume(
         self, monkeypatch
     ):
         async def fake_turn(text, thread_id, ctx, require_approval=False, images=None):
@@ -70,13 +69,13 @@ class TestAstreamEventsTurnUnattended:
                 )
             ]
 
-        events = asyncio.run(_run())
+        events = await _run()
         # approval_required itself is swallowed, never forwarded — only the
         # events on either side of it (the token, then the resume's "done").
         assert events == [{"type": "token", "content": "hi"}, {"type": "done"}]
         assert _count(metrics.agent_unattended_pause_total) == before + 1
 
-    def test_never_calls_resume_when_never_paused(self, monkeypatch):
+    async def test_never_calls_resume_when_never_paused(self, monkeypatch):
         async def fake_turn(text, thread_id, ctx, require_approval=False, images=None):
             yield {"type": "done"}
 
@@ -94,4 +93,4 @@ class TestAstreamEventsTurnUnattended:
                 )
             ]
 
-        asyncio.run(_run())
+        await _run()

@@ -8,8 +8,11 @@ point (astream_events_turn) is tested by stubbing `_tenant_over_daily_budget`
 itself to True/False and asserting it never even calls init_graph_async()
 when over budget — proving the short-circuit happens BEFORE any real graph
 work, not just that it returns the right shape.
+
+Both `_tenant_over_daily_budget` and `meter.usage_summary` are `async def`
+now (a real `AsyncConnectionPool`, see app/agent/sql_store.py's own
+docstring).
 """
-import asyncio
 
 from app.agent import runtime as agent
 from app.core import errors, metrics
@@ -17,80 +20,84 @@ from tests.conftest import TEST_CTX, metric_value
 
 
 class TestTenantOverDailyBudget:
-    def test_false_when_under_the_limit(self, monkeypatch):
+    async def test_false_when_under_the_limit(self, monkeypatch):
         from app.agent import meter
+
+        async def fake_usage_summary(*a, **kw):
+            return {"total_cost_usd": 1.0, "total_tokens": 100}
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
-        monkeypatch.setattr(
-            meter, "usage_summary", lambda *a, **kw: {"total_cost_usd": 1.0, "total_tokens": 100}
-        )
-        assert agent._tenant_over_daily_budget(TEST_CTX) is False
+        monkeypatch.setattr(meter, "usage_summary", fake_usage_summary)
+        assert await agent._tenant_over_daily_budget(TEST_CTX) is False
 
-    def test_true_when_spend_meets_the_limit(self, monkeypatch):
+    async def test_true_when_spend_meets_the_limit(self, monkeypatch):
         from app.agent import meter
+
+        async def fake_usage_summary(*a, **kw):
+            return {"total_cost_usd": 10.0, "total_tokens": 5000}
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
-        monkeypatch.setattr(
-            meter, "usage_summary", lambda *a, **kw: {"total_cost_usd": 10.0, "total_tokens": 5000}
-        )
-        assert agent._tenant_over_daily_budget(TEST_CTX) is True
+        monkeypatch.setattr(meter, "usage_summary", fake_usage_summary)
+        assert await agent._tenant_over_daily_budget(TEST_CTX) is True
 
-    def test_true_when_spend_exceeds_the_limit(self, monkeypatch):
+    async def test_true_when_spend_exceeds_the_limit(self, monkeypatch):
         from app.agent import meter
+
+        async def fake_usage_summary(*a, **kw):
+            return {"total_cost_usd": 15.0, "total_tokens": 5000}
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
-        monkeypatch.setattr(
-            meter, "usage_summary", lambda *a, **kw: {"total_cost_usd": 15.0, "total_tokens": 5000}
-        )
-        assert agent._tenant_over_daily_budget(TEST_CTX) is True
+        monkeypatch.setattr(meter, "usage_summary", fake_usage_summary)
+        assert await agent._tenant_over_daily_budget(TEST_CTX) is True
 
-    def test_false_for_an_invalid_ctx_without_even_querying_the_ledger(self, monkeypatch):
+    async def test_false_for_an_invalid_ctx_without_even_querying_the_ledger(self, monkeypatch):
         from app.agent import meter
 
-        def _fail_if_called(*a, **kw):
+        async def _fail_if_called(*a, **kw):
             raise AssertionError("usage_summary should not be queried for an invalid ctx")
 
         monkeypatch.setattr(meter, "usage_summary", _fail_if_called)
-        assert agent._tenant_over_daily_budget(None) is False
-        assert agent._tenant_over_daily_budget({"tenant": "", "principal": "", "claims": {}}) is False
+        assert await agent._tenant_over_daily_budget(None) is False
+        assert await agent._tenant_over_daily_budget({"tenant": "", "principal": "", "claims": {}}) is False
 
-    def test_fails_open_when_the_ledger_read_itself_raises(self, monkeypatch):
+    async def test_fails_open_when_the_ledger_read_itself_raises(self, monkeypatch):
         """A usage-ledger outage must not ALSO take down every turn on top
         of whatever already took the ledger down — same degrade-don't-crash
         posture as app/retrieval/semantic_cache.py and app/agent/moderation.py."""
         from app.agent import meter
 
-        def _broken(*a, **kw):
+        async def _broken(*a, **kw):
             raise ConnectionError("appdata postgres unreachable")
 
         monkeypatch.setattr(meter, "usage_summary", _broken)
-        assert agent._tenant_over_daily_budget(TEST_CTX) is False
+        assert await agent._tenant_over_daily_budget(TEST_CTX) is False
 
-    def test_warning_metric_fires_past_80_percent_but_stays_under_the_limit(self, monkeypatch):
+    async def test_warning_metric_fires_past_80_percent_but_stays_under_the_limit(self, monkeypatch):
         from app.agent import meter
 
+        async def fake_usage_summary(*a, **kw):
+            return {"total_cost_usd": 8.5, "total_tokens": 100}
+
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
-        monkeypatch.setattr(
-            meter, "usage_summary", lambda *a, **kw: {"total_cost_usd": 8.5, "total_tokens": 100}
-        )
+        monkeypatch.setattr(meter, "usage_summary", fake_usage_summary)
         before = metric_value(metrics.agent_tenant_budget_warning_total)
 
-        assert agent._tenant_over_daily_budget(TEST_CTX) is False
+        assert await agent._tenant_over_daily_budget(TEST_CTX) is False
 
         assert metric_value(metrics.agent_tenant_budget_warning_total) == before + 1
 
-    def test_queries_a_rolling_24h_window_scoped_to_this_tenant(self, monkeypatch):
+    async def test_queries_a_rolling_24h_window_scoped_to_this_tenant(self, monkeypatch):
         from app.agent import meter
 
         captured = {}
 
-        def fake_usage_summary(tenant, principal=None, since=None):
+        async def fake_usage_summary(tenant, principal=None, since=None):
             captured["tenant"] = tenant
             captured["since"] = since
             return {"total_cost_usd": 0.0, "total_tokens": 0}
 
         monkeypatch.setattr(meter, "usage_summary", fake_usage_summary)
-        agent._tenant_over_daily_budget(TEST_CTX)
+        await agent._tenant_over_daily_budget(TEST_CTX)
 
         assert captured["tenant"] == TEST_CTX["tenant"]
         assert captured["since"] is not None
@@ -111,30 +118,37 @@ def _forbid_graph_access(monkeypatch):
 
 
 class TestEntryPointsRefuseBeforeTouchingTheGraph:
-    def test_astream_events_turn_short_circuits(self, monkeypatch):
-        monkeypatch.setattr(agent, "_tenant_over_daily_budget", lambda ctx: True)
+    async def test_astream_events_turn_short_circuits(self, monkeypatch):
+        async def fake_over_budget(ctx):
+            return True
+
+        monkeypatch.setattr(agent, "_tenant_over_daily_budget", fake_over_budget)
         _forbid_graph_access(monkeypatch)
 
         async def _collect():
             return [event async for event in agent.astream_events_turn("hi", "t1", TEST_CTX)]
 
-        events = asyncio.run(_collect())
+        events = await _collect()
 
         assert len(events) == 1
         assert events[0]["type"] == "error"
         assert events[0]["code"] == errors.ErrorCode.TENANT_BUDGET_EXCEEDED.value
 
-    def test_under_budget_does_not_short_circuit(self, monkeypatch):
+    async def test_under_budget_does_not_short_circuit(self, monkeypatch):
         """The False path must actually reach graph work — proving the
         check isn't accidentally unconditional."""
-        monkeypatch.setattr(agent, "_tenant_over_daily_budget", lambda ctx: False)
+
+        async def fake_over_budget(ctx):
+            return False
+
+        monkeypatch.setattr(agent, "_tenant_over_daily_budget", fake_over_budget)
         _forbid_graph_access(monkeypatch)
 
         async def _collect():
             return [event async for event in agent.astream_events_turn("hi", "t1", TEST_CTX)]
 
         try:
-            asyncio.run(_collect())
+            await _collect()
         except _GraphTouchedError:
             pass  # expected — proves init_graph_async() WAS reached this time
         else:

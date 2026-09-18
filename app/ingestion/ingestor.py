@@ -28,7 +28,7 @@ import html.parser
 import logging
 import socket  # noqa: F401
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 
 import httpx
@@ -85,13 +85,13 @@ def _sparse_vectors_or_none(
         return None
 
 
-def ingest_text(
+async def ingest_text(
     text: str,
     title: str,
     ctx: SecurityCtx | None,
     source: str = "text",
     topic: str | None = None,
-    on_progress: Callable[[int, int], None] | None = None,
+    on_progress: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> int:
     """Chunk, embed, and upsert `text` as one or more Qdrant points — the
     shared core every `ingest_*` entry point below funnels through.
@@ -113,11 +113,17 @@ def ingest_text(
     `embed_texts` exactly as many times either way, just interleaved with
     `on_progress` instead of collected into one list first.
 
-    `on_progress(chunks_embedded, chunks_total)`, if given, is called after
-    each dense batch — optional, for a caller that wants to report
+    `await on_progress(chunks_embedded, chunks_total)`, if given, is awaited
+    after each dense batch — optional, for a caller that wants to report
     incremental progress on a large document (app/ingestion/ingest_worker.py
     does, for the upload UI's progress bar). Never called for a document
-    with 0 chunks.
+    with 0 chunks. An `async def` callback now that this whole function
+    runs directly on the caller's own event loop, not offloaded to a
+    worker thread — app/ingestion/ingest_worker.py used to need
+    `asyncio.run_coroutine_threadsafe` to bridge a sync callback back onto
+    the loop from there; a plain `await` does the same job with no bridge
+    needed now that `embed_texts`/`qdrant_store.upsert` are real awaits
+    too.
     """
     if not valid_ctx(ctx):
         metrics.agent_ingest_refused_total.labels(reason="no_ctx").inc()
@@ -133,9 +139,9 @@ def ingest_text(
 
     dense_vectors: list[list[float]] = []
     for start in range(0, total, EMBED_BATCH_SIZE):
-        dense_vectors.extend(embed_texts(child_texts[start : start + EMBED_BATCH_SIZE]))
+        dense_vectors.extend(await embed_texts(child_texts[start : start + EMBED_BATCH_SIZE]))
         if on_progress is not None:
-            on_progress(len(dense_vectors), total)
+            await on_progress(len(dense_vectors), total)
 
     points = []
     i = 0
@@ -163,12 +169,12 @@ def ingest_text(
             )
             i += 1
 
-    qdrant_store.upsert(points)
+    await qdrant_store.upsert(points)
     metrics.agent_ingest_total.labels(source=source.split(":")[0]).inc()
     return len(points)
 
 
-def ingest_file(path: str, ctx: SecurityCtx | None, topic: str | None = None) -> int:
+async def ingest_file(path: str, ctx: SecurityCtx | None, topic: str | None = None) -> int:
     """`.txt`/`.md` only, by design: broader formats (PDF, DOCX, ...) need
     a real extraction library each, which is a deliberate scope line for
     this demo's Ingestor, not an oversight — the chunking/embedding/upsert
@@ -182,7 +188,7 @@ def ingest_file(path: str, ctx: SecurityCtx | None, topic: str | None = None) ->
             f"unsupported file type {p.suffix!r} — only {sorted(_ALLOWED_FILE_SUFFIXES)} are supported"
         )
     text = p.read_text(encoding="utf-8", errors="replace")
-    return ingest_text(text, title=p.stem, ctx=ctx, source=f"file:{p.name}", topic=topic)
+    return await ingest_text(text, title=p.stem, ctx=ctx, source=f"file:{p.name}", topic=topic)
 
 
 class _TextExtractor(html.parser.HTMLParser):
@@ -229,15 +235,15 @@ def _assert_safe_url(url: str) -> None:
         raise IngestRefused(str(exc)) from exc
 
 
-def ingest_url(url: str, ctx: SecurityCtx | None, topic: str | None = None) -> int:
+async def ingest_url(url: str, ctx: SecurityCtx | None, topic: str | None = None) -> int:
     """Fetch `url` (SSRF-guarded — see `_assert_safe_url`), strip HTML if
     present, and ingest the result. `follow_redirects=False`: a validated
     URL that redirects to an unvalidated one would otherwise reintroduce
     the exact SSRF surface the guard exists to close."""
     _assert_safe_url(url)
     try:
-        with httpx.Client(follow_redirects=False, timeout=_URL_TIMEOUT_SECONDS) as client:
-            response = client.get(
+        async with httpx.AsyncClient(follow_redirects=False, timeout=_URL_TIMEOUT_SECONDS) as client:
+            response = await client.get(
                 url, headers={"User-Agent": "agent-core-demo-ingestor/1.0"}
             )
     except httpx.HTTPError as exc:
@@ -259,4 +265,4 @@ def ingest_url(url: str, ctx: SecurityCtx | None, topic: str | None = None) -> i
     else:
         text = response.text
 
-    return ingest_text(text, title=url, ctx=ctx, source=f"url:{url}", topic=topic)
+    return await ingest_text(text, title=url, ctx=ctx, source=f"url:{url}", topic=topic)

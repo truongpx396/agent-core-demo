@@ -1,6 +1,14 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+# pytest-asyncio in "auto" mode: any `async def test_...` (or `async def`
+# fixture) is collected and run automatically, no `@pytest.mark.asyncio`
+# needed on every one — adopted so tests exercising this app's now-async
+# tool/store/client layer can `await` directly instead of every test body
+# wrapping its own call in `asyncio.run(...)`. Purely additive: a plain
+# `def test_...` is collected and run exactly as before regardless of this
+# setting, so it changes nothing for the (majority) sync tests in this suite.
+asyncio_mode = "auto"
 # `addopts`'s own `-m` default is what actually keeps a bare `pytest -q`
 # fast — every marked test ALSO self-skips (not fails) when Docker/the
 # model it needs isn't reachable (tests/containers.py), but relying on

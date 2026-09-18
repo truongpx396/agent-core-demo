@@ -53,7 +53,7 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-def query_employees(
+async def query_employees(
     tenant: str,
     principal: str,
     department: str | None = None,
@@ -75,7 +75,7 @@ def query_employees(
             valid = ", ".join(d.value for d in Department)
             return f"Invalid department {department!r}. Valid values: {valid}."
 
-    return _query_employees_impl(dept, name_contains, ctx)
+    return await _query_employees_impl(dept, name_contains, ctx)
 
 
 if __name__ == "__main__":

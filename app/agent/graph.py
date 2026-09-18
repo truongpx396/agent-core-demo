@@ -51,7 +51,6 @@ factory (make_agent_node, make_retrieve_context_node) instead of being
 plain module-level functions — see GraphDeps and build_graph, and each
 factory's own docstring for why.
 """
-import asyncio
 import functools
 import logging
 import operator
@@ -1022,17 +1021,19 @@ def context_window_exceeded(state: State) -> dict:
     }
 
 
-def _default_cache_get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
-    return semantic_cache.get(ctx, query)
+async def _default_cache_get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
+    return await semantic_cache.get(ctx, query)
 
 
-def _default_cache_set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict]) -> None:
-    semantic_cache.set(ctx, query, answer, citations)
+async def _default_cache_set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict]) -> None:
+    await semantic_cache.set(ctx, query, answer, citations)
 
 
 # --- Node: semantic cache lookup (GRAPH_PATTERNS.md pattern 22) ---
 def make_check_semantic_cache_node(
-    cache_get: Callable[["SecurityCtx | None", str], tuple[str, list[dict]] | None] = _default_cache_get,
+    cache_get: Callable[
+        ["SecurityCtx | None", str], Awaitable[tuple[str, list[dict]] | None]
+    ] = _default_cache_get,
 ):
     """Factory, same rationale as make_retrieve_context_node: needs an
     injected client so tests can fake it (see tests/agent/test_nodes.py) instead
@@ -1053,18 +1054,15 @@ def make_check_semantic_cache_node(
         returns None for both a real miss and a degraded lookup, so this
         node doesn't need its own try/except on top.
 
-        `cache_get` itself stays a plain sync `Callable` (its type in
-        GraphDeps/make_check_semantic_cache_node is unchanged) — real
-        implementations wrap a sync `redis.Redis` client with no async
-        equivalent in this app, and tests inject plain sync fakes. Only
-        this node is `async def`; the actual (embedding + Redis) work runs
-        via `asyncio.to_thread` so it can't block the event loop, same
-        pattern as retrieve_context/write_semantic_cache below.
+        `cache_get` is an async `Callable` — the real implementation
+        (app/retrieval/semantic_cache.py) awaits a real `redis.asyncio.Redis`
+        client directly now, so this just awaits it in place; tests inject
+        async fakes (see tests/agent/test_nodes.py).
         """
         last_human = _last_human_message(state["messages"])
         if last_human is None:
             return {}
-        hit = await asyncio.to_thread(cache_get, state.get("ctx"), _human_text(last_human))
+        hit = await cache_get(state.get("ctx"), _human_text(last_human))
         if hit is None:
             return {}
         answer, citations = hit
@@ -1131,10 +1129,10 @@ def make_retrieve_context_node(
         nothing to fall back to and gets a retry policy instead
         (AGENT_RETRY_POLICY).
 
-        `search` is an async `Callable` now — unlike `check_semantic_cache`'s
-        `cache_get`/`write_semantic_cache`'s `cache_set` above, which stay
-        plain sync callables wrapped in `asyncio.to_thread` because their
-        real implementations are local Redis calls with no async client.
+        `search` is an async `Callable`, same as `check_semantic_cache`'s
+        `cache_get`/`write_semantic_cache`'s `cache_set` above — their real
+        implementations (app/retrieval/semantic_cache.py) await a real
+        `redis.asyncio.Redis` client directly now.
         `gather_context`'s hybrid search used to be genuinely CPU-bound
         end to end (local ONNX sparse-embedding AND cross-encoder rerank),
         which is why this used to `asyncio.to_thread` the whole thing —
@@ -1447,7 +1445,9 @@ def make_suggest_followups_node(llm):
 
 # --- Node: semantic cache write-through (GRAPH_PATTERNS.md pattern 22) ---
 def make_write_semantic_cache_node(
-    cache_set: Callable[["SecurityCtx | None", str, str, list[dict]], None] = _default_cache_set,
+    cache_set: Callable[
+        ["SecurityCtx | None", str, str, list[dict]], Awaitable[None]
+    ] = _default_cache_set,
 ):
     """Factory, same rationale as make_check_semantic_cache_node."""
 
@@ -1463,9 +1463,8 @@ def make_write_semantic_cache_node(
         check_semantic_cache's docstring). Only a genuine miss — a real
         agent turn that ran retrieve_context + the LLM — writes here.
 
-        `cache_set` stays sync (same reasoning as check_semantic_cache's
-        `cache_get`); only the actual write moves off the event loop via
-        `asyncio.to_thread`.
+        `cache_set` is an async `Callable` — same reasoning as
+        check_semantic_cache's `cache_get`.
         """
         if state.get("cache_hit"):
             return {}
@@ -1474,8 +1473,8 @@ def make_write_semantic_cache_node(
         content = getattr(last, "content", "") or ""
         if last_human is None or not content:
             return {}
-        await asyncio.to_thread(
-            cache_set, state.get("ctx"), _human_text(last_human), content, state.get("used_citations") or []
+        await cache_set(
+            state.get("ctx"), _human_text(last_human), content, state.get("used_citations") or []
         )
         return {}
 
@@ -1791,8 +1790,12 @@ class GraphDeps:
     search_docs: (
         Callable[[str, "SecurityCtx | None"], Awaitable[tuple[str, list[dict]]]] | None
     ) = None
-    cache_get: Callable[["SecurityCtx | None", str], tuple[str, list[dict]] | None] | None = None
-    cache_set: Callable[["SecurityCtx | None", str, str, list[dict]], None] | None = None
+    cache_get: (
+        Callable[["SecurityCtx | None", str], Awaitable[tuple[str, list[dict]] | None]] | None
+    ) = None
+    cache_set: (
+        Callable[["SecurityCtx | None", str, str, list[dict]], Awaitable[None]] | None
+    ) = None
 
 
 @dataclass(frozen=True)

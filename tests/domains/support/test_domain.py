@@ -17,7 +17,7 @@ this domain's graphs use the default in-memory MemorySaver (no event-loop-
 bound state — contrast with `AsyncPostgresSaver`'s per-instance
 `asyncio.Lock`, see app/agent/runtime.py's module docstring).
 """
-import asyncio
+from contextlib import asynccontextmanager
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
@@ -50,7 +50,7 @@ class _FakeCursor:
     def __init__(self, row):
         self._row = row
 
-    def fetchone(self):
+    async def fetchone(self):
         return self._row
 
 
@@ -59,15 +59,17 @@ class _FakeConnection:
         self._row = row
         self.calls: list[tuple[str, list]] = []
 
-    def execute(self, sql, params):
+    async def execute(self, sql, params):
         self.calls.append((sql, list(params)))
         return _FakeCursor(self._row)
 
-    def __enter__(self):
-        return self
 
-    def __exit__(self, *exc):
-        return False
+def _fake_get_connection(fake):
+    @asynccontextmanager
+    async def get_connection():
+        yield fake
+
+    return get_connection
 
 
 def _tool_call(name, args, call_id="c1"):
@@ -145,13 +147,14 @@ class TestDomainScopedSubagent:
         enum_def = next(iter(schema["$defs"].values()))
         assert enum_def["enum"] == ["ticket-researcher"]
 
-    def test_never_pauses_it_is_read_only(self, monkeypatch):
+    async def test_never_pauses_it_is_read_only(self, monkeypatch):
         from app.agent import subagent_tools as agent_tools_module
 
+        async def fake_run_subagent_impl(*a, **k):
+            return agent_tools_module.SubagentResult("found it", 0, 0.0)
+
         monkeypatch.setattr(
-            agent_tools_module,
-            "_run_subagent_impl",
-            lambda *a, **k: agent_tools_module.SubagentResult("found it", 0, 0.0),
+            agent_tools_module, "_run_subagent_impl", fake_run_subagent_impl
         )
         llm = _fake_llm_returning(
             _tool_call(
@@ -161,26 +164,26 @@ class TestDomainScopedSubagent:
             AIMessage(content="Here's what the subagent found out for you."),
         )
         g = _build(llm)
-        asyncio.run(g.ainvoke(
+        await g.ainvoke(
             {"messages": [HumanMessage(content="look into ticket 7 for me")]}, config=_config()
-        ))
-        assert not asyncio.run(g.aget_state(_config())).next  # never paused
+        )
+        assert not (await g.aget_state(_config())).next  # never paused
 
 
 class TestMandatoryApprovalGate:
-    def test_create_ticket_pauses_for_approval(self):
+    async def test_create_ticket_pauses_for_approval(self):
         llm = _fake_llm_returning(
             _tool_call("create_ticket", {"subject": "Login broken", "description": "Can't log in"})
         )
         g = _build(llm)
-        asyncio.run(g.ainvoke(
+        await g.ainvoke(
             {"messages": [HumanMessage(content="I can't log in")]}, config=_config()
-        ))
-        assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
+        )
+        assert (await g.aget_state(_config())).next  # paused, not finished
 
-    def test_approving_runs_create_ticket_and_finishes(self, monkeypatch):
+    async def test_approving_runs_create_ticket_and_finishes(self, monkeypatch):
         fake_conn = _FakeConnection(row=(7,))
-        monkeypatch.setattr(store, "get_connection", lambda: fake_conn)
+        monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake_conn))
 
         llm = _fake_llm_returning(
             _tool_call(
@@ -190,141 +193,155 @@ class TestMandatoryApprovalGate:
             AIMessage(content="I've opened ticket #7 for you."),
         )
         g = build_graph(GraphDeps(llm=llm), manifest=SUPPORT_MANIFEST, domain=SUPPORT_DOMAIN_PLUGIN)
-        asyncio.run(g.ainvoke({"messages": [HumanMessage(content="I can't log in")]}, config=_config()))
-        result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
+        await g.ainvoke({"messages": [HumanMessage(content="I can't log in")]}, config=_config())
+        result = await g.ainvoke(Command(resume=True), config=_config())
 
-        assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
+        assert not (await g.aget_state(_config())).next  # finished, not paused
         tool_messages = [m for m in result["messages"] if m.type == "tool"]
         assert any("Ticket #7 opened" in m.content for m in tool_messages)
         assert result["messages"][-1].content == "I've opened ticket #7 for you."
 
-    def test_check_ticket_status_is_read_only_and_never_pauses(self, monkeypatch):
-        monkeypatch.setattr(
-            store,
-            "get_ticket",
-            lambda tenant, ticket_id: {
+    async def test_check_ticket_status_is_read_only_and_never_pauses(self, monkeypatch):
+        async def fake_get_ticket(tenant, ticket_id):
+            return {
                 "id": ticket_id,
                 "status": "open",
                 "priority": "normal",
                 "subject": "Login broken",
                 "escalation_reason": None,
-            },
-        )
+            }
+
+        monkeypatch.setattr(store, "get_ticket", fake_get_ticket)
         llm = _fake_llm_returning(
             _tool_call("check_ticket_status", {"ticket_id": 7}),
             AIMessage(content="Ticket #7 is still open."),
         )
         g = build_graph(GraphDeps(llm=llm), manifest=SUPPORT_MANIFEST, domain=SUPPORT_DOMAIN_PLUGIN)
-        result = asyncio.run(g.ainvoke(
+        result = await g.ainvoke(
             {"messages": [HumanMessage(content="what's the status of ticket 7?")]},
             config=_config(),
-        ))
-        assert not asyncio.run(g.aget_state(_config())).next  # never paused
+        )
+        assert not (await g.aget_state(_config())).next  # never paused
         assert result["messages"][-1].content == "Ticket #7 is still open."
 
-    def test_list_my_tickets_is_read_only_and_never_pauses(self, monkeypatch):
-        monkeypatch.setattr(
-            store, "list_tickets_for_requester", lambda tenant, requester, limit=10: []
-        )
+    async def test_list_my_tickets_is_read_only_and_never_pauses(self, monkeypatch):
+        async def fake_list_tickets(tenant, requester, limit=10):
+            return []
+
+        monkeypatch.setattr(store, "list_tickets_for_requester", fake_list_tickets)
         llm = _fake_llm_returning(
             _tool_call("list_my_tickets", {}),
             AIMessage(content="You have no open tickets."),
         )
         g = build_graph(GraphDeps(llm=llm), manifest=SUPPORT_MANIFEST, domain=SUPPORT_DOMAIN_PLUGIN)
-        result = asyncio.run(g.ainvoke(
+        result = await g.ainvoke(
             {"messages": [HumanMessage(content="what tickets have I opened?")]},
             config=_config(),
-        ))
-        assert not asyncio.run(g.aget_state(_config())).next  # never paused
+        )
+        assert not (await g.aget_state(_config())).next  # never paused
         assert result["messages"][-1].content == "You have no open tickets."
 
-    def test_add_ticket_comment_pauses_for_approval_and_runs_once_approved(self, monkeypatch):
-        monkeypatch.setattr(store, "add_comment", lambda tenant, ticket_id, comment: True)
+    async def test_add_ticket_comment_pauses_for_approval_and_runs_once_approved(self, monkeypatch):
+        async def fake_add_comment(tenant, ticket_id, comment):
+            return True
+
+        monkeypatch.setattr(store, "add_comment", fake_add_comment)
 
         llm = _fake_llm_returning(
             _tool_call("add_ticket_comment", {"ticket_id": 7, "comment": "still happening"}),
             AIMessage(content="Added that to ticket #7."),
         )
         g = build_graph(GraphDeps(llm=llm), manifest=SUPPORT_MANIFEST, domain=SUPPORT_DOMAIN_PLUGIN)
-        asyncio.run(g.ainvoke(
+        await g.ainvoke(
             {"messages": [HumanMessage(content="it's still happening on ticket 7")]},
             config=_config(),
-        ))
-        assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
+        )
+        assert (await g.aget_state(_config())).next  # paused, not finished
 
-        result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
-        assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
+        result = await g.ainvoke(Command(resume=True), config=_config())
+        assert not (await g.aget_state(_config())).next  # finished, not paused
         tool_messages = [m for m in result["messages"] if m.type == "tool"]
         assert any("Added your follow-up to ticket #7" in m.content for m in tool_messages)
 
 
-def test_fetch_external_reference_pauses_for_approval_as_an_outward_tool():
+async def test_fetch_external_reference_pauses_for_approval_as_an_outward_tool():
     llm = _fake_llm_returning(
         _tool_call("fetch_external_reference", {"url": "https://vendor.example.com/docs"})
     )
     g = _build(llm)
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="here's the doc that doesn't match what you said")]},
         config=_config(),
-    ))
-    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
+    )
+    assert (await g.aget_state(_config())).next  # paused, not finished
 
 
-def test_approving_fetch_external_reference_runs_it_and_finishes(monkeypatch):
+async def test_approving_fetch_external_reference_runs_it_and_finishes(monkeypatch):
     from app.domains.support import tools as support_tools
 
-    monkeypatch.setattr(
-        support_tools, "render_url_to_markdown", lambda url: "Webhook payloads must include `id`."
-    )
+    async def fake_render_url_to_markdown(url):
+        return "Webhook payloads must include `id`."
+
+    monkeypatch.setattr(support_tools, "render_url_to_markdown", fake_render_url_to_markdown)
 
     llm = _fake_llm_returning(
         _tool_call("fetch_external_reference", {"url": "https://vendor.example.com/docs"}),
         AIMessage(content="Their docs say every webhook payload needs an `id` field."),
     )
     g = _build(llm)
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="here's the doc that doesn't match what you said")]},
         config=_config(),
-    ))
-    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
+    )
+    result = await g.ainvoke(Command(resume=True), config=_config())
 
-    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
+    assert not (await g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("Webhook payloads must include" in m.content for m in tool_messages)
 
 
-def test_escalate_to_human_notifies_the_team_channel(monkeypatch):
+async def test_escalate_to_human_notifies_the_team_channel(monkeypatch):
     """escalate_to_human's own side effect (app/domains/support/tools.py)
     — a unit-level check, not through the graph, so it doesn't also need a
     fake LLM/tool-call round trip just to reach one function call."""
     from app.domains import notify
     from app.domains.support.tools import _escalate_to_human_impl
 
-    monkeypatch.setattr(store, "escalate_ticket", lambda tenant, ticket_id, reason: True)
-    posted = {}
-    monkeypatch.setattr(
-        notify, "post_to_team_channel", lambda channel, message: posted.setdefault(channel, message)
-    )
+    async def fake_escalate_ticket(tenant, ticket_id, reason):
+        return True
 
-    result = _escalate_to_human_impl(7, "needs a refund", TEST_CTX)
+    monkeypatch.setattr(store, "escalate_ticket", fake_escalate_ticket)
+    posted = {}
+
+    async def fake_post_to_team_channel(channel, message):
+        posted.setdefault(channel, message)
+
+    monkeypatch.setattr(notify, "post_to_team_channel", fake_post_to_team_channel)
+
+    result = await _escalate_to_human_impl(7, "needs a refund", TEST_CTX)
 
     assert "escalated" in result.lower()
     assert "support-escalations" in posted
     assert "needs a refund" in posted["support-escalations"]
 
 
-def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monkeypatch):
+async def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monkeypatch):
     """Same shape as app/domains/ops/test_domain.py's own version of this
     test — the sandbox trio is always present now, but its impl still
     calls load_raw_sandbox_tools() fresh on every real call, so stub that
     out too, not just run_command_in_sandbox_impl."""
     from app.domains.support import tools as support_tools
 
-    monkeypatch.setattr(support_tools.sandbox_session, "load_raw_sandbox_tools", lambda: {"command_run": object()})
+    async def fake_load_raw_sandbox_tools():
+        return {"command_run": object()}
+
+    monkeypatch.setattr(support_tools.sandbox_session, "load_raw_sandbox_tools", fake_load_raw_sandbox_tools)
+
+    async def fake_run_command_in_sandbox_impl(command, thread_id, raw):
+        return "exit code: 0\nstdout:\n2 db_timeout occurrences\n"
+
     monkeypatch.setattr(
-        support_tools.sandbox_session,
-        "run_command_in_sandbox_impl",
-        lambda command, thread_id, raw: "exit code: 0\nstdout:\n2 db_timeout occurrences\n",
+        support_tools.sandbox_session, "run_command_in_sandbox_impl", fake_run_command_in_sandbox_impl
     )
 
     llm = _fake_llm_returning(
@@ -332,19 +349,19 @@ def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monke
         AIMessage(content="The pasted log shows 2 db_timeout occurrences."),
     )
     g = _build(llm)
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="here's the error log, can you count db_timeout")]},
         config=_config(),
-    ))
-    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
+    )
+    assert (await g.aget_state(_config())).next  # paused, not finished
 
-    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
-    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
+    result = await g.ainvoke(Command(resume=True), config=_config())
+    assert not (await g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("2 db_timeout occurrences" in m.content for m in tool_messages)
 
 
-def test_run_python_in_sandbox_pauses_for_approval_and_runs_once_approved(monkeypatch):
+async def test_run_python_in_sandbox_pauses_for_approval_and_runs_once_approved(monkeypatch):
     """Same shape as run_command_in_sandbox's own version of this test —
     run_python_in_sandbox exists specifically so a pasted log/payload
     with its own quotes or apostrophes can go straight into a real
@@ -352,11 +369,16 @@ def test_run_python_in_sandbox_pauses_for_approval_and_runs_once_approved(monkey
     `python -c '...'` (a real, repeatedly-observed failure mode)."""
     from app.domains.support import tools as support_tools
 
-    monkeypatch.setattr(support_tools.sandbox_session, "load_raw_sandbox_tools", lambda: {"command_run": object()})
+    async def fake_load_raw_sandbox_tools():
+        return {"command_run": object()}
+
+    monkeypatch.setattr(support_tools.sandbox_session, "load_raw_sandbox_tools", fake_load_raw_sandbox_tools)
+
+    async def fake_run_python_in_sandbox_impl(script, thread_id, raw):
+        return "exit code: 0\nstdout:\n2 db_timeout occurrences\n"
+
     monkeypatch.setattr(
-        support_tools.sandbox_session,
-        "run_python_in_sandbox_impl",
-        lambda script, thread_id, raw: "exit code: 0\nstdout:\n2 db_timeout occurrences\n",
+        support_tools.sandbox_session, "run_python_in_sandbox_impl", fake_run_python_in_sandbox_impl
     )
 
     llm = _fake_llm_returning(
@@ -364,13 +386,13 @@ def test_run_python_in_sandbox_pauses_for_approval_and_runs_once_approved(monkey
         AIMessage(content="The pasted log shows 2 db_timeout occurrences."),
     )
     g = _build(llm)
-    asyncio.run(g.ainvoke(
+    await g.ainvoke(
         {"messages": [HumanMessage(content="here's the error log, can you count db_timeout")]},
         config=_config(),
-    ))
-    assert asyncio.run(g.aget_state(_config())).next  # paused, not finished
+    )
+    assert (await g.aget_state(_config())).next  # paused, not finished
 
-    result = asyncio.run(g.ainvoke(Command(resume=True), config=_config()))
-    assert not asyncio.run(g.aget_state(_config())).next  # finished, not paused
+    result = await g.ainvoke(Command(resume=True), config=_config())
+    assert not (await g.aget_state(_config())).next  # finished, not paused
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
     assert any("2 db_timeout occurrences" in m.content for m in tool_messages)

@@ -85,14 +85,14 @@ class TestAddNoteArgsValidation:
 
 
 class TestAddNoteImpl:
-    def test_embeds_and_upserts_a_single_point(self, monkeypatch):
+    async def test_embeds_and_upserts_a_single_point(self, monkeypatch):
         captured = {}
 
-        def fake_embed_text(text):
+        async def fake_embed_text(text):
             captured["embedded_text"] = text
             return [0.1, 0.2, 0.3]
 
-        def fake_upsert(points):
+        async def fake_upsert(points):
             captured["points"] = points
 
         monkeypatch.setattr(tools, "embed_text", fake_embed_text)
@@ -102,7 +102,7 @@ class TestAddNoteImpl:
         # this patches the one `.upsert` attribute both names resolve to.
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        result = tools._add_note_impl("Refunds", "30-day window.", Topic.company, TEST_CTX)
+        result = await tools._add_note_impl("Refunds", "30-day window.", Topic.company, TEST_CTX)
 
         assert "points" in captured
         assert len(captured["points"]) == 1
@@ -118,63 +118,83 @@ class TestAddNoteImpl:
         assert "Refunds" in result
         assert "company" in result
 
-    def test_sparse_embedding_failure_degrades_to_dense_only_point(self, monkeypatch):
+    async def test_sparse_embedding_failure_degrades_to_dense_only_point(self, monkeypatch):
         """A local BM25 model hiccup must not block a human-approved write
         — see _sparse_vector_or_none's docstring."""
         captured = {}
 
-        monkeypatch.setattr(tools, "embed_text", lambda text: [0.1])
+        async def fake_embed_text(text):
+            return [0.1]
+
+        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
 
         def failing_sparse(text):
             raise RuntimeError("model not loaded")
 
         monkeypatch.setattr(tools, "embed_sparse", failing_sparse)
-        monkeypatch.setattr(qdrant_store, "upsert", lambda points: captured.update(points=points))
 
-        tools._add_note_impl("Refunds", "30-day window.", Topic.company, TEST_CTX)
+        async def fake_upsert(points):
+            captured.update(points=points)
+
+        monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
+
+        await tools._add_note_impl("Refunds", "30-day window.", Topic.company, TEST_CTX)
 
         point = captured["points"][0]
         assert "sparse" not in point.vector
         assert point.vector["dense"] == [0.1]
 
-    def test_each_call_gets_a_fresh_id_never_overwriting(self, monkeypatch):
+    async def test_each_call_gets_a_fresh_id_never_overwriting(self, monkeypatch):
         """A fresh UUID id per call means add_note can only ever append a
         point, never target/overwrite an existing one by guessing its id —
         see _add_note_impl's docstring."""
         seen_ids = []
 
-        def fake_upsert(points):
+        async def fake_embed_text(text):
+            return [0.0]
+
+        async def fake_upsert(points):
             seen_ids.append(points[0].id)
 
-        monkeypatch.setattr(tools, "embed_text", lambda text: [0.0])
+        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
         monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1], [1.0]))
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        tools._add_note_impl("A", "one", Topic.qdrant, TEST_CTX)
-        tools._add_note_impl("B", "two", Topic.qdrant, TEST_CTX)
+        await tools._add_note_impl("A", "one", Topic.qdrant, TEST_CTX)
+        await tools._add_note_impl("B", "two", Topic.qdrant, TEST_CTX)
 
         assert len(seen_ids) == 2
         assert seen_ids[0] != seen_ids[1]
 
-    def test_run_with_timeout_wraps_the_impl(self, monkeypatch):
+    async def test_run_with_timeout_wraps_the_impl(self, monkeypatch):
         """add_note (the @tool-decorated function) must route through
         _run_with_timeout like search_docs/calculator do — a hung
         embedding/Qdrant call shouldn't be able to stall the turn
         indefinitely either."""
-        monkeypatch.setattr(tools, "embed_text", lambda text: [0.0])
-        monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1], [1.0]))
-        monkeypatch.setattr(qdrant_store, "upsert", lambda points: None)
+        async def fake_embed_text(text):
+            return [0.0]
 
-        result = add_note.invoke(
+        async def fake_upsert(points):
+            pass
+
+        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
+        monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1], [1.0]))
+        monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
+
+        result = await add_note.ainvoke(
             {"title": "T", "content": "C", "topic": "langgraph"}, config=_cfg()
         )
         assert "T" in result
 
-    def test_refuses_without_ctx(self, monkeypatch):
+    async def test_refuses_without_ctx(self, monkeypatch):
         upserted = []
-        monkeypatch.setattr(qdrant_store, "upsert", lambda points: upserted.append(points))
 
-        result = add_note.invoke({"title": "T", "content": "C", "topic": "langgraph"})
+        async def fake_upsert(points):
+            upserted.append(points)
+
+        monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
+
+        result = await add_note.ainvoke({"title": "T", "content": "C", "topic": "langgraph"})
 
         assert "Refused" in result
         assert upserted == []  # never reached Qdrant
@@ -205,11 +225,11 @@ class TestRunWithTimeoutScrubbing:
 
 
 class TestSearchDocsCtx:
-    def test_refuses_without_ctx(self):
-        result = search_docs.invoke({"query": "anything"})
+    async def test_refuses_without_ctx(self):
+        result = await search_docs.ainvoke({"query": "anything"})
         assert "Refused" in result
 
-    def test_applies_tenant_prefilter(self, monkeypatch):
+    async def test_applies_tenant_prefilter(self, monkeypatch):
         captured = {}
 
         async def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
@@ -218,7 +238,7 @@ class TestSearchDocsCtx:
 
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
-        search_docs.invoke({"query": "hello"}, config=_cfg())
+        await search_docs.ainvoke({"query": "hello"}, config=_cfg())
 
         # Every FieldCondition in the lowered filter came from THIS ctx's
         # tenant, and the filter scopes to documents (never memories).
@@ -227,7 +247,7 @@ class TestSearchDocsCtx:
         assert values["tenant"] == TEST_CTX["tenant"]
         assert values["kind"] == "document"
 
-    def test_two_different_tenants_get_different_filters(self, monkeypatch):
+    async def test_two_different_tenants_get_different_filters(self, monkeypatch):
         """The concrete manifestation of tenant isolation at the query
         layer: two tenants never produce the same server-side predicate,
         so one tenant's search can't be satisfied by another's data —
@@ -241,15 +261,15 @@ class TestSearchDocsCtx:
 
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
-        search_docs.invoke({"query": "hello"}, config=_cfg(TEST_CTX))
-        search_docs.invoke({"query": "hello"}, config=_cfg(_OTHER_TENANT_CTX))
+        await search_docs.ainvoke({"query": "hello"}, config=_cfg(TEST_CTX))
+        await search_docs.ainvoke({"query": "hello"}, config=_cfg(_OTHER_TENANT_CTX))
 
         tenants = [
             next(c.match.value for c in f.must if c.key == "tenant") for f in seen_filters
         ]
         assert tenants[0] != tenants[1]
 
-    def test_doc_ids_is_anded_onto_the_tenant_filter_not_a_replacement(self, monkeypatch):
+    async def test_doc_ids_is_anded_onto_the_tenant_filter_not_a_replacement(self, monkeypatch):
         """doc_ids narrows an already tenant-scoped query — it must never
         be able to substitute for the tenant predicate. Checked at the
         qdrant_store.hybrid_search boundary (mocked) since that's where
@@ -266,7 +286,7 @@ class TestSearchDocsCtx:
 
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
-        search_docs.invoke({"query": "hello", "doc_ids": ["abc", "def"]}, config=_cfg())
+        await search_docs.ainvoke({"query": "hello", "doc_ids": ["abc", "def"]}, config=_cfg())
 
         assert captured["doc_ids"] == ["abc", "def"]
         # The tenant filter is passed through UNCHANGED alongside doc_ids
@@ -302,13 +322,19 @@ class TestRememberArgsValidation:
 
 
 class TestRememberImpl:
-    def test_writes_a_memory_owned_by_the_principal(self, monkeypatch):
+    async def test_writes_a_memory_owned_by_the_principal(self, monkeypatch):
         captured = {}
 
-        monkeypatch.setattr(tools, "embed_text", lambda text: [0.4])
-        monkeypatch.setattr(qdrant_store, "upsert", lambda points: captured.update(points=points))
+        async def fake_embed_text(text):
+            return [0.4]
 
-        result = tools._remember_impl("likes dark roast coffee", TEST_CTX)
+        async def fake_upsert(points):
+            captured.update(points=points)
+
+        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
+        monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
+
+        result = await tools._remember_impl("likes dark roast coffee", TEST_CTX)
 
         point = captured["points"][0]
         assert point.payload["kind"] == "memory"
@@ -317,21 +343,25 @@ class TestRememberImpl:
         assert point.payload["text"] == "likes dark roast coffee"
         assert result == "Remembered."
 
-    def test_refuses_without_ctx(self, monkeypatch):
+    async def test_refuses_without_ctx(self, monkeypatch):
         upserted = []
-        monkeypatch.setattr(qdrant_store, "upsert", lambda points: upserted.append(points))
 
-        result = remember.invoke({"content": "likes dark roast coffee"})
+        async def fake_upsert(points):
+            upserted.append(points)
+
+        monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
+
+        result = await remember.ainvoke({"content": "likes dark roast coffee"})
 
         assert "Refused" in result
         assert upserted == []
 
 
 class TestRecallMemories:
-    def test_returns_empty_string_without_ctx(self):
-        assert asyncio.run(recall_memories(None, "coffee")) == ""
+    async def test_returns_empty_string_without_ctx(self):
+        assert await recall_memories(None, "coffee") == ""
 
-    def test_scopes_to_tenant_and_owner(self, monkeypatch):
+    async def test_scopes_to_tenant_and_owner(self, monkeypatch):
         captured = {}
 
         async def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
@@ -341,7 +371,7 @@ class TestRecallMemories:
 
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
-        asyncio.run(recall_memories(TEST_CTX, "coffee"))
+        await recall_memories(TEST_CTX, "coffee")
 
         must = captured["tenant_filter"].must
         values = {c.key: c.match.value for c in must if c.match is not None}
@@ -352,7 +382,7 @@ class TestRecallMemories:
         # _memory_hits's docstring.
         assert captured["rerank_results"] is False
 
-    def test_two_different_principals_get_different_filters(self, monkeypatch):
+    async def test_two_different_principals_get_different_filters(self, monkeypatch):
         """The concrete manifestation of "a memory belongs to whoever wrote
         it, not the tenant at large" — two principals in the SAME tenant
         must produce filters that scope to different owners."""
@@ -365,8 +395,8 @@ class TestRecallMemories:
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
         other_principal_same_tenant = {**TEST_CTX, "principal": "someone-else"}
-        asyncio.run(recall_memories(TEST_CTX, "coffee"))
-        asyncio.run(recall_memories(other_principal_same_tenant, "coffee"))
+        await recall_memories(TEST_CTX, "coffee")
+        await recall_memories(other_principal_same_tenant, "coffee")
 
         owners = [
             next(c.match.value for c in f.must if c.key == "owner") for f in seen_filters
@@ -375,14 +405,14 @@ class TestRecallMemories:
 
 
 class TestQueryEmployees:
-    def test_refuses_without_ctx(self):
-        result = query_employees.invoke({})
+    async def test_refuses_without_ctx(self):
+        result = await query_employees.ainvoke({})
         assert "Refused" in result
 
-    def test_passes_tenant_and_filters_through_to_sql_store(self, monkeypatch):
+    async def test_passes_tenant_and_filters_through_to_sql_store(self, monkeypatch):
         captured = {}
 
-        def fake_query_employees(tenant, department=None, name_contains=None, limit=None):
+        async def fake_query_employees(tenant, department=None, name_contains=None, limit=None):
             captured["tenant"] = tenant
             captured["department"] = department
             captured["name_contains"] = name_contains
@@ -390,7 +420,7 @@ class TestQueryEmployees:
 
         monkeypatch.setattr(sql_store, "query_employees", fake_query_employees)
 
-        result = query_employees.invoke(
+        result = await query_employees.ainvoke(
             {"department": "Engineering", "name_contains": "pri"}, config=_cfg()
         )
 
@@ -399,62 +429,72 @@ class TestQueryEmployees:
         assert captured["name_contains"] == "pri"
         assert "Priya Nair" in result
 
-    def test_passes_cap_plus_one_as_the_sql_limit(self, monkeypatch):
+    async def test_passes_cap_plus_one_as_the_sql_limit(self, monkeypatch):
         """See TOOL_RESULT_CAPS's docstring: limit=cap+1 is exactly enough
         to detect "more rows exist" without a second COUNT(*) query."""
         captured = {}
-        monkeypatch.setattr(
-            sql_store,
-            "query_employees",
-            lambda tenant, department=None, name_contains=None, limit=None: captured.update(limit=limit) or [],
-        )
+        async def fake_query_employees(tenant, department=None, name_contains=None, limit=None):
+            captured["limit"] = limit
+            return []
 
-        query_employees.invoke({}, config=_cfg())
+        monkeypatch.setattr(sql_store, "query_employees", fake_query_employees)
+
+        await query_employees.ainvoke({}, config=_cfg())
 
         assert captured["limit"] == tools.TOOL_RESULT_CAPS["query_employees"] + 1
 
-    def test_result_beyond_the_cap_is_marked_truncated_not_silently_dropped(self, monkeypatch):
+    async def test_result_beyond_the_cap_is_marked_truncated_not_silently_dropped(self, monkeypatch):
         cap = tools.TOOL_RESULT_CAPS["query_employees"]
         rows = [
             {"name": f"Employee {i}", "department": "Engineering", "title": "Engineer", "hired_on": "2021-01-01"}
             for i in range(cap + 1)  # sql_store.query_employees(limit=cap+1) returning cap+1 rows means "more exist"
         ]
-        monkeypatch.setattr(sql_store, "query_employees", lambda **kw: rows)
+        async def fake_query_employees(**kw):
+            return rows
 
-        result = query_employees.invoke({}, config=_cfg())
+        monkeypatch.setattr(sql_store, "query_employees", fake_query_employees)
+
+        result = await query_employees.ainvoke({}, config=_cfg())
 
         assert "truncated" in result
         assert result.count("Employee") == cap  # exactly `cap` rows shown, not cap + 1
 
-    def test_result_at_or_under_the_cap_is_not_marked_truncated(self, monkeypatch):
+    async def test_result_at_or_under_the_cap_is_not_marked_truncated(self, monkeypatch):
         cap = tools.TOOL_RESULT_CAPS["query_employees"]
         rows = [
             {"name": f"Employee {i}", "department": "Engineering", "title": "Engineer", "hired_on": "2021-01-01"}
             for i in range(cap)  # exactly at the cap, not over it
         ]
-        monkeypatch.setattr(sql_store, "query_employees", lambda **kw: rows)
+        async def fake_query_employees(**kw):
+            return rows
 
-        result = query_employees.invoke({}, config=_cfg())
+        monkeypatch.setattr(sql_store, "query_employees", fake_query_employees)
+
+        result = await query_employees.ainvoke({}, config=_cfg())
 
         assert "truncated" not in result
 
-    def test_no_matches_returns_a_friendly_string(self, monkeypatch):
-        monkeypatch.setattr(sql_store, "query_employees", lambda **kw: [])
+    async def test_no_matches_returns_a_friendly_string(self, monkeypatch):
+        async def fake_query_employees(**kw):
+            return []
 
-        result = query_employees.invoke({}, config=_cfg())
+        monkeypatch.setattr(sql_store, "query_employees", fake_query_employees)
+
+        result = await query_employees.ainvoke({}, config=_cfg())
 
         assert "No matching employees found." == result
 
-    def test_two_different_tenants_get_different_tenant_param(self, monkeypatch):
+    async def test_two_different_tenants_get_different_tenant_param(self, monkeypatch):
         seen = []
-        monkeypatch.setattr(
-            sql_store,
-            "query_employees",
-            lambda tenant, department=None, name_contains=None, limit=None: seen.append(tenant) or [],
-        )
 
-        query_employees.invoke({}, config=_cfg(TEST_CTX))
-        query_employees.invoke({}, config=_cfg(_OTHER_TENANT_CTX))
+        async def fake_query_employees(tenant, department=None, name_contains=None, limit=None):
+            seen.append(tenant)
+            return []
+
+        monkeypatch.setattr(sql_store, "query_employees", fake_query_employees)
+
+        await query_employees.ainvoke({}, config=_cfg(TEST_CTX))
+        await query_employees.ainvoke({}, config=_cfg(_OTHER_TENANT_CTX))
 
         assert seen[0] != seen[1]
 
@@ -474,8 +514,8 @@ class TestAskClarificationArgsValidation:
 
 
 class TestAskClarification:
-    def test_formats_the_question_and_numbered_options(self):
-        result = ask_clarification.invoke(
+    async def test_formats_the_question_and_numbered_options(self):
+        result = await ask_clarification.ainvoke(
             {
                 "question": "Do you mean the LangGraph checkpointer or the database one?",
                 "options": ["The LangGraph checkpointer", "A database checkpoint"],
@@ -485,10 +525,10 @@ class TestAskClarification:
         assert "1. The LangGraph checkpointer" in result
         assert "2. A database checkpoint" in result
 
-    def test_needs_no_ctx_it_is_read_only_and_has_no_side_effects(self):
+    async def test_needs_no_ctx_it_is_read_only_and_has_no_side_effects(self):
         # Unlike search_docs/add_note/remember/query_employees, this tool
         # never touches SecurityCtx at all — it's pure text formatting.
-        result = ask_clarification.invoke(
+        result = await ask_clarification.ainvoke(
             {"question": "Which?", "options": ["A", "B"]}
         )
         assert "Refused" not in result
@@ -531,16 +571,16 @@ class _FakeHit:
 
 
 class TestSkillSearch:
-    def test_needs_no_ctx_it_is_a_bundled_capability_not_tenant_data(self, monkeypatch):
+    async def test_needs_no_ctx_it_is_a_bundled_capability_not_tenant_data(self, monkeypatch):
         # Same posture as calculator: no SecurityCtx at all, no config arg.
         async def fake_hybrid_search(*a, **k):
             return []
 
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
-        result = skill_search.invoke({"query": "anything"})
+        result = await skill_search.ainvoke({"query": "anything"})
         assert "Refused" not in result
 
-    def test_searches_the_dedicated_skills_collection(self, monkeypatch):
+    async def test_searches_the_dedicated_skills_collection(self, monkeypatch):
         captured = {}
 
         async def fake_hybrid_search(query_text, **kwargs):
@@ -550,12 +590,12 @@ class TestSkillSearch:
 
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
-        skill_search.invoke({"query": "onboard a new hire"})
+        await skill_search.ainvoke({"query": "onboard a new hire"})
 
         assert captured["query_text"] == "onboard a new hire"
         assert captured["collection"] == SKILLS_COLLECTION
 
-    def test_formats_hits_as_name_and_description(self, monkeypatch):
+    async def test_formats_hits_as_name_and_description(self, monkeypatch):
         hits = [
             _FakeHit({"name": "onboarding-brief", "description": "Compose a new-hire brief."}),
             _FakeHit({"name": "expense-summary", "description": "Summarize expense line items."}),
@@ -579,37 +619,37 @@ class TestSkillSearch:
             },
         )
 
-        result = skill_search.invoke({"query": "onboard a new hire"})
+        result = await skill_search.ainvoke({"query": "onboard a new hire"})
 
         assert "- onboarding-brief: Compose a new-hire brief." in result
         assert "- expense-summary: Summarize expense line items." in result
 
-    def test_no_hits_tells_the_model_to_proceed_without_a_skill(self, monkeypatch):
+    async def test_no_hits_tells_the_model_to_proceed_without_a_skill(self, monkeypatch):
         async def fake_hybrid_search(*a, **k):
             return []
 
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
-        result = skill_search.invoke({"query": "something with no matching skill"})
+        result = await skill_search.ainvoke({"query": "something with no matching skill"})
         assert "No matching skills" in result
 
-    def test_missing_collection_degrades_to_a_clear_message_not_a_crash(self, monkeypatch):
+    async def test_missing_collection_degrades_to_a_clear_message_not_a_crash(self, monkeypatch):
         def raises(*args, **kwargs):
             raise RuntimeError("collection 'skills' doesn't exist")
 
         monkeypatch.setattr(qdrant_store, "hybrid_search", raises)
 
-        result = skill_search.invoke({"query": "anything"})
+        result = await skill_search.ainvoke({"query": "anything"})
 
         assert "index-skills" in result
 
 
 class TestUseSkill:
-    def test_needs_no_ctx_it_is_a_bundled_capability_not_tenant_data(self, monkeypatch):
+    async def test_needs_no_ctx_it_is_a_bundled_capability_not_tenant_data(self, monkeypatch):
         monkeypatch.setattr(skills_module, "get_skills", lambda: {})
-        result = use_skill.invoke({"name": "whatever"})
+        result = await use_skill.ainvoke({"name": "whatever"})
         assert "Refused" not in result
 
-    def test_returns_the_matched_skills_full_body_from_disk_not_qdrant(self, monkeypatch):
+    async def test_returns_the_matched_skills_full_body_from_disk_not_qdrant(self, monkeypatch):
         record = SkillRecord(
             name="onboarding-brief",
             description="Compose a new-hire brief.",
@@ -619,13 +659,13 @@ class TestUseSkill:
         )
         monkeypatch.setattr(skills_module, "get_skills", lambda: {"onboarding-brief": record})
 
-        result = use_skill.invoke({"name": "onboarding-brief"})
+        result = await use_skill.ainvoke({"name": "onboarding-brief"})
 
         assert result == record.body
 
-    def test_unknown_name_returns_a_clear_message_not_an_exception(self, monkeypatch):
+    async def test_unknown_name_returns_a_clear_message_not_an_exception(self, monkeypatch):
         monkeypatch.setattr(skills_module, "get_skills", lambda: {})
-        result = use_skill.invoke({"name": "does-not-exist"})
+        result = await use_skill.ainvoke({"name": "does-not-exist"})
         assert "No skill named" in result
         assert "skill_search" in result
 
@@ -676,7 +716,7 @@ class TestMakeSkillTools:
         assert s1.name == "skill_search" == s2.name
         assert u1.name == "use_skill" == u2.name
 
-    def test_skill_search_hides_a_skill_tagged_to_another_domain(self, monkeypatch):
+    async def test_skill_search_hides_a_skill_tagged_to_another_domain(self, monkeypatch):
         hits = [_FakeHit({"name": "sales-only", "description": "a sales playbook"})]
 
         async def fake_hybrid_search(*a, **k):
@@ -697,10 +737,10 @@ class TestMakeSkillTools:
         support_search, _ = make_skill_tools("support")
         sales_search, _ = make_skill_tools("sales")
 
-        assert "No matching skills" in support_search.invoke({"query": "help a lead"})
-        assert "sales-only" in sales_search.invoke({"query": "help a lead"})
+        assert "No matching skills" in await support_search.ainvoke({"query": "help a lead"})
+        assert "sales-only" in await sales_search.ainvoke({"query": "help a lead"})
 
-    def test_use_skill_refuses_a_skill_tagged_to_another_domain_even_by_exact_name(self, monkeypatch):
+    async def test_use_skill_refuses_a_skill_tagged_to_another_domain_even_by_exact_name(self, monkeypatch):
         monkeypatch.setattr(
             skills_module,
             "get_skills",
@@ -715,10 +755,10 @@ class TestMakeSkillTools:
         support_search, support_use = make_skill_tools("support")
         sales_search, sales_use = make_skill_tools("sales")
 
-        assert "No skill named" in support_use.invoke({"name": "sales-only"})
-        assert sales_use.invoke({"name": "sales-only"}) == "the sales playbook body"
+        assert "No skill named" in await support_use.ainvoke({"name": "sales-only"})
+        assert await sales_use.ainvoke({"name": "sales-only"}) == "the sales playbook body"
 
-    def test_untagged_skill_is_reachable_from_every_domain(self, monkeypatch):
+    async def test_untagged_skill_is_reachable_from_every_domain(self, monkeypatch):
         monkeypatch.setattr(
             skills_module,
             "get_skills",
@@ -731,8 +771,8 @@ class TestMakeSkillTools:
         _, support_use = make_skill_tools("support")
         _, ops_use = make_skill_tools("ops")
 
-        assert support_use.invoke({"name": "global"}) == "global body"
-        assert ops_use.invoke({"name": "global"}) == "global body"
+        assert await support_use.ainvoke({"name": "global"}) == "global body"
+        assert await ops_use.ainvoke({"name": "global"}) == "global body"
 
 
 class _RecordingFakeLLM:
@@ -904,15 +944,15 @@ class TestBuildSubagentGraphTopology:
 
 
 class TestRunSubagentImpl:
-    def test_refuses_without_ctx(self):
-        result = _run_subagent_impl("researcher", "do something", {"configurable": {}})
+    async def test_refuses_without_ctx(self):
+        result = await _run_subagent_impl("researcher", "do something", {"configurable": {}})
         assert "Refused" in result.answer
 
-    def test_unknown_subagent_name_is_a_clear_message_not_an_exception(self):
-        result = _run_subagent_impl("does-not-exist", "task", _subagent_cfg(), registry={})
+    async def test_unknown_subagent_name_is_a_clear_message_not_an_exception(self):
+        result = await _run_subagent_impl("does-not-exist", "task", _subagent_cfg(), registry={})
         assert "No subagent named" in result.answer
 
-    def test_delegates_and_returns_the_final_answer(self):
+    async def test_delegates_and_returns_the_final_answer(self):
         fake_llm = _RecordingFakeLLM(
             AIMessage(
                 content="",
@@ -922,18 +962,18 @@ class TestRunSubagentImpl:
         )
         registry = {"researcher": (_fake_subagent_record(), ("search_docs", "calculator"))}
 
-        result = _run_subagent_impl(
+        result = await _run_subagent_impl(
             "researcher", "what is 6*7?", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
         assert result.answer == "The answer is 42."
 
-    def test_nested_system_prompt_has_its_own_prompt_and_the_citation_warning(self):
+    async def test_nested_system_prompt_has_its_own_prompt_and_the_citation_warning(self):
         fake_llm = _RecordingFakeLLM(AIMessage(content="A plain answer, long enough."))
         record = _fake_subagent_record()
         registry = {"researcher": (record, ("calculator",))}
 
-        _run_subagent_impl("researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm)
+        await _run_subagent_impl("researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm)
 
         first_call_messages = fake_llm.calls[0]
         system_text = "\n".join(
@@ -942,13 +982,13 @@ class TestRunSubagentImpl:
         assert record.system_prompt in system_text
         assert "[n]" in system_text  # the citation-marker warning text
 
-    def test_task_is_the_subagents_sole_human_message_not_parent_history(self):
+    async def test_task_is_the_subagents_sole_human_message_not_parent_history(self):
         from langchain_core.messages import HumanMessage
 
         fake_llm = _RecordingFakeLLM(AIMessage(content="A plain answer, long enough."))
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        _run_subagent_impl(
+        await _run_subagent_impl(
             "researcher", "the delegated task", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -956,7 +996,7 @@ class TestRunSubagentImpl:
         assert len(human_messages) == 1
         assert human_messages[0].content == "the delegated task"
 
-    def test_respects_its_own_smaller_iteration_ceiling_not_the_parents(self):
+    async def test_respects_its_own_smaller_iteration_ceiling_not_the_parents(self):
         """Distinct expressions each turn — never repeating identical args —
         so MAX_REPEATED_ACTIONS' no-progress detector never trips first;
         this isolates MAX_SUBAGENT_ITERATIONS specifically, proving
@@ -975,7 +1015,7 @@ class TestRunSubagentImpl:
         fake_llm = _RecordingFakeLLM(*responses)
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        result = _run_subagent_impl(
+        result = await _run_subagent_impl(
             "researcher", "never converge", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -986,7 +1026,7 @@ class TestRunSubagentImpl:
         assert "did not produce a final answer" in result.answer
         assert len(fake_llm.calls) <= MAX_SUBAGENT_ITERATIONS
 
-    def test_hitting_its_own_no_progress_budget_reports_a_clear_message_not_empty(self):
+    async def test_hitting_its_own_no_progress_budget_reports_a_clear_message_not_empty(self):
         """Same identical-tool-call-batch loop MAX_REPEATED_ACTIONS already
         catches for the top-level agent (GRAPH_PATTERNS.md pattern 34) — this
         is one of should_continue's several "__end__" routes, not the
@@ -1006,7 +1046,7 @@ class TestRunSubagentImpl:
         before = metric_value(
             metrics.agent_subagent_run_total, subagent="researcher", outcome="budget_exceeded"
         )
-        result = _run_subagent_impl(
+        result = await _run_subagent_impl(
             "researcher", "loop forever", _subagent_cfg(), registry=registry, llm=fake_llm
         )
         after = metric_value(
@@ -1016,7 +1056,7 @@ class TestRunSubagentImpl:
         assert "did not produce a final answer" in result.answer
         assert after == before + 1
 
-    def test_giving_up_on_a_stuck_retry_loop_reports_a_clear_message_not_the_rejected_text(self):
+    async def test_giving_up_on_a_stuck_retry_loop_reports_a_clear_message_not_the_rejected_text(self):
         """Different route than the two tests above: those hit
         should_continue's OWN tool-loop safety nets (never reaching
         check_output at all); this one goes through check_output/
@@ -1037,14 +1077,14 @@ class TestRunSubagentImpl:
         )
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        result = _run_subagent_impl(
+        result = await _run_subagent_impl(
             "researcher", "is that right?", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
         assert "did not produce a final answer" in result.answer
         assert narration not in result.answer
 
-    def test_an_uncited_answer_gets_auto_corrected_and_returns_the_real_content(
+    async def test_an_uncited_answer_gets_auto_corrected_and_returns_the_real_content(
         self, monkeypatch
     ):
         """An answer that's correct but missing its citation marker is an
@@ -1075,14 +1115,14 @@ class TestRunSubagentImpl:
         fake_llm = _RecordingFakeLLM(AIMessage(content=correct_but_uncited))
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        result = _run_subagent_impl(
+        result = await _run_subagent_impl(
             "researcher", "why is the sky blue?", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
         assert result.answer == "The sky is blue due to Rayleigh scattering [1]."
         assert "did not produce a final answer" not in result.answer
 
-    def test_timeout_raises_and_is_recorded(self, monkeypatch):
+    async def test_timeout_raises_and_is_recorded(self, monkeypatch):
         class _SlowLLM:
             async def ainvoke(self, messages, *a, **kw):
                 await asyncio.sleep(0.5)
@@ -1095,7 +1135,7 @@ class TestRunSubagentImpl:
             metrics.agent_subagent_run_total, subagent="researcher", outcome="timeout"
         )
         with pytest.raises(TimeoutError):
-            _run_subagent_impl(
+            await _run_subagent_impl(
                 "researcher", "task", _subagent_cfg(), registry=registry, llm=_SlowLLM()
             )
         after = metric_value(
@@ -1104,12 +1144,12 @@ class TestRunSubagentImpl:
 
         assert after == before + 1
 
-    def test_records_usage_to_the_ledger_with_a_derived_thread_id(self, monkeypatch):
+    async def test_records_usage_to_the_ledger_with_a_derived_thread_id(self, monkeypatch):
         from app.agent import meter
 
         captured = {}
 
-        def fake_record_usage(ctx, thread_id, model_alias, total_tokens):
+        async def fake_record_usage(ctx, thread_id, model_alias, total_tokens):
             captured["ctx"] = ctx
             captured["thread_id"] = thread_id
 
@@ -1117,14 +1157,14 @@ class TestRunSubagentImpl:
         fake_llm = _RecordingFakeLLM(AIMessage(content="An answer, long enough to pass."))
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        _run_subagent_impl(
+        await _run_subagent_impl(
             "researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
         assert captured["ctx"] == TEST_CTX
         assert captured["thread_id"].startswith("parent-thread:subagent:researcher:")
 
-    def test_never_touches_the_shared_semantic_cache(self, monkeypatch):
+    async def test_never_touches_the_shared_semantic_cache(self, monkeypatch):
         """Closes GRAPH_PATTERNS.md pattern 46's previously-disclosed gap:
         a subagent run used to check/write the SAME semantic cache the
         top-level conversation uses (keyed by tenant+principal, shared
@@ -1146,14 +1186,14 @@ class TestRunSubagentImpl:
         fake_llm = _RecordingFakeLLM(AIMessage(content="An answer, long enough to pass."))
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        _run_subagent_impl(
+        await _run_subagent_impl(
             "researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
         assert cache_get_calls == []
         assert cache_set_calls == []
 
-    def test_never_pays_for_a_discarded_suggest_followups_call(self):
+    async def test_never_pays_for_a_discarded_suggest_followups_call(self):
         """The other previously-disclosed gap: a subagent run used to pay
         for a suggest_followups LLM call whose result was simply thrown
         away. Queuing exactly ONE response for a one-round, uncited answer
@@ -1165,7 +1205,7 @@ class TestRunSubagentImpl:
         fake_llm = _RecordingFakeLLM(AIMessage(content="A single-round answer, long enough."))
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        result = _run_subagent_impl(
+        result = await _run_subagent_impl(
             "researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1189,7 +1229,7 @@ class TestSubagentGraphCache:
     def teardown_method(self):
         subagent_tools.reset_subagent_graph_cache()
 
-    def test_use_cache_reuses_the_compiled_graph_across_calls(self, monkeypatch):
+    async def test_use_cache_reuses_the_compiled_graph_across_calls(self, monkeypatch):
         from app.agent import graph_build_subagent
 
         build_calls = []
@@ -1216,7 +1256,7 @@ class TestSubagentGraphCache:
         # bind THIS one and immediately exhaust its own single-shot iterator.
         never_used_llm = _RecordingFakeLLM(AIMessage(content="should never be reached."))
 
-        _run_subagent_impl(
+        await _run_subagent_impl(
             "researcher",
             "task one",
             _subagent_cfg(),
@@ -1227,7 +1267,7 @@ class TestSubagentGraphCache:
         )
         assert len(build_calls) == 1
 
-        _run_subagent_impl(
+        await _run_subagent_impl(
             "researcher",
             "task two",
             _subagent_cfg(),
@@ -1242,7 +1282,7 @@ class TestSubagentGraphCache:
         assert len(build_calls) == 1
         assert never_used_llm.calls == []
 
-    def test_different_domains_get_independent_cache_entries(self, monkeypatch):
+    async def test_different_domains_get_independent_cache_entries(self, monkeypatch):
         from app.agent import graph_build_subagent
 
         build_calls = []
@@ -1258,11 +1298,11 @@ class TestSubagentGraphCache:
             AIMessage(content="a, long enough."), AIMessage(content="b, long enough.")
         )
 
-        _run_subagent_impl(
+        await _run_subagent_impl(
             "researcher", "t", _subagent_cfg(), registry=registry, llm=fake_llm,
             domain="ecorp", use_cache=True,
         )
-        _run_subagent_impl(
+        await _run_subagent_impl(
             "researcher", "t", _subagent_cfg(), registry=registry, llm=fake_llm,
             domain="support", use_cache=True,
         )
@@ -1275,11 +1315,11 @@ class TestSubagentGraphCache:
             ("support", "researcher"),
         }
 
-    def test_without_use_cache_the_graph_cache_is_never_touched(self):
+    async def test_without_use_cache_the_graph_cache_is_never_touched(self):
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
         fake_llm = _RecordingFakeLLM(AIMessage(content="an answer, long enough to pass."))
 
-        _run_subagent_impl(
+        await _run_subagent_impl(
             "researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1305,7 +1345,7 @@ class TestRunSubagentTool:
                 subagent_name=SubagentName.researcher, task="   ", tool_call_id="test-call-id"
             )
 
-    def test_invoke_returns_a_command_with_the_answer_and_its_spend(self, monkeypatch):
+    async def test_invoke_returns_a_command_with_the_answer_and_its_spend(self, monkeypatch):
         """The tool now builds its own ToolMessage and folds usage back into
         the parent turn's live budget via Command(update=...), rather than
         returning a bare string ToolNode wraps for us (GRAPH_PATTERNS.md
@@ -1313,11 +1353,12 @@ class TestRunSubagentTool:
         own ceiling" gap)."""
         from langgraph.types import Command
 
-        monkeypatch.setattr(
-            subagent_tools, "_run_subagent_impl", lambda *a, **k: SubagentResult("42", 123, 0.05)
-        )
+        async def fake_run_subagent_impl(*a, **k):
+            return SubagentResult("42", 123, 0.05)
 
-        result = run_subagent.invoke(
+        monkeypatch.setattr(subagent_tools, "_run_subagent_impl", fake_run_subagent_impl)
+
+        result = await run_subagent.ainvoke(
             {
                 "name": "run_subagent",
                 "args": {"subagent_name": "researcher", "task": "what is 6*7?"},
@@ -1444,7 +1485,7 @@ class TestMakeDomainSubagentTool:
         assert next(iter(support_schema["$defs"].values()))["enum"] == ["support-agent"]
         assert next(iter(sales_schema["$defs"].values()))["enum"] == ["sales-agent"]
 
-    def test_delegates_using_the_domains_own_tools_not_ecorps(self, monkeypatch):
+    async def test_delegates_using_the_domains_own_tools_not_ecorps(self, monkeypatch):
         """The actual bug this whole mechanism exists to fix: a
         domain-specific tool name must be resolvable as a real nested tool
         object, not silently dropped because it isn't in Ecorp's TOOLS."""
@@ -1455,7 +1496,7 @@ class TestMakeDomainSubagentTool:
 
         captured = {}
 
-        def fake_run_subagent_impl(
+        async def fake_run_subagent_impl(
             name, task, config, *, domain=None, registry=None, tools_by_name=None, llm=None, use_cache=False
         ):
             captured["tools_by_name"] = tools_by_name
@@ -1468,7 +1509,7 @@ class TestMakeDomainSubagentTool:
         domain_tool = make_domain_subagent_tool(
             "support", [fake_support_tool], {"a_support_only_tool": "read_only"}
         )
-        domain_tool.invoke(
+        await domain_tool.ainvoke(
             {
                 "name": "run_subagent",
                 "args": {"subagent_name": "ticket-researcher", "task": "look something up"},

@@ -3,8 +3,12 @@ log an inbound lead interaction, schedule a follow-up, package a brief on
 a lead, hand a hot lead off to a human rep, check the pending follow-up
 queue, and close out a lead that isn't going to convert. Same conventions
 as app/agent/tools.py / app/domains/support/tools.py throughout (Pydantic
-args_schema, RunnableConfig ctx, _run_with_timeout reuse, fail-closed ctx
-check).
+args_schema, RunnableConfig ctx, _arun_with_timeout reuse, fail-closed ctx
+check). Every tool is `async def` now — `store`'s queries await a real
+`AsyncConnectionPool`, `notify`/`render_url_to_markdown` await real HTTP
+clients, and the sandbox tools await a real MCP client session
+(app/domains/sandbox_session.py) — matching app/agent/tools.py's own
+async-first design.
 
 No tool here sends anything to the customer. "Drafts replies in your
 voice" (the use case's own words) is satisfied by the LLM's ordinary final
@@ -20,7 +24,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field, field_validator
 
-from app.agent.tools import _run_with_timeout
+from app.agent.tools import _arun_with_timeout
 from app.core.security import SecurityCtx, valid_ctx
 from app.domains import notify, sandbox_session
 from app.domains.policy import ActionAllowlistPolicy
@@ -78,20 +82,20 @@ class LogLeadInteractionArgs(BaseModel):
         return v
 
 
-def _log_lead_interaction_impl(name: str, contact: str, notes: str, ctx: SecurityCtx) -> str:
-    lead_id = store.find_or_create_lead(ctx["tenant"], name, contact, notes)
+async def _log_lead_interaction_impl(name: str, contact: str, notes: str, ctx: SecurityCtx) -> str:
+    lead_id = await store.find_or_create_lead(ctx["tenant"], name, contact, notes)
     return f"Logged interaction for lead #{lead_id} ({name}, {contact})."
 
 
 @tool(args_schema=LogLeadInteractionArgs)
-def log_lead_interaction(name: str, contact: str, notes: str, config: RunnableConfig) -> str:
+async def log_lead_interaction(name: str, contact: str, notes: str, config: RunnableConfig) -> str:
     """Record an inbound interaction with a lead — finds the existing lead
     by contact or creates a new one. Call this for every meaningful inbound
     message before deciding what to do next."""
     ctx = _ctx_or_refuse(config, "log_lead_interaction")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_log_lead_interaction_impl, name, contact, notes, ctx)
+    return await _arun_with_timeout(_log_lead_interaction_impl, name, contact, notes, ctx)
 
 
 class ScheduleFollowupArgs(BaseModel):
@@ -107,31 +111,31 @@ class ScheduleFollowupArgs(BaseModel):
         return v
 
 
-def _schedule_followup_impl(contact: str, due_in_days: int, note: str, ctx: SecurityCtx) -> str:
+async def _schedule_followup_impl(contact: str, due_in_days: int, note: str, ctx: SecurityCtx) -> str:
     due_at = datetime.now(UTC) + timedelta(days=due_in_days)
-    followup_id = store.add_followup(ctx["tenant"], contact, due_at, note, ctx["principal"])
+    followup_id = await store.add_followup(ctx["tenant"], contact, due_at, note, ctx["principal"])
     if followup_id is None:
         return f"No lead found for contact {contact!r} — log an interaction with them first."
     return f"Follow-up #{followup_id} scheduled for {due_at.date().isoformat()}: {note}"
 
 
 @tool(args_schema=ScheduleFollowupArgs)
-def schedule_followup(contact: str, due_in_days: int, note: str, config: RunnableConfig) -> str:
+async def schedule_followup(contact: str, due_in_days: int, note: str, config: RunnableConfig) -> str:
     """Schedule a future follow-up for a lead. scripts/followup_sweep.py
     (run via cron) picks these up once due and drafts a nudge for a human
     to review and send."""
     ctx = _ctx_or_refuse(config, "schedule_followup")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_schedule_followup_impl, contact, due_in_days, note, ctx)
+    return await _arun_with_timeout(_schedule_followup_impl, contact, due_in_days, note, ctx)
 
 
 class PackageLeadBriefArgs(BaseModel):
     contact: str = Field(..., description="The lead's contact to brief on.")
 
 
-def _package_lead_brief_impl(contact: str, ctx: SecurityCtx) -> str:
-    history = store.lead_history(ctx["tenant"], contact)
+async def _package_lead_brief_impl(contact: str, ctx: SecurityCtx) -> str:
+    history = await store.lead_history(ctx["tenant"], contact)
     if history is None:
         return f"No lead found for contact {contact!r}."
     lines = [
@@ -148,14 +152,14 @@ def _package_lead_brief_impl(contact: str, ctx: SecurityCtx) -> str:
 
 
 @tool(args_schema=PackageLeadBriefArgs)
-def package_lead_brief(contact: str, config: RunnableConfig) -> str:
+async def package_lead_brief(contact: str, config: RunnableConfig) -> str:
     """Assemble a structured brief on a lead — history, notes, follow-ups
     — read-only, for either your own reasoning or as the summary handed to
     a human rep via handoff_to_human."""
     ctx = _ctx_or_refuse(config, "package_lead_brief")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_package_lead_brief_impl, contact, ctx)
+    return await _arun_with_timeout(_package_lead_brief_impl, contact, ctx)
 
 
 class HandoffToHumanArgs(BaseModel):
@@ -171,11 +175,11 @@ class HandoffToHumanArgs(BaseModel):
         return v
 
 
-def _handoff_to_human_impl(contact: str, brief_summary: str, reason: str, ctx: SecurityCtx) -> str:
-    updated = store.set_lead_status(ctx["tenant"], contact, "handed_off")
+async def _handoff_to_human_impl(contact: str, brief_summary: str, reason: str, ctx: SecurityCtx) -> str:
+    updated = await store.set_lead_status(ctx["tenant"], contact, "handed_off")
     if not updated:
         return f"No lead found for contact {contact!r} — nothing to hand off."
-    notify.post_to_team_channel(
+    await notify.post_to_team_channel(
         "sales-handoffs",
         f"[{ctx['tenant']}] Hot lead {contact} handed off by {ctx['principal']} ({reason}):\n{brief_summary}",
     )
@@ -183,14 +187,14 @@ def _handoff_to_human_impl(contact: str, brief_summary: str, reason: str, ctx: S
 
 
 @tool(args_schema=HandoffToHumanArgs)
-def handoff_to_human(contact: str, brief_summary: str, reason: str, config: RunnableConfig) -> str:
+async def handoff_to_human(contact: str, brief_summary: str, reason: str, config: RunnableConfig) -> str:
     """Mark a lead 'hot' and hand it to a human rep with a packaged brief
     — use this once a lead is ready to talk to a person, never to send
     anything to the lead itself."""
     ctx = _ctx_or_refuse(config, "handoff_to_human")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_handoff_to_human_impl, contact, brief_summary, reason, ctx)
+    return await _arun_with_timeout(_handoff_to_human_impl, contact, brief_summary, reason, ctx)
 
 
 class ListPendingFollowupsArgs(BaseModel):
@@ -200,8 +204,8 @@ class ListPendingFollowupsArgs(BaseModel):
     )
 
 
-def _list_pending_followups_impl(contact: str | None, ctx: SecurityCtx) -> str:
-    followups = store.list_pending_followups(ctx["tenant"], contact)
+async def _list_pending_followups_impl(contact: str | None, ctx: SecurityCtx) -> str:
+    followups = await store.list_pending_followups(ctx["tenant"], contact)
     if not followups:
         return "No pending follow-ups." if contact is None else f"No pending follow-ups for {contact!r}."
     lines = [
@@ -211,14 +215,14 @@ def _list_pending_followups_impl(contact: str | None, ctx: SecurityCtx) -> str:
 
 
 @tool(args_schema=ListPendingFollowupsArgs)
-def list_pending_followups(config: RunnableConfig, contact: str | None = None) -> str:
+async def list_pending_followups(config: RunnableConfig, contact: str | None = None) -> str:
     """List pending follow-ups, most-imminent first — the whole queue, or
     just one lead's if `contact` is given. Use this to see what's coming
     up rather than guessing whether a lead already has one scheduled."""
     ctx = _ctx_or_refuse(config, "list_pending_followups")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_list_pending_followups_impl, contact, ctx)
+    return await _arun_with_timeout(_list_pending_followups_impl, contact, ctx)
 
 
 class MarkLeadLostArgs(BaseModel):
@@ -233,15 +237,15 @@ class MarkLeadLostArgs(BaseModel):
         return v
 
 
-def _mark_lead_lost_impl(contact: str, reason: str, ctx: SecurityCtx) -> str:
-    updated = store.mark_lead_lost(ctx["tenant"], contact, reason)
+async def _mark_lead_lost_impl(contact: str, reason: str, ctx: SecurityCtx) -> str:
+    updated = await store.mark_lead_lost(ctx["tenant"], contact, reason)
     if not updated:
         return f"No lead found for contact {contact!r} — nothing to mark lost."
     return f"Lead {contact} marked lost ({reason}); its pending follow-ups were cancelled."
 
 
 @tool(args_schema=MarkLeadLostArgs)
-def mark_lead_lost(contact: str, reason: str, config: RunnableConfig) -> str:
+async def mark_lead_lost(contact: str, reason: str, config: RunnableConfig) -> str:
     """Close out a lead that has clearly decided not to buy or gone
     unresponsive — cancels its pending follow-ups so it stops surfacing in
     the sweep. Use this instead of leaving a dead lead's follow-ups
@@ -249,7 +253,7 @@ def mark_lead_lost(contact: str, reason: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "mark_lead_lost")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(_mark_lead_lost_impl, contact, reason, ctx)
+    return await _arun_with_timeout(_mark_lead_lost_impl, contact, reason, ctx)
 
 
 class EnrichLeadFromWebsiteArgs(BaseModel):
@@ -259,14 +263,14 @@ class EnrichLeadFromWebsiteArgs(BaseModel):
     url: str = Field(..., description="The lead's company website (https:// only).")
 
 
-def _enrich_lead_from_website_impl(contact: str, url: str, ctx: SecurityCtx) -> str:
-    lead = store.get_lead(ctx["tenant"], contact)
+async def _enrich_lead_from_website_impl(contact: str, url: str, ctx: SecurityCtx) -> str:
+    lead = await store.get_lead(ctx["tenant"], contact)
     if lead is None:
         return f"No lead found for contact {contact!r} — log an interaction with them first."
 
-    page_text = render_url_to_markdown(url)
+    page_text = await render_url_to_markdown(url)
     note = f"Website research ({url}):\n{page_text}"
-    store.append_lead_note(ctx["tenant"], contact, note)
+    await store.append_lead_note(ctx["tenant"], contact, note)
     return (
         f"Added research from {url} to {lead['name']}'s notes. "
         f"Summary of what was found:\n{page_text[:500]}"
@@ -274,7 +278,7 @@ def _enrich_lead_from_website_impl(contact: str, url: str, ctx: SecurityCtx) -> 
 
 
 @tool(args_schema=EnrichLeadFromWebsiteArgs)
-def enrich_lead_from_website(contact: str, url: str, config: RunnableConfig) -> str:
+async def enrich_lead_from_website(contact: str, url: str, config: RunnableConfig) -> str:
     """Crawl a lead's company website (real headless-browser render, so it
     works on JS-rendered marketing/SPA sites) and add a firmographic
     research summary to their notes — use this BEFORE package_lead_brief/
@@ -286,7 +290,7 @@ def enrich_lead_from_website(contact: str, url: str, config: RunnableConfig) -> 
     ctx = _ctx_or_refuse(config, "enrich_lead")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(
+    return await _arun_with_timeout(
         _enrich_lead_from_website_impl, contact, url, ctx, _timeout_seconds=CRAWL_TOOL_TIMEOUT_SECONDS
     )
 
@@ -324,8 +328,8 @@ class RunCommandInSandboxArgs(BaseModel):
         return v
 
 
-def _raw_sandbox_tools_or_raise() -> dict:
-    raw = sandbox_session.load_raw_sandbox_tools()
+async def _raw_sandbox_tools_or_raise() -> dict:
+    raw = await sandbox_session.load_raw_sandbox_tools()
     if not raw:
         raise sandbox_session.SandboxCallFailed(
             "OpenSandbox is not reachable right now (opensandbox-mcp/opensandbox-server may still be "
@@ -334,12 +338,14 @@ def _raw_sandbox_tools_or_raise() -> dict:
     return raw
 
 
-def _run_command_in_sandbox_impl(command: str, thread_id: str, ctx: SecurityCtx) -> str:
-    return sandbox_session.run_command_in_sandbox_impl(command, thread_id, _raw_sandbox_tools_or_raise())
+async def _run_command_in_sandbox_impl(command: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return await sandbox_session.run_command_in_sandbox_impl(
+        command, thread_id, await _raw_sandbox_tools_or_raise()
+    )
 
 
 @tool(args_schema=RunCommandInSandboxArgs)
-def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
+async def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
     """Run a shell command inside an isolated, disposable sandbox —
     use this for plain shell tasks only, NOT for Python computation.
     For real deal-economics math calculator's plain arithmetic can't
@@ -365,7 +371,7 @@ def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "run_command_in_sandbox")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(
+    return await _arun_with_timeout(
         _run_command_in_sandbox_impl,
         command,
         _thread_id_from_config(config),
@@ -385,12 +391,14 @@ class RunPythonInSandboxArgs(BaseModel):
         return v
 
 
-def _run_python_in_sandbox_impl(script: str, thread_id: str, ctx: SecurityCtx) -> str:
-    return sandbox_session.run_python_in_sandbox_impl(script, thread_id, _raw_sandbox_tools_or_raise())
+async def _run_python_in_sandbox_impl(script: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return await sandbox_session.run_python_in_sandbox_impl(
+        script, thread_id, await _raw_sandbox_tools_or_raise()
+    )
 
 
 @tool(args_schema=RunPythonInSandboxArgs)
-def run_python_in_sandbox(script: str, config: RunnableConfig) -> str:
+async def run_python_in_sandbox(script: str, config: RunnableConfig) -> str:
     """Run real deal-economics math calculator's plain arithmetic
     can't do: a multi-year contract with an annual escalation % and
     volume-discount tiers, not just one flat expression. STOP: if this
@@ -420,7 +428,7 @@ def run_python_in_sandbox(script: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "run_python_in_sandbox")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(
+    return await _arun_with_timeout(
         _run_python_in_sandbox_impl,
         script,
         _thread_id_from_config(config),
@@ -433,12 +441,14 @@ class ReadSandboxFileArgs(BaseModel):
     path: str = Field(..., description="Path of the file to read inside the sandbox.")
 
 
-def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -> str:
-    return sandbox_session.read_sandbox_file_impl(path, thread_id, _raw_sandbox_tools_or_raise())
+async def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return await sandbox_session.read_sandbox_file_impl(
+        path, thread_id, await _raw_sandbox_tools_or_raise()
+    )
 
 
 @tool(args_schema=ReadSandboxFileArgs)
-def read_sandbox_file(path: str, config: RunnableConfig) -> str:
+async def read_sandbox_file(path: str, config: RunnableConfig) -> str:
     """Read a text file from this conversation's sandbox (e.g. a
     script's output written to disk, or a file written earlier with
     write_sandbox_file). Same auto-created sandbox as
@@ -451,7 +461,7 @@ def read_sandbox_file(path: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "read_sandbox_file")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(
+    return await _arun_with_timeout(
         _read_sandbox_file_impl,
         path,
         _thread_id_from_config(config),
@@ -465,12 +475,14 @@ class WriteSandboxFileArgs(BaseModel):
     content: str = Field(..., description="The file's full text content.")
 
 
-def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx: SecurityCtx) -> str:
-    return sandbox_session.write_sandbox_file_impl(path, content, thread_id, _raw_sandbox_tools_or_raise())
+async def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx: SecurityCtx) -> str:
+    return await sandbox_session.write_sandbox_file_impl(
+        path, content, thread_id, await _raw_sandbox_tools_or_raise()
+    )
 
 
 @tool(args_schema=WriteSandboxFileArgs)
-def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
+async def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
     """Write a text file into this conversation's sandbox (e.g. stage
     a script before running it with run_command_in_sandbox, or a
     chunk of crawled page text too big to pass inline). Same
@@ -480,7 +492,7 @@ def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "write_sandbox_file")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return _run_with_timeout(
+    return await _arun_with_timeout(
         _write_sandbox_file_impl,
         path,
         content,

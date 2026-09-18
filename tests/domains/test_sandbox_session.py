@@ -19,7 +19,7 @@ class _FakeTool:
     def __init__(self, fn):
         self._fn = fn
 
-    def invoke(self, kwargs):
+    async def ainvoke(self, kwargs):
         return self._fn(**kwargs)
 
 
@@ -28,7 +28,7 @@ def _raw(**tools):
 
 
 class TestGetOrCreateSandboxId:
-    def test_reuses_an_existing_running_sandbox_found_by_metadata(self):
+    async def test_reuses_an_existing_running_sandbox_found_by_metadata(self):
         captured_filter = {}
 
         def fake_sandbox_list(filter):
@@ -47,13 +47,13 @@ class TestGetOrCreateSandboxId:
 
         raw = _raw(sandbox_list=fake_sandbox_list, sandbox_create=fake_sandbox_create)
 
-        sandbox_id = sandbox_session.get_or_create_sandbox_id(raw, "thread-1")
+        sandbox_id = await sandbox_session.get_or_create_sandbox_id(raw, "thread-1")
 
         assert sandbox_id == "sbx_existing"
         assert captured_filter["metadata"] == {sandbox_session.SANDBOX_METADATA_KEY: "thread-1"}
         assert captured_filter["states"] == ["RUNNING"]
 
-    def test_creates_a_fresh_sandbox_tagged_with_the_thread_id_when_none_found(self):
+    async def test_creates_a_fresh_sandbox_tagged_with_the_thread_id_when_none_found(self):
         captured_create_kwargs = {}
 
         def fake_sandbox_list(filter):
@@ -65,13 +65,13 @@ class TestGetOrCreateSandboxId:
 
         raw = _raw(sandbox_list=fake_sandbox_list, sandbox_create=fake_sandbox_create)
 
-        sandbox_id = sandbox_session.get_or_create_sandbox_id(raw, "thread-2")
+        sandbox_id = await sandbox_session.get_or_create_sandbox_id(raw, "thread-2")
 
         assert sandbox_id == "sbx_new"
         assert captured_create_kwargs["metadata"] == {sandbox_session.SANDBOX_METADATA_KEY: "thread-2"}
         assert captured_create_kwargs["image"]  # a real image was passed, not left empty
 
-    def test_falls_through_to_create_when_the_list_call_itself_fails(self):
+    async def test_falls_through_to_create_when_the_list_call_itself_fails(self):
         def fake_sandbox_list(filter):
             return "Remote tool error: Error executing tool sandbox_list: boom"
 
@@ -80,11 +80,11 @@ class TestGetOrCreateSandboxId:
 
         raw = _raw(sandbox_list=fake_sandbox_list, sandbox_create=fake_sandbox_create)
 
-        sandbox_id = sandbox_session.get_or_create_sandbox_id(raw, "thread-3")
+        sandbox_id = await sandbox_session.get_or_create_sandbox_id(raw, "thread-3")
 
         assert sandbox_id == "sbx_new"
 
-    def test_raises_when_creation_itself_fails(self):
+    async def test_raises_when_creation_itself_fails(self):
         def fake_sandbox_list(filter):
             return json.dumps({"sandbox_infos": [], "pagination": {}})
 
@@ -94,9 +94,9 @@ class TestGetOrCreateSandboxId:
         raw = _raw(sandbox_list=fake_sandbox_list, sandbox_create=fake_sandbox_create)
 
         with pytest.raises(sandbox_session.SandboxCallFailed):
-            sandbox_session.get_or_create_sandbox_id(raw, "thread-4")
+            await sandbox_session.get_or_create_sandbox_id(raw, "thread-4")
 
-    def test_raises_when_create_succeeds_but_omits_a_sandbox_id(self):
+    async def test_raises_when_create_succeeds_but_omits_a_sandbox_id(self):
         def fake_sandbox_list(filter):
             return json.dumps({"sandbox_infos": [], "pagination": {}})
 
@@ -106,11 +106,11 @@ class TestGetOrCreateSandboxId:
         raw = _raw(sandbox_list=fake_sandbox_list, sandbox_create=fake_sandbox_create)
 
         with pytest.raises(sandbox_session.SandboxCallFailed):
-            sandbox_session.get_or_create_sandbox_id(raw, "thread-5")
+            await sandbox_session.get_or_create_sandbox_id(raw, "thread-5")
 
 
 class TestRunCommandInSandboxImpl:
-    def test_reuses_the_same_sandbox_across_calls_in_one_thread(self):
+    async def test_reuses_the_same_sandbox_across_calls_in_one_thread(self):
         create_calls = []
 
         def fake_sandbox_list(filter):
@@ -135,8 +135,8 @@ class TestRunCommandInSandboxImpl:
 
         raw = _raw(sandbox_list=fake_sandbox_list, sandbox_create=fake_sandbox_create, command_run=fake_command_run)
 
-        first = sandbox_session.run_command_in_sandbox_impl("echo hi", "same-thread", raw)
-        second = sandbox_session.run_command_in_sandbox_impl("echo bye", "same-thread", raw)
+        first = await sandbox_session.run_command_in_sandbox_impl("echo hi", "same-thread", raw)
+        second = await sandbox_session.run_command_in_sandbox_impl("echo bye", "same-thread", raw)
 
         assert len(create_calls) == 1  # only ONE sandbox created for both calls
         assert captured_run_kwargs[0]["sandbox_id"] == captured_run_kwargs[1]["sandbox_id"] == create_calls[0]
@@ -144,7 +144,7 @@ class TestRunCommandInSandboxImpl:
         assert "42" in first
         assert "42" in second
 
-    def test_formats_exit_code_and_stdout(self):
+    async def test_formats_exit_code_and_stdout(self):
         raw = _raw(
             sandbox_list=lambda filter: json.dumps({"sandbox_infos": [], "pagination": {}}),
             sandbox_create=lambda **kw: json.dumps({"sandbox_id": "sbx_1", "info": {}}),
@@ -153,14 +153,14 @@ class TestRunCommandInSandboxImpl:
             ),
         )
 
-        result = sandbox_session.run_command_in_sandbox_impl("ls", "t", raw)
+        result = await sandbox_session.run_command_in_sandbox_impl("ls", "t", raw)
 
         assert "exit code: 0" in result
         assert "line1" in result
         assert "line2" in result
         assert "stderr" not in result  # omitted entirely when empty
 
-    def test_includes_stderr_when_present(self):
+    async def test_includes_stderr_when_present(self):
         raw = _raw(
             sandbox_list=lambda filter: json.dumps({"sandbox_infos": [], "pagination": {}}),
             sandbox_create=lambda **kw: json.dumps({"sandbox_id": "sbx_1", "info": {}}),
@@ -169,13 +169,13 @@ class TestRunCommandInSandboxImpl:
             ),
         )
 
-        result = sandbox_session.run_command_in_sandbox_impl("false", "t", raw)
+        result = await sandbox_session.run_command_in_sandbox_impl("false", "t", raw)
 
         assert "exit code: 1" in result
         assert "stdout: (empty)" in result
         assert "stderr:\nboom" in result
 
-    def test_a_remote_tool_error_on_command_run_propagates(self):
+    async def test_a_remote_tool_error_on_command_run_propagates(self):
         raw = _raw(
             sandbox_list=lambda filter: json.dumps({"sandbox_infos": [], "pagination": {}}),
             sandbox_create=lambda **kw: json.dumps({"sandbox_id": "sbx_1", "info": {}}),
@@ -183,7 +183,7 @@ class TestRunCommandInSandboxImpl:
         )
 
         with pytest.raises(sandbox_session.SandboxCallFailed):
-            sandbox_session.run_command_in_sandbox_impl("ls", "t", raw)
+            await sandbox_session.run_command_in_sandbox_impl("ls", "t", raw)
 
 
 class TestRunPythonInSandboxImpl:
@@ -194,7 +194,7 @@ class TestRunPythonInSandboxImpl:
     most common real failure mode of run_command_in_sandbox's own
     `python -c '...'` pattern, confirmed via repeated Langfuse traces)."""
 
-    def test_writes_the_script_then_runs_it_with_python3(self):
+    async def test_writes_the_script_then_runs_it_with_python3(self):
         captured_write_kwargs = {}
         captured_run_kwargs = {}
 
@@ -214,14 +214,14 @@ class TestRunPythonInSandboxImpl:
         )
 
         script = "print('it worked even with a \\'quote\\' inside')"
-        result = sandbox_session.run_python_in_sandbox_impl(script, "t", raw)
+        result = await sandbox_session.run_python_in_sandbox_impl(script, "t", raw)
 
         assert captured_write_kwargs["content"] == script  # passed through untouched, no shell escaping
         assert captured_write_kwargs["path"] == captured_run_kwargs["command"].split()[-1]
         assert captured_run_kwargs["command"].startswith("python3 ")
         assert "42" in result
 
-    def test_a_script_with_quotes_and_newlines_survives_untouched(self):
+    async def test_a_script_with_quotes_and_newlines_survives_untouched(self):
         """The exact real failure class this tool exists to eliminate:
         nested single quotes, apostrophes, and multi-line code that would
         break a `python -c '...'` one-liner never even reach a shell
@@ -240,11 +240,11 @@ class TestRunPythonInSandboxImpl:
         )
 
         script = "text = \"db_timeout at 09:12, retry ok\"\nprint(text.count('db_timeout'))\n"
-        sandbox_session.run_python_in_sandbox_impl(script, "t", raw)
+        await sandbox_session.run_python_in_sandbox_impl(script, "t", raw)
 
         assert captured["content"] == script
 
-    def test_reuses_the_same_sandbox_as_other_sandbox_tools(self):
+    async def test_reuses_the_same_sandbox_as_other_sandbox_tools(self):
         """Same thread-scoped sandbox reuse as run_command_in_sandbox —
         no separate sandbox lifecycle for this tool."""
         create_calls = []
@@ -268,12 +268,12 @@ class TestRunPythonInSandboxImpl:
             command_run=lambda **kw: json.dumps({"exit_code": 0, "logs": {"stdout": [], "stderr": []}}),
         )
 
-        sandbox_session.run_command_in_sandbox_impl("echo hi", "same-thread", raw)
-        sandbox_session.run_python_in_sandbox_impl("print(1)", "same-thread", raw)
+        await sandbox_session.run_command_in_sandbox_impl("echo hi", "same-thread", raw)
+        await sandbox_session.run_python_in_sandbox_impl("print(1)", "same-thread", raw)
 
         assert len(create_calls) == 1  # only ONE sandbox for both tools, same thread
 
-    def test_a_remote_tool_error_on_file_write_propagates(self):
+    async def test_a_remote_tool_error_on_file_write_propagates(self):
         raw = _raw(
             sandbox_list=lambda filter: json.dumps({"sandbox_infos": [], "pagination": {}}),
             sandbox_create=lambda **kw: json.dumps({"sandbox_id": "sbx_1", "info": {}}),
@@ -281,9 +281,9 @@ class TestRunPythonInSandboxImpl:
         )
 
         with pytest.raises(sandbox_session.SandboxCallFailed):
-            sandbox_session.run_python_in_sandbox_impl("print(1)", "t", raw)
+            await sandbox_session.run_python_in_sandbox_impl("print(1)", "t", raw)
 
-    def test_strips_a_markdown_code_fence_the_model_wrapped_the_script_in(self):
+    async def test_strips_a_markdown_code_fence_the_model_wrapped_the_script_in(self):
         """Real bug, found live immediately after this tool shipped: the
         model wrapped its script in ```python\\n...\\n``` — the same
         shape it uses to SHOW code to a human — which is not valid
@@ -303,11 +303,11 @@ class TestRunPythonInSandboxImpl:
         )
 
         fenced = "```python\nprint('hi')\n```"
-        sandbox_session.run_python_in_sandbox_impl(fenced, "t", raw)
+        await sandbox_session.run_python_in_sandbox_impl(fenced, "t", raw)
 
         assert captured["content"] == "print('hi')"
 
-    def test_strips_a_closing_fence_glued_directly_onto_the_last_code_line(self):
+    async def test_strips_a_closing_fence_glued_directly_onto_the_last_code_line(self):
         """Real variant found live in a later call of the same
         investigation: the model sometimes emits the closing ``` with no
         newline before it (glued straight onto the last line of code),
@@ -326,11 +326,11 @@ class TestRunPythonInSandboxImpl:
         )
 
         glued = "```python\nprint('hi')```"
-        sandbox_session.run_python_in_sandbox_impl(glued, "t", raw)
+        await sandbox_session.run_python_in_sandbox_impl(glued, "t", raw)
 
         assert captured["content"] == "print('hi')"
 
-    def test_leaves_a_script_with_no_fence_untouched(self):
+    async def test_leaves_a_script_with_no_fence_untouched(self):
         captured = {}
 
         def fake_file_write(**kwargs):
@@ -345,11 +345,11 @@ class TestRunPythonInSandboxImpl:
         )
 
         plain = "print('hi')"
-        sandbox_session.run_python_in_sandbox_impl(plain, "t", raw)
+        await sandbox_session.run_python_in_sandbox_impl(plain, "t", raw)
 
         assert captured["content"] == plain
 
-    def test_leaves_a_stray_triple_backtick_inside_the_script_alone(self):
+    async def test_leaves_a_stray_triple_backtick_inside_the_script_alone(self):
         """Only a fence wrapping the WHOLE script is stripped — a stray
         ``` that's legitimately part of the script's own content (e.g.
         inside a string) must survive untouched, since it's never both
@@ -368,13 +368,13 @@ class TestRunPythonInSandboxImpl:
         )
 
         script = "text = 'a fenced block looks like ```'\nprint(text)"
-        sandbox_session.run_python_in_sandbox_impl(script, "t", raw)
+        await sandbox_session.run_python_in_sandbox_impl(script, "t", raw)
 
         assert captured["content"] == script
 
 
 class TestReadWriteSandboxFileImpl:
-    def test_read_returns_the_file_content(self):
+    async def test_read_returns_the_file_content(self):
         raw = _raw(
             sandbox_list=lambda filter: json.dumps(
                 {"sandbox_infos": [{"id": "sbx_1", "status": {"state": "RUNNING"}}], "pagination": {}}
@@ -382,11 +382,11 @@ class TestReadWriteSandboxFileImpl:
             file_read=lambda **kw: json.dumps({"path": kw["path"], "content": "hello world"}),
         )
 
-        result = sandbox_session.read_sandbox_file_impl("/tmp/out.txt", "t", raw)
+        result = await sandbox_session.read_sandbox_file_impl("/tmp/out.txt", "t", raw)
 
         assert result == "hello world"
 
-    def test_write_confirms_the_path(self):
+    async def test_write_confirms_the_path(self):
         captured = {}
 
         def fake_file_write(**kwargs):
@@ -399,13 +399,13 @@ class TestReadWriteSandboxFileImpl:
             file_write=fake_file_write,
         )
 
-        result = sandbox_session.write_sandbox_file_impl("/tmp/script.py", "print(1)", "t", raw)
+        result = await sandbox_session.write_sandbox_file_impl("/tmp/script.py", "print(1)", "t", raw)
 
         assert "/tmp/script.py" in result
         assert captured["content"] == "print(1)"
         assert captured["connect_if_missing"] is True
 
-    def test_read_and_write_share_the_same_per_thread_sandbox(self):
+    async def test_read_and_write_share_the_same_per_thread_sandbox(self):
         create_calls = []
 
         def fake_sandbox_list(filter):
@@ -427,21 +427,21 @@ class TestReadWriteSandboxFileImpl:
             file_read=lambda **kw: json.dumps({"path": kw["path"], "content": "data"}),
         )
 
-        sandbox_session.write_sandbox_file_impl("/tmp/a.txt", "x", "same-thread", raw)
-        sandbox_session.read_sandbox_file_impl("/tmp/a.txt", "same-thread", raw)
+        await sandbox_session.write_sandbox_file_impl("/tmp/a.txt", "x", "same-thread", raw)
+        await sandbox_session.read_sandbox_file_impl("/tmp/a.txt", "same-thread", raw)
 
         assert len(create_calls) == 1
 
 
 class TestCallRawTool:
-    def test_raises_on_unparseable_response(self):
+    async def test_raises_on_unparseable_response(self):
         raw = _raw(sandbox_list=lambda filter: "not json at all")
 
         with pytest.raises(sandbox_session.SandboxCallFailed):
-            sandbox_session._call_raw_tool(raw, "sandbox_list", filter={})
+            await sandbox_session._call_raw_tool(raw, "sandbox_list", filter={})
 
-    def test_raises_on_a_json_array_instead_of_an_object(self):
+    async def test_raises_on_a_json_array_instead_of_an_object(self):
         raw = _raw(sandbox_list=lambda filter: json.dumps([1, 2, 3]))
 
         with pytest.raises(sandbox_session.SandboxCallFailed):
-            sandbox_session._call_raw_tool(raw, "sandbox_list", filter={})
+            await sandbox_session._call_raw_tool(raw, "sandbox_list", filter={})

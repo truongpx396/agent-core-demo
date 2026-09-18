@@ -77,7 +77,6 @@ now seeds properly before asserting anything. `scripts/eval.py`'s own
 baseline the way earlier comments here assumed — it has the identical gap
 and needs its own re-verification, not just this file's.
 """
-import asyncio
 import uuid
 
 import pytest
@@ -166,7 +165,7 @@ async def _run_and_get_tool_calls(question: str, manifest=None, domain=None, aut
     return answer, tools_called
 
 
-def test_search_docs_tool_call_is_correct_and_well_argued(deepeval_ollama, deepeval_judge):
+async def test_search_docs_tool_call_is_correct_and_well_argued(deepeval_ollama, deepeval_judge):
     """The original case this file was built around — see its own module
     docstring for the real, disclosed word-collision finding this
     surfaced (fixed in app/agent/graph.py's SYSTEM_PROMPT and
@@ -178,7 +177,7 @@ def test_search_docs_tool_call_is_correct_and_well_argued(deepeval_ollama, deepe
     from deepeval.test_case import LLMTestCase, ToolCall
 
     question = "What are Ecorp's support hours?"
-    answer, tools_called = asyncio.run(_run_and_get_tool_calls(question))
+    answer, tools_called = await _run_and_get_tool_calls(question)
 
     judge = deepeval_judge
     test_case = LLMTestCase(
@@ -197,7 +196,7 @@ def test_search_docs_tool_call_is_correct_and_well_argued(deepeval_ollama, deepe
     )
 
 
-def test_calculator_tool_call_is_correct_and_well_argued(deepeval_ollama, deepeval_judge):
+async def test_calculator_tool_call_is_correct_and_well_argued(deepeval_ollama, deepeval_judge):
     """Regression coverage for the SAME prompt fix above, from the other
     direction: does a genuine arithmetic question still correctly reach
     `calculator`, with the right expression, now that the fix explicitly
@@ -214,7 +213,7 @@ def test_calculator_tool_call_is_correct_and_well_argued(deepeval_ollama, deepev
     from deepeval.test_case import LLMTestCase, ToolCall
 
     question = "What is 12 times 7?"
-    answer, tools_called = asyncio.run(_run_and_get_tool_calls(question))
+    answer, tools_called = await _run_and_get_tool_calls(question)
 
     judge = deepeval_judge
     test_case = LLMTestCase(
@@ -233,7 +232,7 @@ def test_calculator_tool_call_is_correct_and_well_argued(deepeval_ollama, deepev
     )
 
 
-def test_query_employees_tool_call_is_correct_and_well_argued(deepeval_ollama, deepeval_judge):
+async def test_query_employees_tool_call_is_correct_and_well_argued(deepeval_ollama, deepeval_judge):
     """Regression coverage from the THIRD direction: a genuine staff-
     lookup question should still reach `query_employees`, now that
     search_docs/tools.py's own docstring explicitly claims "support hours"-
@@ -247,7 +246,7 @@ def test_query_employees_tool_call_is_correct_and_well_argued(deepeval_ollama, d
     from deepeval.test_case import LLMTestCase, ToolCall
 
     question = "Who works in the Sales department at Ecorp?"
-    answer, tools_called = asyncio.run(_run_and_get_tool_calls(question))
+    answer, tools_called = await _run_and_get_tool_calls(question)
 
     judge = deepeval_judge
     test_case = LLMTestCase(
@@ -266,7 +265,7 @@ def test_query_employees_tool_call_is_correct_and_well_argued(deepeval_ollama, d
     )
 
 
-def test_skill_tool_calls_are_correct_and_well_argued(deepeval_ollama, deepeval_judge):
+async def test_skill_tool_calls_are_correct_and_well_argued(deepeval_ollama, deepeval_judge):
     """A genuinely different mechanism from the three tool-selection cases
     above: not "which of several DATA tools fits this question," but "does
     the model recognize a packaged, multi-step INSTRUCTION set exists for
@@ -288,7 +287,7 @@ def test_skill_tool_calls_are_correct_and_well_argued(deepeval_ollama, deepeval_
     from deepeval.test_case import LLMTestCase, ToolCall
 
     question = "Can you put together an onboarding brief for a new hire named Alex Rivera?"
-    answer, tools_called = asyncio.run(_run_and_get_tool_calls(question))
+    answer, tools_called = await _run_and_get_tool_calls(question)
 
     judge = deepeval_judge
     test_case = LLMTestCase(
@@ -307,7 +306,7 @@ def test_skill_tool_calls_are_correct_and_well_argued(deepeval_ollama, deepeval_
     )
 
 
-def test_subagent_delegation_is_correct_and_well_argued(deepeval_ollama, deepeval_judge):
+async def test_subagent_delegation_is_correct_and_well_argued(deepeval_ollama, deepeval_judge):
     """The other genuinely different mechanism nothing live/semantic
     tested before today: does the model correctly delegate a
     self-contained lookup to `run_subagent` when a bundled subagent's own
@@ -336,7 +335,7 @@ def test_subagent_delegation_is_correct_and_well_argued(deepeval_ollama, deepeva
         "Look up Ecorp's support hours for me — I don't need to see how "
         "you found it, just the answer."
     )
-    answer, tools_called = asyncio.run(_run_and_get_tool_calls(question))
+    answer, tools_called = await _run_and_get_tool_calls(question)
 
     judge = deepeval_judge
     test_case = LLMTestCase(
@@ -386,7 +385,7 @@ def _use_crawl4ai_server(monkeypatch, crawl4ai_server):
     monkeypatch.setattr(web_crawler, "CRAWL4AI_API_TOKEN", crawl4ai_server["crawl4ai_api_token"])
 
 
-def test_fetch_external_reference_tool_call_is_correct_and_well_argued(
+async def test_fetch_external_reference_tool_call_is_correct_and_well_argued(
     deepeval_ollama, deepeval_judge, _use_crawl4ai_server
 ):
     """The fourth tool-mechanism gap this file closes: a REAL crawl4ai
@@ -412,11 +411,9 @@ def test_fetch_external_reference_tool_call_is_correct_and_well_argued(
     from app.domains.support.domain import SUPPORT_DOMAIN_PLUGIN, SUPPORT_MANIFEST
 
     question = "A customer linked this page and asked if it explains their issue: https://example.com"
-    answer, tools_called = asyncio.run(
-        _run_and_get_tool_calls(
+    answer, tools_called = await _run_and_get_tool_calls(
             question, manifest=SUPPORT_MANIFEST, domain=SUPPORT_DOMAIN_PLUGIN, auto_approve=True
         )
-    )
 
     judge = deepeval_judge
     test_case = LLMTestCase(
