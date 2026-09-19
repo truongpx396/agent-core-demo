@@ -78,6 +78,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from app.agent import runtime as agent_module
+from app.agent import runtime_stream as stream_module
 from app.agent import subagent_tools
 from app.agent import tools as tools_module
 from app.agent.graph import GraphDeps
@@ -411,7 +412,7 @@ class TestNoCrossContaminationUnderConcurrency:
             thread_ids = [str(uuid.uuid4()) for _ in range(n)]
 
             async def drive(i: int) -> None:
-                async for _ in agent_module.astream_events_turn(
+                async for _ in stream_module.astream_events_turn(
                     f"remember the number {i}", thread_ids[i], _ctx(f"tenant-{i}")
                 ):
                     pass
@@ -451,7 +452,7 @@ class TestSemanticCacheIsolationUnderConcurrency:
         question = "What is a LangGraph checkpointer?"
 
         async def drive(tenant: str) -> None:
-            async for _ in agent_module.astream_events_turn(question, str(uuid.uuid4()), _ctx(tenant)):
+            async for _ in stream_module.astream_events_turn(question, str(uuid.uuid4()), _ctx(tenant)):
                 pass
 
         async def _run():
@@ -678,7 +679,7 @@ class TestHITLApprovalUnderConcurrency:
 
         async def resume(thread_id: str, principal: str) -> list:
             events = []
-            async for event in agent_module.astream_events_resume(
+            async for event in stream_module.astream_events_resume(
                 thread_id, True, _ctx(tenant, principal)
             ):
                 events.append(event)
@@ -892,7 +893,7 @@ class TestQdrantReadWriteUnderConcurrency:
 
         async def drive(i: int, graph) -> list[dict]:
             thread_id = str(uuid.uuid4())
-            async for _ in agent_module.astream_events_turn(
+            async for _ in stream_module.astream_events_turn(
                 f"distinguishing content {i}", thread_id, _ctx(f"tenant-{i}")
             ):
                 pass
