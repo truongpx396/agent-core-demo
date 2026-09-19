@@ -5,11 +5,11 @@ Provisions TWO droplets (via `infra/terraform/`):
 - The **app droplet**, running a lean production subset of this app's stack
   (`docker-compose.prod.yml`): api + agent-worker + ingest-worker + postgres
   + redis + qdrant + litellm + ml-service, fronted by Caddy, plus a handful
-  of lightweight observability sidecars (node-exporter, cadvisor,
-  otel-collector-agent, promtail). It deliberately excludes local Ollama,
-  Langfuse, open-webui, and MinIO from `docker-compose.yml` — see that
-  file's own header comment for the tradeoffs and how to add any of them
-  back.
+  of lightweight observability sidecars (node-exporter, cadvisor, and
+  Grafana Alloy relaying metrics/logs to the observability droplet below).
+  It deliberately excludes local Ollama, Langfuse, open-webui, and MinIO
+  from `docker-compose.yml` — see that file's own header comment for the
+  tradeoffs and how to add any of them back.
 - The **observability droplet**, a separate, smaller box running
   Prometheus/Loki/Grafana/Alertmanager/otel-collector
   (`docker-compose.observability.prod.yml`), fed by the app droplet's
@@ -170,10 +170,9 @@ docker compose -f docker-compose.observability.prod.yml logs -f grafana
 
 Grafana is at `https://<obs_domain>` (or `http://<observability_reserved_ip>`
 with no domain set) — log in with `admin` / `GRAFANA_ADMIN_PASSWORD`. If a
-dashboard shows no data, check the app droplet's relay first:
-`docker compose -f docker-compose.prod.yml logs otel-collector-agent
-promtail` — both should show successful pushes to the observability
-droplet, not connection errors.
+dashboard shows no data, check the app droplet's relay first: `docker
+compose -f docker-compose.prod.yml logs alloy` — it should show successful
+OTLP/Loki pushes to the observability droplet, not connection errors.
 
 **Backups**: `enable_backups` (terraform.tfvars) turns on DO's own weekly
 whole-droplet image backups for the **app** droplet only — the simplest

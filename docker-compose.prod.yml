@@ -13,7 +13,7 @@
 # (docker-compose.observability.prod.yml) so a metrics/logs spike can't
 # compete with the app for this box's own CPU/mem. This file only carries
 # the lightweight sidecars needed to feed it (node-exporter, cadvisor,
-# otel-collector-agent, promtail — see their own comments below).
+# alloy — see their own comments below).
 #
 # Deployed by .github/workflows/deploy.yml: builds+pushes the app image
 # (root Dockerfile) and the ml-service image (docker/ml-service.Dockerfile)
@@ -60,10 +60,10 @@ x-app-env: &app-env
   LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
   SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
   TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-  # Local agent collector (this file's own `otel-collector-agent` service),
-  # NOT the observability droplet directly — it relays on to there over
-  # OTLP itself. See that service's own comment and observability/otel-collector/config.agent.yaml.
-  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector-agent:4318
+  # Local agent (this file's own `alloy` service), NOT the observability
+  # droplet directly — it relays on to there over OTLP itself. See that
+  # service's own comment and observability/alloy/config.alloy.
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://alloy:4318
   CRAWL4AI_SERVER_URL: ${CRAWL4AI_SERVER_URL:-}
   CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
   OPENSANDBOX_MCP_DOMAIN: ${OPENSANDBOX_MCP_DOMAIN:-}
@@ -273,11 +273,10 @@ services:
   # infra/terraform's digitalocean_droplet.observability) — see that file's
   # own header for the full topology. None of these publish a host port:
   # everything below talks over this compose file's own internal network,
-  # and only otel-collector-agent/promtail ever reach off-box (OTLP to
-  # OBS_COLLECTOR_ENDPOINT, Loki push to LOKI_PUSH_HOST — both set in this
-  # droplet's own .env, see .env.prod.example), which is why the app
-  # droplet's firewall/cloud-init needed zero new inbound rules for any of
-  # this.
+  # and only `alloy` ever reaches off-box (OTLP to OBS_COLLECTOR_ENDPOINT,
+  # Loki push to LOKI_PUSH_HOST — both set in this droplet's own .env, see
+  # .env.prod.example), which is why the app droplet's firewall/cloud-init
+  # needed zero new inbound rules for any of this.
   node-exporter:
     image: prom/node-exporter:latest
     restart: unless-stopped
@@ -314,47 +313,31 @@ services:
       - /var/lib/docker/:/var/lib/docker:ro
       - /dev/disk/:/dev/disk:ro
 
-  # Agent-mode otel-collector: api/agent-worker/ingest-worker's own OTel
-  # metrics push HERE (this file's `OTEL_EXPORTER_OTLP_ENDPOINT`), and it
-  # also scrapes node-exporter/cadvisor above LOCALLY (same network, no
-  # firewall exposure needed) before forwarding everything on to the
-  # observability droplet's own collector over OTLP — see
-  # observability/otel-collector/config.agent.yaml. This "agent + gateway"
-  # split is why only ONE port (4318) ever needs to cross the two droplets'
-  # firewall, instead of opening node-exporter/cadvisor/qdrant/litellm's
-  # ports individually.
-  otel-collector-agent:
-    image: otel/opentelemetry-collector-contrib:latest
+  # Replaces what used to be two separate sidecars (otel-collector-agent +
+  # promtail) with one process — Alloy embeds the same OTel Collector
+  # receiver/processor/exporter components those used, plus native Docker
+  # log discovery + Loki writing that vanilla OTel Collector has no
+  # equivalent for. Reads THIS droplet's own Docker socket directly (must
+  # be co-located with the containers it tails/scrapes: node-exporter,
+  # cadvisor, its own OTLP receiver), forwarding both metrics (OTLP) and
+  # logs (Loki push) to the SAME, unchanged gateway on the observability
+  # droplet — see observability/alloy/config.alloy's own header for the
+  # full reasoning and how each piece was validated.
+  alloy:
+    image: grafana/alloy:latest
     restart: unless-stopped
-    cpus: "0.2"
-    mem_limit: 256m
-    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    cpus: "0.3"
+    mem_limit: 384m
+    command: ["run", "/etc/alloy/config.alloy"]
     environment:
       OBS_COLLECTOR_ENDPOINT: ${OBS_COLLECTOR_ENDPOINT}
+      LOKI_PUSH_HOST: ${LOKI_PUSH_HOST}
     volumes:
-      - ./observability/otel-collector/config.agent.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - node-exporter
       - cadvisor
-
-  # Reads THIS droplet's own Docker socket/log files directly (must be
-  # co-located with the containers it tails), pushing to the observability
-  # droplet's Loki over the network — see
-  # observability/promtail/promtail-config.prod.yaml's own comment for why
-  # this can't just be a service in docker-compose.observability.prod.yml
-  # like it is in the dev-only docker-compose.observability.yml.
-  promtail:
-    image: grafana/promtail:latest
-    restart: unless-stopped
-    cpus: "0.1"
-    mem_limit: 128m
-    command: ["-config.file=/etc/promtail/promtail-config.yaml", "-config.expand-env=true"]
-    environment:
-      LOKI_PUSH_HOST: ${LOKI_PUSH_HOST}
-    volumes:
-      - ./observability/promtail/promtail-config.prod.yaml:/etc/promtail/promtail-config.yaml:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
 
 volumes:
   postgres:

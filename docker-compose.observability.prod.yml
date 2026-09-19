@@ -9,10 +9,9 @@
 # Unlike the dev file, nothing here bridges via `host.docker.internal` —
 # the app droplet reaches IN to this droplet instead, over the two ports
 # infra/terraform/main.tf's digitalocean_firewall.observability scopes to
-# the DO VPC's own CIDR: OTLP (4318, from the app droplet's
-# otel-collector-agent) and Loki's push endpoint (3100, from the app
-# droplet's promtail). See docker-compose.prod.yml's own observability
-# sidecars for the other half of this topology.
+# the DO VPC's own CIDR: OTLP (4318) and Loki's push endpoint (3100), both
+# from the app droplet's single `alloy` sidecar. See docker-compose.prod.yml's
+# own observability sidecars for the other half of this topology.
 #
 # Grafana is the only thing meant for a human browser (fronted by `caddy`
 # below, real auth via GRAFANA_ADMIN_PASSWORD — not the dev file's
@@ -29,7 +28,7 @@ services:
     volumes:
       - ./observability/otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
     ports:
-      - "4318:4318"   # OTLP HTTP — what the app droplet's otel-collector-agent forwards to
+      - "4318:4318"   # OTLP HTTP — what the app droplet's `alloy` forwards to
     # No 4317 (gRPC)/8889 host-published here (unlike the dev file) — the
     # app droplet only ever speaks OTLP/HTTP, and 8889 (this collector's own
     # Prometheus exporter) is only ever scraped by `prometheus` below, over
@@ -66,7 +65,7 @@ services:
       - ./observability/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
       - loki:/loki
     ports:
-      - "3100:3100"   # Loki push — what the app droplet's promtail pushes to
+      - "3100:3100"   # Loki push — what the app droplet's `alloy` pushes to
 
   grafana:
     image: grafana/grafana:latest

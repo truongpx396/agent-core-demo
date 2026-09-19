@@ -1,16 +1,16 @@
 # Prod counterpart of ./prometheus.yml — runs on the SEPARATE observability
 # droplet (docker-compose.observability.prod.yml), scraping only its own
 # LOCAL otel-collector (the gateway collector, ./config.yaml — the app
-# droplet's own otel-collector-agent, node-exporter, and cadvisor metrics
-# all arrive here already, relayed through that gateway's OTLP receiver,
-# see observability/otel-collector/config.agent.yaml). No
-# `host.docker.internal`/cross-droplet static_configs here at all — that's
-# the whole point of the agent+gateway split (infra/terraform/main.tf's
-# digitalocean_firewall.observability comment).
+# droplet's own `alloy` sidecar, node-exporter, and cadvisor metrics all
+# arrive here already, relayed through that gateway's OTLP receiver, see
+# observability/alloy/config.alloy). No `host.docker.internal`/cross-droplet
+# static_configs here at all — that's the whole point of the agent+gateway
+# split (infra/terraform/main.tf's digitalocean_firewall.observability
+# comment).
 #
 # Qdrant's and LiteLLM's own internal /metrics aren't in this pipeline yet
-# — see config.agent.yaml's own comment on why that's deliberately
-# deferred, not an oversight.
+# — see config.alloy's own comment on why that's deliberately deferred, not
+# an oversight.
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
@@ -31,7 +31,7 @@ scrape_configs:
   # Every OTel metric this app emits (app/core/metrics.py, aggregated
   # across every api/agent-worker/ingest-worker replica) PLUS the app
   # droplet's own node-exporter/cadvisor metrics, all relayed through the
-  # app droplet's otel-collector-agent — one target covers all of it.
+  # app droplet's `alloy` sidecar — one target covers all of it.
   - job_name: otel-collector
     static_configs:
       - targets: ["otel-collector:8889"]

@@ -120,10 +120,10 @@ jobs:
           rsync -az --delete -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
             postgres-init/ \
             deploy@${{ secrets.DROPLET_HOST }}:/opt/agent-core-demo/postgres-init/
-          # otel-collector-agent + promtail configs (docker-compose.prod.yml's
-          # observability sidecars) — this app droplet only ever needs its
-          # OWN agent-side configs, not the gateway-side ones the
-          # deploy-observability job below ships to the other droplet.
+          # alloy's config (docker-compose.prod.yml's observability
+          # sidecars) — this app droplet only ever needs its OWN agent-side
+          # config, not the gateway-side ones the deploy-observability job
+          # below ships to the other droplet.
           rsync -az --delete -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
             observability/ \
             deploy@${{ secrets.DROPLET_HOST }}:/opt/agent-core-demo/observability/
