@@ -12,8 +12,8 @@ from contextlib import asynccontextmanager
 
 from app.agent import sql_store
 from app.api import health
-from app.retrieval import qdrant_store
 from app.job_queue import queue
+from app.retrieval import qdrant_store
 
 
 class _FakeConnection:

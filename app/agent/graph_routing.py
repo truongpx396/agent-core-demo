@@ -58,8 +58,8 @@ from app.agent.graph_citations import (
     _insert_missing_citation_markers,
     _likely_misattributed_citations,
     _likely_uncited_citations,
-    _used_citations,
     _ungrounded_claims_count,
+    _used_citations,
 )
 from app.agent.graph_loop_guards import (
     _consecutive_repeat_count,

@@ -27,8 +27,8 @@ import psycopg
 
 from app.agent import sql_store
 from app.core.config import CHECKPOINTER_DATABASE_URL, ML_SERVICE_URL
-from app.retrieval import qdrant_store
 from app.job_queue import queue
+from app.retrieval import qdrant_store
 
 logger = logging.getLogger(__name__)
 

@@ -101,7 +101,11 @@ from langgraph.graph.message import add_messages
 from langgraph.types import RetryPolicy, interrupt  # noqa: F401
 
 from app.agent import moderation
-from app.agent.graph_messages import _human_has_content, _human_text, _last_human_message
+from app.agent.graph_messages import (
+    _human_has_content,
+    _human_text,
+    _last_human_message,
+)
 from app.core import metrics
 
 # OPENAI_API_BASE/OPENAI_API_KEY: same deliberate-re-export reasoning as

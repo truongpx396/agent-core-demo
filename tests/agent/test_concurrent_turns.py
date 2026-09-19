@@ -83,9 +83,9 @@ from app.agent import tools as tools_module
 from app.agent.graph import GraphDeps
 from app.agent.graph_build import build_graph
 from app.core import metrics
+from app.job_queue import agent_worker, queue
 from app.retrieval import embeddings as embeddings_module
 from app.retrieval import qdrant_store, semantic_cache
-from app.job_queue import agent_worker, queue
 from tests.conftest import metric_value as _count
 from tests.containers import ensure_postgres, ensure_qdrant, ensure_redis
 

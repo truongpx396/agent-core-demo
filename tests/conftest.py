@@ -182,7 +182,7 @@ def mock_semantic_cache(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def mock_appdata_postgres(monkeypatch):
-    from app.agent import usage_ledger, sessions
+    from app.agent import sessions, usage_ledger
 
     monkeypatch.setattr(usage_ledger, "get_connection", _no_postgres_in_tests)
     monkeypatch.setattr(sessions, "get_connection", _no_postgres_in_tests)

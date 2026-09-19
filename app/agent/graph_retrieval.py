@@ -19,7 +19,12 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from app.agent.graph import State, _default_search
-from app.agent.graph_messages import _human_text, _last_human_message, _previous_human_message, _retrieval_query
+from app.agent.graph_messages import (
+    _human_text,
+    _last_human_message,
+    _previous_human_message,
+    _retrieval_query,
+)
 from app.core import metrics
 
 if TYPE_CHECKING:

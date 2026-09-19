@@ -88,7 +88,10 @@ class TestNodeLevelMetrics:
         assert _count(metrics.agent_context_retrieval_degraded_total) == before + 1
 
     async def test_history_trim_increments_compacted_counter(self):
-        from app.agent.graph_compaction import _estimate_tokens, make_compact_history_node
+        from app.agent.graph_compaction import (
+            _estimate_tokens,
+            make_compact_history_node,
+        )
 
         messages = [
             HumanMessage(content=f"question number {i} with some real words", id=f"h{i}")

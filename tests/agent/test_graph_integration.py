@@ -36,8 +36,8 @@ from app.agent.graph import (
     MAX_TOOL_CALLS_PER_TURN,
     GraphDeps,
 )
-from app.agent.graph_compaction import _estimate_tokens
 from app.agent.graph_build import build_graph
+from app.agent.graph_compaction import _estimate_tokens
 from tests.conftest import TEST_CTX
 
 

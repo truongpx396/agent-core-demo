@@ -87,7 +87,11 @@ from typing import cast
 
 from app.agent import sql_store
 from app.agent.runtime import close_checkpointer_pool, init_graph_async
-from app.agent.runtime_stream import astream_events_resume, astream_events_turn, cancel_run
+from app.agent.runtime_stream import (
+    astream_events_resume,
+    astream_events_turn,
+    cancel_run,
+)
 from app.core.config import AGENT_DOMAIN, AGENT_WORKER_MAX_CONCURRENCY
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.logging_config import bind_request_id, configure_logging
