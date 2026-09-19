@@ -1,6 +1,6 @@
 """Per-tenant HTTP rate limiting for app/api/main.py's turn-creating endpoints —
 a single client (or one misbehaving/compromised tenant) must not be able
-to flood the shared Redis Streams queue (app/turns/queue.py) or starve every
+to flood the shared Redis Streams queue (app/job_queue/queue.py) or starve every
 other tenant's turns.
 
 A plain Starlette middleware over the `limits` library's engine directly

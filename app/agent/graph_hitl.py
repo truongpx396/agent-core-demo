@@ -128,7 +128,7 @@ async def resumability_error_async(graph, config: dict) -> str | None:
     return _resumability_error_from_state(await graph.aget_state(config))
 
 
-CANCEL_SENTINEL = "cancelled"  # app/agent/runtime.py::cancel_run resumes a paused run with this value
+CANCEL_SENTINEL = "cancelled"  # app/agent/runtime_stream.py::cancel_run resumes a paused run with this value
 
 
 def human_approval(state: State) -> dict:
@@ -141,7 +141,7 @@ def human_approval(state: State) -> dict:
     continues. Three outcomes, not two (GRAPH_PATTERNS.md pattern 36):
     approved, rejected (the model sees a ToolMessage and gets a chance to
     react — apologize, try something else), and CANCELLED
-    (`app/agent/runtime.py::cancel_run`) — a caller-initiated abort, which is
+    (`app/agent/runtime_stream.py::cancel_run`) — a caller-initiated abort, which is
     deliberately NOT the same as a rejection: `route_after_approval`
     sends a cancelled run straight to `__end__`, never back to `agent`,
     because cancellation means "stop this run," not "here's feedback for

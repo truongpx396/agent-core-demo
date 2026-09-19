@@ -1,7 +1,7 @@
 """Tests for astream_events_turn_unattended's auto-decline handling of an
 unexpected pause.
 
-Its callers (app/turns/agent_worker.py's queue consumer, app/channels/telegram.py)
+Its callers (app/job_queue/agent_worker.py's queue consumer, app/channels/telegram.py)
 have no interactive human on the other end of the call to solicit a real
 approval decision from — unlike astream_events_turn's approval_required/
 astream_events_resume round trip — so when a turn pauses at human_approval
@@ -10,7 +10,7 @@ auto-decline rather than leave the checkpoint paused forever or silently
 run an unreviewed tool call. See app/agent/runtime.py's matching docstring.
 """
 
-from app.agent import runtime as agent_module
+from app.agent import runtime_stream as stream_module
 from app.core import metrics
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
@@ -19,7 +19,7 @@ from tests.conftest import metric_value as _count
 class TestAstreamEventsTurnUnattended:
     """astream_events_turn_unattended (GRAPH_PATTERNS.md pattern 43) — the
     async, streaming sibling of pattern 8's auto-decline, used by
-    app/turns/agent_worker.py's Redis Streams consumer and
+    app/job_queue/agent_worker.py's Redis Streams consumer and
     app/channels/telegram.py, neither of which has an interactive human to
     show an approval_required event to. Tested by monkeypatching
     astream_events_turn/astream_events_resume themselves (both plain
@@ -33,12 +33,12 @@ class TestAstreamEventsTurnUnattended:
             yield {"type": "token", "content": "hi"}
             yield {"type": "done"}
 
-        monkeypatch.setattr(agent_module, "astream_events_turn", fake_turn)
+        monkeypatch.setattr(stream_module, "astream_events_turn", fake_turn)
 
         async def _run():
             return [
                 event
-                async for event in agent_module.astream_events_turn_unattended(
+                async for event in stream_module.astream_events_turn_unattended(
                     "q", "t1", TEST_CTX
                 )
             ]
@@ -57,14 +57,14 @@ class TestAstreamEventsTurnUnattended:
             assert approved is False  # auto-DECLINE, never auto-approve
             yield {"type": "done"}
 
-        monkeypatch.setattr(agent_module, "astream_events_turn", fake_turn)
-        monkeypatch.setattr(agent_module, "astream_events_resume", fake_resume)
+        monkeypatch.setattr(stream_module, "astream_events_turn", fake_turn)
+        monkeypatch.setattr(stream_module, "astream_events_resume", fake_resume)
         before = _count(metrics.agent_unattended_pause_total)
 
         async def _run():
             return [
                 event
-                async for event in agent_module.astream_events_turn_unattended(
+                async for event in stream_module.astream_events_turn_unattended(
                     "q", "t1", TEST_CTX
                 )
             ]
@@ -82,13 +82,13 @@ class TestAstreamEventsTurnUnattended:
         def fail_if_called(*a, **kw):
             raise AssertionError("astream_events_resume should not be called")
 
-        monkeypatch.setattr(agent_module, "astream_events_turn", fake_turn)
-        monkeypatch.setattr(agent_module, "astream_events_resume", fail_if_called)
+        monkeypatch.setattr(stream_module, "astream_events_turn", fake_turn)
+        monkeypatch.setattr(stream_module, "astream_events_resume", fail_if_called)
 
         async def _run():
             return [
                 event
-                async for event in agent_module.astream_events_turn_unattended(
+                async for event in stream_module.astream_events_turn_unattended(
                     "q", "t1", TEST_CTX
                 )
             ]

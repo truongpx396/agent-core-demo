@@ -1,6 +1,6 @@
 # Worker concurrency: how we decided, what we built
 
-This documents the reasoning behind scaling `app/turns/agent_worker.py` and
+This documents the reasoning behind scaling `app/job_queue/agent_worker.py` and
 `app/ingestion/ingest_worker.py` for concurrent requests, why they ended up
 sharing one concurrency model despite doing very different work, and the
 decision framework behind it. Written up separately from
@@ -14,8 +14,8 @@ MinIO and publishes a job onto `ingest:requests`
 (`app/ingestion/ingest_queue.py`), then returns immediately. The actual
 parsing/embedding happens in `app/ingestion/ingest_worker.py`, a separate
 consumer process — the same producer/consumer split
-`POST /chat/stream/queued` uses against `app/turns/agent_worker.py` via
-`app/turns/queue.py`. The question that started this: **if 50 requests land
+`POST /chat/stream/queued` uses against `app/job_queue/agent_worker.py` via
+`app/job_queue/queue.py`. The question that started this: **if 50 requests land
 at once, does that require 50 running worker containers?**
 
 Short answer: no. Longer answer below, because the reasoning generalizes
@@ -85,7 +85,7 @@ pattern 43), so scaling replica count needs no scrape-config change either.
 
 ## Model 1: `agent_worker` — concurrency because turns mostly *wait*
 
-`app/turns/agent_worker.py::run()` runs up to `AGENT_WORKER_MAX_CONCURRENCY`
+`app/job_queue/agent_worker.py::run()` runs up to `AGENT_WORKER_MAX_CONCURRENCY`
 turns at once in ONE process — an `asyncio.Semaphore` acquired *before* a
 task is created, then `asyncio.create_task` per job, not a serial `await`
 loop.

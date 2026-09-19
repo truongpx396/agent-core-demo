@@ -75,16 +75,16 @@ telegram-sales:  ## Start the Telegram channel as the sales/CRM concierge (see a
 	AGENT_DOMAIN=sales python -m app.channels.telegram
 
 agent-worker:  ## Start a Redis Streams agent worker for the Ecorp domain (run several for independent scaling; see POST /chat/stream/queued)
-	python -m app.turns.agent_worker
+	python -m app.job_queue.agent_worker
 
 agent-worker-support:  ## Start an agent worker pool for the Tier-1 support domain (see app/domains/support/); the web UI's X-Domain: support turns route here
-	AGENT_DOMAIN=support python -m app.turns.agent_worker
+	AGENT_DOMAIN=support python -m app.job_queue.agent_worker
 
 agent-worker-ops:  ## Start an agent worker pool for the ops domain (see app/domains/ops/); the web UI's X-Domain: ops turns route here
-	AGENT_DOMAIN=ops python -m app.turns.agent_worker
+	AGENT_DOMAIN=ops python -m app.job_queue.agent_worker
 
 agent-worker-sales:  ## Start an agent worker pool for the sales/CRM domain (see app/domains/sales/); the web UI's X-Domain: sales turns route here
-	AGENT_DOMAIN=sales python -m app.turns.agent_worker
+	AGENT_DOMAIN=sales python -m app.job_queue.agent_worker
 
 restart-all:  ## Kill and relaunch the API service (which also serves the built-in web UI) + every domain's agent-worker pool + the ingest-worker as backgrounded host processes (logs under var/*.log), then reset+re-seed ingest data (`make ingest`) and the skills search index (`make index-skills`) — host-native dev convenience; not for the containerized `up-app` stack
 	pkill -f 'uvicorn app\.api\.main:app' 2>/dev/null || true
@@ -97,7 +97,7 @@ restart-all:  ## Kill and relaunch the API service (which also serves the built-
 	# serving stale code, forever invisible to the pkill above. Killing
 	# whatever actually holds the port catches that case.
 	lsof -tiTCP:8000 -sTCP:LISTEN 2>/dev/null | xargs -r kill 2>/dev/null || true
-	pkill -f 'app\.turns\.agent_worker' 2>/dev/null || true
+	pkill -f 'app\.job_queue\.agent_worker' 2>/dev/null || true
 	pkill -f 'app\.ingestion\.ingest_worker' 2>/dev/null || true
 	# A killed process doesn't free its port / stop matching `pgrep`
 	# instantly — verified directly this isn't theoretical: a plain
@@ -109,11 +109,11 @@ restart-all:  ## Kill and relaunch the API service (which also serves the built-
 	# for actual exit instead of guessing a fixed delay; SIGKILL anything
 	# still alive after 10s rather than waiting forever.
 	for i in $$(seq 1 20); do \
-		lsof -tiTCP:8000 -sTCP:LISTEN >/dev/null 2>&1 || pgrep -f 'app\.turns\.agent_worker' >/dev/null 2>&1 || pgrep -f 'app\.ingestion\.ingest_worker' >/dev/null 2>&1 || break; \
+		lsof -tiTCP:8000 -sTCP:LISTEN >/dev/null 2>&1 || pgrep -f 'app\.job_queue\.agent_worker' >/dev/null 2>&1 || pgrep -f 'app\.ingestion\.ingest_worker' >/dev/null 2>&1 || break; \
 		sleep 0.5; \
 	done
 	lsof -tiTCP:8000 -sTCP:LISTEN 2>/dev/null | xargs -r kill -9 2>/dev/null || true
-	pkill -9 -f 'app\.turns\.agent_worker' 2>/dev/null || true
+	pkill -9 -f 'app\.job_queue\.agent_worker' 2>/dev/null || true
 	pkill -9 -f 'app\.ingestion\.ingest_worker' 2>/dev/null || true
 	mkdir -p var
 	nohup $(MAKE) serve > var/serve.log 2>&1 &
@@ -343,7 +343,7 @@ loadtest-app-up:  ## Point the ALREADY-RUNNING containerized api/agent-worker*/i
 	docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up -d \
 		api agent-worker agent-worker-support agent-worker-ops agent-worker-sales ingest-worker
 
-loadtest-queued:  ## Interactive Locust UI against the queued path (loadtest/locustfile_queued.py, the only HTTP chat path this app serves) — needs `make loadtest-up` first (or the host-native equivalent from that file's own docstring); measures app/turns/agent_worker.py's own concurrency, not native Ollama's
+loadtest-queued:  ## Interactive Locust UI against the queued path (loadtest/locustfile_queued.py, the only HTTP chat path this app serves) — needs `make loadtest-up` first (or the host-native equivalent from that file's own docstring); measures app/job_queue/agent_worker.py's own concurrency, not native Ollama's
 	locust -f loadtest/locustfile_queued.py --host http://localhost:8000
 
 loadtest-queued-headless:  ## Fixed 20-user, 2-minute headless run of the queued-path scenario above → CSV + HTML report under loadtest/results-queued/

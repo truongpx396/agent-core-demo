@@ -1,5 +1,5 @@
 """Structured (JSON) logging, shared by every long-running service process
-(app/api/main.py, app/turns/agent_worker.py, app/ingestion/ingest_worker.py,
+(app/api/main.py, app/job_queue/agent_worker.py, app/ingestion/ingest_worker.py,
 app/channels/telegram.py) — NOT the interactive CLI tool (app/channels/chat.py)
 or one-shot operator scripts (scripts/seed.py, scripts/eval.py), which print
 directly to the terminal for a human watching it and would just get JSON
@@ -9,7 +9,7 @@ Built on structlog, not a hand-rolled `logging.Formatter` — but every log
 CALL site in this app already logs through the stdlib `logging` module
 (`logger = logging.getLogger(__name__)`), many with a per-call
 `extra={...}` dict carrying real correlation data (request_id, tool name,
-error_class, tenant — see e.g. app/turns/agent_worker.py::process_request,
+error_class, tenant — see e.g. app/job_queue/agent_worker.py::process_request,
 app/core/metrics.py::MetricsCallbackHandler). `configure_logging()` below
 wires structlog's `ProcessorFormatter` onto the ROOT logger's handler
 instead — the standard "structlog processes stdlib logging" recipe — so
@@ -39,7 +39,7 @@ changing what's logged:
 A third, separate gap this module also closes: `request_id` (or
 `thread_id`, on an in-process/non-queued path) was only ever attached to
 the ONE log line at a turn's failure boundary (e.g.
-app/turns/agent_worker.py::process_request's `except` clause) — every OTHER log
+app/job_queue/agent_worker.py::process_request's `except` clause) — every OTHER log
 line touched while processing that same turn (deep inside app/agent/graph.py,
 app/agent/tools.py, app/core/metrics.py's tool-call audit lines, ...) carried no
 correlation id at all, making "show me every log line for turn X" not
@@ -72,7 +72,7 @@ request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 
 @contextmanager
 def bind_request_id(request_id: str) -> Iterator[None]:
-    """Wrap one turn/job's processing (app/turns/agent_worker.py::process_request,
+    """Wrap one turn/job's processing (app/job_queue/agent_worker.py::process_request,
     app/ingestion/ingest_worker.py::process_job, app/api/main.py's in-process endpoints —
     `thread_id` doubles as the correlation id on those, there being no
     separate request_id concept for a non-queued turn). Every log line

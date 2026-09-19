@@ -4,7 +4,7 @@ An in-memory `limits` storage backend (`memory://`) stands in for Redis —
 hermetic, no live service needed, same "fake the collaborator, not the
 network" approach the rest of this suite uses. The middleware's
 `dispatch()` is called directly (via asyncio.run — no pytest-asyncio
-plugin here, see tests/turns/test_queue.py's own module docstring) with a
+plugin here, see tests/job_queue/test_queue.py's own module docstring) with a
 hand-built Request, the same "test the function, not the framework
 wiring" approach tests/api/test_api.py's module docstring already establishes
 for this codebase's route handlers.

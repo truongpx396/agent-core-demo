@@ -12,7 +12,7 @@ all)."""
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from app.agent.graph import make_agent_node
+from app.agent.graph_agent_node import make_agent_node
 
 
 class _RecordingFakeLLM:

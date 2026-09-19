@@ -1,6 +1,6 @@
 """OpenAI-compatible fake LLM server — a load-testing double for whatever
 actually serves inference, so `POST /chat/stream/queued`'s concurrency
-(app/turns/agent_worker.py's own `_MAX_CONCURRENCY` + pooled checkpointer)
+(app/job_queue/agent_worker.py's own `_MAX_CONCURRENCY` + pooled checkpointer)
 can be measured in isolation. Native Ollama on this project's own dev stack
 is NOT concurrent — verified directly by firing concurrent requests at it:
 its `llama-server` process runs with `-np 1` (`--parallel 1`), so every

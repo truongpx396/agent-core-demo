@@ -1,5 +1,5 @@
-"""A real Redis Stack round trip for app/turns/queue.py — the fake-free
-counterpart to tests/turns/test_queue.py, which (correctly, for a fast/
+"""A real Redis Stack round trip for app/job_queue/queue.py — the fake-free
+counterpart to tests/job_queue/test_queue.py, which (correctly, for a fast/
 hermetic suite) drives the exact same functions against a hand-rolled
 `FakeRedis` covering just the Streams commands this app uses. What that
 can't catch — a real redis-py/Redis Stack server version mismatch in
@@ -10,7 +10,7 @@ this self-skips without Docker rather than needing `make up`).
 
 Drives the real producer/consumer functions end to end for the "turn" job
 kind: `publish_request` (producer) → a real `XREADGROUP` pull, the same
-shape app/turns/agent_worker.py's own dispatch loop reads (consumer) →
+shape app/job_queue/agent_worker.py's own dispatch loop reads (consumer) →
 `publish_result`/`read_results` for the results leg (worker → producer) —
 proving the two real Redis Streams primitives this whole queue is built on
 actually round-trip against a real server, not just this app's own
@@ -21,7 +21,7 @@ import uuid
 
 import pytest
 
-from app.turns import queue
+from app.job_queue import queue
 from tests.conftest import TEST_CTX
 from tests.containers import ensure_redis
 
@@ -74,7 +74,7 @@ async def test_a_turn_request_round_trips_from_producer_through_a_real_consumer_
             ctx=TEST_CTX,
         )
 
-        # Consumer side: the same XREADGROUP shape app/turns/agent_worker.py's
+        # Consumer side: the same XREADGROUP shape app/job_queue/agent_worker.py's
         # own dispatch loop reads (see that module's `run()`).
         response = await client.xreadgroup(
             queue.CONSUMER_GROUP, "test-consumer", {queue.requests_stream_key(): ">"}, count=1

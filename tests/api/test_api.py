@@ -18,9 +18,9 @@ from app.api import main as api
 from app.api.main import ui
 from app.api.schemas import CancelRequest, ChatRequest, ResumeRequest
 from app.ingestion import ingest_queue
-from app.turns import queue
+from app.job_queue import queue
 from tests.conftest import TEST_CTX
-from tests.turns.test_queue import FakeRedis
+from tests.job_queue.test_queue import FakeRedis
 
 
 class TestHealthReady:
@@ -56,7 +56,7 @@ class TestHealthReady:
 
 
 class TestUsage:
-    """GET /usage — a thin pass-through to app/agent/meter.py::usage_summary,
+    """GET /usage — a thin pass-through to app/agent/usage_ledger.py::usage_summary,
     called once all-time and once scoped to the rolling 24h window
     app/agent/runtime.py::_tenant_over_daily_budget itself checks."""
 
@@ -69,7 +69,7 @@ class TestUsage:
                 return {"total_tokens": 5000, "total_cost_usd": 3.5}
             return {"total_tokens": 200, "total_cost_usd": 0.1}
 
-        monkeypatch.setattr(api.meter, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(api.usage_ledger, "usage_summary", fake_usage_summary)
         monkeypatch.setattr(api, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
 
         result = await api.usage(ctx=TEST_CTX)
@@ -135,10 +135,10 @@ class TestGetDomain:
 class TestChatStreamQueued:
     """POST /chat/stream/queued (GRAPH_PATTERNS.md pattern 43) — the
     producer half of the Redis Streams SSE-service/agent-worker split.
-    FakeRedis (tests/turns/test_queue.py) stands in for a real Redis Stream, and
+    FakeRedis (tests/job_queue/test_queue.py) stands in for a real Redis Stream, and
     since nothing here ever calls astream_events_turn or touches a real
     graph, results have to be published "by hand" to simulate what a
-    separate app/turns/agent_worker.py process would otherwise do."""
+    separate app/job_queue/agent_worker.py process would otherwise do."""
 
     async def test_publishes_a_request_then_streams_back_whatever_a_worker_publishes(
         self, monkeypatch
@@ -162,7 +162,7 @@ class TestChatStreamQueued:
             assert payload["ctx"] == TEST_CTX
             request_id = payload["request_id"]
 
-            # Simulate app/turns/agent_worker.py publishing this turn's events.
+            # Simulate app/job_queue/agent_worker.py publishing this turn's events.
             await queue.publish_result(client, request_id, {"type": "token", "content": "hi"})
             await queue.publish_result(client, request_id, {"type": "done"})
 
@@ -194,7 +194,7 @@ class TestChatStreamQueued:
 
     async def test_publishes_attached_images_onto_the_request(self, monkeypatch):
         """GRAPH_PATTERNS.md pattern 44 — images ride the same request
-        payload all the way to app/turns/agent_worker.py."""
+        payload all the way to app/job_queue/agent_worker.py."""
         client = FakeRedis()
         monkeypatch.setattr(queue, "get_client", lambda: client)
 
@@ -216,8 +216,8 @@ class TestChatStreamQueued:
     async def test_a_non_ecorp_domain_publishes_onto_its_own_stream(self, monkeypatch):
         """The whole point of threading `domain` through — an X-Domain:
         support turn must land where ONLY an `AGENT_DOMAIN=support`
-        app/turns/agent_worker.py pool is listening, never on Ecorp's own
-        stream (see app/turns/queue.py::publish_request's own docstring)."""
+        app/job_queue/agent_worker.py pool is listening, never on Ecorp's own
+        stream (see app/job_queue/queue.py::publish_request's own docstring)."""
         client = FakeRedis()
         monkeypatch.setattr(queue, "get_client", lambda: client)
 
@@ -233,8 +233,8 @@ class TestChatStreamQueued:
 
 class TestChatResume:
     """POST /chat/resume — publishes a `"resume"` job onto the SAME
-    Redis Stream a new turn uses (app/turns/queue.py::publish_resume_request),
-    not a separate queue; app/turns/agent_worker.py dispatches on
+    Redis Stream a new turn uses (app/job_queue/queue.py::publish_resume_request),
+    not a separate queue; app/job_queue/agent_worker.py dispatches on
     `payload["kind"]`."""
 
     async def test_publishes_a_resume_job_with_approved_and_thread_id(self, monkeypatch):

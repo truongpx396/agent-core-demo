@@ -3,7 +3,7 @@ Counter/Histogram in app/core/metrics.py ultimately records against.
 
 Push, not pull: unlike the old prometheus_client-based `GET /metrics`
 endpoint this replaces, every instrumented process — the API AND each
-independently-scaled app/turns/agent_worker.py / app/ingestion/ingest_worker.py
+independently-scaled app/job_queue/agent_worker.py / app/ingestion/ingest_worker.py
 replica (GRAPH_PATTERNS.md pattern 43) — pushes its own metrics via OTLP to
 a shared otel-collector (docker-compose.observability.yml), which exposes
 ONE aggregated Prometheus scrape target. A pull-based /metrics endpoint on

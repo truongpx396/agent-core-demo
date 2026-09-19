@@ -3,7 +3,7 @@ pipeline. Run one or more of these;
 Redis's own consumer-group delivery guarantees each job on
 `app/ingestion/ingest_queue.py::INGEST_REQUESTS_STREAM` is handed to exactly one of
 them, so running more workers is still one way to add capacity — same shape
-as app/turns/agent_worker.py, deliberately a SEPARATE queue/consumer group
+as app/job_queue/agent_worker.py, deliberately a SEPARATE queue/consumer group
 from it (see app/ingestion/ingest_queue.py's module docstring for why).
 
 For each job: download the uploaded file from MinIO
@@ -15,7 +15,7 @@ itself, only the download/dispatch/queue-plumbing around it.
 
 Within ONE process, `run()` also runs up to `_MAX_CONCURRENCY` ingest jobs at
 once (an `asyncio.Semaphore`-bounded `asyncio.create_task` per job, not a
-serial `await` loop) — the exact same shape app/turns/agent_worker.py's `run()`
+serial `await` loop) — the exact same shape app/job_queue/agent_worker.py's `run()`
 uses for concurrent turns, see that module's own docstring for the
 acquire-before-create-task reasoning shared here verbatim. Safe for the same
 reason turns are: a job holds no in-process state a concurrent sibling could
@@ -88,7 +88,7 @@ from app.ingestion.ingest_queue import (
     get_client,
     publish_result,
 )
-from app.turns.queue import StreamReadResponse
+from app.job_queue.queue import StreamReadResponse
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ _MAX_CONCURRENCY = INGEST_WORKER_MAX_CONCURRENCY  # concurrent ingest jobs ONE
 # worker process will run at once (asyncio.Semaphore-bounded, see this
 # module's own docstring) — bounds both the semaphore in run() below and how
 # many entries a single xreadgroup call pulls off the stream, same shape and
-# reasoning as app/turns/agent_worker.py::_READ_COUNT.
+# reasoning as app/job_queue/agent_worker.py::_READ_COUNT.
 _READ_COUNT = _MAX_CONCURRENCY
 _BLOCK_MS = 5000
 
@@ -130,7 +130,7 @@ def _make_progress_reporter(client, job_id: str):
 async def process_job(client, entry_id: str, fields: dict) -> None:
     """Run one ingest job and publish its outcome — always ack, even on
     failure, same "never silently redeliver an already-attempted job"
-    reasoning as app/turns/agent_worker.py::process_request (a redelivered
+    reasoning as app/job_queue/agent_worker.py::process_request (a redelivered
     ingest job would re-embed and re-upsert the same document's chunks a
     second time, duplicating them in the index — not just re-run a side
     effect, but a real data-quality regression)."""
@@ -188,7 +188,7 @@ async def _process_with_limit(
     client, entry_id: str, fields: dict, semaphore: asyncio.Semaphore
 ) -> None:
     """Runs one job under `semaphore` and releases it when done, success or
-    failure — same shape as app/turns/agent_worker.py::_process_with_limit;
+    failure — same shape as app/job_queue/agent_worker.py::_process_with_limit;
     `process_job` already acks in its own `finally` regardless of outcome, so
     the only thing this wrapper owns is the concurrency slot."""
     try:
@@ -228,7 +228,7 @@ async def run() -> None:
         extra={"consumer": CONSUMER_NAME, "max_concurrency": _MAX_CONCURRENCY},
     )
 
-    # Graceful shutdown — same reasoning as app/turns/agent_worker.py's `run()`:
+    # Graceful shutdown — same reasoning as app/job_queue/agent_worker.py's `run()`:
     # a SIGTERM/SIGINT stops this worker from claiming a NEW job, but never
     # interrupts one already in flight (a redelivered ingest job would
     # re-embed and re-upsert the same document's chunks a second time, a
@@ -244,7 +244,7 @@ async def run() -> None:
     # them pending for the group (another worker, or this one once a slot
     # frees up, can still claim them) rather than piling up an unbounded
     # number of not-yet-running tasks in `in_flight` below. Same shape as
-    # app/turns/agent_worker.py::run().
+    # app/job_queue/agent_worker.py::run().
     semaphore = asyncio.Semaphore(_MAX_CONCURRENCY)
     in_flight: set[asyncio.Task] = set()
 

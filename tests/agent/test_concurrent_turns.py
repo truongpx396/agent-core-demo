@@ -85,7 +85,7 @@ from app.agent.graph_build import build_graph
 from app.core import metrics
 from app.retrieval import embeddings as embeddings_module
 from app.retrieval import qdrant_store, semantic_cache
-from app.turns import agent_worker, queue
+from app.job_queue import agent_worker, queue
 from tests.conftest import metric_value as _count
 from tests.containers import ensure_postgres, ensure_qdrant, ensure_redis
 
@@ -486,7 +486,7 @@ class TestSemanticCacheIsolationUnderConcurrency:
 
 class TestWorkerConcurrencyAgainstTheRealQueue:
     """Regression guard for the actual production dispatch code
-    (app/turns/agent_worker.py::run's Semaphore-gated asyncio.create_task
+    (app/job_queue/agent_worker.py::run's Semaphore-gated asyncio.create_task
     loop, exercised here via the same `_process_with_limit` helper `run()`
     itself calls) against a real Redis queue. N turns, each deliberately
     slow (a real `await asyncio.sleep` per streamed chunk, not instant),
@@ -558,7 +558,7 @@ class TestWorkerConcurrencyAgainstTheRealQueue:
             _, entries = response[0]
             assert len(entries) == n
 
-            # The EXACT dispatch shape app/turns/agent_worker.py::run uses:
+            # The EXACT dispatch shape app/job_queue/agent_worker.py::run uses:
             # acquire the semaphore BEFORE creating each task (so a full
             # worker backpressures reads, not just processing), release
             # inside _process_with_limit's own finally.

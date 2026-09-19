@@ -204,7 +204,7 @@ class TestAsyncSeeding:
         Root cause: `_seeded` (app/agent/runtime.py) is a plain
         in-process `set()` — a fast-path cache, not the source of truth.
         It forgets everything on a worker restart, and — since
-        app/turns/agent_worker.py's own docstring says to run SEVERAL
+        app/job_queue/agent_worker.py's own docstring says to run SEVERAL
         `agent-worker` processes for scaling, with Redis Streams
         distributing turns round-robin across them — a thread's turns
         can just as easily land on a DIFFERENT process that's never seen

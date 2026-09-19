@@ -3,7 +3,7 @@
 Pushed via OTLP to a shared otel-collector (docker-compose.observability.yml
 — see app/core/telemetry.py::configure_telemetry, called once at real
 process startup), which exposes one aggregated Prometheus scrape target
-covering the API AND every independently-scaled app/turns/agent_worker.py /
+covering the API AND every independently-scaled app/job_queue/agent_worker.py /
 app/ingestion/ingest_worker.py replica (GRAPH_PATTERNS.md pattern 43) — a
 pull-based `GET /metrics` on the API process alone (this module's previous,
 prometheus_client-backed design) could never see a worker's metrics at all,
@@ -334,7 +334,7 @@ agent_missing_ctx_total = Counter(
 agent_unattended_pause_total = Counter(
     "agent_unattended_pause_total",
     "Turns auto-declined by astream_events_turn_unattended after pausing at "
-    "a mandatory capability gate — its callers (app/turns/agent_worker.py's "
+    "a mandatory capability gate — its callers (app/job_queue/agent_worker.py's "
     "queue consumer, app/channels/telegram.py) have no interactive human on "
     "the other end of the call to solicit a real decision from (unlike "
     "astream_events_turn's approval_required/astream_events_resume flow)",
@@ -402,7 +402,7 @@ agent_cost_ceiling_exceeded_total = Counter(
 
 agent_cancellation_total = Counter(
     "agent_cancellation_total",
-    "Paused runs cancelled via app/agent/runtime.py::cancel_run (GRAPH_PATTERNS.md pattern 36)",
+    "Paused runs cancelled via app/agent/runtime_stream.py::cancel_run (GRAPH_PATTERNS.md pattern 36)",
 )
 
 agent_streaming_cancellation_total = Counter(

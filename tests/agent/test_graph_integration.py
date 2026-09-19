@@ -35,8 +35,8 @@ from app.agent.graph import (
     MAX_TOKENS_PER_TURN,
     MAX_TOOL_CALLS_PER_TURN,
     GraphDeps,
-    _estimate_tokens,
 )
+from app.agent.graph_compaction import _estimate_tokens
 from app.agent.graph_build import build_graph
 from tests.conftest import TEST_CTX
 
@@ -1090,10 +1090,10 @@ class TestCostCeilingPath:
         per-1k-token price (not a huge token count) is what trips this
         one, proving MAX_COST_USD_PER_TURN is its own budget, not a
         re-derivation of MAX_TOKENS_PER_TURN (GRAPH_PATTERNS.md pattern 35)."""
-        from app.agent import meter
+        from app.agent import usage_ledger
         from app.core.config import CHAT_MODEL
 
-        monkeypatch.setitem(meter.PRICE_PER_1K_TOKENS_USD, CHAT_MODEL, 1_000_000.0)
+        monkeypatch.setitem(usage_ledger.PRICE_PER_1K_TOKENS_USD, CHAT_MODEL, 1_000_000.0)
 
         small_usage_msg = AIMessage(
             content="",
@@ -1116,7 +1116,7 @@ class TestCostCeilingPath:
 
     async def test_ordinary_turns_never_approach_the_ceiling_with_local_models(self):
         """Every model this app's own docker-compose runs locally via
-        Ollama costs $0/1k tokens (app/agent/meter.py's price table has no
+        Ollama costs $0/1k tokens (app/agent/usage_ledger.py's price table has no
         entry for them) — a normal local turn must never trip this."""
         llm = _fake_llm(AIMessage(content="A perfectly ordinary local answer."))
         g = build_graph(GraphDeps(llm=llm))

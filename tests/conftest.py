@@ -6,8 +6,8 @@ to invoke `retrieve_context`/`check_semantic_cache`/`write_semantic_cache`
 on its way through the graph via build_graph()'s default GraphDeps. Tests
 that care about a specific retrieved/cached value inject their own fake
 instead — via `GraphDeps(search_docs=fake)`/`GraphDeps(cache_get=fake, ...)`
-(build_graph) or `graph.make_retrieve_context_node(fake)`/
-`graph.make_check_semantic_cache_node(fake)` (node-level) — which simply
+(build_graph) or `graph_retrieval.make_retrieve_context_node(fake)`/
+`graph_cache.make_check_semantic_cache_node(fake)` (node-level) — which simply
 bypasses these defaults.
 
 `mock_ml_moderation` is the same guarantee for `app/agent/moderation.py`'s
@@ -30,10 +30,10 @@ exceptions.
 
 `mock_appdata_postgres` is the equivalent guarantee for the third live
 service (`appdata` Postgres, app/agent/sql_store.py) — a gap this suite
-had until it was found the hard way: `app/agent/runtime.py::astream_events_turn`
+had until it was found the hard way: `app/agent/runtime_stream.py::astream_events_turn`
 calls `_tenant_over_daily_budget`/`_upsert_session` UNCONDITIONALLY
-on every turn (`meter.usage_summary`/`sessions.upsert_session` underneath),
-and `_record_turn_metrics` calls `meter.record_usage` on every COMPLETED
+on every turn (`usage_ledger.usage_summary`/`sessions.upsert_session` underneath),
+and `_record_turn_metrics` calls `usage_ledger.record_usage` on every COMPLETED
 one — all three already degrade gracefully on a connection FAILURE (each
 has its own try/except, independently tested — see
 tests/agent/test_tenant_budget.py/test_sessions.py), but none of them were
@@ -48,7 +48,7 @@ suite from ~10s (locally, against a real docker-compose Postgres) to
 ~20+ minutes in CI (see GRAPH_PATTERNS.md pattern 46's note on the
 recursion_limit fix found the same way).
 
-Patched at `meter.get_connection`/`sessions.get_connection` — each
+Patched at `usage_ledger.get_connection`/`sessions.get_connection` — each
 module's OWN `from app.agent.sql_store import get_connection` binding, not
 `sql_store.get_connection` itself (a `from X import Y` binding is a
 separate reference; patching the origin module wouldn't reach it) — and
@@ -182,9 +182,9 @@ def mock_semantic_cache(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def mock_appdata_postgres(monkeypatch):
-    from app.agent import meter, sessions
+    from app.agent import usage_ledger, sessions
 
-    monkeypatch.setattr(meter, "get_connection", _no_postgres_in_tests)
+    monkeypatch.setattr(usage_ledger, "get_connection", _no_postgres_in_tests)
     monkeypatch.setattr(sessions, "get_connection", _no_postgres_in_tests)
 
 

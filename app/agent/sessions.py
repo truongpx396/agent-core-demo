@@ -2,10 +2,10 @@
 and switch between their own past conversation threads.
 
 Persisted in the same `appdata` Postgres database app/agent/sql_store.py and
-app/agent/meter.py already use (`chat_sessions` table, postgres-init/06-chat-sessions.sql)
+app/agent/usage_ledger.py already use (`chat_sessions` table, postgres-init/06-chat-sessions.sql)
 — this app's own operational-data lifecycle, not a new database. A
 dedicated table rather than reusing `usage_ledger`: that table no-ops on
-a zero-token/rejected turn (app/agent/meter.py::record_usage) and carries no
+a zero-token/rejected turn (app/agent/usage_ledger.py::record_usage) and carries no
 title, so a session with no billable tokens (a moderation block, a cache
 hit) would silently vanish from a "resume my conversations" list built
 from it. The checkpointer's own `checkpoints` table has `thread_id` but
@@ -21,10 +21,10 @@ belongs to whichever domain's graph/tools/system-prompt (app/domains/registry.py
 actually ran on it, not just to a tenant+principal, since a thread_id
 resumed under a DIFFERENT domain than it was opened in would run that
 domain's tools/prompt against a conversation history that was never built
-around them (see app/turns/queue.py::publish_request's own docstring on
+around them (see app/job_queue/queue.py::publish_request's own docstring on
 the identical hazard for a queued resume/cancel). `domain` defaults to
 `"ecorp"` everywhere in this module — same "no domain given" convention
-`app/turns/queue.py::requests_stream_key`/`app/core/config.py`'s
+`app/job_queue/queue.py::requests_stream_key`/`app/core/config.py`'s
 `AGENT_DOMAIN` already establish — and is set ONLY on first insert
 (`upsert_session`'s `ON CONFLICT` clause never touches it, same as
 `title`): a session's domain is fixed at whichever one actually created
@@ -46,7 +46,7 @@ async def upsert_session(
     """Best-effort write-through at the start of every turn (app/agent/runtime.py's
     astream_events_turn, right after seeding) — NOT
     gated on the turn actually completing or producing any tokens, unlike
-    app/agent/meter.py::record_usage, specifically so a rejected/moderated/
+    app/agent/usage_ledger.py::record_usage, specifically so a rejected/moderated/
     short-circuited turn still shows up in the session list (the user did
     start a real conversation on this thread_id, whatever happened next).
 
@@ -102,7 +102,7 @@ async def list_sessions(ctx: SecurityCtx | None, domain: str = "ecorp") -> list[
 
 async def session_belongs_to(ctx: SecurityCtx | None, thread_id: str, domain: str = "ecorp") -> bool:
     """Ownership check for GET /chat/sessions/{thread_id}/messages —
-    app/agent/runtime.py::get_session_messages reads the shared Postgres
+    app/agent/runtime_stream.py::get_session_messages reads the shared Postgres
     checkpointer directly, which carries no tenant/principal (or domain) of
     its own to check against (see this module's docstring), so the CALLER
     must verify ownership here first, against this table, before ever

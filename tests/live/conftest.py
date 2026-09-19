@@ -41,7 +41,7 @@ since it drives the real graph through a `human_approval` interrupt.
 
 `real_stack` — the full backing stack (Postgres + Redis + Qdrant + Ollama)
 PLUS a real `uvicorn app.api.main:app` and one real `python -m
-app.turns.agent_worker`, started as OS subprocesses. Used only by
+app.job_queue.agent_worker`, started as OS subprocesses. Used only by
 test_chat_ui.py's Playwright browser test, which needs a genuinely running
 HTTP server — the built-in web UI (app/api/static/index.html) actually
 calls `POST /chat/stream/queued`/`POST /chat/resume` (see that file's own
@@ -62,7 +62,7 @@ for: a plain `scope="session"` fixture with a normal generator teardown is
 correct and sufficient here, since nothing about a subprocess's lifecycle
 is shared across workers in the first place. The agent-worker's own
 `CONSUMER_NAME` is independently randomized per process
-(app/turns/agent_worker.py's own `f"{socket.gethostname()}-{uuid4().hex[:8]}"`),
+(app/job_queue/agent_worker.py's own `f"{socket.gethostname()}-{uuid4().hex[:8]}"`),
 so N workers' agent-worker processes all correctly join the SAME Redis
 consumer group without colliding — exactly how this app's own production
 scaling story already works (`make agent-worker`, run several times).
@@ -191,7 +191,7 @@ def real_stack() -> Iterator[str]:
         cwd=str(_REPO_ROOT),
     )
     worker_proc = subprocess.Popen(
-        [sys.executable, "-m", "app.turns.agent_worker"],
+        [sys.executable, "-m", "app.job_queue.agent_worker"],
         env=env,
         cwd=str(_REPO_ROOT),
     )

@@ -6,7 +6,7 @@ tools to an external MCP client" story app/mcp/server.py already tells for
 
 A SEPARATE server/process from app/mcp/server.py's `ecorp-structured-data`
 rather than one more `@mcp.tool()` bolted onto it — this app already runs
-one process per domain everywhere else (app/turns/agent_worker.py,
+one process per domain everywhere else (app/job_queue/agent_worker.py,
 AGENT_DOMAIN), so an ops-specific MCP server keeps that same shape rather
 than mixing Ecorp's employee directory and ops's operational data behind
 one name.

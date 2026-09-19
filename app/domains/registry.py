@@ -1,7 +1,7 @@
 """Name → (AgentManifest, DomainPlugin) lookup for every domain this app
 ships, consulted two different ways depending on whether "domain" is a
 property of a whole PROCESS or of a single REQUEST:
-- Per-process: app/channels/telegram.py and app/turns/agent_worker.py both
+- Per-process: app/channels/telegram.py and app/job_queue/agent_worker.py both
   read AGENT_DOMAIN once at startup and resolve it here — that process (or
   worker pool) serves exactly that one domain for its whole life. Running
   several domains at once this way means running several such processes,
@@ -10,7 +10,7 @@ property of a whole PROCESS or of a single REQUEST:
   /chat/stream/queued`, `/chat/resume`, `/chat/cancel`) validate the
   caller's `X-Domain` header against this registry's keys (see that
   module's `get_domain`) and route the request onto that domain's own
-  Redis Stream (app/turns/queue.py::requests_stream_key) — which domain a
+  Redis Stream (app/job_queue/queue.py::requests_stream_key) — which domain a
   MESSAGE is for, not the API process itself. This is what lets that ONE
   unified API process serve every domain a worker pool is currently
   running for.

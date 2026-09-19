@@ -4,7 +4,7 @@ raises, the same "fake the collaborator, not the network" approach
 tests/agent/test_sql_store.py/tests/agent/test_tools.py already use.
 
 No pytest-asyncio plugin is installed in this project (see
-tests/turns/test_queue.py's own module docstring) — async calls go through
+tests/job_queue/test_queue.py's own module docstring) — async calls go through
 `asyncio.run(...)` directly, same as every other async test here.
 """
 import asyncio
@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from app.agent import sql_store
 from app.api import health
 from app.retrieval import qdrant_store
-from app.turns import queue
+from app.job_queue import queue
 
 
 class _FakeConnection:

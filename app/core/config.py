@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # hand-maintained app tables. Postgres, not a SQLite file, because this
     # checkpoint store is now shared across multiple OS processes at once
     # (the API process plus one or more independently-scaled
-    # app/turns/agent_worker.py processes) — a single SQLite file's
+    # app/job_queue/agent_worker.py processes) — a single SQLite file's
     # writer-locking is fragile under that; Postgres is built for it. The
     # test suite degrades gracefully when this isn't reachable (see
     # tests/agent/test_durable_checkpoint.py's connectivity-probe skip fixture),
@@ -140,7 +140,7 @@ class Settings(BaseSettings):
     # pattern 35) — a HARD stop, enforced before the next tool/LLM call,
     # independent of MAX_TOKENS_PER_TURN: a token cap bounds work done, a
     # dollar cap bounds what that work is actually worth on whichever
-    # model tier is configured (app/agent/meter.py::PRICE_PER_1K_TOKENS_USD).
+    # model tier is configured (app/agent/usage_ledger.py::PRICE_PER_1K_TOKENS_USD).
     # $0 for every locally-run Ollama model this demo's own docker-compose
     # ships, so this never trips in the default local setup — it starts
     # mattering the moment OPENAI_API_BASE points at a real paid provider.
@@ -158,7 +158,7 @@ class Settings(BaseSettings):
 
     # Per-tenant ceiling across MANY turns (app/agent/runtime.py's
     # _tenant_over_daily_budget), a rolling 24-hour window against
-    # app/agent/meter.py's usage_ledger — distinct from MAX_COST_USD_PER_TURN
+    # app/agent/usage_ledger.py's usage_ledger — distinct from MAX_COST_USD_PER_TURN
     # above, which only ever sees ONE turn at a time and has no memory of
     # what a tenant already spent on turns before it. Same "$0 for every
     # locally-run Ollama model" note as MAX_COST_USD_PER_TURN: this never
@@ -204,7 +204,7 @@ class Settings(BaseSettings):
     # Which domain (app/domains/registry.py) a process boots its shared
     # graph singleton against — read by app/channels/telegram.py, which is
     # now a generalized gateway rather than an Ecorp-only one (GRAPH_PATTERNS.md
-    # pattern 23/42), and by app/turns/agent_worker.py, where it also picks
+    # pattern 23/42), and by app/job_queue/agent_worker.py, where it also picks
     # which domain's requests stream this worker POOL reads (see that
     # module's own docstring — `POST /chat/stream/queued` picks the domain
     # per REQUEST instead, via an X-Domain header, since that endpoint's
@@ -260,7 +260,7 @@ class Settings(BaseSettings):
 
     # API-layer protections (app/api/main.py) — a single client (or one
     # misbehaving/compromised tenant) must not be able to flood the shared
-    # Redis Streams queue (app/turns/queue.py) or starve every other tenant's
+    # Redis Streams queue (app/job_queue/queue.py) or starve every other tenant's
     # turns. Rate limiting is per-tenant (X-Tenant-Id), backed by the SAME
     # Redis this app already depends on — not in-process memory, which
     # would silently stop working the moment more than one `uvicorn`
@@ -273,7 +273,7 @@ class Settings(BaseSettings):
     # here to a THIRD ancillary system.
     rate_limit_per_minute: int = 30
 
-    # Concurrent turns ONE app/turns/agent_worker.py process will run at
+    # Concurrent turns ONE app/job_queue/agent_worker.py process will run at
     # once (asyncio.Semaphore-bounded, see that module's own docstring).
     # Env-configurable, not just a code constant, specifically so a
     # load-testing run can dial it without a redeploy — production sizing
@@ -321,11 +321,11 @@ class Settings(BaseSettings):
     # profiling shows CPU-bound extraction, not I/O wait, dominates.
     ingest_worker_max_concurrency: int = 10
 
-    # Cap on app/turns/queue.py::get_client()'s connection pool — redis-py's
+    # Cap on app/job_queue/queue.py::get_client()'s connection pool — redis-py's
     # own default (100, unset if this weren't here) is silent and easy to
     # blow through: every POST /chat/stream/queued SSE connection holds a
     # pooled connection for the FULL blocking-read duration of its turn
-    # (app/turns/queue.py::read_results's XREAD BLOCK), not just a quick
+    # (app/job_queue/queue.py::read_results's XREAD BLOCK), not just a quick
     # round trip, so concurrent SSE connections map ~1:1 onto pool
     # connections held. Verified directly: 250 concurrent requests against
     # the redis-py default produced redis.exceptions.MaxConnectionsError

@@ -3,7 +3,7 @@ first-party interface alongside the CLI (app/channels/chat.py), the HTTP API
 (app/api/main.py), and the built-in web UI (pattern 29). Long-polls Telegram's
 `getUpdates` (no public webhook URL needed — appropriate for a local/demo
 deployment with no inbound port to expose) and drives the SAME
-`app/agent/runtime.py::astream_events_turn_unattended()` every queued worker
+`app/agent/runtime_stream.py::astream_events_turn_unattended()` every queued worker
 turn already runs through — no bespoke graph-driving logic here, just a new
 front door onto it, collecting the streamed events into one final reply
 since Telegram has no incremental-message UX to stream tokens into.
@@ -59,11 +59,8 @@ import signal
 import httpx
 
 from app.agent import sql_store
-from app.agent.runtime import (
-    astream_events_turn_unattended,
-    close_checkpointer_pool,
-    init_graph_async,
-)
+from app.agent.runtime import close_checkpointer_pool, init_graph_async
+from app.agent.runtime_stream import astream_events_turn_unattended
 from app.core.config import AGENT_DOMAIN, DEFAULT_TENANT, TELEGRAM_BOT_TOKEN
 from app.core.logging_config import configure_logging
 from app.core.security import SecurityCtx
@@ -200,7 +197,7 @@ async def run() -> None:
     # Graceful shutdown: a SIGTERM/SIGINT stops this loop from starting a
     # NEW getUpdates poll, but never interrupts a message already being
     # handled — same "finish what's claimed, never abandon it mid-turn"
-    # shape as app/turns/agent_worker.py's `run()`. Bounded by how long a single
+    # shape as app/job_queue/agent_worker.py's `run()`. Bounded by how long a single
     # getUpdates call can block (`_POLL_TIMEOUT_SECONDS`, Telegram's own
     # long-poll window) rather than instant, since that call itself isn't
     # cancelled mid-flight — the tradeoff a long-poll design accepts, per
@@ -236,7 +233,7 @@ async def run() -> None:
     # Same reasoning as app/api/main.py's lifespan shutdown: handle_message ->
     # astream_events_turn_unattended runs the full graph, which may have
     # opened app/agent/sql_store.py's connection pool (query_employees,
-    # app/agent/meter.py::record_usage). A no-op if this process never touched it.
+    # app/agent/usage_ledger.py::record_usage). A no-op if this process never touched it.
     await sql_store.close_pool()
     # Same reasoning for the checkpointer's own pool (app/agent/runtime.py) —
     # init_graph_async() above always opens it, so this is never a no-op here.

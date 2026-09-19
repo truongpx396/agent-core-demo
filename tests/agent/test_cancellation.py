@@ -19,6 +19,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 
 from app.agent import runtime as agent_module
+from app.agent import runtime_stream as stream_module
 from app.agent.graph import GraphDeps
 from app.agent.graph_build import build_graph
 from app.core import metrics
@@ -58,7 +59,7 @@ class TestIterateWithTimeoutCancelCheck:
             events = []
             raised = None
             try:
-                async for e in agent_module._iterate_with_timeout(
+                async for e in stream_module._iterate_with_timeout(
                     aiter(), 60, cancel_check=always_cancelled
                 ):
                     events.append(e)
@@ -68,7 +69,7 @@ class TestIterateWithTimeoutCancelCheck:
 
         events, raised = await _run()
         assert events == []
-        assert isinstance(raised, agent_module.TurnCancelled)
+        assert isinstance(raised, stream_module.TurnCancelled)
 
     async def test_no_cancel_check_behaves_exactly_as_before(self):
         """Regression guard: every existing caller passes nothing here —
@@ -79,7 +80,7 @@ class TestIterateWithTimeoutCancelCheck:
             yield 2
 
         async def _run():
-            return [e async for e in agent_module._iterate_with_timeout(aiter(), 60)]
+            return [e async for e in stream_module._iterate_with_timeout(aiter(), 60)]
 
         assert await _run() == [1, 2]
 
@@ -94,7 +95,7 @@ class TestIterateWithTimeoutCancelCheck:
         async def _run():
             return [
                 e
-                async for e in agent_module._iterate_with_timeout(
+                async for e in stream_module._iterate_with_timeout(
                     aiter(), 60, cancel_check=never_cancelled
                 )
             ]
@@ -137,7 +138,7 @@ class TestAstreamEventsTurnCancellation:
         async def _run():
             return [
                 event
-                async for event in agent_module.astream_events_turn(
+                async for event in stream_module.astream_events_turn(
                     "hello", str(uuid.uuid4()), TEST_CTX, cancel_check=cancel_after_first_check
                 )
             ]
@@ -166,7 +167,7 @@ class TestAstreamEventsTurnCancellation:
         async def _run():
             return [
                 event
-                async for event in agent_module.astream_events_turn(
+                async for event in stream_module.astream_events_turn(
                     "hello", str(uuid.uuid4()), TEST_CTX, cancel_check=never_cancelled
                 )
             ]
@@ -188,7 +189,7 @@ class TestAstreamEventsTurnCancellation:
         async def _run():
             return [
                 event
-                async for event in agent_module.astream_events_turn(
+                async for event in stream_module.astream_events_turn(
                     "hello", str(uuid.uuid4()), TEST_CTX
                 )
             ]
@@ -233,7 +234,7 @@ class TestAstreamEventsTurnRawAsyncioCancellation:
         before_requests_cancelled = _count(metrics.agent_requests_total, outcome="cancelled")
 
         async def _consume():
-            async for _event in agent_module.astream_events_turn(
+            async for _event in stream_module.astream_events_turn(
                 "hello", str(uuid.uuid4()), TEST_CTX
             ):
                 pass

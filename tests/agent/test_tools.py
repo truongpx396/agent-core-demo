@@ -20,6 +20,7 @@ from app.agent import skills as skills_module
 from app.agent import sql_store, subagent_tools, tools
 from app.agent import subagents as subagents_module
 from app.agent.skills import SkillRecord
+from app.agent.subagent_domain_tools import make_domain_subagent_tool
 from app.agent.subagent_tools import (
     _ALL_TOOL_NAMES,
     SubagentName,
@@ -29,7 +30,6 @@ from app.agent.subagent_tools import (
     _run_subagent_impl,
     _subagent_declared_for_domain,
     _SubagentDomainPlugin,
-    make_domain_subagent_tool,
     run_subagent,
 )
 from app.agent.subagents import SubagentRecord
@@ -1145,7 +1145,7 @@ class TestRunSubagentImpl:
         assert after == before + 1
 
     async def test_records_usage_to_the_ledger_with_a_derived_thread_id(self, monkeypatch):
-        from app.agent import meter
+        from app.agent import usage_ledger
 
         captured = {}
 
@@ -1153,7 +1153,7 @@ class TestRunSubagentImpl:
             captured["ctx"] = ctx
             captured["thread_id"] = thread_id
 
-        monkeypatch.setattr(meter, "record_usage", fake_record_usage)
+        monkeypatch.setattr(usage_ledger, "record_usage", fake_record_usage)
         fake_llm = _RecordingFakeLLM(AIMessage(content="An answer, long enough to pass."))
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 

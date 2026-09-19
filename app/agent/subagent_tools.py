@@ -1,12 +1,18 @@
 """Everything behind `run_subagent` (GRAPH_PATTERNS.md pattern 46): the
 bundled-catalog resolution (`_resolve_subagent_tools`/`_build_subagent_registry`/
 `_subagent_declared_for_domain`), the compiled-graph cache, `_run_subagent_impl`
-itself, and both `run_subagent` tool constructions (the Ecorp-level
-singleton and `make_domain_subagent_tool`'s per-domain factory). Split out
+itself, and the Ecorp-level `run_subagent` singleton construction. Split out
 of `app/agent/tools.py` purely for file size — see that module's own
 docstring, and `app/agent/graph_hitl.py`/`app/agent/graph_utils.py`'s for
 the analogous splits on the graph.py side. No behavior change from the
 pre-split single-file version.
+
+The per-domain equivalent, `make_domain_subagent_tool`, lives in
+`app/agent/subagent_domain_tools.py` instead — split out from THIS file
+(not `tools.py` directly) purely for file size, since it's a large,
+self-contained factory that only needs `_build_subagent_registry`/
+`_run_subagent_impl` from here, one-directionally (nothing in this file
+calls back into it).
 
 `_run_subagent_impl` reads `ChatOpenAI` through `tools_module.ChatOpenAI`
 rather than a plain statically-imported bare name — same real bug/fix as
@@ -40,7 +46,7 @@ from typing import Annotated, Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool, InjectedToolCallId, tool
+from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.types import Command
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
@@ -371,7 +377,7 @@ async def _run_subagent_impl(
     )
     from app.agent.graph_build_subagent import build_subagent_graph
     from app.agent.manifest import AgentManifest
-    from app.agent.meter import record_usage
+    from app.agent.usage_ledger import record_usage
 
     # Computed fresh on every call regardless of caching below — cheap string
     # formatting, fully determined by record.system_prompt (already resolved
@@ -421,7 +427,7 @@ async def _run_subagent_impl(
         "callbacks": config.get("callbacks"),
         # Tags every event this nested run produces (LLM stream chunks, tool
         # start/end) with which subagent it came from — consumed by
-        # app/agent/runtime.py::_run_graph_stream to (a) keep this run's own
+        # app/agent/runtime_stream.py::_run_graph_stream to (a) keep this run's own
         # "agent" node token stream from leaking into the client's main
         # answer stream (both graphs use the SAME node name), and (b)
         # surface this run's own tool activity to the client, tagged, instead
@@ -628,107 +634,3 @@ if _SUBAGENT_REGISTRY:
     # same as skill_search/use_skill's own inline positioning in TOOLS's
     # literal above.
     TOOLS.insert(2, run_subagent)
-
-
-def make_domain_subagent_tool(
-    domain: str, all_tools: list, tool_capabilities: Mapping[str, str]
-) -> BaseTool | None:
-    """Builds a `run_subagent` tool scoped to `domain` — the domain
-    equivalent of the Ecorp-level construction above (same closed-enum
-    menu, same `RunSubagentArgs` shape, same mandatory read_only-only
-    resolution via `_resolve_subagent_tools`), but resolved against
-    `all_tools`/`tool_capabilities` — the CALLING domain's own tool
-    universe, e.g. app/domains/support/domain.py passes its own ticket
-    tools plus its own `search_docs`/`skill_search`/`use_skill`/
-    `ask_clarification`, not Ecorp's `TOOLS`/`TOOL_CAPABILITIES` — and
-    filtered to only the subagents actually declared for `domain`
-    (`domains: [...]` frontmatter, see app/agent/subagents.py's docstring
-    for the "untagged means Ecorp-only" default this applies).
-
-    Returns `None` if that filtered registry ends up empty — a domain with
-    no bundled subagent gets no `run_subagent` tool at all, never one
-    offering an empty menu: a `SubagentName`-style enum needs at least one
-    real member to be a meaningful closed vocabulary, and a tool a caller
-    can never usefully invoke is worse than no tool (same "that omission is
-    what sandboxed means" posture app/domains/support/domain.py's own
-    docstring already takes for tools this app deliberately doesn't expose).
-
-    Each call builds a genuinely NEW, distinct closure (its own Enum class,
-    `Args` schema, and `run_subagent` tool object) — never the Ecorp-level
-    `run_subagent` above. Meant to be called ONCE, at each domain module's
-    own import time (same "built once, not lazily" reasoning the
-    Ecorp-level block's own comment gives — a subagent added to disk after
-    the process starts needs a restart to appear here either way).
-    """
-    all_tool_names = frozenset(t.name for t in all_tools)
-    registry = _build_subagent_registry(all_tool_names, tool_capabilities, domain=domain)
-    if not registry:
-        return None
-
-    tools_by_name = {t.name: t for t in all_tools}
-
-    # A per-domain Enum TYPE (not just distinct member values) — reusing
-    # SubagentName here would mix this domain's menu with Ecorp's, and two
-    # domains both calling this factory would silently share one Enum
-    # class between them, wrong the moment their registries diverge.
-    domain_subagent_name = Enum(  # type: ignore[misc]
-        f"SubagentName_{domain}", {name: name for name in sorted(registry)}, type=str
-    )
-
-    menu = "\n".join(
-        f"- {name}: {record.description}" for name, (record, _tools) in sorted(registry.items())
-    )
-
-    class _RunSubagentArgs(BaseModel):
-        subagent_name: domain_subagent_name = Field(  # type: ignore[valid-type]
-            ..., description=f"Which subagent to delegate to. Options:\n{menu}"
-        )
-        task: str = Field(
-            ...,
-            description="The self-contained task to delegate. The subagent has NO "
-            "access to this conversation's history, so include everything it needs "
-            "to know in this one description.",
-        )
-        # See RunSubagentArgs's identical field above for why this must be
-        # declared on the schema itself, not just the wrapper function below.
-        tool_call_id: Annotated[str, InjectedToolCallId]
-
-        @field_validator("task")
-        @classmethod
-        def _not_blank(cls, v: str) -> str:
-            if not v.strip():
-                raise ValueError("task must not be empty")
-            return v
-
-    @tool(args_schema=_RunSubagentArgs)
-    async def run_subagent(
-        subagent_name: domain_subagent_name,
-        task: str,
-        config: RunnableConfig,
-        tool_call_id: Annotated[str, InjectedToolCallId],
-    ) -> Command:
-        """Delegate a self-contained task to a specialized subagent running in
-        its own isolated context — it does NOT see this conversation's
-        history, only the `task` description you give it, so describe
-        everything it needs to know. Use this to keep a multi-step lookup's
-        intermediate steps out of the main conversation, or when a task
-        matches a subagent's specific focus better than doing it yourself.
-        Every subagent is restricted to read_only tools, so calling this
-        never needs human approval."""
-        result = await _run_subagent_impl(
-            subagent_name.value,
-            task,
-            config,
-            domain=domain,
-            registry=registry,
-            tools_by_name=tools_by_name,
-            use_cache=True,
-        )
-        return Command(
-            update={
-                "messages": [ToolMessage(content=result.answer, tool_call_id=tool_call_id)],
-                "subagent_spend": [(result.total_tokens, result.total_cost_usd)],
-            }
-        )
-
-    return run_subagent
