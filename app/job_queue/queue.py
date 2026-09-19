@@ -2,7 +2,7 @@
 process and one or more agent-executing worker processes (GRAPH_PATTERNS.md
 pattern 43) — so the two can scale independently: run more `uvicorn`
 processes to handle more concurrent SSE connections, run more
-`app/turns/agent_worker.py` processes to handle more concurrent turns, without
+`app/job_queue/agent_worker.py` processes to handle more concurrent turns, without
 either number depending on the other.
 
 Two streams per JOB — a job is one of three kinds (`"turn"` | `"resume"` |
@@ -12,7 +12,7 @@ pair, never sharing one with another job even across the SAME thread_id:
 - `requests_stream_key(domain)` (`agent:requests:{domain}`) — ONE shared
   stream PER DOMAIN (app/domains/registry.py), consumed via a Redis Streams
   consumer group (`CONSUMER_GROUP`) so N worker processes bound to that same
-  domain (app/turns/agent_worker.py's own `AGENT_DOMAIN`) split its load,
+  domain (app/job_queue/agent_worker.py's own `AGENT_DOMAIN`) split its load,
   with no request delivered to more than one of them (Redis's own
   consumer-group semantics, not something this module has to implement).
   Splitting by domain — rather than one flat stream every domain's workers
@@ -33,12 +33,12 @@ A separate, per-THREAD (not per-request) mechanism: the cancel flag
 a short-lived Redis key a `"turn"` job's worker polls between graph events
 so `POST /chat/cancel` can stop an ACTIVELY STREAMING turn, which (unlike a
 turn already paused at human_approval) has no queued job of its own to
-target; see app/turns/agent_worker.py's `"cancel"` dispatch for the paused case.
+target; see app/job_queue/agent_worker.py's `"cancel"` dispatch for the paused case.
 
 This module only wraps the queue mechanics (publish/read, group setup) —
 it doesn't know what a "turn" or an "event" IS. The producer half lives in
 app/api/main.py (`POST /chat/stream/queued`, `/chat/resume`, `/chat/cancel`);
-the consumer half is app/turns/agent_worker.py, which is the only place that
+the consumer half is app/job_queue/agent_worker.py, which is the only place that
 actually runs the graph.
 """
 import json
@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 # overload on; every call site in this app always constructs its client with
 # decode_responses=True (see get_client below), so the wide union is never
 # actually possible here — just unprovable to the type checker without this
-# cast. Shared with app/ingestion/ingest_queue.py, app/turns/agent_worker.py, and
+# cast. Shared with app/ingestion/ingest_queue.py, app/job_queue/agent_worker.py, and
 # app/ingestion/ingest_worker.py, which read streams the identical way.
 StreamReadResponse = list[tuple[str, list[tuple[str, dict[str, str]]]]]
 
@@ -84,7 +84,7 @@ def get_client() -> redis.Redis:
     `socket_timeout=None` is deliberate, not an oversight: redis-py
     defaults `socket_timeout` to 5 SECONDS — verified empirically that this
     races directly against `XREAD`/`XREADGROUP`'s own server-side `BLOCK`
-    (both `read_results` and app/turns/agent_worker.py block for 5000ms), so the
+    (both `read_results` and app/job_queue/agent_worker.py block for 5000ms), so the
     socket timed out and raised `redis.exceptions.TimeoutError` before
     Redis's own block window ever elapsed, on every real blocking read.
     Redis's `BLOCK` argument is what actually bounds the wait; the socket
@@ -121,7 +121,7 @@ def results_stream_key(request_id: str) -> str:
 
 def requests_stream_key(domain: str = "ecorp") -> str:
     """The one requests stream a given domain's worker pool
-    (app/turns/agent_worker.py, `AGENT_DOMAIN`) all consume from as a single
+    (app/job_queue/agent_worker.py, `AGENT_DOMAIN`) all consume from as a single
     Redis Streams consumer group — see this module's own docstring for why
     domain-scoping the stream, rather than sharing one flat stream across
     every domain, is what lets one worker pool's load stay independent of
@@ -180,7 +180,7 @@ async def publish_request(
     Sibling functions `publish_resume_request`/`publish_cancel_request`
     publish the other two job kinds onto this SAME per-domain stream — one
     consumer group per domain, one dispatch-by-`kind` in
-    app/turns/agent_worker.py, rather than a second queue per kind: keeps
+    app/job_queue/agent_worker.py, rather than a second queue per kind: keeps
     Redis consumer-group load-balancing working across all three kinds
     without extra coordination. A resume/cancel MUST land on the SAME
     domain's stream the original turn did — the paused graph it continues
@@ -214,7 +214,7 @@ async def publish_resume_request(
 ) -> None:
     """Producer side: enqueue a resume decision for a turn paused at
     human_approval — the queued-path counterpart to
-    app/agent/runtime.py::astream_events_resume, dispatched by whichever worker
+    app/agent/runtime_stream.py::astream_events_resume, dispatched by whichever worker
     in `domain`'s own pool picks it up (GRAPH_PATTERNS.md pattern 43's
     whole point: any worker IN THAT DOMAIN can resume any of its threads,
     since the checkpoint they all share lives in Postgres, not in
@@ -237,7 +237,7 @@ async def publish_cancel_request(
     client: redis.Redis, *, request_id: str, thread_id: str, ctx: SecurityCtx, domain: str = "ecorp"
 ) -> None:
     """Producer side: enqueue a cancel for a turn paused at human_approval
-    (the queued-path counterpart to app/agent/runtime.py::cancel_run). Deliberately
+    (the queued-path counterpart to app/agent/runtime_stream.py::cancel_run). Deliberately
     NOT how an ACTIVELY STREAMING turn gets cancelled — that's the separate
     cancel-flag mechanism below, since a streaming turn's worker is already
     running a job of its own and has nothing here to dispatch to; this
@@ -258,7 +258,7 @@ def cancel_flag_key(thread_id: str) -> str:
 
 async def set_cancel_flag(client: redis.Redis, thread_id: str) -> None:
     """Signal an ACTIVELY STREAMING `"turn"` job's worker to stop at its
-    next cancel-check (see app/agent/runtime.py::_iterate_with_timeout's
+    next cancel-check (see app/agent/runtime_stream.py::_iterate_with_timeout's
     `cancel_check` parameter) — a short-lived flag, not a queued job,
     since the worker already running that turn isn't waiting on the queue
     for anything; it's polling this key directly."""
@@ -281,7 +281,7 @@ async def clear_cancel_flag(client: redis.Redis, thread_id: str) -> None:
 
 async def publish_result(client: redis.Redis, request_id: str, event: dict) -> None:
     """Consumer side: append one typed event (the same shapes
-    app/agent/runtime.py::_run_graph_stream already yields — token, tool_start,
+    app/agent/runtime_stream.py::_run_graph_stream already yields — token, tool_start,
     tool_end, citations, error, done) to this request's results stream,
     refreshing its TTL on every write so a long-running turn's stream
     doesn't expire mid-flight."""
@@ -302,7 +302,7 @@ async def read_results(client: redis.Redis, request_id: str, *, block_ms: int = 
     as terminal here too, this generator would block forever waiting for a
     "done"/"error" that a `"turn"` job's worker will never publish once
     it's paused (resuming is a SEPARATE job — see
-    app/turns/queue.py::publish_resume_request — with its own results stream).
+    app/job_queue/queue.py::publish_resume_request — with its own results stream).
     A caller that stops iterating early (e.g. the client disconnected) just
     leaves the stream to expire via its TTL rather than needing explicit
     cleanup here.

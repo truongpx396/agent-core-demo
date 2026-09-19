@@ -128,7 +128,7 @@ class TestSandboxing:
 
 class TestDomainScopedSubagent:
     """run_subagent is present, but it's this domain's OWN closure-built
-    tool (app.agent.tools.make_domain_subagent_tool), never Ecorp's literal
+    tool (app.agent.subagent_domain_tools.make_domain_subagent_tool), never Ecorp's literal
     module-level object — and its menu offers only the bundled subagent(s)
     declared `domains: [support]` (subagents/ticket-researcher/AGENT.md),
     never Ecorp's own `researcher`."""

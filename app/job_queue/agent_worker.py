@@ -1,21 +1,21 @@
 """Redis Streams consumer — the "agent worker" half of the SSE-service/
 agent-worker split (GRAPH_PATTERNS.md pattern 43). Run one or more of these
 processes; Redis's own consumer-group delivery guarantees each request on
-this process's own domain stream (`app/turns/queue.py::requests_stream_key`)
+this process's own domain stream (`app/job_queue/queue.py::requests_stream_key`)
 is handed to exactly one of them, so running more workers is still the
 primary way to add capacity — no coordination code needed here beyond what
-`app/turns/queue.py` already wraps.
+`app/job_queue/queue.py` already wraps.
 
 Like app/channels/telegram.py, ONE process still serves exactly ONE domain
 for its whole life — `AGENT_DOMAIN` (app/core/config.py, default `"ecorp"`)
 picks which domain's manifest/tools this process's graph is built from, and
 which domain's requests stream it reads (`AGENT_DOMAIN=support python -m
-app.turns.agent_worker` runs a support-only worker pool). The domain is a
+app.job_queue.agent_worker` runs a support-only worker pool). The domain is a
 property of the PROCESS, not of any individual message, so running several
 domains at once means running several worker POOLS, one per `AGENT_DOMAIN`
 — app/api/main.py stays a single unified process throughout, routing each
 incoming request to the right domain's stream by its `X-Domain` header
-(see that module's `get_domain`), same way app/turns/queue.py's own
+(see that module's `get_domain`), same way app/job_queue/queue.py's own
 docstring frames this as pattern 43's SSE-tier/worker-tier split applied
 one level deeper.
 
@@ -43,7 +43,7 @@ existed):
   browser (app/api/main.py's `POST /chat/stream/queued`), which can render a
   real approve/reject UI for an `approval_required` pause — auto-declining
   it the way `_unattended` does would make that impossible. Wired with a
-  `cancel_check` polling `app/turns/queue.py::is_cancelled` so `POST /chat/cancel`
+  `cancel_check` polling `app/job_queue/queue.py::is_cancelled` so `POST /chat/cancel`
   can stop an actively-streaming (not yet paused) turn.
 - `"resume"` — continues a turn paused at human_approval, via
   `astream_events_resume`. Any worker can handle any thread's resume: the
@@ -69,7 +69,7 @@ by other genuinely fire-and-forget callers with no interactive human on
 the other end of the SAME call — none in this codebase route through
 THIS queue today, but the function stays available for one that might.
 
-Run with: `python -m app.turns.agent_worker` (see Makefile's `agent-worker`
+Run with: `python -m app.job_queue.agent_worker` (see Makefile's `agent-worker`
 target, or `agent-worker-support`/`agent-worker-ops`/`agent-worker-sales`
 for the other example domains). Needs `make up`'s Redis running; NOT
 started by `make up` itself or `make serve` — it's an alternate, opt-in
@@ -86,19 +86,18 @@ import uuid
 from typing import cast
 
 from app.agent import sql_store
-from app.agent.runtime import (
+from app.agent.runtime import close_checkpointer_pool, init_graph_async
+from app.agent.runtime_stream import (
     astream_events_resume,
     astream_events_turn,
     cancel_run,
-    close_checkpointer_pool,
-    init_graph_async,
 )
 from app.core.config import AGENT_DOMAIN, AGENT_WORKER_MAX_CONCURRENCY
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.logging_config import bind_request_id, configure_logging
 from app.core.telemetry import configure_telemetry
 from app.domains.registry import resolve_domain
-from app.turns.queue import (
+from app.job_queue.queue import (
     CONSUMER_GROUP,
     StreamReadResponse,
     clear_cancel_flag,
@@ -280,7 +279,7 @@ async def run() -> None:
     await client.aclose()
     # Same reasoning as app/api/main.py's lifespan shutdown: a turn this worker
     # ran may have opened app/agent/sql_store.py's connection pool (query_employees,
-    # app/agent/meter.py::record_usage) — leaving it open past process exit is
+    # app/agent/usage_ledger.py::record_usage) — leaving it open past process exit is
     # what produces the "couldn't stop thread... within 5.0 seconds" warning
     # documented there. A no-op if this worker never touched it.
     await sql_store.close_pool()

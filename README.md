@@ -423,7 +423,7 @@ approve/reject decision over HTTP, queue-first like every other turn (see
 browser client (or `curl`) can drive the same approve/reject flow `make
 chat-hitl` already could from a terminal.
 
-- `GET /usage` → this caller's own tenant usage/cost (`app/agent/meter.py`),
+- `GET /usage` → this caller's own tenant usage/cost (`app/agent/usage_ledger.py`),
   including the rolling-24h figure checked against
   `MAX_COST_USD_PER_TENANT_PER_DAY` before every turn
 - Metrics (tool calls, retries, HITL decisions, capability-gate hits,
@@ -863,7 +863,7 @@ agent-worker` first, and ideally `make ingest` for real retrieval hits:
 - One simulated-user class (`QueuedTurnUser`) mints its own synthetic tenant
   id per simulated user (past `app/api/rate_limit.py`'s per-`X-Tenant-Id`
   ceiling, `RATE_LIMIT_PER_MINUTE`, default 30/min) so it actually
-  load-tests `app/turns/agent_worker.py`'s own concurrency (moderation, the
+  load-tests `app/job_queue/agent_worker.py`'s own concurrency (moderation, the
   semantic cache, the LLM call, the Postgres checkpointer) rather than just
   hitting the rate limiter. Point it at `loadtest/fake_llm_server.py`
   instead of native Ollama to isolate that concurrency from Ollama's own
@@ -1004,7 +1004,7 @@ from the library/service code in `app/`.
 | `.github/workflows/ci.yml` | Runs `ruff`/`mypy`/`pytest` (no live services needed) and a Docker build check on every push/PR against `main` |
 | `requirements-lock.txt`| Fully pinned freeze of `requirements.txt`'s runtime deps — what the `Dockerfile`/CI actually install from, so a build today and next year resolve identically |
 | `litellm-config.yaml`  | Model routing, retries, fallbacks, Langfuse callback, LiteLLM's own built-in Prometheus metrics callback |
-| `postgres-init/`       | SQL run automatically on a fresh postgres volume — `01-*.sql` (litellm/langfuse), `02-appdata.sql` (the `employees` table `query_employees` reads), `03-meter.sql` (the `usage_ledger` table `app/agent/meter.py` reads/writes) |
+| `postgres-init/`       | SQL run automatically on a fresh postgres volume — `01-*.sql` (litellm/langfuse), `02-appdata.sql` (the `employees` table `query_employees` reads), `03-meter.sql` (the `usage_ledger` table `app/agent/usage_ledger.py` reads/writes) |
 | **`app/core/`** — cross-cutting, depended on by every other subpackage | |
 | `app/core/config.py`        | Typed settings (Pydantic `BaseSettings`) |
 | `app/core/security.py`      | `SecurityCtx` + `Policy` — tenant/owner isolation, enforced as a Qdrant pre-filter (GRAPH_PATTERNS.md pattern 17) |
@@ -1023,14 +1023,14 @@ from the library/service code in `app/`.
 | **`app/agent/`** — the LangGraph agent itself | |
 | `app/agent/sql_store.py`     | The one fixed, parameterized `query_employees` query against Postgres, with a declared result cap — never generated SQL (GRAPH_PATTERNS.md pattern 21) |
 | `app/agent/moderation.py`    | Real (non-hollow) pattern-based input moderation — injection/jailbreak phrasings + a denylist (pattern 25) |
-| `app/agent/meter.py`         | Real usage/cost ledger (Postgres `usage_ledger` table) — tenant+principal scoped (pattern 26) |
+| `app/agent/usage_ledger.py`  | Real usage/cost ledger (Postgres `usage_ledger` table) — tenant+principal scoped (pattern 26) |
 | `app/agent/tools.py`         | `search_docs` + `calculator` + `query_employees` + `ask_clarification` (read-only) + `add_note` + `remember` (mutating) — each wrapped with a timeout budget, each declaring a capability in `TOOL_CAPABILITIES`; ctx-scoped via `app/core/security.py` |
 | `app/agent/graph.py`         | LangGraph agent (state, edges, memory, safety budgets, mandatory capability gate, checkpoint version stamping, SecurityCtx fail-closed guard, moderation screen, semantic cache short-circuit, citation extraction, follow-up suggestions) |
 | `app/agent/runtime.py`         | Shared runtime (used by both CLI and API); request-level timeout + metrics recording; durable-checkpointer init (`init_graph_async`) |
 | `app/agent/manifest.py`      | `AgentManifest` (config) + `DomainPlugin` (code) — the multi-domain composition layer `build_graph(manifest=..., domain=...)` reads (pattern 23); `DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN` wrap this app's own Ecorp setup unchanged |
-| **`app/turns/`** — async chat-turn queue + its worker | |
-| `app/turns/queue.py`   | Redis Streams queue between the SSE-serving process and agent-worker processes (GRAPH_PATTERNS.md pattern 43) |
-| `app/turns/agent_worker.py` | Consumes `app/turns/queue.py`, runs the graph, publishes results back — the only place that actually executes a queued turn |
+| **`app/job_queue/`** — async chat-turn queue + its worker | |
+| `app/job_queue/queue.py`   | Redis Streams queue between the SSE-serving process and agent-worker processes (GRAPH_PATTERNS.md pattern 43) |
+| `app/job_queue/agent_worker.py` | Consumes `app/job_queue/queue.py`, runs the graph, publishes results back — the only place that actually executes a queued turn |
 | **`app/mcp/`** — Model Context Protocol, both directions | |
 | `app/mcp/server.py`    | MCP server exposing `query_employees` over stdio (`make mcp-serve`) — a separate trust boundary from the in-process LLM (pattern 21) |
 | `app/mcp/ops_server.py`| A second MCP server, for the ops domain — `fetch_metrics_summary`/`list_recent_incidents` over stdio (`make mcp-serve-ops`, pattern 50) |

@@ -1,4 +1,4 @@
-"""Tests for app/agent/runtime.py::get_session_messages — the session switcher's
+"""Tests for app/agent/runtime_stream.py::get_session_messages — the session switcher's
 transcript replay (item #9). Bypasses the real durable checkpointer via a
 monkeypatched init_graph_async (same pattern
 tests/agent/test_streaming_terminal_events.py's `_events_for` helper already
@@ -10,7 +10,8 @@ tests/agent/test_durable_checkpoint.py).
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from app.agent import runtime as agent_module
-from app.agent.graph import COMPACTION_MARKER_KEY
+from app.agent import runtime_stream as stream_module
+from app.agent.graph_compaction import COMPACTION_MARKER_KEY
 
 
 class _FakeState:
@@ -31,7 +32,7 @@ async def _get(messages, monkeypatch):
         return _FakeGraph(messages)
 
     monkeypatch.setattr(agent_module, "init_graph_async", fake_init_graph_async)
-    return await agent_module.get_session_messages("t1")
+    return await stream_module.get_session_messages("t1")
 
 
 async def test_human_and_ai_messages_become_user_and_assistant_roles(monkeypatch):

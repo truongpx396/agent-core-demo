@@ -24,7 +24,7 @@ from psycopg_pool import AsyncConnectionPool
 from app.core.config import APPDATA_DATABASE_URL
 
 # One pool for the process lifetime — every caller (query_employees below,
-# app/agent/meter.py's usage_ledger reads/writes) shares it via
+# app/agent/usage_ledger.py's usage_ledger reads/writes) shares it via
 # get_connection(), rather than each paying a fresh TCP+auth handshake per
 # call the way a bare `psycopg.connect()` per call did before. Opened
 # lazily (on first get_connection() call, not at import time) so importing
@@ -38,7 +38,7 @@ from app.core.config import APPDATA_DATABASE_URL
 # opened, this pool is bound to whichever event loop was running at that
 # first call, and every later `get_connection()` must be awaited from that
 # SAME loop. Fine in every real long-lived process this app runs (uvicorn's
-# own loop, app/turns/agent_worker.py's main loop, the CLI's one
+# own loop, app/job_queue/agent_worker.py's main loop, the CLI's one
 # `asyncio.run(main())`) — each holds exactly one loop for its whole
 # lifetime, and nothing left in this codebase nests a second `asyncio.run()`
 # inside an already-running one anymore (see app/agent/subagent_tools.py's
@@ -69,7 +69,7 @@ async def get_connection():
     """A pooled connection, checked out for the caller's `async with` block
     and returned to the pool (not closed) on exit — same `pool.connection()`
     contract as the sync version this replaced (commits on normal exit,
-    the property app/agent/meter.py::record_usage's `async with
+    the property app/agent/usage_ledger.py::record_usage's `async with
     get_connection() as conn: await conn.execute(...)` depends on), just
     awaited, and wrapped in its own `@asynccontextmanager` so the pool
     itself is only ever looked up (and lazily opened) from inside a real

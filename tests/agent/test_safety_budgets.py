@@ -22,16 +22,18 @@ from langchain_core.messages import (
 from app.agent import runtime as agent_module
 from app.agent import tools
 from app.agent.graph import (
-    COMPACTION_MARKER_KEY,
     MAX_ITERATIONS,
     MAX_SUBAGENT_TOKENS_PER_RUN,
     MAX_TOKENS_PER_TURN,
     MAX_TOOL_CALLS_PER_TURN,
+    validate_input,
+)
+from app.agent.graph_compaction import (
+    COMPACTION_MARKER_KEY,
     _estimate_tokens,
     _messages_to_trim,
     _trim_history,
     make_compact_history_node,
-    validate_input,
 )
 from app.agent.graph_routing import should_continue
 from app.agent.graph_tools import too_many_tool_calls

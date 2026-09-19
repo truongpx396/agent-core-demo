@@ -173,7 +173,7 @@ services:
   agent-worker:
     image: ${APP_IMAGE}:${IMAGE_TAG:-latest}
     restart: unless-stopped
-    command: ["python", "-m", "app.turns.agent_worker"]
+    command: ["python", "-m", "app.job_queue.agent_worker"]
     environment: *app-env
     depends_on:
       postgres:

@@ -31,7 +31,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
-from app.agent.meter import record_usage
+from app.agent.usage_ledger import record_usage
 from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_API_KEY
 from app.core.logging_config import configure_logging
 from app.core.security import SecurityCtx

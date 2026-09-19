@@ -3,60 +3,61 @@
 MAX_COST_USD_PER_TURN, which only ever sees one turn at a time.
 
 `_tenant_over_daily_budget` itself is tested directly against a
-monkeypatched app.agent.meter.usage_summary (no live Postgres). The entry
+monkeypatched app.agent.usage_ledger.usage_summary (no live Postgres). The entry
 point (astream_events_turn) is tested by stubbing `_tenant_over_daily_budget`
 itself to True/False and asserting it never even calls init_graph_async()
 when over budget — proving the short-circuit happens BEFORE any real graph
 work, not just that it returns the right shape.
 
-Both `_tenant_over_daily_budget` and `meter.usage_summary` are `async def`
+Both `_tenant_over_daily_budget` and `usage_ledger.usage_summary` are `async def`
 now (a real `AsyncConnectionPool`, see app/agent/sql_store.py's own
 docstring).
 """
 
 from app.agent import runtime as agent
+from app.agent import runtime_stream as stream_module
 from app.core import errors, metrics
 from tests.conftest import TEST_CTX, metric_value
 
 
 class TestTenantOverDailyBudget:
     async def test_false_when_under_the_limit(self, monkeypatch):
-        from app.agent import meter
+        from app.agent import usage_ledger
 
         async def fake_usage_summary(*a, **kw):
             return {"total_cost_usd": 1.0, "total_tokens": 100}
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
-        monkeypatch.setattr(meter, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
         assert await agent._tenant_over_daily_budget(TEST_CTX) is False
 
     async def test_true_when_spend_meets_the_limit(self, monkeypatch):
-        from app.agent import meter
+        from app.agent import usage_ledger
 
         async def fake_usage_summary(*a, **kw):
             return {"total_cost_usd": 10.0, "total_tokens": 5000}
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
-        monkeypatch.setattr(meter, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
         assert await agent._tenant_over_daily_budget(TEST_CTX) is True
 
     async def test_true_when_spend_exceeds_the_limit(self, monkeypatch):
-        from app.agent import meter
+        from app.agent import usage_ledger
 
         async def fake_usage_summary(*a, **kw):
             return {"total_cost_usd": 15.0, "total_tokens": 5000}
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
-        monkeypatch.setattr(meter, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
         assert await agent._tenant_over_daily_budget(TEST_CTX) is True
 
     async def test_false_for_an_invalid_ctx_without_even_querying_the_ledger(self, monkeypatch):
-        from app.agent import meter
+        from app.agent import usage_ledger
 
         async def _fail_if_called(*a, **kw):
             raise AssertionError("usage_summary should not be queried for an invalid ctx")
 
-        monkeypatch.setattr(meter, "usage_summary", _fail_if_called)
+        monkeypatch.setattr(usage_ledger, "usage_summary", _fail_if_called)
         assert await agent._tenant_over_daily_budget(None) is False
         assert await agent._tenant_over_daily_budget({"tenant": "", "principal": "", "claims": {}}) is False
 
@@ -64,22 +65,22 @@ class TestTenantOverDailyBudget:
         """A usage-ledger outage must not ALSO take down every turn on top
         of whatever already took the ledger down — same degrade-don't-crash
         posture as app/retrieval/semantic_cache.py and app/agent/moderation.py."""
-        from app.agent import meter
+        from app.agent import usage_ledger
 
         async def _broken(*a, **kw):
             raise ConnectionError("appdata postgres unreachable")
 
-        monkeypatch.setattr(meter, "usage_summary", _broken)
+        monkeypatch.setattr(usage_ledger, "usage_summary", _broken)
         assert await agent._tenant_over_daily_budget(TEST_CTX) is False
 
     async def test_warning_metric_fires_past_80_percent_but_stays_under_the_limit(self, monkeypatch):
-        from app.agent import meter
+        from app.agent import usage_ledger
 
         async def fake_usage_summary(*a, **kw):
             return {"total_cost_usd": 8.5, "total_tokens": 100}
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
-        monkeypatch.setattr(meter, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
         before = metric_value(metrics.agent_tenant_budget_warning_total)
 
         assert await agent._tenant_over_daily_budget(TEST_CTX) is False
@@ -87,7 +88,7 @@ class TestTenantOverDailyBudget:
         assert metric_value(metrics.agent_tenant_budget_warning_total) == before + 1
 
     async def test_queries_a_rolling_24h_window_scoped_to_this_tenant(self, monkeypatch):
-        from app.agent import meter
+        from app.agent import usage_ledger
 
         captured = {}
 
@@ -96,7 +97,7 @@ class TestTenantOverDailyBudget:
             captured["since"] = since
             return {"total_cost_usd": 0.0, "total_tokens": 0}
 
-        monkeypatch.setattr(meter, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
         await agent._tenant_over_daily_budget(TEST_CTX)
 
         assert captured["tenant"] == TEST_CTX["tenant"]
@@ -126,7 +127,7 @@ class TestEntryPointsRefuseBeforeTouchingTheGraph:
         _forbid_graph_access(monkeypatch)
 
         async def _collect():
-            return [event async for event in agent.astream_events_turn("hi", "t1", TEST_CTX)]
+            return [event async for event in stream_module.astream_events_turn("hi", "t1", TEST_CTX)]
 
         events = await _collect()
 
@@ -145,7 +146,7 @@ class TestEntryPointsRefuseBeforeTouchingTheGraph:
         _forbid_graph_access(monkeypatch)
 
         async def _collect():
-            return [event async for event in agent.astream_events_turn("hi", "t1", TEST_CTX)]
+            return [event async for event in stream_module.astream_events_turn("hi", "t1", TEST_CTX)]
 
         try:
             await _collect()

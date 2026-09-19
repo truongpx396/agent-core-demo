@@ -75,7 +75,7 @@ attempt in `app/agent/tools.py::_arun_with_timeout` (a bounded budget, same
 helper this module's own sibling domain `tools.py` files already reuse for
 their own timeout needs) and catches every exception, degrading to
 `([], {})` with a logged warning — mirroring
-app/agent/tools.py::make_domain_subagent_tool's "resolves to nothing
+app/agent/subagent_domain_tools.py::make_domain_subagent_tool's "resolves to nothing
 usable, not a crash" contract for the analogous case (an AGENT.md
 declaring tools this domain doesn't actually have).
 

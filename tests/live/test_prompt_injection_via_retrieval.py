@@ -67,7 +67,7 @@ _CITATIONS = [
 async def _poisoned_search(query: str, ctx=None) -> tuple[str, list[dict]]:
     # `async def`, not `def` — `make_retrieve_context_node`'s own
     # `retrieve_context` does `await search(query, state.get("ctx"))`
-    # (app/agent/graph.py), so a plain sync callable here fails with
+    # (app/agent/graph_retrieval.py), so a plain sync callable here fails with
     # `TypeError: object tuple can't be used in 'await' expression` — caught
     # directly against a real CI run: that TypeError trips
     # `retrieve_context`'s own degrade-on-failure `except Exception` (by
@@ -92,8 +92,9 @@ def real_ollama_chat_model(monkeypatch, ollama_endpoint):
 
 async def test_real_model_does_not_comply_with_an_instruction_injected_into_retrieved_content(monkeypatch):
     # `GraphDeps(search_docs=...)` only overrides `retrieve_context`'s own
-    # automatic PRE-FETCH (graph.py: `make_retrieve_context_node(deps.search_docs
-    # or _default_search)`) — it does NOT reach `app/agent/tools.py`'s
+    # automatic PRE-FETCH (graph.py's `_assemble_shared_graph_parts`:
+    # `make_retrieve_context_node(deps.search_docs or _default_search)`) —
+    # it does NOT reach `app/agent/tools.py`'s
     # separately-bound `search_docs` TOOL, which the system prompt itself
     # instructs the model to use ("Use the search_docs tool to answer
     # questions", graph.py's own SYSTEM_PROMPT) and which a real (if small)

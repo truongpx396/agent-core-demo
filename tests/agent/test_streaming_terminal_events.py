@@ -26,8 +26,10 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
 from app.agent import moderation
 from app.agent import runtime as agent_module
-from app.agent.graph import GraphDeps, _estimate_tokens
+from app.agent import runtime_stream as stream_module
+from app.agent.graph import GraphDeps
 from app.agent.graph_build import build_graph
+from app.agent.graph_compaction import _estimate_tokens
 from tests.conftest import TEST_CTX
 
 
@@ -40,7 +42,7 @@ async def _events_for(graph_obj, text, thread_id=None, ctx=TEST_CTX, monkeypatch
     async def _run():
         return [
             event
-            async for event in agent_module.astream_events_turn(
+            async for event in stream_module.astream_events_turn(
                 text, thread_id or str(uuid.uuid4()), ctx
             )
         ]
@@ -125,7 +127,7 @@ class TestTraceOutputMatchesWhatTheClientActuallySaw:
 
     async def test_a_cache_hit_records_the_cached_text_on_the_trace_not_a_blank(self, monkeypatch):
         fake_trace = _FakeTrace()
-        monkeypatch.setattr(agent_module, "_open_trace", lambda *a, **k: (fake_trace, []))
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (fake_trace, []))
         llm = GenericFakeChatModel(messages=iter([]))  # would raise if ever invoked
 
         async def fake_cache_get(ctx, query):
@@ -142,7 +144,7 @@ class TestTraceOutputMatchesWhatTheClientActuallySaw:
         that DID stream real tokens must still record exactly that text,
         not a duplicate or an empty one."""
         fake_trace = _FakeTrace()
-        monkeypatch.setattr(agent_module, "_open_trace", lambda *a, **k: (fake_trace, []))
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (fake_trace, []))
         llm = GenericFakeChatModel(
             messages=iter([AIMessage(content="A normal, freshly generated answer.")])
         )
@@ -524,7 +526,7 @@ class TestCompactedEventSignalsHistoryTrimming:
                 await graph_obj.ainvoke({"messages": [q]}, config=cfg)
             return [
                 event
-                async for event in agent_module.astream_events_turn(
+                async for event in stream_module.astream_events_turn(
                     triggering_question, thread_id, TEST_CTX
                 )
             ]
@@ -631,14 +633,14 @@ async def _stream_events(fake_events, final_messages):
         cfg = {"configurable": {"thread_id": "fake-thread", "ctx": TEST_CTX}}
         return [
             event
-            async for event in agent_module._run_graph_stream(graph_obj, {}, cfg, trace=None)
+            async for event in stream_module._run_graph_stream(graph_obj, {}, cfg, trace=None)
         ]
 
     return await _run()
 
 
 class TestSubagentEventsDontLeakIntoTheMainStream:
-    """_run_graph_stream (app/agent/runtime.py) threads this turn's own
+    """_run_graph_stream (app/agent/runtime_stream.py) threads this turn's own
     callbacks/metadata into a subagent's NESTED graph.invoke() (see
     app/agent/tools.py::_run_subagent_impl's `nested_config`) so its
     internal LLM/tool calls trace correctly — but that nested graph is

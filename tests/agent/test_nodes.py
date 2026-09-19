@@ -12,7 +12,16 @@ stays plain sync — nothing to await — so those calls are unchanged.
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from app.agent import graph, graph_hitl, graph_routing, moderation
+from app.agent import (
+    graph,
+    graph_cache,
+    graph_followups,
+    graph_hitl,
+    graph_retrieval,
+    graph_retry,
+    graph_routing,
+    moderation,
+)
 from app.core import metrics
 from tests.conftest import TEST_CTX, metric_value
 
@@ -90,7 +99,7 @@ class TestCheckSemanticCache:
         async def fake_cache_get(ctx, query):
             return "A cached answer [1].", cached_citations
 
-        check_semantic_cache = graph.make_check_semantic_cache_node(fake_cache_get)
+        check_semantic_cache = graph_cache.make_check_semantic_cache_node(fake_cache_get)
         state = {
             "messages": [HumanMessage(content="what is a checkpointer?")],
             "ctx": TEST_CTX,
@@ -106,7 +115,7 @@ class TestCheckSemanticCache:
         async def fake_cache_get(ctx, query):
             return None
 
-        check_semantic_cache = graph.make_check_semantic_cache_node(fake_cache_get)
+        check_semantic_cache = graph_cache.make_check_semantic_cache_node(fake_cache_get)
         state = {
             "messages": [HumanMessage(content="what is a checkpointer?")],
             "ctx": TEST_CTX,
@@ -117,7 +126,7 @@ class TestCheckSemanticCache:
         async def fail_cache_get(ctx, query):
             raise AssertionError("cache_get should not be called")
 
-        check_semantic_cache = graph.make_check_semantic_cache_node(fail_cache_get)
+        check_semantic_cache = graph_cache.make_check_semantic_cache_node(fail_cache_get)
         result = await check_semantic_cache({"messages": [AIMessage(content="hi")]})
         assert result == {}
 
@@ -134,7 +143,7 @@ class TestSuggestFollowups:
 
     async def test_generates_followups_for_a_grounded_answer(self, monkeypatch):
         fake_llm = _fake_llm_returning("What is a MemorySaver?\nHow do I resume a run?")
-        suggest_followups = graph.make_suggest_followups_node(fake_llm)
+        suggest_followups = graph_followups.make_suggest_followups_node(fake_llm)
 
         result = await suggest_followups(self._state())
 
@@ -144,21 +153,21 @@ class TestSuggestFollowups:
         def fail_llm(*a, **kw):
             raise AssertionError("llm.ainvoke should not be called")
 
-        suggest_followups = graph.make_suggest_followups_node(_FailingLLM())
+        suggest_followups = graph_followups.make_suggest_followups_node(_FailingLLM())
 
         result = await suggest_followups(self._state(used_citations=[]))
 
         assert result == {"followups": []}
 
     async def test_cache_hit_skips_followup_generation_entirely(self):
-        suggest_followups = graph.make_suggest_followups_node(_FailingLLM())
+        suggest_followups = graph_followups.make_suggest_followups_node(_FailingLLM())
 
         result = await suggest_followups(self._state(cache_hit=True))
 
         assert result == {"followups": []}
 
     async def test_llm_failure_degrades_to_no_followups(self):
-        suggest_followups = graph.make_suggest_followups_node(_FailingLLM())
+        suggest_followups = graph_followups.make_suggest_followups_node(_FailingLLM())
 
         result = await suggest_followups(self._state())
 
@@ -166,7 +175,7 @@ class TestSuggestFollowups:
 
     async def test_caps_at_three_followups(self):
         fake_llm = _fake_llm_returning("Q1?\nQ2?\nQ3?\nQ4?\nQ5?")
-        suggest_followups = graph.make_suggest_followups_node(fake_llm)
+        suggest_followups = graph_followups.make_suggest_followups_node(fake_llm)
 
         result = await suggest_followups(self._state())
 
@@ -199,7 +208,7 @@ class TestWriteSemanticCache:
             captured["answer"] = answer
             captured["citations"] = citations
 
-        write_semantic_cache = graph.make_write_semantic_cache_node(fake_cache_set)
+        write_semantic_cache = graph_cache.make_write_semantic_cache_node(fake_cache_set)
         state = {
             "messages": [
                 HumanMessage(content="what is a checkpointer?"),
@@ -225,7 +234,7 @@ class TestWriteSemanticCache:
         async def fail_cache_set(ctx, query, answer, citations):
             raise AssertionError("cache_set should not be called on a cache hit")
 
-        write_semantic_cache = graph.make_write_semantic_cache_node(fail_cache_set)
+        write_semantic_cache = graph_cache.make_write_semantic_cache_node(fail_cache_set)
         state = {
             "messages": [
                 HumanMessage(content="what is a checkpointer?"),
@@ -247,7 +256,7 @@ async def test_retrieve_context_calls_search_docs_with_last_human_message_and_ct
         captured["ctx"] = ctx
         return "[1] doc 1\n[2] doc 2", [{"marker": "[1]", "text": "doc 1"}]
 
-    retrieve_context = graph.make_retrieve_context_node(fake_search_docs)
+    retrieve_context = graph_retrieval.make_retrieve_context_node(fake_search_docs)
 
     state = {
         "messages": [HumanMessage(content="what is a checkpointer?")],
@@ -279,7 +288,7 @@ async def test_retrieve_context_enriches_a_vague_followup_with_the_prior_questio
         captured["query"] = query
         return "[1] doc 1", [{"marker": "[1]", "text": "doc 1"}]
 
-    retrieve_context = graph.make_retrieve_context_node(fake_search_docs)
+    retrieve_context = graph_retrieval.make_retrieve_context_node(fake_search_docs)
 
     state = {
         "messages": [
@@ -307,7 +316,7 @@ async def test_retrieve_context_leaves_a_self_contained_followup_alone():
         captured["query"] = query
         return "[1] doc 1", [{"marker": "[1]", "text": "doc 1"}]
 
-    retrieve_context = graph.make_retrieve_context_node(fake_search_docs)
+    retrieve_context = graph_retrieval.make_retrieve_context_node(fake_search_docs)
 
     state = {
         "messages": [
@@ -326,7 +335,7 @@ async def test_retrieve_context_no_human_message_skips_search():
     async def fail_search_docs(query, ctx):
         raise AssertionError("search_docs should not be called")
 
-    retrieve_context = graph.make_retrieve_context_node(fail_search_docs)
+    retrieve_context = graph_retrieval.make_retrieve_context_node(fail_search_docs)
 
     result = await retrieve_context({"messages": [AIMessage(content="hi")]})
     assert result == {"context": "", "citations": [], "context_anchor_index": 0}
@@ -341,7 +350,7 @@ async def test_retrieve_context_degrades_to_empty_when_search_docs_raises():
     async def failing_search_docs(query, ctx):
         raise RuntimeError("Qdrant unreachable")
 
-    retrieve_context = graph.make_retrieve_context_node(failing_search_docs)
+    retrieve_context = graph_retrieval.make_retrieve_context_node(failing_search_docs)
     before = metric_value(metrics.agent_context_retrieval_degraded_total)
 
     state = {
@@ -1183,7 +1192,7 @@ class TestLeaksSystemPrompt:
 
 
 def test_retry_output_appends_corrective_human_message():
-    result = graph.retry_output({"messages": []})
+    result = graph_retry.retry_output({"messages": []})
     assert len(result["messages"]) == 1
     msg = result["messages"][0]
     assert isinstance(msg, HumanMessage)
@@ -1196,7 +1205,7 @@ def test_retry_output_too_short_feedback_also_nudges_toward_tool_use():
     round-2 narration (see _defers_instead_of_acting). Nudging toward
     tool use directly here, not just "write more," is meant to short-
     circuit that whole narration cycle one round earlier."""
-    result = graph.retry_output({"messages": [AIMessage(content="")]})
+    result = graph_retry.retry_output({"messages": [AIMessage(content="")]})
     msg = result["messages"][0]
     assert "tool" in msg.content.lower()
     assert "empty response" in msg.content.lower()
@@ -1207,7 +1216,7 @@ def test_retry_output_names_the_missing_citation_marker():
         "messages": [AIMessage(content="A sufficiently detailed but uncited answer.")],
         "likely_uncited_citations": [{"marker": "[2]", "text": "..."}],
     }
-    result = graph.retry_output(state)
+    result = graph_retry.retry_output(state)
     msg = result["messages"][0]
     assert isinstance(msg, HumanMessage)
     assert "[2]" in msg.content
@@ -1224,7 +1233,7 @@ def test_retry_output_citation_feedback_tells_the_model_not_to_call_tools():
         "messages": [AIMessage(content="A sufficiently detailed but uncited answer.")],
         "likely_uncited_citations": [{"marker": "[1]", "text": "..."}],
     }
-    result = graph.retry_output(state)
+    result = graph_retry.retry_output(state)
     assert "do not call any tools" in result["messages"][0].content.lower()
 
 
@@ -1235,7 +1244,7 @@ def test_retry_output_prefers_the_length_complaint_when_both_apply():
         "messages": [AIMessage(content="Yes.")],
         "likely_uncited_citations": [{"marker": "[1]", "text": "..."}],
     }
-    result = graph.retry_output(state)
+    result = graph_retry.retry_output(state)
     assert "short" in result["messages"][0].content.lower()
 
 
@@ -1244,7 +1253,7 @@ def test_retry_output_tells_the_model_never_to_reveal_instructions_on_a_leak():
         "messages": [AIMessage(content=graph.SYSTEM_PROMPT[:200])],
         "leaks_system_prompt": True,
     }
-    result = graph.retry_output(state)
+    result = graph_retry.retry_output(state)
     msg = result["messages"][0]
     assert isinstance(msg, HumanMessage)
     assert "system prompt" in msg.content.lower() or "instructions" in msg.content.lower()
@@ -1260,7 +1269,7 @@ def test_retry_output_leak_complaint_outranks_the_length_complaint():
         "messages": [AIMessage(content="Yes.")],  # also too short
         "leaks_system_prompt": True,
     }
-    result = graph.retry_output(state)
+    result = graph_retry.retry_output(state)
     assert "short" not in result["messages"][0].content.lower()
     assert "system prompt" in result["messages"][0].content.lower()
 
@@ -1270,7 +1279,7 @@ def test_retry_output_names_the_misattributed_citation_marker():
         "messages": [AIMessage(content="A sufficiently detailed but wrongly cited answer.")],
         "likely_misattributed_citations": [{"marker": "[3]", "text": "..."}],
     }
-    result = graph.retry_output(state)
+    result = graph_retry.retry_output(state)
     msg = result["messages"][0]
     assert isinstance(msg, HumanMessage)
     assert "[3]" in msg.content
@@ -1288,7 +1297,7 @@ def test_retry_output_prefers_uncited_complaint_when_both_citation_issues_apply(
         "likely_uncited_citations": [{"marker": "[1]", "text": "..."}],
         "likely_misattributed_citations": [{"marker": "[3]", "text": "..."}],
     }
-    result = graph.retry_output(state)
+    result = graph_retry.retry_output(state)
     assert "[1]" in result["messages"][0].content
     assert "[3]" not in result["messages"][0].content
 
@@ -1301,7 +1310,7 @@ def test_retry_output_tells_the_model_to_call_the_tool_when_it_deferred():
         "messages": [AIMessage(content="I can look that up for you. Would you like to know more?")],
         "deferred_instead_of_acting": True,
     }
-    result = graph.retry_output(state)
+    result = graph_retry.retry_output(state)
     msg = result["messages"][0]
     assert isinstance(msg, HumanMessage)
     assert "call it now" in msg.content.lower()
@@ -1317,7 +1326,7 @@ def test_retry_output_prefers_deferred_complaint_over_citation_complaints():
         "deferred_instead_of_acting": True,
         "likely_uncited_citations": [{"marker": "[1]", "text": "..."}],
     }
-    result = graph.retry_output(state)
+    result = graph_retry.retry_output(state)
     assert "call it now" in result["messages"][0].content.lower()
     assert "[1]" not in result["messages"][0].content
 
@@ -1330,7 +1339,7 @@ def test_retry_output_tells_the_model_its_output_was_never_real_when_fabricated(
         "messages": [AIMessage(content="Running it now:\n\n```python\nx=1\n```\n\nOutput:\n\n```\n1\n```")],
         "fabricated_tool_output": True,
     }
-    result = graph.retry_output(state)
+    result = graph_retry.retry_output(state)
     msg = result["messages"][0]
     assert isinstance(msg, HumanMessage)
     assert "invented" in msg.content.lower() or "not actually" in msg.content.lower()
@@ -1348,7 +1357,7 @@ def test_retry_output_prefers_fabricated_complaint_over_deferred_complaint():
         "fabricated_tool_output": True,
         "deferred_instead_of_acting": True,
     }
-    result = graph.retry_output(state)
+    result = graph_retry.retry_output(state)
     assert "invented" in result["messages"][0].content.lower()
     assert "call it now" not in result["messages"][0].content.lower()
 
@@ -1362,7 +1371,7 @@ def test_retry_output_tells_the_model_the_skill_named_a_required_tool():
         "messages": [AIMessage(content="Step by step, the total is $141,862.50.")],
         "skipped_required_tool": "run_python_in_sandbox",
     }
-    result = graph.retry_output(state)
+    result = graph_retry.retry_output(state)
     msg = result["messages"][0]
     assert isinstance(msg, HumanMessage)
     assert "run_python_in_sandbox" in msg.content
@@ -1378,7 +1387,7 @@ def test_retry_output_prefers_skipped_tool_complaint_over_deferred_complaint():
         "skipped_required_tool": "run_python_in_sandbox",
         "deferred_instead_of_acting": True,
     }
-    result = graph.retry_output(state)
+    result = graph_retry.retry_output(state)
     assert "run_python_in_sandbox" in result["messages"][0].content
     assert "call it now" not in result["messages"][0].content.lower()
 
@@ -1394,7 +1403,7 @@ def test_retry_output_prefers_fabricated_complaint_over_skipped_tool_complaint()
         "fabricated_tool_output": True,
         "skipped_required_tool": "run_python_in_sandbox",
     }
-    result = graph.retry_output(state)
+    result = graph_retry.retry_output(state)
     assert "invented" in result["messages"][0].content.lower()
     assert "by hand" not in result["messages"][0].content.lower()
 
@@ -1476,7 +1485,7 @@ class TestNoAnswerFallback:
     computation for whatever content is actually shown to the user."""
 
     def test_empty_content_gets_the_fallback_message_and_empty_citations(self):
-        no_answer = graph.make_no_answer_fallback_node()
+        no_answer = graph_retry.make_no_answer_fallback_node()
         state = {"messages": [AIMessage(content="")], "citations": [{"marker": "[1]", "text": "x"}]}
         result = no_answer(state)
 
@@ -1498,7 +1507,7 @@ class TestNoAnswerFallback:
             "messages": [AIMessage(content="Checkpointers persist state [1].")],
             "citations": citations,
         }
-        no_answer = graph.make_no_answer_fallback_node()
+        no_answer = graph_retry.make_no_answer_fallback_node()
         result = no_answer(state)
 
         assert "messages" not in result  # the good answer is left untouched
@@ -1519,7 +1528,7 @@ class TestNoAnswerFallback:
             "messages": [AIMessage(content="The weather today is sunny.")],
             "citations": citations,
         }
-        no_answer = graph.make_no_answer_fallback_node()
+        no_answer = graph_retry.make_no_answer_fallback_node()
         result = no_answer(state)
 
         assert "messages" not in result
@@ -1547,7 +1556,7 @@ class TestNoAnswerFallback:
             "messages": [AIMessage(content="Checkpointers persist state across restarts.")],
             "citations": citations,
         }
-        no_answer = graph.make_no_answer_fallback_node()
+        no_answer = graph_retry.make_no_answer_fallback_node()
         result = no_answer(state)
 
         assert result["used_citations"] != []
@@ -1573,7 +1582,7 @@ class TestNoAnswerFallback:
             ],
             "citations": [],
         }
-        no_answer = graph.make_no_answer_fallback_node()
+        no_answer = graph_retry.make_no_answer_fallback_node()
         result = no_answer(state)
 
         assert "messages" in result
@@ -1592,7 +1601,7 @@ class TestNoAnswerFallback:
             ],
             "citations": [],
         }
-        no_answer = graph.make_no_answer_fallback_node()
+        no_answer = graph_retry.make_no_answer_fallback_node()
         result = no_answer(state)
 
         assert "messages" in result
@@ -1604,7 +1613,7 @@ class TestNoAnswerFallback:
         produces, for their own "did not produce a final answer" +
         outcome="budget_exceeded" reporting — this node must be a
         complete no-op for them, not just skip the message replacement."""
-        no_answer = graph.make_no_answer_fallback_node(emit_message=False)
+        no_answer = graph_retry.make_no_answer_fallback_node(emit_message=False)
         state = {
             "messages": [AIMessage(content="Checkpointers persist state [1].")],
             "citations": [{"marker": "[1]", "text": "Checkpointers persist state."}],

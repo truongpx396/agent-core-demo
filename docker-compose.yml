@@ -545,7 +545,7 @@ services:
     build: .
     profiles: ["app"]
     restart: unless-stopped
-    command: ["python", "-m", "app.turns.agent_worker"]
+    command: ["python", "-m", "app.job_queue.agent_worker"]
     environment: *app-env
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -572,7 +572,7 @@ services:
     build: .
     profiles: ["app"]
     restart: unless-stopped
-    command: ["python", "-m", "app.turns.agent_worker"]
+    command: ["python", "-m", "app.job_queue.agent_worker"]
     environment:
       <<: *app-env
       AGENT_DOMAIN: support
@@ -588,7 +588,7 @@ services:
     build: .
     profiles: ["app"]
     restart: unless-stopped
-    command: ["python", "-m", "app.turns.agent_worker"]
+    command: ["python", "-m", "app.job_queue.agent_worker"]
     environment:
       <<: *app-env
       AGENT_DOMAIN: ops
@@ -604,7 +604,7 @@ services:
     build: .
     profiles: ["app"]
     restart: unless-stopped
-    command: ["python", "-m", "app.turns.agent_worker"]
+    command: ["python", "-m", "app.job_queue.agent_worker"]
     environment:
       <<: *app-env
       AGENT_DOMAIN: sales

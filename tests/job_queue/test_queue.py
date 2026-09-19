@@ -1,5 +1,5 @@
-"""Tests for app/turns/queue.py — the Redis Streams queue mechanics between the
-SSE-serving process and app/turns/agent_worker.py's agent workers
+"""Tests for app/job_queue/queue.py — the Redis Streams queue mechanics between the
+SSE-serving process and app/job_queue/agent_worker.py's agent workers
 (GRAPH_PATTERNS.md pattern 43). A hand-rolled in-memory fake stands in for
 a real Redis Stream (no live Redis needed), matching the rest of this
 suite's hermetic discipline.
@@ -12,7 +12,7 @@ import json
 
 from redis.exceptions import ResponseError
 
-from app.turns import queue
+from app.job_queue import queue
 
 
 def _id_gt(a: str, b: str) -> bool:
@@ -21,7 +21,7 @@ def _id_gt(a: str, b: str) -> bool:
 
 class FakeRedis:
     """An in-memory stand-in for redis.asyncio.Redis covering exactly the
-    Streams commands app/turns/queue.py/app/turns/agent_worker.py actually use."""
+    Streams commands app/job_queue/queue.py/app/job_queue/agent_worker.py actually use."""
 
     def __init__(self):
         self.streams: dict[str, list[tuple[str, dict]]] = {}
@@ -196,7 +196,7 @@ class TestPublishRequest:
 class TestPublishResumeRequest:
     async def test_enqueues_a_resume_job_onto_the_same_stream(self):
         """Same domain's requests stream as a new turn — one consumer
-        group, one dispatch-by-kind in app/turns/agent_worker.py, not a
+        group, one dispatch-by-kind in app/job_queue/agent_worker.py, not a
         second queue."""
         client = FakeRedis()
         await queue.publish_resume_request(
@@ -241,7 +241,7 @@ class TestPublishCancelRequest:
 class TestCancelFlag:
     """The separate, per-thread (not per-request) mechanism POST
     /chat/cancel uses to stop an ACTIVELY STREAMING turn — see
-    app/turns/agent_worker.py's cancel_check wiring."""
+    app/job_queue/agent_worker.py's cancel_check wiring."""
 
     async def test_is_cancelled_false_before_anything_is_set(self):
         client = FakeRedis()
@@ -289,7 +289,7 @@ class TestPublishResultAndReadResults:
 
     async def test_read_results_stops_at_approval_required_too(self):
         """approval_required is the last event a "turn" job's worker ever
-        publishes for a paused turn (app/agent/runtime.py::_run_graph_stream never
+        publishes for a paused turn (app/agent/runtime_stream.py::_run_graph_stream never
         yields anything after it) — without treating it as terminal here,
         this generator would block forever waiting for a "done"/"error"
         that will never come on THIS results stream (resuming is a

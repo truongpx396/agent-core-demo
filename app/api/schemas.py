@@ -77,7 +77,7 @@ class ReadinessResponse(BaseModel):
 
 
 class UsageResponse(BaseModel):
-    """GET /usage's body (app/agent/meter.py::usage_summary) — this caller's own
+    """GET /usage's body (app/agent/usage_ledger.py::usage_summary) — this caller's own
     tenant, all-time, plus the same rolling-24h number
     app/agent/runtime.py::_tenant_over_daily_budget checks before every turn, so a
     caller can see how close they are to MAX_COST_USD_PER_TENANT_PER_DAY

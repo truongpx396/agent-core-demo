@@ -19,11 +19,8 @@ import uuid
 
 from langfuse.decorators import langfuse_context
 
-from app.agent.runtime import (
-    astream_events_resume,
-    astream_events_turn,
-    init_graph_async,
-)
+from app.agent.runtime import init_graph_async
+from app.agent.runtime_stream import astream_events_resume, astream_events_turn
 from app.core.config import DEFAULT_TENANT
 from app.core.security import SecurityCtx
 

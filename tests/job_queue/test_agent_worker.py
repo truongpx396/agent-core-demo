@@ -1,19 +1,19 @@
-"""Tests for app/turns/agent_worker.py's process_request — the Redis Streams
+"""Tests for app/job_queue/agent_worker.py's process_request — the Redis Streams
 consumer side of GRAPH_PATTERNS.md pattern 43, dispatching by
 `payload["kind"]` (`"turn"` | `"resume"` | `"cancel"`). Reuses
-tests/turns/test_queue.py's FakeRedis; the actual graph-running functions
+tests/job_queue/test_queue.py's FakeRedis; the actual graph-running functions
 (`astream_events_turn`/`astream_events_resume`/`cancel_run`) are
 monkeypatched so these never touch a real graph/LLM.
 """
 import asyncio
 import json
 
-from app.turns import agent_worker
-from app.turns.queue import CONSUMER_GROUP, results_stream_key
-from tests.turns.test_queue import FakeRedis
+from app.job_queue import agent_worker
+from app.job_queue.queue import CONSUMER_GROUP, results_stream_key
+from tests.job_queue.test_queue import FakeRedis
 
 REQUESTS_STREAM = agent_worker.REQUESTS_STREAM  # this test module's worker
-# runs as the default AGENT_DOMAIN ("ecorp"); see app/turns/agent_worker.py's
+# runs as the default AGENT_DOMAIN ("ecorp"); see app/job_queue/agent_worker.py's
 # own docstring on why the requests stream is a per-process, not per-message,
 # property.
 
@@ -110,7 +110,7 @@ class TestProcessRequestTurn:
         the fake generator — an assertion failure in there would just be
         caught by process_request's own try/except and published as an
         ordinary error event instead of failing this test."""
-        from app.turns.queue import is_cancelled, set_cancel_flag
+        from app.job_queue.queue import is_cancelled, set_cancel_flag
 
         seen_cancelled = []
 
@@ -134,7 +134,7 @@ class TestProcessRequestTurn:
         assert still_cancelled_after is False
 
     async def test_passes_a_working_cancel_check_bound_to_the_thread_id(self, monkeypatch):
-        from app.turns.queue import set_cancel_flag
+        from app.job_queue.queue import set_cancel_flag
 
         captured = {}
 
@@ -192,7 +192,7 @@ class TestProcessRequestTurn:
         assert captured["images"] == ["https://example.com/cat.png"]
 
     async def test_no_images_attached_passes_none_not_an_empty_list(self, monkeypatch):
-        """_build_human_content (app/agent/runtime.py) treats an empty list the
+        """_build_human_content (app/agent/runtime_stream.py) treats an empty list the
         same as None, but keeping the distinction here means a future
         reader can tell "no image was ever attached" from "an empty list
         was explicitly sent" by reading the call, not by re-deriving it."""
@@ -325,7 +325,7 @@ class TestRunLoop:
     async def test_processes_one_request_end_to_end_via_the_consumer_group(self, monkeypatch):
         """A thin proof that run()'s xreadgroup wiring actually delivers a
         published request to process_request — not a re-test of
-        FakeRedis's own semantics (see tests/turns/test_queue.py for those)."""
+        FakeRedis's own semantics (see tests/job_queue/test_queue.py for those)."""
 
         async def fake_turn(text, thread_id, ctx, require_approval=False, images=None, cancel_check=None):
             yield {"type": "done"}
@@ -336,7 +336,7 @@ class TestRunLoop:
         monkeypatch.setattr(agent_worker, "get_client", lambda: client)
 
         async def _run_one_iteration():
-            from app.turns.queue import ensure_consumer_group
+            from app.job_queue.queue import ensure_consumer_group
 
             await ensure_consumer_group(client)
             entry_id, fields = _entry(request_id="r3")

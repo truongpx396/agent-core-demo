@@ -4,7 +4,7 @@ app/agent/tools.py::_run_subagent_impl already uses) and
 metrics_client/notify/record_usage monkeypatched, so this stays hermetic
 (no live Prometheus, LLM, or Postgres) — matching the rest of this suite's
 discipline (tests/conftest.py's autouse mock_appdata_postgres degrades
-app.agent.meter.get_connection itself, but record_usage also calls
+app.agent.usage_ledger.get_connection itself, but record_usage also calls
 app.agent.model_resolver.resolve_model, a real network call this test
 avoids entirely by monkeypatching record_usage directly rather than
 exercising its internals — those have their own test coverage elsewhere).

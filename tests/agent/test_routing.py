@@ -11,21 +11,20 @@ from app.agent.graph import (
     MAX_HISTORY_SUMMARY_CHARS,
     MAX_ITERATIONS,
     MAX_REPEATED_ACTIONS,
-    route_after_cache,
     route_after_compaction,
     route_after_moderation,
     route_after_validation,
 )
+from app.agent.graph_cache import route_after_cache
 from app.agent.graph_hitl import route_after_approval
-from app.agent.graph_routing import (
+from app.agent.graph_loop_guards import (
     _consecutive_repeat_count,
     _mandatory_gate_reason,
     _tool_call_fingerprint,
     _tool_capability,
     _use_skill_called_without_search,
-    route_after_check,
-    should_continue,
 )
+from app.agent.graph_routing import route_after_check, should_continue
 from tests.conftest import TEST_CTX
 
 

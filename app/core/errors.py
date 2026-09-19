@@ -8,7 +8,7 @@ caller can switch on `code` (a small, stable enum) without parsing
 moderation."
 
 Applied to this app's own OPERATOR/CALLER-facing surfaces: the SSE
-`error` event (`app/agent/runtime.py::_run_graph_stream`) and the CLI's
+`error` event (`app/agent/runtime_stream.py::_run_graph_stream`) and the CLI's
 printed error text (`app/channels/chat.py`). Deliberately NOT applied to `ToolMessage` content — what
 a failing tool returns to the LLM (`app/agent/graph_utils.py::_friendly_tool_error`)
 is natural-language by design, read and reacted to by the model, a
@@ -32,7 +32,7 @@ class ErrorCode(str, Enum):
 
 
 class TurnCancelled(Exception):
-    """Raised by app/agent/runtime.py::_iterate_with_timeout when its optional
+    """Raised by app/agent/runtime_stream.py::_iterate_with_timeout when its optional
     `cancel_check` callback reports a user-initiated stop mid-turn
     (GRAPH_PATTERNS.md pattern 43's `POST /chat/cancel` — the "actively
     streaming, not paused at approval" case; a run already paused at

@@ -12,7 +12,7 @@ import threading
 import time
 
 from app.ingestion import ingest_queue, ingest_worker
-from tests.turns.test_queue import FakeRedis
+from tests.job_queue.test_queue import FakeRedis
 
 TEST_CTX = {"tenant": "ecorp", "principal": "p1", "claims": {}}
 
@@ -282,7 +282,7 @@ class TestConcurrentDispatch:
     semaphore slot, then asyncio.create_tasks _process_with_limit per entry
     (see run()'s own comments for why the semaphore is acquired BEFORE task
     creation, not inside it). Same shape, same test structure, as
-    app/turns/agent_worker.py::TestConcurrentDispatch — this replicates that
+    app/job_queue/agent_worker.py::TestConcurrentDispatch — this replicates that
     exact acquire-then-dispatch pattern against several ingest jobs at once."""
 
     async def test_bounds_concurrency_and_actually_overlaps(self, monkeypatch):

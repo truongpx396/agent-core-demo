@@ -178,7 +178,7 @@ def _make_llm(tools: list = TOOLS):
         base_url=graph_module.OPENAI_API_BASE,
         api_key=SecretStr(graph_module.OPENAI_API_KEY),
         temperature=0,
-        # astream_events (app/agent/runtime.py's astream_events_turn) forces this
+        # astream_events (app/agent/runtime_stream.py's astream_events_turn) forces this
         # model through its streaming code path even though agent() calls
         # .invoke() — OpenAI-compatible streaming only includes token usage
         # in the final chunk when explicitly requested, so without this,

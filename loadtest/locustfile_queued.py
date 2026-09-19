@@ -1,4 +1,4 @@
-"""Locust load test against every HTTP surface app/turns/agent_worker.py's
+"""Locust load test against every HTTP surface app/job_queue/agent_worker.py's
 queued path touches — POST /chat/stream/queued, /chat/resume, /chat/cancel,
 and /ingest/upload — built so running it moves the panels on the
 "Agent Core Overview" Grafana dashboard (observability/grafana/dashboards/
@@ -7,7 +7,7 @@ agent-overview.json), not just raw throughput numbers.
 Meant to run against loadtest/fake_llm_server.py, not native Ollama — same
 reasoning as before: native Ollama on this project's own dev stack
 serializes to exactly one in-flight generation (`-np 1`, verified directly),
-so a load test against it can't tell whether app/turns/agent_worker.py's own
+so a load test against it can't tell whether app/job_queue/agent_worker.py's own
 concurrency (`_MAX_CONCURRENCY`, the pooled checkpointer) does anything —
 every result would be dominated by Ollama's own ceiling. Every OTHER piece
 of infra (Postgres, Redis, Qdrant, MinIO) stays real; only the LLM is faked.
@@ -81,7 +81,7 @@ against the actual source before being ruled out, not assumed:
     fault (e.g. Postgres/Redis down mid-turn), not content-driven.
 
 One caveat worth knowing before reading the "Turn rate by outcome" panel:
-_turn_outcome (app/agent/runtime.py) reports outcome="rejected" whenever a
+_turn_outcome (app/agent/runtime_stream.py) reports outcome="rejected" whenever a
 turn never reaches the agent node — which includes reject_input/
 reject_context/reject_moderation (genuine rejections) AND a semantic-cache
 HIT (a fast, correct, non-rejected answer that happens to also skip the

@@ -1,5 +1,5 @@
 # One image, three roles — the API service and both queue workers
-# (app/turns/agent_worker.py, app/ingestion/ingest_worker.py) are the same codebase and the
+# (app/job_queue/agent_worker.py, app/ingestion/ingest_worker.py) are the same codebase and the
 # same dependency set, just a different entrypoint command. docker-compose.yml
 # builds this once and overrides `command:` per service rather than
 # maintaining three near-identical Dockerfiles.
@@ -64,7 +64,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3)" || exit 1
 
 # The API service is the default role; agent-worker/ingest-worker override
-# this in docker-compose.yml (`command: ["python", "-m", "app.turns.agent_worker"]`
+# this in docker-compose.yml (`command: ["python", "-m", "app.job_queue.agent_worker"]`
 # / `app.ingestion.ingest_worker`) — neither of those binds a port, so EXPOSE/
 # HEALTHCHECK above are meaningful for this default role only.
 CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

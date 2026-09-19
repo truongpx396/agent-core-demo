@@ -91,7 +91,7 @@ class TestBindRequestId:
 
     def test_an_explicit_extra_request_id_is_not_overwritten(self, captured_logger):
         """An explicit extra={"request_id": ...} at a specific call site
-        (e.g. app/turns/agent_worker.py's own failure-path log) wins over the
+        (e.g. app/job_queue/agent_worker.py's own failure-path log) wins over the
         ambient contextvar — same value in practice today, but explicit
         should still take precedence over implicit."""
         logger, stream = captured_logger

@@ -2,7 +2,7 @@
 44): app/agent/graph.py's `_human_text`/`_human_has_content` (extracting the text
 portion of a possibly-multimodal HumanMessage for every downstream
 text-only consumer — moderation, the semantic cache key, the retrieval
-query), app/agent/runtime.py's `_build_human_content` (constructing the multimodal
+query), app/agent/runtime_stream.py's `_build_human_content` (constructing the multimodal
 content list actually sent to the model), and the routing/node-level call
 sites that had to switch from `.content` to these helpers.
 
@@ -15,9 +15,11 @@ pattern for exercising async code from a plain `def test_...`.
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent import graph
+from app.agent import graph, graph_cache, graph_retrieval
 from app.agent import runtime as agent_module
-from app.agent.graph import _human_has_content, _human_text, route_after_validation
+from app.agent import runtime_stream as stream_module
+from app.agent.graph import route_after_validation
+from app.agent.graph_messages import _human_has_content, _human_text
 from tests.conftest import TEST_CTX
 
 
@@ -131,7 +133,7 @@ class TestSemanticCacheAndRetrievalUseTextOnly:
             captured["query"] = query
             return None
 
-        check_semantic_cache = graph.make_check_semantic_cache_node(fake_cache_get)
+        check_semantic_cache = graph_cache.make_check_semantic_cache_node(fake_cache_get)
         state = {
             "messages": [_multimodal("describe this photo", "https://example.com/x.png")],
             "ctx": TEST_CTX,
@@ -147,7 +149,7 @@ class TestSemanticCacheAndRetrievalUseTextOnly:
             captured["query"] = query
             return "", []
 
-        retrieve_context = graph.make_retrieve_context_node(fake_search)
+        retrieve_context = graph_retrieval.make_retrieve_context_node(fake_search)
         state = {
             "messages": [_multimodal("what company is this about?", "https://example.com/x.png")],
             "ctx": TEST_CTX,
@@ -162,7 +164,7 @@ class TestSemanticCacheAndRetrievalUseTextOnly:
         async def fake_cache_set(ctx, query, answer, citations):
             captured["query"] = query
 
-        write_semantic_cache = graph.make_write_semantic_cache_node(fake_cache_set)
+        write_semantic_cache = graph_cache.make_write_semantic_cache_node(fake_cache_set)
         state = {
             "messages": [
                 _multimodal("describe this photo", "https://example.com/x.png"),
@@ -191,20 +193,20 @@ class TestChatRequestImagesField:
 
 class TestBuildHumanContent:
     def test_no_images_returns_plain_string(self):
-        assert agent_module._build_human_content("hello", None) == "hello"
+        assert stream_module._build_human_content("hello", None) == "hello"
 
     def test_empty_images_list_returns_plain_string(self):
-        assert agent_module._build_human_content("hello", []) == "hello"
+        assert stream_module._build_human_content("hello", []) == "hello"
 
     def test_one_image_builds_a_multimodal_content_list(self):
-        result = agent_module._build_human_content("what is this?", ["https://example.com/cat.png"])
+        result = stream_module._build_human_content("what is this?", ["https://example.com/cat.png"])
         assert result == [
             {"type": "text", "text": "what is this?"},
             {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
         ]
 
     def test_multiple_images_each_become_their_own_part(self):
-        result = agent_module._build_human_content("compare these", ["url1", "url2"])
+        result = stream_module._build_human_content("compare these", ["url1", "url2"])
         assert result == [
             {"type": "text", "text": "compare these"},
             {"type": "image_url", "image_url": {"url": "url1"}},
@@ -253,7 +255,7 @@ class TestAstreamEventsTurnBuildsMultimodalContent:
         monkeypatch.setattr(agent_module, "init_graph_async", fake_init_graph_async)
 
         async def _run():
-            async for _ in agent_module.astream_events_turn(
+            async for _ in stream_module.astream_events_turn(
                 "what is this?", str(uuid.uuid4()), TEST_CTX, images=["https://example.com/cat.png"]
             ):
                 pass

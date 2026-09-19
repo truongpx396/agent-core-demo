@@ -463,7 +463,7 @@ jobs:
       # `test_health.py`/`test_rate_limit.py`/`tests/agent/test_multimodal.py`
       # import `app.api.main` at module level — which calls
       # `configure_logging()` UNCONDITIONALLY at import time (unlike
-      # `app/turns/agent_worker.py`'s/`app/channels/telegram.py`'s own
+      # `app/job_queue/agent_worker.py`'s/`app/channels/telegram.py`'s own
       # `if __name__ == "__main__":`-gated calls, deliberately different
       # since uvicorn imports `app.api.main:app` without ever hitting
       # `__main__` — see that module's own comment). That installs a real

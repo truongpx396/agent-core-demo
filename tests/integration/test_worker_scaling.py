@@ -1,5 +1,5 @@
 """Real-subprocess capacity test: do N independently-scaled
-app/turns/agent_worker.py processes, each running M turns concurrently
+app/job_queue/agent_worker.py processes, each running M turns concurrently
 (AGENT_WORKER_MAX_CONCURRENCY), genuinely absorb N*M concurrent real HTTP
 requests against POST /chat/stream/queued — correctly, not just without
 crashing?
@@ -25,7 +25,7 @@ TestScaledWorkersAbsorbConcurrentLoad is a regression guard for a real
 capacity bug found while manually verifying this exact scenario before
 writing it: 250 concurrent requests against 5 agent_worker.py processes at
 AGENT_WORKER_MAX_CONCURRENCY=50 each initially failed ~83% of the time with
-redis.exceptions.MaxConnectionsError — app/turns/queue.py::get_client()'s
+redis.exceptions.MaxConnectionsError — app/job_queue/queue.py::get_client()'s
 Redis pool silently inherited redis-py's own 100-connection default, a
 ceiling with nothing to do with how many workers or how much per-worker
 concurrency was configured (every POST /chat/stream/queued SSE connection
@@ -159,7 +159,7 @@ def qdrant_collection() -> str:
 
 @pytest.fixture(scope="module")
 def scaled_stack(qdrant_collection: str) -> Iterator[str]:
-    """`_NUM_WORKERS` real app/turns/agent_worker.py OS processes, each at
+    """`_NUM_WORKERS` real app/job_queue/agent_worker.py OS processes, each at
     `AGENT_WORKER_MAX_CONCURRENCY=_PER_WORKER_CONCURRENCY` (`_TOTAL_REQUESTS`
     system-wide capacity), plus a real `uvicorn app.api.main` and a real
     `loadtest/fake_llm_server.py` — the exact shape manually verified
@@ -266,7 +266,7 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
 
     worker_procs = [
         subprocess.Popen(
-            [sys.executable, "-m", "app.turns.agent_worker"], env=env, cwd=str(_REPO_ROOT)
+            [sys.executable, "-m", "app.job_queue.agent_worker"], env=env, cwd=str(_REPO_ROOT)
         )
         for _ in range(_NUM_WORKERS)
     ]
@@ -360,7 +360,7 @@ class TestScaledWorkersAbsorbConcurrentLoad:
         assert succeeded == n, (
             f"only {succeeded}/{n} requests succeeded ({n - succeeded} failed) — "
             f"status codes seen: {sorted(set(statuses))}. If these are Redis "
-            f"connection errors, app/turns/queue.py::get_client()'s "
+            f"connection errors, app/job_queue/queue.py::get_client()'s "
             f"REDIS_MAX_CONNECTIONS ceiling has regressed below what "
             f"{n} concurrent SSE connections need."
         )

@@ -17,7 +17,7 @@ code change — but it also means the single input with the largest effect
 on output quality can change (a gateway remap) without any artifact this
 app records changing with it. Resolving and recording it here keeps model
 choice invisible to *routing* (nothing downstream branches on it) while
-leaving it visible to *forensics* (app/agent/meter.py's usage ledger).
+leaving it visible to *forensics* (app/agent/usage_ledger.py's usage ledger).
 """
 import logging
 

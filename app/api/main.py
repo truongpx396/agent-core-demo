@@ -13,7 +13,7 @@ Endpoints:
                               published SSE event vocabulary an in-process
                               `astream_events_turn` call would produce, but
                               the turn actually runs on a separate
-                              app/turns/agent_worker.py process via a Redis
+                              app/job_queue/agent_worker.py process via a Redis
                               Streams queue (GRAPH_PATTERNS.md pattern 43)
                               — needs `make agent-worker` running, and a
                               real approve/reject UI can act on a pause it
@@ -27,7 +27,7 @@ Endpoints:
                               single unified process
 - POST /chat/resume       -> continues a turn paused at human_approval —
                               the HTTP counterpart to
-                              app/agent/runtime.py::astream_events_resume, always
+                              app/agent/runtime_stream.py::astream_events_resume, always
                               routed through the same per-domain queue as
                               new turns (same X-Domain header)
 - POST /chat/cancel       -> stops a turn, whether it's actively streaming
@@ -38,7 +38,7 @@ Endpoints:
                               first (the session switcher)
 - GET  /chat/sessions/{thread_id}/messages -> that thread's transcript
                               (404 if it belongs to a different domain)
-- GET  /usage             -> this caller's own tenant usage/cost (app/agent/meter.py),
+- GET  /usage             -> this caller's own tenant usage/cost (app/agent/usage_ledger.py),
                               including the rolling-24h number
                               app/agent/runtime.py::_tenant_over_daily_budget checks
 - POST /ingest/upload     -> upload one or more PDF/DOCX documents; each
@@ -91,12 +91,9 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 
-from app.agent import meter, sessions, sql_store
-from app.agent.runtime import (
-    close_checkpointer_pool,
-    get_session_messages,
-    init_graph_async,
-)
+from app.agent import sessions, sql_store, usage_ledger
+from app.agent.runtime import close_checkpointer_pool, init_graph_async
+from app.agent.runtime_stream import get_session_messages
 from app.api import (
     health as health_checks,  # `health` is also this module's own liveness endpoint name below
 )
@@ -125,7 +122,7 @@ from app.core.telemetry import configure_telemetry
 from app.domains.registry import DOMAINS
 from app.ingestion import ingest_queue, object_store
 from app.ingestion.extractors import EXTRACTORS_BY_SUFFIX
-from app.turns import queue
+from app.job_queue import queue
 
 # Called at import time, before uvicorn (or anything else) has a chance to
 # log through this module — see app/core/logging_config.py's own docstring for
@@ -166,7 +163,7 @@ async def get_domain(
     here instead of a process-startup crash, since this is a per-request
     value rather than a per-process one. Without this check, a typo'd
     domain would publish onto a requests stream no running
-    app/turns/agent_worker.py pool ever reads, hanging silently until the
+    app/job_queue/agent_worker.py pool ever reads, hanging silently until the
     caller gives up — a much worse failure mode than an immediate 422."""
     if x_domain not in DOMAINS:
         raise HTTPException(
@@ -307,27 +304,27 @@ async def chat_stream_queued(
     call would produce (token, tool_start, tool_end, citations, followups,
     approval_required, error, done) — but this process never runs the graph
     itself. It publishes the turn as a request onto a shared Redis Stream and
-    streams back whatever a separate `app/turns/agent_worker.py` process
+    streams back whatever a separate `app/job_queue/agent_worker.py` process
     publishes to this turn's own results stream (GRAPH_PATTERNS.md pattern 43,
-    app/turns/queue.py).
+    app/job_queue/queue.py).
 
     This is what makes the SSE-serving tier and the agent-executing tier
     independently scalable: this endpoint does no LLM/tool work of its own,
     so running more `uvicorn` processes scales concurrent SSE connections,
-    and running more `app/turns/agent_worker.py` processes scales concurrent
+    and running more `app/job_queue/agent_worker.py` processes scales concurrent
     turns — neither number constrains the other. Needs at least one
-    `app/turns/agent_worker.py` process running (`make agent-worker`) to ever
+    `app/job_queue/agent_worker.py` process running (`make agent-worker`) to ever
     produce a reply; with none running, a request just waits on the queue
     until one is (or the client gives up and disconnects).
 
     A real `approval_required` pause from this endpoint IS actionable
-    — the worker no longer auto-declines it (see app/turns/agent_worker.py's
+    — the worker no longer auto-declines it (see app/job_queue/agent_worker.py's
     module docstring), so it reaches the caller as-is, resumed via
     `POST /chat/resume` below.
 
     `domain` (an `X-Domain` header, see `get_domain`) picks which domain's
     requests stream this turn is published onto — only an
-    `app/turns/agent_worker.py` pool booted with a matching `AGENT_DOMAIN`
+    `app/job_queue/agent_worker.py` pool booted with a matching `AGENT_DOMAIN`
     ever reads it, so this is what lets ONE unified API process serve every
     domain a worker pool is currently running for.
     """
@@ -350,7 +347,7 @@ async def chat_resume(
     req: ResumeRequest, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> StreamingResponse:
     """Continue a turn paused at human_approval — the HTTP counterpart to
-    `app/agent/runtime.py::astream_events_resume`. Always routed through the same
+    `app/agent/runtime_stream.py::astream_events_resume`. Always routed through the same
     Redis queue as a new turn (GRAPH_PATTERNS.md pattern 43), not run
     in-process: a resume can still execute a real tool call and run many
     more LLM turns, so handling it directly in the SSE-serving tier would
@@ -388,7 +385,7 @@ async def chat_cancel(
     harmless no-op if it doesn't apply):
 
     1. Actively streaming, not yet paused: sets a short-lived Redis flag
-       (`app/turns/queue.py::set_cancel_flag`) the worker CURRENTLY running that
+       (`app/job_queue/queue.py::set_cancel_flag`) the worker CURRENTLY running that
        turn polls between graph events (app/agent/runtime.py's `cancel_check`) and
        stops on — its own already-open results stream (the one
        `POST /chat/stream/queued` is reading) gets the terminal
@@ -452,16 +449,16 @@ async def chat_session_messages(
 
 @app.get("/usage", response_model=UsageResponse)
 async def usage(ctx: SecurityCtx = Depends(get_ctx)) -> UsageResponse:
-    """This caller's own tenant usage (app/agent/meter.py) — the read path that
+    """This caller's own tenant usage (app/agent/usage_ledger.py) — the read path that
     was already there (`usage_summary`), just not reachable over HTTP
     before now, so a caller had no way to see how close they were to
     MAX_COST_USD_PER_TENANT_PER_DAY short of getting refused by
     app/agent/runtime.py::_tenant_over_daily_budget first. Tenant-scoped only,
     same as `usage_summary` itself — no way to query another tenant's
     spend through this."""
-    all_time = await meter.usage_summary(ctx["tenant"])
+    all_time = await usage_ledger.usage_summary(ctx["tenant"])
     since = datetime.now(UTC) - timedelta(hours=24)
-    last_24h = await meter.usage_summary(ctx["tenant"], since=since)
+    last_24h = await usage_ledger.usage_summary(ctx["tenant"], since=since)
     return UsageResponse(
         total_tokens=all_time["total_tokens"],
         total_cost_usd=all_time["total_cost_usd"],
@@ -586,7 +583,7 @@ async def ingest_stream(job_id: str) -> StreamingResponse:
     pipeline doesn't maintain a job directory the way chat sessions do) —
     `job_id` is a `uuid4().hex`, unguessable in practice, the same
     "unguessable id is the access control" posture
-    app/turns/queue.py's chat results streams already rely on.
+    app/job_queue/queue.py's chat results streams already rely on.
     """
     client = ingest_queue.get_client()
 

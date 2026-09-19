@@ -44,6 +44,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.agent import runtime as agent_module
+from app.agent import runtime_stream as stream_module
 from app.agent.graph import (
     STATE_SCHEMA_VERSION,
     SYSTEM_PROMPT,
@@ -187,7 +188,7 @@ class TestAsyncSeeding:
         async def _run():
             await agent_module.init_graph_async()
             events = []
-            async for event in agent_module.astream_events_turn(
+            async for event in stream_module.astream_events_turn(
                 "hello", str(uuid.uuid4()), TEST_CTX
             ):
                 events.append(event)
@@ -204,7 +205,7 @@ class TestAsyncSeeding:
         Root cause: `_seeded` (app/agent/runtime.py) is a plain
         in-process `set()` — a fast-path cache, not the source of truth.
         It forgets everything on a worker restart, and — since
-        app/turns/agent_worker.py's own docstring says to run SEVERAL
+        app/job_queue/agent_worker.py's own docstring says to run SEVERAL
         `agent-worker` processes for scaling, with Redis Streams
         distributing turns round-robin across them — a thread's turns
         can just as easily land on a DIFFERENT process that's never seen
@@ -324,7 +325,7 @@ class TestAsyncSeeding:
             # Now resume it — this is where resumability_error_async's
             # aget_state must be used, not the sync version.
             events = []
-            async for event in agent_module.astream_events_resume(
+            async for event in stream_module.astream_events_resume(
                 thread_id, True, TEST_CTX
             ):
                 events.append(event)
@@ -394,7 +395,7 @@ class TestAsyncSeeding:
             paused_state = await graph.aget_state(cfg)
             assert paused_state.next, "should be paused"
 
-            cancelled = await agent_module.cancel_run(thread_id, TEST_CTX)
+            cancelled = await stream_module.cancel_run(thread_id, TEST_CTX)
 
             final_state = await graph.aget_state(cfg)
             return cancelled, final_state
@@ -408,7 +409,7 @@ class TestAsyncSeeding:
     async def test_cancel_run_returns_false_when_nothing_is_paused(self):
         async def _run():
             await agent_module.init_graph_async()
-            return await agent_module.cancel_run(str(uuid.uuid4()), TEST_CTX)
+            return await stream_module.cancel_run(str(uuid.uuid4()), TEST_CTX)
 
         assert await _run() is False
 
@@ -597,7 +598,7 @@ class TestResumabilityErrorRejectsAnActivelyRunningThread:
             await agent_module.init_graph_async()
 
             async def drive_turn():
-                async for _ in agent_module.astream_events_turn("say something slowly", thread_id, TEST_CTX):
+                async for _ in stream_module.astream_events_turn("say something slowly", thread_id, TEST_CTX):
                     pass
 
             async def snoop_mid_flight():
@@ -632,7 +633,7 @@ class TestResumabilityErrorRejectsAnActivelyRunningThread:
             tokens = []
 
             async def drive_turn():
-                async for event in agent_module.astream_events_turn(
+                async for event in stream_module.astream_events_turn(
                     "say something slowly", thread_id, TEST_CTX
                 ):
                     if event["type"] == "token":
@@ -640,7 +641,7 @@ class TestResumabilityErrorRejectsAnActivelyRunningThread:
 
             async def race_cancel():
                 await asyncio.sleep(0.1)  # see _SlowFakeLLM's own comment on the widened margins
-                return await agent_module.cancel_run(thread_id, TEST_CTX)
+                return await stream_module.cancel_run(thread_id, TEST_CTX)
 
             _, cancelled = await asyncio.gather(drive_turn(), race_cancel())
             return tokens, cancelled

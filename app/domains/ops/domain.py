@@ -91,7 +91,7 @@ next real step if this needs to be airtight rather than "much better."
 from dataclasses import dataclass
 
 from app.agent.manifest import AgentManifest, DomainPlugin
-from app.agent.subagent_tools import make_domain_subagent_tool
+from app.agent.subagent_domain_tools import make_domain_subagent_tool
 from app.agent.tools import TOOL_CAPABILITIES as _ECORP_TOOL_CAPABILITIES
 from app.agent.tools import (
     ask_clarification,
