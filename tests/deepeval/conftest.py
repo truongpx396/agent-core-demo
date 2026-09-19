@@ -37,6 +37,17 @@ Used by `test_rag_quality_deepeval.py`/`test_tool_correctness_deepeval.py`
 only — see `deepeval_conversation_judge` below for why
 `test_conversation_simulator_deepeval.py` can't use it.
 
+Both judge fixtures below wrap their primary in `_JudgeWithBackup`, an
+optional free fallback (https://plugsky.com, OpenAI-compatible,
+`PLUGSKY_API_KEY`) that engages ONLY once the primary's own retry policy
+(deepeval.models.retry_policy — a few attempts with backoff) has already
+given up on a 429 — added proactively, not from an observed CI incident,
+since both GOOGLE_API_KEY's free tier (30 req/min) and GROQ_API_KEY's
+(1,000 RPD) are real, finite ceilings a busy `make deepeval` run could
+plausibly hit (see this module's own comments above for where those
+numbers came from). Absent PLUGSKY_API_KEY, both fixtures behave exactly
+as before — this is additive, never a new hard requirement.
+
 `deepeval_conversation_judge` — a THIRD knob, Groq's `openai/gpt-oss-120b`
 again (`DEEPEVAL_CONVERSATION_JUDGE_MODEL`), added 2026-09-18 after a real
 run (CI run 35230147154, PR #41) hard-crashed both
@@ -72,11 +83,118 @@ DEEPEVAL_JUDGE_MODEL = os.environ.get("DEEPEVAL_JUDGE_MODEL", "gemini-3.1-flash-
 DEEPEVAL_CONVERSATION_JUDGE_MODEL = os.environ.get(
     "DEEPEVAL_CONVERSATION_JUDGE_MODEL", "openai/gpt-oss-120b"
 )
+# Optional free backup judge for both fixtures below — see this module's
+# own docstring for why (a 429-only fallback, never a replacement).
+DEEPEVAL_BACKUP_MODEL = os.environ.get("DEEPEVAL_BACKUP_MODEL", "plugsky-micro")
+PLUGSKY_BASE_URL = "https://api.plugsky.com/v1"
 
 
 @pytest.fixture(scope="session")
 def deepeval_ollama() -> dict[str, str]:
     return ensure_ollama(DEEPEVAL_MODEL)
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    """True for a 429/RESOURCE_EXHAUSTED from either provider the judge
+    fixtures below use — Gemini's google-genai raises `APIError` (base
+    class of `ClientError`) with `.code` set to the HTTP status, Groq's
+    OpenAI-SDK client raises `RateLimitError` directly. Deliberately
+    narrow: only a rate limit should trigger the Plugsky fallback — any
+    other failure (auth, bad request, timeout) must still surface
+    immediately rather than get silently masked by a fallback that can't
+    fix it."""
+    from openai import RateLimitError
+
+    if isinstance(exc, RateLimitError):
+        return True
+    return getattr(exc, "code", None) == 429
+
+
+def _plugsky_backup():
+    """The optional free backup judge (https://plugsky.com, 100%
+    OpenAI-compatible, `plugsky-micro` = NVIDIA Nemotron 3 Super 120B on
+    the free tier) — `None` if PLUGSKY_API_KEY isn't set, so callers can
+    treat "no backup configured" and "primary never rate-limited" the
+    same way (just use the primary). Uses deepeval's own `LocalModel`
+    (a generic OpenAI-SDK client), the same class `deepeval_conversation_judge`
+    already uses for Groq — Plugsky needs no dedicated model class, only a
+    different `base_url`."""
+    from deepeval.models import LocalModel
+
+    api_key = os.environ.get("PLUGSKY_API_KEY")
+    if not api_key:
+        return None
+    return LocalModel(
+        model=DEEPEVAL_BACKUP_MODEL,
+        api_key=api_key,
+        base_url=PLUGSKY_BASE_URL,
+        temperature=0,
+    )
+
+
+def _with_optional_backup(primary):
+    """Wraps `primary` in a fallback that only engages on a rate limit
+    (`_is_rate_limited` above), or returns `primary` unchanged if
+    PLUGSKY_API_KEY isn't set (`_plugsky_backup` returns `None`) — see
+    this module's own docstring. `DeepEvalBaseLLM` is imported, and the
+    wrapper class defined, INSIDE this function rather than at module
+    level — this file's own docstring already establishes that importing
+    `deepeval` at collection time has to stay optional (the fast `test`
+    job's pytest run collects this whole file without `deepeval`
+    installed at all), and a module-level `class X(DeepEvalBaseLLM)`
+    would import it unconditionally just by being defined."""
+    backup = _plugsky_backup()
+    if backup is None:
+        return primary
+
+    from deepeval.models import DeepEvalBaseLLM
+
+    class _JudgeWithBackup(DeepEvalBaseLLM):
+        """MUST subclass DeepEvalBaseLLM, not just duck-type `generate`/
+        `a_generate`/`get_model_name` — deepeval's own
+        `metrics/utils.py::initialize_model` does `isinstance(model,
+        DeepEvalBaseLLM)` before trusting a passed-in model object at
+        all; a plain wrapper object fails that check and falls through
+        to deepeval's env-based auto-detection instead of raising,
+        silently grading with the wrong model rather than this
+        fixture's chosen one."""
+
+        def __init__(self, primary, backup):
+            self._primary = primary
+            self._backup = backup
+            super().__init__(primary.get_model_name())
+
+        def load_model(self):
+            return self._primary
+
+        def get_model_name(self) -> str:
+            return self._primary.get_model_name()
+
+        def generate(self, prompt: str, schema=None):
+            try:
+                return self._primary.generate(prompt, schema=schema)
+            except Exception as exc:
+                if not _is_rate_limited(exc):
+                    raise
+                print(
+                    f"[deepeval] {self._primary.get_model_name()} rate-limited, "
+                    f"falling back to {self._backup.get_model_name()}: {exc}"
+                )
+                return self._backup.generate(prompt, schema=schema)
+
+        async def a_generate(self, prompt: str, schema=None):
+            try:
+                return await self._primary.a_generate(prompt, schema=schema)
+            except Exception as exc:
+                if not _is_rate_limited(exc):
+                    raise
+                print(
+                    f"[deepeval] {self._primary.get_model_name()} rate-limited, "
+                    f"falling back to {self._backup.get_model_name()}: {exc}"
+                )
+                return await self._backup.a_generate(prompt, schema=schema)
+
+    return _JudgeWithBackup(primary, backup)
 
 
 @pytest.fixture(scope="session")
@@ -89,7 +207,9 @@ def deepeval_judge():
     OpenAI-SDK `LocalModel` this fixture used for Groq before — Gemini
     isn't OpenAI-compatible, so the real Google GenAI SDK is required
     (`pip install google-genai`). Fails fast with a clear message if
-    GOOGLE_API_KEY isn't set, rather than an opaque 401 mid-test.
+    GOOGLE_API_KEY isn't set, rather than an opaque 401 mid-test. Wrapped
+    in `_with_optional_backup` — see this module's own docstring for the
+    optional Plugsky fallback on a 429.
     """
     from deepeval.models import GeminiModel
 
@@ -100,11 +220,12 @@ def deepeval_judge():
             "(DEEPEVAL_JUDGE_MODEL, see tests/deepeval/conftest.py). Get one "
             "at https://aistudio.google.com/app/apikey and set it in .env."
         )
-    return GeminiModel(
+    primary = GeminiModel(
         model=DEEPEVAL_JUDGE_MODEL,
         api_key=api_key,
         temperature=0,
     )
+    return _with_optional_backup(primary)
 
 
 @pytest.fixture(scope="session")
@@ -117,7 +238,9 @@ def deepeval_conversation_judge():
     for Groq before it moved to Gemini (`deepeval.models.LocalModel` is a
     plain OpenAI-SDK client under a generic name — any OpenAI-compatible
     `base_url` works). Fails fast with a clear message if GROQ_API_KEY
-    isn't set, rather than an opaque 401 mid-test.
+    isn't set, rather than an opaque 401 mid-test. Wrapped in
+    `_with_optional_backup` — see this module's own docstring for the
+    optional Plugsky fallback on a 429.
     """
     from deepeval.models import LocalModel
 
@@ -130,12 +253,13 @@ def deepeval_conversation_judge():
             "tests/deepeval/conftest.py). Get one at "
             "https://console.groq.com/keys and set it in .env."
         )
-    return LocalModel(
+    primary = LocalModel(
         model=DEEPEVAL_CONVERSATION_JUDGE_MODEL,
         api_key=api_key,
         base_url="https://api.groq.com/openai/v1",
         temperature=0,
     )
+    return _with_optional_backup(primary)
 
 
 @pytest.fixture(scope="session")
