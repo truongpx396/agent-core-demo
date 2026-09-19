@@ -1,75 +1,53 @@
 """FastAPI service exposing the LangGraph agent over HTTP.
 
 Endpoints:
-- GET  /                  -> the built-in web UI (app/api/static/index.html)
-- GET  /health            -> liveness check (always 200 if the process is up)
-- GET  /health/ready      -> readiness check (200 only if Qdrant/Postgres/
-                              Redis/the ml-service container are actually
-                              reachable, see app/api/health.py)
-                              (metrics are pushed via OTLP, not pulled from an
-                              endpoint here — see app/core/telemetry.py and
-                              docker-compose.observability.yml)
-- POST /chat/stream/queued -> the ONLY way to run a turn over HTTP: same
-                              published SSE event vocabulary an in-process
-                              `astream_events_turn` call would produce, but
-                              the turn actually runs on a separate
-                              app/job_queue/agent_worker.py process via a Redis
-                              Streams queue (GRAPH_PATTERNS.md pattern 43)
-                              — needs `make agent-worker` running, and a
-                              real approve/reject UI can act on a pause it
-                              emits (see POST /chat/resume). Routes by an
-                              `X-Domain` header (default "ecorp", see
-                              get_domain) to that domain's own worker pool
-                              — this endpoint (and /chat/resume,
-                              /chat/cancel below) is the ONE place this
-                              service serves every domain
-                              app/domains/registry.py knows about from a
-                              single unified process
-- POST /chat/resume       -> continues a turn paused at human_approval —
-                              the HTTP counterpart to
-                              app/agent/runtime_stream.py::astream_events_resume, always
-                              routed through the same per-domain queue as
-                              new turns (same X-Domain header)
-- POST /chat/cancel       -> stops a turn, whether it's actively streaming
-                              or paused at human_approval (same X-Domain
-                              header for the paused-job case)
-- GET  /chat/sessions     -> this caller's past conversation threads for
-                              the given X-Domain, most recently active
-                              first (the session switcher)
+- GET  /                  -> built-in web UI (app/api/static/index.html)
+- GET  /health            -> liveness (always 200 if the process is up)
+- GET  /health/ready      -> readiness (200 only if Qdrant/Postgres/Redis/
+                              ml-service are reachable, see app/api/health.py;
+                              metrics are pushed via OTLP, not pulled here)
+- POST /chat/stream/queued -> the ONLY way to run a turn over HTTP: same SSE
+                              event vocabulary an in-process astream_events_turn
+                              would produce, but the turn runs on a separate
+                              agent_worker.py process via a Redis Streams queue
+                              (pattern 43; needs `make agent-worker` running).
+                              Routes by `X-Domain` header (default "ecorp",
+                              see get_domain) to that domain's worker pool —
+                              this and /chat/resume, /chat/cancel are the one
+                              place this service serves every registered domain
+- POST /chat/resume       -> continues a turn paused at human_approval, the
+                              HTTP counterpart to astream_events_resume, same
+                              per-domain queue as new turns
+- POST /chat/cancel       -> stops a turn, streaming or paused at human_approval
+- GET  /chat/sessions     -> this caller's past threads for the given
+                              X-Domain, most recent first (session switcher)
 - GET  /chat/sessions/{thread_id}/messages -> that thread's transcript
                               (404 if it belongs to a different domain)
-- GET  /usage             -> this caller's own tenant usage/cost (app/agent/usage_ledger.py),
-                              including the rolling-24h number
-                              app/agent/runtime.py::_tenant_over_daily_budget checks
-- POST /ingest/upload     -> upload one or more PDF/DOCX documents; each
-                              becomes its own job on a SEPARATE queue from
-                              chat turns (app/ingestion/ingest_queue.py), processed
-                              by app/ingestion/ingest_worker.py — this endpoint does
-                              no parsing/embedding of its own, just
-                              MinIO upload + job publish
+- GET  /usage             -> this caller's tenant usage/cost, including the
+                              rolling-24h number _tenant_over_daily_budget checks
+- POST /ingest/upload     -> upload PDF/DOCX documents; each becomes its own
+                              job on a SEPARATE queue from chat turns,
+                              processed by ingest_worker.py — this endpoint
+                              just does MinIO upload + job publish
 - GET  /ingest/stream/{job_id} -> SSE progress for one upload's job
 
-Reuses the exact same agent runtime as the CLI, so conversation memory
-(keyed by thread_id) and Langfuse tracing work identically here.
+Reuses the same agent runtime as the CLI, so memory (by thread_id) and
+Langfuse tracing work identically here.
 
-Run with: `make serve`  (then open http://localhost:8000/docs)
+Run with: `make serve` (then open http://localhost:8000/docs)
 
 ## Identity: trusted headers, NOT authentication (app/core/security.py)
 
 `get_ctx` reads `X-Tenant-Id`/`X-Principal-Id` and stamps a `SecurityCtx`.
-This is the seam a real deployment's auth middleware plugs into — it is
-**not** authentication itself: nothing here verifies a password, a JWT, or
-a session, and nothing stops a client from sending any header value it
-likes. That's fine only because nothing downstream trusts an HTTP request
-directly: in production this service sits behind a gateway/reverse proxy
-that authenticates the caller and sets these headers itself, stripping any
-client-supplied copies first — exactly how `X-Forwarded-*` headers are
-conventionally only trusted from a proxy hop, never from the original
-client. Wiring that gateway is out of scope here (see GRAPH_PATTERNS.md);
-what this app owes is the correct shape at the boundary — required
-headers, fail closed (422) if absent, never a body field a client could
-set directly, never a default identity — so dropping in real
-authentication later is a gateway config change, not a rewrite of this file.
+This is the seam a real auth middleware plugs into, not authentication
+itself — nothing verifies a password/JWT/session, and nothing stops a
+client sending any header value. That's fine only because production sits
+behind a gateway that authenticates the caller and sets these headers
+itself, stripping client-supplied copies first (like `X-Forwarded-*`).
+What this app owes is the correct shape at the boundary: required headers,
+fail closed (422) if absent, never a client-settable body field, never a
+default identity — so real auth later is a gateway config change, not a
+rewrite here.
 """
 import asyncio
 import json
@@ -124,13 +102,9 @@ from app.ingestion import ingest_queue, object_store
 from app.ingestion.extractors import EXTRACTORS_BY_SUFFIX
 from app.job_queue import queue
 
-# Called at import time, before uvicorn (or anything else) has a chance to
-# log through this module — see app/core/logging_config.py's own docstring for
-# why this matters here specifically: without it, this service had NO
-# logging handler configured at all (verified empirically), so every
-# `logger.info(...)` call throughout this app's tool/graph/turn
-# instrumentation was silently discarded under `make serve`, not merely
-# unstructured.
+# Called at import time, before uvicorn logs anything — without this, the
+# service had no logging handler at all, so every `logger.info(...)` call
+# was silently discarded under `make serve` (see logging_config.py).
 configure_logging()
 
 
@@ -138,10 +112,9 @@ async def get_ctx(
     x_tenant_id: str = Header(..., description="Trusted-layer tenant id."),
     x_principal_id: str = Header(..., description="Trusted-layer principal id."),
 ) -> SecurityCtx:
-    """FastAPI dependency: required headers, so a request missing either
-    one never reaches an endpoint at all (FastAPI returns 422 before the
-    handler runs) — the fail-closed behavior lives in the *shape* of the
-    dependency, not in a runtime check here."""
+    """Required headers, so a request missing either never reaches an
+    endpoint (FastAPI returns 422 before the handler runs) — fail-closed
+    lives in the *shape* of the dependency, not a runtime check here."""
     return {"tenant": x_tenant_id, "principal": x_principal_id, "claims": {}}
 
 
@@ -154,17 +127,12 @@ async def get_domain(
         ),
     ),
 ) -> str:
-    """Unlike `get_ctx`'s two headers, this one defaults rather than fails
-    closed — an absent `X-Domain` is a normal, common case (every existing
-    caller before this dependency existed), not a misconfiguration, so it
-    should behave exactly as before: Ecorp. An UNKNOWN domain name is still
-    fail-loud, though — same discipline as
-    app/domains/registry.py::resolve_domain itself, just surfaced as a 422
-    here instead of a process-startup crash, since this is a per-request
-    value rather than a per-process one. Without this check, a typo'd
-    domain would publish onto a requests stream no running
-    app/job_queue/agent_worker.py pool ever reads, hanging silently until the
-    caller gives up — a much worse failure mode than an immediate 422."""
+    """Unlike `get_ctx`'s headers, this one defaults rather than fails
+    closed — an absent `X-Domain` is the normal case (every caller before
+    this existed), so it behaves as before: Ecorp. An UNKNOWN domain is
+    still fail-loud (422 here, vs. resolve_domain's startup crash) —
+    without this check a typo'd domain would publish onto a requests stream
+    no worker pool reads, hanging silently until the caller gives up."""
     if x_domain not in DOMAINS:
         raise HTTPException(
             422, f"Unknown X-Domain {x_domain!r} — must be one of: {', '.join(sorted(DOMAINS))}"
@@ -175,53 +143,38 @@ async def get_domain(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Opens the durable checkpointer on uvicorn's own event loop, once, at
-    # startup — not lazily on first request. This matters beyond warming
-    # the connection: GET /chat/sessions/{thread_id}/messages (`async def`,
-    # so it runs directly on uvicorn's loop) reads this same checkpointer
-    # via get_session_messages, and it must be bound to THIS loop or that
-    # call hits "bound to a different event loop" — see app/agent/runtime.py's
-    # module docstring for the full reasoning (verified empirically before
-    # writing that doc).
+    # startup, not lazily on first request — GET /chat/sessions/{thread_id}/
+    # messages also reads it via get_session_messages, and it must be bound
+    # to THIS loop or that call hits "bound to a different event loop" (see
+    # app/agent/runtime.py).
     #
     # configure_telemetry() belongs here, not at module level like
-    # configure_logging() above: it installs a real, network-bound OTLP
-    # MeterProvider, and OTel's set_meter_provider is call-once — the FIRST
-    # caller in the process wins, permanently. Module level would make that
-    # first caller whichever test module happens to import this file first
-    # under pytest (see app/core/telemetry.py's own docstring). Lifespan
-    # never runs under this app's test suite (no test drives this app
-    # through TestClient as a context manager — see tests/api/test_api.py's
-    # docstring), so this is safe here.
+    # configure_logging() above: OTel's set_meter_provider is call-once, so
+    # module level would make the first-importing test module under pytest
+    # win that race instead. Lifespan never runs under this app's test suite
+    # (see tests/api/test_api.py), so this is safe here.
     configure_telemetry("agent-core-api")
     await init_graph_async()
     yield
-    # Closes the Postgres connection pool's background worker threads
-    # cleanly (app/agent/sql_store.py, GRAPH_PATTERNS.md pattern 31) — verified
-    # empirically that skipping this leaves them still running at process
-    # exit with a "couldn't stop thread... within 5.0 seconds" warning.
-    # A no-op if nothing in this process ever queried query_employees or
-    # wrote to the usage ledger (the pool was never opened).
+    # Closes the Postgres pool's background worker threads cleanly
+    # (sql_store.py, pattern 31) — skipping this leaves them running at exit
+    # with a "couldn't stop thread" warning. No-op if the pool was never opened.
     await sql_store.close_pool()
-    # Same reasoning for the checkpointer's own pool (app/agent/runtime.py) —
-    # init_graph_async() above always opens it, so this is never a no-op here.
+    # Same reasoning for the checkpointer's pool — init_graph_async() above
+    # always opens it, so this is never a no-op here.
     await close_checkpointer_pool()
 
 
 app = FastAPI(title="Core AI Stack Demo", version="1.0.0", lifespan=lifespan)
 
-# Per-tenant, Redis-backed — see app/api/rate_limit.py's own module docstring
-# for why this is a plain Starlette middleware rather than a per-route
-# decorator (this app's test suite calls every handler directly as a
-# plain function, and a decorator needing its own `request: Request`
-# parameter on every rate-limited endpoint would mean changing all of
-# their signatures just to satisfy it).
+# Per-tenant, Redis-backed — plain Starlette middleware, not a per-route
+# decorator, since this app's tests call every handler directly as a plain
+# function (see app/api/rate_limit.py).
 app.add_middleware(TenantRateLimitMiddleware)
 
-# "*" (the default, CORS_ALLOWED_ORIGINS) is fine for a local demo with no
-# other frontend pointed at this API — app/api/static/index.html is
-# same-origin and never touches CORS at all. A real multi-origin
-# deployment sets CORS_ALLOWED_ORIGINS to a comma-separated allowlist —
-# see .env.prod.example, which does exactly that (not "*").
+# "*" (default) is fine for a local demo — the web UI is same-origin and
+# never touches CORS. A real multi-origin deployment sets
+# CORS_ALLOWED_ORIGINS to a comma-separated allowlist (.env.prod.example).
 app.add_middleware(
     CORSMiddleware,
     # nosemgrep: python.fastapi.security.wildcard-cors.wildcard-cors -- gated behind CORS_ALLOWED_ORIGINS, not a hardcoded wildcard; see comment above.
@@ -235,16 +188,11 @@ _UI_HTML_PATH = Path(__file__).parent / "static" / "index.html"
 
 @app.get("/", response_class=HTMLResponse)
 def ui() -> str:
-    """The built-in standalone-product web UI (GRAPH_PATTERNS.md pattern
-    29) — a single self-contained page, no build step, no CDN dependency
-    (consistent with this app's fully-offline commitment). Talks ONLY to
-    `POST /chat/stream/queued`'s published SSE event vocabulary (see that
-    endpoint's own docstring) — never a special-cased endpoint of its
-    own, so the vocabulary stays the one true contract every client
-    (this page, `make chat`, a future one) renders from. Read from
-    disk per request (not cached at import time) so editing
-    app/api/static/index.html and refreshing the browser is enough during
-    development — this file is tiny and this isn't a hot path.
+    """The built-in web UI (pattern 29) — a single self-contained page, no
+    build step, no CDN dependency. Talks only to `POST /chat/stream/queued`'s
+    SSE vocabulary, never a special-cased endpoint of its own. Read from
+    disk per request (not cached) so editing the file and refreshing is
+    enough during development — this isn't a hot path.
     """
     return _UI_HTML_PATH.read_text()
 
@@ -252,20 +200,16 @@ def ui() -> str:
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     """Liveness only — always 200 if this process can respond at all. See
-    `GET /health/ready` for whether it can actually complete a turn right
-    now; conflating the two into one endpoint would make an orchestrator
-    unable to tell "the process is wedged" apart from "a downstream store
-    is down" (app/api/health.py's module docstring)."""
+    `GET /health/ready` for whether it can actually complete a turn (see
+    app/api/health.py on why these stay separate endpoints)."""
     return HealthResponse()
 
 
 @app.get("/health/ready", response_model=ReadinessResponse)
 async def health_ready(response: Response) -> ReadinessResponse:
-    """Readiness — 200 only if every real dependency (Qdrant, both
-    Postgres databases, Redis) is actually reachable right now, 503
-    otherwise, with which one(s) failed in the body — see
-    app/api/health.py::check_dependencies for what "reachable" means for each.
-    """
+    """Readiness — 200 only if every real dependency is reachable right now,
+    503 otherwise, with which one(s) failed in the body (see
+    app/api/health.py::check_dependencies)."""
     checks = await health_checks.check_dependencies()
     ready = all(checks.values())
     response.status_code = 200 if ready else 503
@@ -274,10 +218,9 @@ async def health_ready(response: Response) -> ReadinessResponse:
 
 def _queued_sse_response(client, request_id: str) -> StreamingResponse:
     """Shared by every queue-backed endpoint below (new turn, resume,
-    cancel): relay one job's results stream as SSE frames, cleaning up the
-    stream once a terminal event ends the read. Factored out because all
-    three endpoints are otherwise identical here — only how the JOB gets
-    published differs between them."""
+    cancel): relay one job's results stream as SSE frames, cleaning up on a
+    terminal event. Factored out since only how the JOB gets published
+    differs between the three."""
 
     async def generate():
         try:
@@ -300,33 +243,25 @@ def _queued_sse_response(client, request_id: str) -> StreamingResponse:
 async def chat_stream_queued(
     req: ChatRequest, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> StreamingResponse:
-    """The published SSE event vocabulary an in-process `astream_events_turn`
-    call would produce (token, tool_start, tool_end, citations, followups,
-    approval_required, error, done) — but this process never runs the graph
-    itself. It publishes the turn as a request onto a shared Redis Stream and
-    streams back whatever a separate `app/job_queue/agent_worker.py` process
-    publishes to this turn's own results stream (GRAPH_PATTERNS.md pattern 43,
-    app/job_queue/queue.py).
+    """Same SSE event vocabulary an in-process `astream_events_turn` would
+    produce (token, tool_start, tool_end, citations, followups,
+    approval_required, error, done), but this process never runs the graph
+    itself — it publishes the turn onto a shared Redis Stream and streams
+    back whatever a separate `agent_worker.py` process publishes to this
+    turn's results stream (pattern 43, app/job_queue/queue.py).
 
-    This is what makes the SSE-serving tier and the agent-executing tier
-    independently scalable: this endpoint does no LLM/tool work of its own,
-    so running more `uvicorn` processes scales concurrent SSE connections,
-    and running more `app/job_queue/agent_worker.py` processes scales concurrent
-    turns — neither number constrains the other. Needs at least one
-    `app/job_queue/agent_worker.py` process running (`make agent-worker`) to ever
-    produce a reply; with none running, a request just waits on the queue
-    until one is (or the client gives up and disconnects).
+    This makes the SSE-serving tier and agent-executing tier independently
+    scalable: more `uvicorn` processes scale concurrent SSE connections,
+    more `agent_worker.py` processes scale concurrent turns. Needs at least
+    one worker running (`make agent-worker`) to ever produce a reply.
 
-    A real `approval_required` pause from this endpoint IS actionable
-    — the worker no longer auto-declines it (see app/job_queue/agent_worker.py's
-    module docstring), so it reaches the caller as-is, resumed via
-    `POST /chat/resume` below.
+    A real `approval_required` pause here IS actionable (the worker no
+    longer auto-declines it), resumed via `POST /chat/resume` below.
 
-    `domain` (an `X-Domain` header, see `get_domain`) picks which domain's
-    requests stream this turn is published onto — only an
-    `app/job_queue/agent_worker.py` pool booted with a matching `AGENT_DOMAIN`
-    ever reads it, so this is what lets ONE unified API process serve every
-    domain a worker pool is currently running for.
+    `domain` (`X-Domain` header, see `get_domain`) picks which domain's
+    requests stream this is published onto — only a worker pool booted with
+    a matching `AGENT_DOMAIN` reads it, letting one API process serve every
+    running domain.
     """
     client = queue.get_client()
     request_id = uuid.uuid4().hex
@@ -347,18 +282,14 @@ async def chat_resume(
     req: ResumeRequest, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> StreamingResponse:
     """Continue a turn paused at human_approval — the HTTP counterpart to
-    `app/agent/runtime_stream.py::astream_events_resume`. Always routed through the same
-    Redis queue as a new turn (GRAPH_PATTERNS.md pattern 43), not run
-    in-process: a resume can still execute a real tool call and run many
-    more LLM turns, so handling it directly in the SSE-serving tier would
-    quietly reintroduce the real graph work `POST /chat/stream/queued`
-    exists to move off of it. Any worker IN `domain`'s OWN pool can pick
-    this up regardless of which one ran (or is even still running) the
-    original turn — the checkpoint they all share lives in Postgres, not in
-    a worker's own process memory. `domain` must match the ORIGINAL turn's
-    (see `queue.publish_request`'s docstring for why) — the caller (the web
-    UI) is expected to keep sending the same `X-Domain` for a given
-    thread_id throughout its conversation.
+    `astream_events_resume`. Always routed through the same Redis queue as a
+    new turn (pattern 43), not run in-process: a resume can execute a real
+    tool call and run more LLM turns, so handling it in the SSE-serving tier
+    would reintroduce the work `POST /chat/stream/queued` exists to move
+    off. Any worker in `domain`'s own pool can pick this up — the shared
+    checkpoint lives in Postgres, not a worker's process memory. `domain`
+    must match the original turn's (the caller is expected to keep sending
+    the same `X-Domain` for a given thread_id).
 
     `ctx` is re-supplied here, not reused from the original pause — see
     `astream_events_resume`'s own docstring for why.
@@ -380,28 +311,21 @@ async def chat_resume(
 async def chat_cancel(
     req: CancelRequest, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> StreamingResponse:
-    """Stop a turn — whichever of two states it's actually in, handled by
-    two independent mechanisms that both fire unconditionally (each is a
-    harmless no-op if it doesn't apply):
+    """Stop a turn, whichever of two states it's in — two independent
+    mechanisms fire unconditionally (each a no-op if it doesn't apply):
 
-    1. Actively streaming, not yet paused: sets a short-lived Redis flag
-       (`app/job_queue/queue.py::set_cancel_flag`) the worker CURRENTLY running that
-       turn polls between graph events (app/agent/runtime.py's `cancel_check`) and
-       stops on — its own already-open results stream (the one
-       `POST /chat/stream/queued` is reading) gets the terminal
-       "cancelled" event directly; nothing more to do here for that case.
-       Keyed by thread_id alone, not by domain — whichever worker is
-       actually running the turn polls this flag directly, so which
-       domain it belongs to is irrelevant here.
-    2. Paused at human_approval: publishes a `"cancel"` job
-       (GRAPH_PATTERNS.md pattern 36's `cancel_run`, over `domain`'s own
-       queue like every other job kind) — picked up by any available
-       worker IN THAT DOMAIN's pool, since nothing is actively running for
-       this thread to signal via the flag.
+    1. Actively streaming: sets a short-lived Redis flag
+       (`queue.py::set_cancel_flag`) the worker running that turn polls
+       between graph events (`runtime.py`'s `cancel_check`) — its own
+       results stream gets the terminal "cancelled" event directly. Keyed
+       by thread_id alone; domain is irrelevant since the worker polls the
+       flag directly.
+    2. Paused at human_approval: publishes a `"cancel"` job (pattern 36's
+       `cancel_run`, over `domain`'s own queue) — picked up by any worker in
+       that domain's pool.
 
-    This endpoint's OWN SSE response is the job-2 outcome specifically
-    (cancelled a real pause, or confirmed nothing was paused here) — not
-    a proxy for job-1's effect on the original turn's stream, which the
+    This endpoint's own SSE response is the job-2 outcome specifically —
+    not a proxy for job-1's effect on the original turn's stream, which the
     caller is expected to already be reading independently.
     """
     client = queue.get_client()
@@ -417,15 +341,11 @@ async def chat_cancel(
 async def chat_sessions(
     ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> list[SessionSummary]:
-    """This caller's own past conversation threads (app/agent/sessions.py),
-    most recently active first — the session switcher's list. Scoped to
-    tenant+principal+domain, never tenant alone: a session belongs to
-    whoever started it (own-conversation isolation), the same axis
-    app/core/security.py::Policy.lower already applies to memories — and,
-    since GRAPH_PATTERNS.md pattern 49, to whichever domain actually ran it
-    too, via the same `X-Domain` header the queued chat endpoints read
-    (`get_domain`), so switching domains in the web UI also switches which
-    sessions the switcher lists."""
+    """This caller's own past conversation threads, most recently active
+    first — the session switcher's list. Scoped to tenant+principal+domain,
+    never tenant alone: a session belongs to whoever started it, same axis
+    as Policy.lower's memory scoping (pattern 49 added the domain part), so
+    switching domains in the web UI also switches which sessions list."""
     return await sessions.list_sessions(ctx, domain)  # type: ignore[return-value]  # response_model coerces dict -> SessionSummary at the HTTP boundary; a direct Python call (see tests/api/test_api.py) intentionally gets the raw dicts back
 
 
@@ -433,15 +353,12 @@ async def chat_sessions(
 async def chat_session_messages(
     thread_id: str, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
 ) -> list[SessionMessage]:
-    """One session's transcript, for the switcher to replay when a user
-    picks it. `session_belongs_to` is checked FIRST and is the entire
-    authorization boundary here — the shared Postgres checkpointer
-    `get_session_messages` reads has no tenant/principal (or domain) of its
-    own to scope by, so skipping this check would let any caller read any
-    thread_id's transcript just by guessing/enumerating ids. Requiring
-    `domain` to match too means a thread opened under a different domain
-    404s here exactly like a different tenant's/principal's thread already
-    did — not a new failure mode, the same one extended to a third axis."""
+    """One session's transcript, for the switcher to replay. `session_belongs_to`
+    is checked FIRST and is the entire authorization boundary — the shared
+    Postgres checkpointer `get_session_messages` reads has no tenant/
+    principal/domain of its own to scope by, so skipping this would let any
+    caller read any thread_id's transcript by guessing ids. `domain` must
+    match too, extending the same check to a third axis."""
     if not await sessions.session_belongs_to(ctx, thread_id, domain):
         raise HTTPException(status_code=404, detail="session not found")
     return await get_session_messages(thread_id)  # type: ignore[return-value]  # same response_model coercion note as chat_sessions above
@@ -449,13 +366,10 @@ async def chat_session_messages(
 
 @app.get("/usage", response_model=UsageResponse)
 async def usage(ctx: SecurityCtx = Depends(get_ctx)) -> UsageResponse:
-    """This caller's own tenant usage (app/agent/usage_ledger.py) — the read path that
-    was already there (`usage_summary`), just not reachable over HTTP
-    before now, so a caller had no way to see how close they were to
-    MAX_COST_USD_PER_TENANT_PER_DAY short of getting refused by
-    app/agent/runtime.py::_tenant_over_daily_budget first. Tenant-scoped only,
-    same as `usage_summary` itself — no way to query another tenant's
-    spend through this."""
+    """This caller's own tenant usage — exposes the existing
+    `usage_summary` over HTTP, so a caller can see how close they are to
+    MAX_COST_USD_PER_TENANT_PER_DAY without getting refused first.
+    Tenant-scoped only; no way to query another tenant's spend."""
     all_time = await usage_ledger.usage_summary(ctx["tenant"])
     since = datetime.now(UTC) - timedelta(hours=24)
     last_24h = await usage_ledger.usage_summary(ctx["tenant"], since=since)
@@ -472,13 +386,11 @@ _MAX_UPLOAD_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 
 
 async def _read_bounded(upload: UploadFile, filename: str) -> bytes:
-    """Reads in chunks and rejects as soon as the running total crosses
-    the limit — never materializes more than roughly one chunk past
-    `_MAX_UPLOAD_BYTES` in memory, unlike a bare `await upload.read()`
-    (what this replaced), which reads the ENTIRE file into memory first
-    and only then would have anything to check the size of. An unbounded
-    upload is a memory/storage exhaustion vector, not just a slow
-    request."""
+    """Reads in chunks and rejects as soon as the running total crosses the
+    limit — never materializes much more than one chunk past
+    `_MAX_UPLOAD_BYTES`, unlike a bare `await upload.read()` which reads the
+    entire file first. An unbounded upload is a memory/storage exhaustion
+    vector, not just a slow request."""
     chunks = []
     total = 0
     while True:
@@ -502,27 +414,21 @@ async def ingest_upload(
     topic: str | None = Form(None),
     ctx: SecurityCtx = Depends(get_ctx),
 ) -> list[IngestUploadResult]:
-    """Upload one or more documents to build this tenant's retrievable
-    corpus — PDF/DOCX only today (app/ingestion/extractors.py); `.txt`/`.md` already
-    have their own path (app/ingestion/ingestor.py::ingest_file, the CLI/script-driven
-    one).
+    """Upload documents to build this tenant's corpus — PDF/DOCX only today
+    (app/ingestion/extractors.py); `.txt`/`.md` have their own path
+    (ingestor.py::ingest_file, the CLI/script-driven one).
 
-    Fire-and-forget per file, not a blocking wait: this handler's only
-    job is getting the bytes into MinIO and a job onto the queue — actual
-    parsing/embedding happens in app/ingestion/ingest_worker.py, a separate process
-    on a SEPARATE queue from chat turns (see app/ingestion/ingest_queue.py's module
-    docstring for why sharing one would be a mistake). Each file's
-    outcome is tracked independently via its own `job_id`
-    (`GET /ingest/stream/{job_id}`), so one slow/failing file in a batch
-    never blocks or hides the others.
+    Fire-and-forget per file: this handler only gets bytes into MinIO and a
+    job onto the queue — parsing/embedding happens in ingest_worker.py, on a
+    SEPARATE queue from chat turns (see ingest_queue.py). Each file's
+    outcome tracks independently via its own `job_id`
+    (`GET /ingest/stream/{job_id}`), so one slow/failing file never blocks
+    the others.
 
-    An unsupported extension is rejected here, synchronously, before any
-    MinIO write — no reason to pay for an upload this app already knows
-    it can't process. Same for too many files in one request — a UX/abuse
-    guard on this ONE call, distinct from app/ingestion/ingest_worker.py's own
-    INGEST_WORKER_MAX_CONCURRENCY (see WORKER_CONCURRENCY.md): this caps how
-    many jobs one submission may create, not how many jobs a worker may run
-    at once.
+    An unsupported extension, or too many files, is rejected synchronously
+    before any MinIO write. The file-count cap is a UX/abuse guard on this
+    one call, distinct from INGEST_WORKER_MAX_CONCURRENCY — it limits how
+    many jobs one submission creates, not how many a worker runs at once.
     """
     if len(files) > MAX_UPLOAD_FILES_PER_REQUEST:
         metrics.agent_upload_rejected_total.labels(reason="too_many_files").inc()
@@ -547,9 +453,7 @@ async def ingest_upload(
         job_id = uuid.uuid4().hex
         object_key = f"{ctx['tenant']}/{job_id}-{filename}"
         # Blocking MinIO I/O off the event loop — this IS the shared
-        # SSE-serving process (unlike app/ingestion/ingest_worker.py, a dedicated
-        # single-purpose process where the same call runs directly), so a
-        # large upload must not stall every other concurrent request.
+        # SSE-serving process, so a large upload must not stall other requests.
         await asyncio.to_thread(
             object_store.upload_bytes,
             object_key,
@@ -573,17 +477,11 @@ async def ingest_upload(
 async def ingest_stream(job_id: str) -> StreamingResponse:
     """SSE progress for one upload's job — `{"type": "started"}`, zero or
     more `{"type": "progress", "done": N, "total": M}` while
-    app/ingestion/ingest_worker.py's embedding loop is actually running (chunk
-    counts, published once per embedding batch — see that module's own
-    docstring for why it needs `asyncio.to_thread` to publish these WHILE
-    embedding runs, not just before/after it), then exactly one terminal
-    event: `{"type": "done", "chunks": N}` or `{"type": "error", "content":
-    "..."}`. Deliberately NOT
-    ownership-checked against app/agent/sessions.py-style records (this
-    pipeline doesn't maintain a job directory the way chat sessions do) —
-    `job_id` is a `uuid4().hex`, unguessable in practice, the same
-    "unguessable id is the access control" posture
-    app/job_queue/queue.py's chat results streams already rely on.
+    ingest_worker.py's embedding loop runs, then one terminal event:
+    `{"type": "done", "chunks": N}` or `{"type": "error", ...}`.
+    Deliberately NOT ownership-checked against sessions.py-style records
+    (this pipeline keeps no job directory) — `job_id` is a `uuid4().hex`,
+    unguessable in practice, same posture as the chat results streams.
     """
     client = ingest_queue.get_client()
 

@@ -1,48 +1,29 @@
 """MCP client: consuming a REMOTE tool catalog as LangChain tools this
-app's own graph can bind — the reverse direction from `app/mcp/server.py`
-(this app EXPOSING a tool to external clients). Closes the "no support
-for consuming a remote MCP tool catalog" gap (GRAPH_PATTERNS.md pattern
-28): a `DomainPlugin` (`app/agent/manifest.py`) can now include tools it
-doesn't implement itself, sourced from any MCP server reachable over
-stdio.
+app's graph can bind — the reverse direction from `app/mcp/server.py`
+(this app exposing a tool). Closes GRAPH_PATTERNS.md pattern 28: a
+`DomainPlugin` can include tools it doesn't implement itself, sourced from
+any MCP server reachable over stdio.
 
 ## Capability enforcement for tools this app didn't author (AR-004b)
 
-Every tool in this app declares a capability (`read_only`/`mutating`/
-`outward` — `app/agent/tools.py::TOOL_CAPABILITIES`) that `should_continue`
-(GRAPH_PATTERNS.md pattern 15) uses to decide whether a tool call needs
-human approval before running. A remote MCP tool is code this app
-doesn't control, and per the MCP spec, a tool's self-reported
-`ToolAnnotations` (`readOnlyHint`, `destructiveHint`, ...) are HINTS, not
-verified guarantees — a malicious or just-unmaintained remote server can
-claim `readOnlyHint=True` for a tool that deletes data (verified
-empirically: this app's own `app/mcp/server.py` doesn't set any
-annotations at all, so trusting them would mean silently defaulting to
-"unknown" for every tool a naive integration might connect to). Trusting
-that claim would let a config-only binding — adding a remote MCP server
-as a tool source — hand an ungated mutating/outward action to a run
-that's already carrying private-data access and untrusted content,
-exactly the "capability budget" hole this app's whole capability-gate
-design exists to close.
-
-So: `load_remote_tools`'s `capability_overrides` — supplied by the LOCAL
-caller binding this remote server, never read from the remote tool's own
-metadata — is the ONLY source of truth for a remote tool's capability.
-Any remote tool NOT named in `capability_overrides` defaults to
-`"outward"`, the same fail-closed default `app/agent/tools.py::_tool_capability`
-already applies to an in-process tool missing from `TOOL_CAPABILITIES` —
-an unmaintained or newly-added remote tool is gated, never silently
-trusted, by construction.
+Every tool declares a capability (`read_only`/`mutating`/`outward` —
+`app/agent/tools.py::TOOL_CAPABILITIES`) that `should_continue` uses to
+gate human approval. A remote MCP tool's self-reported `ToolAnnotations`
+(`readOnlyHint`, etc.) are HINTS per the MCP spec, not verified
+guarantees — a malicious or unmaintained server could claim
+`readOnlyHint=True` for a tool that deletes data. So `load_remote_tools`'s
+`capability_overrides` — supplied by the LOCAL caller, never read from the
+remote's own metadata — is the ONLY source of truth for a remote tool's
+capability. Any tool not named in `capability_overrides` defaults to
+`"outward"`, same fail-closed default as `_tool_capability` for an
+in-process tool missing from `TOOL_CAPABILITIES`.
 
 ## One connection per call, by design
 
-Each wrapped tool call opens a fresh stdio connection to the remote
-server, calls the tool, and closes it — no persistent session held
-across the app's process lifetime. Simpler (no connection-lifecycle/
-reconnect logic, nothing to clean up on shutdown) at the cost of
-per-call latency — an honest, disclosed tradeoff for a demo, not a
-hidden one; a production integration reaching a remote server on every
-single turn would likely want a persistent, reconnecting session instead.
+Each wrapped tool call opens a fresh stdio connection, calls the tool, and
+closes it — no persistent session. Simpler at the cost of per-call
+latency; a production integration would likely want a persistent,
+reconnecting session instead.
 """
 import logging
 
@@ -61,10 +42,9 @@ async def _call_remote_tool(params: StdioServerParameters, tool_name: str, kwarg
             await session.initialize()
             result = await session.call_tool(tool_name, kwargs)
             text = "".join(c.text for c in result.content if hasattr(c, "text"))
-            # Scrubbed here too, not just in-process tools' _run_with_timeout
-            # (app/agent/tools.py) — a remote server this app doesn't own is at
-            # least as likely to echo a credential-shaped value back
-            # (GRAPH_PATTERNS.md pattern 32).
+            # Scrubbed here too, not just in-process tools' _run_with_timeout —
+            # a remote server this app doesn't own is at least as likely to
+            # echo a credential-shaped value back (pattern 32).
             text = scrub(text)
             if result.isError:
                 return f"Remote tool error: {text}"
@@ -90,10 +70,9 @@ def _wrap_remote_tool(params: StdioServerParameters, remote_tool) -> StructuredT
         coroutine=async_call,
         name=name,
         description=description,
-        args_schema=remote_tool.inputSchema,  # a raw JSON Schema dict — langchain_core
-        # 0.3's StructuredTool accepts this directly (verified empirically),
-        # so the LLM sees the remote tool's actual parameter names/types
-        # rather than an opaque **kwargs.
+        args_schema=remote_tool.inputSchema,  # a raw JSON Schema dict —
+        # langchain_core 0.3's StructuredTool accepts this directly, so the
+        # LLM sees the remote tool's real parameter names/types, not **kwargs.
     )
 
 
@@ -106,19 +85,14 @@ async def load_remote_tools(
 ) -> tuple[list[StructuredTool], dict[str, str]]:
     """Connects to a remote MCP server (stdio transport), lists its tools,
     and returns `(langchain_tools, tool_capabilities)` — the second dict
-    is meant to be merged into a `DomainPlugin.tool_capabilities()`
-    mapping (see module docstring: an unlisted remote tool's capability
-    defaults to `"outward"`, never inferred from the remote's own
-    annotations).
+    merges into a `DomainPlugin.tool_capabilities()` mapping (unlisted
+    tools default to `"outward"`, see module docstring).
 
-    `async def`, awaiting `_list_remote_tools` directly — this module's own
-    `mcp` SDK client (`ClientSession`/`stdio_client`) is async-native, and
-    this function's one real caller
+    `async def`, awaiting `_list_remote_tools` directly — the `mcp` SDK
+    client is async-native and this function's one real caller
     (`app/domains/sandbox_tools.py::load_sandbox_tools`) is `async def`
-    now too, so there's no sync/async boundary left here to bridge with an
-    inner `asyncio.run(...)`. Every wrapped remote tool this returns is
-    `coroutine`-only (no sync `func`) for the same reason — see
-    `_wrap_remote_tool` above.
+    too, so there's no sync/async boundary to bridge. Every wrapped remote
+    tool is `coroutine`-only for the same reason.
     """
     capability_overrides = capability_overrides or {}
     params = StdioServerParameters(command=command, args=args or [], env=env, cwd=cwd)

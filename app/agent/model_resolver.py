@@ -1,23 +1,16 @@
-"""Resolves a chat model ALIAS (`app.core.config.CHAT_MODEL`, e.g. `"chat"`) to
-the concrete model LiteLLM actually routes it to (e.g.
-`"ollama_chat/qwen2.5:3b"`) — via LiteLLM's own `GET /model/info` admin
-endpoint (GRAPH_PATTERNS.md pattern 38, verified empirically: the alias
-appears as `data[].model_name`, the resolved model as
-`data[].litellm_params.model`; the OpenAI-compatible chat response body
-and LangChain's own `response_metadata` both only ever echo back the
-ALIAS — `x-litellm-model-name` on the raw HTTP response header carries
-the resolved value per-call, but LangChain's `ChatOpenAI` client doesn't
-surface response headers through `.invoke()`, so this queries the
-resolution directly instead of trying to intercept a header LangChain
-throws away).
+"""Resolves a chat model ALIAS (`config.CHAT_MODEL`, e.g. "chat") to the
+concrete model LiteLLM routes it to (e.g. "ollama_chat/qwen2.5:3b") via
+LiteLLM's `GET /model/info` admin endpoint (pattern 38). The
+OpenAI-compatible response body and LangChain's `response_metadata` only
+ever echo back the alias — `x-litellm-model-name` carries the resolved
+value per-call, but `ChatOpenAI.invoke()` doesn't surface response
+headers, so this queries the resolution directly instead.
 
-Naming only aliases (as `app/core/config.py::CHAT_MODEL` already does) is what
-keeps this app portable — swapping providers is a config change, not a
-code change — but it also means the single input with the largest effect
-on output quality can change (a gateway remap) without any artifact this
-app records changing with it. Resolving and recording it here keeps model
-choice invisible to *routing* (nothing downstream branches on it) while
-leaving it visible to *forensics* (app/agent/usage_ledger.py's usage ledger).
+Naming only aliases keeps this app portable (swapping providers is a
+config change), but means the biggest lever on output quality (a gateway
+remap) can change without any recorded artifact reflecting it. Resolving
+it here keeps model choice invisible to routing but visible to forensics
+(usage_ledger.py).
 """
 import logging
 
@@ -39,10 +32,8 @@ def _admin_base_url() -> str:
 
 def resolve_model(alias: str) -> str | None:
     """Best-effort, cached-per-process lookup. Returns `None` on any
-    failure (LiteLLM unreachable, alias not found, unexpected response
-    shape) — this is observability, never something that should be able
-    to block or fail a turn, same degrade-don't-crash posture every other
-    enrichment layer in this app already takes.
+    failure (LiteLLM unreachable, alias not found, bad response shape) —
+    observability only, never something that blocks or fails a turn.
     """
     if alias in _cache:
         return _cache[alias]

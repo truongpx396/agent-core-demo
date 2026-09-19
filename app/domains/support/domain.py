@@ -1,26 +1,19 @@
 """The support-copilot domain: a Tier-1 customer-facing agent, deployed
-behind a chat gateway (see app/channels/telegram.py's AGENT_DOMAIN — the
-same shape a WhatsApp Business Cloud API webhook would use, not built here,
-see that module's docstring), with SANDBOXED tool access — literally just
-the knowledge base plus the ticket system, nothing else.
+behind a chat gateway (app/channels/telegram.py's AGENT_DOMAIN), with
+SANDBOXED tool access — just the knowledge base plus the ticket system.
 
-`tools()` deliberately reuses `search_docs`/`ask_clarification` from
-app/agent/tools.py AS-IS (same functions, same TOOL_CAPABILITIES entries,
-same SecurityCtx/DEFAULT_POLICY enforcement under the hood — see that
-module's docstring) rather than reimplementing retrieval for a new domain.
-`skill_search`/`use_skill`, by contrast, are built via
-`app.agent.tools.make_skill_tools("support")` — this domain's OWN pair,
-not Ecorp's literal objects — so a domain-tagged `SKILL.md`
-(`domains: [...]` frontmatter) stays scoped to the domain(s) it names; see
-that factory's own docstring. `SUPPORT_MANIFEST.allowed_tools` is exactly
-those four plus this domain's own five ticket tools — deliberately
-EXCLUDING calculator/add_note/remember/query_employees/run_subagent: a
-Tier-1 support bot has no legitimate reason to do arbitrary arithmetic,
-write to the shared knowledge base, remember cross-session facts, or look
-up employees. `run_subagent` gets a domain-scoped version too, see below.
-That omission — not a Policy check — is literally what "sandboxed" means
-here (GRAPH_PATTERNS.md pattern 23: `build_graph()`'s `ToolNode` only
-ever knows the tools this list names).
+`tools()` reuses `search_docs`/`ask_clarification` from app/agent/tools.py
+as-is rather than reimplementing retrieval. `skill_search`/`use_skill` are
+this domain's own pair (`make_skill_tools("support")`), so a
+domain-tagged `SKILL.md` stays scoped to the domain(s) it names.
+`SUPPORT_MANIFEST.allowed_tools` is exactly those four plus this domain's
+five ticket tools — deliberately excluding
+calculator/add_note/remember/query_employees: a Tier-1 support bot has no
+legitimate reason for arbitrary arithmetic, writing to the shared
+knowledge base, remembering cross-session facts, or looking up employees.
+That omission (not a Policy check) is literally what "sandboxed" means
+here — `build_graph()`'s `ToolNode` only ever knows the tools this list
+names (pattern 23).
 """
 from dataclasses import dataclass
 

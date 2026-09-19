@@ -77,11 +77,9 @@ class ReadinessResponse(BaseModel):
 
 
 class UsageResponse(BaseModel):
-    """GET /usage's body (app/agent/usage_ledger.py::usage_summary) — this caller's own
-    tenant, all-time, plus the same rolling-24h number
-    app/agent/runtime.py::_tenant_over_daily_budget checks before every turn, so a
-    caller can see how close they are to MAX_COST_USD_PER_TENANT_PER_DAY
-    without waiting to actually get refused by it."""
+    """GET /usage's body — this caller's tenant, all-time plus the same
+    rolling-24h number _tenant_over_daily_budget checks, so a caller can see
+    how close they are to the daily budget without getting refused first."""
 
     total_tokens: int = Field(..., description="All-time tokens recorded for this tenant.")
     total_cost_usd: float = Field(..., description="All-time cost (USD) recorded for this tenant.")

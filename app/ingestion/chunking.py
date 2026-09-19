@@ -1,51 +1,29 @@
 """Parent-child, overlapping-sliding-window chunking for the general-purpose
-Ingestor (`app/ingestion/ingestor.py`) — closes the "no general Ingestor" gap from
-GRAPH_PATTERNS.md pattern 20's retrieval work by giving longer ingested
-documents (a file, a URL, a pasted block of text) a real chunking strategy,
-not a single oversized point per document.
+Ingestor (`app/ingestion/ingestor.py`) — closes the "no general Ingestor" gap
+from GRAPH_PATTERNS.md pattern 20.
 
-## Why parent AND child chunks, not one size
+Small **child** chunks are what gets embedded (dense+sparse) and matched by
+`hybrid_search` — precise retrieval needs a focused passage, not a diluted
+page. Each child's larger **parent** passage is stored alongside it
+(`parent_id`/`parent_text` in the payload, `app/ingestion/ingestor.py`) and
+surfaced to the LLM/citations instead, since a bare child fragment often
+reads as ambiguous out of context. Standard "small-to-big" retrieval,
+riding on the existing hybrid-search path — `hybrid_search` doesn't know
+`parent_text` exists; `app/agent/tools.py`'s citation formatting reads it.
 
-A single chunk size is fighting two different jobs with one number:
-- **Retrieval precision** wants SMALL chunks — a short, focused passage
-  embeds and matches a specific query far more precisely than a page-long
-  block where the one relevant sentence is diluted by nine irrelevant ones.
-- **Answer quality** wants enough SURROUNDING context for the model to
-  actually understand what it retrieved — a 600-character fragment often
-  reads as an isolated, ambiguous sentence.
-
-So: only the small **child** chunk is embedded (both dense and sparse —
-see `app/retrieval/qdrant_store.py`'s hybrid search) and is what `hybrid_search`
-actually matches against. Its **parent** — the larger passage it came
-from — is what's stored alongside it and surfaced to the LLM/citations,
-via `parent_id`/`parent_text` in the point's payload (`app/ingestion/ingestor.py`).
-This is the standard "small-to-big" retrieval pattern, applied through
-this app's own existing hybrid-search machinery rather than a new
-retrieval path — `hybrid_search` doesn't know or care that a payload
-happens to carry a `parent_text` field; that's read downstream, by
-`app/agent/tools.py`'s citation-formatting functions.
-
-## Why overlapping children, not a hard split
-
-A hard, non-overlapping split can cut the one sentence that answers a
-query exactly at a chunk boundary, so neither resulting chunk embeds it
-whole. A sliding window with overlap (`child_overlap` characters shared
-between consecutive children) means a boundary-straddling fact is still
-captured *whole* by at least one child chunk, at the cost of some
-redundant embedding.
+Children overlap (`child_overlap` shared chars between consecutive windows)
+so a fact straddling a hard chunk boundary is still captured whole by at
+least one child, at the cost of some redundant embedding.
 """
 import uuid
 from dataclasses import dataclass, field
 
 DEFAULT_PARENT_CHARS = 1200
-# Kept at 1200, NOT doubled alongside the child settings below: `parent_text`
-# (not `text`) is what `app/agent/tools.py::_display_text` actually injects
-# into the LLM's prompt per citation, and up to `RERANK_TOP_K` (5) distinct
-# parents can be cited in one turn — doubling this would risk pushing a
-# retrieval-heavy turn's prompt into the ~2300-2800 token range
-# GRAPH_PATTERNS.md pattern 13 directly measured `qwen2.5:3b` (this app's
-# own CHAT_MODEL) dropping a mandatory system-prompt instruction in —
-# notably, that instruction was this exact citation format (pattern 20).
+# `parent_text` (not `text`) is injected into the LLM prompt per citation
+# (app/agent/tools.py::_display_text), and up to RERANK_TOP_K (5) parents
+# can be cited in one turn — doubling this risks the ~2300-2800 token range
+# where pattern 13 measured qwen2.5:3b dropping the citation-format
+# instruction from its system prompt (pattern 20).
 DEFAULT_CHILD_CHARS = 600
 DEFAULT_CHILD_OVERLAP = 150
 
@@ -58,13 +36,11 @@ class ParentChunk:
 
 
 def _split_into_parents(text: str, parent_chars: int) -> list[str]:
-    """Paragraph-aware where possible: greedily packs consecutive
-    `\n\n`-separated paragraphs into a parent until adding the next one
-    would exceed `parent_chars`, so a parent boundary lands between
-    paragraphs rather than mid-sentence whenever the source text has
-    paragraph structure at all. A single paragraph longer than
-    `parent_chars` (e.g. ingested plain text with no blank lines) is
-    hard-split instead — there's no better boundary to prefer."""
+    """Paragraph-aware: greedily packs consecutive `\n\n`-separated
+    paragraphs into a parent until the next one would exceed
+    `parent_chars`, so boundaries land between paragraphs rather than
+    mid-sentence. A single paragraph longer than `parent_chars` (e.g. plain
+    text with no blank lines) is hard-split instead."""
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     if not paragraphs:
         return []
@@ -118,13 +94,9 @@ def chunk_text(
     child_overlap: int = DEFAULT_CHILD_OVERLAP,
 ) -> list[ParentChunk]:
     """Split `text` into parent chunks, each carrying its own overlapping
-    child chunks. Returns `[]` for blank/whitespace-only text. A `text`
-    short enough to fit one parent (most of this app's own sample docs,
-    and most `add_note`/`remember` calls) still round-trips through this
-    same code path and comes out as exactly one `ParentChunk` with exactly
-    one child — no special-casing needed for "short" input, here or in
-    any caller.
-    """
+    child chunks. Returns `[]` for blank/whitespace-only text. Short text
+    (fits in one parent) still round-trips through this same path, coming
+    out as one `ParentChunk` with one child — no special-casing needed."""
     if child_overlap >= child_chars:
         raise ValueError("child_overlap must be smaller than child_chars")
 

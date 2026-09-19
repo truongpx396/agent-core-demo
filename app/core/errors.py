@@ -1,18 +1,13 @@
 """Canonical error envelope — `{code, message, details}` — the one shape
-every meaningful error/terminal-state surface in this app uses
-(GRAPH_PATTERNS.md pattern 30), drawn from a single registry (`ErrorCode`)
-rather than each call site inventing its own string. An integrating
-caller can switch on `code` (a small, stable enum) without parsing
-`message` (free text, safe to reword) or pattern-matching prose to tell
-"was this a timeout" from "was this a stale checkpoint" from "was this
-moderation."
+every error/terminal-state surface in this app uses (pattern 30), drawn
+from a single registry (`ErrorCode`) so a caller can switch on `code`
+instead of parsing free-text `message`.
 
-Applied to this app's own OPERATOR/CALLER-facing surfaces: the SSE
-`error` event (`app/agent/runtime_stream.py::_run_graph_stream`) and the CLI's
-printed error text (`app/channels/chat.py`). Deliberately NOT applied to `ToolMessage` content — what
-a failing tool returns to the LLM (`app/agent/graph_utils.py::_friendly_tool_error`)
-is natural-language by design, read and reacted to by the model, a
-different audience than an operator or an integrating caller.
+Applied to operator/caller-facing surfaces: the SSE `error` event
+(`runtime_stream.py::_run_graph_stream`) and the CLI's error text
+(`app/channels/chat.py`). NOT applied to `ToolMessage` content — a failing
+tool's message to the LLM (`graph_utils.py::_friendly_tool_error`) is
+natural-language by design, a different audience.
 """
 from dataclasses import asdict, dataclass
 from enum import Enum
@@ -32,15 +27,12 @@ class ErrorCode(str, Enum):
 
 
 class TurnCancelled(Exception):
-    """Raised by app/agent/runtime_stream.py::_iterate_with_timeout when its optional
-    `cancel_check` callback reports a user-initiated stop mid-turn
-    (GRAPH_PATTERNS.md pattern 43's `POST /chat/cancel` — the "actively
-    streaming, not paused at approval" case; a run already paused at
-    human_approval is cancelled directly via `cancel_run` instead, with no
-    exception involved). Caught specifically in `_run_graph_stream`,
-    distinct from the generic `except Exception` there, so a deliberate
-    stop is reported via `ErrorCode.CANCELLED` rather than looking like an
-    unexpected failure."""
+    """Raised by `runtime_stream.py::_iterate_with_timeout` when `cancel_check`
+    reports a user-initiated stop mid-turn (the "actively streaming, not
+    paused at approval" case — a paused run is cancelled directly via
+    `cancel_run` instead). Caught specifically in `_run_graph_stream`, apart
+    from the generic `except Exception`, so it reports `ErrorCode.CANCELLED`
+    instead of looking like an unexpected failure."""
 
 
 @dataclass(frozen=True)

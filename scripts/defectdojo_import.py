@@ -1,36 +1,29 @@
 """Push one scan report (OWASP ZAP, Trivy, Semgrep, Checkov, ...) into a
 running DefectDojo instance (`make defectdojo-up`, or CI's `zap` workflow)
 via its `/api/v2/import-scan/` endpoint — see README's "Security scanning &
-load testing" section for the fuller picture of why DefectDojo sits
-downstream of every scanner in this repo rather than being just another
-report file: it's the one place findings get deduplicated and tracked
-across runs instead of re-litigated from scratch on every scan.
+load testing" section for why DefectDojo sits downstream of every scanner
+here rather than being just another report file: it's where findings get
+deduplicated and tracked across runs.
 
-Deliberately dependency-light (stdlib argparse + httpx only, no `app.*`
-import) — this needs to run standalone in CI (`.github/workflows/zap.yml`)
-without installing this repo's full `requirements-lock.txt` just to POST one
-file, the same "don't drag in more than the job needs" reasoning
-`garak/run_ci_scan.py` already applies to its own CI runner script.
+Dependency-light (stdlib argparse + httpx only, no `app.*` import) so this
+runs standalone in CI (`.github/workflows/zap.yml`) without installing the
+repo's full `requirements-lock.txt` just to POST one file.
 
-**`auto_create_context` needs BOTH `product_type_name` and `product_name`,
-not just the latter — verified directly against a real DefectDojo 3.3.100
-instance (self-hosted via `make defectdojo-up`), not assumed from docs**:
-passing only `product_name` for a Product that doesn't exist yet fails with
-a clear `400` ("Product ... does not exist and no product_type_name
-provided"); DefectDojo only auto-creates the Product once it also has a
-Product_Type name to hang it off. Defaults below pass both so first-run
-`make defectdojo-import` works with zero manual setup in the UI.
+Gotchas, verified against a real DefectDojo 3.3.100 instance:
+- `auto_create_context` needs BOTH `product_type_name` and `product_name` —
+  `product_name` alone 400s ("Product ... does not exist and no
+  product_type_name provided") when the Product doesn't exist yet. Defaults
+  below pass both so first-run `make defectdojo-import` needs no manual UI
+  setup.
+- The ZAP parser wants XML, not the JSON report `make zap-baseline`/`make
+  zap-api-scan` also produce — importing JSON fails with "Internal error:
+  Wrong file format, please use xml."; zap's own `-x` XML report imports
+  cleanly.
 
-**The ZAP parser wants XML, not the JSON report `make zap-baseline`/`make
-zap-api-scan` also produce — verified directly, not assumed**: importing
-the JSON report against that same instance failed with `"Internal error:
-Wrong file format, please use xml."`; the XML report (zap's own `-x` flag)
-imported cleanly and produced real findings. `SCAN_TYPE` stays a
-caller-supplied string rather than this script guessing one from the file
-extension — DefectDojo's own scan_type strings (`"ZAP Scan"`, `"Trivy
-Scan"`, `"Semgrep JSON Report"`, `"Checkov Scan"`, ...) are its API's
-vocabulary, not this repo's, and hard-coding a guess here would silently
-break the day DefectDojo adds/renames a parser.
+`SCAN_TYPE` stays a caller-supplied string (DefectDojo's own vocabulary,
+e.g. `"ZAP Scan"`, `"Trivy Scan"`, `"Semgrep JSON Report"`) rather than
+guessed from the file extension, so a DefectDojo parser rename/addition
+can't silently break this.
 """
 import argparse
 import os
@@ -56,11 +49,9 @@ def import_scan(
 ) -> dict:
     """POSTs one report to `/api/v2/import-scan/` with
     `auto_create_context=True` so a first run needs no manual Product/
-    Engagement setup in the DefectDojo UI. Returns the parsed JSON response
-    (includes a `statistics` breakdown by severity) on success; raises
-    `httpx.HTTPStatusError` otherwise — DefectDojo's own error bodies (see
-    module docstring) are informative enough to surface as-is rather than
-    wrapping them in a new message.
+    Engagement setup. Returns the parsed JSON response (includes a
+    `statistics` breakdown by severity); raises `httpx.HTTPStatusError`
+    otherwise (DefectDojo's own error bodies are informative as-is).
     """
     with file_path.open("rb") as fh:
         response = httpx.post(

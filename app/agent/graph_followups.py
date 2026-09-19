@@ -28,24 +28,15 @@ def make_suggest_followups_node(llm):
 
     async def suggest_followups(state: State) -> dict:
         """Suggests follow-ups only for a GROUNDED answer (`used_citations`
-        non-empty) — an answer with no citations has nothing derived to
-        build follow-ups from, which naturally suppresses this for a
-        refusal, a general-knowledge aside, or an ask_clarification
-        response (none of those cite anything), without needing to
-        specially detect any of those cases.
+        non-empty) — no citations means nothing to build from, which
+        naturally suppresses this for a refusal, general-knowledge aside,
+        or ask_clarification response without special-casing any of them.
 
-        Skipped entirely on a cache hit (`state["cache_hit"]`): generating
-        follow-ups would mean a fresh LLM call on what's supposed to be
-        the FAST, zero-LLM-call path (see check_semantic_cache's
-        docstring) — the same reasoning write_semantic_cache already
-        applies to skip its own redundant work on a hit.
+        Skipped on a cache hit: would mean a fresh LLM call on what's
+        supposed to be the zero-LLM-call fast path.
 
-        Degrades to `{"followups": []}` on any failure — this is
-        enrichment on top of an already-complete answer, never something
-        that should fail the turn (same reliability posture as
-        retrieve_context/check_semantic_cache).
-
-        `async def`/`ainvoke`, same reasoning as `agent`/`compact_history`.
+        Degrades to `{"followups": []}` on any failure — enrichment on an
+        already-complete answer, never something that fails the turn.
         """
         if state.get("cache_hit"):
             return {"followups": []}

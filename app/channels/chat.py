@@ -25,12 +25,10 @@ from app.core.config import DEFAULT_TENANT
 from app.core.security import SecurityCtx
 
 # Local dev ctx: this process IS the trusted boundary (no network hop, no
-# untrusted client to spoof it) — unlike app/api/main.py's header extraction,
-# which explicitly is NOT authentication (see its module docstring), there
-# is no analogous gap here to name. `tenant` matches DEFAULT_TENANT so the
-# CLI actually sees the docs `make ingest` seeded; `principal` is the OS
-# user, so multiple people on one machine get separate memories
-# (app/agent/tools.py's remember/recall_memories) rather than sharing one.
+# untrusted client to spoof it), unlike app/api/main.py's header extraction.
+# `tenant` matches DEFAULT_TENANT so the CLI sees what `make ingest` seeded;
+# `principal` is the OS user, so multiple people on one machine get separate
+# memories (app/agent/tools.py's remember/recall_memories).
 _LOCAL_CTX: SecurityCtx = {
     "tenant": DEFAULT_TENANT,
     "principal": f"local:{getpass.getuser()}",
@@ -102,10 +100,9 @@ async def async_main(hitl: bool = False) -> None:
     graph_hitl.py's human_approval) — the streaming event protocol's own
     opt-in HITL mechanism.
     """
-    # Opens the durable checkpointer on THIS asyncio.run() loop, before any
-    # graph call — astream_events_turn/_resume need the checkpointer bound
-    # to the same loop that's driving them (see app/agent/runtime.py's module
-    # docstring). A no-op if something already initialized the singleton.
+    # Opens the durable checkpointer on THIS loop before any graph call —
+    # it must be bound to the same loop driving it (see runtime.py). No-op
+    # if the singleton is already initialized.
     await init_graph_async()
     thread_id = str(uuid.uuid4())
     mode = " with HITL tool approval" if hitl else ""

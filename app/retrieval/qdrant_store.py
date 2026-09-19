@@ -3,39 +3,27 @@
 ## Hybrid retrieval (GRAPH_PATTERNS.md pattern 20)
 
 Every point carries TWO named vectors — `dense` (semantic, via LiteLLM) and
-`sparse` (lexical/BM25, via `app/retrieval/embeddings.py`'s local fastembed model).
-`hybrid_search` fetches both legs with `Prefetch` and fuses them
-server-side with Qdrant's own RRF (`FusionQuery(fusion=Fusion.RRF)`) — no
-manual rank-fusion arithmetic here, Qdrant's Query API does it in one
-round trip. The tenant/owner pre-filter (`app/core/security.py`'s
-`Policy.lower`) is applied inside EACH `Prefetch`, not just at the top
-level — a filter Qdrant applies only after fusion would mean the fused
-candidate set briefly included rows this principal may not see, which is
-exactly the pre-filter-not-post-filter discipline this module's `search`
-function already existed to enforce before hybrid search was added.
+`sparse` (lexical/BM25, local fastembed). `hybrid_search` fetches both
+legs with `Prefetch` and fuses them server-side via Qdrant's own RRF
+(`FusionQuery(fusion=Fusion.RRF)`). The tenant/owner pre-filter
+(`app/core/security.py`'s `Policy.lower`) is applied inside EACH
+`Prefetch`, not just at the top level — filtering only after fusion would
+let the fused candidate set briefly include rows the principal can't see.
 
-Two independent degradation layers, matching this app's established
-"multi-layer, narrowly-scoped, recorded-not-smoothed-over" reliability
-policy (GRAPH_PATTERNS.md pattern 10):
-1. Sparse embedding unavailable (fastembed model failed to load/embed) →
-   degrade to a dense-only query. Still correct, still tenant-scoped,
-   just lower recall than hybrid.
-2. Reranking unavailable (cross-encoder failed to load/score) → degrade
-   to the RRF-fused order Qdrant already returned. Still a cited,
-   correctly-ordered-enough answer — reranking improves precision at the
-   top of the list, it isn't what makes the list correct.
-
-Both are recorded via `agent_retrieval_degraded_total{stage=...}`
-(`app/core/metrics.py`), never silently absorbed.
+Two independent degradation layers (pattern 10's "narrowly-scoped,
+recorded-not-smoothed-over" policy), both recorded via
+`agent_retrieval_degraded_total{stage=...}`:
+1. Sparse unavailable -> degrade to dense-only. Still correct/scoped, just
+   lower recall.
+2. Reranking unavailable -> degrade to the RRF-fused order. Reranking
+   improves top-of-list precision; it isn't what makes the list correct.
 
 ## Multiple collections, one schema (GRAPH_PATTERNS.md pattern 45)
 
 `ensure_collection`/`upsert`/`hybrid_search` all take an optional
-`collection` (defaulting to `COLLECTION`, the main docs collection) so a
-second collection built with this same dense+sparse schema — e.g.
-`SKILLS_COLLECTION` (app/agent/skills.py's search index) — gets the exact
-same fusion/rerank/degrade pipeline with zero duplicated logic. Every
-existing call site keeps working unchanged by simply omitting it.
+`collection` (default `COLLECTION`) so a second collection with this same
+dense+sparse schema — e.g. `SKILLS_COLLECTION` — gets the identical
+fusion/rerank/degrade pipeline with no duplicated logic.
 """
 import asyncio
 import logging
@@ -81,18 +69,14 @@ async def ensure_collection(dim: int, collection: str | None = None) -> None:
     is incompatible and must be re-ingested (`make ingest`).
 
     `collection` defaults to the main `COLLECTION` (docs) — pass e.g.
-    `SKILLS_COLLECTION` (app/core/config.py) to (re)create a SEPARATE
-    collection with the same dense+sparse schema, as scripts/index_skills.py
-    does. Every call site keeps working unchanged by omitting it."""
-    # `Modifier.IDF` is required here, not optional tuning: fastembed's
-    # `Qdrant/bm25` sparse model (app/retrieval/embeddings.py) only computes
-    # the term-frequency half of the BM25 formula locally — its own docs
-    # state the IDF half is expected to be computed by Qdrant, via this
-    # exact modifier, from the collection's indexed document frequencies.
-    # Without it, Qdrant scores the sparse leg as a plain dot product over
-    # TF-only values — no IDF weighting at all, so common/uninformative
-    # terms score the same as rare/distinctive ones and the "BM25" leg of
-    # hybrid search isn't actually BM25.
+    `SKILLS_COLLECTION` to (re)create a SEPARATE collection with the same
+    dense+sparse schema, as `scripts/index_skills.py` does."""
+    # `Modifier.IDF` is required, not optional tuning: fastembed's
+    # `Qdrant/bm25` model only computes the term-frequency half of BM25
+    # locally; the IDF half is expected to come from Qdrant via this
+    # modifier, from the collection's indexed document frequencies.
+    # Without it, common and rare terms score identically and the "BM25"
+    # leg isn't actually BM25.
     client = get_client()
     await client.recreate_collection(
         collection_name=collection or COLLECTION,
@@ -110,12 +94,11 @@ def build_point(
     sparse_vector: tuple[list[int], list[float]] | None = None,
 ) -> PointStruct:
     """One point, both vector legs — the single place that assembles the
-    hybrid vector shape, so scripts/seed.py and app/agent/tools.py's write paths
-    (add_note, remember) can't drift from each other or from
-    `ensure_collection`'s schema. `sparse_vector` is optional (a point
-    missing the sparse leg just never surfaces via that leg's Prefetch —
-    still findable dense-only) so a caller whose sparse embedding failed
-    can still write a point rather than losing the write entirely."""
+    hybrid vector shape, so `scripts/seed.py` and `app/agent/tools.py`'s
+    write paths (add_note, remember) can't drift from `ensure_collection`'s
+    schema. `sparse_vector` is optional (a point missing it just never
+    surfaces via that leg's Prefetch, still findable dense-only) so a
+    failed sparse embedding doesn't lose the whole write."""
     vector: dict = {DENSE_VECTOR_NAME: dense_vector}
     if sparse_vector is not None:
         indices, values = sparse_vector
@@ -123,22 +106,16 @@ def build_point(
     return PointStruct(id=point_id, vector=vector, payload=payload)
 
 
-# Qdrant rejects a single request whose serialized JSON body exceeds its
-# own default limit (`service.max_request_size_mb`, 32MiB) with a 400 —
-# live-verified, not a guess: ingesting one real 9.7MB PDF
-# (app/ingestion/ingestor.py::ingest_text, via the upload path) chunked
-# into 5700 points, whose single `client.upsert(...)` call serialized to
-# ~94MB and was rejected with `"JSON payload (94238282 bytes) is larger
-# than allowed (limit: 33554432 bytes)."` — losing the ~13 minutes already
-# spent embedding every chunk, since ingest_text calls this once with the
-# WHOLE points list. 300 points/batch keeps each request comfortably under
-# that limit even at this app's worst-case point size (a full 1200-char
-# parent_text + 300-char child text + a 768-float dense vector + a sparse
-# vector + metadata is still only ~20KB/point here, so 300/batch is ~6MB,
-# more than 5x headroom) without needing to reason about a specific
-# document's actual chunk count at every call site — `add_note`/`remember`
-# (always a single point) and `scripts/seed.py`/`scripts/index_skills.py`
-# (small, hand-authored corpora) never notice the batching at all.
+# Qdrant rejects a request whose serialized JSON exceeds
+# `service.max_request_size_mb` (32MiB, 400 error). A real 9.7MB PDF
+# chunked into 5700 points serialized to ~94MB and was rejected
+# ("JSON payload (94238282 bytes) is larger than allowed (limit:
+# 33554432 bytes)"), losing the ~13min already spent embedding, since
+# ingest_text upserts the whole points list in one call. 300/batch keeps
+# each request well under the limit (worst-case point ~20KB -> ~6MB/batch,
+# 5x headroom) without reasoning about chunk count per call site —
+# add_note/remember (single point) and seed.py/index_skills.py (small
+# corpora) never notice the batching.
 _MAX_POINTS_PER_UPSERT_BATCH = 300
 
 
@@ -160,12 +137,10 @@ def _build_filter(
         existing = tenant_filter.must
         must.extend(existing if isinstance(existing, list) else [existing] if existing else [])
     if doc_ids:
-        # ANDed onto whatever's already in `must` (tenant, topic) — this
-        # can only NARROW the result set to a caller-chosen subset of
-        # already-permitted points, never widen it past the tenant filter
-        # above (app/core/security.py's Policy.lower is still applied, and
-        # applied first in every real call site — see app/agent/tools.py's
-        # search_docs docstring for why the ordering matters).
+        # ANDed onto `must` (tenant, topic) — can only NARROW the result
+        # set to a caller-chosen subset of already-permitted points, never
+        # widen past the tenant filter (Policy.lower is still applied
+        # first — see app/agent/tools.py's search_docs docstring).
         must.append(HasIdCondition(has_id=cast("list[int | str | UUID]", doc_ids)))
     return Filter(must=must) if must else None
 
@@ -181,39 +156,31 @@ async def hybrid_search(
     min_score: float | None = None,
 ):
     """Dense+sparse hybrid search, RRF-fused, cross-encoder reranked —
-    degrading gracefully at each stage (see module docstring). Returns a
-    list of scored points (each has a `.payload`), reranked-and-truncated
-    to `k` (default `RERANK_TOP_K`) when reranking succeeds, or the
-    RRF/dense order truncated to `k` when it doesn't.
+    degrading gracefully at each stage (see module docstring). Returns
+    scored points (each has `.payload`), reranked-and-truncated to `k`
+    (default `RERANK_TOP_K`) when reranking succeeds, or the RRF/dense
+    order truncated to `k` otherwise.
 
-    `doc_ids`, when given, narrows results to those specific Qdrant point
-    ids — ANDed onto the tenant/topic filter, never a replacement for it.
+    `doc_ids`, when given, narrows results to those point ids — ANDed onto
+    the tenant/topic filter, never a replacement for it.
 
-    `collection` defaults to the main `COLLECTION` (docs) — pass e.g.
-    `SKILLS_COLLECTION` to search a different collection built with this
-    same dense+sparse schema (see `ensure_collection`); the fusion/rerank/
-    degrade pipeline below is otherwise identical regardless of which
-    collection it's pointed at.
+    `collection` defaults to `COLLECTION` (docs) — pass e.g.
+    `SKILLS_COLLECTION` to search a different collection with this same
+    schema (see `ensure_collection`).
 
     `min_score`, when given, drops points whose cross-encoder score falls
     below it — a real relevance floor, not just a rank cutoff (RRF/dense
     order alone says "most similar of what came back," not "actually
-    relevant"; a query with no good match in the collection can still
-    return `k` confidently-ordered but irrelevant points otherwise). Only
-    ever applied when reranking actually ran: the cross-encoder's raw
-    logit scale (unbounded, e.g. -11 for a clearly wrong match vs +6 for a
-    strong one) is the only scale `min_score` is meaningful against — RRF
-    fusion scores are rank-derived and NOT comparable to it, so this is a
-    no-op whenever `rerank_results=False` or reranking degrades.
+    relevant"). Only applied when reranking actually ran: the cross-
+    encoder's raw logit scale (unbounded, e.g. -11 vs +6) is the only scale
+    it's meaningful against — RRF scores are rank-derived and not
+    comparable, so this is a no-op when `rerank_results=False` or
+    reranking degrades.
 
-    `async def`: every leg here is real I/O now — `embeddings.embed_text`
-    (dense, an HTTP call to LiteLLM/Ollama) and `embeddings.rerank` (an
-    HTTP call to the `ml-service` container) are both awaited directly;
-    the Qdrant `query_points` calls run against `AsyncQdrantClient`, also
-    awaited. `embed_sparse` is the one exception — it's local ONNX/CPU
-    compute, not I/O, so it still runs via `asyncio.to_thread` rather than
-    a plain `await` (unchanged from why `retrieve_context`,
-    app/agent/graph.py, already did this before reranking moved out).
+    `async def`: every leg is real I/O — `embed_text`/`rerank` (HTTP) and
+    Qdrant's `query_points` (`AsyncQdrantClient`) are all awaited directly.
+    `embed_sparse` is the exception — local ONNX/CPU compute, so it runs
+    via `asyncio.to_thread` instead.
     """
     # deferred: avoids importing fastembed at module load
     from app.retrieval import embeddings
@@ -272,10 +239,9 @@ async def hybrid_search(
         texts = [(p.payload or {}).get("text", "") for p in points]
         scores = await embeddings.rerank(query_text, texts)
         # Overwrite the RRF fusion score (rank-derived, not a relevance
-        # measure) with the cross-encoder's own raw logit score, so callers
-        # that read `.score` (e.g. app/agent/tools.py's relevance floor) see
-        # an actual judgment of relevance rather than a fusion-rank artifact.
-        # `.score` is confirmed to have no other consumer in this codebase.
+        # measure) with the cross-encoder's raw logit score, so callers
+        # reading `.score` (e.g. app/agent/tools.py's relevance floor) see
+        # an actual relevance judgment, not a fusion-rank artifact.
         for point, score in zip(points, scores, strict=True):
             point.score = score
         order = sorted(range(len(points)), key=lambda i: scores[i], reverse=True)
@@ -293,17 +259,14 @@ async def hybrid_search(
 
 async def delete_by_filter(delete_filter: Filter) -> None:
     """Support function for the "a memory must be removable" requirement
-    (see app/agent/tools.py's remember/MemoryService note) — a scoped, auditable
-    delete, e.g. every point with `owner == <principal>`.
+    (see app/agent/tools.py's remember/MemoryService note) — a scoped,
+    auditable delete, e.g. every point with `owner == <principal>`.
 
     Deliberately NOT exposed as an agent-facing tool: an LLM deciding to
-    delete a principal's memories on their behalf is a different, harder
-    trust question (real user intent vs. a model's interpretation of a
-    request) than the retrieval/write-gating this app already handles, and
-    conflating the two would blur a boundary that should stay sharp. This
-    is the mechanism a real data-subject-request or retention-sweep script
-    would call directly — the removability guarantee exists; wiring it to
-    an autonomous decision-maker is a deliberate non-goal here.
+    delete a principal's memories is a harder trust question than the
+    retrieval/write-gating this app handles, and blurs a boundary that
+    should stay sharp. This is what a real data-subject-request or
+    retention-sweep script would call directly.
     """
     await get_client().delete(
         collection_name=COLLECTION, points_selector=FilterSelector(filter=delete_filter)
@@ -312,9 +275,9 @@ async def delete_by_filter(delete_filter: Filter) -> None:
 
 async def count_by_filter(count_filter: Filter) -> int:
     """How many points currently match `count_filter` — used by
-    app/agent/memory.py::delete_memories to report how many memories a
-    deletion actually removed (Qdrant's own `delete` call doesn't return
-    a row count, so this is called immediately BEFORE deleting the same
-    filter — see that function's docstring for the accepted race)."""
+    `app/agent/memory.py::delete_memories` to report how many memories a
+    deletion removed (Qdrant's `delete` doesn't return a row count, so
+    this is called immediately BEFORE deleting the same filter — see that
+    function's docstring for the accepted race)."""
     result = await get_client().count(collection_name=COLLECTION, count_filter=count_filter)
     return result.count

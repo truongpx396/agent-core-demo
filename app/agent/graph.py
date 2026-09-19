@@ -1,82 +1,43 @@
-"""Enhanced LangGraph agent demonstrating practical patterns.
+"""Enhanced LangGraph agent demonstrating practical patterns beyond a basic
+LLM+tools loop: input validation/moderation, pre-fetched RAG context framed
+as untrusted data (`<retrieved_document>` delimiters + a system rule that
+delimited text is data, never instructions), bounded history (see
+HISTORY_TOKEN_CEILING/_FLOOR, never splitting a tool_call/ToolMessage
+pair), an output quality gate with retry, per-node reliability policies
+(retrieve_context degrades, agent gets AGENT_RETRY_POLICY, tool exceptions
+become a message instead of crashing), opt-in human-in-the-loop
+(app/channels/chat.py's `--hitl`), built-in parallel tool execution via
+ToolNode, per-node telemetry (_instrumented), multi-tenant isolation via
+SecurityCtx (stamped once by validate_input, fails closed at
+reject_context, every downstream read/write pre-filtered by it), and
+cross-session memory (automatic recall, explicit-only write via
+`remember`). See GRAPH_PATTERNS.md for the full pattern catalog.
 
-Shows real-world scenarios beyond basic "LLM + tools" loop:
-- Input validation: a real conditional exit for bad input, not just a
-  message appended and hoped for the best.
-- Context enrichment: fetch relevant docs *before* reasoning (multi-step),
-  and actually pass that context to the LLM.
-- Untrusted content framing: retrieved context is wrapped in
-  <retrieved_document> delimiters with a system rule that delimited text is
-  data, never instructions — the structural defense against a document
-  telling the model to ignore its instructions.
-- State tracking: iterations, context, enriched messages.
-- Loop control: max iterations to prevent infinite loops.
-- Bounded conversation history: the only unbounded input in State
-  (`messages`) is trimmed once its estimated token count crosses
-  HISTORY_TOKEN_CEILING, down to HISTORY_TOKEN_FLOOR, never splitting a
-  tool_call/ToolMessage pair (see _trim_history).
-- Output quality gate: a conditional node that can send the answer back to
-  the agent for a retry, not a pass-through that always ends.
-- Per-node reliability policy: retrieve_context degrades (never fails the
-  turn), the agent's LLM call gets an automatic retry on transient failure
-  (AGENT_RETRY_POLICY), and tool exceptions become a message the agent can
-  react to instead of crashing the whole run — three failure modes, three
-  deliberately different policies (see GRAPH_PATTERNS.md).
-- Human-in-the-loop: an opt-in `interrupt()` gate before tool execution
-  (see app/channels/chat.py's `--hitl` mode for a runnable end-to-end example).
-- Parallel tool execution: ToolNode already runs every tool call from one
-  LLM turn concurrently — no extra code needed (see comment at its node).
-- Node telemetry: every node is wrapped (at graph-registration time, see
-  _instrumented) with structured start/complete/failed logs carrying a
-  per-turn run_id and duration_ms — metadata only, never message content.
-- Multi-tenant isolation: a SecurityCtx (app/core/security.py) is stamped once
-  by validate_input from config, never from message content; a missing or
-  malformed one fails closed at reject_context, before any retrieval or
-  spend. Every read/write downstream (search_docs, add_note, remember) is
-  scoped to it via a Qdrant pre-filter, never a Python post-filter.
-- Cross-session memory: recall is automatic (folded into retrieve_context,
-  re-filtered against current ctx on every call); writing is only ever
-  explicit, via the `remember` tool — nothing here extracts facts from
-  turn text autonomously (see app/agent/tools.py's module docstring).
+Nodes/routing functions live at module level (not nested in build_graph)
+so they're unit-testable directly, without compiling a graph or calling a
+real LLM. `agent`/`retrieve_context` are the exception — they need an
+injected client, so they're built by factories (make_agent_node,
+make_retrieve_context_node); see GraphDeps/build_graph.
 
-Nodes and routing functions live at module level (not nested inside
-build_graph) specifically so they can be unit-tested directly — imported
-and called with a hand-built `state` dict — without compiling a graph or
-touching a real LLM. See tests/ for the corresponding test-per-layer
-suite (routing functions, nodes, agent node, full graph scenarios).
-
-Two nodes are the exception: `agent` and `retrieve_context` need an
-injected client (an LLM, a search function), so they're built by a
-factory (make_agent_node, make_retrieve_context_node) instead of being
-plain module-level functions — see GraphDeps and build_graph, and each
-factory's own docstring for why.
-
-This file holds `State`, the seeded `SYSTEM_PROMPT`/safety-budget
-constants every other node file reads, the turn-entry gating nodes
-(validate_input/moderate_input/the reject_*/context_window_exceeded
-family), the `_default_search`/`_default_cache_get`/`_default_cache_set`
-swappable defaults (kept here specifically because `tests/conftest.py`'s
-autouse fixtures monkeypatch them on THIS module, and
-`app/agent/graph_build.py` reads them via `graph_module.X` for the same
-reason), and `GraphDeps`/`_assemble_shared_graph_parts` (the composition
-root `build_graph()`/`build_subagent_graph()` both call into). Every
-other node factory/helper cluster has its own sibling file, split out
-purely for file size — no behavior change from before any of these
-splits existed:
-- `app/agent/graph_messages.py` — human-message text helpers
-- `app/agent/graph_compaction.py` — token estimation, history trimming,
-  `make_compact_history_node`
-- `app/agent/graph_cache.py` — the semantic-cache node pair
-- `app/agent/graph_retrieval.py` — `make_retrieve_context_node`
-- `app/agent/graph_agent_node.py` — `make_agent_node`
-- `app/agent/graph_followups.py` — `make_suggest_followups_node`
-- `app/agent/graph_retry.py` — `retry_output`, `make_retry_exhausted_node`,
-  `make_no_answer_fallback_node`
-- `app/agent/graph_routing.py` — `should_continue`, `check_output`,
-  `route_after_check` (and its own further sibling splits)
-- `app/agent/graph_hitl.py`/`graph_skills.py`/`graph_tools.py`/
-  `graph_utils.py`/`graph_build.py`/`graph_build_subagent.py` — the
-  pre-existing splits (see each one's own docstring)
+This file holds `State`, `SYSTEM_PROMPT`/safety-budget constants, the
+turn-entry gating nodes (validate_input/moderate_input/reject_*/
+context_window_exceeded), the swappable defaults `_default_search`/
+`_default_cache_get`/`_default_cache_set` (kept here because
+tests/conftest.py monkeypatches them on this module, and graph_build.py
+reads them via `graph_module.X`), and `GraphDeps`/
+`_assemble_shared_graph_parts` (the composition root build_graph()/
+build_subagent_graph() both use). Everything else was split out purely for
+file size (no behavior change):
+- graph_messages.py — human-message text helpers
+- graph_compaction.py — token estimation, history trimming, make_compact_history_node
+- graph_cache.py — semantic-cache node pair
+- graph_retrieval.py — make_retrieve_context_node
+- graph_agent_node.py — make_agent_node
+- graph_followups.py — make_suggest_followups_node
+- graph_retry.py — retry_output, make_retry_exhausted_node, make_no_answer_fallback_node
+- graph_routing.py — should_continue, check_output, route_after_check (+ its own sibling splits)
+- graph_hitl.py / graph_skills.py / graph_tools.py / graph_utils.py /
+  graph_build.py / graph_build_subagent.py — pre-existing splits (see each one's docstring)
 """
 import functools
 import logging
@@ -92,12 +53,10 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.message import add_messages
 
-# `interrupt` isn't called in THIS file anymore (moved to graph_hitl.py's
-# human_approval) — kept as a deliberate re-export: graph_hitl.py reads it
-# live as `graph_module.interrupt` rather than importing it fresh, so
-# tests/core/test_metrics.py's/tests/agent/test_nodes.py's
-# `monkeypatch.setattr(graph, "interrupt", ...)` keep working (see
-# graph_hitl.py's own module docstring). Don't "clean up" this import.
+# `interrupt` is unused here directly (moved to graph_hitl.py's
+# human_approval) but re-exported deliberately: graph_hitl.py reads it as
+# `graph_module.interrupt` so tests' `monkeypatch.setattr(graph,
+# "interrupt", ...)` keep working. Don't remove this import.
 from langgraph.types import RetryPolicy, interrupt  # noqa: F401
 
 from app.agent import moderation
@@ -108,10 +67,9 @@ from app.agent.graph_messages import (
 )
 from app.core import metrics
 
-# OPENAI_API_BASE/OPENAI_API_KEY: same deliberate-re-export reasoning as
-# `interrupt` above, this time for graph_utils.py's `_make_llm` (reads them
-# live as `graph_module.OPENAI_API_BASE`/`.OPENAI_API_KEY`) and the
-# tests/live/* monkeypatches that target OPENAI_API_BASE. Don't remove.
+# OPENAI_API_BASE/OPENAI_API_KEY: same re-export reasoning as `interrupt`
+# above — graph_utils.py's `_make_llm` and tests/live/* monkeypatches read
+# them live off this module. Don't remove.
 from app.core.config import (  # noqa: F401
     CHAT_MODEL,
     MAX_COST_USD_PER_TURN,
@@ -127,56 +85,24 @@ from app.agent import tools
 
 logger = logging.getLogger(__name__)
 
-# SYSTEM_PROMPT's search_docs/query_employees disambiguation (and the
-# matching clauses on each tool's own docstring, app/agent/tools.py) was
-# tightened 2026-09-16 after a real, disclosed finding from
-# tests/deepeval/test_tool_correctness_deepeval.py: "What are Ecorp's support
-# hours?" reliably (10/10, cache-cleared between every real run to rule out
-# a false signal from this app's own semantic cache) called query_employees
-# instead of search_docs — a plain word collision between "support hours"
-# and the Department.support enum value query_employees actually accepts,
-# not an adversarial prompt. Fixed at the prompt level (naming the exact
-# failure mode, not a vague "be careful") since that's where the ambiguity
-# actually lives — both tools' schemas were already correct.
-#
-# Re-verified live after that fix, not just inspected for plausibility —
-# and the first attempt introduced a NEW regression, caught the same way:
-# the possessive phrasing ("Ecorp's support hours") started correctly
-# calling search_docs 5/5, but the non-possessive phrasing ("Ecorp support
-# hours" — scripts/eval.py's own `retrieval_company_topic_filter` golden
-# case wording) started calling calculator 5/5 instead, computing nonsense
-# like '8 * 24'. Root cause: the first fix's own wording put "hours" right
-# next to "Use the calculator tool for math" — the same class of surface
-# word-collision as the original bug, just relocated by the fix itself.
-# Second pass moved the calculator instruction earlier, scoped it to "a
-# literal arithmetic expression" instead of generic "math", and moved
-# "hours" away from it entirely.
-#
-# THIRD, unrelated finding from the SAME re-verification effort, live
-# 2026-09-17: even with tool selection fully fixed, "What are Ecorp's
-# support hours?" still hit a generic "I wasn't able to put together a
-# full answer" fallback in roughly HALF of real runs. Traced (not
-# guessed) to a specific, existing safety net: check_output's
-# `_defers_instead_of_acting` correctly flagging the model's own answer,
-# which reliably appended a permission-seeking closer ("...Would you like
-# more details on any of these points?") after an otherwise complete,
-# correctly cited answer — a pattern this SAME prompt already explicitly
-# forbids ("do not add your own suggested follow-up questions or ask
-# 'would you like to know more'"), just not reliably followed right after
-# a tool result specifically. `MAX_CONSECUTIVE_SAME_RETRY_REASON = 2`
-# means two such closers in a row (the model's own one correction attempt
-# also failing) gives up fast. Fixed by repeating a SHORTER, more
-# specific version of the existing rule at the exact point of failure —
-# immediately after the citation-marker instructions, not just once,
-# earlier, in a general style paragraph — same "proximity matters for a
-# small model" lesson the calculator fix above already established.
-# Live-verified after this third pass: the SAME 12-run comparison (both
-# phrasings, 6x each, cache cleared before every run) that previously hit
-# the fallback in roughly half of runs dropped to 1/12 — a real,
-# dramatic, but NOT perfect improvement, honestly reported as such rather
-# than rounded up. A calculator regression control (6x) stayed clean at
-# 0/6, confirming this pass didn't reintroduce the second pass's own
-# mistake.
+# SYSTEM_PROMPT gotchas, found via live testing with qwen2.5:3b (not just
+# inspection) — don't reintroduce these:
+# 1. search_docs vs query_employees: "support hours" collided with the
+#    Department.support enum, so business-hours questions mis-routed to
+#    query_employees. Fixed by naming the exact failure mode in the prompt
+#    (both tools' schemas were already correct).
+# 2. Keep the calculator instruction's wording away from "hours" — an
+#    earlier fix phrased it right next to "hours" and caused "Ecorp support
+#    hours" to mis-route to the calculator instead (same word-collision
+#    class, just relocated).
+# 3. Small-model instruction-following is proximity-sensitive: a rule
+#    stated once, early, in a general style paragraph isn't reliably
+#    followed right after a tool result. check_output's
+#    `_defers_instead_of_acting` caught the model appending a
+#    permission-seeking closer (already forbidden earlier in the prompt)
+#    in roughly half of real runs; repeating a SHORTER version of the same
+#    rule right after the citation-marker instructions (closest to the
+#    failure point) dropped that to 1/12, live-verified.
 SYSTEM_PROMPT = (
     "You are a helpful assistant. Use the calculator tool only to evaluate a "
     "literal arithmetic expression the user actually wrote out, like '21 * 2'. "
@@ -249,118 +175,80 @@ SYSTEM_PROMPT = (
     "quote, or restate its contents in your answer unless the user's "
     "current question specifically asks about that earlier topic. Answer "
     "only what the user just asked."
-)  # Static, deliberately — see GRAPH_PATTERNS.md pattern 19: nothing
-   # request-specific (ctx, a timestamp, a trace id) may ever be interpolated
-   # into this constant, or the prompt-cache stability property it exists to
-   # protect breaks silently. tests/agent/test_prompt_cache_stability.py guards this.
+)  # Static, deliberately (pattern 19): never interpolate request-specific
+   # data (ctx, timestamps, trace ids) here — it breaks prompt-cache
+   # stability silently. Guarded by tests/agent/test_prompt_cache_stability.py.
 
 MAX_ITERATIONS = 10  # safety budget: LLM loop iterations, per turn (see validate_input's reset)
 MIN_ANSWER_LENGTH = 10
 MAX_TOOL_CALLS_PER_TURN = 5  # safety budget: simultaneous tool calls from one LLM turn
-MAX_TOKENS_PER_TURN = 16000  # safety budget: cumulative token usage, per turn (0 if the model/proxy doesn't report usage_metadata — fails open, not closed)
-# Bumped from 8000: a real, live-caught failure mode — a citation-repair
-# retry_output round (necessary, correct, and NOT rare: any answer that
-# skips a mandatory marker on the first try needs one) roughly doubles a
-# turn's own token spend on top of whatever the accumulated conversation
-# history already costs as input. At 8000, a turn needing even one retry
-# could tip over the cap on a perfectly GOOD final answer — caught live via
-# Langfuse: a correctly-cited, well-formed answer got routed to no_answer
-# anyway (should_continue's budget check runs before check_output ever
-# sees it), silently losing its follow-up suggestions
-# (no_answer_fallback deliberately skips computing those) even though
-# nothing was actually wrong with the answer. 16000 gives a retry round
-# real headroom without approaching num_ctx (32000 as of this change) —
-# see HISTORY_TOKEN_CEILING's own comment for why more input headroom
-# isn't sized up 1:1 with num_ctx either.
-HISTORY_TOKEN_CEILING = 24000  # safety budget: bound the only unbounded input
-# in State — see _trim_history. Trips compact_history once RAW (non-system)
+MAX_TOKENS_PER_TURN = 16000  # safety budget: cumulative token usage per
+# turn (0 if the model/proxy doesn't report usage_metadata — fails open).
+# Bumped from 8000 after a live bug: a citation-repair retry round roughly
+# doubles a turn's token spend, so 8000 could cap an otherwise-good,
+# correctly cited answer before check_output ever saw it (caught via
+# Langfuse). 16000 leaves retry headroom without approaching num_ctx
+# (32000) — see HISTORY_TOKEN_CEILING's comment for why input headroom
+# isn't scaled 1:1 with num_ctx either.
+HISTORY_TOKEN_CEILING = 24000  # bounds the only unbounded input in State
+# (see _trim_history) — trips compact_history once raw (non-system)
 # history exceeds this estimated token count.
-HISTORY_TOKEN_FLOOR = 4000  # once HISTORY_TOKEN_CEILING trips, trim whole turns
-# from the front until the KEPT tail is at/under this — deliberately LOWER than
-# the ceiling (hysteresis/"sawtooth", not a sliding window of 1). A prior
-# turn-count design (MAX_HISTORY_TURNS, always trimming back to the exact same
-# count) was verified empirically to re-trigger compact_history's own LLM
-# summarization call on EVERY SINGLE TURN once past the threshold, forever —
-# and to keep re-shifting the entire kept history's position on every one of
-# those turns, which is worse for a provider's/inference engine's prefix-cache
-# reuse than the "occasional periodic reset" it looks like on paper. Cutting to
-# a lower floor instead means several turns of real, stable, cache-friendly
-# growth happen before the ceiling is crossed again, and the summarization
-# call fires a fraction as often.
+HISTORY_TOKEN_FLOOR = 4000  # once tripped, trim front-to-back until the
+# kept tail is at/under this — deliberately LOWER than the ceiling
+# (hysteresis, not a sliding window of 1). A prior fixed-turn-count design
+# re-triggered compact_history's own summarization call every turn past
+# the threshold, and reshifted the kept history's position each time (bad
+# for prefix-cache reuse). A lower floor buys several turns of stable,
+# cache-friendly growth before the ceiling trips again.
 #
-# NOT scaled 1:1 with `litellm-config.yaml`'s ollama_chat `num_ctx: 32000` —
-# that number answers "what can fit without truncation" (it needed real
-# margin: system prompt + tool schemas alone measure ~2500 tokens on a bare
-# call, and a citation-repair retry round roughly doubles a turn's own spend
-# on top of that — see MAX_TOKENS_PER_TURN's own comment); this pair answers
-# "how much raw history is actually WORTH carrying," a cost/latency/relevance
-# question num_ctx headroom doesn't change the answer to. More history is
-# real prefill latency on every round of every turn, and this app has
-# DIRECTLY caught qwen2.5:3b dropping a "mandatory" instruction (citations)
-# in prompts of only ~2300-2800 tokens — small-model instruction-following
-# degrades with more context well before its rated max length, so a wide
-# ceiling is a real, deliberate tradeoff (fewer, cheaper compactions and
-# better cache reuse) against a real cost (more tokens for a 3B model to
-# attend to per call), not a default to size up just because num_ctx has
-# room. 24000/4000 leaves real margin below num_ctx for a retry round's
-# extra spend plus retrieved context/tool results, while keeping the
-# post-compaction FLOOR modest.
-MAX_HISTORY_SUMMARY_CHARS = 4000  # safety budget: the CUMULATIVE history_summary
-# itself must stay bounded too (AR-015a) — compact_history keeps folding older
-# turns in, so without a ceiling here the "compacted" summary would just become
-# the next unbounded input. Exceeding it after a compaction is a named terminal
-# state (context_window_exceeded), not silent truncation — see route_after_compaction.
-MAX_REPEATED_ACTIONS = 3  # safety budget: consecutive IDENTICAL tool-call batches within one
-# turn before ending as no_progress — bounds convergence, not just repetition count, and
-# fires independently of (typically well before) MAX_ITERATIONS — see should_continue.
-MAX_CONSECUTIVE_SAME_RETRY_REASON = 2  # safety budget: check_output's OWN
-# convergence check, mirroring MAX_REPEATED_ACTIONS's reasoning but for the
-# retry_output loop instead of the tool-call loop — real bug, found live: a
-# turn stuck in the SAME rejection reason (round after round narrating tool
-# intent instead of calling one) burned 6 full retry rounds and ~18k tokens
-# before should_continue's own MAX_TOKENS_PER_TURN cap finally cut it off,
-# landing on the exact same "couldn't answer" fallback it could have reached
-# after 2 rounds. `2` means exactly one retry attempt per distinct rejection
-# reason: the first occurrence still gets a real chance to self-correct
-# (this is what makes the citation-repair retry loop work at all in the
-# common case), but a SECOND consecutive occurrence of the identical reason
-# means the model isn't converging, just repeating — see
-# route_after_check/retry_exhausted. Deliberately does NOT reset on a
-# DIFFERENT reason appearing (e.g. too-short then uncited then
-# misattributed, three genuinely different problems in a row): that's slow
-# progress through distinct issues, not the stuck-in-a-loop signal this
-# specifically targets, and MAX_ITERATIONS/MAX_TOKENS_PER_TURN already
-# bound that broader case.
+# Not scaled 1:1 with litellm-config.yaml's num_ctx (32000): num_ctx
+# answers "what fits without truncation" (needs margin for ~2500 tokens of
+# system prompt/tool schemas plus a retry round's ~2x spend); this pair
+# answers "how much raw history is worth carrying" — a cost/latency
+# tradeoff num_ctx headroom doesn't resolve. qwen2.5:3b has been caught
+# dropping the "mandatory" citation instruction in prompts of only
+# ~2300-2800 tokens, so a wide ceiling trades cheaper/rarer compactions
+# against more context for a small model to attend to — not sized up just
+# because num_ctx has room. 24000/4000 leaves margin below num_ctx for a
+# retry round plus retrieved context/tool results.
+MAX_HISTORY_SUMMARY_CHARS = 4000  # (AR-015a) the CUMULATIVE history_summary
+# must stay bounded too, or the "compacted" summary becomes the next
+# unbounded input. Exceeding it is a named terminal state
+# (context_window_exceeded), not silent truncation — see route_after_compaction.
+MAX_REPEATED_ACTIONS = 3  # consecutive IDENTICAL tool-call batches before
+# ending as no_progress — bounds convergence, not just repetition, and
+# fires independently of (usually before) MAX_ITERATIONS — see should_continue.
+MAX_CONSECUTIVE_SAME_RETRY_REASON = 2  # check_output's own convergence
+# check, mirroring MAX_REPEATED_ACTIONS but for the retry_output loop.
+# Live bug: a turn stuck on the SAME rejection reason burned 6 retry
+# rounds (~18k tokens) before MAX_TOKENS_PER_TURN cut it off, landing on
+# the same fallback it could've reached after 2. `2` = one
+# self-correction attempt per distinct reason; deliberately does NOT reset
+# on a DIFFERENT reason (that's slow progress through distinct issues, not
+# a stuck loop) — see route_after_check/retry_exhausted.
 
 # Budgets for a NESTED subagent run (app/agent/tools.py::run_subagent,
-# GRAPH_PATTERNS.md pattern 46) — deliberately separate constants, not a
-# fraction of the values above: a subagent's own should_continue is bound to
-# THESE via functools.partial (see build_graph's max_iterations/
-# max_tokens_per_turn params), independently of whatever budget the parent
-# turn that spawned it has already spent or has left. Hardcoded here (not
-# Settings-backed) for the same reason MAX_ITERATIONS/MAX_TOOL_CALLS_PER_TURN
-# are: a loop-count safety net, not a per-deployment dollar policy knob (see
-# MAX_SUBAGENT_COST_USD_PER_RUN in app/core/config.py, which IS Settings-backed,
-# for that distinction).
+# pattern 46) — separate from the constants above; a subagent's own
+# should_continue is bound to THESE via functools.partial, independent of
+# the parent turn's remaining budget. Hardcoded (not Settings-backed) as a
+# loop-count safety net, unlike MAX_SUBAGENT_COST_USD_PER_RUN
+# (app/core/config.py, IS Settings-backed — a $ policy knob, not a safety net).
 MAX_SUBAGENT_ITERATIONS = 6
 MAX_SUBAGENT_TOKENS_PER_RUN = 4000
 
-# Reliability policy for the `agent` node (see build_graph): retry a
-# transient LLM-endpoint failure (connection error, 5xx) a few times before
-# giving up on the turn. LangGraph's default retry_on already excludes
-# programming errors (ValueError, TypeError, ...), so this can't mask a real
-# bug as a flaky call — see GRAPH_PATTERNS.md pattern 7.
+# Reliability policy for `agent` (see build_graph): retry a transient
+# LLM-endpoint failure (connection error, 5xx) before giving up. LangGraph's
+# default retry_on excludes programming errors, so this can't mask a real
+# bug as a flaky call (pattern 7).
 AGENT_RETRY_POLICY = RetryPolicy(max_attempts=3)
 
-# Bumped only on a genuinely incompatible State/topology change — a renamed
-# or removed State key, or a removed/reordered node a *paused* thread might
-# resume into. An ordinary change (a new node appended after suggest, a
-# prompt/timeout tweak) leaves this unchanged — the way to declare "this
-# change is backward-compatible" is to leave the number alone *deliberately*
-# in the same PR, never to relax the comparison in resumability_error.
-# Meaningful only with a durable checkpointer (app/agent/runtime.py's
-# AsyncPostgresSaver wiring) — MemorySaver never survives a restart, so there
-# is never a stale checkpoint to compare against.
+# Bump only on a genuinely incompatible State/topology change (a renamed/
+# removed State key, or a removed/reordered node a *paused* thread might
+# resume into) — an ordinary change (new node appended, prompt/timeout
+# tweak) leaves this unchanged deliberately. Meaningful only with a durable
+# checkpointer (app/agent/runtime.py's AsyncPostgresSaver) — MemorySaver
+# never survives a restart, so there's never a stale checkpoint to compare
+# against.
 STATE_SCHEMA_VERSION = 1
 
 
@@ -398,24 +286,18 @@ class State(TypedDict):
     # app/agent/usage_ledger.py's PRICE_PER_1K_TOKENS_USD — should_continue enforces
     # MAX_COST_USD_PER_TURN against this (GRAPH_PATTERNS.md pattern 35).
     subagent_spend: Annotated[list[tuple[int, float]], operator.add]  # One
-    # (tokens, cost_usd) entry per completed run_subagent call *this turn*,
-    # appended via Command(update=...) from app/agent/tools.py's run_subagent
-    # tool(s). The only other reducer field besides `messages`, for the same
-    # reason: ToolNode already runs multiple tool calls from one AI turn
-    # CONCURRENTLY (GRAPH_PATTERNS.md pattern 9) — two simultaneous
-    # run_subagent calls each returning Command(update={"subagent_spend":
-    # [...]}) must be safely list-concatenated, not raced as a read-then-
-    # overwrite pair the way total_tokens/total_cost_usd above are (agent()'s
-    # own read-modify-write is safe only because `agent` itself never runs
-    # concurrently with a sibling `agent` call, unlike `tools`). should_continue
-    # sums this on top of total_tokens/total_cost_usd when checking
-    # MAX_TOKENS_PER_TURN/MAX_COST_USD_PER_TURN — folding a subagent's spend
-    # into the PARENT turn's own live ceiling (GRAPH_PATTERNS.md pattern 46's
-    # disclosed gap), without touching MAX_SUBAGENT_TOKENS_PER_RUN/
-    # MAX_SUBAGENT_COST_USD_PER_RUN (the nested run's own separate per-call
-    # ceiling, unchanged). Reset to [] every turn by validate_input, same as
-    # total_tokens/total_cost_usd — unlike history_summary, this must NOT
-    # accumulate turn over turn.
+    # (tokens, cost_usd) entry per completed run_subagent call this turn,
+    # appended via Command(update=...) from tools.py's run_subagent. The
+    # only other reducer field besides `messages`: ToolNode runs multiple
+    # tool calls from one AI turn CONCURRENTLY (pattern 9), so concurrent
+    # run_subagent calls must list-concat safely rather than race a
+    # read-modify-write like total_tokens/total_cost_usd do (safe there
+    # only because `agent` never runs concurrently with itself). Summed
+    # into should_continue's MAX_TOKENS_PER_TURN/MAX_COST_USD_PER_TURN
+    # checks on top of total_tokens/total_cost_usd (pattern 46's disclosed
+    # gap), without touching MAX_SUBAGENT_*'s own separate per-run ceiling.
+    # Reset to [] every turn by validate_input, same as total_tokens/
+    # total_cost_usd — unlike history_summary, must NOT accumulate turn over turn.
     require_approval: bool  # Opt-in: gate tool calls behind human_approval.
     approved: bool  # Set by human_approval; read by route_after_approval.
     cancelled: bool  # Set by human_approval on a cancel decision; read by
@@ -425,12 +307,11 @@ class State(TypedDict):
     # point as iterations/total_tokens.
     graph_version: str  # Build that wrote this checkpoint — see _graph_version.
     state_schema_version: int  # See STATE_SCHEMA_VERSION / resumability_error.
-    ctx: SecurityCtx | None  # Stamped ONCE by validate_input, from
-    # config["configurable"]["ctx"] — the trusted boundary (app/api/main.py's
-    # header extraction, or a local dev ctx from app/channels/chat.py).
-    # Read-only from here on: no other node may write this key. See
-    # app/core/security.py's SecurityCtx docstring and route_after_validation's
-    # fail-closed check below.
+    ctx: SecurityCtx | None  # Stamped ONCE by validate_input from
+    # config["configurable"]["ctx"] (the trusted boundary) — read-only
+    # from here on; no other node may write this key. See
+    # app/core/security.py's SecurityCtx and route_after_validation's
+    # fail-closed check.
     citations: list[dict]  # Set by retrieve_context — every numbered [n]
     # source retrieve_context's pre-fetch could have cited, whether or not
     # the final answer actually used it. See app/agent/tools.py::gather_context.
@@ -440,85 +321,58 @@ class State(TypedDict):
     ungrounded_claims_count: int  # Set by check_output — [n] markers the
     # answer used that don't match any real citation (GRAPH_PATTERNS.md pattern 39).
     likely_uncited_citations: list[dict]  # Set by check_output — citations
-    # NOT referenced by marker in the FINAL answer text, but whose own text
-    # shares heavy word overlap with it (see _likely_uncited_citations) — a
-    # stronger, much less ambiguous signal than agent_zero_citations_total's
-    # "citations were merely available" check that the model paraphrased a
-    # source without attributing it. Almost always empty in practice: when
-    # check_output finds one, it mechanically inserts the missing marker
-    # itself (_insert_missing_citation_markers) rather than routing to a
-    # retry — live-verified that asking the model to fix this reliably
-    # doesn't work — and recomputes this field against the CORRECTED
-    # answer before returning, so a real value here means the auto-fix
-    # itself found no matching sentence to attach the marker to (should not
-    # happen given how _uncited_citation_matches is built, but checked
-    # rather than assumed). route_after_check still retries on a real
-    # value, as the last line of defense.
+    # NOT referenced by marker in the final answer, but with heavy word
+    # overlap with it (see _likely_uncited_citations) — stronger signal
+    # than agent_zero_citations_total's "was merely available" check.
+    # Almost always empty: check_output auto-fixes a real hit by inserting
+    # the missing marker (_insert_missing_citation_markers — live-verified
+    # that asking the model to fix this doesn't work) and recomputes this
+    # field against the corrected answer. route_after_check still retries
+    # on a real value here as the last line of defense.
     likely_misattributed_citations: list[dict]  # Set by check_output — the
     # mirror image of likely_uncited_citations: a real, in-range marker IS
-    # used in the answer, but every sentence citing it shares no meaningful
-    # vocabulary with THAT marker's own source text (see
-    # _likely_misattributed_citations) — a real bug, found live via
-    # Langfuse: [3] cited on every sentence of an answer unrelated to what
-    # [3] actually said. Read by route_after_check to trigger a real retry.
+    # used, but its citing sentences share no vocabulary with that marker's
+    # source (see _likely_misattributed_citations). Real bug found live:
+    # [3] cited on every sentence of an answer unrelated to what [3] said.
+    # Read by route_after_check to trigger a retry.
     deferred_instead_of_acting: bool  # Set by check_output — the answer
-    # narrates an intent to use a tool ("I will use the X tool...") or asks
-    # the user's permission to proceed ("would you like me to?") instead of
-    # actually calling the tool or answering directly (see
-    # _defers_instead_of_acting) — a real bug, found live: a 3B model
-    # repeating this across several turns, each "yes" reply just
-    # restarting the identical cycle since no real tool_calls were ever
-    # made. Read by route_after_check to trigger a real retry.
-    fabricated_tool_output: bool  # Set by check_output — the answer
-    # contains two or more markdown code fences with NO real tool_calls
-    # entry backing them (see _fabricates_tool_output) — a script AND a
-    # plausible-looking "output" for it, presented as if run_command_in_sandbox
-    # had actually executed, when it never did. A real bug, found live:
-    # after a sandbox approval was declined once, the model invented BOTH
-    # a script and its output, narrated in present tense ("Running the
-    # calculation script...") so deferred_instead_of_acting's own
-    # future-intent phrasing never caught it — the fabricated arithmetic
-    # didn't even match the fabricated code. Read by route_after_check to
-    # trigger a real retry, same as the other check_output-computed
-    # reasons — this one ranks ABOVE deferred_instead_of_acting (see
-    # _retry_reason) since presenting false information as true is worse
-    # than merely failing to act on it.
+    # narrates intent ("I will use the X tool...") or asks permission
+    # ("would you like me to?") instead of acting (_defers_instead_of_acting).
+    # Real bug found live: a 3B model repeating this across turns, each
+    # "yes" reply just restarting the same cycle. Read by route_after_check
+    # to trigger a retry.
+    fabricated_tool_output: bool  # Set by check_output — 2+ markdown code
+    # fences with NO real tool_calls backing them (_fabricates_tool_output).
+    # Real bug found live: after a sandbox approval was declined, the model
+    # invented both a script and its "output," narrated in present tense so
+    # deferred_instead_of_acting's future-tense check missed it. Ranks
+    # ABOVE deferred_instead_of_acting in _retry_reason — presenting false
+    # info as true is worse than merely failing to act. Read by
+    # route_after_check to trigger a retry.
     skipped_required_tool: str | None  # Set by check_output — the NAME of
-    # a tool a skill loaded THIS TURN (use_skill) named as required, if
-    # that tool was never actually called even though the final answer
-    # states a specific dollar figure (see
-    # _skipped_required_sandbox_after_skill) — None if nothing was
-    # skipped. A real bug, found live: the deal-economics skill was
-    # loaded, its own text says "don't estimate this kind of number in
-    # your head," and the model estimated it in its head anyway —
-    # correctly, that one specific time, but nothing enforced that, and
-    # every other live freehand attempt at the same math landed on a
-    # wrong number. The actual tool NAME, not just a bool, so
-    # retry_output's feedback can name it specifically rather than
-    # hardcoding one. Read by route_after_check to trigger a real retry.
-    leaks_system_prompt: bool  # Set by check_output — the final answer
-    # contains a long, verbatim run of the seeded system prompt's own text
-    # (see _leaks_system_prompt) — output-side defense-in-depth alongside
-    # app/agent/moderation.py's input-side screening: an injection phrased
-    # in a way moderation's known-pattern regexes don't catch can still be
-    # caught here if it actually succeeds in getting the model to recite
-    # its instructions back. Read by route_after_check to trigger a real
-    # retry, same as the other check_output-computed reasons.
-    last_retry_reason: str | None  # Set by check_output — a short code
+    # a tool a skill loaded THIS TURN named as required, if the final
+    # answer states a dollar figure without ever calling it
+    # (_skipped_required_sandbox_after_skill); None if nothing was skipped.
+    # Real bug found live: the deal-economics skill says "don't estimate
+    # this in your head," and the model did anyway — right that once,
+    # wrong on other freehand attempts. The actual name (not a bool) lets
+    # retry_output's feedback name it specifically. Read by
+    # route_after_check to trigger a retry.
+    leaks_system_prompt: bool  # Set by check_output — a long, verbatim run
+    # of the seeded system prompt in the final answer (_leaks_system_prompt).
+    # Output-side defense-in-depth alongside moderation.py's input-side
+    # screening: catches an injection phrased past moderation's regexes if
+    # it actually succeeds in getting the prompt recited back. Read by
+    # route_after_check to trigger a retry.
+    last_retry_reason: str | None  # Set by check_output — short code
     # ("leaked_prompt"/"too_short"/"deferred"/"uncited"/"misattributed")
-    # naming THIS round's rejection reason, or None if the answer didn't
-    # need a retry at all. Same priority order route_after_check/
-    # retry_output already use. Read (and compared against the PRIOR
-    # round's value) by check_output itself to compute
-    # retry_reason_repeat_count below — never reset mid-turn by anything
-    # else.
-    retry_reason_repeat_count: int  # Set by check_output — how many
-    # consecutive rounds THIS SAME reason has fired in a row this turn (1
-    # on first occurrence, reset to 1 on a DIFFERENT reason, incremented
-    # only when the reason repeats identically). Read by route_after_check
-    # to give up (routing to retry_exhausted) once
-    # MAX_CONSECUTIVE_SAME_RETRY_REASON is reached, instead of retrying
-    # again — see that constant's own docstring for why.
+    # naming this round's rejection reason, or None. Compared against the
+    # PRIOR round's value by check_output to compute
+    # retry_reason_repeat_count below — never reset mid-turn elsewhere.
+    retry_reason_repeat_count: int  # Set by check_output — consecutive
+    # rounds THIS SAME reason has fired (1 on first occurrence, reset to 1
+    # on a different reason). Read by route_after_check to give up
+    # (routing to retry_exhausted) once MAX_CONSECUTIVE_SAME_RETRY_REASON is hit.
     cache_hit: bool  # Set by check_semantic_cache — read by
     # write_semantic_cache to skip a redundant re-embed+write on a turn that
     # was already served from cache (GRAPH_PATTERNS.md pattern 22).
@@ -527,47 +381,36 @@ class State(TypedDict):
     followups: list[str]  # Set by suggest_followups — 2-3 follow-up
     # questions derived from a grounded answer, or [] when the answer had
     # no citations to derive them from (GRAPH_PATTERNS.md pattern 27).
-    history_summary: str  # Set by compact_history — a cumulative summary of
-    # whatever _messages_to_trim has discarded so far, across the WHOLE
-    # thread's lifetime. Deliberately NOT reset per-turn in validate_input
-    # (unlike citations/followups/etc.) — it accumulates turn over turn, the
-    # same way the checkpointed message list itself does. Injected by
-    # agent() as an early SystemMessage (GRAPH_PATTERNS.md pattern 41).
-    context_anchor_index: int  # Set by retrieve_context, alongside `context`
-    # — the index, in THAT MOMENT's `state["messages"]`, of the human
-    # message that opened this turn. Nothing removes messages between here
-    # and the end of the turn's agent<->tools/check_output<->retry_output
-    # loop (compact_history's own trimming already ran, once, earlier in
-    # the pipeline), only appends — so this index stays valid for every
-    # remaining call in the turn even as later ones grow the list past it.
-    # agent() re-locates this SAME fixed position on every call to splice
-    # history_summary/context in right before the turn's real question,
-    # instead of at whatever the CURRENT tail happens to be — see agent()'s
-    # own docstring for why a shifting position, not shifting CONTENT, was
-    # what broke prefix-cache reuse across a turn's own internal loop.
+    history_summary: str  # Set by compact_history — cumulative summary of
+    # what _messages_to_trim has discarded, across the WHOLE thread's
+    # lifetime. NOT reset per-turn (unlike citations/followups) — it
+    # accumulates like the checkpointed message list itself. Injected by
+    # agent() as an early SystemMessage (pattern 41).
+    context_anchor_index: int  # Set by retrieve_context, alongside
+    # `context` — the index, in THAT MOMENT's state["messages"], of the
+    # human message that opened this turn. Only appends happen after this
+    # point for the rest of the turn, so the index stays valid throughout
+    # the agent<->tools/check_output<->retry_output loop. agent() re-locates
+    # this fixed position on every call to splice history_summary/context
+    # right before the turn's question, rather than at the current tail —
+    # see agent()'s own docstring for why a SHIFTING position broke
+    # prefix-cache reuse.
 
 
-# --- Node: validate input. Also resets the per-turn safety budgets
-# (iterations, total_tokens, run_id), trims history, and stamps SecurityCtx:
-# validate_input is the fixed entry point for every graph.invoke() call
-# (START -> validate_input, always), but is *not* re-run when resuming a
-# paused HITL turn via Command(resume=...) — that resumes inside
-# human_approval directly. So this runs exactly once per conversation turn,
-# which is what "per turn" budgets need: without this reset,
-# `iterations`/`total_tokens` persist in the checkpointed state and keep
-# climbing turn over turn, so MAX_ITERATIONS would eventually end the graph
-# on a random future turn regardless of how much work that turn actually
-# did. `run_id` gets a fresh value here for the same reason. History
-# trimming+summarization (HISTORY_TOKEN_CEILING/FLOOR) runs one node later, in
-# compact_history — it needs an LLM call, so it stays out of this node to
-# keep validate_input a plain, dependency-free function of state/config.
+# --- Node: validate input. Fixed entry point for every graph.invoke() call
+# (START -> validate_input), but NOT re-run when resuming a paused HITL turn
+# (Command(resume=...) resumes inside human_approval directly) — so this
+# runs exactly once per turn, which is what resetting iterations/
+# total_tokens/run_id here requires (otherwise they'd persist across turns
+# and MAX_ITERATIONS would fire on an arbitrary future turn). History
+# trimming/summarization stays out of this node (compact_history, one node
+# later) since it needs an LLM call and this stays a plain, dependency-free
+# function of state/config.
 #
-# `ctx` is read from `config["configurable"]["ctx"]` — never from `state`,
-# never from message content — and stamped into state exactly once, here.
-# This is the ONLY node that ever writes state["ctx"]; every other node
-# that needs it reads state["ctx"] as read-only (see State's docstring).
-# route_after_validation checks it's actually valid before anything
-# downstream runs — a missing/malformed ctx never reaches retrieve_context.
+# `ctx` is read from config["configurable"]["ctx"] (never state or message
+# content) and stamped ONCE, here — the ONLY node that writes state["ctx"];
+# everything else reads it read-only. route_after_validation fails closed
+# on an invalid one before retrieve_context ever runs.
 def validate_input(state: State, config: RunnableConfig) -> dict:
     updates: dict = {
         "iterations": 0,
@@ -602,20 +445,15 @@ def validate_input(state: State, config: RunnableConfig) -> dict:
 def route_after_validation(
     state: State,
 ) -> Literal["compact_history", "reject_input", "reject_context"]:
-    """Checked in order: security context first, then the message itself.
+    """Checks ctx first, then the message. A missing/malformed ctx routes
+    to reject_context (a system-level failure), kept distinct from
+    reject_input's "you typed nothing" so an infra problem doesn't read as
+    a user error in the transcript or in agent_requests_total's outcome
+    label (see runtime_stream.py::_turn_outcome).
 
-    A missing/malformed ctx is a system-level fact (something upstream
-    failed to stamp one — see validate_input) rather than anything the
-    user typed, so it's routed to a distinct node (reject_context) with
-    its own message rather than folded into reject_input's "you typed
-    nothing" — conflating the two would make a real infra problem read
-    like a user error in the transcript and in agent_requests_total's
-    outcome label (see app/agent/runtime_stream.py::_turn_outcome).
-
-    The valid path goes to compact_history, not straight to
-    moderate_input — trimming/summarizing history runs on every valid
-    turn regardless of what moderate_input decides about THIS turn's
-    input (see route_after_compaction for what runs after it).
+    Valid path goes to compact_history, not moderate_input directly —
+    history trimming/summarization runs on every valid turn regardless of
+    what moderate_input decides about THIS turn's input.
     """
     if not valid_ctx(state.get("ctx")):
         return "reject_context"
@@ -629,17 +467,13 @@ def route_after_validation(
 # the semantic cache lookup or retrieval, so a screened-out input never
 # reaches either. ---
 async def moderate_input(state: State) -> dict:
-    """Screens the TEXT portion only (`_human_text`) — this app's
-    moderation (app/agent/moderation.py) is a pattern screen + an ML
-    classifier layer over that same text; neither has any way to inspect
-    an attached image's actual content. An image-only message (no text at
-    all) is a `_human_text` of "", which `moderation.screen` allows
-    through unblocked — a real, honestly-disclosed gap (GRAPH_PATTERNS.md
-    pattern 44), not a silent one: this app screens WORDS, never PIXELS.
+    """Screens the TEXT only (`_human_text`) — moderation.py is a pattern
+    screen + ML classifier over that text, neither can inspect an image's
+    actual content. An image-only message has empty `_human_text`, so it
+    passes through unblocked — a disclosed gap (pattern 44): this app
+    screens WORDS, not PIXELS.
 
-    `async def`/`await`: `moderation.screen` awaits real I/O now (its ML
-    layer is an HTTP call to the `ml-service` container) — see that
-    function's own docstring.
+    async: moderation.screen awaits a real HTTP call to ml-service.
     """
     last_human = _last_human_message(state["messages"])
     if last_human is None:
@@ -732,23 +566,19 @@ async def _default_cache_set(ctx: SecurityCtx | None, query: str, answer: str, c
 
 
 async def _default_search(query: str, ctx: SecurityCtx | None) -> tuple[str, list[dict]]:
-    """Thin wrapper over `app.agent.tools.gather_context` matching the
+    """Thin wrapper over `tools.gather_context` matching the
     `Callable[[str, SecurityCtx | None], Awaitable[tuple[str, list[dict]]]]`
-    shape `make_retrieve_context_node` expects — isolates the real call to
-    one place so a fake passed to the factory in tests is just a plain
-    (async) function.
+    shape `make_retrieve_context_node` expects, so tests can pass a plain
+    fake function to the factory.
 
-    `ctx` flows straight through, the same value `search_docs`/`remember`
-    read from `config["configurable"]["ctx"]` when the *model* calls them
-    as tools — pre-fetched and on-demand retrieval are policy-enforced
-    identically; this isn't a second, laxer path. Hybrid search
-    (dense+sparse RRF, cross-encoder reranked, both with their own
-    fallback layers) and cross-session memory recall both live inside
-    `gather_context` — see app/agent/tools.py and GRAPH_PATTERNS.md pattern 20.
+    `ctx` flows straight through — the same value search_docs/remember read
+    from config when the *model* calls them as tools, so pre-fetched and
+    on-demand retrieval are policy-enforced identically. Hybrid search
+    (dense+sparse RRF, cross-encoder reranked) and cross-session memory
+    recall both live inside `gather_context` (see tools.py, pattern 20).
 
-    `async def`/`await`: `gather_context` awaits real I/O now (the
-    reranker leg is an HTTP call to the ml-service container, not
-    local ONNX compute) — see its own docstring.
+    async: gather_context awaits real I/O (the reranker is an HTTP call to
+    ml-service, not local ONNX compute).
     """
     return await tools.gather_context(ctx, query)
 
@@ -798,34 +628,21 @@ def _assemble_shared_graph_parts(
     max_tokens_per_turn: int | None,
     max_cost_usd_per_turn: float | None,
 ) -> _SharedGraphParts:
-    """The setup `build_graph()` and `build_subagent_graph()` both need
-    before they diverge on which NODES to register and how to wire them:
-    resolve `deps`/`manifest`/`domain` defaults, compute the domain's own
-    tool set/capabilities, build the shared LLM client, the `agent`/
-    `retrieve_context` node closures, and the `should_continue`/
-    `check_output` partials bound to this domain's own capability mapping
-    and budget ceiling. Factored out so the two assembly functions
-    duplicate only their actual topology difference (which nodes exist,
-    how they're wired) — never this setup, which was the whole reason
-    `build_graph()`'s own full topology got reused wholesale for subagents
-    in the first place ("one pipeline, not two that can drift",
-    GRAPH_PATTERNS.md pattern 46) before this split existed. Everything
-    each caller ALSO needs beyond this (compact_history/suggest_followups/
-    the semantic-cache nodes for build_graph(); nothing extra for
-    build_subagent_graph()) stays in that caller, built from
-    `.llm_client`/`.deps` here.
+    """Setup shared by `build_graph()`/`build_subagent_graph()` before they
+    diverge on topology: resolves `deps`/`manifest`/`domain` defaults,
+    computes the domain's tool set/capabilities, builds the LLM client, the
+    `agent`/`retrieve_context` closures, and the `should_continue`/
+    `check_output` partials bound to this domain's capability mapping and
+    budget ceiling. Factored out so both builders duplicate only their
+    actual topology (which nodes exist, how they're wired) — "one
+    pipeline, not two that can drift" (pattern 46). Each caller builds
+    whatever else it additionally needs from `.llm_client`/`.deps`.
     """
-    # Deferred for the same reason as the manifest import right above:
-    # app/agent/graph_routing.py and app/agent/graph_utils.py both import
-    # State/constants/a few helpers back from THIS module at THEIR OWN top
-    # level (see each one's own module docstring), so importing either back
-    # here at graph.py's own module level would close a real cycle. Only
-    # ever needed here, at call time, long after every module has finished
-    # loading. `make_agent_node`/`make_retrieve_context_node` don't
-    # strictly need to be deferred (neither `graph_agent_node.py` nor
-    # `graph_retrieval.py` imports anything back from this module's own
-    # top level) — kept alongside the other three for consistency, one
-    # single "everything this function needs from elsewhere" import block.
+    # Deferred: graph_routing.py and graph_utils.py both import State/
+    # constants back from THIS module at their own top level, so importing
+    # them here at module level would close a real cycle. Only needed at
+    # call time. make_agent_node/make_retrieve_context_node don't strictly
+    # need deferring either, but kept together for one single import block.
     from app.agent.graph_agent_node import make_agent_node
     from app.agent.graph_retrieval import make_retrieve_context_node
     from app.agent.graph_routing import check_output, should_continue
@@ -858,11 +675,10 @@ def _assemble_shared_graph_parts(
         max_tokens=max_tokens_per_turn if max_tokens_per_turn is not None else MAX_TOKENS_PER_TURN,
         max_cost_usd=max_cost_usd_per_turn if max_cost_usd_per_turn is not None else MAX_COST_USD_PER_TURN,
     )
-    # Same "plain module-level function, not a factory" shape and reason —
-    # bound to THIS domain's own system prompt (manifest.system_prompt),
-    # not the bare Ecorp-only SYSTEM_PROMPT default, so _leaks_system_prompt
-    # checks a non-Ecorp domain's answer against the prompt it was ACTUALLY
-    # seeded with, not a different domain's text it would never match.
+    # Same "plain function, not a factory" shape — bound to THIS domain's
+    # own system_prompt, not the bare Ecorp SYSTEM_PROMPT, so
+    # _leaks_system_prompt checks an answer against the prompt it was
+    # ACTUALLY seeded with.
     domain_check_output = functools.partial(check_output, system_prompt=manifest.system_prompt)
 
     return _SharedGraphParts(

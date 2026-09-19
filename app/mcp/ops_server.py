@@ -1,34 +1,28 @@
-"""MCP server exposing read-only ops-domain tools (app/domains/ops/tools.py's
-`fetch_metrics_summary`/`list_recent_incidents`) over the Model Context
-Protocol — GRAPH_PATTERNS.md pattern 50, the same "expose this app's own
-tools to an external MCP client" story app/mcp/server.py already tells for
-`query_employees`, extended to a second domain.
+"""MCP server exposing read-only ops-domain tools
+(`app/domains/ops/tools.py`'s `fetch_metrics_summary`/
+`list_recent_incidents`) over MCP — GRAPH_PATTERNS.md pattern 50, the same
+story `app/mcp/server.py` tells for `query_employees`, extended to a
+second domain.
 
-A SEPARATE server/process from app/mcp/server.py's `ecorp-structured-data`
-rather than one more `@mcp.tool()` bolted onto it — this app already runs
-one process per domain everywhere else (app/job_queue/agent_worker.py,
-AGENT_DOMAIN), so an ops-specific MCP server keeps that same shape rather
-than mixing Ecorp's employee directory and ops's operational data behind
-one name.
+A SEPARATE server/process from `app/mcp/server.py`'s
+`ecorp-structured-data` rather than one more `@mcp.tool()` bolted on —
+this app runs one process per domain everywhere else
+(`app/job_queue/agent_worker.py`, `AGENT_DOMAIN`), so this keeps that
+shape instead of mixing Ecorp's directory and ops data behind one name.
 
-Real use case: an on-call engineer's own Claude Desktop/Cursor can pull
-live incident status and metrics directly — "is anything currently
-flagged as anomalous," "what incidents happened this week" — without
-opening this app's chat UI at all.
+Real use case: an on-call engineer's Claude Desktop/Cursor can pull live
+incident status and metrics directly, no chat UI needed.
 
 ## Identity over MCP, same seam as app/mcp/server.py
 
-Ops data isn't tenant-scoped (see app/domains/ops/tools.py's own module
-docstring: `ctx` here proves "a legitimate caller of this deployment," not
-a filter over rows a caller isn't supposed to see) — but `OPS_POLICY.permit`
-still fails closed on a missing/malformed ctx, same as every other tool in
-this app. So, same demo simplification app/mcp/server.py's own docstring
-already discloses for `query_employees`: `principal` is an explicit tool
-argument here (not derived from any verified caller identity — an MCP
-client has no equivalent of this app's own RunnableConfig channel), just
-enough to construct a valid SecurityCtx and satisfy that fail-closed check.
-`tenant` is fixed to a constant demo value rather than also being a caller
-argument, since nothing this server exposes is ever filtered by it.
+Ops data isn't tenant-scoped (`ctx` here proves "a legitimate caller of
+this deployment," not a row filter — see `ops/tools.py`), but
+`OPS_POLICY.permit` still fails closed on a missing/malformed ctx.
+`principal` is an explicit tool argument (an MCP client has no
+`RunnableConfig` channel) just enough to construct a valid `SecurityCtx`;
+`tenant` is fixed to a constant demo value since nothing here is filtered
+by it — same simplification `app/mcp/server.py` discloses for
+`query_employees`.
 
 Run with: `make mcp-serve-ops` (stdio transport, same as app/mcp/server.py).
 """

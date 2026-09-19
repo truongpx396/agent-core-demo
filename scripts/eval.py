@@ -1,44 +1,35 @@
 """Golden-dataset evaluation harness.
 
-Unlike tests/ (which run the graph against a fake LLM so they're fast,
-hermetic, and deterministic — see tests/agent/test_graph_integration.py), this
-runs a fixed set of representative inputs through the *real* graph: real
-model, real Qdrant retrieval, real tool execution. That's the whole point
-— unit tests catch routing/logic regressions, this catches *behavior*
-regressions (a prompt tweak, model swap, or retrieval change that quietly
-makes the agent worse) that a fake LLM can't reveal, because a fake LLM's
-responses are hand-scripted rather than actually reasoned.
+Unlike tests/ (fake LLM — fast, hermetic, deterministic), this runs a fixed
+set of representative inputs through the *real* graph: real model, real
+Qdrant retrieval, real tool execution. Unit tests catch routing/logic
+regressions; this catches *behavior* regressions (a prompt tweak, model
+swap, retrieval change) a hand-scripted fake LLM can't reveal.
 
 ## Statistical rigor (GRAPH_PATTERNS.md pattern 40)
 
 Two release-gating checks, not one pass/fail per case:
 
-- **Per-case pass RATE, not a single pass/fail.** Each case runs
-  `EVAL_REPETITIONS` times (5, by default); a case is only counted as
-  passing if at least `REPETITION_PASS_THRESHOLD` (80%, i.e. 4-of-5) of
-  those repetitions individually passed. A stochastic system graded once
-  yields a coin flip, and a gate that flips is a gate that gets disabled.
+- **Per-case pass RATE.** Each case runs `EVAL_REPETITIONS` times (5); it
+  only counts as passing if `>= REPETITION_PASS_THRESHOLD` (80%, 4-of-5)
+  of repetitions individually passed — a stochastic system graded once is
+  a coin flip.
 - **A grounded-claims gate over the WHOLE golden set**, using the
   runtime's own computed grounding (`used_citations` vs.
-  `ungrounded_claims_count` — GRAPH_PATTERNS.md pattern 39), never a
-  model's opinion of itself. `≥ GROUNDED_CLAIMS_THRESHOLD` (95%) of every
-  citation marker referenced across every repetition must correspond to a
-  REAL citation, or the whole run fails release-gating — this is an
-  ANSWER-quality gate, distinct from (and in addition to) each case's own
-  keyword/tool-usage checks, which only gate retrieval/routing.
+  `ungrounded_claims_count` — pattern 39), never a model's opinion of
+  itself. `>= GROUNDED_CLAIMS_THRESHOLD` (95%) of every citation marker
+  across every repetition must be real, or the whole run fails — an
+  ANSWER-quality gate, distinct from each case's own keyword/tool checks.
 
-`--repetitions N` overrides `EVAL_REPETITIONS` for fast local iteration
-(`make eval -- --repetitions 1`) — the default of 5 is what CI/release
-gating should actually run, but 5x the real-model latency of every case
-is a real cost worth being able to opt out of during day-to-day dev.
+`--repetitions N` overrides `EVAL_REPETITIONS` for fast local iteration —
+5 is what CI/release gating runs, but 5x real-model latency per case is
+worth skipping day-to-day.
 
 Needs the full local stack up first: `make up`, `make pull-models`,
 `make ingest`.
 
-Run with: `make eval`
-Compare against the previous run: `make eval` again (comparison is automatic
-whenever eval_runs/latest.json exists from a prior run); pass --no-compare
-or --no-save to opt out.
+Run with: `make eval`. A prior eval_runs/latest.json triggers an automatic
+before/after comparison; pass --no-compare or --no-save to opt out.
 """
 import argparse
 import asyncio
@@ -95,25 +86,14 @@ GOLDEN_CASES: list[GoldenCase] = [
         expect_keywords=["checkpointer", "thread_id", "memory", "persist"],
         min_answer_length=20,
     ),
-    # `retrieval_company_topic_filter` ("What are Ecorp support hours?",
-    # expect_tool="search_docs") and `calculator_basic` ("what is 21 * 2?",
-    # expect_tool="calculator") retired 2026-09-16 — a deliberate decision,
-    # not silent drift: both scenarios are now covered more richly by
-    # tests/deepeval/test_tool_correctness_deepeval.py's
-    # `test_search_docs_tool_call_is_correct_and_well_argued` (the
-    # near-identical "Ecorp's support hours" question) and
-    # `test_calculator_tool_call_is_correct_and_well_argued` — real
-    # tool-call SET/argument checks via deepeval's `ToolCorrectnessMetric`/
-    # `ArgumentCorrectnessMetric`, not just "was the tool called" plus a
-    # keyword grep. What stays HERE, deliberately, is what deepeval
-    # structurally can't replace: this file's own N-repetition statistical
-    # gate and its DETERMINISTIC grounded-claims-ratio check (never an
-    # LLM's opinion of itself) — see this module's own docstring. Kept
-    # `retrieval_langgraph_checkpointer`/`calculator_with_human_approval`/
-    # `general_knowledge_no_tool_needed` below precisely because none of
-    # them have a deepeval equivalent yet (a different question, the HITL
-    # approval flow as the actual subject under test, and "correctly does
-    # NOT reach for a tool," respectively).
+    # `retrieval_company_topic_filter` and `calculator_basic` retired
+    # 2026-09-16 — superseded by tests/deepeval/test_tool_correctness_deepeval.py's
+    # real tool-call SET/argument checks (ToolCorrectnessMetric/
+    # ArgumentCorrectnessMetric) on near-identical questions. What stays
+    # here: this file's N-repetition statistical gate and its deterministic
+    # grounded-claims-ratio check (see module docstring) — deepeval has no
+    # equivalent for either, nor for the HITL approval flow or the
+    # no-tool-needed case below.
     GoldenCase(
         id="calculator_with_human_approval",
         input="what is 12 * 7?",
@@ -175,24 +155,17 @@ async def _run_case_once(graph, case: GoldenCase) -> _Attempt:
     }
     start = time.monotonic()
 
-    # Seed the system prompt BEFORE the first real turn — a real, disclosed
-    # finding from actually running this, not assumed: `build_graph()` +
-    # `.ainvoke()` directly, bypassing app/agent/runtime.py entirely, never
-    # triggers the seeding every production path (API/Telegram/agent-worker)
-    # relies on (see app/agent/graph.py's own `agent()` node docstring).
-    # Without this, every golden case here was running the agent with ZERO
-    # tool-routing guidance — only each tool's own individual docstring,
-    # which LangChain always sends regardless — a materially different,
-    # un-guided agent from what real users actually get. Reuses the exact
-    # production function rather than re-deriving the seeding logic, so
-    # this can never drift out of sync with real behavior.
+    # Seed the system prompt before the first real turn — build_graph() +
+    # .ainvoke() directly bypasses app/agent/runtime.py, so it never
+    # triggers the seeding every production path relies on (see
+    # app/agent/graph.py's `agent()` node docstring). Without this the
+    # agent runs with zero tool-routing guidance, unlike real users. Reuses
+    # the production function so this can't drift from real behavior.
     await _ensure_seeded_async(graph, thread_id)
 
-    # `ainvoke`/`aget_state`, not the sync `.invoke()`/`.get_state()` this
-    # used to be: the graph's `agent`/`retrieve_context`/etc. nodes are
-    # `async def` now (see app/agent/graph.py), and LangGraph's sync Pregel
-    # loop can't run an async-only node at all (raises "No synchronous
-    # function provided" the moment it reaches one).
+    # `ainvoke`/`aget_state`, not sync `.invoke()`/`.get_state()` — the
+    # graph's nodes are `async def` now (app/agent/graph.py), and
+    # LangGraph's sync Pregel loop can't run an async-only node at all.
     result = await graph.ainvoke(
         {
             "messages": [HumanMessage(content=case.input)],
@@ -288,12 +261,10 @@ async def run_case(graph, case: GoldenCase, repetitions: int = EVAL_REPETITIONS)
 
 
 def grounded_claims_ratio(results: list[CaseResult]) -> float:
-    """AR-021a's answer-quality gate: of every citation marker referenced
-    across every case and every repetition, what fraction were REAL
-    (matched a real citation) vs. invented. `1.0` (vacuously grounded)
-    when nothing ever cited anything at all — a golden set with no
-    citing cases isn't a grounding FAILURE, it's a set that doesn't
-    exercise this gate; the per-case checks still cover it independently.
+    """AR-021a's answer-quality gate: fraction of citation markers across
+    every case/repetition that were real vs. invented. `1.0` (vacuously
+    grounded) when nothing ever cited anything — an unexercised gate, not
+    a failure; per-case checks still cover it independently.
     """
     total_used = sum(r.used_citations_count for r in results)
     total_ungrounded = sum(r.ungrounded_claims_count for r in results)
@@ -412,12 +383,9 @@ def main() -> None:
 
     graph = build_graph()  # real LLM, real Qdrant/embeddings — needs `make up` + `make ingest`
 
-    # run_case/_run_case_once call graph.ainvoke/aget_state (the graph's
-    # nodes are async def now — see app/agent/graph.py) — asyncio.run here
-    # is the one bridge point from this script's otherwise-sync main(),
-    # same idiom as every other CLI entry point in this repo without
-    # pytest-asyncio (see app/agent/graph_utils.py's `_instrumented`
-    # docstring).
+    # run_case/_run_case_once are async (graph nodes are async def) —
+    # asyncio.run is the one sync/async bridge point in this otherwise-sync
+    # main().
     async def _run_all() -> list[CaseResult]:
         return [
             await run_case(graph, case, repetitions=args.repetitions) for case in GOLDEN_CASES

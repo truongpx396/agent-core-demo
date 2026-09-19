@@ -23,32 +23,22 @@ from app.agent.subagent_tools import _build_subagent_registry
 def make_domain_subagent_tool(
     domain: str, all_tools: list, tool_capabilities: Mapping[str, str]
 ) -> BaseTool | None:
-    """Builds a `run_subagent` tool scoped to `domain` — the domain
-    equivalent of the Ecorp-level construction above (same closed-enum
-    menu, same `RunSubagentArgs` shape, same mandatory read_only-only
-    resolution via `_resolve_subagent_tools`), but resolved against
-    `all_tools`/`tool_capabilities` — the CALLING domain's own tool
-    universe, e.g. app/domains/support/domain.py passes its own ticket
-    tools plus its own `search_docs`/`skill_search`/`use_skill`/
-    `ask_clarification`, not Ecorp's `TOOLS`/`TOOL_CAPABILITIES` — and
-    filtered to only the subagents actually declared for `domain`
-    (`domains: [...]` frontmatter, see app/agent/subagents.py's docstring
-    for the "untagged means Ecorp-only" default this applies).
+    """Builds a `run_subagent` tool scoped to `domain` — same closed-enum
+    menu, `RunSubagentArgs` shape, and mandatory read_only-only resolution
+    (`_resolve_subagent_tools`) as the Ecorp-level construction, but
+    resolved against `all_tools`/`tool_capabilities` (the CALLING domain's
+    own tool universe) and filtered to subagents actually declared for
+    `domain` (see app/agent/subagents.py's docstring for the "untagged means
+    Ecorp-only" default).
 
-    Returns `None` if that filtered registry ends up empty — a domain with
-    no bundled subagent gets no `run_subagent` tool at all, never one
-    offering an empty menu: a `SubagentName`-style enum needs at least one
-    real member to be a meaningful closed vocabulary, and a tool a caller
-    can never usefully invoke is worse than no tool (same "that omission is
-    what sandboxed means" posture app/domains/support/domain.py's own
-    docstring already takes for tools this app deliberately doesn't expose).
+    Returns `None` if the filtered registry is empty — a domain with no
+    bundled subagent gets no `run_subagent` tool at all, never one offering
+    an empty menu (a `SubagentName`-style enum needs at least one real
+    member).
 
-    Each call builds a genuinely NEW, distinct closure (its own Enum class,
-    `Args` schema, and `run_subagent` tool object) — never the Ecorp-level
-    `run_subagent` above. Meant to be called ONCE, at each domain module's
-    own import time (same "built once, not lazily" reasoning the
-    Ecorp-level block's own comment gives — a subagent added to disk after
-    the process starts needs a restart to appear here either way).
+    Each call builds a genuinely NEW closure (its own Enum class, `Args`
+    schema, tool object). Meant to be called ONCE, at each domain module's
+    own import time.
     """
     all_tool_names = frozenset(t.name for t in all_tools)
     registry = _build_subagent_registry(all_tool_names, tool_capabilities, domain=domain)
@@ -57,10 +47,9 @@ def make_domain_subagent_tool(
 
     tools_by_name = {t.name: t for t in all_tools}
 
-    # A per-domain Enum TYPE (not just distinct member values) — reusing
-    # SubagentName here would mix this domain's menu with Ecorp's, and two
-    # domains both calling this factory would silently share one Enum
-    # class between them, wrong the moment their registries diverge.
+    # A per-domain Enum TYPE, not just distinct member values — reusing
+    # SubagentName would mix this domain's menu with Ecorp's, and two
+    # domains sharing one Enum class breaks the moment their registries diverge.
     domain_subagent_name = Enum(  # type: ignore[misc]
         f"SubagentName_{domain}", {name: name for name in sorted(registry)}, type=str
     )
@@ -105,15 +94,12 @@ def make_domain_subagent_tool(
         matches a subagent's specific focus better than doing it yourself.
         Every subagent is restricted to read_only tools, so calling this
         never needs human approval."""
-        # Read as subagent_tools_module._run_subagent_impl, not a plain
-        # statically-imported bare name — tests/agent/test_tools.py does
-        # monkeypatch.setattr(subagent_tools, "_run_subagent_impl", ...),
-        # patching an attribute on the live `app.agent.subagent_tools`
-        # module object. A bare name here would bind to the ORIGINAL
-        # function once, at this module's own import time, permanently, so
-        # the monkeypatch would silently never take effect — same real
-        # bug/fix as `app/agent/graph_hitl.py`'s own `graph_module.interrupt`
-        # (see its docstring).
+        # Read as subagent_tools_module._run_subagent_impl, not a bare
+        # imported name — tests/agent/test_tools.py does
+        # monkeypatch.setattr(subagent_tools, "_run_subagent_impl", ...), and
+        # a bare name would bind to the original function permanently at
+        # import time, silently defeating the monkeypatch (same fix as
+        # graph_hitl.py's `graph_module.interrupt`).
         result = await subagent_tools_module._run_subagent_impl(
             subagent_name.value,
             task,

@@ -1,29 +1,22 @@
-"""General-purpose Ingestor: files, URLs, or raw text → retrievable,
-citable Qdrant points — closing the "standalone product needs a way to
-build its own corpus, not just answer over a hardcoded one" gap
-(GRAPH_PATTERNS.md pattern 24). `scripts/seed.py` (`make ingest`) is now
-just this module's `ingest_text` called once per sample doc, not a
-separate write path — one ingest pipeline, one place it can drift.
+"""General-purpose Ingestor: files, URLs, or raw text → retrievable, citable
+Qdrant points (GRAPH_PATTERNS.md pattern 24). `scripts/seed.py`
+(`make ingest`) is just this module's `ingest_text` called once per sample
+doc — one ingest pipeline, one place it can drift.
 
-Every ingested item is chunked (`app/ingestion/chunking.py`'s parent-child, sliding-
-window strategy) and embedded exactly the way `hybrid_search` expects
-(dense + sparse, via `app/retrieval/embeddings.py`, written through
-`qdrant_store.build_point` — the same hybrid vector shape `add_note`/
-`remember` already use), so ingested content is retrievable through the
-SAME retrieval path as everything else, not a second one.
+Every item is chunked (`app/ingestion/chunking.py`'s parent-child, sliding-
+window strategy) and embedded the way `hybrid_search` expects (dense+sparse,
+via `app/retrieval/embeddings.py`, through `qdrant_store.build_point` — same
+shape `add_note`/`remember` use), so ingested content shares the same
+retrieval path as everything else.
 
-Every ingested item is stamped with the `tenant` (and, for provenance,
-`principal`) from a `SecurityCtx` and refused without one — content whose
-ownership can't be established is refused, never ingested as
-tenant-less/public (mirrors app/core/security.py's fail-closed discipline: a
-missing ctx is a refusal, not a default).
+Every item is stamped with `tenant`/`principal` from a `SecurityCtx` and
+refused without one — ownerless content is never ingested as tenant-less/
+public (mirrors `app/core/security.py`'s fail-closed discipline).
 """
-# socket is not used directly below anymore, but kept imported so
-# tests/ingestion/test_ingestor.py's monkeypatch.setattr(ingestor.socket,
-# "getaddrinfo", ...) still patches the right object: `socket` is a single
-# shared module in sys.modules, so mutating the attribute via THIS
-# module's reference mutates the exact same function app/core/url_safety.py
-# (where the actual lookup now runs) sees too.
+# socket is unused directly below but kept imported: tests monkeypatch
+# ingestor.socket.getaddrinfo, and since `socket` is a shared module in
+# sys.modules, that mutation is visible to url_safety.py too (where the
+# actual lookup now runs).
 import html.parser
 import logging
 import socket  # noqa: F401
@@ -50,31 +43,23 @@ _URL_TIMEOUT_SECONDS = 10
 
 class IngestRefused(Exception):
     """A refused ingest (bad ctx, disallowed file type, SSRF-blocked URL,
-    fetch too large, ...) — an expected, caller-facing outcome, not a bug.
-    Every raise site also records `agent_ingest_refused_total{reason=...}`
-    (app/core/metrics.py) so refusals are visible in aggregate, not just to
-    whichever caller happened to catch the exception."""
+    fetch too large, ...) — expected and caller-facing, not a bug. Every
+    raise site also records `agent_ingest_refused_total{reason=...}`
+    (app/core/metrics.py)."""
 
 
 def _sparse_vectors_or_none(
     texts: list[str],
 ) -> Sequence[tuple[list[int], list[float]] | None] | None:
-    """Best-effort sparse leg for a WHOLE document's chunks at once — same
-    degrade-not-fail shape as app/agent/tools.py's identical helper for
-    add_note/remember, batched the same way embed_texts is (see that
-    function's docstring for why): a local BM25 model hiccup must not
-    block an ingest, just cost the WHOLE document's sparse leg recall
-    (every point still writes, findable dense-only) rather than one point
-    at a time.
+    """Best-effort sparse leg for a WHOLE document at once — same
+    degrade-not-fail shape as `app/agent/tools.py`'s add_note/remember
+    helper: a BM25 hiccup costs the document's sparse recall (still
+    findable dense-only), not the whole ingest.
 
-    `Sequence`, not `list`, specifically so `embed_sparse_batch`'s own
-    `list[tuple[...]]` (every element a real tuple, never `None`) can be
-    returned as-is on the success path below — `list` is invariant in its
-    type parameter (mypy can't assume a `list[X]` reference is safe to
-    treat as `list[X | None]`, since a caller could append a bare `None` to
-    it), `Sequence` is covariant (read-only, so that hazard doesn't apply),
-    and the one caller (`ingest_text`) only ever reads this by index,
-    never mutates it."""
+    Returns `Sequence` rather than `list` so `embed_sparse_batch`'s
+    `list[tuple[...]]` can be returned as-is on success — `list` is
+    invariant (mypy can't treat `list[X]` as `list[X | None]`), `Sequence`
+    is covariant; the one caller only reads this by index."""
     try:
         return embed_sparse_batch(texts)
     except Exception as exc:  # noqa: BLE001
@@ -94,36 +79,24 @@ async def ingest_text(
     on_progress: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> int:
     """Chunk, embed, and upsert `text` as one or more Qdrant points — the
-    shared core every `ingest_*` entry point below funnels through.
-    Returns the number of child chunks written (0 for blank/whitespace
-    text — not an error, there's simply nothing to index).
+    shared core every `ingest_*` entry point funnels through. Returns the
+    number of child chunks written (0 for blank/whitespace text).
 
-    Sparse vectors are computed in ONE batched call for the whole document
-    (`_sparse_vectors_or_none`, a local ONNX model — trivially fast even at
-    thousands of chunks, live-verified at ~0.5s for 5700). Dense vectors —
-    the actual bottleneck, a real HTTP round trip per batch against the
-    embedding endpoint — are embedded `EMBED_BATCH_SIZE` chunks at a time
-    rather than one `embed_texts` call for everything, specifically so
-    there's a natural per-batch checkpoint to report progress from: a
-    5700-chunk document has ~28 checkpoints instead of one all-or-nothing
-    wait. Live-verified ~10x wall-clock improvement over the original
-    one-chunk-at-a-time loop (13 minutes -> 75 seconds on a real 5700-chunk
-    document) comes from batching itself (see `embed_texts`'s own
-    docstring), not from this per-batch splitting — this loop calls
-    `embed_texts` exactly as many times either way, just interleaved with
-    `on_progress` instead of collected into one list first.
+    Sparse vectors are computed in one batched call for the whole document
+    (local ONNX, ~0.5s for 5700 chunks). Dense vectors — the real
+    bottleneck, an HTTP round trip per batch — are embedded
+    `EMBED_BATCH_SIZE` chunks at a time so there's a natural per-batch
+    checkpoint for progress reporting (~28 checkpoints for 5700 chunks
+    instead of one all-or-nothing wait); the ~10x wall-clock win (13min ->
+    75s on a real 5700-chunk doc) comes from batching itself
+    (`embed_texts`), not from this splitting.
 
-    `await on_progress(chunks_embedded, chunks_total)`, if given, is awaited
-    after each dense batch — optional, for a caller that wants to report
-    incremental progress on a large document (app/ingestion/ingest_worker.py
-    does, for the upload UI's progress bar). Never called for a document
-    with 0 chunks. An `async def` callback now that this whole function
-    runs directly on the caller's own event loop, not offloaded to a
-    worker thread — app/ingestion/ingest_worker.py used to need
-    `asyncio.run_coroutine_threadsafe` to bridge a sync callback back onto
-    the loop from there; a plain `await` does the same job with no bridge
-    needed now that `embed_texts`/`qdrant_store.upsert` are real awaits
-    too.
+    `on_progress(chunks_embedded, chunks_total)`, if given, is awaited
+    after each dense batch (`app/ingestion/ingest_worker.py` uses this for
+    the upload UI's progress bar); never called for 0 chunks. Plain
+    `async def` callback, awaited directly — no thread-bridging needed
+    since this function and `embed_texts`/`qdrant_store.upsert` all run on
+    the caller's own event loop.
     """
     if not valid_ctx(ctx):
         metrics.agent_ingest_refused_total.labels(reason="no_ctx").inc()
@@ -175,12 +148,10 @@ async def ingest_text(
 
 
 async def ingest_file(path: str, ctx: SecurityCtx | None, topic: str | None = None) -> int:
-    """`.txt`/`.md` only, by design: broader formats (PDF, DOCX, ...) need
-    a real extraction library each, which is a deliberate scope line for
-    this demo's Ingestor, not an oversight — the chunking/embedding/upsert
-    pipeline below is format-agnostic, so adding a format later means
-    adding one more `ingest_*` front end that produces plain text and
-    calls `ingest_text`, not touching this pipeline."""
+    """`.txt`/`.md` only, by design — broader formats need a real extraction
+    library each (see `app/ingestion/extractors.py`); the pipeline below is
+    format-agnostic, so a new format just needs its own `ingest_*` front
+    end producing plain text for `ingest_text`."""
     p = Path(path)
     if p.suffix.lower() not in _ALLOWED_FILE_SUFFIXES:
         metrics.agent_ingest_refused_total.labels(reason="bad_file_type").inc()
@@ -219,15 +190,11 @@ class _TextExtractor(html.parser.HTMLParser):
 
 
 def _assert_safe_url(url: str) -> None:
-    """SSRF guard — the actual check now lives in app/core/url_safety.py,
-    shared with app/ingestion/web_crawler.py's crawl4ai-backed render (same
-    "reaches the open network" exposure, same guard, not two independently-
-    maintained copies). This wrapper only translates a generic
-    UnsafeURLError into this module's own caller-facing IngestRefused and
-    records the refusal metric — exactly what this function did inline
-    before the check itself moved out; see app/core/url_safety.py's own
-    docstring for the check's disclosed DNS-rebinding gap.
-    """
+    """SSRF guard — the actual check lives in `app/core/url_safety.py`,
+    shared with `app/ingestion/web_crawler.py`'s render path. This wrapper
+    just translates `UnsafeURLError` into this module's `IngestRefused` and
+    records the refusal metric; see `url_safety.py` for the disclosed
+    DNS-rebinding gap."""
     try:
         _assert_safe_url_impl(url)
     except UnsafeURLError as exc:

@@ -1,31 +1,19 @@
 """Per-tenant HTTP rate limiting for app/api/main.py's turn-creating endpoints —
-a single client (or one misbehaving/compromised tenant) must not be able
-to flood the shared Redis Streams queue (app/job_queue/queue.py) or starve every
-other tenant's turns.
+a single client (or one compromised tenant) must not flood the shared
+Redis Streams queue (app/job_queue/queue.py) or starve other tenants' turns.
 
-A plain Starlette middleware over the `limits` library's engine directly
-(the same library slowapi wraps) — NOT slowapi's own `@limiter.limit(...)`
-route decorator, which requires every decorated endpoint to accept a
-`request: Request` parameter purely for the decorator's own use. This
-app's own test suite calls every app/api/main.py handler directly as a plain
-Python function (see tests/api/test_api.py's module docstring) rather than
-through a real ASGI request — adding a required, test-irrelevant `Request`
-parameter to every rate-limited endpoint's signature would mean updating
-every existing direct-call test to construct one just to satisfy the
-decorator, for a concern (rate limiting) those tests have nothing to do
-with. A middleware sees the raw request already, without touching any
-endpoint's signature at all.
+A plain Starlette middleware over the `limits` library directly (the same
+library slowapi wraps), NOT slowapi's `@limiter.limit(...)` decorator —
+that requires every decorated endpoint to accept a `request: Request`
+param just for the decorator, and this app's tests call handlers directly
+as plain functions (tests/api/test_api.py). A middleware sees the raw
+request without touching any endpoint signature.
 
 Redis-backed (`limits.storage.RedisStorage`), not in-process memory — a
-per-process counter would silently stop meaning anything the moment more
-than one `uvicorn` process is running (this app's own horizontal-scaling
-story, see GRAPH_PATTERNS.md pattern 43), since each process would count
-hits independently instead of sharing one real count across all of them.
-Fails OPEN if Redis itself is unreachable — the same "an ancillary
-system's outage must not take down the core turn" posture
-app/retrieval/semantic_cache.py and app/agent/moderation.py already established
-(degrade-don't-crash), applied here to a third ancillary system rather
-than silently becoming the one exception to it.
+per-process counter would stop meaning anything once more than one
+`uvicorn` process is running (pattern 43). Fails OPEN if Redis is
+unreachable, same degrade-don't-crash posture as semantic_cache.py/
+moderation.py.
 """
 import logging
 
@@ -39,9 +27,8 @@ from app.core.config import RATE_LIMIT_PER_MINUTE, REDIS_URL
 
 logger = logging.getLogger(__name__)
 
-# Only the endpoints that can actually trigger real LLM/tool work or a
-# heavy parse/embed job — never GET /health(/ready), GET /metrics, the
-# session-listing reads, or POST /chat/cancel (a client trying to STOP a
+# Only endpoints that trigger real LLM/tool work or a heavy parse/embed job —
+# never health/metrics/session reads, or POST /chat/cancel (stopping a
 # runaway turn must never itself be throttled).
 RATE_LIMITED_PATHS = frozenset(
     {"/chat/stream/queued", "/chat/resume", "/ingest/upload"}
@@ -53,13 +40,11 @@ _limit = RateLimitItemPerMinute(RATE_LIMIT_PER_MINUTE)
 
 
 def _tenant_key(request: Request) -> str:
-    """Keyed by TENANT (X-Tenant-Id), not by IP — a shared reverse
-    proxy/NAT can put many distinct, legitimate tenants behind one IP, and
-    the isolation axis this whole app is built around (app/core/security.py) is
-    tenant, not network address. A request missing the header falls back
-    to the client address — it's about to get rejected with 422 by
-    get_ctx's own dependency anyway; this is just about not crashing the
-    limiter itself on the way there."""
+    """Keyed by TENANT (X-Tenant-Id), not IP — a shared proxy/NAT can put many
+    legitimate tenants behind one IP, and tenant is this app's isolation axis
+    (app/core/security.py). Falls back to client address if the header is
+    missing; that request gets 422'd by get_ctx anyway, this just avoids
+    crashing the limiter first."""
     tenant = request.headers.get("x-tenant-id")
     if tenant:
         return tenant

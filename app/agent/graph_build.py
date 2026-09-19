@@ -1,11 +1,9 @@
 """`build_graph()` — compiles the main conversation graph. Split out of
-`app/agent/graph.py` (which still holds `State`, every node function/
-factory, and the shared assembly helper this function calls) purely for
-file size — see `app/agent/graph.py`'s own module docstring and
-`app/agent/graph_routing.py`'s for the sibling split (`should_continue`/
-`check_output`) and `app/agent/graph_build_subagent.py` (the nested-run
-counterpart, `build_subagent_graph()`). No behavior change from the
-pre-split single-file version.
+`graph.py` (which still holds `State`, every node function/factory, and
+the shared assembly helper) purely for file size — see graph.py's module
+docstring. Sibling splits: `graph_routing.py` (should_continue/
+check_output) and `graph_build_subagent.py` (build_subagent_graph(), the
+nested-run counterpart). No behavior change from the pre-split file.
 """
 from typing import TYPE_CHECKING
 
@@ -68,67 +66,42 @@ def build_graph(
 ):
     """Compile the graph.
 
-    `deps` bundles the graph's swappable external clients (LLM, search) —
-    see GraphDeps; unset fields default to the real clients. Tests pass a
-    GraphDeps with fakes to run full graph scenarios — reject path, tool
-    loop, HITL approve/reject, iteration cap, retry — without hitting a
-    live model or Qdrant. See tests/agent/test_graph_integration.py.
+    `deps` bundles swappable external clients (LLM, search) — see
+    GraphDeps; tests inject fakes via a GraphDeps to run full scenarios
+    (reject path, tool loop, HITL, iteration cap, retry) without a live
+    model or Qdrant (tests/agent/test_graph_integration.py).
 
-    `checkpointer` defaults to an in-memory MemorySaver — fine for tests
-    (nothing needs to survive this process) but never for a real HITL
-    pause: a mandatory or opt-in human_approval gate parks the run
-    indefinitely, and MemorySaver's "durability" ends the moment the
-    process restarts. app/agent/runtime.py's init_graph_async() passes a
-    durable AsyncPostgresSaver instead for the CLI/API singleton — see its
-    module docstring for why that's not just `checkpointer=PostgresSaver(...)` here.
+    `checkpointer` defaults to an in-memory MemorySaver — fine for tests,
+    never for a real HITL pause: a paused human_approval gate parks the run
+    indefinitely, and MemorySaver doesn't survive a process restart.
+    runtime.py's init_graph_async() passes a durable AsyncPostgresSaver
+    instead for the CLI/API singleton.
 
-    `manifest`/`domain` (GRAPH_PATTERNS.md pattern 23, app/agent/manifest.py) are
-    what let this SAME function serve a completely different domain — a
-    different system prompt, tool set, tool-capability mapping, and Policy
-    — without any code in this function branching on which domain it is.
-    Both default to `app.agent.manifest`'s `DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN`
-    (this app's existing Ecorp setup, unchanged), imported here rather than
-    at module level specifically to avoid a circular import — see
-    app/agent/manifest.py's module docstring for the full reasoning; don't hoist
-    this import without re-reading that. `deps.search_docs`/`cache_get`/
-    `cache_set` remain the separate, already-existing override points for
-    retrieval/caching (pattern 20/22) — a domain plugin whose tools need a
-    different corpus or cache is expected to supply its own `GraphDeps`
-    alongside its manifest/domain, the same way a test already does today.
+    `manifest`/`domain` (pattern 23, app/agent/manifest.py) let this SAME
+    function serve a different domain (system prompt, tools, capability
+    mapping, policy) with no branching in this function. Default to
+    `DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN`, imported here (not at module
+    level) to avoid a circular import — see manifest.py's docstring before
+    hoisting it. `deps.search_docs`/`cache_get`/`cache_set` remain the
+    override points for a domain needing a different corpus or cache.
 
-    `max_iterations`/`max_tokens_per_turn`/`max_cost_usd_per_turn` default to
-    `None`, which falls back to this module's own MAX_ITERATIONS/
-    MAX_TOKENS_PER_TURN/MAX_COST_USD_PER_TURN exactly as before these params
-    existed — every existing caller passing none of them is unaffected.
-    `app/agent/tools.py::run_subagent` is the one caller that sets them, to
-    MAX_SUBAGENT_ITERATIONS/MAX_SUBAGENT_TOKENS_PER_RUN/
-    MAX_SUBAGENT_COST_USD_PER_RUN (GRAPH_PATTERNS.md pattern 46), so a nested
-    subagent run is bounded by its own ceiling rather than inheriting
-    whichever budget the top-level runtime happens to use.
+    `max_iterations`/`max_tokens_per_turn`/`max_cost_usd_per_turn` default
+    to `None` (this module's own MAX_ITERATIONS/MAX_TOKENS_PER_TURN/
+    MAX_COST_USD_PER_TURN). `tools.py::run_subagent` is the one caller that
+    sets them, to MAX_SUBAGENT_ITERATIONS/_TOKENS_PER_RUN/_COST_USD_PER_RUN
+    (pattern 46), so a nested run is bounded by its own ceiling.
 
-    `emit_no_answer_message` (default True) controls whether the `no_answer`
-    node (reached via should_continue's four safety-net exits) fills an
-    empty final AIMessage with a user-facing fallback string — see
-    make_no_answer_fallback_node's docstring. ALSO controls the separate
-    `retry_exhausted` node (reached via route_after_check giving up on a
-    stuck retry_output loop — see MAX_CONSECUTIVE_SAME_RETRY_REASON) for
-    the identical reason: both are "this run ended without a real answer"
-    terminal paths, so both need to stay silent for the SAME caller.
-    `run_subagent` is the one caller that sets this False: its nested
-    graph needs the SAME empty/unmodified content should_continue's (or
-    route_after_check's) routing already produces, since it does its own,
-    differently-worded "did not produce a final answer" substitution and
-    outcome="budget_exceeded" tagging on the raw result — a real, non-empty
-    apology message from either node would be wrongly read as the
-    subagent's own genuine answer otherwise.
+    `emit_no_answer_message` (default True) controls whether `no_answer`
+    AND `retry_exhausted` (both "ended without a real answer" terminal
+    paths) fill an empty final AIMessage with a user-facing fallback.
+    `run_subagent` sets this False: it substitutes its own
+    differently-worded message and outcome tag, so the real fallback text
+    would be wrongly read as the subagent's own genuine answer.
 
-    `history_token_ceiling`/`history_token_floor` default to `None`, falling
-    back to HISTORY_TOKEN_CEILING/HISTORY_TOKEN_FLOOR — the same
-    None-means-module-default shape as max_iterations/max_tokens_per_turn
-    above. No production caller overrides these; they exist purely so
-    tests can exercise compact_history's hysteresis behavior with small,
-    controlled token budgets instead of needing thousands of tokens of
-    placeholder conversation content to trip the real ones.
+    `history_token_ceiling`/`history_token_floor` default to `None`
+    (HISTORY_TOKEN_CEILING/FLOOR). No production caller overrides these;
+    they let tests exercise compact_history's hysteresis with small,
+    controlled budgets instead of thousands of tokens of placeholder text.
     """
     parts = _assemble_shared_graph_parts(
         deps, manifest, domain, max_iterations, max_tokens_per_turn, max_cost_usd_per_turn
@@ -154,19 +127,13 @@ def build_graph(
         ceiling=history_token_ceiling if history_token_ceiling is not None else HISTORY_TOKEN_CEILING,
         floor=history_token_floor if history_token_floor is not None else HISTORY_TOKEN_FLOOR,
     )
-    # Read as graph_module.X, not a bare `from app.agent.graph import
-    # _default_cache_get` name — tests/conftest.py's autouse
-    # mock_semantic_cache fixture monkeypatches THESE EXACT attributes on
-    # the live `app.agent.graph` module object (`monkeypatch.setattr(graph,
-    # "_default_cache_get", ...)`) so every test gets a hardcoded miss/no-op
-    # instead of touching a real cache. A statically-imported bare name
-    # would bind to the ORIGINAL function once, at this module's own import
-    # time — permanently, since Python's `from X import Y` copies the
-    # reference rather than tracking X's attribute — so the monkeypatch
-    # would silently never take effect here. Verified directly: this was a
-    # real bug caught by the existing test suite (a fake-LLM test got back
-    # a stale cached answer from an unrelated test's real cache write)
-    # before switching to this module-qualified form.
+    # Read as graph_module.X, not a bare imported name — tests/conftest.py's
+    # autouse mock_semantic_cache fixture monkeypatches these exact
+    # attributes on the live `app.agent.graph` module object; a statically
+    # imported bare name binds to the original function once, at import
+    # time, so the monkeypatch would silently never take effect. Real bug,
+    # caught by the test suite before this fix: a fake-LLM test got back a
+    # stale cached answer from an unrelated test's real cache write.
     check_semantic_cache = make_check_semantic_cache_node(
         deps.cache_get or graph_module._default_cache_get
     )
@@ -177,12 +144,10 @@ def build_graph(
     builder = StateGraph(State)
 
     # Every node below is wrapped in _instrumented(name) at registration
-    # time, not by editing the node functions themselves — see its
-    # docstring and GRAPH_PATTERNS.md pattern 14. The plain module-level
-    # functions (e.g. `graph.reject_input`) stay undecorated, which is what
-    # keeps them directly callable from tests exactly as before; `agent`
-    # and `retrieve_context` are the two exceptions built above via a
-    # factory, since they need an injected client.
+    # time, not by editing the node functions themselves (pattern 14).
+    # Plain module-level functions stay undecorated so they're directly
+    # callable from tests; `agent`/`retrieve_context` are the two
+    # factory-built exceptions above.
     builder.add_node("validate_input", _instrumented("validate_input")(validate_input))
     builder.add_node("reject_input", _instrumented("reject_input")(reject_input))
     builder.add_node("reject_context", _instrumented("reject_context")(reject_context))
@@ -204,21 +169,17 @@ def build_graph(
     builder.add_node(
         "retrieve_context", _instrumented("retrieve_context")(retrieve_context)
     )
-    # Reliability policy: retry a transient LLM-endpoint failure (connection
-    # error, 5xx) a few times before giving up — see AGENT_RETRY_POLICY.
-    # Nothing else here gets a retry policy: `tools` already recovers via
-    # handle_tool_errors below (no exception ever escapes it to retry), and
-    # every other node is a pure, deterministic function of state where a
-    # retry would just repeat the same bug (GRAPH_PATTERNS.md pattern 7).
+    # Reliability policy: retry a transient LLM-endpoint failure a few
+    # times before giving up — see AGENT_RETRY_POLICY. Nothing else here
+    # gets one: `tools` recovers via handle_tool_errors below, and every
+    # other node is a pure function of state where a retry would just
+    # repeat the same bug (pattern 7).
     builder.add_node("agent", _instrumented("agent")(agent), retry=AGENT_RETRY_POLICY)
-    # Error recovery: a failing tool (e.g. Qdrant unreachable) doesn't crash
-    # the run — handle_tool_errors turns the exception into a ToolMessage so
-    # the agent node sees it on the next turn and can react (apologize, fall
-    # back to general knowledge, etc.) instead of the graph blowing up.
-    #
-    # Parallel tool execution: if the LLM returns multiple tool_calls in one
-    # AIMessage (e.g. "search docs AND compute 12*7"), ToolNode already runs
-    # them concurrently — that's built in, no extra graph wiring required.
+    # Error recovery: a failing tool (e.g. Qdrant unreachable) doesn't
+    # crash the run — handle_tool_errors turns the exception into a
+    # ToolMessage so `agent` can react on the next turn instead of the
+    # graph blowing up. Parallel: ToolNode already runs multiple tool_calls
+    # from one AIMessage concurrently — no extra wiring needed.
     builder.add_node(
         "tools", ToolNode(domain_tools, handle_tool_errors=_friendly_tool_error)
     )
@@ -288,8 +249,8 @@ def build_graph(
 
     compiled = builder.compile(checkpointer=checkpointer or MemorySaver())
     # Not LangGraph API — a plain attribute stash so a caller holding the
-    # compiled graph (chiefly app/agent/runtime.py's _ensure_seeded_async) can recover
-    # which domain built it, and seed the CORRECT system prompt, without
-    # this function's return type changing for every existing call site.
+    # compiled graph (chiefly runtime.py's _ensure_seeded_async) can
+    # recover which domain built it, without changing this function's
+    # return type.
     compiled.manifest = manifest  # type: ignore[attr-defined]  # deliberate stash, see comment above
     return compiled

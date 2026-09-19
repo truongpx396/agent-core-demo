@@ -10,11 +10,10 @@ from app.agent.sql_store import get_connection
 
 
 async def find_or_create_lead(tenant: str, name: str, contact: str, note: str) -> int:
-    """One lead per (tenant, contact) — postgres-init/08-crm.sql's unique
-    index makes this a real upsert, not a check-then-insert race: a second
-    interaction with the same contact appends to `notes` (a running log,
-    newest last) rather than creating a duplicate lead or discarding the
-    earlier history."""
+    """One lead per (tenant, contact) — a real upsert via
+    postgres-init/08-crm.sql's unique index, not check-then-insert. A
+    second interaction with the same contact appends to `notes` (running
+    log, newest last) rather than duplicating the lead."""
     sql = """
         INSERT INTO crm_leads (tenant, name, contact, notes)
         VALUES (%s, %s, %s, %s)
@@ -49,10 +48,9 @@ async def get_lead(tenant: str, contact: str) -> dict | None:
 
 
 async def add_followup(tenant: str, contact: str, due_at: datetime, note: str, created_by: str) -> int | None:
-    """Schedules a follow-up against the lead for `contact` — returns None
-    (no follow-up created) if no lead with that contact exists yet for
-    this tenant, so the tool impl can tell the model to log the
-    interaction first."""
+    """Schedules a follow-up for `contact`. Returns None if no lead exists
+    yet for this tenant/contact, so the tool impl can tell the model to
+    log the interaction first."""
     lead = await get_lead(tenant, contact)
     if lead is None:
         return None
@@ -67,11 +65,9 @@ async def add_followup(tenant: str, contact: str, due_at: datetime, note: str, c
 
 
 async def list_pending_followups(tenant: str, contact: str | None = None) -> list[dict]:
-    """Pending follow-ups, most-imminent first, joined with their lead's
-    name — like `due_followups` but not bounded to "due by now": this is
-    what `list_pending_followups` shows a rep the whole upcoming queue
-    (optionally narrowed to one lead's contact) rather than only what a
-    cron sweep would act on right now."""
+    """Pending follow-ups, most-imminent first, joined with lead name —
+    like `due_followups` but not bounded to "due by now": shows a rep the
+    whole upcoming queue, optionally narrowed to one contact."""
     sql = """
         SELECT f.id, f.due_at, f.note, l.contact, l.name AS lead_name
         FROM crm_followups f
@@ -91,13 +87,10 @@ async def list_pending_followups(tenant: str, contact: str | None = None) -> lis
 
 
 async def mark_lead_lost(tenant: str, contact: str, reason: str) -> bool:
-    """Closes out a lead that isn't going to convert: sets `status='lost'`,
-    appends `reason` to `notes` (same running-log append `find_or_create_lead`
-    already uses), and cancels any of its still-pending follow-ups so
-    scripts/followup_sweep.py's cron sweep never nudges a rep about a dead
-    lead. Returns False (nothing updated) if no lead with that contact
-    exists for this tenant, same "tell the model, don't silently no-op"
-    contract as `set_lead_status`."""
+    """Closes out a lead: sets `status='lost'`, appends `reason` to
+    `notes`, and cancels its pending follow-ups so followup_sweep.py's
+    cron never nudges a rep about a dead lead. Returns False if no lead
+    exists for this tenant/contact."""
     lead = await get_lead(tenant, contact)
     if lead is None:
         return False
@@ -117,11 +110,10 @@ async def mark_lead_lost(tenant: str, contact: str, reason: str) -> bool:
 
 
 async def due_followups(tenant: str, as_of: datetime) -> list[dict]:
-    """Pending follow-ups due by `as_of`, joined with their lead's name/
-    contact — what scripts/followup_sweep.py sweeps. Scoped to `tenant`
-    even though today's only caller (the cron sweep) runs per-tenant
-    itself; keeping the tenant predicate here too means a future caller
-    (e.g. a multi-tenant sweep) can't accidentally drop it."""
+    """Pending follow-ups due by `as_of`, joined with lead name/contact —
+    what scripts/followup_sweep.py sweeps. Scoped to `tenant` even though
+    the only caller already runs per-tenant, so a future multi-tenant
+    caller can't accidentally drop the predicate."""
     sql = """
         SELECT f.id, f.due_at, f.note, l.contact, l.name AS lead_name
         FROM crm_followups f
@@ -143,15 +135,10 @@ async def mark_followup_done(tenant: str, followup_id: int) -> None:
 
 
 async def append_lead_note(tenant: str, contact: str, note: str) -> bool:
-    """Appends `note` to an EXISTING lead's running notes log — same
-    `notes = notes || '\\n' || %s` append used by `mark_lead_lost`/
-    `find_or_create_lead`, but for a caller that already knows the lead
-    exists and isn't logging a new interaction or closing it out (see
-    app/domains/sales/tools.py::enrich_lead_from_website, which appends a
-    crawled firmographic summary this way). Returns False (nothing
-    updated) if no lead with that contact exists for this tenant, same
-    "tell the model, don't silently no-op" contract every other
-    contact-keyed write in this module already follows."""
+    """Appends `note` to an existing lead's running notes log, for a
+    caller that already knows the lead exists (e.g.
+    tools.py::enrich_lead_from_website appending a crawled summary).
+    Returns False if no lead exists for this tenant/contact."""
     lead = await get_lead(tenant, contact)
     if lead is None:
         return False

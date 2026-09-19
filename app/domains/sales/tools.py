@@ -2,21 +2,14 @@
 log an inbound lead interaction, schedule a follow-up, package a brief on
 a lead, hand a hot lead off to a human rep, check the pending follow-up
 queue, and close out a lead that isn't going to convert. Same conventions
-as app/agent/tools.py / app/domains/support/tools.py throughout (Pydantic
-args_schema, RunnableConfig ctx, _arun_with_timeout reuse, fail-closed ctx
-check). Every tool is `async def` now — `store`'s queries await a real
-`AsyncConnectionPool`, `notify`/`render_url_to_markdown` await real HTTP
-clients, and the sandbox tools await a real MCP client session
-(app/domains/sandbox_session.py) — matching app/agent/tools.py's own
-async-first design.
+as app/agent/tools.py/support/tools.py (Pydantic args_schema,
+RunnableConfig ctx, `_arun_with_timeout`, fail-closed ctx check). All
+tools are `async def`, matching app/agent/tools.py's async-first design.
 
-No tool here sends anything to the customer. "Drafts replies in your
-voice" (the use case's own words) is satisfied by the LLM's ordinary final
-answer, shaped by SALES_MANIFEST's system prompt (app/domains/sales/domain.py)
-— a human reviews and actually sends it, the same "the model never gets a
-send button" boundary app/agent/tools.py already draws for add_note/
-remember (always human-approved) and app/domains/support/tools.py draws
-for escalate_to_human.
+No tool here sends anything to the customer — the LLM's ordinary final
+answer (shaped by SALES_MANIFEST's system prompt) is the draft; a human
+reviews and sends it, same "no send button" boundary as
+add_note/remember and support/tools.py's escalate_to_human.
 """
 from datetime import UTC, datetime, timedelta
 
@@ -299,22 +292,18 @@ def _thread_id_from_config(config: RunnableConfig | None) -> str:
     return (config or {}).get("configurable", {}).get("thread_id", "unknown")
 
 
-# Three narrow, purpose-built tools over OpenSandbox's raw MCP catalog
-# (app/domains/sandbox_session.py, GRAPH_PATTERNS.md pattern 50) — same
-# shared plumbing/wrapper shape app/domains/ops/tools.py and
-# app/domains/support/tools.py already use (see either's own comment for
-# the full "why not the raw ~19-tool catalog" writeup).
+# Three narrow tools over OpenSandbox's raw MCP catalog
+# (sandbox_session.py, pattern 50) — same shared plumbing/wrapper shape as
+# ops/tools.py and support/tools.py (see either's comment for the full
+# "why not the raw ~19-tool catalog" writeup).
 #
-# Always defined and always in TOOLS/TOOL_CAPABILITIES below — NOT gated on
-# opensandbox-mcp's reachability at this module's own import time, unlike
-# an earlier version of this code (see sandbox_session.load_raw_sandbox_tools's
-# own docstring for the live trace that surfaced why: a process that
-# finished booting before opensandbox-server finished starting cached an
-# empty tool set forever, with no self-healing short of a restart). These
-# three tools now match enrich_lead_from_website's own established shape
-# instead: always present, each impl below calls
-# sandbox_session.load_raw_sandbox_tools() FRESH on every call and raises a
-# plain, catchable error if it's still empty.
+# Always defined and in TOOLS/TOOL_CAPABILITIES below, NOT gated on
+# opensandbox-mcp's reachability at import time (an earlier version did
+# that and cached an empty tool set forever if the process booted before
+# opensandbox-server finished starting — see
+# sandbox_session.load_raw_sandbox_tools's docstring). Each impl instead
+# calls sandbox_session.load_raw_sandbox_tools() fresh per call and raises
+# a catchable error if still empty.
 
 
 class RunCommandInSandboxArgs(BaseModel):

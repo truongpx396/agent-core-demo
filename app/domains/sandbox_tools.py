@@ -1,93 +1,42 @@
 """OpenSandbox (https://github.com/opensandbox-group/OpenSandbox) consumed
-over MCP — GRAPH_PATTERNS.md pattern 50, built entirely on the EXISTING,
-unmodified `app/mcp/client.py::load_remote_tools` (pattern 28). No new MCP
-CLIENT plumbing: `opensandbox-mcp` is a real, purpose-built stdio MCP
-server that bridges to a containerized `opensandbox-server` (`make
-sandbox-up`, docker-compose's opt-in `sandbox` profile — `docker/
-opensandbox-server.{Dockerfile,toml}`). What IS new: `scripts/
-opensandbox_mcp_bridge.py`, a thin wrapper this module spawns INSTEAD of
-the packaged `opensandbox-mcp` binary directly — necessary because that
-package's own CLI has no way to set `ConnectionConfig(use_server_proxy=
-True)`, which containerizing opensandbox-server made a hard requirement
-(that script's own docstring has the full, verified finding: without it, a
-real sandbox call hangs 40+ seconds trying to reach a Docker-internal
-bridge IP unreachable from this host process). This module is otherwise
-just the (small) wiring that turns the remote tool catalog into something
-a domain's `DomainPlugin` can merge in.
+over MCP (pattern 50), built on the existing, unmodified
+`app/mcp/client.py::load_remote_tools` (pattern 28). `opensandbox-mcp` is a
+purpose-built stdio MCP server bridging to a containerized
+`opensandbox-server` (`make sandbox-up`). New here: `scripts/
+opensandbox_mcp_bridge.py`, spawned instead of the packaged
+`opensandbox-mcp` binary directly, because that CLI has no way to set
+`ConnectionConfig(use_server_proxy=True)` — without it, a sandbox call
+hangs 40+ seconds against a Docker-internal bridge IP unreachable from the
+host (see that script's docstring).
 
-Verified empirically against a real, locally-run `opensandbox-server` +
-`opensandbox-mcp` (not written blind): `load_remote_tools` correctly lists
-its full 19-tool catalog (`sandbox_create`, `command_run`, `file_read`/
-`file_write`, ...) and, with no `capability_overrides` supplied at all,
-already defaults every one of them to `"outward"` — this module still
-passes an explicit empty override dict below, so that fail-closed default
-is visible here rather than an implicit fact a reader has to already know
-about `load_remote_tools`. The actual sandbox-creation call itself hit a
-`405` against a locally `uvx`-launched server, reproduced identically via
-OpenSandbox's own official `osb` CLI too — at first this looked like a
-server-side/environment quirk, but was later root-caused to a real bug in
-THIS app's own old default: `opensandbox_mcp_domain`'s port (8080)
-collided with `docker-compose.yml`'s `open-webui` service, so every
-request was silently landing on open-webui's uvicorn instead of
-OpenSandbox at all (see app/core/config.py's `opensandbox_mcp_domain`
-comment, GRAPH_PATTERNS.md pattern 50). Fixed by moving to port 8090 and,
-separately, wiring real `--api-key` auth below (`opensandbox_api_key`) —
-the tool-discovery/dispatch round trip this module depends on was never
-the broken part.
+Historical gotcha: sandbox-creation calls 405'd, root-caused to
+`opensandbox_mcp_domain`'s old port (8080) colliding with
+`docker-compose.yml`'s `open-webui` — requests silently landed on
+open-webui instead. Fixed via port 8090 + real `--api-key` auth.
 
-## Why a real code-execution tool, when app/agent/tools.py::calculator
-## deliberately is NOT one
+## Why a real code-execution tool, unlike app/agent/tools.py::calculator
+`calculator` is a narrow AST evaluator specifically because this app has
+nowhere safe to run arbitrary code. OpenSandbox changes that: an isolated,
+disposable container is a real security boundary. Wired into the ops
+domain for investigations needing computation beyond arithmetic (recompute
+a percentile, grep a log dump, diff two JSON configs).
 
-`calculator`'s whole design point (see its own module docstring in
-app/agent/tools.py) is a narrow, whitelisted AST evaluator specifically
-BECAUSE this app has nowhere safe to run arbitrary code — `eval()` in the
-agent's own process would be a real sandbox escape waiting to happen.
-OpenSandbox is what changes that calculus: a genuinely isolated, disposable
-container is a real security boundary `calculator`'s AST walk never had to
-be. That's why this is wired into the ops domain (app/domains/ops/domain.py)
-rather than expanding calculator's own scope — real use case: an
-investigation needs computation beyond arithmetic (recompute a percentile
-from raw metric readings, grep a pasted log dump for an error signature,
-diff two JSON configs) and the ops bot writes a short script and runs it
-inside a sandbox instead.
-
-## Fail-soft loading, called lazily and cached by its one real caller
-
-Verified empirically: `opensandbox-mcp`'s tool CATALOG is served from its
-own static tool definitions, not proxied to the backend sandbox server —
-`load_sandbox_tools()` returns the full tool list in about a second even
-with NO `opensandbox-server` running at all (only actually CALLING a tool
-like `sandbox_create` needs the backend reachable, and that failure surfaces
-normally through app/agent/graph.py's handle_tool_errors like any other tool
-error). Its one real caller is
-`app/domains/sandbox_session.py::load_raw_sandbox_tools` — called lazily,
-FRESH on every sandbox tool invocation across every domain (support/sales/
-ops all share it), self-caching there once it returns a non-empty catalog
-(see that function's own docstring for why cache-once-successfully beats
-either "never cache" or "cache forever," including a real live bug the
-latter caused). Nothing calls this at plain import time.
-
-What still MUST degrade rather than crash: `opensandbox-mcp` not being
-installed/on PATH at all (a real, legitimate case — not every deployment
-of this app wants the sandbox feature), or the bridge process hanging
-instead of failing fast. `load_sandbox_tools()` wraps the connection
-attempt in `app/agent/tools.py::_arun_with_timeout` (a bounded budget, same
-helper this module's own sibling domain `tools.py` files already reuse for
-their own timeout needs) and catches every exception, degrading to
-`([], {})` with a logged warning — mirroring
-app/agent/subagent_domain_tools.py::make_domain_subagent_tool's "resolves to nothing
-usable, not a crash" contract for the analogous case (an AGENT.md
-declaring tools this domain doesn't actually have).
+## Fail-soft, lazy loading
+`opensandbox-mcp`'s tool catalog is served from static definitions, not
+proxied to the backend — `load_sandbox_tools()` returns near-instantly
+even with no `opensandbox-server` running (only actually calling a tool
+needs the backend reachable). Its one caller,
+`sandbox_session.py::load_raw_sandbox_tools`, calls it lazily and caches
+it there. Must degrade, never crash, if opensandbox-mcp is missing or the
+bridge hangs: wrapped in `_arun_with_timeout`, all exceptions caught,
+degrading to `([], {})` with a logged warning.
 
 ## Disclosed gap: no SecurityCtx, no tenant scoping
-
-Same limitation app/mcp/client.py's own docstring already names for any
-remote MCP tool: there is no `RunnableConfig`/`SecurityCtx` channel over
-MCP, so these tools carry no tenant/principal scoping at all. That's an
-acceptable gap here specifically because a code sandbox is a shared
-OPERATIONAL resource, not tenant data — the mandatory-approval capability
-gate (every tool forced to "outward" below) is the actual safety boundary,
-not per-tenant isolation.
+Same limitation as any remote MCP tool (app/mcp/client.py) — no
+`RunnableConfig`/`SecurityCtx` channel over MCP. Acceptable here since a
+code sandbox is a shared operational resource, not tenant data; the
+mandatory-approval gate (every tool forced to "outward") is the actual
+safety boundary.
 """
 import logging
 import sys
@@ -101,40 +50,28 @@ from app.mcp import client as mcp_client
 
 logger = logging.getLogger(__name__)
 
-_SANDBOX_LIST_TIMEOUT_SECONDS = 10  # bounds the one-time catalog-listing
-# connection attempt this module makes — normally near-instant (see module
-# docstring), this is a backstop against a hung bridge process, not the
-# expected path.
+_SANDBOX_LIST_TIMEOUT_SECONDS = 10  # backstop against a hung bridge
+# process; catalog listing is normally near-instant (see module docstring).
 
-# scripts/opensandbox_mcp_bridge.py, NOT the packaged `opensandbox-mcp` CLI
-# directly — verified directly (a real Sandbox.create() call hung 44+
-# seconds against the containerized opensandbox-server, see that script's
-# own docstring for the full finding) that opensandbox-mcp==0.1.1's CLI has
-# no way to set ConnectionConfig(use_server_proxy=True), which THIS
-# process's own deployment topology (a host process talking to sandboxes
-# that live on a Docker bridge network) genuinely needs. Same interpreter
-# this process is already running under, so the same installed
+# scripts/opensandbox_mcp_bridge.py, not the packaged opensandbox-mcp CLI
+# directly: that CLI can't set ConnectionConfig(use_server_proxy=True),
+# needed for this host process to reach sandboxes on the Docker bridge
+# network. Runs under this same interpreter, so the same installed
 # opensandbox-mcp/opensandbox packages are guaranteed available.
 _BRIDGE_SCRIPT = str(Path(__file__).resolve().parent.parent.parent / "scripts" / "opensandbox_mcp_bridge.py")
 
 
 async def load_sandbox_tools() -> tuple[list[BaseTool], dict[str, str]]:
-    """Connects to `opensandbox-mcp` (the stdio bridge; the containerized
-    `opensandbox-server`, `make sandbox-up`, is only needed once a tool is
-    actually CALLED, not for this listing step — see module docstring) and
-    returns its tool catalog as LangChain tools, every one of them capped at
-    `"outward"`. Degrades to `([], {})` with a logged warning — never raises
-    — if the bridge isn't installed/reachable or hangs past
-    `_SANDBOX_LIST_TIMEOUT_SECONDS`, so a domain merging this in still
-    builds and runs with every OTHER tool intact.
+    """Connects to `opensandbox-mcp` and returns its tool catalog as
+    LangChain tools, every one capped at `"outward"`. Degrades to
+    `([], {})` with a logged warning — never raises — if the bridge isn't
+    installed/reachable or hangs past `_SANDBOX_LIST_TIMEOUT_SECONDS`, so a
+    domain merging this in still builds with every other tool intact.
 
-    `async def`, via `_arun_with_timeout` — this function's own caller,
-    `app/domains/sandbox_session.py::load_raw_sandbox_tools`, is `async def`
-    now too (called from each domain's now-async sandbox tool impls,
-    already running on the graph's own event loop), so this can await
-    `mcp_client.load_remote_tools` directly instead of dispatching it to a
-    worker thread (which would otherwise block that loop for up to
-    `_SANDBOX_LIST_TIMEOUT_SECONDS` on every cache-miss call).
+    `async def` so this can await `mcp_client.load_remote_tools` directly
+    on the caller's event loop (its caller,
+    `sandbox_session.py::load_raw_sandbox_tools`, is async too) instead of
+    dispatching to a worker thread and blocking that loop.
     """
     try:
         return await _arun_with_timeout(
@@ -145,14 +82,11 @@ async def load_sandbox_tools() -> tuple[list[BaseTool], dict[str, str]]:
                 "--domain", OPENSANDBOX_MCP_DOMAIN, "--protocol", "http",
                 "--api-key", OPENSANDBOX_API_KEY,
             ],
-            capability_overrides={},  # explicit: every tool defaults to
-            # "outward" (see module docstring) — never trust OpenSandbox's
-            # own annotations, same reasoning app/mcp/client.py always applies.
+            capability_overrides={},  # explicit: never trust OpenSandbox's
+            # own capability annotations (see module docstring).
             _timeout_seconds=_SANDBOX_LIST_TIMEOUT_SECONDS,
         )
-    except Exception as exc:  # noqa: BLE001 - a missing/hung bridge must
-        # degrade this domain's tool list, never crash its import or its
-        # build_graph() call (see module docstring).
+    except Exception as exc:  # noqa: BLE001 - a missing/hung bridge must degrade, never crash
         logger.warning(
             "opensandbox_mcp_unavailable",
             extra={"error_class": type(exc).__name__, "domain": OPENSANDBOX_MCP_DOMAIN},

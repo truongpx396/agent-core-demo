@@ -1,42 +1,26 @@
 """OpenTelemetry metrics for the agent runtime.
 
-Pushed via OTLP to a shared otel-collector (docker-compose.observability.yml
-— see app/core/telemetry.py::configure_telemetry, called once at real
-process startup), which exposes one aggregated Prometheus scrape target
-covering the API AND every independently-scaled app/job_queue/agent_worker.py /
-app/ingestion/ingest_worker.py replica (GRAPH_PATTERNS.md pattern 43) — a
-pull-based `GET /metrics` on the API process alone (this module's previous,
-prometheus_client-backed design) could never see a worker's metrics at all,
-since nothing scrapes a worker process directly. Rates (human-approval
-rate, retry rate, p50/p95/p99 latency, etc.) are still *derived* from these
-at query time via PromQL (`rate()`, `histogram_quantile()`) in Grafana, not
-stored directly.
+Pushed via OTLP to a shared otel-collector (see telemetry.py::configure_telemetry),
+exposing one aggregated Prometheus target covering the API and every scaled
+agent_worker.py/ingest_worker.py replica (pattern 43) — a pull-based
+`GET /metrics` on the API alone could never see a worker's metrics, since
+nothing scrapes it directly. Rates are derived from these via PromQL in
+Grafana, not stored directly.
 
-`Counter`/`Histogram` below are a small prometheus_client-shaped wrapper
-around the real OTel API (`meter.create_counter`/`create_histogram`,
-`.add`/`.record`) — every call site elsewhere in this app already uses
-`some_counter.labels(k=v).inc()` / `some_histogram.observe(v)`
-(prometheus_client's own surface), and keeping that shape here means this
-was a genuine library swap under the hood, not a rewrite of every call
-site across app/agent/, app/retrieval/, app/ingestion/, app/api/. Explicit
-histogram bucket boundaries for agent_latency_seconds/agent_iterations
-aren't set here — an OTel Histogram instrument has no per-call bucket
-parameter — they're configured as Views on the MeterProvider in
-app/core/telemetry.py, matched by instrument name.
+`Counter`/`Histogram` below are a prometheus_client-shaped wrapper around
+the real OTel API (`.add`/`.record`), so existing call sites
+(`x.labels(k=v).inc()` / `x.observe(v)`) needed no rewrite — a library swap
+under the hood only. Histogram bucket boundaries aren't set here (OTel has
+no per-call bucket param) — they're Views on the MeterProvider in
+telemetry.py, matched by instrument name.
 
-Two ways these get incremented:
-  - Tool calls/errors: via `MetricsCallbackHandler`, wired into
-    `config["callbacks"]` in app/agent/runtime.py the same way the Langfuse handler
-    is — so it observes every tool run without any instrumentation inside
-    app/agent/graph.py's node functions.
-  - Everything else (retries, HITL decisions, budget trips, context-
-    retrieval degradations, history compaction, request
-    outcome/latency/iterations/tokens): incremented directly at the point
-    the event happens, in app/agent/graph.py's nodes and app/agent/runtime.py's turn
-    boundary. These can happen more than once per turn (e.g. two HITL
-    round-trips in one conversation turn) or need the final state dict
-    (iterations, tokens) — both awkward to reconstruct reliably from
-    generic callback events, so a direct `.inc()` is simpler and correct.
+Two ways these get incremented: tool calls/errors via
+`MetricsCallbackHandler` (wired into `config["callbacks"]` like the
+Langfuse handler, so it needs no instrumentation inside graph.py's nodes);
+everything else incremented directly at the point it happens in graph.py's
+nodes / runtime.py's turn boundary, since those events can fire more than
+once per turn or need the final state dict — awkward to reconstruct from
+generic callback events.
 """
 import hashlib
 import logging
@@ -47,21 +31,18 @@ from opentelemetry import metrics as metrics_api
 
 logger = logging.getLogger(__name__)
 
-# A proxy meter (verified empirically — see app/core/telemetry.py's module
-# docstring): every create_counter/create_histogram call below is safe
-# regardless of whether configure_telemetry() has run yet in this process,
-# and gets transparently replayed against the real MeterProvider once it
-# does.
+# A proxy meter (see telemetry.py): every create_counter/create_histogram
+# call below is safe before configure_telemetry() runs, and gets replayed
+# against the real MeterProvider once it does.
 _meter = metrics_api.get_meter("app.core.metrics")
 
 
 def _fingerprint(text: str) -> str:
     """A short, stable fingerprint of `text` for an audit log line — NEVER
-    the raw content itself (matching GRAPH_PATTERNS.md pattern 14's "never
-    message content in a generic log" rule, extended here to tool call
-    args/results specifically). Enough to correlate "was this the same
-    result as last time" without the log line becoming a second,
-    unscrubbed copy of prompt/document text sitting outside Langfuse."""
+    the raw content (pattern 14's "never message content in a generic log"
+    rule, extended to tool args/results). Enough to correlate "was this the
+    same result as last time" without an unscrubbed copy sitting outside
+    Langfuse."""
     return hashlib.sha256((text or "").encode()).hexdigest()[:16]
 
 
@@ -460,18 +441,14 @@ agent_subagent_duration_seconds = Histogram(
 
 class MetricsCallbackHandler(BaseCallbackHandler):
     """Records tool-call/tool-error counts AND a structured per-call audit
-    line (GRAPH_PATTERNS.md pattern 37) — tool name, a fingerprint (never
-    the raw content) of the args and result, and LangChain's own `run_id`
-    as the correlation key tying a call's start to its outcome. Pass an
-    instance in `config["callbacks"]` — LangChain fires these hooks for
-    every tool run inside the graph's ToolNode, regardless of which tool
-    or how many run in parallel.
+    line (pattern 37) — tool name, a fingerprint of args/result (never raw
+    content), and LangChain's `run_id` correlating start to outcome. Pass an
+    instance in `config["callbacks"]` — fires for every tool run in the
+    graph's ToolNode.
 
-    Logged, not durably stored: the reference design this mirrors says "a
-    tool call that cannot be audited MUST NOT run," which strictly implies
-    a synchronous durable-store write gating dispatch — more audit
-    infrastructure than this demo has. Logging is the honest scope here,
-    not a hollow claim of that stronger guarantee.
+    Logged, not durably stored: the reference design this mirrors implies a
+    synchronous durable-store write gating dispatch, more audit
+    infrastructure than this demo has. Logging is the honest scope here.
     """
 
     def on_tool_start(self, serialized, input_str, *, run_id, **kwargs) -> None:

@@ -1,33 +1,22 @@
 """Ad-hoc ops investigation: ask the ops domain's own agent a one-off
-question ("why is latency high right now?", "did anything break this
-morning?") using its full toolset (see app/domains/ops/tools.py). Most of
-an investigation stays read_only (fetch_metrics_summary,
-list_recent_incidents) and never pauses — but if the model decides to
-call a mutating tool (log_incident, resolve_incident, post_to_team_channel)
-it WILL hit should_continue's mandatory human_approval gate same as any
-other caller, and this one-shot invocation has no resume loop to answer
-it: `investigate()` just returns whatever's in the last AIMessage at that
-point (typically empty, since the pending tool call itself carries no
-text). Disclosed rather than papered over — an interactive Telegram
-session handles the same gate by actually presenting the pause to a human;
-this CLI is for read-only questions, and a mutating one surfacing an empty
-answer is the honest signal something needs a human in the loop instead.
+question ("why is latency high right now?") using its full toolset
+(app/domains/ops/tools.py). Most investigations stay read-only and never
+pause — but a mutating tool call (log_incident, resolve_incident,
+post_to_team_channel) WILL hit should_continue's mandatory human_approval
+gate like any caller, and this one-shot invocation has no resume loop:
+`investigate()` just returns whatever's in the last AIMessage (typically
+empty). Disclosed, not papered over — an empty answer on a mutating call
+is the honest signal a human needs to be in the loop instead.
 
 A one-shot `build_graph(manifest=OPS_MANIFEST, domain=OPS_DOMAIN_PLUGIN)`
-call, NOT `run_subagent` — even though the ops domain has its own
-`run_subagent` today, resolved against its own tools
-(app/agent/subagent_domain_tools.py::make_domain_subagent_tool, not hardwired to Ecorp's
-tool universe the way an earlier version of this domain was). The reason
-to skip it here isn't a limitation, just a fit: `run_subagent` would
-delegate to `metrics-researcher`, restricted to
-`fetch_metrics_summary`/`list_recent_incidents` — narrower than this
-script's own caller, which wants the ops domain's FULL toolset for an
-open-ended question, this module's own docstring above included.
+call, not `run_subagent` — the ops domain's own `run_subagent` delegates
+to `metrics-researcher`, restricted to `fetch_metrics_summary`/
+`list_recent_incidents`, narrower than the full toolset this script's
+open-ended questions need.
 
-No durable checkpointer — each invocation is independent (a bare
-build_graph() call defaults to an in-memory MemorySaver), matching how a
-person actually uses a "let me ask something" CLI: one question, one
-answer, no expectation it remembers the last run.
+No durable checkpointer — a bare build_graph() defaults to an in-memory
+MemorySaver, matching a "let me ask something" CLI: one question, one
+answer, no memory expected across runs.
 
 Run with: `python -m scripts.ops_investigate "why is latency high right now?"`
 """
@@ -62,10 +51,8 @@ async def investigate(question: str) -> str:
             "ctx": _LOCAL_CTX,
         }
     }
-    # `ainvoke`, not `.invoke()` — the graph's `agent`/`retrieve_context`/etc.
-    # nodes are `async def` now (see app/agent/graph.py), and LangGraph's
-    # sync Pregel loop can't run an async-only node at all (raises "No
-    # synchronous function provided" the moment it reaches one).
+    # `ainvoke`, not `.invoke()` — the graph's nodes are `async def` now
+    # (app/agent/graph.py); LangGraph's sync Pregel loop can't run one.
     result = await graph.ainvoke(
         {
             "messages": [

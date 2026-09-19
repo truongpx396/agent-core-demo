@@ -2,14 +2,12 @@
 
 Run with: `make ingest`
 
-Just `app/ingestion/ingestor.py::ingest_text` called once per sample doc — the same
-general-purpose Ingestor pipeline (chunking, hybrid dense+sparse
+Just `app/ingestion/ingestor.py::ingest_text` called once per sample doc —
+the same general-purpose pipeline (chunking, hybrid dense+sparse
 embedding, `qdrant_store.build_point`) any file/URL/pasted-text ingest
-goes through (GRAPH_PATTERNS.md pattern 24), not a separate write path
-that could drift from it. Each sample doc is short enough to become
-exactly one parent chunk with one child (see app/ingestion/chunking.py) — chunking
-is a no-op for content this small, not a special case this module has to
-work around.
+goes through (GRAPH_PATTERNS.md pattern 24), not a separate write path.
+Each sample doc is short enough to become one parent chunk with one child
+— chunking is a no-op here, not a special case.
 """
 import asyncio
 
@@ -20,22 +18,18 @@ from app.retrieval import qdrant_store
 from app.retrieval.embeddings import embed_text
 from scripts.sample_docs import DOCS
 
-# Ingestion needs a real SecurityCtx (app/core/security.py) — `ingest_text`
-# refuses without one (content whose ownership can't be established is
-# refused, never ingested as tenant-less/public). `make ingest` is a local
-# dev/seed operation with no request to derive one from, so it stamps a
-# fixed principal identifying itself as the seeding script, same spirit as
-# app/channels/chat.py's local dev ctx.
+# Ingestion needs a real SecurityCtx — `ingest_text` refuses without one
+# (unowned content is never ingested as tenant-less/public). `make ingest`
+# stamps a fixed principal identifying itself as the seeding script.
 _INGEST_CTX: SecurityCtx = {"tenant": DEFAULT_TENANT, "principal": "make-ingest", "claims": {}}
 
 
 async def main() -> None:
     try:
-        # ensure_collection recreates the collection (destructive — see its
-        # docstring), so it's called explicitly, exactly once, here — never
-        # implicitly inside ingest_text, which would wipe prior ingests on
-        # every single call. `dim` comes from a real embed call, same as
-        # app/retrieval/semantic_cache.py's index-dimension lookup, never hardcoded.
+        # ensure_collection recreates the collection (destructive), so it's
+        # called explicitly once here, never implicitly inside ingest_text
+        # (which would wipe prior ingests every call). `dim` comes from a
+        # real embed call, never hardcoded.
         await qdrant_store.ensure_collection(dim=len(await embed_text("dimension probe")))
 
         total_chunks = 0

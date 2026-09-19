@@ -1,23 +1,19 @@
-"""Alternative streaming implementation kept for reference/comparison —
-`_langfuse_trace`/`astream_events_turn_ctx` demonstrate the SAME
-production streaming contract (`app/agent/runtime_stream.py`'s
-`astream_events_turn`) expressed via an `@asynccontextmanager` for
-Langfuse's open/flush lifecycle instead of manual trace bookkeeping. Split
-out of `app/agent/runtime.py` purely for file size — see that module's own
-docstring and `app/agent/runtime_stream.py` for the sibling split (the
-actual production path every real caller uses).
+"""Alternative streaming implementation, kept for reference/comparison:
+`_langfuse_trace`/`astream_events_turn_ctx` implement the same production
+streaming contract as `runtime_stream.py`'s `astream_events_turn`, via
+`@asynccontextmanager` for Langfuse's open/flush lifecycle instead of
+manual trace bookkeeping. Split out of `runtime.py` for file size only
+(see that module's docstring); `runtime_stream.py` is the sibling split
+holding the actual production path.
 
-Not wired into any production caller or test today — `astream_events_turn`
-(runtime_stream.py) is what `app/api/main.py`/`app/channels/chat.py`/
-`app/job_queue/agent_worker.py`/`app/channels/telegram.py` all actually
-call. Kept as a working, runnable illustration of the alternative
-context-manager shape (see its own module comment for the tradeoffs), not
-dead weight to delete outright — no behavior change from the pre-split
-single-file version either way.
+Not wired into any production caller or test — `astream_events_turn` is
+what every real caller (app/api/main.py, chat.py, agent_worker.py,
+telegram.py) uses. Kept as a working illustration of the alternative
+shape, not dead code to delete.
 
-Reads `init_graph_async`/`_ensure_seeded_async`/`RECURSION_LIMIT` through
-`runtime_module.X` rather than plain statically-imported bare names — same
-reasoning as `app/agent/runtime_stream.py`'s own module docstring.
+Reads `init_graph_async`/`_ensure_seeded_async`/`RECURSION_LIMIT` via
+`runtime_module.X` rather than bare imports — same monkeypatch reasoning
+as `runtime_stream.py`'s module docstring.
 """
 import time
 from contextlib import asynccontextmanager
@@ -40,27 +36,18 @@ from app.core.security import SecurityCtx
 # ---------------------------------------------------------------------------
 # Alternative: Langfuse via @asynccontextmanager
 # ---------------------------------------------------------------------------
-# Key difference from astream_events_turn (manual trace):
-#   - Langfuse resource lifecycle (open → flush) is expressed as an
-#     `async with` block via `@asynccontextmanager`, keeping acquisition and
-#     cleanup co-located in one place.
-#   - Reusable: `_langfuse_trace()` can be composed with other async context
-#     managers (e.g. httpx sessions, DB transactions) at the call site.
-#   - Easier to test: swap in a no-op context manager in unit tests without
-#     touching the streaming logic.
-#
-# Both versions yield the same event dict shapes — they are interchangeable
-# from the caller's perspective (CLI, tests).
+# vs. astream_events_turn's manual trace: open/flush is scoped to an
+# `async with` block, composable with other async context managers, and
+# easier to swap for a no-op in tests. Same event shapes either way —
+# interchangeable from the caller's perspective.
 
 
 @asynccontextmanager
 async def _langfuse_trace(name: str, session_id: str, input_text: str):
-    """Async context manager that opens a Langfuse trace and flushes on exit.
-
-    Yields (trace_object | None, callbacks_list) to the caller.
-    On exit — whether by normal return or exception — flushes the Langfuse
-    queue so traces aren't lost when the process returns quickly (e.g. tests,
-    one-shot CLI invocations).
+    """Async context manager: opens a Langfuse trace, yields
+    (trace_object | None, callbacks_list), and flushes on exit (normal or
+    exception) so traces aren't lost on a fast return (tests, one-shot CLI
+    runs).
 
     Usage::
         async with _langfuse_trace("my-trace", thread_id, text) as (trace, cbs):
@@ -95,13 +82,10 @@ async def _langfuse_trace(name: str, session_id: str, input_text: str):
 
 
 async def astream_events_turn_ctx(text: str, thread_id: str, ctx: SecurityCtx):
-    """Production async generator — Langfuse tracing via context-manager.
+    """Production async generator — Langfuse tracing via context manager
+    instead of astream_events_turn's manual trace object.
 
-    Uses `_langfuse_trace` (an `@asynccontextmanager`) so trace open/flush
-    lifecycle is scoped to the `async with` block.  Compare with the sibling
-    `astream_events_turn` which manages the trace object manually.
-
-    `ctx` is required — see stream_turn's matching docstring note.
+    `ctx` is required (see stream_turn's docstring).
 
     Yields the same event shapes as `astream_events_turn`:
       {"type": "token",      "content": "<text chunk>"}
@@ -115,8 +99,7 @@ async def astream_events_turn_ctx(text: str, thread_id: str, ctx: SecurityCtx):
 
     final_answer: list[str] = []
 
-    # `async with` opens the Langfuse trace and hands us the callbacks list.
-    # On exit (normal or exception) the context manager flushes automatically.
+    # Opens the Langfuse trace and flushes automatically on exit.
     async with _langfuse_trace("chat-turn-stream-ctx", thread_id, text) as (
         trace,
         callbacks,

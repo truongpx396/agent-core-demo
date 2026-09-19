@@ -1,70 +1,43 @@
 """Redis Streams consumer — the worker half of the production ingestion
-pipeline. Run one or more of these;
-Redis's own consumer-group delivery guarantees each job on
-`app/ingestion/ingest_queue.py::INGEST_REQUESTS_STREAM` is handed to exactly one of
-them, so running more workers is still one way to add capacity — same shape
-as app/job_queue/agent_worker.py, deliberately a SEPARATE queue/consumer group
-from it (see app/ingestion/ingest_queue.py's module docstring for why).
+pipeline. Run one or more of these; Redis's consumer-group delivery hands
+each job on `ingest_queue.py::INGEST_REQUESTS_STREAM` to exactly one worker,
+so running more is how you add capacity — same shape as
+`app/job_queue/agent_worker.py`, deliberately a separate queue/group (see
+`ingest_queue.py`'s docstring for why).
 
-For each job: download the uploaded file from MinIO
-(app/ingestion/object_store.py), dispatch to a PDF/DOCX extractor by file extension
-(app/ingestion/extractors.py), and feed the resulting text into the SAME
-chunk/embed/upsert pipeline every other ingest path already shares
-(app/ingestion/ingestor.py::ingest_text) — this worker owns none of that logic
-itself, only the download/dispatch/queue-plumbing around it.
+Per job: download from MinIO (`object_store.py`), dispatch to a PDF/DOCX
+extractor by extension (`extractors.py`), feed the text into the same
+chunk/embed/upsert pipeline every ingest path shares
+(`ingestor.py::ingest_text`) — this worker only owns the download/dispatch/
+queue plumbing.
 
-Within ONE process, `run()` also runs up to `_MAX_CONCURRENCY` ingest jobs at
-once (an `asyncio.Semaphore`-bounded `asyncio.create_task` per job, not a
-serial `await` loop) — the exact same shape app/job_queue/agent_worker.py's `run()`
-uses for concurrent turns, see that module's own docstring for the
-acquire-before-create-task reasoning shared here verbatim. Safe for the same
-reason turns are: a job holds no in-process state a concurrent sibling could
-corrupt — each job downloads its own bytes, extracts its own text, and
-upserts its own points into Qdrant independently; the module-level MinIO/
-Qdrant/embedding clients (`object_store.get_client()`,
-app/retrieval/qdrant_store.py, app/retrieval/embeddings.py) are already lazy
-singletons shared across sequential jobs today, and remain safe under
-concurrent calls from multiple threads (see below).
+`run()` runs up to `_MAX_CONCURRENCY` jobs at once per process (an
+`asyncio.Semaphore`-bounded `create_task` per job, acquired before the task
+is created — same shape and reasoning as `agent_worker.py::run()`). Safe
+because a job holds no shared in-process state; module-level MinIO/Qdrant/
+embedding clients are already lazy singletons safe under concurrent use.
 
-Download and extraction are both synchronous, blocking calls (the MinIO SDK
-and pypdf/python-docx are sync libraries) — unlike a single-job-at-a-time
-worker, where calling them directly on the event loop thread was harmless
-(nothing else was ever waiting to run), running several jobs concurrently
-means a blocking call left on the loop thread would stall every OTHER
-in-flight job's I/O (its own Redis reads, its own progress publishes) for as
-long as it runs. Both are offloaded via `asyncio.to_thread` — this is what
-actually makes `_MAX_CONCURRENCY > 1` safe for them, not just the lack of
-shared state. `ingestor.ingest_text` is NOT offloaded this way (see below):
-it's `async def` now (a real `AsyncQdrantClient`/`AsyncOpenAI`-backed
-embedding client under the hood), so it awaits its own I/O directly on this
-loop instead of needing a thread to hide a blocking call.
+Download and extraction are sync/blocking (MinIO SDK, pypdf/python-docx),
+so both are offloaded via `asyncio.to_thread` — otherwise one job's blocking
+call would stall every other in-flight job's I/O on the event loop. This
+doesn't remove the GIL bottleneck though: PDF/DOCX extraction is CPU-bound,
+and the GIL serializes bytecode across threads regardless of concurrency —
+`to_thread` overlaps I/O (MinIO download, embedding HTTP calls, Qdrant
+upserts) while one job parses, not real parallel CPU work. For workloads
+dominated by parsing large documents, more worker PROCESSES add more real
+CPU parallelism than raising `_MAX_CONCURRENCY`; raise `_MAX_CONCURRENCY`
+when jobs spend more time waiting on MinIO/embeddings/Qdrant than parsing.
 
-The bottleneck this doesn't remove: PDF/DOCX extraction is CPU-bound, and
-Python's GIL serializes CPU-bound bytecode across threads regardless of how
-many run "concurrently" — `asyncio.to_thread` here buys overlap on the I/O
-portions of several jobs (MinIO download, the embedding endpoint's HTTP
-round trips, Qdrant upserts, progress publishing) while one job's extraction
-runs, not genuine parallel CPU work for the extraction step itself. For a
-workload dominated by parsing very large documents, running more WORKER
-PROCESSES (or replicas — see Makefile's `ingest-worker` target) still adds
-more real CPU parallelism than raising `_MAX_CONCURRENCY` within one process
-does; `_MAX_CONCURRENCY` is the right lever when jobs spend more wall-clock
-time waiting on MinIO/the embedding endpoint/Qdrant than parsing.
+`ingestor.ingest_text` is `async def` (real `AsyncQdrantClient`/`AsyncOpenAI`
+under the hood) so it awaits its own I/O directly on this loop rather than
+needing a thread. Its `on_progress` callback (`_make_progress_reporter`
+below) is likewise a plain `async def` that calls `publish_result` in
+place — no `asyncio.run_coroutine_threadsafe` bridge needed.
 
-`ingestor.ingest_text` awaits `embed_texts`/`qdrant_store.upsert` directly on
-this loop, interleaved with every OTHER in-flight job's own awaits — the
-same cooperative concurrency every other awaited call in this module
-already gets, no thread involved. `on_progress` (`_make_progress_reporter`
-below) is a plain `async def` callback `ingest_text` awaits in place after
-each embedding batch, calling `publish_result` (Redis I/O) directly — no
-`asyncio.run_coroutine_threadsafe` bridge needed, unlike when `ingest_text`
-was a plain sync function offloaded to a worker thread and its progress
-callback had to hop back onto this loop from there.
-
-Run with: `python -m app.ingestion.ingest_worker` (see Makefile's `ingest-worker`
-target). Needs `make up`'s Redis + MinIO running; NOT started by `make up`
-itself — an opt-in path alongside `POST /ingest/upload` (app/api/main.py),
-which just publishes the job and does no parsing/embedding of its own.
+Run with: `python -m app.ingestion.ingest_worker` (Makefile's `ingest-worker`
+target). Needs `make up`'s Redis + MinIO; not started by `make up` itself —
+opt-in alongside `POST /ingest/upload` (app/api/main.py), which only
+publishes the job.
 """
 import asyncio
 import concurrent.futures
@@ -93,27 +66,19 @@ from app.job_queue.queue import StreamReadResponse
 logger = logging.getLogger(__name__)
 
 CONSUMER_NAME = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
-_MAX_CONCURRENCY = INGEST_WORKER_MAX_CONCURRENCY  # concurrent ingest jobs ONE
-# worker process will run at once (asyncio.Semaphore-bounded, see this
-# module's own docstring) — bounds both the semaphore in run() below and how
-# many entries a single xreadgroup call pulls off the stream, same shape and
-# reasoning as app/job_queue/agent_worker.py::_READ_COUNT.
+_MAX_CONCURRENCY = INGEST_WORKER_MAX_CONCURRENCY  # concurrent jobs per worker
+# process (see module docstring) — also bounds how many entries one
+# xreadgroup call pulls, same shape as agent_worker.py::_READ_COUNT.
 _READ_COUNT = _MAX_CONCURRENCY
 _BLOCK_MS = 5000
 
 
 def _make_progress_reporter(client, job_id: str):
-    """An `async def` callback `ingestor.ingest_text` awaits directly —
-    `ingest_text` runs on this worker's own event loop now (it awaits its
-    own I/O, `embed_texts`/`qdrant_store.upsert`, rather than blocking a
-    thread), so this can just `await publish_result(...)` in place instead
-    of bridging back from a separate worker thread via
-    `asyncio.run_coroutine_threadsafe` (what this used to need when
-    `ingest_text` was a plain sync function offloaded via
-    `asyncio.to_thread`). Fire-and-forget in spirit, not in mechanism: a
-    failed progress publish is logged, never raised — the terminal
-    `done`/`error` event, published normally below, is what actually
-    matters for correctness."""
+    """An `async def` callback `ingestor.ingest_text` awaits directly (it
+    runs on this worker's own event loop, so no thread-bridging needed).
+    Fire-and-forget in spirit, not mechanism: a failed progress publish is
+    logged, never raised — the terminal `done`/`error` event published
+    below is what actually matters for correctness."""
 
     async def on_progress(done: int, total: int) -> None:
         try:
@@ -129,11 +94,10 @@ def _make_progress_reporter(client, job_id: str):
 
 async def process_job(client, entry_id: str, fields: dict) -> None:
     """Run one ingest job and publish its outcome — always ack, even on
-    failure, same "never silently redeliver an already-attempted job"
-    reasoning as app/job_queue/agent_worker.py::process_request (a redelivered
-    ingest job would re-embed and re-upsert the same document's chunks a
-    second time, duplicating them in the index — not just re-run a side
-    effect, but a real data-quality regression)."""
+    failure, same "never redeliver an already-attempted job" reasoning as
+    `agent_worker.py::process_request`: a redelivered job would re-embed
+    and re-upsert the same document's chunks, duplicating them in the
+    index."""
     payload = json.loads(fields["payload"])
     job_id = payload["job_id"]
     with bind_request_id(job_id):
@@ -147,11 +111,9 @@ async def process_job(client, entry_id: str, fields: dict) -> None:
                     f"unsupported file type {suffix!r} — only "
                     f"{sorted(EXTRACTORS_BY_SUFFIX)} are supported"
                 )
-            # Both offloaded via asyncio.to_thread — with several jobs able
-            # to run concurrently in this process (see module docstring),
-            # calling either directly on the event loop would stall every
-            # OTHER in-flight job's I/O for as long as this one's blocking
-            # call runs.
+            # Both offloaded via asyncio.to_thread — see module docstring:
+            # a blocking call on the event loop would stall every OTHER
+            # in-flight job's I/O.
             data = await asyncio.to_thread(object_store.download_bytes, payload["object_key"])
             text = await asyncio.to_thread(extractor, data)
             on_progress = _make_progress_reporter(client, job_id)
@@ -165,12 +127,10 @@ async def process_job(client, entry_id: str, fields: dict) -> None:
             )
             await publish_result(client, job_id, {"type": "done", "chunks": chunks})
         except Exception as exc:  # noqa: BLE001 - the queue must keep moving regardless
-            # The actual message, not just error_class — same truncated-string
-            # convention as app/domains/sandbox_session.py/app/agent/skills.py.
-            # Without it, this job's real failure reason only ever existed in
-            # the result Redis stream (`publish_result` below), which expires
-            # after RESULTS_STREAM_TTL_SECONDS — gone long before anyone
-            # thinks to go looking for why a large upload silently failed.
+            # Log the actual message, not just error_class (same truncated-
+            # string convention as sandbox_session.py/skills.py) — otherwise
+            # the failure reason only lives in the results stream, which
+            # expires after RESULTS_STREAM_TTL_SECONDS.
             logger.warning(
                 "ingest_worker_job_failed",
                 extra={
@@ -188,9 +148,9 @@ async def _process_with_limit(
     client, entry_id: str, fields: dict, semaphore: asyncio.Semaphore
 ) -> None:
     """Runs one job under `semaphore` and releases it when done, success or
-    failure — same shape as app/job_queue/agent_worker.py::_process_with_limit;
-    `process_job` already acks in its own `finally` regardless of outcome, so
-    the only thing this wrapper owns is the concurrency slot."""
+    failure — same shape as `agent_worker.py::_process_with_limit`;
+    `process_job` already acks regardless of outcome, so this wrapper only
+    owns the concurrency slot."""
     try:
         await process_job(client, entry_id, fields)
     finally:
@@ -199,22 +159,15 @@ async def _process_with_limit(
 
 async def run() -> None:
     loop = asyncio.get_running_loop()
-    # asyncio.to_thread borrows from the loop's DEFAULT executor
-    # (min(32, os.cpu_count()+4) if never set) — a generic heuristic with no
-    # relationship to _MAX_CONCURRENCY, and hard-capped at 32 regardless of
-    # host, which would silently throttle real concurrency below whatever
-    # INGEST_WORKER_MAX_CONCURRENCY is configured to if that's ever raised
-    # past 32. Sized explicitly instead, to exactly _MAX_CONCURRENCY: a job
-    # holds at most ONE pool thread at a time (process_job's to_thread calls
-    # are sequential, never overlapping each other), so _MAX_CONCURRENCY
-    # concurrent jobs need at most _MAX_CONCURRENCY pool threads — no more,
-    # no less. Deliberately NOT also padded by CPU core count: the GIL, not
-    # thread count, is what bounds CPU-bound throughput regardless of cores
-    # (see this module's own docstring), and _MAX_CONCURRENCY is already
-    # the operator's own CPU-vs-I/O-aware tuning knob (WORKER_CONCURRENCY.md)
-    # — a core-count-based cap here would just silently override that
-    # deliberate setting the same way the default executor's own ceiling
-    # does, which is exactly what this is replacing.
+    # asyncio.to_thread borrows the loop's DEFAULT executor
+    # (min(32, os.cpu_count()+4)) — capped at 32 regardless of host, which
+    # would silently throttle concurrency if INGEST_WORKER_MAX_CONCURRENCY
+    # is raised past that. Sized explicitly to _MAX_CONCURRENCY instead: a
+    # job holds at most one pool thread at a time, so N concurrent jobs need
+    # at most N threads. Not padded by CPU count — the GIL, not thread
+    # count, bounds CPU-bound throughput (see module docstring), and
+    # _MAX_CONCURRENCY is already the operator's tuning knob
+    # (WORKER_CONCURRENCY.md).
     loop.set_default_executor(
         concurrent.futures.ThreadPoolExecutor(
             max_workers=_MAX_CONCURRENCY, thread_name_prefix="ingest-worker"
@@ -228,23 +181,18 @@ async def run() -> None:
         extra={"consumer": CONSUMER_NAME, "max_concurrency": _MAX_CONCURRENCY},
     )
 
-    # Graceful shutdown — same reasoning as app/job_queue/agent_worker.py's `run()`:
-    # a SIGTERM/SIGINT stops this worker from claiming a NEW job, but never
-    # interrupts one already in flight (a redelivered ingest job would
-    # re-embed and re-upsert the same document's chunks a second time, a
-    # real data-quality regression — see process_job's own docstring).
+    # Graceful shutdown — same reasoning as agent_worker.py's run(): SIGTERM/
+    # SIGINT stops this worker from claiming a NEW job but never interrupts
+    # one in flight (a redelivered job would re-embed/re-upsert the same
+    # chunks — see process_job's docstring).
     stop_event = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop_event.set)
 
-    # Bounds how many jobs this ONE process runs at once. Acquired in the
-    # read loop below, BEFORE a task is even created — not inside the task —
-    # so a full semaphore also backpressures reading: this process simply
-    # stops pulling new entries off the stream once it's at capacity, leaving
-    # them pending for the group (another worker, or this one once a slot
-    # frees up, can still claim them) rather than piling up an unbounded
-    # number of not-yet-running tasks in `in_flight` below. Same shape as
-    # app/job_queue/agent_worker.py::run().
+    # Bounds jobs this process runs at once. Acquired BEFORE the task is
+    # created, so a full semaphore also backpressures reading: entries stay
+    # pending for the group instead of piling up unbounded in `in_flight`.
+    # Same shape as agent_worker.py::run().
     semaphore = asyncio.Semaphore(_MAX_CONCURRENCY)
     in_flight: set[asyncio.Task] = set()
 
