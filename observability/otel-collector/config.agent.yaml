@@ -1,0 +1,66 @@
+# Agent-mode collector — runs ON THE APP DROPLET (docker-compose.prod.yml's
+# `otel-collector-agent` service), the other half of the "agent + gateway"
+# split from this directory's own `config.yaml` (which runs unchanged on
+# the SEPARATE observability droplet as the gateway). Two jobs:
+#   1. Same OTLP receiver app/core/telemetry.py already pushes to (now
+#      pointed here instead of a remote host — see docker-compose.prod.yml's
+#      `OTEL_EXPORTER_OTLP_ENDPOINT`).
+#   2. Scrapes node-exporter/cadvisor LOCALLY (same Docker network, no
+#      firewall exposure needed) so the app droplet's own resource usage
+#      (feeding Stage 1's cpus:/mem_limit: sizing) reaches Grafana too.
+# Everything gets forwarded on to the observability droplet's gateway
+# collector over OTLP — this is the ONLY thing that crosses the two
+# droplets' firewall, rather than opening node-exporter/cadvisor's ports
+# individually (see infra/terraform/main.tf's digitalocean_firewall.observability
+# comment).
+#
+# Qdrant's and LiteLLM's own internal /metrics are NOT scraped here yet —
+# deliberately deferred (see the plan this shipped under): those two ports
+# also carry each service's full API, so scraping them needs its own
+# tradeoff discussion, not a default-on add. Add a second `prometheus/infra`
+# receiver job here (targets: ["qdrant:6333"], ["litellm:4000"]) if/when
+# that's decided.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: node
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["node-exporter:9100"]
+        - job_name: cadvisor
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["cadvisor:8080"]
+
+processors:
+  batch:
+    timeout: 5s
+
+exporters:
+  # otlphttp, not the gRPC `otlp` exporter — OBS_COLLECTOR_ENDPOINT is a
+  # plain `http://<obs-private-ip>:4318` URL (this directory's own
+  # `config.yaml` gateway only opens an HTTP OTLP receiver on 4318, no TLS:
+  # the DO VPC's private network is the trust boundary here, never the
+  # public internet — see infra/terraform/main.tf's
+  # digitalocean_firewall.observability comment).
+  otlphttp/gateway:
+    endpoint: ${env:OBS_COLLECTOR_ENDPOINT}
+
+service:
+  telemetry:
+    logs:
+      level: warn
+  pipelines:
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [batch]
+      exporters: [otlphttp/gateway]

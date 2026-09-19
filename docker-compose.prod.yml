@@ -2,16 +2,23 @@
 # infra/terraform (see infra/README.md for the full deploy runbook). A
 # deliberately SMALLER set of services than docker-compose.yml's local dev
 # stack — no Ollama (litellm-config.prod.yaml points at a real hosted
-# OpenAI-compatible endpoint instead), no Langfuse/open-webui/observability
-# stack, no self-hosted MinIO (object storage instead points at DigitalOcean
-# Spaces, S3-compatible — see MINIO_* in .env.prod.example; the `minio`
-# Python client this app already uses talks to any S3-compatible endpoint,
-# not just the literal MinIO server). Fronted by Caddy for TLS.
+# OpenAI-compatible endpoint instead), no Langfuse/open-webui, no
+# self-hosted MinIO (object storage instead points at DigitalOcean Spaces,
+# S3-compatible — see MINIO_* in .env.prod.example; the `minio` Python
+# client this app already uses talks to any S3-compatible endpoint, not
+# just the literal MinIO server). Fronted by Caddy for TLS.
+#
+# The full Grafana/Prometheus/Loki/Alertmanager observability stack itself
+# does NOT run here either — it's on its own, separate, smaller droplet
+# (docker-compose.observability.prod.yml) so a metrics/logs spike can't
+# compete with the app for this box's own CPU/mem. This file only carries
+# the lightweight sidecars needed to feed it (node-exporter, cadvisor,
+# otel-collector-agent, promtail — see their own comments below).
 #
 # Deployed by .github/workflows/deploy.yml: builds+pushes the app image
 # (root Dockerfile) and the ml-service image (docker/ml-service.Dockerfile)
 # to GHCR, rsyncs this file + Caddyfile + litellm-config.prod.yaml +
-# postgres-init/ to /opt/agent-core-demo on the droplet, then runs
+# postgres-init/ + observability/ to /opt/agent-core-demo on the droplet, then runs
 # `docker compose -f docker-compose.prod.yml pull && up -d` over SSH —
 # api/agent-worker/ingest-worker/ml-service below all reference `image:`,
 # never `build:`, so the droplet only ever pulls layers, it never compiles
@@ -47,14 +54,16 @@ x-app-env: &app-env
   # Left unset (empty) unless the operator opts into these — same
   # degrade-gracefully posture app/core/config.py already documents for
   # each: no Langfuse tracing, no crawl4ai/OpenSandbox tool surfaces, no
-  # Slack notifications, no Telegram channel, no push-based OTel metrics
-  # unless a collector endpoint is actually reachable from this droplet.
+  # Slack notifications, no Telegram channel.
   LANGFUSE_HOST: ${LANGFUSE_HOST:-}
   LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
   LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
   SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
   TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  # Local agent collector (this file's own `otel-collector-agent` service),
+  # NOT the observability droplet directly — it relays on to there over
+  # OTLP itself. See that service's own comment and observability/otel-collector/config.agent.yaml.
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector-agent:4318
   CRAWL4AI_SERVER_URL: ${CRAWL4AI_SERVER_URL:-}
   CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-}
   OPENSANDBOX_MCP_DOMAIN: ${OPENSANDBOX_MCP_DOMAIN:-}
@@ -64,6 +73,16 @@ services:
   postgres:
     image: postgres:16
     restart: unless-stopped
+    # Ceilings, not reservations — Docker's --cpus lets a container burst up
+    # to this many cores when the host has spare capacity, it never reserves
+    # them, so these numbers summing past 4 (this droplet's actual core
+    # count) isn't oversubscription at rest. Same rationale as ml-service's
+    # existing "cpus: 3" below: stop any one runaway container (a bad query,
+    # a leak) from starving everything else sharing this box. Starting
+    # points only — revisit once the observability droplet's dashboards
+    # (docker-compose.observability.prod.yml) show real usage.
+    cpus: "0.3"
+    mem_limit: 768m
     command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
     environment:
       # Username stays "langfuse" to match postgres-init/*.sql's hardcoded
@@ -86,6 +105,8 @@ services:
   redis:
     image: redis/redis-stack-server:latest
     restart: unless-stopped
+    cpus: "0.2"
+    mem_limit: 256m
     volumes:
       - redis:/data
     healthcheck:
@@ -97,12 +118,16 @@ services:
   qdrant:
     image: qdrant/qdrant:latest
     restart: unless-stopped
+    cpus: "0.3"
+    mem_limit: 512m
     volumes:
       - qdrant:/qdrant/storage
 
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
     restart: unless-stopped
+    cpus: "0.3"
+    mem_limit: 512m
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     volumes:
       - ./litellm-config.prod.yaml:/app/config.yaml:ro
@@ -141,6 +166,7 @@ services:
     image: ${ML_IMAGE}:${IMAGE_TAG:-latest}
     restart: unless-stopped
     cpus: "3"
+    mem_limit: 2g
     environment:
       RERANK_CPU_BUDGET: "2"
       GUARD_CPU_BUDGET: "1"
@@ -161,8 +187,19 @@ services:
   api:
     image: ${APP_IMAGE}:${IMAGE_TAG:-latest}
     restart: unless-stopped
-    ports:
-      - "8000:8000"
+    cpus: "0.5"
+    mem_limit: 512m
+    # Long enough for an in-flight SSE turn (POST /chat/stream/queued) to
+    # finish rather than being SIGKILLed on redeploy/scale-down — uvicorn
+    # already stops accepting new requests and drains in-flight ones on
+    # SIGTERM by default, this just gives it time to.
+    stop_grace_period: 60s
+    # No `ports:` here (unlike before) — a fixed host port can't be shared
+    # across replicas, and Caddy's `dynamic a` upstream (Caddyfile) needs
+    # `--scale api=N` to actually work. This also retires the old
+    # bypass-Caddy debug convenience (`curl host:8000/...`); use `ssh` in +
+    # `docker compose exec api curl localhost:8000/health` instead (see
+    # infra/README.md).
     environment: *app-env
     depends_on:
       postgres:
@@ -173,6 +210,9 @@ services:
   agent-worker:
     image: ${APP_IMAGE}:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    cpus: "0.5"
+    mem_limit: 768m
+    stop_grace_period: 90s # let an in-flight agent turn (LLM calls, tool use) finish rather than being killed mid-turn
     command: ["python", "-m", "app.job_queue.agent_worker"]
     environment: *app-env
     depends_on:
@@ -186,6 +226,9 @@ services:
   ingest-worker:
     image: ${APP_IMAGE}:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    cpus: "0.3"
+    mem_limit: 768m
+    stop_grace_period: 90s # let an in-flight document parse/embed job finish rather than being killed mid-job
     command: ["python", "-m", "app.ingestion.ingest_worker"]
     environment: *app-env
     depends_on:
@@ -202,6 +245,8 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    cpus: "0.1"
+    mem_limit: 128m
     ports:
       - "80:80"
       - "443:443"
@@ -222,6 +267,94 @@ services:
       - caddy_config:/config
     depends_on:
       - api
+
+  # --- Observability sidecars: relay this droplet's metrics/logs to the
+  # SEPARATE observability droplet (docker-compose.observability.prod.yml,
+  # infra/terraform's digitalocean_droplet.observability) — see that file's
+  # own header for the full topology. None of these publish a host port:
+  # everything below talks over this compose file's own internal network,
+  # and only otel-collector-agent/promtail ever reach off-box (OTLP to
+  # OBS_COLLECTOR_ENDPOINT, Loki push to LOKI_PUSH_HOST — both set in this
+  # droplet's own .env, see .env.prod.example), which is why the app
+  # droplet's firewall/cloud-init needed zero new inbound rules for any of
+  # this.
+  node-exporter:
+    image: prom/node-exporter:latest
+    restart: unless-stopped
+    cpus: "0.05"
+    mem_limit: 64m
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+
+  # No Mac-Docker-Desktop containerd gap here (unlike docker-compose.yml's
+  # own cadvisor comment) — this droplet runs native Linux Docker, so the
+  # standard cadvisor recipe (privileged + /dev/kmsg) works as documented
+  # and container names resolve on their own; no container-name-mapper
+  # sidecar needed.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    restart: unless-stopped
+    cpus: "0.2"
+    mem_limit: 256m
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+
+  # Agent-mode otel-collector: api/agent-worker/ingest-worker's own OTel
+  # metrics push HERE (this file's `OTEL_EXPORTER_OTLP_ENDPOINT`), and it
+  # also scrapes node-exporter/cadvisor above LOCALLY (same network, no
+  # firewall exposure needed) before forwarding everything on to the
+  # observability droplet's own collector over OTLP — see
+  # observability/otel-collector/config.agent.yaml. This "agent + gateway"
+  # split is why only ONE port (4318) ever needs to cross the two droplets'
+  # firewall, instead of opening node-exporter/cadvisor/qdrant/litellm's
+  # ports individually.
+  otel-collector-agent:
+    image: otel/opentelemetry-collector-contrib:latest
+    restart: unless-stopped
+    cpus: "0.2"
+    mem_limit: 256m
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    environment:
+      OBS_COLLECTOR_ENDPOINT: ${OBS_COLLECTOR_ENDPOINT}
+    volumes:
+      - ./observability/otel-collector/config.agent.yaml:/etc/otelcol-contrib/config.yaml:ro
+    depends_on:
+      - node-exporter
+      - cadvisor
+
+  # Reads THIS droplet's own Docker socket/log files directly (must be
+  # co-located with the containers it tails), pushing to the observability
+  # droplet's Loki over the network — see
+  # observability/promtail/promtail-config.prod.yaml's own comment for why
+  # this can't just be a service in docker-compose.observability.prod.yml
+  # like it is in the dev-only docker-compose.observability.yml.
+  promtail:
+    image: grafana/promtail:latest
+    restart: unless-stopped
+    cpus: "0.1"
+    mem_limit: 128m
+    command: ["-config.file=/etc/promtail/promtail-config.yaml", "-config.expand-env=true"]
+    environment:
+      LOKI_PUSH_HOST: ${LOKI_PUSH_HOST}
+    volumes:
+      - ./observability/promtail/promtail-config.prod.yaml:/etc/promtail/promtail-config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
 
 volumes:
   postgres:
