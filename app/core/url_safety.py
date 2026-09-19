@@ -1,22 +1,14 @@
-"""Shared SSRF guard for anything in this app that fetches a caller- or
-agent-supplied URL: app/ingestion/ingestor.py::ingest_url (the original,
-ingest-specific caller) and app/ingestion/web_crawler.py's crawl4ai-backed
-render (added for domain tools that fetch a live web page mid-turn, e.g.
-app/domains/sales/tools.py::enrich_lead_from_website). One implementation,
-not two independently-maintained SSRF checks that can drift out of sync —
-the same "one place it can drift" reasoning app/domains/notify.py already
-gives for sharing one team-channel notifier across three domains.
+"""Shared SSRF guard for anything fetching a caller- or agent-supplied URL:
+app/ingestion/ingestor.py::ingest_url and app/ingestion/web_crawler.py's
+crawl4ai-backed render. One implementation so the two don't drift.
 
-https-only, and every A/AAAA record the hostname resolves to must be
-public/routable — checked against ALL resolved addresses, not just the
-first, so a hostname with a mixed public+private record set still gets
-refused. Disclosed limitation (unchanged from before this was extracted
-out of app/ingestion/ingestor.py): this validates resolution now and lets
-the caller (httpx, or a headless browser) resolve and connect separately,
-a moment later — a DNS-rebinding attack could still slip through that gap.
-Closing it fully means pinning the actual connection to the address
-already validated here (a custom transport / browser proxy), real added
-complexity neither caller takes on today.
+https-only; every A/AAAA record the hostname resolves to must be
+public/routable, checked against ALL of them so a mixed public+private
+record set is still refused. Disclosed limitation: this validates
+resolution now, but the caller (httpx / headless browser) resolves and
+connects separately a moment later — a DNS-rebinding attack could slip
+through that gap. Closing it fully means pinning the connection to the
+address validated here, real added complexity neither caller takes on.
 """
 import ipaddress
 import socket
@@ -27,10 +19,9 @@ class UnsafeURLError(Exception):
     """A URL that fails the SSRF guard — non-https, no hostname,
     unresolvable, or resolving to a private/loopback/link-local/reserved/
     multicast/unspecified address. Callers translate this into their own
-    domain-facing refusal (see app/ingestion/ingestor.py::IngestRefused)
-    rather than this module raising something ingest-specific itself — a
-    headless-browser crawl (app/ingestion/web_crawler.py) is refused for
-    exactly the same reason but isn't an "ingest" at all."""
+    domain-facing refusal (e.g. app/ingestion/ingestor.py::IngestRefused)
+    rather than this module raising something ingest-specific — a
+    headless-browser crawl is refused the same way but isn't an "ingest"."""
 
 
 def assert_safe_url(url: str) -> None:

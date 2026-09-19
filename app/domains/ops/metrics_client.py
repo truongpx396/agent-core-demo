@@ -29,20 +29,14 @@ class MetricCheck:
     description: str
     expr: str
     threshold: float
-    # Every check below is a "greater than" ceiling (mirrors
-    # observability/prometheus/alerts.yml's own `> value` alert
-    # expressions) — there's no "less than" style check in this app's
-    # alert set to mirror, so this stays a fixed direction rather than a
-    # per-check field with only one value ever used.
+    # Always a "greater than" ceiling, mirroring alerts.yml's `> value`
+    # expressions — no "less than" checks exist in this app's alert set.
 
 
-# Mirrors observability/prometheus/alerts.yml's `agent-core-slo` group,
-# name-for-name and threshold-for-threshold — see that file for the
-# reasoning behind each one. Deliberately NOT every alert in that file:
-# ScrapeTargetDown (infra group) and the tenant-budget/semantic-cache
-# checks are omitted here as noise for a daily human-readable digest, not
-# because they're unimportant — a real deployment wanting the full set
-# would just extend this list.
+# Mirrors observability/prometheus/alerts.yml's `agent-core-slo` group
+# name-for-name/threshold-for-threshold (see that file for reasoning).
+# Omits ScrapeTargetDown and tenant-budget/semantic-cache checks as noise
+# for a daily digest, not because they're unimportant.
 CHECKS: tuple[MetricCheck, ...] = (
     MetricCheck(
         name="turn_error_rate",
@@ -94,12 +88,9 @@ CHECKS: tuple[MetricCheck, ...] = (
 
 async def _query_one(expr: str) -> float | None:
     """A single Prometheus instant query. Returns None on any failure
-    (Prometheus/otel stack not running, a malformed response, an empty
-    result vector because that metric has never fired) rather than
-    raising — the caller degrades that one reading to "unknown," never
-    fails the whole digest over one metric (same posture
-    app/retrieval/semantic_cache.py/app/agent/moderation.py already take
-    on their own optional dependencies)."""
+    (stack not running, malformed response, empty result vector) rather
+    than raising — the caller degrades that reading to "unknown" instead
+    of failing the whole digest over one metric."""
     try:
         async with httpx.AsyncClient(timeout=_QUERY_TIMEOUT_SECONDS) as client:
             resp = await client.get(
@@ -115,12 +106,9 @@ async def _query_one(expr: str) -> float | None:
 
 
 async def fetch_readings() -> dict[str, float | None]:
-    """{check_name: value | None} for every check in CHECKS — one HTTP
-    call per check (Prometheus has no documented batch-query endpoint),
-    all run CONCURRENTLY via asyncio.gather rather than one-at-a-time —
-    a real latency win now that each query awaits real I/O instead of
-    blocking sequentially, same "independent checks run concurrently"
-    shape app/api/health.py::check_dependencies already uses."""
+    """{check_name: value | None} for every check in CHECKS. One HTTP call
+    per check (no batch-query endpoint), run concurrently via
+    asyncio.gather rather than sequentially."""
     values = await asyncio.gather(*(_query_one(check.expr) for check in CHECKS))
     return dict(zip((check.name for check in CHECKS), values, strict=True))
 

@@ -1,25 +1,20 @@
-"""Tenant+principal-scoped semantic cache backed by Redis Stack (RediSearch's
+"""Tenant+principal-scoped semantic cache backed by Redis Stack (RediSearch
 vector KNN over JSON documents) — not plain Redis, which has no vector
-search of its own.
+search.
 
-A cache entry is keyed by *meaning*, not exact text: `get` embeds the
-incoming query with the same dense embedding used for Qdrant retrieval
-(app/retrieval/embeddings.py::embed_text — one embedding space, one model, no drift
-between what's indexed for documents and what's indexed for cache lookups)
-and does a cosine-KNN search restricted to this ctx's tenant+principal, same
-pre-filter discipline as app/core/security.py's Policy.lower() and
-app/agent/sql_store.py's mandatory `WHERE tenant = %s` — a cache is still a store
-that can leak across tenants if the isolation is bolted on as a Python
-post-filter instead of a server-side predicate.
+Keyed by *meaning*, not exact text: `get` embeds the query with the same
+dense model used for Qdrant retrieval (one embedding space, no drift
+between documents and cache lookups) and does a cosine-KNN search
+restricted to this ctx's tenant+principal — same pre-filter discipline as
+`app/core/security.py`'s `Policy.lower()`, since a cache can leak across
+tenants if isolation is a Python post-filter instead of a server-side
+predicate.
 
-Graceful degradation, always: Redis unreachable, the index missing, or an
-embedding call failing all fall through to a cache miss (`get` returns
-None) or a swallowed no-op (`set` returns without writing) — a semantic
-cache is a latency optimization, never a correctness dependency, so it must
-never be able to fail a turn the way retrieve_context's own degradation
-guarantees for retrieval (see app/agent/graph.py). Every outcome (hit/miss/error)
-is recorded via agent_semantic_cache_total (app/core/metrics.py) so a degraded
-cache is visible, not silently smoothed over.
+Graceful degradation, always: Redis unreachable, index missing, or an
+embedding call failing all fall through to a cache miss (`get`) or a
+swallowed no-op (`set`) — never a correctness dependency. Every outcome
+(hit/miss/error) is recorded via `agent_semantic_cache_total`
+(`app/core/metrics.py`).
 """
 import json
 import logging
@@ -47,19 +42,17 @@ logger = logging.getLogger(__name__)
 INDEX_NAME = "idx:semantic_cache"
 KEY_PREFIX = "cache:"
 # COSINE distance (RediSearch) is 1 - cosine_similarity: 0 for identical
-# vectors, up to 2 for opposite ones — verified empirically against a real
-# Redis Stack instance before writing this module. A cached entry only
-# counts as a hit within this much distance of the incoming query.
+# vectors, up to 2 for opposite ones. A cached entry only counts as a hit
+# within this much distance of the incoming query.
 _MAX_DISTANCE = 1 - SEMANTIC_CACHE_SIMILARITY_THRESHOLD
 
 _client: redis.Redis | None = None
 _index_ready = False
 
 # RediSearch TAG queries treat these characters as syntax, not literal text
-# (verified empirically: an unescaped tenant like "other-co" raises "Syntax
-# error... near other") — every tag value interpolated into a query string
-# must be escaped first, the same reason app/agent/sql_store.py never interpolates
-# a caller-supplied value into SQL text unparameterized.
+# (e.g. an unescaped tenant like "other-co" raises "Syntax error... near
+# other") — every tag value interpolated into a query string must be
+# escaped first, same reason sql_store.py never interpolates unparameterized.
 _TAG_ESCAPE_RE = re.compile(r"([,.<>{}\[\]\"':;!@#$%^&*()\-+=~ ])")
 
 
@@ -75,12 +68,10 @@ def _get_client() -> redis.Redis:
 
 
 async def _ensure_index(client: redis.Redis) -> None:
-    """Idempotent: creates the index on first use, in whichever process
-    reaches it first. Dimension is derived from a real embed_text() call,
-    never hardcoded — the same approach scripts/seed.py uses for Qdrant's
-    collection (`ensure_collection(dim=len(vectors[0]))`), so this module
-    never drifts out of sync with whatever embedding model is actually
-    configured."""
+    """Idempotent: creates the index on first use. Dimension is derived
+    from a real `embed_text()` call, never hardcoded — same approach
+    `scripts/seed.py` uses for Qdrant, so this never drifts out of sync
+    with whatever embedding model is configured."""
     global _index_ready
     if _index_ready:
         return
@@ -90,9 +81,8 @@ async def _ensure_index(client: redis.Redis) -> None:
         TagField("$.principal", as_name="principal"),
         TextField("$.query", as_name="query"),
         # Declared (not just stored) so return_fields can project them back
-        # on a hit — RediSearch's JSON index only returns fields that are
-        # part of the schema, verified empirically (an undeclared field
-        # silently comes back missing, not as an error, which is worse).
+        # on a hit — RediSearch's JSON index only returns schema fields; an
+        # undeclared field silently comes back missing, not as an error.
         TextField("$.answer", as_name="answer", no_stem=True),
         TextField("$.citations", as_name="citations", no_stem=True),
         VectorField(
@@ -116,10 +106,9 @@ async def get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | N
     """Look up a near-identical past query, scoped to ctx's tenant AND
     principal (never just tenant — a cached answer can carry citations to
     that principal's own memories, so this is at least as narrow as
-    Policy.lower(ctx, "memories"), not merely "documents"). Returns
-    (answer, citations) on a hit, None on a miss OR any failure — a
-    degraded cache is a miss, never an exception the caller has to guard
-    against.
+    `Policy.lower(ctx, "memories")`). Returns `(answer, citations)` on a
+    hit, `None` on a miss OR any failure — a degraded cache is always a
+    miss, never an exception the caller has to guard against.
     """
     if not ctx or not ctx.get("tenant") or not ctx.get("principal"):
         return None

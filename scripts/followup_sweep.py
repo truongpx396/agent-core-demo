@@ -1,28 +1,22 @@
 """Cron-callable follow-up sweep: find every CRM follow-up due today
 (app/domains/sales/store.py::due_followups), draft a nudge in the sales
 concierge's own voice for each, and post the draft to the team channel for
-a human to review and actually send.
+a human to review and send.
 
-Same "fixed pipeline, not an agent turn" shape as scripts/ops_digest.py,
-for the same reason: an unattended cron run can never satisfy
-should_continue's mandatory human_approval gate, so this never calls
-schedule_followup/handoff_to_human/log_lead_interaction through the real
-agent loop — those are for the INTERACTIVE sales domain (via the
-generalized app/channels/telegram.py, a human actually present in the
-conversation) to call. This script never auto-sends anything and never
-auto-hands off a lead on its own — it only drafts, mirroring the use
-case's own "drafts replies in your voice" and "hands hot leads to humans"
-language: the human stays in the loop for both the send and the handoff
-decision.
+Same "fixed pipeline, not an agent turn" shape as scripts/ops_digest.py:
+an unattended cron run can never satisfy should_continue's mandatory
+human_approval gate, so this never calls schedule_followup/
+handoff_to_human/log_lead_interaction through the real agent loop — those
+are for the interactive sales domain (a human actually present, via
+app/channels/telegram.py). This script only drafts; the human stays in the
+loop for both sending and any handoff decision.
 
 Meant to be wired to real cron, e.g.:
 
     0 9 * * * cd /path/to/agent-core-demo && python -m scripts.followup_sweep
 
-Each due follow-up is marked 'done' once swept (postgres-init/08-crm.sql's
-crm_followups.status) so a re-run of this same script doesn't redraft the
-same nudge tomorrow — a missed follow-up doesn't get lost, it's just
-handled once, at whichever run first sees it past its due_at.
+Each due follow-up is marked 'done' once swept (crm_followups.status) so a
+re-run doesn't redraft the same nudge tomorrow.
 """
 import asyncio
 from datetime import UTC, datetime

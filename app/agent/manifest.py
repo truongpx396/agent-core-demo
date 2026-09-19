@@ -1,44 +1,27 @@
-"""Config-first multi-domain composition layer (GRAPH_PATTERNS.md pattern
-23): the ONE `app/agent/graph.py` StateGraph topology — every node, every edge,
-every routing function — is adapted to a new domain by swapping an
-`AgentManifest` (config) plus a `DomainPlugin` (a thin bundle of that
-domain's own tools/capabilities/policy), never by forking `build_graph()`
-or branching on a domain name anywhere inside it.
+"""Config-first multi-domain composition layer (pattern 23): the ONE
+`app/agent/graph.py` StateGraph topology is adapted to a new domain by
+swapping an `AgentManifest` (config) plus a `DomainPlugin` (tools/
+capabilities/policy), never by forking `build_graph()` or branching on a
+domain name.
 
-Two deliberately different halves:
+- `AgentManifest` — the YAML/JSON-able part: name, system prompt, which
+  of the plugin's tools this deployment exposes.
+- `DomainPlugin` — the CODE a manifest can't express: tool
+  implementations, capability declarations (read_only/mutating/outward,
+  see `tools.py::TOOL_CAPABILITIES`), and the `Policy` they enforce
+  internally. `build_graph()` never calls `.policy()` itself — enforcement
+  lives at the tool-implementation boundary (pattern 17); it exists so a
+  plugin can assert/expose its own Policy.
 
-- `AgentManifest` — everything that could plausibly live in a YAML/JSON
-  file without touching code: a name, the system prompt, and which of the
-  plugin's tools this deployment actually exposes to its LLM.
-- `DomainPlugin` — the CODE a manifest can't express: the actual tool
-  implementations, their capability declarations (read_only/mutating/
-  outward — see `app/agent/tools.py::TOOL_CAPABILITIES`), and the `Policy` those
-  tools enforce internally. A plugin's tools are expected to already carry
-  their own tenant/principal scoping the same way `app/agent/tools.py`'s do
-  (`_ctx_or_refuse`, `Policy.lower(...)`) — `build_graph()` never reaches
-  into a Policy itself, because nothing in `app/agent/graph.py`'s own node/edge
-  code calls one today (see pattern 17): Policy enforcement lives at the
-  tool-implementation boundary, not the graph-topology boundary, and this
-  module doesn't invent a new consumption point just to exercise
-  `DomainPlugin.policy()` — it exists so a plugin can assert/expose which
-  Policy backs it (useful for tests and docs), not because build_graph
-  threads it anywhere.
+`DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN` wrap the existing Ecorp setup
+unchanged — proof the single-domain app was always just the default
+domain. See `tests/agent/test_manifest.py` for a second domain proving the
+same graph runs with different tools/prompt/Policy.
 
-`DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN` wrap this app's existing Ecorp
-setup completely unchanged — proof that today's single-domain app was
-always just the *default* domain, not a special case `build_graph()` has
-to keep working around. See `tests/agent/test_manifest.py` for a second,
-completely different domain (different tools, prompt, and Policy) proving
-the same unmodified graph runs green end-to-end with it.
-
-A note on the import direction: this module imports `app.agent.graph.SYSTEM_PROMPT`
-(for `DEFAULT_MANIFEST`) at module load time. `app/agent/graph.py` imports this
-module back — but only *inside* `build_graph()`'s function body, never at
-`app/agent/graph.py`'s own module level. `build_graph()` is only ever *called*
-after `app.agent.graph` has finished importing, so by the time that deferred
-import runs, `SYSTEM_PROMPT` already exists — the cycle never actually
-closes in either import order. Don't move that import to `app/agent/graph.py`'s
-top without re-checking this.
+Import direction: this module imports `graph.SYSTEM_PROMPT` at load time;
+`graph.py` imports this module back only INSIDE `build_graph()`'s body
+(never at its own module level), so the cycle never closes. Don't move
+that import to `graph.py`'s top without re-checking this.
 """
 from __future__ import annotations
 

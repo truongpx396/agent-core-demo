@@ -15,31 +15,23 @@ Anthropic's Agent Skills / OpenClaw's `SKILL.md` use:
     1. Look up the new hire with query_employees...
 
 `domains`, if set, is a list of domain names (`app/domains/registry.py`'s
-keys, e.g. `[support]`) this skill is relevant to; omitted means "every
-domain" — the default every skill had before this field existed, so an
-un-tagged `SKILL.md` keeps working unchanged. `app/agent/tools.py::make_skill_tools`
-is what actually ENFORCES this (both in `skill_search`'s results and
-`use_skill`'s exact-name lookup) — this module only carries the fact,
-same "parse and carry, don't enforce" split its `tools`/`model` fields
-already establish for app/agent/subagents.py's `SubagentRecord`.
+keys) this skill is relevant to; omitted means "every domain" — the
+pre-existing default, so an un-tagged `SKILL.md` keeps working unchanged.
+`app/agent/tools.py::make_skill_tools` enforces this (in both
+`skill_search`'s results and `use_skill`'s lookup); this module only
+carries the fact.
 
 This module is the DISK side only — the source of truth for a skill's full
 body. `app/agent/tools.py::use_skill` reads a skill's `body` from here by
 exact `name`, never from Qdrant: the `skills` Qdrant collection
 (`app/retrieval/qdrant_store.py`, built by `scripts/index_skills.py`) holds
 only `{name, description}`, just enough for `skill_search`'s hybrid search
-to find the right name. Keeping "what's searchable" (Qdrant) and "what's
-authoritative" (this module, reading the file directly) as two different
-systems means a skill's full instructions can never drift out of sync with
-what's actually on disk — there's nothing to keep in sync in the first
-place.
+to find the right name. Keeping "searchable" (Qdrant) and "authoritative"
+(this module) as two systems means a skill's instructions can never drift
+out of sync with what's on disk.
 
 Skills are bundled app capabilities, not tenant data — no `SecurityCtx`
-involved here, same as `app/agent/tools.py::calculator`. See that module's
-`TOOL_CAPABILITIES` comment for why every tool this app ships defaults to
-the most conservative capability unless declared otherwise; skills
-themselves aren't tools, just content two tools (`skill_search`/
-`use_skill`) load and return.
+involved, same as `app/agent/tools.py::calculator`.
 """
 import logging
 import re

@@ -1,74 +1,36 @@
 """Shared agent runtime used by BOTH the CLI and the FastAPI service.
 
-Centralises: the compiled graph (singleton), per-thread system-prompt seeding,
-Langfuse callbacks, and the streaming entry points every front-end actually
-calls — `astream_events_turn`/`astream_events_resume` for a caller with a real
-interactive human on the other end (the CLI, `app/job_queue/agent_worker.py`'s
-`"turn"`/`"resume"` jobs backing the queued HTTP API) and
-`astream_events_turn_unattended` for one with nobody able to answer an
-approval prompt (`app/channels/telegram.py`). Keeping this in one place means
-memory and tracing behave identically no matter which front-end is used.
+Centralises the compiled graph (singleton), per-thread system-prompt seeding,
+and Langfuse callbacks, so memory and tracing behave identically regardless
+of front-end (CLI, FastAPI, `app/job_queue/agent_worker.py`, `app/channels/telegram.py`).
 
 ## Durable checkpointing (init_graph_async)
 
-The graph is built with an `AsyncPostgresSaver` (survives a process
-restart, and — unlike a single SQLite file — is safe under concurrent
-access from multiple OS processes at once), not `build_graph()`'s
-bare-call default `MemorySaver` (gone the moment the process exits) — a
-paused human_approval gate is only a meaningful safety control if the
-pause actually survives a redeploy while someone reviews it. Postgres
-over SQLite specifically because this app now runs as more than one
-process sharing one checkpoint store (the FastAPI process plus one or
-more independently-scaled `app/job_queue/agent_worker.py` processes, all attaching
-to the same `thread_id`s) — a single SQLite file's writer-locking is
-fragile under that; Postgres is built for it.
+Uses `AsyncPostgresSaver`, not `build_graph()`'s default `MemorySaver` —
+a paused `human_approval` gate is only a real safety control if it survives
+a redeploy, and Postgres (unlike a single SQLite file) is safe under
+concurrent access from multiple processes sharing the same `thread_id`s
+(FastAPI + one or more `agent_worker.py` replicas).
 
-`AsyncPostgresSaver`'s async lock/state is bound to whichever asyncio
-event loop it was *created* on — its async methods (`graph.ainvoke`/
-`graph.astream_events`, i.e. astream_events_turn/_resume, the only way
-this app ever drives the graph now) raise "bound to a different event
-loop" if awaited from a different loop than the one that created it
-(asyncio locks are loop-bound, verified empirically before writing this,
-originally against AsyncSqliteSaver — the same driver-level constraint
-holds for AsyncPostgresSaver). `init_graph_async()` opens the
-checkpointer directly on the CALLING (current) loop, so every process
-that drives the graph (FastAPI's lifespan, on uvicorn's own loop; the
-CLI, inside `asyncio.run()`; app/job_queue/agent_worker.py;
-app/channels/telegram.py) must await it on that SAME loop before making
-any graph call — never from a background thread or a different loop.
+`AsyncPostgresSaver` binds its async lock to whichever event loop it was
+*created* on; calling it from a different loop raises "bound to a different
+event loop" (verified empirically). `init_graph_async()` therefore opens the
+checkpointer on the CALLING loop — every process driving the graph must
+await it on that same loop before any graph call, never from a background
+thread or a different loop.
 
-A sync-checkpointer-access path (`init_graph_sync()`/`get_graph()`, a
-background thread hosting a persistent loop purely so `graph.invoke()`
-could be called synchronously) existed here for one caller —
-`scripts/hitl_demo.py`, a standalone demo of LangGraph's HITL
-`interrupt()` pattern — and was removed once that script was, since
-`make chat-hitl` (app/channels/chat.py, fully async) already demonstrates
-the identical approve/reject pause/resume cycle through this app's real,
-production streaming path. Nothing else ever called the sync graph
-methods.
-
-This file holds the checkpointer/compiled-graph singleton lifecycle
+This file owns the checkpointer/graph singleton lifecycle
 (`init_graph_async`/`close_checkpointer_pool`/`_open_checkpointer`/
-`_resolve_domain_name`), per-thread system-prompt seeding
-(`_ensure_seeded_async`), the session-directory upsert
-(`_upsert_session`), and the tenant daily-budget check
-(`_tenant_over_daily_budget`/`_tenant_budget_envelope`) — kept here rather
-than split out further because each reads or reassigns a module global
-(`_graph`/`_domain_name`/`_seeded`, or `MAX_COST_USD_PER_TENANT_PER_DAY`/
-`CHECKPOINTER_DATABASE_URL` as bare names several tests monkeypatch
-directly on THIS module) that only works correctly while consumer and
-binding live in the same file. The actual streaming entry points
-(`astream_events_turn`/`astream_events_turn_unattended`/
-`astream_events_resume`/`cancel_run`/`get_session_messages`, plus the
-`astream_events` event-translation core) moved to
-`app/agent/runtime_stream.py`, and the alternative
-`@asynccontextmanager`-based streaming path moved to
-`app/agent/runtime_legacy_stream.py` — both split out purely for file
-size, no behavior change from the pre-split single-file version. Both
-read the handful of names above through `runtime_module.X` (`from
-app.agent import runtime as runtime_module`) rather than a plain
-statically-imported bare name, for the same monkeypatch reason — see
-`runtime_stream.py`'s own module docstring.
+`_resolve_domain_name`), per-thread prompt seeding (`_ensure_seeded_async`),
+session-directory upsert (`_upsert_session`), and the tenant daily-budget
+check (`_tenant_over_daily_budget`/`_tenant_budget_envelope`) — kept together
+because each reads/reassigns a module global (`_graph`/`_domain_name`/
+`_seeded`, or config names several tests monkeypatch directly on this
+module) that only works correctly with consumer and binding in one file.
+The streaming entry points live in `app/agent/runtime_stream.py` (and the
+legacy `@asynccontextmanager` path in `runtime_legacy_stream.py`) — both
+access this module's globals via `runtime_module.X` rather than a bare
+import, for the same monkeypatch reason.
 """
 import asyncio
 import logging
@@ -97,35 +59,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _graph = None
-_domain_name = "ecorp"  # this process's own domain (app/domains/registry.py),
-# set alongside _graph below — used only to stamp app/agent/sessions.py's
-# chat_sessions.domain column (GRAPH_PATTERNS.md pattern 49), since the
-# graph itself doesn't otherwise need to know its own domain's NAME (only
-# its manifest/tools, already baked into `_graph` by build_graph()).
-_checkpointer_pool = None  # keeps AsyncPostgresSaver's AsyncConnectionPool
-# alive for the process's lifetime — letting it get garbage-collected would
-# close every pooled connection out from under the saver (verified
-# empirically against the old single-AsyncConnection shape: the very next
-# call failed "no active connection" — the same contract holds for a pool).
-# Also lets close_checkpointer_pool() below shut it down explicitly on
-# graceful shutdown instead of leaving it dangling at process exit.
+_domain_name = "ecorp"  # this process's domain (app/domains/registry.py); stamps
+# app/agent/sessions.py's chat_sessions.domain column — the graph itself only needs
+# the manifest/tools, already baked into _graph by build_graph().
+_checkpointer_pool = None  # keeps AsyncConnectionPool alive for the process
+# lifetime (GC'ing it closes every pooled connection under the saver); also lets
+# close_checkpointer_pool() shut it down explicitly on graceful shutdown.
 _seeded: set[str] = set()
 
-# LangGraph's OWN graph-step cap — a coarser, different unit than
-# MAX_ITERATIONS (an agent-node-invocation count): every turn also runs
-# several fixed pre-loop nodes (validate_input, compact_history,
-# moderate_input, check_semantic_cache, retrieve_context) plus a couple more
-# post-loop (check_output, write_semantic_cache), and each agent<->tools
-# round trip is 2 steps on top of that. A flat "12" here (this constant's
-# value before this derivation existed) undercounts for a real model making
-# several genuine tool-call round trips in one turn — verified empirically
-# against a live Ollama-backed run hitting GraphRecursionError on an
-# ordinary multi-tool-call question well before MAX_ITERATIONS (10) was
-# reached — the same class of bug independently caught and fixed for the
-# nested subagent graph, see GRAPH_PATTERNS.md pattern 46. Derived from
-# MAX_ITERATIONS, with real margin, instead of a bare literal, so all four
-# call sites below share one source of truth that can't drift out of sync
-# with each other or with MAX_ITERATIONS if that ever changes.
+# LangGraph's own graph-step cap — coarser than MAX_ITERATIONS (an agent-node
+# count): each turn also runs several fixed pre/post-loop nodes, and each
+# agent<->tools round trip is 2 steps. A flat "12" undercounted for a model
+# making several real tool-call round trips (hit GraphRecursionError on an
+# ordinary question before MAX_ITERATIONS was reached — same bug fixed for the
+# subagent graph, see GRAPH_PATTERNS.md pattern 46). Derived, with margin, so
+# it can't drift out of sync with MAX_ITERATIONS.
 RECURSION_LIMIT = MAX_ITERATIONS * 2 + 15
 
 
@@ -133,21 +81,15 @@ _TENANT_BUDGET_WARNING_FRACTION = 0.8  # log/count once a tenant crosses 80% of 
 
 
 async def _tenant_over_daily_budget(ctx: SecurityCtx | None) -> bool:
-    """True if `ctx`'s tenant has already spent >= MAX_COST_USD_PER_TENANT_PER_DAY
-    over the last rolling 24 hours (app/agent/usage_ledger.py's usage_ledger) — checked
-    BEFORE a turn starts (astream_events_turn), so an
-    over-budget tenant is refused without ever reaching the LLM/tool loop
-    at all. Distinct from MAX_COST_USD_PER_TURN
-    (app/agent/graph_routing.py::should_continue): that ceiling only ever sees ONE
-    turn's own running total and has no memory of what the same tenant
-    already spent on turns before it — this is the ceiling that
-    accumulates ACROSS turns.
+    """True if `ctx`'s tenant has spent >= MAX_COST_USD_PER_TENANT_PER_DAY over
+    the trailing 24h (usage_ledger), checked before a turn starts so an
+    over-budget tenant is refused before reaching the LLM/tool loop. Distinct
+    from MAX_COST_USD_PER_TURN (graph_routing.py::should_continue), which only
+    tracks one turn's own total — this is the cross-turn accumulator.
 
-    Fails OPEN (never blocks a turn) if the ledger read itself fails — a
-    usage-ledger outage must not ALSO take down every turn on top of
-    whatever already took the ledger down, same degrade-don't-crash
-    posture as usage_ledger.record_usage's own write path and
-    app/retrieval/semantic_cache.py/app/agent/moderation.py's read paths.
+    Fails OPEN if the ledger read fails, so a ledger outage doesn't also take
+    down every turn (same posture as usage_ledger.record_usage and the
+    semantic_cache/moderation read paths).
     """
     if not valid_ctx(ctx):
         return False
@@ -186,82 +128,46 @@ def _tenant_budget_envelope() -> ErrorEnvelope:
 
 
 async def _upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> None:
-    """Record/refresh this thread_id in the session directory (item #9's
-    switcher, app/agent/sessions.py) — called at the START of every turn
-    (astream_events_turn, right after seeding), unlike
-    usage_ledger.record_usage/_record_turn_metrics which only fire on a
-    completed turn with real token usage. Deliberate: a rejected,
-    moderated, or otherwise short-circuited turn still represents a real
-    conversation the user started on this thread_id and should still show
-    up in "switch conversation," even though it has nothing to meter.
-    upsert_session degrades to a no-op on its own failure (see its
-    docstring) — this can't fail the turn.
+    """Record/refresh this thread_id in the session directory (the conversation
+    switcher, app/agent/sessions.py) — called at the START of every turn, unlike
+    usage_ledger's metrics which only fire on a completed turn. Deliberate: a
+    rejected/moderated/short-circuited turn is still a real conversation and
+    should still appear in "switch conversation." Degrades to a no-op on its
+    own failure (can't fail the turn).
 
-    `_domain_name` is THIS PROCESS's own domain (set once, in
-    init_graph_async, alongside `_graph` itself) — correct
-    regardless of which caller reached here through astream_events_turn: the
-    CLI (app/channels/chat.py) and app/channels/telegram.py both stay bound to
-    whichever domain their own process booted against, while a queued
-    `"turn"` job runs inside whichever app/job_queue/agent_worker.py POOL picked
-    it up, already bound to one AGENT_DOMAIN for its whole life — so the
-    session row this stamps always matches the domain that actually ran the
-    turn."""
+    `_domain_name` is this process's own domain (set once in init_graph_async
+    alongside `_graph`), so the stamped row always matches whichever domain
+    actually ran the turn, regardless of caller.
+    """
     from app.agent import sessions
 
     await sessions.upsert_session(ctx, thread_id, text, domain=_domain_name)
 
 
 async def _open_checkpointer():
-    """Open the AsyncPostgresSaver on whichever loop calls this — see this
-    module's docstring for why the calling loop matters. Returns the saver;
-    stashes the pool in the module global so it isn't garbage-collected out
-    from under the connection (see `_checkpointer_pool`'s own comment) and
-    so `close_checkpointer_pool()` can shut it down explicitly later.
+    """Open the AsyncPostgresSaver on whichever loop calls this (see module
+    docstring). Stashes the pool in the module global so it isn't
+    garbage-collected out from under the connection, and so
+    `close_checkpointer_pool()` can shut it down explicitly later.
 
-    Backed by an `AsyncConnectionPool`, not a single `AsyncConnection` (what
-    the old `AsyncPostgresSaver.from_conn_string` call opened and held for
-    the whole process lifetime) — `AsyncPostgresSaver` accepts either
-    (`langgraph.checkpoint.postgres._ainternal.get_connection` branches on
-    `isinstance(conn, AsyncConnectionPool)`), and a pool is what actually
-    lets concurrent turns overlap instead of every checkpoint read/write
-    funneling through one shared connection (psycopg wraps every operation
-    on a connection in its own internal lock — verified directly in
-    psycopg/connection_async.py — so a single connection serializes
-    concurrent callers regardless of how the caller above is written).
+    Backed by an `AsyncConnectionPool` rather than a single `AsyncConnection`,
+    so concurrent turns get independent connections instead of funneling
+    through one (psycopg serializes all operations on a single connection).
 
-    Out of the box, `AsyncPostgresSaver` would still serialize every
-    checkpoint read/write behind one `asyncio.Lock` per saver instance,
-    regardless of `conn`'s type (`langgraph/checkpoint/postgres/aio.py`'s
-    `_cursor`: `async with self.lock, _ainternal.get_connection(self.conn)`)
-    — measured directly against this app (a real HTTP burst, 50 concurrent
-    turns) to serialize checkpoint I/O so hard that per-turn latency grew
-    ~5x from N=1 to N=50 while `pg_stat_activity` on the checkpointer DB
-    never showed more than 1 query actually active at a time, regardless of
-    `max_size`. That lock is only genuinely needed when `conn` is a single
-    shared `AsyncConnection` — the library's own comment on that line says
-    so ("a connection not in pipeline mode can only be used by one
-    thread/coroutine at a time") — but it's applied unconditionally even
-    when `conn` is an `AsyncConnectionPool`, whose whole job is safely
-    handing out independent connections to concurrent callers. This is a
-    confirmed, still-open upstream defect (langchain-ai/langgraph#7259,
-    verified against that project's own `main` branch on 2026-09-12 — not
-    fixed by upgrading `langgraph-checkpoint-postgres`), with a fix
-    (#7269, ~2.7x throughput in its own author's benchmark) written but
-    not yet merged. The `saver.lock = asyncio.Semaphore(...)` swap below is
-    the same workaround that issue's own commenters verified in production
-    (~4x reported) — `Semaphore` supports the same `async with` protocol as
-    `Lock`, so it's a same-shape drop-in, just capping concurrent
-    checkpoint I/O at the pool's real size instead of hard-serializing to
-    1. Remove this once #7269 (or equivalent) ships upstream — re-check
-    that issue before any langgraph-checkpoint-postgres version bump, since
-    this pokes a private, unversioned attribute of a third-party class.
-    `min_size` is fixed at 1 (app/agent/sql_store.py's own appdata pool is
-    a separate, differently-sized pool — this one doesn't mirror it).
+    Workaround: `AsyncPostgresSaver` still wraps every checkpoint read/write
+    in one `asyncio.Lock` per saver instance regardless of `conn` type,
+    which hard-serializes checkpoint I/O even with a pool — measured ~5x
+    latency growth from N=1 to N=50 concurrent turns. This is an open
+    upstream defect (langchain-ai/langgraph#7259; fix #7269 not yet merged).
+    Swapping `saver.lock` for an `asyncio.Semaphore` (same `async with`
+    protocol) is the community-verified workaround, capping concurrency at
+    the pool size instead of serializing to 1. Remove once #7269 ships
+    upstream — re-check before any langgraph-checkpoint-postgres bump, since
+    this pokes a private attribute of a third-party class.
 
-    `saver.setup()` is idempotent (creates its checkpoints/checkpoint_blobs/
-    checkpoint_writes tables on first run only) — safe to call on every
-    process start, including every independently-scaled agent_worker.py
-    instance."""
+    `saver.setup()` is idempotent (creates tables on first run only) — safe
+    to call on every process start, including each agent_worker.py replica.
+    """
     global _checkpointer_pool
     pool = AsyncConnectionPool(
         CHECKPOINTER_DATABASE_URL,
@@ -273,10 +179,7 @@ async def _open_checkpointer():
     await pool.open(wait=True)
     saver = AsyncPostgresSaver(conn=pool)
     if isinstance(saver.conn, AsyncConnectionPool):
-        # See this function's own docstring (langchain-ai/langgraph#7259):
-        # only the single-AsyncConnection case genuinely needs mutual
-        # exclusion here; a pool already hands out independent connections
-        # to concurrent callers safely on its own.
+        # Workaround for langchain-ai/langgraph#7259 — see this function's docstring.
         saver.lock = asyncio.Semaphore(CHECKPOINTER_POOL_MAX_SIZE)
     await saver.setup()
     _checkpointer_pool = pool
@@ -284,13 +187,10 @@ async def _open_checkpointer():
 
 
 def _resolve_domain_name(manifest: "AgentManifest | None") -> str:
-    """`manifest.name` if given, else whatever build_graph() itself would
-    fall back to (DEFAULT_MANIFEST, "ecorp") — mirrors build_graph()'s own
-    `manifest = manifest or DEFAULT_MANIFEST` substitution (app/agent/graph.py)
-    exactly, so `_domain_name` always names whichever manifest the graph
-    was ACTUALLY built with, never guessed independently of it. Lazy
-    import, same reason build_graph() itself imports DEFAULT_MANIFEST
-    lazily rather than at module level (see that function's own docstring)."""
+    """`manifest.name` if given, else build_graph()'s own fallback
+    (DEFAULT_MANIFEST, "ecorp") — mirrors build_graph()'s substitution exactly
+    so `_domain_name` always names whichever manifest the graph was actually
+    built with."""
     if manifest is not None:
         return manifest.name
     from app.agent.manifest import DEFAULT_MANIFEST
@@ -299,12 +199,10 @@ def _resolve_domain_name(manifest: "AgentManifest | None") -> str:
 
 
 async def close_checkpointer_pool() -> None:
-    """Shuts the checkpointer's connection pool down cleanly — same
-    reasoning as app/agent/sql_store.py::close_pool for the appdata pool
-    (skipping this leaves the pool's background worker tasks/connections
-    still open at process exit). Called from graceful-shutdown paths only
-    (app/api/main.py's lifespan, app/job_queue/agent_worker.py::run); a no-op if
-    the checkpointer was never opened."""
+    """Closes the checkpointer's connection pool cleanly (skipping this leaves
+    background worker tasks/connections open at process exit). Called from
+    graceful-shutdown paths only (app/api/main.py's lifespan,
+    agent_worker.py::run); a no-op if the checkpointer was never opened."""
     global _checkpointer_pool
     if _checkpointer_pool is not None:
         await _checkpointer_pool.close()
@@ -313,30 +211,20 @@ async def close_checkpointer_pool() -> None:
 
 async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "DomainPlugin | None" = None):
     """Initialize (or reuse) the shared graph for a process with its own
-    persistent event loop (FastAPI's lifespan; the CLI's --stream mode) —
-    see this module's docstring. Returns the graph. A no-op if the
-    singleton already exists — both astream_events_turn/_resume call this
-    directly precisely so the checkpointer ends up bound to whichever loop
-    is *actually* driving them, self-healing even if a process's startup
-    path forgot to prime it via lifespan; when startup DID prime it
-    already, this is just a cheap existence check (`manifest`/`domain` are
-    then ignored — the singleton, once built, doesn't change domain
-    mid-process).
+    persistent event loop (FastAPI's lifespan; the CLI's --stream mode).
+    Returns the graph; a no-op if the singleton already exists — both
+    astream_events_turn/_resume call this directly so the checkpointer ends
+    up bound to whichever loop actually drives them, self-healing even if
+    startup forgot to prime it via lifespan (`manifest`/`domain` are then
+    ignored — the singleton doesn't change domain mid-process).
 
-    `manifest`/`domain` (GRAPH_PATTERNS.md pattern 23, app/agent/manifest.py)
-    are threaded straight into `build_graph()`, which already accepts
-    them — both default to `None`, meaning "build_graph()'s own default,
-    the Ecorp domain," so every EXISTING caller (app/api/main.py's lifespan,
-    app/channels/chat.py's --stream mode) is completely unaffected. This is
-    what lets a NEW process boot the exact same durable-checkpointer
-    machinery against a DIFFERENT domain instead — see
-    app/channels/telegram.py, which reads AGENT_DOMAIN and resolves it via
-    app/domains/registry.py before priming the singleton. Each such
-    process still serves exactly one domain for its whole lifetime — this
-    is not the "several domains from one running process" registry the
-    Roadmap describes as still unbuilt (GRAPH_PATTERNS.md's "Extending
-    Further"), just "which one domain" becoming a boot-time parameter
-    instead of a hardcoded default.
+    `manifest`/`domain` (app/agent/manifest.py) thread straight into
+    `build_graph()` and default to `None` (build_graph()'s own Ecorp
+    default), so existing callers are unaffected. This is what lets a new
+    process boot the same durable-checkpointer machinery against a
+    different domain — see app/channels/telegram.py, which resolves
+    AGENT_DOMAIN via app/domains/registry.py before priming the singleton.
+    Each process still serves exactly one domain for its lifetime.
     """
     global _graph, _domain_name
     if _graph is None:
@@ -348,48 +236,25 @@ async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "Dom
 
 async def _ensure_seeded_async(graph, thread_id: str) -> None:
     """Seed a new conversation thread with the system prompt exactly once.
-    ASYNC only — `astream_events_turn`/`astream_events_turn_ctx` run
-    directly ON the checkpointer's own event loop (via `init_graph_async()`),
-    where only the checkpointer's async methods (`aupdate_state`, not
-    `update_state`) are safe to call; the sync method raises
-    `asyncio.InvalidStateError` from that same loop (the checkpointer
-    refuses a sync call from the loop it was created on — originally
-    caught against `AsyncSqliteSaver`; the same loop-binding constraint
-    holds for `AsyncPostgresSaver` — see this module's docstring), caught
-    empirically via a real live-`uvicorn` request against a fresh
-    thread_id before this async-only version existed (see
-    tests/agent/test_durable_checkpoint.py::TestAsyncSeeding).
+    ASYNC only — the streaming entry points run directly on the
+    checkpointer's own event loop, where the sync `update_state` raises
+    `asyncio.InvalidStateError`; only `aupdate_state` is safe there.
 
-    Reads `graph.manifest.system_prompt` (stamped by build_graph — see
-    GRAPH_PATTERNS.md pattern 23, app/agent/manifest.py) rather than the
-    module-level `SYSTEM_PROMPT` constant, so this seeds the CORRECT
-    prompt for whichever domain `graph` was actually built for — every
-    graph build_graph() returns always carries a `.manifest`, defaulting
-    to the Ecorp domain, so `graph.manifest.system_prompt` and the
-    top-level `SYSTEM_PROMPT` import are identical for every caller in
-    this app today (init_graph_async never passes a non-default
-    manifest); this only starts to matter the day some caller does.
+    Reads `graph.manifest.system_prompt` rather than the module-level
+    `SYSTEM_PROMPT` constant, so it seeds the correct prompt for whichever
+    domain `graph` was actually built for.
 
-    `_seeded` is only a same-process FAST PATH, never the source of
-    truth — real bug, found live via Langfuse: a thread's `agent`
-    generation showed the ~800-token system prompt TWICE. `_seeded` is a
-    plain in-process `set()`, so it forgets everything on a worker
-    restart, and — since `app/job_queue/agent_worker.py`'s own docstring
-    says to run SEVERAL `agent-worker` processes for scaling, with Redis
-    Streams distributing turns across them round-robin — a thread's
-    later turns can just as easily land on a DIFFERENT process that
-    never saw this thread_id before. Either way, the next process thinks
-    a long-running thread is brand new and appends a second copy of the
-    prompt via `aupdate_state`. That duplicate is permanent, not a
-    one-time cost: `_messages_to_trim` (graph.py) excludes every
-    SystemMessage from both its token budget AND its removal candidates,
-    so nothing ever cleans it up — every later turn on that thread pays
-    the extra ~800 tokens forever, directly eating into
-    MAX_TOKENS_PER_TURN. Fixed by checking the thread's actual persisted
-    state (the real source of truth) before seeding, and only trusting
-    `_seeded` to skip that check on a thread this SAME process already
-    confirmed — costs one extra `aget_state` per thread per process, not
-    per turn.
+    `_seeded` is a same-process fast path, never the source of truth: it's a
+    plain in-process `set()`, so it forgets everything on a worker restart,
+    and with several `agent_worker.py` replicas a thread's later turns can
+    land on a process that never saw this thread_id. Trusting `_seeded`
+    alone previously caused a real bug (caught via Langfuse) — a thread's
+    system prompt got duplicated, and since `_messages_to_trim` excludes
+    SystemMessages from trimming, the duplicate was permanent, quietly
+    eating into MAX_TOKENS_PER_TURN forever. Fixed by checking the thread's
+    actual persisted state before seeding, and only using `_seeded` to skip
+    that check once this process has confirmed it — one extra `aget_state`
+    per thread per process, not per turn.
     """
     if thread_id in _seeded:
         return

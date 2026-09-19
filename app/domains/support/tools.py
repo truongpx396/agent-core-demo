@@ -1,21 +1,15 @@
 """Tools for the support-copilot domain (app/domains/support/domain.py) —
-Tier-1 customer support: look things up in the knowledge base (reused
-as-is from app/agent/tools.py, see domain.py), open/check/escalate a
-support ticket, list a customer's own tickets, and add a follow-up comment
-to one already open. Sandboxed by design: this domain's AgentManifest never
-exposes calculator/add_note/remember/query_employees/run_subagent — see
-domain.py's own docstring for why that's the literal meaning of
-"sandboxed... knowledge base + ticket system" access.
+Tier-1 customer support: knowledge-base lookup (reused as-is from
+app/agent/tools.py), open/check/escalate a ticket, list a customer's own
+tickets, add a follow-up comment. Sandboxed by design: this domain's
+AgentManifest never exposes calculator/add_note/remember/query_employees/
+run_subagent (see domain.py's docstring).
 
-Same conventions as app/agent/tools.py throughout: an explicit Pydantic
-`args_schema`, `config: RunnableConfig` for ctx (auto-excluded from the
-schema the LLM sees), `_arun_with_timeout` (reused, not reimplemented) for
-the shared timeout budget + output scrubbing, and a fail-closed ctx check
-before touching Postgres. Every tool is `async def` now — `store`'s
-queries await a real `AsyncConnectionPool`, `notify`/`render_url_to_markdown`
-await real HTTP clients, and the sandbox tools await a real MCP client
-session (app/domains/sandbox_session.py) — matching app/agent/tools.py's
-own async-first design.
+Same conventions as app/agent/tools.py: Pydantic `args_schema`,
+`config: RunnableConfig` for ctx, `_arun_with_timeout` reused for the
+shared timeout budget + output scrubbing, fail-closed ctx check before
+touching Postgres. All tools are `async def`, matching that module's
+async-first design.
 """
 from enum import Enum
 
@@ -263,24 +257,19 @@ def _thread_id_from_config(config: RunnableConfig | None) -> str:
     return (config or {}).get("configurable", {}).get("thread_id", "unknown")
 
 
-# Three narrow, purpose-built tools over OpenSandbox's raw MCP catalog
-# (app/domains/sandbox_session.py, GRAPH_PATTERNS.md pattern 50) — the same
-# shared plumbing app/domains/ops/tools.py already uses (see its own
-# comment for the full "why not the raw ~19-tool catalog" writeup); this is
-# just this domain's own @tool wrapper layer around it, same "one shared
-# impl, one wrapper per domain" shape fetch_external_reference already has
+# Three narrow tools over OpenSandbox's raw MCP catalog
+# (sandbox_session.py, pattern 50) — same shared plumbing ops/tools.py
+# uses; this is just this domain's own @tool wrapper layer, same "one
+# shared impl, one wrapper per domain" shape fetch_external_reference has
 # around render_url_to_markdown.
 #
-# Always defined and always in TOOLS/TOOL_CAPABILITIES below — NOT gated on
-# opensandbox-mcp's reachability at this module's own import time, unlike
-# an earlier version of this code (see sandbox_session.load_raw_sandbox_tools's
-# own docstring for the live trace that surfaced why: a process that
-# finished booting before opensandbox-server finished starting cached an
-# empty tool set forever, with no self-healing short of a restart). These
-# three tools now match fetch_external_reference's own established shape
-# instead: always present, each impl below calls
-# sandbox_session.load_raw_sandbox_tools() FRESH on every call and raises a
-# plain, catchable error if it's still empty.
+# Always defined and in TOOLS/TOOL_CAPABILITIES below, NOT gated on
+# opensandbox-mcp's reachability at import time (an earlier version did
+# that and cached an empty tool set forever if the process booted before
+# opensandbox-server finished starting — see
+# sandbox_session.load_raw_sandbox_tools's docstring). Each impl instead
+# calls sandbox_session.load_raw_sandbox_tools() fresh per call and raises
+# a catchable error if still empty.
 
 
 class RunCommandInSandboxArgs(BaseModel):

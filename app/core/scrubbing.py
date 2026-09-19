@@ -1,26 +1,18 @@
 """Scrubs credential-shaped values out of TOOL OUTPUT before it reaches a
-prompt, a trace, or an audit entry (GRAPH_PATTERNS.md pattern 32) — a
-different chokepoint than a model-call-path PII scrubber would be,
-because tool output never passes through the model-call path: a tool can
-return a raw database row, a file's contents, or an API response
-containing a credential nobody asked the model to reveal, and that text
-reaches the LLM (and Langfuse) directly as `ToolMessage.content`.
+prompt, trace, or audit entry (pattern 32) — a different chokepoint than a
+model-call-path PII scrubber, since tool output (a raw DB row, file
+contents, an API response) reaches the LLM/Langfuse directly as
+`ToolMessage.content`, never through the model-call path.
 
-Two independent layers:
-1. **Static patterns** — common credential shapes (OpenAI-style `sk-...`
-   keys, AWS access key ids, `password=`/`token=`/`secret=`/`api_key=`
-   pairs, a connection URL's embedded `user:password@`, JWT-shaped
-   strings).
-2. **This deployment's own bound secret values** — the actual configured
-   values (`OPENAI_API_KEY`, `LANGFUSE_SECRET_KEY`/`_PUBLIC_KEY`, the
-   password portion of `APPDATA_DATABASE_URL`/`REDIS_URL`) read from
-   `app.core.config` at call time, so an exact echo of THIS deployment's real
-   secret is caught even when it doesn't match any generic pattern —
-   static patterns alone don't catch a structured tool result (e.g. a
-   `query_employees` row) that happens to surface a column containing a
-   raw connection string.
+Two layers: (1) static patterns for common credential shapes (`sk-...`
+keys, AWS key ids, `password=`/`token=`/`secret=`/`api_key=` pairs, a
+URL's embedded `user:password@`, JWT-shaped strings); (2) this
+deployment's own bound secret values, read live from `app.core.config`, so
+an exact echo of a real configured secret is caught even when it doesn't
+match a generic pattern (e.g. a `query_employees` row surfacing a raw
+connection string).
 
-Always on, no config flag — a tool result is never trusted to be
+Always on, no config flag — tool output is never trusted to be
 credential-free by default.
 """
 import logging
@@ -43,12 +35,10 @@ _STATIC_PATTERNS = [
 
 
 def _bound_secret_values() -> list[str]:
-    """This deployment's own actual configured secret values — read
-    fresh from app.core.config on every call (not cached at import time) so a
-    runtime config change is honored. Filtered to non-empty strings only:
-    an unset secret is `""` in this app's Settings defaults, and scrubbing
-    `""` would (via `str.replace`) mangle every character boundary of
-    every tool result."""
+    """Read fresh from app.core.config on every call (not cached at import
+    time) so a runtime config change is honored. Filtered to non-empty
+    strings: an unset secret defaults to `""`, and scrubbing `""` would
+    mangle every character boundary via `str.replace`."""
     from app.core import config
 
     candidates = [
@@ -57,9 +47,7 @@ def _bound_secret_values() -> list[str]:
         config.LANGFUSE_PUBLIC_KEY,
     ]
     for url in (config.APPDATA_DATABASE_URL, config.REDIS_URL):
-        # Only the password portion — scrubbing the whole URL would also
-        # hide the host/db name, which is harmless and often useful to see
-        # in a trace (e.g. "which Postgres did this hit").
+        # Password only — the host/db name is harmless and useful in a trace.
         match = re.search(r"://[^:\s/@]+:([^@\s/]+)@", url)
         if match:
             candidates.append(match.group(1))
@@ -67,14 +55,10 @@ def _bound_secret_values() -> list[str]:
 
 
 def scrub(text: str) -> str:
-    """Returns `text` with every credential-shaped or actually-bound
-    secret value replaced by `[REDACTED]`. Never raises — a scrubbing bug
-    must not be able to crash a tool call; on any unexpected failure this
-    degrades to returning `text` UNSCRUBBED (logged as a warning) rather
-    than blocking the tool result entirely, the same "a safety check's
-    own failure must not itself crash the turn" posture
-    app/agent/moderation.py::screen already takes.
-    """
+    """Returns `text` with every credential-shaped or bound secret value
+    replaced by `[REDACTED]`. Never raises — on unexpected failure this
+    degrades to returning `text` UNSCRUBBED (logged), rather than blocking
+    the tool result, same posture as moderation.py::screen."""
     if not text:
         return text
     try:

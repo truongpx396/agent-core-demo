@@ -1,6 +1,6 @@
 """Subagent definitions: bundled, on-disk descriptions of scoped, isolated
-nested agent runs the main agent can delegate a task to (GRAPH_PATTERNS.md
-pattern 46).
+nested agent runs the main agent can delegate to (GRAPH_PATTERNS.md pattern
+46).
 
 A subagent is one directory under `SUBAGENTS_DIR` (app/core/config.py)
 containing an `AGENT.md` — YAML frontmatter (`name`, `description`, and
@@ -16,22 +16,17 @@ body, the same shape `app/agent/skills.py`'s `SKILL.md` uses:
 
     You are a focused research assistant...
 
-This module is deliberately domain-agnostic, mirroring `app/agent/skills.py`'s
-own scope exactly: it knows nothing about `TOOL_CAPABILITIES`, read_only-ness,
-or which domain's tools exist. All of that validation (which declared tools
-are actually safe to hand a subagent, the run_subagent recursion block) lives
-in `app/agent/tools.py`, the module that already owns `TOOL_CAPABILITIES` —
-keeping this module a pure, reusable disk parser avoids any import-order
-coupling between the two. That split applies to `domains` too: this module
-only parses and carries the raw list (or `None`); app/agent/tools.py decides
-what an absent `domains` DEFAULTS to (unlike app/agent/skills.py's SkillRecord,
-where `None` means "every domain," an untagged subagent here stays exactly
-where it's always been — visible only when `app/agent/tools.py` builds
-Ecorp's own registry — precisely BECAUSE a subagent's declared `tools:` are
-only ever meaningful against one specific tool universe: a nested run
-resolves each declared name against the CALLING domain's own tools, so an
-untagged subagent silently exposed to every domain would mostly just resolve
-to nothing useful in a domain its tools were never written for).
+This module is domain-agnostic, mirroring `app/agent/skills.py`'s scope: it
+knows nothing about `TOOL_CAPABILITIES`, read_only-ness, or which domain's
+tools exist. That validation lives in `app/agent/tools.py`, which already
+owns `TOOL_CAPABILITIES` — avoids import-order coupling between the two.
+Same split for `domains`: this module only parses and carries the raw list
+(or `None`); app/agent/tools.py decides the default. Unlike
+`app/agent/skills.py`'s SkillRecord (where `None` means "every domain"), an
+untagged subagent here stays visible only when Ecorp's own registry is
+built — because a subagent's declared `tools:` only make sense against ONE
+specific tool universe, and an untagged subagent exposed to every domain
+would mostly resolve to nothing useful there.
 """
 import logging
 import re

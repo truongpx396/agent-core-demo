@@ -1,56 +1,38 @@
-"""Telegram bot channel (GRAPH_PATTERNS.md pattern 42) — a fourth
-first-party interface alongside the CLI (app/channels/chat.py), the HTTP API
-(app/api/main.py), and the built-in web UI (pattern 29). Long-polls Telegram's
-`getUpdates` (no public webhook URL needed — appropriate for a local/demo
-deployment with no inbound port to expose) and drives the SAME
-`app/agent/runtime_stream.py::astream_events_turn_unattended()` every queued worker
-turn already runs through — no bespoke graph-driving logic here, just a new
-front door onto it, collecting the streamed events into one final reply
-since Telegram has no incremental-message UX to stream tokens into.
+"""Telegram bot channel (pattern 42) — a fourth interface alongside the CLI,
+the HTTP API, and the built-in web UI. Long-polls Telegram's `getUpdates`
+(no public webhook needed) and drives the same
+`runtime_stream.py::astream_events_turn_unattended()` every queued worker
+turn runs through — just a new front door onto it, collecting streamed
+events into one final reply since Telegram has no token-streaming UX.
 
-Requires `TELEGRAM_BOT_TOKEN` (create a bot via @BotFather, then set it in
-.env) — refuses to start (raises, loud) rather than silently no-op when
-unset, matching this app's fail-closed-on-missing-config discipline
-elsewhere (SecurityCtx, moderation). This is also the ONE surface in this
-app that necessarily reaches the public internet (Telegram's own servers)
-— unlike the rest of the stack, which runs fully local via docker-compose.
+Requires `TELEGRAM_BOT_TOKEN` (create via @BotFather) — refuses to start
+rather than silently no-op when unset, same fail-closed discipline as
+SecurityCtx/moderation. Also the ONE surface in this app that necessarily
+reaches the public internet, unlike the rest of the fully-local stack.
 
 ## A generalized gateway, not an Ecorp-only one
 
-`AGENT_DOMAIN` (app/core/config.py, default `"ecorp"`) picks which domain
-(app/domains/registry.py) this process's shared graph singleton boots
-against — `AGENT_DOMAIN=support python -m app.channels.telegram` runs the
-Tier-1 support copilot (app/domains/support/), `AGENT_DOMAIN=sales` the
-sales concierge (app/domains/sales/) behind this exact same gateway,
-unmodified. Each is still its own OS process (its own bot token, in
-practice) — see app/agent/runtime.py's init_graph_async docstring for why
-this is "which one domain a process boots as," not the
-"several domains from one running process" registry GRAPH_PATTERNS.md's
-Roadmap still lists as unbuilt.
+`AGENT_DOMAIN` (default `"ecorp"`) picks which domain this process's shared
+graph singleton boots against — `AGENT_DOMAIN=support python -m
+app.channels.telegram` runs the support copilot, `AGENT_DOMAIN=sales` the
+sales concierge, unmodified. Each domain is still its own OS process (own
+bot token) — this is "which domain a process boots as," not the
+"several domains from one process" registry the Roadmap still lists as
+unbuilt (see runtime.py::init_graph_async).
 
-A WhatsApp gateway for the same domains would reuse the identical
-`handle_message`/`astream_events_turn_unattended()` core below unchanged —
-only the transport differs: WhatsApp's Business Cloud API is push/webhook-based
-(Meta POSTs to a public HTTPS endpoint you expose and verify), not
-long-poll-based like Telegram, so it would be a small FastAPI route
-(app/api/main.py) with signature verification and a Graph API send call, not
-a poller. Not built here: this repo doesn't ship integration code it can't
-verify against a live service (the same reasoning "Extending Further"
-already gives for not building a real webhook-based Telegram deployment),
-and there's no WhatsApp Business account/credentials to verify one against.
+A WhatsApp gateway for the same domains would reuse
+`handle_message`/`astream_events_turn_unattended()` unchanged — only the
+transport differs (WhatsApp is webhook-based, not long-poll). Not built
+here: no WhatsApp Business credentials to verify it against.
 
-HITL tool-call approval: this channel has no interactive approve/reject UX
-(no inline keyboard handling) — `astream_events_turn_unattended()` already
-auto-declines a mandatory-capability-gate pause for exactly this kind of
-caller with no interactive human on the other end (see its docstring and
-GRAPH_PATTERNS.md pattern 8's note), so a Telegram user asking for a
-mutating action gets a real reply explaining it wasn't approved, never a
-silently-run write or a message that never arrives.
+HITL: this channel has no interactive approve/reject UX —
+`astream_events_turn_unattended()` auto-declines a mandatory-capability-gate
+pause for callers with no human on the other end, so a mutating request
+gets a real reply explaining it wasn't approved, never a silent write.
 
-Run with: `python -m app.channels.telegram` (see Makefile's `telegram`/
-`telegram-support`/`telegram-sales` targets). Runs as its own process —
-not started by `make up`/`make serve` — since it's opt-in and needs a real
-bot token to do anything at all.
+Run with: `python -m app.channels.telegram` (Makefile's `telegram`/
+`telegram-support`/`telegram-sales`). Its own process, not started by
+`make up`/`make serve`, since it needs a real bot token to do anything.
 """
 import asyncio
 import logging
@@ -80,16 +62,15 @@ def _api_url(method: str) -> str:
 
 def _thread_id_for_chat(chat_id: int) -> str:
     """One durable conversation thread per Telegram chat — stable across
-    process restarts (the durable AsyncPostgresSaver checkpointer, same as
-    every other interface), so a user's history survives a bot restart."""
+    process restarts (the durable checkpointer), so history survives a
+    bot restart."""
     return f"telegram:{chat_id}"
 
 
 def _ctx_for_user(user_id: int) -> SecurityCtx:
     """Every Telegram user is its own principal within one shared tenant —
-    the same shape as app/channels/chat.py's local dev ctx, just keyed by Telegram's
-    own user id instead of the OS username, so different Telegram users
-    never share memories (app/agent/tools.py's remember/recall_memories)."""
+    same shape as chat.py's local dev ctx, keyed by Telegram's user id
+    instead of the OS username, so different users never share memories."""
     return {"tenant": DEFAULT_TENANT, "principal": f"telegram:{user_id}", "claims": {}}
 
 
@@ -104,9 +85,8 @@ def _format_reply(text: str, citations: list[dict]) -> str:
 
 async def _send_message(client: httpx.AsyncClient, chat_id: int, text: str) -> None:
     """Splits rather than truncates: a long, grounded answer with citations
-    is a normal, expected shape here, not an edge case to just cut off.
-    Best-effort — a failed send is logged, never raised, so one bad chat_id
-    can't take down the poll loop for every other chat."""
+    is a normal shape here, not an edge case. Best-effort — a failed send
+    is logged, never raised, so one bad chat_id can't kill the poll loop."""
     for i in range(0, len(text), _MESSAGE_CHAR_LIMIT):
         chunk = text[i : i + _MESSAGE_CHAR_LIMIT]
         try:
@@ -122,11 +102,9 @@ async def _send_message(client: httpx.AsyncClient, chat_id: int, text: str) -> N
 
 
 async def _run_turn(text: str, thread_id: str, ctx: SecurityCtx) -> tuple[str, list[dict]]:
-    """Drive astream_events_turn_unattended to completion and collect the
-    one final reply + its citations this channel actually sends — the same
-    single-shot shape the old, now-removed `answer()` gave callers, built
-    locally here since this channel needs one full reply per message, not
-    the raw per-token event stream."""
+    """Drive astream_events_turn_unattended to completion and collect the one
+    final reply + citations this channel sends — built locally since this
+    channel needs one full reply per message, not the raw event stream."""
     parts: list[str] = []
     citations: list[dict] = []
     async for event in astream_events_turn_unattended(text, thread_id, ctx):
@@ -145,9 +123,7 @@ async def handle_message(client: httpx.AsyncClient, message: dict) -> None:
     run the turn, and reply.
 
     Non-text messages (photos, stickers, voice, ...) are silently skipped —
-    out of scope for this channel; see GRAPH_PATTERNS.md's "Extending
-    Further" note on multimodal support for what would need to change to
-    handle an image here instead of just in a browser/API caller.
+    out of scope for this channel.
     """
     chat_id = message["chat"]["id"]
     user_id = message.get("from", {}).get("id", chat_id)
@@ -170,15 +146,12 @@ async def handle_message(client: httpx.AsyncClient, message: dict) -> None:
 
 
 async def run() -> None:
-    """The long-poll loop: fetch updates since the last processed offset,
-    handle each sequentially — one bot process, one chat handled at a time
-    — then advance `offset` past every update in the batch so a message is
-    never replayed after a successful reply, but IS retried (at-least-once,
-    not exactly-once) if the process dies mid-batch. A single, sequential
-    loop is a deliberate demo-scope choice: a real deployment fanning out
-    to many concurrent chats would want a worker pool, which is exactly the
-    shape GRAPH_PATTERNS.md's "Extending Further" Redis Streams note
-    describes generalizing this whole app towards.
+    """The long-poll loop: fetch updates since the last offset, handle each
+    sequentially (one chat at a time), then advance `offset` past the batch
+    — a message is never replayed after a successful reply, but IS retried
+    (at-least-once) if the process dies mid-batch. Sequential is a
+    deliberate demo-scope choice; a real deployment fanning out to many
+    concurrent chats would want a worker pool.
     """
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError(
@@ -187,22 +160,16 @@ async def run() -> None:
 
     manifest, domain = resolve_domain(AGENT_DOMAIN)
     logger.info("telegram_channel_domain", extra={"domain": manifest.name})
-    # Opens the durable checkpointer on THIS asyncio.run() loop, against
-    # WHICHEVER domain AGENT_DOMAIN resolved to — astream_events_turn_unattended
-    # (via astream_events_turn) needs the checkpointer bound to the same loop
-    # that's driving it, see app/agent/runtime.py's module docstring.
+    # Opens the durable checkpointer on THIS loop, against whichever domain
+    # AGENT_DOMAIN resolved to — it must be bound to the same loop driving
+    # it (see runtime.py).
     await init_graph_async(manifest=manifest, domain=domain)
     offset = 0
 
-    # Graceful shutdown: a SIGTERM/SIGINT stops this loop from starting a
-    # NEW getUpdates poll, but never interrupts a message already being
-    # handled — same "finish what's claimed, never abandon it mid-turn"
-    # shape as app/job_queue/agent_worker.py's `run()`. Bounded by how long a single
-    # getUpdates call can block (`_POLL_TIMEOUT_SECONDS`, Telegram's own
-    # long-poll window) rather than instant, since that call itself isn't
-    # cancelled mid-flight — the tradeoff a long-poll design accepts, per
-    # this function's own docstring on why a real webhook deployment would
-    # differ.
+    # Graceful shutdown: SIGTERM/SIGINT stops new getUpdates polls but never
+    # interrupts a message already being handled (same shape as
+    # agent_worker.py's `run()`). Bounded by `_POLL_TIMEOUT_SECONDS` since
+    # an in-flight getUpdates call isn't cancelled mid-flight.
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -230,13 +197,12 @@ async def run() -> None:
                     await handle_message(client, message)
 
     logger.info("telegram_channel_stopping")
-    # Same reasoning as app/api/main.py's lifespan shutdown: handle_message ->
-    # astream_events_turn_unattended runs the full graph, which may have
-    # opened app/agent/sql_store.py's connection pool (query_employees,
-    # app/agent/usage_ledger.py::record_usage). A no-op if this process never touched it.
+    # Same reasoning as app/api/main.py's lifespan shutdown: handle_message
+    # runs the full graph, which may have opened sql_store.py's pool.
+    # No-op if this process never touched it.
     await sql_store.close_pool()
-    # Same reasoning for the checkpointer's own pool (app/agent/runtime.py) —
-    # init_graph_async() above always opens it, so this is never a no-op here.
+    # Same reasoning for the checkpointer's pool — init_graph_async() above
+    # always opens it, so this is never a no-op here.
     await close_checkpointer_pool()
 
 

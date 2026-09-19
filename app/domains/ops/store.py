@@ -1,23 +1,19 @@
 """Fixed, parameterized queries against `ops_incidents`
-(postgres-init/10-ops-incidents.sql) — the ops bot's own incident log, so an
-investigation that finds a real anomaly can record it durably instead of
-only ever posting a one-off team-channel message that scrolls away. Same
-discipline as app/agent/sql_store.py/app/domains/support/store.py: no
-generated SQL, reusing that module's own pooled `appdata` connection.
+(postgres-init/10-ops-incidents.sql) — the ops bot's incident log, so a
+confirmed anomaly can be recorded durably instead of only posted as a
+one-off team-channel message. No generated SQL; reuses sql_store's pooled
+`appdata` connection, same discipline as support/store.py.
 
-Deliberately NOT `tenant`-scoped, unlike support_tickets/crm_leads — see
-postgres-init/10-ops-incidents.sql's own comment for why: this app's own
-operational metrics have no per-tenant dimension for an incident about them
-to inherit.
+Deliberately NOT `tenant`-scoped, unlike support_tickets/crm_leads: this
+app's own operational metrics have no per-tenant dimension to inherit
+(see postgres-init/10-ops-incidents.sql's comment).
 """
 from app.agent.sql_store import get_connection
 
 
 async def log_incident(opened_by: str, summary: str, detail: str | None) -> int:
-    """Insert one new incident, always `status='open'` — the only way an
-    incident comes into existence, mirroring
-    app/domains/support/store.py::create_ticket's "a fresh id, never a
-    caller-targeted one" discipline. Returns the new incident's id."""
+    """Insert one new incident, always `status='open'`. Returns the new
+    incident's id (fresh, never caller-targeted)."""
     sql = (
         "INSERT INTO ops_incidents (opened_by, summary, detail) "
         "VALUES (%s, %s, %s) RETURNING id"
@@ -30,9 +26,8 @@ async def log_incident(opened_by: str, summary: str, detail: str | None) -> int:
 
 async def list_recent_incidents(limit: int = 10, status: str | None = None) -> list[dict]:
     """Most recent incidents first, optionally narrowed to one `status`
-    ('open'/'resolved') — what `list_recent_incidents` shows so an
-    investigation can check "has this happened before?" without a human
-    having to dig through team-channel history."""
+    ('open'/'resolved'), so an investigation can check "has this happened
+    before?" without digging through team-channel history."""
     sql = (
         "SELECT id, opened_by, summary, detail, status, resolution, created_at, resolved_at "
         "FROM ops_incidents"
@@ -51,10 +46,9 @@ async def list_recent_incidents(limit: int = 10, status: str | None = None) -> l
 
 
 async def resolve_incident(incident_id: int, resolution: str) -> bool:
-    """Marks an incident resolved — returns False (no update applied) if no
-    incident with that id exists, so the tool impl can tell the model "no
-    such incident" instead of silently no-op-ing, same contract as
-    app/domains/support/store.py::escalate_ticket."""
+    """Marks an incident resolved. Returns False if no incident with that
+    id exists, so the tool impl can tell the model "no such incident"
+    instead of silently no-op-ing."""
     sql = (
         "UPDATE ops_incidents SET status = 'resolved', resolution = %s, resolved_at = now() "
         "WHERE id = %s"

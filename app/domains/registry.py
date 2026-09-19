@@ -1,23 +1,14 @@
-"""Name → (AgentManifest, DomainPlugin) lookup for every domain this app
-ships, consulted two different ways depending on whether "domain" is a
-property of a whole PROCESS or of a single REQUEST:
-- Per-process: app/channels/telegram.py and app/job_queue/agent_worker.py both
-  read AGENT_DOMAIN once at startup and resolve it here — that process (or
-  worker pool) serves exactly that one domain for its whole life. Running
-  several domains at once this way means running several such processes,
-  one per AGENT_DOMAIN.
-- Per-request: app/api/main.py's queued endpoints (`POST
-  /chat/stream/queued`, `/chat/resume`, `/chat/cancel`) validate the
-  caller's `X-Domain` header against this registry's keys (see that
-  module's `get_domain`) and route the request onto that domain's own
-  Redis Stream (app/job_queue/queue.py::requests_stream_key) — which domain a
-  MESSAGE is for, not the API process itself. This is what lets that ONE
-  unified API process serve every domain a worker pool is currently
-  running for.
+"""Name -> (AgentManifest, DomainPlugin) lookup, consulted two ways:
+- Per-process: telegram.py/agent_worker.py read AGENT_DOMAIN once at
+  startup and resolve it here — that process/worker pool serves exactly
+  one domain for its life.
+- Per-request: app/api/main.py's queued endpoints validate the caller's
+  `X-Domain` header against this registry's keys and route onto that
+  domain's own Redis Stream — which domain a MESSAGE is for, letting one
+  API process serve every domain a worker pool is running.
 
 Deliberately NOT consulted by app/channels/chat.py, which keeps defaulting
-to Ecorp exactly as before this module existed — see app/agent/runtime.py's
-init_graph_async docstring for why that default needed no code change here.
+to Ecorp unchanged (see runtime.py's init_graph_async docstring).
 """
 from app.agent.manifest import (
     DEFAULT_DOMAIN_PLUGIN,
@@ -38,9 +29,7 @@ DOMAINS: dict[str, tuple[AgentManifest, DomainPlugin]] = {
 
 
 def resolve_domain(name: str) -> tuple[AgentManifest, DomainPlugin]:
-    """Fail loud on an unknown name — same discipline as
-    TELEGRAM_BOT_TOKEN's missing-config check
-    (app/channels/telegram.py::run) — rather than silently falling back to
+    """Fail loud on an unknown name rather than silently falling back to
     Ecorp, which would be a confusing way to discover a typo'd
     AGENT_DOMAIN."""
     try:

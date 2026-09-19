@@ -1,23 +1,17 @@
-"""Real usage/cost ledger (GRAPH_PATTERNS.md pattern 26) — closes the "no
-Meter, real or hollow" gap: a shipped standalone-product default is
-supposed to keep an actual usage ledger, not a no-op that makes a broken
-deployment look configured (the same "no hollow defaults" principle
-app/agent/moderation.py's real (if narrowly-scoped) check already follows).
+"""Real usage/cost ledger (pattern 26) — closes the "no hollow Meter" gap:
+a shipped default should keep an actual ledger, not a no-op that makes a
+broken deployment look configured (same principle as moderation.py's real
+check).
 
-Persisted in the same `appdata` Postgres database app/agent/sql_store.py already
-uses (`usage_ledger` table, postgres-init/03-meter.sql) — a separate table,
-not a separate database, since it's the same "this app's own operational
-data" lifecycle as `employees`. Every row is tenant+principal scoped, the
-same isolation axis every other write in this app already carries.
+Persisted in the same `appdata` Postgres database as sql_store.py
+(`usage_ledger` table, postgres-init/03-meter.sql). Every row is
+tenant+principal scoped.
 
-Cost is computed from a small, explicit, approximate per-model price table
-(`PRICE_PER_1K_TOKENS_USD`) — $0 for any model alias not listed, which is
-every locally-run Ollama model this demo's own docker-compose ships (local
-inference has no per-token API cost). Tokens are still recorded
-unconditionally regardless of whether a price is known, so pointing
-`OPENAI_API_BASE` at a real paid provider and adding its alias to the price
-table is the only change needed for real cost tracking — the ledger's
-shape never changes.
+Cost comes from a small, explicit per-model price table
+(`PRICE_PER_1K_TOKENS_USD`) — $0 for any unlisted alias, true for every
+Ollama model this demo runs locally. Tokens are recorded unconditionally
+regardless of price, so pointing at a real paid provider and adding its
+alias is the only change needed for real cost tracking.
 """
 import logging
 from datetime import datetime
@@ -28,10 +22,9 @@ from app.core.security import SecurityCtx, valid_ctx
 
 logger = logging.getLogger(__name__)
 
-# Approximate, illustrative USD-per-1000-tokens pricing — update to match
-# your actual provider's current rates. An alias absent from this table
-# costs $0 (true today for every model this app's docker-compose runs
-# locally via Ollama through LiteLLM).
+# Approximate, illustrative USD/1000-token pricing — update to match your
+# provider's rates. An alias absent from this table costs $0 (true for
+# every model this app runs locally via Ollama/LiteLLM).
 PRICE_PER_1K_TOKENS_USD: dict[str, float] = {
     "gpt-4o": 0.005,
     "gpt-4o-mini": 0.00015,
@@ -41,13 +34,11 @@ PRICE_PER_1K_TOKENS_USD: dict[str, float] = {
 async def record_usage(
     ctx: SecurityCtx | None, thread_id: str, model_alias: str, total_tokens: int
 ) -> None:
-    """Best-effort write-through after a turn completes (app/agent/runtime.py's
-    `_record_turn_metrics`). A ledger write that fails must not fail the
-    turn whose usage it's trying to record — same degrade-don't-crash
-    posture as app/retrieval/semantic_cache.py's `set()`. Records nothing (and logs)
-    without a valid ctx or with zero tokens — a usage row with no
-    tenant/principal is unattributable, and a zero-token row (a rejected/
-    short-circuited turn) has nothing to meter.
+    """Best-effort write-through after a turn completes
+    (`runtime.py::_record_turn_metrics`). A failing write must not fail
+    the turn it's recording — same degrade-don't-crash posture as
+    `semantic_cache.py::set()`. No-ops without a valid ctx or with zero
+    tokens (unattributable / nothing to meter).
     """
     if not valid_ctx(ctx) or total_tokens <= 0:
         return
@@ -83,17 +74,12 @@ async def record_usage(
 async def usage_summary(
     tenant: str, principal: str | None = None, since: datetime | None = None
 ) -> dict:
-    """Real read path proving the ledger isn't write-only: total tokens
-    and cost for `tenant`, optionally narrowed to one `principal` — never
-    the other way around (no way to query across tenants) — and/or to
-    usage recorded on or after `since`. `since` is what
-    `_tenant_over_daily_budget` (app/agent/runtime.py) uses for a ROLLING
-    24-hour-window budget check (`since = now - 24h`, not calendar-day
-    boundaries, so the window a request is checked against never resets a
-    tenant's near-limit status mid-day the way a midnight-UTC boundary
-    would) — `usage_summary`'s own all-time default (`since=None`) stays
-    the right shape for `GET /usage`'s "how much has this tenant ever
-    spent" question, a different one."""
+    """Total tokens and cost for `tenant`, optionally narrowed to one
+    `principal` and/or to usage on/after `since`. `since` is what
+    `_tenant_over_daily_budget` (runtime.py) uses for a ROLLING 24h window
+    (`now - 24h`, not calendar-day boundaries, so a tenant's near-limit
+    status never resets mid-day). `since=None` (all-time) is the right
+    default for `GET /usage`'s "total ever spent" question instead."""
     where = ["tenant = %s"]
     params: list = [tenant]
     if principal:

@@ -1,19 +1,14 @@
-"""Embed the bundled skill catalog (name + description) and load it into
-the `skills` Qdrant collection — the search index `skill_search` queries
+"""Embed the bundled skill catalog (name + description) into the `skills`
+Qdrant collection — the search index `skill_search` queries
 (app/agent/tools.py, GRAPH_PATTERNS.md pattern 45).
 
-Run with: `make index-skills`, any time a SKILL.md is added, edited, or
-removed under `skills/`.
+Run with `make index-skills` whenever a SKILL.md is added/edited/removed.
 
-Mirrors scripts/seed.py's shape and division of labor: `ensure_collection`
-is destructive (recreates the collection) so it's called explicitly, once,
-here — never implicitly inside the loop. Unlike seed.py, this does NOT go
-through app/ingestion/ingestor.py's chunking pipeline: a skill's searchable
-text is just its short `name: description` summary, never split into
-parent/child chunks, and the collection holds only that summary — a
-skill's full instruction body is never written to Qdrant at all (see
-app/agent/skills.py's docstring for why: disk stays the one source of
-truth for content, Qdrant is only the search index over metadata).
+Mirrors scripts/seed.py's shape: `ensure_collection` is destructive
+(recreates the collection), so it's called explicitly, once. Unlike
+seed.py, skips the chunking pipeline — a skill's searchable text is just
+its `name: description` summary; the full instruction body is never
+written to Qdrant (disk stays the source of truth; see app/agent/skills.py).
 """
 import asyncio
 import uuid

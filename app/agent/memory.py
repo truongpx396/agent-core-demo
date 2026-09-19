@@ -1,17 +1,14 @@
 """Scoped, audited memory deletion — the removal half of cross-session
-memory (GRAPH_PATTERNS.md pattern 33, extending pattern 18's "a memory
-must be removable" note). `app/retrieval/qdrant_store.py::delete_by_filter` is the
-low-level mechanism; `delete_memories` here is the one function that
-actually builds a correctly-scoped, correctly-audited selector on top of
-it.
+memory (pattern 33, extending pattern 18's "a memory must be removable").
+`qdrant_store.py::delete_by_filter` is the low-level mechanism;
+`delete_memories` builds the correctly-scoped, correctly-audited selector
+on top of it.
 
-Deliberately NOT an agent-facing tool, same non-goal
-`delete_by_filter`'s own docstring already states: an LLM deciding to
-delete a principal's memories on their behalf is a harder trust question
-(real user intent vs. a model's interpretation of a request) than the
-retrieval/write gating this app already handles. This is the mechanism a
-real data-subject-request handler or a retention-sweep script calls
-directly — a trusted OPERATIONAL caller, never the graph.
+Deliberately NOT an agent-facing tool — an LLM deciding to delete a
+principal's memories is a harder trust question than the retrieval/write
+gating this app already does. Called directly by a trusted OPERATIONAL
+caller (a data-subject-request handler, a retention sweep), never the
+graph.
 """
 import logging
 from datetime import UTC, datetime, timedelta
@@ -40,28 +37,19 @@ async def delete_memories(
     target_principal: str | None = None,
 ) -> int:
     """Delete memories matching EXACTLY ONE selector — `memory_id` (a
-    single memory) or `older_than_days` (every memory strictly older than
-    N days). Never both, never neither: a selector this function can't
-    honor in full is REFUSED (raises `ValueError`), not silently narrowed
-    to "everything" or quietly ignored — the same "fail closed on an
-    ambiguous request" discipline this app applies everywhere else.
+    single memory) or `older_than_days` (older than N days). Never both,
+    never neither: an ambiguous selector is REFUSED (raises `ValueError`),
+    never silently narrowed or ignored.
 
-    Always scoped to `ctx["tenant"]` — a deletion can never reach outside
-    the caller's tenant, no matter what `target_principal` is asked for.
-    `target_principal` defaults to `ctx["principal"]` (delete your own
-    memories); passing a different principal lets a trusted operational
-    caller (see module docstring) target another principal WITHIN THE
-    SAME TENANT — e.g. a departed employee's data-subject-request. This
-    module does not itself authenticate that the caller is entitled to
-    target someone else — same trust boundary `scripts/seed.py`'s
-    script-identity ctx already relies on for its own operational writes.
+    Always scoped to `ctx["tenant"]`. `target_principal` defaults to
+    `ctx["principal"]`; passing a different one lets a trusted operational
+    caller target another principal WITHIN THE SAME TENANT (e.g. a
+    departed employee's data-subject-request) — this module does not
+    itself authenticate that entitlement.
 
-    Returns the number of memories actually removed. Every call — refused
-    or not — is recorded via `agent_memory_deletion_total{outcome=...}`
-    (never carrying tenant/principal in a metric LABEL) plus a structured
-    log line that DOES carry them (metadata, not a metric — same split
-    `_instrumented`'s node-lifecycle logging already uses), so a deletion
-    is never silent either way.
+    Returns the count removed. Every call (refused or not) is recorded via
+    `agent_memory_deletion_total{outcome=...}` (no tenant/principal in the
+    metric label) plus a structured log line that does carry them.
     """
     if not valid_ctx(ctx):
         metrics.agent_memory_deletion_total.labels(outcome="refused").inc()
@@ -90,12 +78,10 @@ async def delete_memories(
         must.append(FieldCondition(key="created_at", range=DatetimeRange(lt=cutoff)))
 
     selector = Filter(must=must)
-    # count-then-delete: Qdrant's delete call doesn't itself return a row
-    # count, and the alternative (retrieve full points just to count them)
-    # is strictly more expensive for the same answer. Accepts a narrow
-    # race (a concurrent write between the count and the delete) as a
-    # demo-scope tradeoff — a strictly exact count would need Qdrant to
-    # return deleted ids directly, which its delete API doesn't offer.
+    # count-then-delete: Qdrant's delete call doesn't return a row count,
+    # and retrieving full points just to count them is more expensive.
+    # Accepts a narrow race (concurrent write between count and delete) as
+    # a demo-scope tradeoff.
     count = await qdrant_store.count_by_filter(selector)
     await qdrant_store.delete_by_filter(selector)
 

@@ -1,26 +1,17 @@
-"""The generic "reject a bad tool-call batch, loop back to agent for a
-self-correcting retry" guardrail cluster: `too_many_tool_calls` (over the
-per-turn cap), `invalid_tool_call` (a hallucinated/non-existent tool name),
-and the machinery both share — `_reject_tool_calls`, `_current_turn_messages`,
+"""Guardrail cluster for rejecting a bad tool-call batch and looping back
+to agent for a self-correcting retry: `too_many_tool_calls` (over the
+per-turn cap), `invalid_tool_call` (hallucinated/non-existent tool name),
+and shared machinery — `_reject_tool_calls`, `_current_turn_messages`,
 `_invalid_tool_call_names`/`_DEFAULT_VALID_TOOL_NAMES`. Split out of
-`app/agent/graph.py` purely for file size — see that module's own docstring,
-and `app/agent/graph_hitl.py`/`app/agent/graph_utils.py`/
-`app/agent/graph_skills.py` for the sibling splits. No behavior change from
-the pre-split single-file version.
+`app/agent/graph.py` for file size.
 
-`use_skill_without_search` — the THIRD node sharing this exact "reject +
-retry" shape — deliberately lives in `app/agent/graph_skills.py` instead,
-alongside the rest of the skill-misuse guardrail family
-(`_pending_skill_required_tool`) it's thematically grouped with; it imports
-`_reject_tool_calls` from here.
+`use_skill_without_search` — a third node with this same shape — lives in
+`graph_skills.py` instead (grouped with the rest of the skill-misuse
+family) and imports `_reject_tool_calls` from here.
 
 `_current_turn_messages`/`_invalid_tool_call_names`/`_DEFAULT_VALID_TOOL_NAMES`
-are also used by `app/agent/graph_routing.py` (imported from here, not
-`app/agent/graph.py`) and, for `_current_turn_messages` specifically, by
-`app/agent/graph.py`'s own `make_agent_node` — which imports it back via a
-deferred (function-body-local) import to avoid a real circular import,
-same pattern `_assemble_shared_graph_parts` already uses for
-`check_output`/`should_continue`/`_make_llm`.
+are also used by `graph_routing.py`, and `_current_turn_messages` by
+`graph.py`'s `make_agent_node` (deferred import to avoid a cycle).
 """
 from typing import cast
 
@@ -40,13 +31,11 @@ def _reject_tool_calls(tool_calls: list, reason: str) -> list[ToolMessage]:
 
 
 def _current_turn_messages(messages: list) -> list:
-    """All messages within the CURRENT turn only — after the most recent
-    HumanMessage, inclusive — never spanning into a prior turn. Shared
-    slice logic behind app/agent/graph_routing.py's own
-    _current_turn_tool_call_batches (loop-progress, GRAPH_PATTERNS.md
-    pattern 34) and _skipped_required_sandbox_after_skill
-    (skill-instruction-compliance); both need "everything said and done so
-    far in THIS turn," just filtered differently afterward."""
+    """Messages in the CURRENT turn only — from the most recent
+    HumanMessage (inclusive) onward, never spanning into a prior turn.
+    Shared by graph_routing.py's `_current_turn_tool_call_batches`
+    (pattern 34) and `_skipped_required_sandbox_after_skill`, each
+    filtering it differently afterward."""
     last_human_index = next(
         (i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)),
         None,
@@ -60,23 +49,13 @@ _DEFAULT_VALID_TOOL_NAMES = frozenset(t.name for t in TOOLS)
 def _invalid_tool_call_names(
     tool_calls: list, valid_tool_names: frozenset[str] = _DEFAULT_VALID_TOOL_NAMES
 ) -> list[str]:
-    """Names in this batch that aren't a real registered tool at all — a
-    stricter, more severe check than `_tool_capability`'s "outward" default
-    (which still assumes the name refers to a real tool, just an undeclared
-    one). Guards against the model itself emitting a malformed/hallucinated
-    tool call — e.g. Ollama's native tool-calling on a small model (verified
-    against a real deployment: `qwen2.5:3b`, asked "list all tools available
-    there," a query that shouldn't trigger any tool call) returning a
-    garbled name for a query that shouldn't have triggered any tool call at
-    all. Verified empirically that this app's own interrupt-payload/SSE-event
-    plumbing (`human_approval` below, `app/agent/runtime.py`'s pass-through, the
-    CLI/web UI's rendering) cannot itself produce a malformed name — every
-    list construction and render path along that chain is structurally
-    correct, so a bad name here can only be what the model already emitted.
-    `valid_tool_names` defaults to app/agent/tools.py's TOOLS (the Ecorp domain) so
-    every existing direct call keeps working unchanged; `build_graph` passes
-    a domain's own tool set instead, same pattern as `tool_capabilities`
-    above."""
+    """Names in this batch that aren't a registered tool at all — stricter
+    than `_tool_capability`'s "outward" default (which still assumes a
+    real, just undeclared, tool). Guards against the model emitting a
+    malformed/hallucinated tool call (seen with Ollama's native
+    tool-calling on small models, e.g. qwen2.5:3b). `valid_tool_names`
+    defaults to app/agent/tools.py's TOOLS (Ecorp); `build_graph` passes a
+    domain's own tool set instead."""
     return [tc["name"] for tc in tool_calls if tc["name"] not in valid_tool_names]
 
 # --- Node: safety budget — abort a turn where the LLM asked for more tool
@@ -94,19 +73,14 @@ def too_many_tool_calls(state: State) -> dict:
     return {"messages": rejections}
 
 
-# --- Node: safety guardrail — abort a batch containing a tool name that
-# isn't a real registered tool at all, instead of dispatching it or (worse)
-# surfacing it to a human at human_approval, where nobody could meaningfully
-# approve or reject a name that doesn't correspond to anything. Same
-# "reject the whole batch + loop back to agent for a self-correcting retry"
-# shape as too_many_tool_calls above — see _invalid_tool_call_names for why
-# this exists (a small-model tool-calling fidelity issue, not a bug in this
-# app's own control flow). Uses the module-default `valid_tool_names` (the
-# Ecorp domain's TOOLS) to name the offending tool(s) in its message even
-# for a non-default domain — should_continue already routed here using the
-# CORRECT domain-bound set, so the whole batch is rejected regardless; this
-# only affects which name(s), if any, get cited in the retry message for a
-# custom domain whose tool set differs from Ecorp's. ---
+# --- Node: abort a batch containing a non-existent tool name, instead of
+# dispatching it or surfacing it to a human at human_approval (who couldn't
+# meaningfully approve/reject a name that doesn't exist). Same reject+retry
+# shape as too_many_tool_calls. Uses the module-default `valid_tool_names`
+# (Ecorp's TOOLS) just to NAME the offending tool(s) in the retry message —
+# should_continue already routed here using the correct domain-bound set,
+# so a custom domain still rejects correctly; only the cited name(s) could
+# differ. ---
 def invalid_tool_call(state: State) -> dict:
     last_ai = cast(AIMessage, state["messages"][-1])
     tool_calls = last_ai.tool_calls or []

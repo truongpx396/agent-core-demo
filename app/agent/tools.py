@@ -1,69 +1,50 @@
 """LangGraph tools the agent can call.
 
-- `search_docs`: tenant-scoped retrieval from Qdrant, with an optional
-  metadata (topic) filter.
+- `search_docs`: tenant-scoped retrieval from Qdrant, optional topic filter.
 - `calculator`: a third tool so the agent must *choose* which to call.
 - `add_note`: writes a new note into the Qdrant knowledge base — a
-  *mutating* tool. See `TOOL_CAPABILITIES` below for why it's declared, not
-  just implemented, as mutating.
-- `remember`: the *only* way a memory gets written — a second mutating
-  tool. See the "Cross-session memory" section below for why recall is
-  automatic (folded into retrieve_context) but writing never is.
+  *mutating* tool (see `TOOL_CAPABILITIES` below).
+- `remember`: the only way a memory gets written — also mutating. Recall
+  is automatic (folded into retrieve_context); writing never is.
 - `skill_search`/`use_skill`: progressive disclosure over a bundled catalog
   of `SKILL.md` packages (`app/agent/skills.py`, GRAPH_PATTERNS.md pattern
-  45) — `skill_search` hybrid-searches a small Qdrant collection of skill
-  name/description metadata, `use_skill` loads one matched skill's full
-  instruction body from disk by exact name. Like `calculator`, these are
-  bundled app capabilities, not tenant data — no `SecurityCtx` involved.
+  45). `skill_search` hybrid-searches a small Qdrant collection of skill
+  name/description metadata; `use_skill` loads one matched skill's full
+  body from disk by exact name. Bundled app capability, not tenant data —
+  no `SecurityCtx` involved.
 - `run_subagent`: delegates a self-contained task to a fresh, ISOLATED
   nested agent run — a genuinely separate `graph.invoke()`, unlike
-  `use_skill`, which loads more instructions into THIS agent's own context.
-  Backed by a bundled catalog of `AGENT.md` packages
-  (`app/agent/subagents.py`, GRAPH_PATTERNS.md pattern 46). Every subagent is
-  restricted to `read_only` tools (enforced at catalog-build time below, see
-  `_resolve_subagent_tools`), so `run_subagent` itself needs no mandatory
-  `human_approval` gating — it's exactly as safe as `search_docs`.
+  `use_skill` which loads more instructions into THIS agent's context.
+  Backed by `AGENT.md` packages (`app/agent/subagents.py`, GRAPH_PATTERNS.md
+  pattern 46). Every subagent is restricted to `read_only` tools (enforced
+  at catalog-build time, see `_resolve_subagent_tools`), so `run_subagent`
+  needs no mandatory `human_approval` gating.
 
-All tools declare an explicit **Pydantic `args_schema`**. This is the robust
-way to define tool inputs: the schema (enums, descriptions, validators) is what
-the LLM sees as the tool's JSON schema, so it constrains what the model can
-send and rejects bad arguments loudly instead of failing silently. `add_note`
-and `remember` lean on this harder than the read-only tools do: their args are
-a fixed, closed set — there is no free-form query or generated-write path
-here, deliberately. A tool that let the model construct its own write target
-(the equivalent of letting it generate SQL) would defeat the whole point of
-gating writes behind a narrow, reviewable surface — see GRAPH_PATTERNS.md's
-"fixed tools, never generated queries" note.
+All tools declare an explicit Pydantic `args_schema` — the JSON schema the
+LLM sees, constraining what it can send and rejecting bad arguments loudly.
+`add_note`/`remember` lean on this harder: their args are a fixed, closed
+set, never a free-form or model-generated write target (see
+GRAPH_PATTERNS.md's "fixed tools, never generated queries").
 
 ## Tenant isolation (app/core/security.py)
 
-`search_docs`, `add_note`, and `remember` all receive `config:
-RunnableConfig` — a LangChain-standard parameter that's auto-injected by
-`ToolNode` and, critically, auto-*excluded* from the schema the LLM sees
-(verified: `tool.args` never lists it) — to read `SecurityCtx` from
-`config["configurable"]["ctx"]`. Every one of them calls `_ctx_or_refuse`
-first and refuses (fails closed) rather than running an unscoped query or
-an untenanted write if `ctx` is missing or malformed. This is the same
-"config carries what the LLM must never see or set" channel app/agent/graph.py's
-nodes already use for `deps` — ctx just travels one level further, into
-the tools themselves.
+`search_docs`, `add_note`, and `remember` receive `config: RunnableConfig`
+(auto-injected by `ToolNode`, auto-excluded from the LLM-visible schema) to
+read `SecurityCtx` from `config["configurable"]["ctx"]`. Each calls
+`_ctx_or_refuse` first and fails closed if `ctx` is missing/malformed,
+rather than running an unscoped query or untenanted write.
 
 ## Cross-session memory
 
-A memory is written *only* by the `remember` tool — nothing in this app
-extracts facts from turn text automatically. That's deliberate: whatever
-writes memory decides what gets replayed into every future prompt, which
-makes autonomous extraction a privileged, unaudited side channel. Recall,
-by contrast, is automatic — folded into `_default_search` (app/agent/graph.py)
-alongside document retrieval, and re-filtered against *current* ctx on
-every call (`Policy.lower(ctx, "memories")`, scoped to `tenant` AND
-`owner`) rather than trusted from a prior turn's snapshot. A recalled
-memory is framed exactly like a retrieved document — untrusted content,
-delimited, never an instruction — because it's the same textbook injection
-vector with a longer memory: unlike a one-off retrieved chunk, a poisoned
-memory keeps coming back on every later turn until removed
-(`qdrant_store.delete_by_filter` is the removal mechanism; deliberately not
-an agent-facing tool — see its docstring for why).
+Memory is written only by `remember` — nothing extracts facts from turn
+text automatically, since whatever writes memory decides what gets
+replayed into every future prompt. Recall is automatic (`_default_search`
+in app/agent/graph.py, alongside document retrieval) and re-filtered
+against *current* ctx every call (`Policy.lower(ctx, "memories")`, scoped
+to `tenant` AND `owner`), never trusted from a prior snapshot. A recalled
+memory is framed like a retrieved document — untrusted, delimited content
+— because a poisoned memory keeps recurring every turn until removed
+(`qdrant_store.delete_by_filter`; deliberately not agent-facing).
 """
 import ast
 import asyncio
@@ -110,92 +91,55 @@ _OPS: dict[type, Callable[..., float]] = {
     ast.USub: operator.neg,
 }
 
-# Safety budget: bound how long any single tool call can block the graph
-# (a hung Qdrant/embedding call, or a pathological expression like
-# `2**99999999999`, would otherwise stall — or in the exponent case,
-# potentially exhaust memory in — the whole turn indefinitely).
+# Safety budget: bounds how long one tool call can block the graph (a hung
+# Qdrant call, or a pathological expression like `2**99999999999`, could
+# otherwise stall — or exhaust memory — the turn indefinitely).
 TOOL_TIMEOUT_SECONDS = 15
 _TOOL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=8, thread_name_prefix="tool-timeout"
 )
 
-# Real bug, found live via Langfuse (trace ed435567): the model cited [3] on
-# every sentence of an answer completely unrelated to what [3] actually said.
-# Nothing was wrong with the citation MECHANISM — [3] was a real, in-range
-# marker — the underlying retrieval just handed the model a chunk that had
-# no real bearing on the query, and hybrid_search's RRF/dense ordering alone
-# never says "not relevant," only "most relevant of what came back." This is
-# a floor on the cross-encoder's own raw logit score (app/retrieval/embeddings.py's
-# rerank(), unbounded — NOT a 0-1 similarity), calibrated against a live
-# comparison: clearly-irrelevant pairs scored ~-11, a genuinely on-topic hit
-# scored +6.7, and a same-topic-but-not-quite-answering passage scored -5.9.
-# -8.0 sits in the gap between "wrong" and "at least plausibly related,"
-# comfortably below every relevant score observed and comfortably above every
-# irrelevant one.
-#
-# Re-verified directly (not just assumed) after switching the reranker
-# backend from TEI/bge-reranker-base to ml-service (Xenova/ms-marco-
-# MiniLM-L-6-v2, docker/ml-service/main.py) — a different model can
-# have a differently-scaled logit range. It doesn't here: the same shape
-# held on a fresh comparable query (refund-policy relevant: +6.3;
-# same-company-wrong-topic: -5.8/-6.8; genuinely unrelated: -11.3), so
-# -8.0 is left unchanged.
+# Real bug (Langfuse trace ed435567): the model cited [3] on every sentence
+# of an answer unrelated to what [3] said. hybrid_search's RRF/dense
+# ordering only says "most relevant of what came back," never "relevant
+# enough" — so this is a floor on the cross-encoder's raw logit score
+# (app/retrieval/embeddings.py's rerank(), unbounded, NOT a 0-1 similarity).
+# Calibrated against live scores: irrelevant ~-11, on-topic +6.7,
+# same-topic-but-not-quite -5.9. -8.0 sits between "wrong" and "plausibly
+# related." Re-verified after switching reranker backends (TEI/bge-reranker-
+# base -> ml-service's Xenova/ms-marco-MiniLM-L-6-v2): same shape held
+# (+6.3 / -5.8..-6.8 / -11.3), so left unchanged.
 MIN_RERANK_SCORE = -8.0
 
 
 async def _arun_with_timeout(func, *args, _timeout_seconds: float | None = None, **kwargs):
-    """Await `func(*args, **kwargs)` (an `async def`) and stop waiting after
-    `_timeout_seconds` (TOOL_TIMEOUT_SECONDS by default). The raised
-    TimeoutError is caught by ToolNode's `handle_tool_errors=_friendly_tool_error`
-    in app/agent/graph.py and turned into a message the agent sees on its next
-    turn, same as any other tool exception.
+    """Await `func(*args, **kwargs)` and stop waiting after `_timeout_seconds`
+    (default TOOL_TIMEOUT_SECONDS). Raised TimeoutError is caught by
+    ToolNode's `handle_tool_errors=_friendly_tool_error` in app/agent/graph.py
+    and surfaced to the agent like any other tool exception.
 
-    Every tool call in this app runs through this now, not `_run_with_timeout`
-    below — search_docs/add_note/remember await a real `AsyncQdrantClient`,
-    query_employees an `AsyncConnectionPool`, the domain tools (support/
-    sales/ops) their own now-async store/notify/crawl/sandbox clients — so
-    this wraps a genuine coroutine call with `asyncio.wait_for` rather than
-    dispatching a plain sync function to a worker thread. `_run_with_timeout`
-    still exists, unchanged, for the one case that structurally CAN'T use
-    this: a caller with no running event loop to `await` anything on at all
-    (see its own docstring). Kept as a `func(*args, **kwargs)` wrapper, not
-    `_arun_with_timeout(some_call(...))` taking an already-built coroutine,
-    specifically so every one of this module's and every domain's existing
-    `_run_with_timeout(_impl, a, b, c)` call sites only needed `_impl` marked
-    `async def`, `_run_with_timeout` swapped for `_arun_with_timeout`, and
-    `await` added at the call site — not rebuilt around a differently-shaped
-    helper.
+    Every tool in this app uses this now (not `_run_with_timeout` below),
+    wrapping a real coroutine with `asyncio.wait_for` since every tool impl
+    now awaits an async client. `_run_with_timeout` still exists for the one
+    caller with no running event loop to await on (see its own docstring).
 
-    `_timeout_seconds` is keyword-only with a leading underscore so it can
-    never collide with a wrapped function's own keyword argument — every
-    existing call site omits it (`None`) and gets TOOL_TIMEOUT_SECONDS,
-    resolved fresh on every call rather than baked in as an ordinary default
-    value: a plain `= TOOL_TIMEOUT_SECONDS` default is evaluated exactly
-    once, at function-DEFINITION time, so it would silently stop honoring
-    `monkeypatch.setattr(tools, "TOOL_TIMEOUT_SECONDS", ...)` — a real
-    regression this caught against tests/agent/test_safety_budgets.py's
-    existing TestToolTimeout, which relies on that global being re-read
-    per call. `run_subagent` (GRAPH_PATTERNS.md pattern 46) is the one
-    caller that overrides it, to SUBAGENT_TIMEOUT_SECONDS: a nested
-    multi-step agent run legitimately needs more wall-clock time than a
-    single Qdrant query or arithmetic eval.
+    `_timeout_seconds` is keyword-only, resolved fresh per call rather than
+    a plain default — a `= TOOL_TIMEOUT_SECONDS` default is bound once at
+    definition time and would stop honoring
+    `monkeypatch.setattr(tools, "TOOL_TIMEOUT_SECONDS", ...)` (caught by
+    tests/agent/test_safety_budgets.py). `run_subagent` is the one caller
+    that overrides it, to SUBAGENT_TIMEOUT_SECONDS.
 
-    Soft timeout, same as before: `asyncio.wait_for` cancels the AWAITING
-    task, not necessarily whatever `func` was itself awaiting underneath —
-    a cancellation only takes effect at `func`'s own next `await` point, so
-    a call stuck in a single non-cancellable operation (e.g. a C-extension
-    call with no cancellation support) can still outlive this timeout in
-    the background. This bounds how long the *graph* waits, not an
-    unconditional guarantee the call stops running.
+    Soft timeout: `asyncio.wait_for` cancels the awaiting task, not
+    necessarily whatever `func` is awaiting underneath — cancellation only
+    takes effect at `func`'s next `await` point, so a call stuck in a
+    non-cancellable operation can outlive this timeout in the background.
 
-    The result is scrubbed (app/core/scrubbing.py, GRAPH_PATTERNS.md pattern
-    32) before it reaches the caller — the one chokepoint every read/write
-    tool impl in this module funnels through, so a credential-shaped or
-    actually-bound-secret value in a tool's raw result (a database row, a
-    fetched document) never reaches the model's next prompt or a trace.
+    Result is scrubbed (app/core/scrubbing.py, GRAPH_PATTERNS.md pattern 32)
+    before returning — the one chokepoint every tool impl funnels through,
+    so secrets in a raw result never reach the model or a trace.
     `run_subagent` returns a state dict here (scrubbing skips non-str
-    results, same as always) and applies its own explicit scrub() to the
-    extracted answer text afterward instead — see its own docstring.
+    results) and scrubs its extracted answer text separately.
     """
     timeout = _timeout_seconds if _timeout_seconds is not None else TOOL_TIMEOUT_SECONDS
     try:
@@ -206,27 +150,18 @@ async def _arun_with_timeout(func, *args, _timeout_seconds: float | None = None,
 
 
 def _run_with_timeout(func, *args, _timeout_seconds: float | None = None, **kwargs):
-    """The one deliberately-kept SYNC survivor of `_arun_with_timeout`'s
-    predecessor, still running `func` in a worker thread bounded by
-    `concurrent.futures`, not `asyncio.wait_for` — because its one caller,
-    `app/domains/sandbox_tools.py::load_sandbox_tools`, runs at plain
-    Python IMPORT time (eager domain composition, e.g.
-    `_OpsDomainPlugin.tools()` — see that module's own docstring for why
-    that's deliberate), before any event loop exists for `_arun_with_timeout`
-    to schedule a task on at all. `mcp_client.load_remote_tools` (what it
-    wraps) is itself a plain sync function that opens its OWN throwaway
-    event loop internally via `asyncio.run(...)` — this dispatches that
-    whole call to a worker thread and bounds it with a real wall-clock
-    `future.result(timeout=...)`, the same shape every tool call in this
-    app used before the rest of this module went async. Every other
-    caller of the old `_run_with_timeout` has moved to `_arun_with_timeout`
-    above; keep this one specifically for callers with no running loop to
-    await anything on, not as a general-purpose alternative to it.
+    """The sync survivor of `_arun_with_timeout`'s predecessor: still runs
+    `func` in a worker thread via `concurrent.futures`, not `asyncio.wait_for`
+    — its one caller, `app/domains/sandbox_tools.py::load_sandbox_tools`, runs
+    at plain Python import time (eager domain composition), before any event
+    loop exists. `mcp_client.load_remote_tools` (what it wraps) opens its own
+    throwaway loop via `asyncio.run(...)` internally; this dispatches that
+    whole call to a worker thread bounded by `future.result(timeout=...)`.
+    Every other caller has moved to `_arun_with_timeout` — keep this one only
+    for callers with no running loop, not as a general alternative.
 
-    Same soft-timeout caveat as ever: Python can't forcibly kill the
-    worker thread, so this bounds how long the CALLER waits, not how long
-    `func` actually keeps running in the background. Same scrub()
-    chokepoint too, for the same reason `_arun_with_timeout` keeps it.
+    Same soft-timeout caveat (Python can't forcibly kill the worker thread)
+    and same scrub() chokepoint as `_arun_with_timeout`.
     """
     timeout = _timeout_seconds if _timeout_seconds is not None else TOOL_TIMEOUT_SECONDS
     future = _TOOL_EXECUTOR.submit(func, *args, **kwargs)
@@ -251,13 +186,11 @@ def _ctx_from_config(config: RunnableConfig | None) -> SecurityCtx | None:
 
 
 def _ctx_or_refuse(config: RunnableConfig | None, action: str) -> SecurityCtx | None:
-    """The one fail-closed check every ctx-aware tool makes first: a
-    missing/malformed ctx, or a ctx this Policy doesn't `permit` for
-    `action`, returns None (the caller returns _NO_CTX_REFUSAL) instead of
-    running an unscoped query or an untenanted write. Never raises — a
-    refusal is a normal ToolMessage the agent sees and can react to, not an
-    exception path (consistent with handle_tool_errors existing for actual
-    failures, not for "this request was never allowed")."""
+    """Fail-closed check every ctx-aware tool makes first: missing/malformed
+    ctx, or a ctx Policy doesn't `permit` for `action`, returns None (caller
+    returns _NO_CTX_REFUSAL) instead of running an unscoped query or
+    untenanted write. Never raises — a refusal is a normal ToolMessage, not
+    an exception path (handle_tool_errors is for actual failures)."""
     ctx = _ctx_from_config(config)
     if not valid_ctx(ctx) or not DEFAULT_POLICY.permit(action, ctx):
         return None
@@ -312,24 +245,21 @@ class CalculatorArgs(BaseModel):
 
 def _display_text(hit) -> str:
     """The text a citation shows: `parent_text` when the hit is a child
-    chunk of a larger parent (app/ingestion/chunking.py, app/ingestion/ingestor.py — the small
-    child is what was *embedded and matched*, but the model gets the
-    richer surrounding passage), falling back to the point's own `text`
-    for anything not chunked this way (add_note/remember/pre-chunking
-    sample docs, and memories, which are never split into parent/child)."""
+    chunk of a larger parent (app/ingestion/chunking.py) — the child is what
+    was embedded/matched, but the model gets the richer passage — falling
+    back to the point's own `text` otherwise (add_note/remember/memories,
+    never split into parent/child)."""
     payload = hit.payload or {}
     return payload.get("parent_text") or payload.get("text", "")
 
 
 def _dedupe_by_parent(hits: list) -> list:
-    """Multiple child chunks from the SAME parent (app/ingestion/chunking.py) can
-    all score highly for one query — without this, the same parent
-    passage would show up as two or three separate, redundant citations.
-    Keeps the highest-ranked hit per `parent_id` (hits arrive pre-sorted
-    by relevance) and drops the rest. Hits with no `parent_id` — memories,
-    add_note/remember points, anything ingested before chunking existed —
-    are never deduped against EACH OTHER: each is its own independent
-    point, not a fragment of some larger shared unit."""
+    """Multiple child chunks from the same parent (app/ingestion/chunking.py)
+    can all score highly for one query — without this they'd show up as
+    redundant citations. Keeps the highest-ranked hit per `parent_id` (hits
+    arrive pre-sorted) and drops the rest. Hits with no `parent_id`
+    (memories, add_note/remember points) are never deduped against each
+    other."""
     seen_parents: set[str] = set()
     deduped = []
     for h in hits:
@@ -343,13 +273,10 @@ def _dedupe_by_parent(hits: list) -> list:
 
 
 def _format_cited_context(hits: list, offset: int = 0) -> str:
-    """`[n] chunk text`, one per line — the citation-marker convention
-    every retrieval surface (search_docs, gather_context) uses
-    consistently, so the model sees the same shape whether context
-    arrived pre-fetched (retrieve_context) or via an on-demand tool call.
-    `offset` lets callers combining several hit lists (documents, then
-    memories) keep one continuously-numbered sequence across all of them.
-    """
+    """`[n] chunk text`, one per line — shared convention across
+    search_docs/gather_context so the model sees the same shape whether
+    context was pre-fetched or fetched via a tool call. `offset` lets
+    callers combining several hit lists keep one continuous numbering."""
     return "\n".join(
         f"[{i + offset + 1}] {_display_text(h)}" for i, h in enumerate(hits)
     )
@@ -377,13 +304,11 @@ def _citation_records(hits: list, offset: int = 0) -> list[dict]:
 
 
 def _sparse_vector_or_none(text: str) -> tuple[list[int], list[float]] | None:
-    """Best-effort BM25 sparse vector for a write path (add_note, remember):
-    if the local sparse model fails to load/embed, the write still
-    succeeds with a dense-only point (qdrant_store.build_point already
-    treats `sparse_vector=None` as "dense-only") rather than blocking a
-    human-approved write on a hybrid-search quality concern — the same
-    degrade-don't-block posture app/retrieval/qdrant_store.py's hybrid_search takes
-    on the read side."""
+    """Best-effort BM25 sparse vector for a write path: if the sparse model
+    fails to load/embed, the write still succeeds dense-only
+    (`qdrant_store.build_point` treats `sparse_vector=None` as dense-only)
+    rather than blocking a write on a hybrid-search quality concern — same
+    degrade-don't-block posture as hybrid_search's read side."""
     try:
         return embed_sparse(text)
     except Exception:  # noqa: BLE001 - degrade to dense-only, never block the write
@@ -397,11 +322,9 @@ async def _document_hits(
     doc_ids: list[str] | None = None,
 ):
     topic_value = topic.value if isinstance(topic, Topic) else topic
-    # Policy.lower is computed from ctx FIRST and applied inside the same
-    # query as doc_ids — doc_ids narrows this already-scoped filter, it
-    # never substitutes for it; a caller can't pass doc_ids to reach a
-    # point outside their own tenant, since the tenant predicate is
-    # ANDed on regardless (app/retrieval/qdrant_store.py::_build_filter).
+    # doc_ids narrows the tenant filter, never substitutes for it — the
+    # tenant predicate is ANDed on regardless (qdrant_store.py::_build_filter),
+    # so a caller can't use doc_ids to reach another tenant's point.
     tenant_filter = DEFAULT_POLICY.lower(ctx, "documents")
     hits = await qdrant_store.hybrid_search(
         query,
@@ -414,10 +337,9 @@ async def _document_hits(
 
 
 async def _memory_hits(ctx: SecurityCtx, query: str):
-    # Reranking is skipped for memories: a principal's own (typically
-    # small) memory set doesn't need cross-encoder precision, and skipping
-    # it avoids paying for a second reranker call on every single turn —
-    # recall runs automatically, unlike a one-off search_docs tool call.
+    # Reranking skipped for memories: a principal's own memory set is small
+    # and doesn't need cross-encoder precision — and recall runs
+    # automatically every turn, unlike a one-off search_docs call.
     tenant_filter = DEFAULT_POLICY.lower(ctx, "memories")
     return await qdrant_store.hybrid_search(
         query, tenant_filter=tenant_filter, rerank_results=False
@@ -522,13 +444,10 @@ class AddNoteArgs(BaseModel):
 async def _add_note_impl(title: str, content: str, topic: Topic, ctx: SecurityCtx) -> str:
     """Embed and upsert one new point into the knowledge base.
 
-    A fixed, single-purpose write: the only variables are the three typed
-    fields above (plus `ctx`, which the model never sees or sets — see
-    module docstring), so there's no query/filter/target the model
-    constructs itself. A fresh UUID id (never a caller-supplied one) means
-    this can only ever *add* a point, never overwrite or target an existing
-    one by guessing its id — the write surface this tool exposes is exactly
-    "append one note to my tenant's knowledge base," nothing broader.
+    Fixed, single-purpose write: the only variables are the three typed
+    fields above (plus `ctx`, never model-visible). A fresh UUID id (never
+    caller-supplied) means this can only ever *add* a point, never overwrite
+    or target an existing one by guessing its id.
     """
     text = f"{title}: {content}"
     point = qdrant_store.build_point(
@@ -580,13 +499,13 @@ class RememberArgs(BaseModel):
 
 async def _remember_impl(content: str, ctx: SecurityCtx) -> str:
     """Embed and upsert one memory, owned by ctx["principal"] within
-    ctx["tenant"] — see the module docstring's "Cross-session memory"
-    section for why this is the *only* place a memory gets written.
+    ctx["tenant"] — the only place a memory gets written (see module
+    docstring's "Cross-session memory" section).
 
-    `created_at` (UTC, ISO 8601) is what `Policy.lower`'s retention-at-
-    recall range filter (app/core/security.py, GRAPH_PATTERNS.md pattern 33)
-    and `app/agent/memory.py::delete_memories`'s age-based selector both read —
-    stamped once, here, never derived from anything caller-supplied.
+    `created_at` (UTC, ISO 8601) is what `Policy.lower`'s retention filter
+    (app/core/security.py, GRAPH_PATTERNS.md pattern 33) and
+    `app/agent/memory.py::delete_memories` both read — stamped once, here,
+    never caller-supplied.
     """
     point = qdrant_store.build_point(
         point_id=str(uuid.uuid4()),
@@ -623,23 +542,15 @@ async def remember(content: str, config: RunnableConfig) -> str:
 
 
 async def recall_memories(ctx: SecurityCtx | None, query: str) -> str:
-    """Fetch this principal's own memories, re-filtered against CURRENT
-    ctx on every call — a standalone utility over the same `_memory_hits`
-    machinery `gather_context` now calls directly for the automatic
-    pre-fetch path (app/agent/graph.py's `_default_search`); this function
-    itself has no production caller today, only direct test coverage.
-    Never on the model's initiative (contrast with search_docs/add_note/
-    remember, which the model chooses to call). Re-filtering every call,
-    rather than trusting a cached/prior-turn result, is what makes a
-    clearance change (if this app ever grows one) take effect on the very
-    next turn instead of persisting until something invalidates a stale
-    snapshot.
+    """Fetch this principal's own memories, re-filtered against CURRENT ctx
+    every call — same `_memory_hits` machinery `gather_context` calls for
+    the automatic pre-fetch path; this function has no production caller
+    today, only test coverage. Never called on the model's own initiative.
+    Re-filtering every call (rather than trusting a cached result) means a
+    clearance change takes effect on the very next turn.
 
-    Returns "" on missing ctx or no results — recall is enrichment, same
-    reliability posture as retrieve_context itself (degrade, never fail
-    the turn just because memory came back empty or ctx wasn't set).
-
-    `async def`: `_memory_hits` awaits `qdrant_store.hybrid_search` now.
+    Returns "" on missing ctx or no results — enrichment, never fails the
+    turn.
     """
     if not valid_ctx(ctx) or not DEFAULT_POLICY.permit("recall_memory", ctx):
         return ""
@@ -651,23 +562,18 @@ async def recall_memories(ctx: SecurityCtx | None, query: str) -> str:
 
 async def gather_context(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]]:
     """Documents + this principal's memories, hybrid-searched and combined
-    into ONE continuously-numbered citation sequence — this is what
-    app/agent/graph.py's `_default_search` calls (the automatic pre-fetch path
-    that runs every turn), NOT the same call `recall_memories`/
-    `_search_docs_impl` make on their own, though all three share the same
-    retrieval/Policy machinery underneath.
+    into ONE continuously-numbered citation sequence — called by
+    app/agent/graph.py's `_default_search` (the automatic pre-fetch every
+    turn), not the same call recall_memories/_search_docs_impl make on
+    their own, though all three share the same retrieval/Policy machinery.
 
-    Degrades to `("", [])` on a missing ctx or a retrieval failure —
-    enrichment, never fails the turn (see retrieve_context's docstring in
-    app/agent/graph.py, which wraps this in the actual try/except).
+    Degrades to `("", [])` on missing ctx or a retrieval failure —
+    enrichment, never fails the turn (see retrieve_context's try/except in
+    app/agent/graph.py).
 
-    `async def`: `_document_hits`/`_memory_hits` both await
-    `qdrant_store.hybrid_search` now (its own reranking leg is a real HTTP
-    call to the ml-service container). Runs sequentially, not via
-    `asyncio.gather` — the doc/memory searches are two independent Qdrant
-    round trips that COULD run concurrently, but that's a separate
-    optimization from what motivated this function becoming async at all
-    (moving the reranker off this process), not bundled in here.
+    Runs the doc/memory searches sequentially, not via `asyncio.gather` —
+    they could run concurrently, but that's a separate optimization not
+    bundled into this async conversion.
     """
     if not valid_ctx(ctx):
         return "", []
@@ -722,10 +628,7 @@ async def _query_employees_impl(
         for r in rows
     ]
     if truncated:
-        # Marked, never silently shortened — "these are the first {cap}
-        # matches" and "these are all the matches" read very differently,
-        # and a caller/model acting on the count needs to know which one
-        # this is (see TOOL_RESULT_CAPS's docstring).
+        # Marked, never silently shortened — see TOOL_RESULT_CAPS's comment.
         lines.append(f"[truncated: showing the first {cap} matches; more exist]")
     return "\n".join(lines)
 
@@ -778,10 +681,8 @@ def _format_skill_hits(hits: list) -> str:
 
 def _skill_visible_to_domain(record: "skills_module.SkillRecord", domain: str) -> bool:
     """A skill with no `domains:` frontmatter (`record.domains is None`) is
-    visible everywhere — the default every SKILL.md had before this field
-    existed. A tagged one is visible only to the domains it names, INCLUDING
-    Ecorp: `domains: [support]` hides a skill from Ecorp's own catalog too,
-    not just from the other two example domains."""
+    visible everywhere, the default before this field existed. A tagged one
+    is visible only to the domains it names — INCLUDING Ecorp."""
     return record.domains is None or domain in record.domains
 
 
@@ -792,10 +693,8 @@ _SKILL_SEARCH_FETCH_K = max(SKILLS_SEARCH_TOP_K * 4, 10)  # over-fetch before
 
 def _filter_skill_hits_by_domain(hits: list, domain: str, catalog: dict) -> list:
     """Keeps only hits visible to `domain`. A hit whose `name` isn't in
-    `catalog` at all (a stale Qdrant entry for a SKILL.md since removed or
-    renamed on disk) is dropped too — disk stays authoritative, same
-    posture app/agent/skills.py's own docstring already establishes for a
-    skill's body."""
+    `catalog` (a stale Qdrant entry for a since-removed/renamed SKILL.md) is
+    dropped too — disk stays authoritative."""
     kept = []
     for h in hits:
         name = (h.payload or {}).get("name")
@@ -807,27 +706,21 @@ def _filter_skill_hits_by_domain(hits: list, domain: str, catalog: dict) -> list
 
 def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
     """Builds a `(skill_search, use_skill)` pair scoped to `domain`. Ecorp's
-    own module-level pair below is `make_skill_tools("ecorp")`; each of
-    app/domains/support|sales|ops/domain.py builds its own via this same
-    factory instead of reusing Ecorp's literal tool objects, so a
-    domain-tagged skill (`domains: [...]` in its SKILL.md frontmatter,
-    app/agent/skills.py) never leaks into a domain it wasn't written for —
-    enforced in BOTH tools here, not just skill_search's results: use_skill
-    loads by exact name with no search step, so it has to apply the same
-    filter itself or a model that somehow guessed/hallucinated a
-    foreign-domain skill's name could load it anyway.
+    own pair below is `make_skill_tools("ecorp")`; each of
+    app/domains/support|sales|ops/domain.py builds its own instead of reusing
+    Ecorp's tool objects, so a domain-tagged skill (`domains: [...]`,
+    app/agent/skills.py) never leaks into a domain it wasn't written for.
+    Enforced in BOTH tools: use_skill loads by exact name with no search
+    step, so it applies the same filter itself in case a model somehow
+    guesses a foreign-domain skill's name.
 
-    The filter runs in PYTHON, over app/agent/skills.py::get_skills()'s own
-    disk-backed catalog — not as a Qdrant payload filter — for the same
-    reason that module keeps a skill's full body off Qdrant entirely:
-    domain eligibility is a fact about the SKILL.md on disk, and duplicating
-    it into the Qdrant payload just to filter there would be a second place
-    it could drift out of sync with what's actually on disk. To keep
-    results correct even when several of Qdrant's top semantic matches fall
-    outside `domain`, this over-fetches (`_SKILL_SEARCH_FETCH_K`) before
-    filtering, then truncates back to `SKILLS_SEARCH_TOP_K` — cheap, since
-    this app's own bundled catalog is demo-scale, never more than a
-    handful of skills.
+    Filters in PYTHON over `skills_module.get_skills()`'s disk-backed
+    catalog, not as a Qdrant payload filter — domain eligibility is a fact
+    about the SKILL.md on disk, and duplicating it into Qdrant would be a
+    second place to drift out of sync. Over-fetches (`_SKILL_SEARCH_FETCH_K`)
+    before filtering, then truncates to `SKILLS_SEARCH_TOP_K`, so results
+    stay correct even when top semantic matches fall outside `domain` —
+    cheap, since this app's bundled catalog is demo-scale.
     """
 
     async def _skill_search_impl(query: str) -> str:
@@ -835,12 +728,11 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
             hits = await qdrant_store.hybrid_search(
                 query, collection=SKILLS_COLLECTION, k=_SKILL_SEARCH_FETCH_K
             )
-        except Exception as exc:  # noqa: BLE001 - the skills collection may not exist
-            # yet (before `make index-skills` has ever run) — hybrid_search's own
-            # two degrade layers (app/retrieval/qdrant_store.py) only cover a missing
-            # SPARSE leg or a failed RERANK, not a wholly missing collection, so a
-            # fresh environment gets a clear, actionable message here instead of a
-            # raw Qdrant 404 bubbling up as a generic tool error.
+        except Exception as exc:  # noqa: BLE001 - skills collection may not exist yet
+            # hybrid_search's own degrade layers only cover a missing SPARSE leg
+            # or failed RERANK, not a wholly missing collection — so a fresh env
+            # (before `make index-skills`) gets an actionable message here instead
+            # of a raw Qdrant 404.
             logger.warning(
                 "skill search unavailable", extra={"error_class": type(exc).__name__}
             )
@@ -869,19 +761,12 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
             )
         body = record.body
         if "run_command_in_sandbox" in body:
-            # A proactive nudge, not a replacement for the reactive check —
-            # app/agent/graph.py::_skipped_required_sandbox_after_skill
-            # still catches and retries this AFTER the fact if the model
-            # ignores this too (real bug, found live: the deal-economics
-            # skill's own body ALREADY says "don't estimate this kind of
-            # number in your head," several paragraphs in, and the model
-            # still computed it by hand anyway — one more directive line,
-            # right here at the very end of what it reads next, costs
-            # nothing to try even though this exact model has a real,
-            # demonstrated ceiling on prompt-only fixes elsewhere this
-            # session). Placed at the END, not folded into the skill's own
-            # prose, so it survives even a skill author who forgets to
-            # write one themselves.
+            # Proactive nudge, not a replacement for the reactive check —
+            # app/agent/graph.py::_skipped_required_sandbox_after_skill still
+            # catches this after the fact if the model ignores it too (real
+            # bug: even a skill body that explicitly says "don't estimate
+            # this by hand" got ignored). Placed at the END so it survives a
+            # skill author who forgets to write one themselves.
             body += (
                 "\n\n---\nReminder: call run_command_in_sandbox now, with a real "
                 "script, for the actual computation this skill describes — do not "
@@ -908,47 +793,30 @@ def skill_tools_first(
     run_subagent: BaseTool | None = None,
 ) -> list[BaseTool]:
     """Orders a domain's bound tool list with skill_search/use_skill FIRST,
-    ahead of every action tool — a real, LIVE-VERIFIED fix, not a guess.
+    ahead of every action tool — a live-verified fix, not a guess.
 
-    Every domain previously built its tool list as `action_tools +
-    reused_tools` (skill_search/use_skill landing near the END, after every
-    domain-specific action tool). Live-tested against a repeated failure —
-    a sales deal-math question never once calling skill_search across many
-    separate runs, even after three escalating system-prompt/docstring
-    rewrites (name it as the literal first required tool call, a `STOP:`
-    directive in run_command_in_sandbox's own docstring, an explicit
-    quoting warning) — all three changed nothing. The actual cause turned
-    out to be list POSITION, not prompt wording: swapping ONLY the order
-    (skill_search/use_skill moved before the domain's action tools, same
-    prompt otherwise) made this app's own local model (qwen2.5:3b via
+    Every domain used to build `action_tools + reused_tools` (skill_search/
+    use_skill near the end). A sales deal-math question never called
+    skill_search across many runs, even after three escalating prompt/
+    docstring rewrites. The actual cause was list POSITION, not wording:
+    swapping only the order made this app's local model (qwen2.5:3b via
     Ollama, grammar-constrained tool-calling) call use_skill('deal-economics')
-    as its very FIRST move, 3/3 fresh runs, zero prompt changes. A small,
-    grammar-constrained model's tool selection is sensitive to where a
-    tool sits in the bound list, not just to how it's described — worth
-    trying before assuming a "won't call X" pattern is an instruction-
-    following ceiling.
+    as its first move, 3/3 fresh runs, zero prompt changes. A small,
+    grammar-constrained model's tool selection is sensitive to bound-list
+    position, not just description — worth trying before assuming a "won't
+    call X" pattern is an instruction-following ceiling.
 
-    Only skill_search/use_skill move to the front — the rest of
-    `reused_tools` (search_docs, ask_clarification) keep their original
-    relative position, after the domain's own action tools. search_docs
-    does NOT share this problem; a separate live finding needed to REDUCE
-    its reflexive-default use (GRAPH_PATTERNS.md), so promoting it too
-    would fight that fix rather than help.
+    Only skill_search/use_skill move to the front; the rest of
+    `reused_tools` (search_docs, ask_clarification) keep their position
+    after the domain's action tools — search_docs doesn't share this
+    problem, and a separate finding needed to REDUCE its reflexive default
+    use, so promoting it too would fight that fix.
 
-    `run_subagent`, if given, is promoted into the SAME leading tier, right
-    after skill_search/use_skill — previously appended dead last, after
-    every domain action tool AND the rest of `reused_tools` (every caller
-    used `tools.append(run_subagent)` once this list was already built; see
-    app/domains/ops/domain.py's git history for the pre-extraction shape).
-    Unlike the skill_search reordering above, this is NOT independently
-    live-verified against a demonstrated run_subagent under-use failure —
-    there's no equivalent repro run backing it. It's a reasoned extension
-    of the SAME established principle (this model class is position-
-    sensitive, dead-last is the position that specific finding was fixing
-    FOR skill_search) applied to another tool stuck in that same worst
-    slot, not a second confirmed fix. Worth confirming live the same way
-    skill_search's promotion was, if this ever gets questioned — nothing
-    here has been re-verified against a real qwen2.5:3b run."""
+    `run_subagent`, if given, is promoted into the same leading tier (was
+    previously appended dead last). Unlike the skill_search fix above, this
+    is a reasoned extension of the same principle, NOT independently
+    live-verified — worth confirming the same way if this ever gets
+    questioned."""
     by_name = {t.name: t for t in reused_tools}
     promoted = [by_name[name] for name in ("skill_search", "use_skill") if name in by_name]
     if run_subagent is not None:
@@ -958,13 +826,9 @@ def skill_tools_first(
 
 
 TOOLS = [
-    # skill_search/use_skill lead the list on purpose — see
-    # skill_tools_first's own docstring for the live-verified finding
-    # behind this (tool-call selection for a grammar-constrained small
-    # local model is sensitive to list position). Every domain-specific
-    # TOOLS list uses that same helper; this is Ecorp's own equivalent,
-    # done inline since there's no separate "reused tools" list to merge
-    # here.
+    # skill_search/use_skill lead intentionally — see skill_tools_first's
+    # docstring (list position affects tool selection for the small local
+    # model). Done inline here since there's no separate "reused tools" list.
     skill_search,
     use_skill,
     search_docs,
@@ -976,20 +840,14 @@ TOOLS = [
 ]
 
 # --- Tool capability declarations -------------------------------------------
-# Every tool declares which "leg" of exposure it adds: read_only (safe to run
-# immediately), mutating (writes/changes persisted state), or outward
-# (reaches outside the corpus — sends, calls an external service, etc.).
-# app/agent/graph_routing.py's should_continue enforces this: a tool_call batch containing
-# ANY non-read_only tool is routed through human_approval unconditionally —
-# "mandatory," not the opt-in require_approval gate — because a retrieval-
-# augmented agent's context is untrusted content on essentially every turn
-# (see GRAPH_PATTERNS.md pattern 12): once a run already carries "exposure to
-# untrusted content," adding "ability to mutate state" is the second of the
-# two legs a run may hold unsupervised, and the access-to-private-data leg
-# (app/core/security.py's tenant/owner isolation) is never worth gambling the
-# third on too. A tool absent from this mapping defaults to "outward" — fail
-# closed, so a new tool added to TOOLS without a capability entry is gated
-# rather than silently trusted.
+# Each tool declares its exposure "leg": read_only (safe immediately),
+# mutating (writes persisted state), or outward (reaches outside the
+# corpus). app/agent/graph_routing.py's should_continue routes ANY
+# non-read_only tool call through human_approval unconditionally (mandatory,
+# not the opt-in require_approval gate) — a RAG agent's context is untrusted
+# on essentially every turn (GRAPH_PATTERNS.md pattern 12), so mutating or
+# reaching outward on top of that is never worth gambling unsupervised. A
+# tool absent from this mapping defaults to "outward" — fail closed.
 ToolCapability = Literal["read_only", "mutating", "outward"]
 
 TOOL_CAPABILITIES: dict[str, ToolCapability] = {
@@ -1001,42 +859,27 @@ TOOL_CAPABILITIES: dict[str, ToolCapability] = {
     "use_skill": "read_only",
     "add_note": "mutating",
     "remember": "mutating",
-    # A plain, static, honest declaration — NOT a fallback subject to some
-    # dynamic per-call override. run_subagent (GRAPH_PATTERNS.md pattern 46)
-    # can only ever delegate to a subagent whose OWN tool subset is entirely
-    # read_only — enforced structurally at catalog-build time, below, not
-    # computed per call — so should_continue's mandatory human_approval gate
-    # needs zero special-casing for it: a run_subagent call really is exactly
-    # as safe as calling search_docs directly.
+    # Honest, static declaration: run_subagent (GRAPH_PATTERNS.md pattern 46)
+    # can only delegate to subagents whose tool subset is entirely read_only
+    # (enforced structurally at catalog-build time) — as safe as search_docs.
     "run_subagent": "read_only",
 }
 
 # --- Tool result-size declarations -------------------------------------------
-# A structured tool with no inherent row limit (query_employees's filters can
-# match arbitrarily many rows) pays for a broad match in full at the store,
-# then again formatting it, unless something bounds it. Declared per-tool
-# (like TOOL_CAPABILITIES above) rather than one global constant, since the
-# right cap is a property of the tool, not the app. A capped result is always
-# MARKED as truncated (see _query_employees_impl) — "these are the first 20
-# matches" and "these are all the matches" read very differently, and neither
-# a caller nor the model acting on the count should have to guess which one
-# it got.
+# Per-tool cap (query_employees has no inherent row limit) rather than one
+# global constant, since the right cap is a property of the tool. A capped
+# result is always MARKED as truncated (see _query_employees_impl) — never
+# silently shortened.
 TOOL_RESULT_CAPS: dict[str, int] = {
     "query_employees": 20,
 }
 
-# Deliberate, load-bearing side-effecting import — not a lint-flagged
-# "unused import" to clean up. app/agent/subagent_tools.py builds the
-# Ecorp-level `run_subagent` tool and appends it onto THIS module's own
-# `TOOLS` list (`TOOLS.append(run_subagent)`, in that module) as part of
-# its own top-level execution. Placed here, at the very end of tools.py —
-# after TOOLS/TOOL_CAPABILITIES are fully defined above — so importing
-# `app.agent.tools` from anywhere (chiefly `app/agent/graph.py`'s own
-# `from app.agent.tools import TOOLS`) deterministically also triggers
-# subagent_tools.py to load and mutate the SAME shared TOOLS list object,
-# regardless of which module gets imported first. Creates no import cycle:
-# subagent_tools.py's own top-level imports from `app.agent.tools` (TOOLS,
-# TOOL_CAPABILITIES, etc.) are already fully defined by the time Python
-# reaches this, the last line of this file's own execution.
+# Deliberate, load-bearing side-effecting import — not an unused import to
+# clean up. subagent_tools.py builds the Ecorp-level `run_subagent` tool and
+# inserts it into THIS module's `TOOLS` list as part of its own top-level
+# execution. Placed at the very end, after TOOLS/TOOL_CAPABILITIES are fully
+# defined, so importing `app.agent.tools` from anywhere always triggers this
+# too, regardless of import order. No import cycle: subagent_tools.py's own
+# top-level imports from this module are already defined by this point.
 from app.agent import subagent_tools  # noqa: E402, F401
 

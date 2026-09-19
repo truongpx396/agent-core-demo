@@ -1,31 +1,23 @@
 """Cron-callable ops digest: fetch this app's own operational metrics, flag
 anomalies, summarize in plain language, post to the team channel.
 
-Deliberately bypasses the ops domain's own agent loop (app/domains/ops/domain.py)
-for the fetch+post — those are fixed, deterministic operations with no
-legitimate need for an LLM to decide whether/how to call them, and running
-them through build_graph() would hit should_continue's mandatory
-human_approval gate (GRAPH_PATTERNS.md pattern 15): post_to_team_channel is
-declared "outward" (app/domains/ops/tools.py), and that gate is
-UNCONDITIONAL — there is no human present to approve an unattended cron
-run. app/channels/telegram.py's own docstring discloses the identical
-tension for its single-shot callers and resolves it by auto-declining;
-auto-declining here would silently make "post the digest" never happen,
-which defeats the whole job. So this script calls the ops domain's own
-`_impl` functions directly (never through a ToolNode) and reserves the LLM
-for the one thing it's actually needed for: turning raw numbers into
-readable prose. scripts/ops_investigate.py, by contrast, is a human asking
-an ad-hoc question — there the full agent loop is exactly the right tool
-for the read-only questions it's meant for (see that script's own
-docstring for the disclosed caveat once log_incident/resolve_incident
-gave the ops domain mutating tools too).
+Bypasses the ops domain's own agent loop (app/domains/ops/domain.py) for
+the fetch+post: those are fixed, deterministic operations with no need for
+an LLM to decide whether to call them, and running them through
+build_graph() would hit should_continue's mandatory, UNCONDITIONAL
+human_approval gate (GRAPH_PATTERNS.md pattern 15) — there's no human to
+approve an unattended cron run, and auto-declining (as
+app/channels/telegram.py does for single-shot callers) would silently make
+"post the digest" never happen. So this calls the ops domain's `_impl`
+functions directly (never through a ToolNode), reserving the LLM only for
+turning numbers into prose. Contrast scripts/ops_investigate.py: a human
+asking an ad-hoc question, where the full agent loop is the right tool.
 
-Meant to be wired to real cron/systemd-timer/a Kubernetes CronJob — e.g.:
+Meant to be wired to real cron/systemd-timer/a Kubernetes CronJob, e.g.:
 
     0 8 * * * cd /path/to/agent-core-demo && python -m scripts.ops_digest
 
-Idempotent and side-effect-bounded to one team-channel post per run — safe
-to re-run by hand (`make ops-digest` / `python -m scripts.ops_digest`) or
+Idempotent, one team-channel post per run — safe to re-run by hand or
 after a missed cron tick.
 """
 import asyncio

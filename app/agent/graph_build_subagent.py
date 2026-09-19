@@ -1,11 +1,10 @@
 """`build_subagent_graph()` — the leaner graph assembly for a NESTED
-subagent run (`app/agent/tools.py::run_subagent`, GRAPH_PATTERNS.md pattern
-46). Split out of `app/agent/graph.py` (which still holds `State`, every
-node function/factory, and the shared assembly helper this function calls)
-purely for file size — see `app/agent/graph.py`'s own module docstring and
-`app/agent/graph_routing.py`'s for the sibling split (`should_continue`/
-`check_output`) and `app/agent/graph_build.py` (the main-turn counterpart,
-`build_graph()`). No behavior change from the pre-split single-file version.
+subagent run (`app/agent/tools.py::run_subagent`, pattern 46). Split out
+of `graph.py` (which still holds `State`, every node function/factory, and
+the shared assembly helper) purely for file size — see graph.py's module
+docstring. Sibling splits: `graph_routing.py` (should_continue/
+check_output) and `graph_build.py` (build_graph(), the main-turn
+counterpart). No behavior change from the pre-split file.
 """
 from typing import TYPE_CHECKING
 
@@ -54,56 +53,39 @@ def build_subagent_graph(
     emit_no_answer_message: bool = True,
 ):
     """`build_graph()`'s topology, minus five nodes that are pure overhead
-    (or worse) for a nested, one-shot subagent run — see GRAPH_PATTERNS.md
-    pattern 46 for the full reasoning behind each:
+    (or worse) for a nested, one-shot subagent run (pattern 46 has the full
+    reasoning):
 
-    - `check_semantic_cache`/`write_semantic_cache`: dropped entirely, not
-      just skipped at runtime — closes a previously-disclosed gap where a
-      subagent run checked/wrote the SAME semantic cache the top-level
-      conversation uses (keyed by tenant+principal, shared with the
-      parent's own ctx): a subagent's cached answer could in theory have
-      been served back for a top-level query with near-identical phrasing,
-      or vice versa. A subagent run no longer touches that cache at all.
-    - `suggest_followups`: dropped — closes the other previously-disclosed
-      gap, a full extra LLM call whose result `_run_subagent_impl` simply
-      discarded on every completed run.
+    - `check_semantic_cache`/`write_semantic_cache`: dropped entirely —
+      closes a disclosed gap where a subagent run shared the top-level
+      conversation's own cache (keyed by tenant+principal), risking a
+      cross-contaminated cache hit in either direction.
+    - `suggest_followups`: dropped — closes another disclosed gap, a full
+      extra LLM call whose result `_run_subagent_impl` simply discarded.
     - `compact_history`/`context_window_exceeded`: dropped because they're
-      PROVABLY inert for a subagent run, not just unlikely to fire —
-      `compact_history` only ever does real work once `state["messages"]`
-      crosses `HISTORY_TOKEN_CEILING` (24000), but a subagent's entire run
-      is hard-capped at `MAX_SUBAGENT_TOKENS_PER_RUN` (4000, see
-      `_run_subagent_impl`'s own `max_tokens_per_turn` argument below) —
+      PROVABLY inert here, not just unlikely — compact_history only fires
+      once history crosses HISTORY_TOKEN_CEILING (24000), but a subagent
+      run is hard-capped at MAX_SUBAGENT_TOKENS_PER_RUN (4000) —
       mathematically unreachable.
 
-    Deliberately KEPT despite looking like overhead at a glance:
-    `moderate_input` (cheap, no LLM call, and the delegated `task` string
-    came from the PARENT model, not hand-vetted, so this isn't a check to
-    skip for size); `retrieve_context` (a lookup-focused subagent's job is
-    generally well served by the same automatic RAG pre-fetch the
-    top-level turn gets; never named as a gap, so left alone rather than
-    silently changing behavior nobody flagged); every other node
-    (`human_approval`, `too_many_tool_calls`, `invalid_tool_call`,
-    `use_skill_without_search`, `check_output`, `retry_output`,
-    `retry_exhausted`, `no_answer`) is safety- or correctness-critical and
-    already cheap regardless of topology size — `human_approval` is
-    currently unreachable here (read_only-only tools never trip the
-    mandatory gate) but stays as defense-in-depth, the same "no flag turns
-    this off" posture pattern 15 already takes for the main graph.
+    Deliberately KEPT despite looking like overhead: `moderate_input`
+    (cheap, and the delegated `task` string came from the PARENT model, not
+    hand-vetted); `retrieve_context` (a lookup-focused subagent is usually
+    well served by the same RAG pre-fetch); every other node is safety- or
+    correctness-critical and already cheap — `human_approval` is currently
+    unreachable here (read_only-only tools never trip the mandatory gate)
+    but stays as defense-in-depth (same "no flag turns this off" posture as
+    pattern 15 for the main graph).
 
-    Reuses `_assemble_shared_graph_parts` for everything this shares with
-    `build_graph()` (LLM client construction, the `agent`/`retrieve_context`
-    node closures, the `should_continue`/`check_output` partials) — see
-    that function's own docstring. Reuses `route_after_validation`/
-    `route_after_moderation`/`route_after_check` completely unmodified via
-    LangGraph's `path_map` (`StateGraph.add_conditional_edges(source, path,
-    path_map=...)`) to remap a routing function's "the full topology would
-    go here" return value onto whichever node actually comes next in THIS
-    smaller topology — so none of those shared routing functions need to
-    know or care which topology they're wired into.
+    Reuses `_assemble_shared_graph_parts` for everything shared with
+    `build_graph()`, and reuses `route_after_validation`/
+    `route_after_moderation`/`route_after_check` unmodified via LangGraph's
+    `path_map` to remap their full-topology branches onto whichever node
+    actually comes next here.
 
-    Parameters mirror `build_graph()`'s own (see its docstring for each),
-    minus `history_token_ceiling`/`history_token_floor` — meaningless here,
-    since `compact_history` isn't part of this topology at all.
+    Parameters mirror `build_graph()`'s (see its docstring), minus
+    `history_token_ceiling`/`history_token_floor` — meaningless since
+    `compact_history` isn't part of this topology.
     """
     parts = _assemble_shared_graph_parts(
         deps, manifest, domain, max_iterations, max_tokens_per_turn, max_cost_usd_per_turn
@@ -156,9 +138,8 @@ def build_subagent_graph(
 
     builder.add_edge(START, "validate_input")
     # route_after_validation's "compact_history" branch has nowhere to go
-    # in this topology — compact_history isn't a node here — so it's
-    # remapped straight to moderate_input, the node that would have come
-    # right after it anyway.
+    # here (not a node in this topology) — remapped straight to
+    # moderate_input, the node that would come right after it anyway.
     builder.add_conditional_edges(
         "validate_input",
         route_after_validation,
@@ -174,9 +155,8 @@ def build_subagent_graph(
     builder.add_conditional_edges(
         "moderate_input",
         route_after_moderation,
-        # Same remap idea: route_after_moderation's "check_semantic_cache"
-        # branch goes straight to retrieve_context — check_semantic_cache
-        # isn't a node here either.
+        # Same remap idea: "check_semantic_cache" goes straight to
+        # retrieve_context — not a node here either.
         {"reject_moderation": "reject_moderation", "check_semantic_cache": "retrieve_context"},
     )
     builder.add_edge("reject_moderation", END)
@@ -192,9 +172,8 @@ def build_subagent_graph(
     builder.add_conditional_edges(
         "check_output",
         route_after_check,
-        # route_after_check's "suggest_followups" branch ends the run
-        # directly — suggest_followups/write_semantic_cache aren't nodes
-        # here, so there's nothing left to do once check_output is happy.
+        # "suggest_followups" ends the run directly — that node and
+        # write_semantic_cache aren't part of this topology.
         {"retry_output": "retry_output", "retry_exhausted": "retry_exhausted", "suggest_followups": END},
     )
     builder.add_edge("retry_output", "agent")

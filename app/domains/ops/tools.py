@@ -1,32 +1,20 @@
 """Tools for the internal ops-bot domain (app/domains/ops/domain.py):
-`fetch_metrics_summary` pulls this app's own operational metrics
-(app/domains/ops/metrics_client.py) and flags anything past its
-alert-matching threshold; `post_to_team_channel` is this repo's first REAL
-use of the `outward` tool capability (app/agent/tools.py::TOOL_CAPABILITIES
-has always documented it as a possible value — every existing tool is
-either read_only or mutating); `log_incident`/`list_recent_incidents`/
-`resolve_incident` give an investigation a durable place to record what it
-found (app/domains/ops/store.py, `ops_incidents`) rather than only ever a
-one-off channel post that scrolls away.
+`fetch_metrics_summary` pulls operational metrics (ops/metrics_client.py)
+and flags threshold breaches; `post_to_team_channel` is this repo's first
+real use of the `outward` capability; `log_incident`/`list_recent_incidents`/
+`resolve_incident` give an investigation a durable record (ops/store.py,
+`ops_incidents`) instead of only a one-off channel post.
 
-Ctx is still required here (fail-closed, same as every other tool in this
-app) even though the underlying data isn't tenant-scoped — there's no
-per-tenant metrics dashboard, this is global operational data about the
-app itself. `ctx` here proves "a legitimate caller of this deployment,"
-not a filter over rows a caller isn't supposed to see; see
-app/domains/policy.py's own docstring for why `ActionAllowlistPolicy` is
-the right (if slightly informational, for this one domain) fit anyway —
-consistency with the rest of this app's tools matters more than skipping
-a check that happens to have nothing to scope here. `log_incident`/
-`resolve_incident` stamp `opened_by`/attribution from `ctx["principal"]`
-even though the incident row itself carries no tenant column — see
-app/domains/ops/store.py's own docstring.
+Ctx is still required (fail-closed, like every tool here) even though the
+data isn't tenant-scoped — it's global operational data about the app
+itself, so `ctx` proves "a legitimate caller," not a row filter. See
+app/domains/policy.py for why `ActionAllowlistPolicy` still fits.
+`log_incident`/`resolve_incident` stamp attribution from
+`ctx["principal"]` even though the incident row has no tenant column.
 
-Every tool is `async def` now — `store`'s queries await a real
-`AsyncConnectionPool`, `metrics_client`/`notify`/`render_url_to_markdown`
-await real HTTP clients, and the sandbox tools await a real MCP client
-session (app/domains/sandbox_session.py) — matching app/agent/tools.py's
-own async-first design.
+All tools are `async def`, matching app/agent/tools.py's async-first
+design (store queries, HTTP clients, and the sandbox MCP session all await
+real I/O).
 """
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
@@ -266,35 +254,19 @@ def _thread_id_from_config(config: RunnableConfig | None) -> str:
     return (config or {}).get("configurable", {}).get("thread_id", "unknown")
 
 
-# Three narrow, purpose-built tools over OpenSandbox's raw MCP catalog
-# (app/domains/sandbox_session.py, GRAPH_PATTERNS.md pattern 50) —
-# NOT the raw ~19-tool catalog itself. Real, live-verified finding behind
-# this: handing a small local model (qwen2.5:3b) OpenSandbox's own
-# stateful create/connect/run tools directly produced reproducible
-# failures (a hallucinated sandbox_id, then reaching for sandbox_connect
-# instead of sandbox_create after an error) that a prompt-only fix did not
-# resolve — see sandbox_session.py's own docstring for the full writeup.
-# These three give the model the exact same flat, 1-3-field shape every
-# other tool in this app already has; the sandbox's entire lifecycle
-# (create-or-reuse per thread, connect_if_missing) is handled in
-# sandbox_session.py, never exposed to the model.
+# Three narrow tools over OpenSandbox's raw MCP catalog
+# (sandbox_session.py, pattern 50), not the raw ~19-tool catalog itself —
+# a small model given that directly produced reproducible failures (see
+# sandbox_session.py's docstring). Same flat 1-3-field shape as every
+# other tool here; sandbox lifecycle is handled in sandbox_session.py.
 #
-# Always defined and always in TOOLS/TOOL_CAPABILITIES below — NOT gated
-# on opensandbox-mcp's reachability at this module's own import time,
-# unlike an earlier version of this code. That gate meant a process that
-# finished booting before opensandbox-server finished starting cached an
-# empty tool set FOREVER (see sandbox_session.load_raw_sandbox_tools's own
-# docstring for the live trace that surfaced this) — no self-healing short
-# of a full process restart, since a domain module only ever runs its
-# top-level code once per process. These three tools now match
-# fetch_external_reference's own established shape instead: always present
-# in the graph's tool list, each impl below calls
-# sandbox_session.load_raw_sandbox_tools() FRESH on every call (never a
-# value captured once at import time) and raises a plain, catchable error
-# if it's still empty — the same "a real call can fail, that's not the
-# same as the tool not existing" contract every other outward tool in this
-# app already has. app/domains/ops/domain.py needs no sandbox-specific
-# code at all either way.
+# Always defined and in TOOLS/TOOL_CAPABILITIES below, NOT gated on
+# opensandbox-mcp's reachability at import time — an earlier version did
+# that and cached an empty tool set forever if the process booted before
+# opensandbox-server finished starting (no self-healing short of a
+# restart). Each impl instead calls
+# sandbox_session.load_raw_sandbox_tools() fresh per call and raises a
+# catchable error if still empty.
 
 
 class RunCommandInSandboxArgs(BaseModel):

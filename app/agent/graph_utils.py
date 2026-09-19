@@ -1,33 +1,22 @@
-"""Generic infrastructure helpers with no dependency on any particular
-node's own logic: `_instrumented` (the structured lifecycle-logging
-wrapper every node gets at graph-registration time), `_friendly_tool_error`
-(ToolNode's error-recovery formatter), `_make_llm` (the production
-`ChatOpenAI` client factory), and `_content_words` (a crude word-overlap
-helper reused by three unrelated call sites — `app/agent/graph.py`'s own
-`_retrieval_query` vague-query check and `app/agent/graph_routing.py`'s
-citation-grounding check — so it belongs here, not with either caller or
-either sibling guardrail split). Split out of `app/agent/graph.py` purely
-for file size — see that module's own docstring, and
-`app/agent/graph_hitl.py`/`app/agent/graph_routing.py`/
-`app/agent/graph_tools.py`/`app/agent/graph_skills.py`'s for the sibling
-splits. No behavior change from the pre-split single-file version.
+"""Generic infrastructure helpers with no dependency on any node's own
+logic: `_instrumented` (structured lifecycle logging wrapper applied at
+graph-registration time), `_friendly_tool_error` (ToolNode's
+error-recovery formatter), `_make_llm` (the production `ChatOpenAI`
+client factory), and `_content_words` (a crude word-overlap helper
+shared by `graph.py`'s vague-query check and `graph_routing.py`'s
+citation-grounding check). Split out of `app/agent/graph.py` for file
+size (see `graph_hitl.py`/`graph_routing.py`/`graph_tools.py`/
+`graph_skills.py` for sibling splits); no behavior change.
 
-`_content_words` is read back into `app/agent/graph.py`'s `_retrieval_query`
-via a deferred (function-body-local) import, to avoid a real circular
-import — same pattern `_assemble_shared_graph_parts` already uses for
-`check_output`/`should_continue`/`_make_llm` itself.
+`_content_words` is read back into `graph.py`'s `_retrieval_query` via a
+deferred import to avoid a circular import.
 
 `_make_llm` reads `CHAT_MODEL`/`OPENAI_API_BASE`/`OPENAI_API_KEY` through
-`graph_module.X` rather than a plain statically-imported bare name — same
-real bug/fix as `app/agent/graph_hitl.py`'s own `graph_module.interrupt`/
-`graph_module.STATE_SCHEMA_VERSION` (see its docstring): several
-`tests/live/*` files do `monkeypatch.setattr(graph_module, "CHAT_MODEL", ...)`
-/`"OPENAI_API_BASE"`, patching an attribute on the live `app.agent.graph`
-module object — a statically-imported bare name here would bind to the
-ORIGINAL values once, at this module's own import time, permanently, so
-the monkeypatch would silently never take effect. `OPENAI_API_KEY` isn't
-currently patched anywhere, but is module-qualified too for consistency —
-cheap insurance against the same bug resurfacing if a future test needs to.
+`graph_module.X` rather than a static bare import — several `tests/live/*`
+files monkeypatch these as attributes on the live `graph` module object,
+which a bare `from X import Y` would miss (copies the reference once, at
+import time). Same fix as `graph_hitl.py`'s `graph_module.interrupt`/
+`STATE_SCHEMA_VERSION`.
 """
 import asyncio
 import functools
@@ -48,46 +37,31 @@ logger = logging.getLogger(__name__)
 def _instrumented(node_name: str):
     """Wrap a node with structured start/complete/failed/paused lifecycle logs.
 
-    Applied once, at graph-registration time (see build_graph), to every
-    node — never hand-rolled inside a node function — so the logged field
-    set can't drift by which node's author remembered to add it, and so the
-    plain node functions stay directly callable from tests exactly as
-    before (see this module's docstring): only the graph-registered copy is
-    wrapped, the module-level name is untouched.
+    Applied once, at graph-registration time (build_graph), to every node
+    — never hand-rolled inside a node function — so the logged field set
+    can't drift, and the plain node functions stay directly callable from
+    tests unwrapped.
 
-    Logs carry the node name, run_id, outcome, and duration_ms — NEVER
-    message content or the state dict. A node dumping `state` into a log
-    would create a second, unscrubbed, non-expiring copy of prompt/document
-    text sitting outside Langfuse's tracing, which is where that data is
-    meant to live (see GRAPH_PATTERNS.md pattern 14).
+    Logs carry node name, run_id, outcome, and duration_ms — NEVER message
+    content or the state dict, which would create a second, unscrubbed,
+    non-expiring copy of prompt/document text outside Langfuse's tracing
+    (GRAPH_PATTERNS.md pattern 14).
 
     `human_approval`'s `interrupt()` raises `GraphInterrupt` (a
-    `GraphBubbleUp`) to pause the run — that's normal control flow, not a
-    failure, so it's logged as `node_paused` and re-raised untouched rather
-    than caught as `node_failed`.
+    `GraphBubbleUp`) to pause the run — normal control flow, logged as
+    `node_paused` and re-raised untouched, not caught as `node_failed`.
 
-    Async-aware: a handful of nodes (`agent`, `compact_history`,
-    `suggest_followups`, `check_semantic_cache`, `retrieve_context`,
-    `write_semantic_cache`, `moderate_input` — the ones that make a real
-    LLM call or hit Redis/Qdrant/ml-service) are `async def`, so their real
-    I/O waits on the event
-    loop instead of occupying a slot in LangChain's shared, process-wide
-    default executor (`langchain_core.runnables.config.run_in_executor`,
-    `min(32, os.cpu_count()+4)` threads total — verified directly against
-    that source, and directly measured here: raising this app's own
-    AGENT_WORKER_MAX_CONCURRENCY/CHECKPOINTER_POOL_MAX_SIZE to 50 barely
-    moved throughput on a 50-concurrent-turn burst until this was fixed,
-    because that shared executor was the next thing every turn queued
-    behind). Every other node stays plain sync `def` — deliberately, per
-    LangGraph's own guidance: they're pure in-memory/regex logic with
-    nothing to await, and forcing them async would just add executor-hop
-    overhead for zero benefit (`check_output`/`retry_output` in particular
-    are hit by ~100 existing direct-call unit tests each — see
-    tests/agent/test_nodes.py — that a real I/O node wouldn't have,
-    reinforcing that these were never the nodes worth converting). Detected
-    via `asyncio.iscoroutinefunction(fn)`, not a caller-supplied flag, so a
-    node's own definition (`def` vs `async def`) is the only place this
-    ever needs to be decided.
+    Async-aware: nodes making a real LLM call or hitting Redis/Qdrant/
+    ml-service (`agent`, `compact_history`, `suggest_followups`,
+    `check_semantic_cache`, `retrieve_context`, `write_semantic_cache`,
+    `moderate_input`) are `async def` so their I/O waits on the event loop
+    instead of occupying a slot in LangChain's shared, process-wide
+    default executor (`min(32, cpu_count+4)` threads) — raising this
+    app's own concurrency limits to 50 barely moved throughput until this
+    was fixed, because that shared executor was the next bottleneck.
+    Every other node stays plain sync `def`, per LangGraph's own guidance,
+    since they're pure in-memory logic with nothing to await. Detected via
+    `asyncio.iscoroutinefunction(fn)`, not a caller flag.
     """
 
     def decorator(fn):
@@ -187,58 +161,29 @@ def _make_llm(tools: list = TOOLS):
         stream_usage=True,
     ).bind_tools(tools)
     # No `parallel_tool_calls=False` here (removed 2026-09-09) — genuine
-    # multi-tool-call turns are now supported end to end, deliberately.
+    # multi-tool-call turns are fully supported now.
     #
-    # History: a real, live-verified streaming bug once made two
-    # simultaneous tool calls in one turn (e.g. calculator + add_note)
-    # come back as ONE malformed tool_calls entry whose id/name/arguments
-    # were each the raw concatenation of both calls' own fields
-    # ("calculatoradd_note" glued into one string, both calls' JSON args
-    # glued into one unparseable blob) — burning ~15k tokens across 5
-    # identical failed retries before ever reaching a human approval pause
-    # (Langfuse trace `fc0a31db`/`dbd2c02b`, 2026-09-08). `parallel_tool_calls
-    # =False` was added here as the apparent fix, but it was a proven no-op
-    # against this stack: litellm's ollama_chat provider doesn't list
-    # `parallel_tool_calls` in its get_supported_openai_params() at all, and
-    # litellm-config.yaml's `drop_params: true` makes litellm silently
-    # discard unsupported params instead of erroring, so the parameter
-    # never reached Ollama — confirmed when the exact same corruption
-    # recurred in a fresh trace (`3c6ed3b0`, 2026-09-09) well after that
-    # line shipped.
+    # History: two simultaneous tool calls used to come back from litellm's
+    # ollama_chat provider as ONE malformed tool_calls entry with
+    # concatenated ids/names/args (Langfuse `fc0a31db`/`dbd2c02b`,
+    # 2026-09-08). `parallel_tool_calls=False` was added as an apparent fix
+    # but was a proven no-op (ollama_chat doesn't support the param;
+    # litellm silently drops it) — confirmed when the corruption recurred
+    # later (`3c6ed3b0`).
     #
-    # The actual bug lived one layer down, in litellm itself:
-    # OllamaChatCompletionResponseIterator.chunk_parser builds a fresh
-    # Delta per top-level Ollama stream chunk, and Delta's own
-    # auto-indexing restarts its counter at 0 for every chunk instead of
-    # tracking it across the whole response — so two tool calls arriving
-    # in separate chunks (how ollama_chat actually delivers them) both got
-    # index 0, and any OpenAI-compatible client (langchain_openai
-    # included) is spec-correct to merge same-index tool_call chunks by
-    # string-concatenating their fields, which is exactly the glued
-    # garbage observed. Fixed at that layer:
-    # litellm-patches/sitecustomize.py, loaded into the litellm proxy
-    # container via PYTHONPATH (docker-compose.yml) — it patches
-    # chunk_parser to hand out one globally-increasing index per response
-    # instead of per chunk. See that file for the full writeup.
+    # Root cause was in litellm: OllamaChatCompletionResponseIterator's
+    # chunk_parser restarts its tool-call index at 0 per chunk instead of
+    # per response, so two calls in separate chunks both get index 0 and
+    # get string-concatenated by any OpenAI-compatible client. Fixed at
+    # that layer (litellm-patches/sitecustomize.py, loaded via PYTHONPATH
+    # in docker-compose.yml) to hand out a globally-increasing index.
     #
-    # With the transport bug actually fixed, `parallel_tool_calls=False`
-    # was removed rather than kept as "harmless defense-in-depth": this
-    # app's should_continue/human_approval/ToolNode/runtime.py SSE/frontend
-    # code was already written generically over the full tool_calls list
-    # (see _mandatory_gate_reason, _reject_tool_calls, human_approval's own
-    # interrupt payload) even though nothing had ever exercised it with a
-    # real multi-call batch — verified live end to end (calculator +
-    # add_note in one turn: routes to human_approval with both calls
-    # bundled, one approve/reject resumes both, ToolNode runs both, mixed
-    # success/failure is reported per-call) and covered by
-    # tests/live/test_agent_parallel_tool_calls.py. Deliberate consequence,
-    # not an oversight: a batch needing approval is now approved/rejected
-    # as ONE decision covering every call in it, not one decision per call
-    # — the pending-tool-calls list in the approval prompt (human_approval,
-    # the `approval_required` SSE event, the web UI's renderApprovalButtons)
-    # already shows every call in the batch, so this trades "one action per
-    # approval" for "fewer round trips," not for reduced visibility into
-    # what's being approved.
+    # `parallel_tool_calls=False` was then removed rather than kept as
+    # defense-in-depth: the approval/routing code already handled the full
+    # tool_calls list generically, just untested with a real batch — now
+    # verified live (tests/live/test_agent_parallel_tool_calls.py). A batch
+    # needing approval is approved/rejected as ONE decision covering every
+    # call, trading round trips for granularity, not visibility.
 
 
 # A small, deliberately crude stopword list — good enough to stop common

@@ -1,25 +1,19 @@
 """Redis Streams queue for the production ingestion pipeline — a SEPARATE
-stream/consumer group from app/job_queue/queue.py's chat-turn queue
-(`agent:requests`), not a generalized
-reuse of it. Deliberate: chat turns are short and human-latency-sensitive;
-an ingest job (parsing a large PDF) can run for many seconds. Sharing one
-Redis consumer group would mean a burst of large ingest jobs delays
-latency-sensitive chat turns on the SAME group (consumer groups
-round-robin without job-type priority) — the identical "independently
-scalable" reasoning app/job_queue/queue.py's own docstring already uses to justify
-splitting the SSE-serving tier from the agent-executing tier, applied a
-second time here between chat and ingestion.
+stream/consumer group from `app/job_queue/queue.py`'s chat-turn queue
+(`agent:requests`). Deliberate: chat turns are short/latency-sensitive,
+while an ingest job (parsing a large PDF) can run for many seconds, and a
+shared consumer group round-robins without job-type priority, so a burst
+of ingest jobs would delay chat turns — same "independently scalable"
+split `app/job_queue/queue.py` already applies between the SSE and
+agent-executing tiers.
 
-Reuses app/job_queue/queue.py's `get_client()` for the actual Redis connection
-(same server, same connection settings — decode_responses=True,
-socket_timeout=None for the same BLOCK-vs-socket-timeout race reasoning
-documented there) rather than opening a second, redundant connection pool
-to the identical Redis instance; only the stream/group NAMES and payload
-shapes below are what's actually separate.
+Reuses `app/job_queue/queue.py`'s `get_client()` (same Redis server/settings)
+rather than a second connection pool — only the stream/group names and
+payload shapes here are actually separate.
 
-The producer half lives in app/api/main.py (`POST /ingest/upload`); the
-consumer half is app/ingestion/ingest_worker.py, which is the only place that
-actually downloads from MinIO and runs extraction/ingestion.
+Producer: `app/api/main.py` (`POST /ingest/upload`). Consumer:
+`app/ingestion/ingest_worker.py`, the only place that downloads from MinIO
+and runs extraction/ingestion.
 """
 import json
 import logging

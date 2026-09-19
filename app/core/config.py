@@ -26,9 +26,8 @@ class Settings(BaseSettings):
     collection: str = "docs"
 
     # Multi-tenant isolation (app/core/security.py) — the tenant scripts/seed.py
-    # stamps on the seeded sample docs. A real deployment ingests per real
-    # tenant; this exists so `make ingest` still has a tenant to stamp
-    # without inventing a signup flow just to run the demo.
+    # stamps on seeded sample docs, so `make ingest` has a tenant without a
+    # signup flow. A real deployment ingests per real tenant.
     default_tenant: str = "ecorp"
 
     # Langfuse
@@ -36,156 +35,103 @@ class Settings(BaseSettings):
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
 
-    # Durable checkpointer (app/agent/runtime.py) — survives a process restart,
-    # unlike the in-memory MemorySaver build_graph() defaults to for tests.
-    # A SEPARATE database in the same Postgres the stack already runs for
-    # LiteLLM/Langfuse/appdata (see postgres-init/05-checkpointer-db.sql),
-    # not sharing their schema — AsyncPostgresSaver.setup() owns and
-    # migrates its own multi-table schema (checkpoints/checkpoint_blobs/
-    # checkpoint_writes), which shouldn't share a lifecycle with
-    # hand-maintained app tables. Postgres, not a SQLite file, because this
-    # checkpoint store is now shared across multiple OS processes at once
-    # (the API process plus one or more independently-scaled
-    # app/job_queue/agent_worker.py processes) — a single SQLite file's
-    # writer-locking is fragile under that; Postgres is built for it. The
-    # test suite degrades gracefully when this isn't reachable (see
-    # tests/agent/test_durable_checkpoint.py's connectivity-probe skip fixture),
-    # so `pytest -q` still needs no live services for its non-checkpoint
-    # coverage.
+    # Durable checkpointer (app/agent/runtime.py) — survives a process restart.
+    # Separate DB from the shared Postgres stack (own schema/lifecycle via
+    # AsyncPostgresSaver.setup()); Postgres not SQLite because it's shared
+    # across multiple processes (API + agent_worker.py replicas). Tests
+    # degrade gracefully when unreachable (see test_durable_checkpoint.py).
     checkpointer_database_url: str = "postgresql://langfuse:langfuse@localhost:5432/checkpointer"
 
-    # Hybrid retrieval (app/retrieval/embeddings.py, app/retrieval/qdrant_store.py) — sparse
-    # (BM25) + dense, fused server-side, then cross-encoder reranked.
-    # See GRAPH_PATTERNS.md pattern 20.
+    # Hybrid retrieval (app/retrieval/embeddings.py, qdrant_store.py) — sparse
+    # (BM25) + dense, fused server-side, then cross-encoder reranked. See
+    # GRAPH_PATTERNS.md pattern 20.
     #
-    # Sparse (BM25) still runs locally via fastembed/ONNX — no network call,
-    # downloaded once and cached, same "offline after first pull" shape as
-    # the Ollama models. It's lexical scoring, not a neural model, so there
-    # was never a serving-infra question for it.
+    # Sparse (BM25) runs locally via fastembed/ONNX — lexical scoring, no
+    # serving-infra question, cached after first download.
     sparse_model: str = "Qdrant/bm25"
-    # Reranking is a real ONNX cross-encoder, and unlike sparse, it was a
-    # measured concurrency bottleneck: running it in-process (fastembed,
-    # same as sparse) meant every concurrent turn's rerank call held a slot
-    # in this process's own thread pool for the call's full duration, and
-    # ONNX Runtime's own default thread settings (unset here) meant each
-    # call ALSO tried to grab every CPU core for itself — real, measured
-    # cost under a 50-concurrent-turn burst. Moved to a dedicated
-    # inference container instead (docker-compose.yml's `ml-service`,
-    # docker/ml-service/main.py) — genuinely gets this compute off
-    # agent-worker's own process/GIL entirely, not just onto a different
-    # thread of the same one.
+    # Reranking is a real ONNX cross-encoder and was a measured concurrency
+    # bottleneck in-process (each call held a thread-pool slot plus ONNX's
+    # own all-cores default under a 50-concurrent-turn burst). Moved to a
+    # dedicated container (docker-compose.yml's `ml-service`,
+    # docker/ml-service/main.py) to get it off agent-worker's GIL entirely.
     #
-    # That service is a small hand-rolled FastAPI + onnxruntime app,
-    # originally reranker-only (Xenova/ms-marco-MiniLM-L-6-v2, with its own
-    # async micro-batching queue coalescing concurrent /rerank calls'
-    # pairs into one ONNX forward pass), not text-embeddings-inference
-    # (TEI) — TEI was tried first (BAAI/bge-reranker-base) and measured
-    # directly against this exact workload before being replaced: TEI's
-    # own admission queue rejected ~94% of a genuine 100-simultaneous
-    # burst outright, needed ~84s to sustainably serve 100 requests, and
-    # idled at 2.26GiB — this service handles that same burst in full with
-    # zero rejections, ~14s sustainably, at ~200-420MiB. Now also hosts a
-    # second small ONNX model (Llama Prompt Guard 2, app/agent/
-    # moderation.py's ML injection-detection layer) in the SAME container,
-    # hence the generic name — see docker/ml-service/main.py's own
-    # docstring for the full reasoning (including why a framework —
-    # BentoML/Ray Serve/Triton — wasn't used either) and
-    # docker-compose.yml's `ml-service` comment for the measured numbers
-    # in full.
+    # Hand-rolled FastAPI + onnxruntime, not TEI — TEI was tried
+    # (BAAI/bge-reranker-base) and measured against this workload first:
+    # ~94% rejected under a 100-simultaneous burst, ~84s to sustain 100
+    # requests, 2.26GiB idle. This service handles that burst with zero
+    # rejections, ~14s sustainably, ~200-420MiB. Also hosts a second ONNX
+    # model (Llama Prompt Guard 2, moderation.py's ML injection layer) in
+    # the same container, hence the generic name — see
+    # docker/ml-service/main.py for full reasoning and measured numbers.
     ml_service_url: str = "http://localhost:8083"
     hybrid_prefetch_limit: int = 20  # candidates pulled per leg (dense, sparse) before fusion
     rerank_top_k: int = 5            # final results returned after rerank
 
-    # Skill packages (app/agent/skills.py, GRAPH_PATTERNS.md pattern 45) — a
-    # bundled catalog of SKILL.md files (name/description frontmatter + a
-    # markdown instruction body), each a *procedural capability* shipped with
-    # the app, not tenant data (no SecurityCtx involved, same as calculator).
-    # `skills_dir` is disk truth for a skill's full body (loaded by
-    # use_skill); `skills_collection` is a SEPARATE Qdrant collection —
-    # never `collection` above — holding just {name, description} for
-    # skill_search's hybrid search, rebuilt via `make index-skills`.
+    # Skill packages (app/agent/skills.py, pattern 45) — bundled SKILL.md
+    # files, a *procedural capability* shipped with the app, not tenant data.
+    # `skills_dir` is disk truth for a skill's body (loaded by use_skill);
+    # `skills_collection` is a SEPARATE Qdrant collection (never `collection`
+    # above) holding {name, description} for skill_search, rebuilt via
+    # `make index-skills`.
     skills_dir: str = "skills"
     skills_collection: str = "skills"
     skills_search_top_k: int = 3
 
-    # Subagents (app/agent/subagents.py, GRAPH_PATTERNS.md pattern 46) — a
-    # bundled catalog of AGENT.md files (name/description/tools/model
-    # frontmatter + a markdown system-prompt body), each a scoped, isolated
-    # nested agent run the `run_subagent` tool can delegate a task to.
-    # `subagents_dir` is disk truth, same "on disk, not a search index"
-    # shape as `skills_dir` — but unlike skills there is no separate Qdrant
-    # collection for discovery, since a subagent's short description is
-    # embedded directly in run_subagent's own tool schema.
+    # Subagents (app/agent/subagents.py, pattern 46) — bundled AGENT.md files,
+    # each a scoped nested agent run `run_subagent` can delegate to.
+    # `subagents_dir` is disk truth like `skills_dir`, but no separate Qdrant
+    # collection — a subagent's description is embedded in run_subagent's
+    # own tool schema.
     subagents_dir: str = "subagents"
 
-    # Structured-data tool (app/agent/sql_store.py) — a SEPARATE database in the
-    # same Postgres the stack already runs for LiteLLM/Langfuse (see
-    # postgres-init/02-appdata.sql), not sharing their schema.
+    # Structured-data tool (app/agent/sql_store.py) — a SEPARATE database in
+    # the same Postgres as LiteLLM/Langfuse, not sharing their schema.
     appdata_database_url: str = "postgresql://langfuse:langfuse@localhost:5432/appdata"
 
-    # Semantic cache (app/retrieval/semantic_cache.py) — Redis Stack (RediSearch, for
-    # vector KNN), not plain Redis.
+    # Semantic cache (app/retrieval/semantic_cache.py) — Redis Stack
+    # (RediSearch, for vector KNN), not plain Redis.
     redis_url: str = "redis://localhost:6379"
     semantic_cache_similarity_threshold: float = 0.95  # cosine; a query must
     # be nearly identical in meaning to reuse a cached answer, not just topically close
     semantic_cache_ttl_seconds: int = 3600
 
-    # Cross-session memory retention (app/core/security.py, app/agent/memory.py) — a
-    # memory older than this is invisible at RECALL time (Policy.lower),
-    # not just eventually removed by a sweep script calling
-    # app/agent/memory.py::delete_memories (GRAPH_PATTERNS.md pattern 33).
+    # Cross-session memory retention (app/core/security.py, app/agent/memory.py)
+    # — a memory older than this is invisible at RECALL time (Policy.lower),
+    # not just eventually removed by delete_memories (pattern 33).
     memory_retention_days: int = 365
 
-    # Per-run cost ceiling (app/agent/graph_routing.py::should_continue, GRAPH_PATTERNS.md
-    # pattern 35) — a HARD stop, enforced before the next tool/LLM call,
-    # independent of MAX_TOKENS_PER_TURN: a token cap bounds work done, a
-    # dollar cap bounds what that work is actually worth on whichever
-    # model tier is configured (app/agent/usage_ledger.py::PRICE_PER_1K_TOKENS_USD).
-    # $0 for every locally-run Ollama model this demo's own docker-compose
-    # ships, so this never trips in the default local setup — it starts
-    # mattering the moment OPENAI_API_BASE points at a real paid provider.
+    # Per-run cost ceiling (graph_routing.py::should_continue, pattern 35) —
+    # a HARD stop before the next tool/LLM call, independent of
+    # MAX_TOKENS_PER_TURN (a token cap bounds work; a dollar cap bounds what
+    # that work costs on the configured model tier). $0 for local Ollama
+    # models, so it only starts mattering once OPENAI_API_BASE points at a
+    # real paid provider.
     max_cost_usd_per_turn: float = 0.50
 
-    # Per-run cost ceiling for a NESTED subagent run (app/agent/tools.py::
-    # run_subagent, GRAPH_PATTERNS.md pattern 46) — deliberately separate
-    # from, and smaller than, max_cost_usd_per_turn above: a subagent's own
-    # spend is recorded to the usage ledger for audit but is NOT folded back
-    # into the live total_cost_usd the parent turn's should_continue
-    # enforces in real time (a disclosed gap, see pattern 46), so this is
-    # the one enforcement point actually bounding what one subagent call can
-    # spend.
+    # Per-run cost ceiling for a NESTED subagent run (tools.py::run_subagent,
+    # pattern 46) — smaller than max_cost_usd_per_turn above. A subagent's
+    # spend is recorded to the ledger for audit but NOT folded back into the
+    # parent turn's live total_cost_usd (disclosed gap, pattern 46), so this
+    # is the only real enforcement on one subagent call's spend.
     max_subagent_cost_usd_per_run: float = 0.15
 
-    # Per-tenant ceiling across MANY turns (app/agent/runtime.py's
-    # _tenant_over_daily_budget), a rolling 24-hour window against
-    # app/agent/usage_ledger.py's usage_ledger — distinct from MAX_COST_USD_PER_TURN
-    # above, which only ever sees ONE turn at a time and has no memory of
-    # what a tenant already spent on turns before it. Same "$0 for every
-    # locally-run Ollama model" note as MAX_COST_USD_PER_TURN: this never
-    # trips against this demo's own docker-compose stack, only once
-    # OPENAI_API_BASE points at a real paid provider.
+    # Per-tenant ceiling across MANY turns (runtime.py's
+    # _tenant_over_daily_budget), rolling 24h window against usage_ledger —
+    # distinct from MAX_COST_USD_PER_TURN, which only sees one turn at a
+    # time. Same "$0 on local Ollama" note applies.
     max_cost_usd_per_tenant_per_day: float = 20.0
 
-    # Outermost per-turn wall-clock bound (app/agent/runtime.py) — beneath
-    # this, MAX_ITERATIONS (LLM loop cap) and RECURSION_LIMIT (graph step
-    # cap) already apply; this is what catches a turn stuck inside a
-    # single slow LLM/tool call those two never see. Deliberately
-    # configurable, unlike its sibling safety budgets above (cost/token
-    # ceilings, which bound runaway SPEND and stay code-level constants on
-    # purpose) — this one is a pure operational timeout, no different in
-    # kind from `rate_limit_per_minute` below: a real deployment against a
-    # genuinely slow backend (a small local model on modest hardware, real
-    # network latency to a hosted provider) has a legitimate reason to
-    # widen it, and widening it carries no safety/cost implication either
-    # way. `tests/live/conftest.py` overrides this for exactly that reason
-    # — a small model's real inference time on a shared CI runner
-    # sometimes exceeds the 60s default that's comfortably enough headroom
-    # for this demo's own local, GPU-backed development setup.
+    # Outermost per-turn wall-clock bound (app/agent/runtime.py) — catches a
+    # turn stuck inside one slow LLM/tool call, which MAX_ITERATIONS/
+    # RECURSION_LIMIT never see. Configurable (unlike the cost/token
+    # ceilings, which are code-level constants bounding spend): it's a pure
+    # operational timeout, and a slow backend has a legitimate reason to
+    # widen it. `tests/live/conftest.py` overrides this since a small
+    # model's inference time on shared CI can exceed the 60s local default.
     request_timeout_seconds: int = 60
 
-    # Object storage for uploaded documents (app/ingestion/object_store.py) — MinIO,
-    # a self-hosted S3-compatible store (docker-compose's `minio` service),
-    # consistent with this app's fully-offline posture everywhere else.
+    # Object storage for uploaded documents (app/ingestion/object_store.py) —
+    # MinIO, self-hosted S3-compatible (docker-compose's `minio` service).
     # Defaults match that service's own MINIO_ROOT_USER/MINIO_ROOT_PASSWORD.
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = "minioadmin"
@@ -193,235 +139,147 @@ class Settings(BaseSettings):
     minio_bucket: str = "ingest-uploads"
     minio_secure: bool = False  # plain http:// for local docker-compose; a real deployment sets this True
 
-    # Telegram channel (app/channels/telegram.py, GRAPH_PATTERNS.md pattern
-    # 42) — empty by default, so the bot refuses to start rather than
-    # silently running with no way to authenticate to Telegram's API. Create
-    # a bot via @BotFather to get a real token; this is the one surface in
-    # this app that necessarily reaches the public internet, unlike the rest
-    # of the stack (fully local via docker-compose).
+    # Telegram channel (app/channels/telegram.py, pattern 42) — empty by
+    # default so the bot refuses to start rather than run with no way to
+    # authenticate. Create a bot via @BotFather. The one surface in this app
+    # that necessarily reaches the public internet.
     telegram_bot_token: str = ""
 
     # Which domain (app/domains/registry.py) a process boots its shared
-    # graph singleton against — read by app/channels/telegram.py, which is
-    # now a generalized gateway rather than an Ecorp-only one (GRAPH_PATTERNS.md
-    # pattern 23/42), and by app/job_queue/agent_worker.py, where it also picks
-    # which domain's requests stream this worker POOL reads (see that
-    # module's own docstring — `POST /chat/stream/queued` picks the domain
-    # per REQUEST instead, via an X-Domain header, since that endpoint's
-    # process itself isn't domain-bound the way these two are). "ecorp" is
-    # this app's own existing default; the demo example domains this app
-    # ships alongside it are "support" and "sales" (see
-    # app/domains/support/, app/domains/sales/) — "ops" is registered too,
-    # mostly so it CAN be chatted with, though its own use case
-    # (scripts/ops_digest.py, scripts/ops_investigate.py) doesn't need a
-    # channel at all. An unknown name fails loud at process start
-    # (app/domains/registry.py::resolve_domain), same discipline as
-    # TELEGRAM_BOT_TOKEN's missing-config check above.
+    # graph singleton against — read by telegram.py (a generalized gateway,
+    # pattern 23/42) and agent_worker.py (which worker POOL reads which
+    # requests stream; `POST /chat/stream/queued` instead picks the domain
+    # per-request via an X-Domain header). "ecorp" is the default; "support"
+    # and "sales" are the other demo domains, "ops" is registered too though
+    # its own scripts don't need a channel. Unknown name fails loud at
+    # startup (registry.py::resolve_domain).
     agent_domain: str = "ecorp"
 
-    # Ops bot (app/domains/ops/) — queries the Prometheus this repo already
-    # runs (docker-compose.observability.yml, `make obs-up`) for its
-    # "pull metrics dashboards" tool, over Prometheus's own HTTP query API.
-    # Not the otel-collector's OTLP port — that's a push target, not
-    # queryable; Prometheus is what actually stores/serves these numbers.
+    # Ops bot (app/domains/ops/) — queries this repo's own Prometheus
+    # (`make obs-up`) via its HTTP query API for the "pull metrics
+    # dashboards" tool. Not the otel-collector's OTLP port — that's a push
+    # target, not queryable.
     prometheus_url: str = "http://localhost:9090"
 
     # Sandbox session defaults (app/domains/sandbox_session.py, shared by
-    # every domain that wires in the sandbox trio — ops/support/sales,
-    # GRAPH_PATTERNS.md pattern 50) — the container image and lifetime for
-    # the ONE OpenSandbox sandbox each investigation (thread) lazily
-    # creates on first use and reuses after that. A fresh sandbox has NO
-    # network egress by default (OpenSandbox's own NetworkPolicy defaults
-    # to deny-all) — a script that tries `pip install` would just
-    # hang/fail — so rather than widen egress for convenience, needed
-    # packages are baked into a small custom image instead:
-    # docker/sandbox.Dockerfile (`make sandbox-build`), currently
-    # python:3.12-slim + numpy + pandas. Bump that Dockerfile (and this
-    # default, if the tag changes) if a real deployment needs more. No
-    # `ops_`/domain prefix on these two — matches the already
-    # domain-agnostic naming every other OpenSandbox/crawl4ai setting here
-    # already has (OPENSANDBOX_MCP_DOMAIN, CRAWL4AI_SERVER_URL, ...);
-    # sandbox creation itself has never been ops-specific, only its
-    # one-time original wiring was.
+    # ops/support/sales, pattern 50) — image and lifetime for the one
+    # OpenSandbox sandbox each investigation thread lazily creates and
+    # reuses. A fresh sandbox has NO network egress by default, so needed
+    # packages are baked into a custom image instead (docker/sandbox.Dockerfile,
+    # `make sandbox-build`, currently python:3.12-slim + numpy + pandas) —
+    # bump both if a real deployment needs more. No domain prefix: sandbox
+    # creation was never ops-specific, only its original wiring was.
     sandbox_image: str = "agent-core-demo-sandbox:latest"
-    sandbox_ttl_seconds: int = 1800  # 30 minutes — long enough for an
-    # investigation spanning several human-approval pauses, short enough
-    # that an abandoned sandbox doesn't linger indefinitely.
+    sandbox_ttl_seconds: int = 1800  # 30 min — enough for several human-approval
+    # pauses, short enough that an abandoned sandbox doesn't linger.
 
     # Team-channel notifications (app/domains/notify.py) — used by the ops
-    # bot's post_to_team_channel tool and the support/sales domains'
-    # escalate_to_human/handoff_to_human. Empty by default: the notifier
-    # degrades to a local file+log sink rather than refusing to start (the
-    # OPPOSITE posture from TELEGRAM_BOT_TOKEN above) — same "additive,
-    # never load-bearing" relationship this app already has with Langfuse/
-    # observability, appropriate for a demo notification sink nobody's
-    # on-call rotation actually depends on.
+    # bot's post_to_team_channel and support/sales's escalate/handoff tools.
+    # Empty by default: degrades to a local file+log sink rather than
+    # refusing to start (opposite posture from TELEGRAM_BOT_TOKEN) — a demo
+    # sink nobody's on-call actually depends on.
     slack_webhook_url: str = ""
 
-    # API-layer protections (app/api/main.py) — a single client (or one
-    # misbehaving/compromised tenant) must not be able to flood the shared
-    # Redis Streams queue (app/job_queue/queue.py) or starve every other tenant's
-    # turns. Rate limiting is per-tenant (X-Tenant-Id), backed by the SAME
-    # Redis this app already depends on — not in-process memory, which
-    # would silently stop working the moment more than one `uvicorn`
-    # process is running (this app's own scaling story, see
-    # GRAPH_PATTERNS.md pattern 43) since each process would count hits
-    # independently. Fails OPEN if Redis itself is unreachable (see
-    # app/api/main.py's limiter construction) — the same "an ancillary system's
-    # outage must not take down the core turn" posture
-    # app/retrieval/semantic_cache.py/app/agent/moderation.py already established, applied
-    # here to a THIRD ancillary system.
+    # API-layer protection (app/api/main.py) — one client/tenant must not
+    # flood the shared Redis Streams queue or starve other tenants. Per-tenant
+    # (X-Tenant-Id), backed by the same Redis, not in-process memory (which
+    # would stop working once more than one `uvicorn` process runs, pattern
+    # 43). Fails OPEN if Redis is unreachable, same posture as
+    # semantic_cache.py/moderation.py.
     rate_limit_per_minute: int = 30
 
-    # Concurrent turns ONE app/job_queue/agent_worker.py process will run at
-    # once (asyncio.Semaphore-bounded, see that module's own docstring).
-    # Env-configurable, not just a code constant, specifically so a
-    # load-testing run can dial it without a redeploy — production sizing
-    # depends on the DOWNSTREAM LLM backend's own real concurrency, not a
-    # value this app can pick once and forget (see loadtest/fake_llm_server.py's
-    # docstring on native Ollama's own hard `-np 1` ceiling vs a genuinely
-    # concurrent backend).
+    # Concurrent turns ONE agent_worker.py process runs at once
+    # (asyncio.Semaphore-bounded). Env-configurable so load tests can dial it
+    # without a redeploy — production sizing depends on the downstream LLM
+    # backend's real concurrency (see loadtest/fake_llm_server.py on Ollama's
+    # `-np 1` ceiling vs a genuinely concurrent backend).
     agent_worker_max_concurrency: int = 10
 
     # app/agent/runtime.py::_open_checkpointer's AsyncConnectionPool size.
-    # Env-configurable for the same load-testing reason as
-    # agent_worker_max_concurrency above, but raising this ALONE will not
-    # raise checkpoint throughput past a single connection's worth: LangGraph's
-    # own AsyncPostgresSaver (langgraph/checkpoint/postgres/aio.py) wraps
-    # EVERY checkpoint read/write in one `asyncio.Lock()` per saver instance
-    # that guards pool.connection() itself, not just the query after it —
-    # verified directly against that library's source, not assumed. So no
-    # matter how many idle connections this pool holds, only one turn's
-    # checkpoint I/O is ever actually in flight at a time, PER PROCESS. That
-    # lock is per-instance, not global across processes, though — genuine
-    # additional checkpoint throughput comes from running more
-    # agent_worker.py REPLICAS (`docker compose --profile app up -d --scale
-    # agent-worker=N`, GRAPH_PATTERNS.md pattern 43), each with its own
-    # independent saver/lock, not from raising either this or
-    # agent_worker_max_concurrency within one process. This still isn't
-    # wasted to raise, though: it bounds how many connections THIS process
-    # can hold open regardless of the lock, and matching it to
-    # agent_worker_max_concurrency keeps the two numbers from silently
-    # drifting apart.
+    # Raising this ALONE won't raise checkpoint throughput past one
+    # connection's worth: AsyncPostgresSaver wraps every checkpoint I/O in
+    # one `asyncio.Lock()` per saver instance guarding pool.connection()
+    # itself (verified against langgraph's source) — only one turn's
+    # checkpoint I/O is ever in flight per process regardless of pool size.
+    # Real additional throughput comes from more agent_worker.py REPLICAS
+    # (pattern 43), each with its own saver/lock. Still worth matching to
+    # agent_worker_max_concurrency so the two numbers don't drift apart.
     checkpointer_pool_max_size: int = 10
 
-    # Concurrent ingest jobs ONE app/ingestion/ingest_worker.py process will
-    # run at once (asyncio.Semaphore-bounded, same shape as
-    # agent_worker_max_concurrency above — see that module's own docstring
-    # for the pattern both share). An ingest job's blocking stages (MinIO
-    # download, PDF/DOCX extraction) are offloaded via asyncio.to_thread,
-    # which overlaps their I/O portions across concurrent jobs but doesn't
-    # grant CPU-bound extraction genuine parallelism (Python's GIL still
-    # serializes it across threads) — unlike agent_worker_max_concurrency,
-    # this isn't backed by "matches the downstream backend's real
-    # concurrency" reasoning, just matched to that same default (10) as a
-    # starting point. Env-configurable so a load test (or a deployment with
-    # genuinely I/O-dominated documents) can dial it without a redeploy;
-    # lower it — and lean on more ingest-worker replicas instead — if
-    # profiling shows CPU-bound extraction, not I/O wait, dominates.
+    # Concurrent ingest jobs ONE ingest_worker.py process runs at once, same
+    # asyncio.Semaphore shape as agent_worker_max_concurrency. Blocking
+    # stages (MinIO download, PDF/DOCX extraction) run via asyncio.to_thread,
+    # which overlaps I/O but doesn't parallelize CPU-bound extraction (GIL).
+    # Matched to the same default (10) as a starting point, not backed by
+    # "matches backend concurrency" reasoning like the worker setting above;
+    # lower it (and add replicas) if extraction, not I/O, dominates.
     ingest_worker_max_concurrency: int = 10
 
-    # Cap on app/job_queue/queue.py::get_client()'s connection pool — redis-py's
-    # own default (100, unset if this weren't here) is silent and easy to
-    # blow through: every POST /chat/stream/queued SSE connection holds a
-    # pooled connection for the FULL blocking-read duration of its turn
-    # (app/job_queue/queue.py::read_results's XREAD BLOCK), not just a quick
-    # round trip, so concurrent SSE connections map ~1:1 onto pool
-    # connections held. Verified directly: 250 concurrent requests against
-    # the redis-py default produced redis.exceptions.MaxConnectionsError
-    # for everything past the ~100th, an 82% failure rate — this app's
-    # actual concurrent-request ceiling was silently 100, regardless of how
-    # many agent_worker.py processes or how high AGENT_WORKER_MAX_CONCURRENCY
-    # was set on the other side of the queue. Comfortably above what any
-    # single reasonable load-test run needs; still finite (never literally
-    # unbounded) to keep one process from being able to exhaust the real
-    # Redis server's own maxclients ceiling by itself.
+    # Cap on app/job_queue/queue.py::get_client()'s connection pool —
+    # redis-py's default (100) is easy to blow through since every
+    # POST /chat/stream/queued SSE connection holds a pooled connection for
+    # its turn's full blocking-read duration (XREAD BLOCK), not a quick
+    # round trip. Verified: 250 concurrent requests against the redis-py
+    # default produced an 82% MaxConnectionsError failure rate past ~100.
+    # Comfortably above normal load-test needs, still finite so one process
+    # can't exhaust Redis's own maxclients.
     redis_max_connections: int = 300
 
-    # Comma-separated list of allowed origins for CORS, or "*" for any
-    # (the default — appropriate for a local demo with no other frontend
-    # pointed at it; a real multi-origin deployment narrows this). The
-    # built-in web UI (app/api/static/index.html) is same-origin and never
-    # needs CORS at all — this only matters for a DIFFERENT origin calling
-    # this API directly from a browser.
+    # Comma-separated CORS allowed origins, or "*" (default — fine for a
+    # local demo; the built-in web UI is same-origin and never needs CORS).
+    # A real multi-origin deployment narrows this (see .env.prod.example).
     cors_allowed_origins: str = "*"
 
-    # POST /ingest/upload's per-file cap, enforced before any MinIO write
-    # (app/api/main.py) — an unbounded upload is a memory/storage exhaustion
-    # vector, not just a slow request.
+    # POST /ingest/upload's per-file cap, enforced before any MinIO write —
+    # an unbounded upload is a memory/storage exhaustion vector.
     max_upload_size_mb: int = 25
 
-    # POST /ingest/upload's per-REQUEST file-count cap (app/api/main.py),
-    # mirrored client-side by the upload form's own check
-    # (app/api/static/index.html) so a user gets an immediate "trim your
-    # selection" message instead of a 400 after picking 30 files. A UX/abuse
-    # guard on one HTTP request, NOT a worker concurrency setting — see
-    # WORKER_CONCURRENCY.md's own note on why this is a different lever
-    # from ingest_worker_max_concurrency (raising this doesn't add ingest
-    # throughput; it only changes how many files one submission may batch).
+    # POST /ingest/upload's per-REQUEST file-count cap, mirrored client-side
+    # by the upload form. A UX/abuse guard on one HTTP request, distinct from
+    # ingest_worker_max_concurrency — raising this doesn't add throughput,
+    # just changes how many files one submission may batch.
     max_upload_files_per_request: int = 5
 
-    # OpenSandbox MCP bridge (app/domains/sandbox_tools.py, GRAPH_PATTERNS.md
-    # pattern 50) — `--domain` value passed to the `opensandbox-mcp` stdio
-    # bridge process app/mcp/client.py::load_remote_tools spawns, i.e. the
-    # host:port `opensandbox-server` listens on. Localhost:PORT, like
-    # PROMETHEUS_URL below and unlike every QDRANT_URL/REDIS_URL-style
-    # in-network service name — `opensandbox-mcp` itself is spawned by THIS
-    # process (a host process for `make serve`/`make agent-worker`, or the
-    # containerized `agent-worker` role talking out to its host-published
-    # port either way), never inside the opensandbox-server container, so it
-    # always reaches the server via a published port, not an in-network name.
+    # OpenSandbox MCP bridge (app/domains/sandbox_tools.py, pattern 50) —
+    # `--domain` passed to the `opensandbox-mcp` stdio bridge process
+    # (mcp/client.py::load_remote_tools spawns it), i.e. the host:port
+    # `opensandbox-server` listens on. Localhost:PORT since the bridge is
+    # spawned by this process and always reaches the server via a published
+    # port, not an in-network name.
     #
-    # 8090, NOT OpenSandbox's own packaged `docker` example config's default
-    # of 8080 — verified directly this collision is real, not theoretical:
-    # this repo's own `open-webui` (docker-compose.yml) already binds host
-    # port 8080 via `make up`. Before opensandbox_api_key below existed, a
-    # stray `opensandbox-server` that failed to bind 8080 didn't surface as a
-    # connection error — every request just landed on open-webui's own
-    # uvicorn instead, which returned a same-shaped generic
-    # `{"detail":"Method Not Allowed"}` 405 for the unrecognized `POST
-    # /sandboxes` route, indistinguishable from a real OpenSandbox error
-    # without checking which process actually answered. `make sandbox-up`'s
-    # docker-compose service (docker/opensandbox-server.toml) publishes this
-    # exact port.
+    # 8090, not OpenSandbox's packaged default of 8080 — this repo's own
+    # open-webui already binds host port 8080. Before opensandbox_api_key
+    # existed, a stray server failing to bind 8080 silently landed requests
+    # on open-webui's uvicorn instead (same-shaped 405), indistinguishable
+    # from a real error. `make sandbox-up` publishes this exact port.
     opensandbox_mcp_domain: str = "localhost:8090"
 
-    # Bearer token `opensandbox-mcp` sends OpenSandbox's own server
-    # (app/domains/sandbox_tools.py appends `--api-key` with this value to
-    # the bridge's args). `docker-compose.yml`'s `opensandbox-server` service
-    # (opt-in `sandbox` profile, `make sandbox-up`) sets the SAME value via
-    # `OPENSANDBOX_SERVER_API_KEY` — verified against OpenSandbox's own
-    # server/configuration.md that this env var overrides the TOML's
-    # `server.api_key` directly. Required: current opensandbox-server
-    # releases refuse to start in non-interactive mode without one set
-    # (`opensandbox_server.startup_guard`) — no insecure-mode fallback here,
-    # unlike SLACK_WEBHOOK_URL below, since an unauthenticated sandbox
-    # executor is a meaningfully worse default to silently allow.
+    # Bearer token `opensandbox-mcp` sends OpenSandbox's server
+    # (sandbox_tools.py appends `--api-key`). docker-compose.yml's
+    # opensandbox-server sets the same value via OPENSANDBOX_SERVER_API_KEY,
+    # which overrides the TOML's `server.api_key`. Required: current
+    # opensandbox-server releases refuse to start without one set — no
+    # insecure fallback, unlike SLACK_WEBHOOK_URL, since an unauthenticated
+    # sandbox executor is a meaningfully worse default.
     opensandbox_api_key: str = ""
 
-    # crawl4ai's own dockerized server (app/ingestion/web_crawler.py,
-    # docker-compose.yml's `crawl4ai` service, default profile — no
-    # `make up-app`/profile gate needed, unlike opensandbox-server, since it
-    # needs no host Docker socket access, just a published port like
-    # qdrant/redis). Verified against crawl4ai's own self-hosting.md: 11235
-    # is the image's real listen port (NOT `Crawl4aiDockerClient`'s stale
-    # `localhost:8000` constructor default).
+    # crawl4ai's dockerized server (app/ingestion/web_crawler.py,
+    # docker-compose.yml's default-profile `crawl4ai` service). 11235 is the
+    # image's real listen port (not Crawl4aiDockerClient's stale
+    # localhost:8000 constructor default).
     crawl4ai_server_url: str = "http://localhost:11235"
 
     # Bearer token for the crawl4ai server above. Required: crawl4ai 0.9.0+
-    # is secure-by-default — without a token matching this value, the server
-    # binds loopback-only INSIDE its own container, so the published port
-    # just connection-resets rather than failing with a clear auth error
-    # (verified against crawl4ai's own self-hosting.md).
+    # is secure-by-default — without a matching token the server binds
+    # loopback-only inside its container, so the published port just
+    # connection-resets instead of a clear auth error.
     crawl4ai_api_token: str = ""
 
-    # OTel metrics export (app/core/telemetry.py) — the OTLP/HTTP base URL
-    # (no /v1/metrics suffix; configure_telemetry appends it) every
-    # long-running process pushes its metrics to. Points at the shared
-    # otel-collector (docker-compose.observability.yml) in a real
-    # deployment; localhost:4318 here matches the "host process talks to a
-    # docker-compose service via its published port" pattern this file
-    # already uses for every other dependency (QDRANT_URL, REDIS_URL, ...).
+    # OTel metrics export (app/core/telemetry.py) — OTLP/HTTP base URL (no
+    # /v1/metrics suffix; configure_telemetry appends it). Points at the
+    # shared otel-collector in a real deployment; localhost:4318 matches
+    # this file's usual "host talks to docker-compose service via published
+    # port" pattern.
     otel_exporter_otlp_endpoint: str = "http://localhost:4318"
 
 

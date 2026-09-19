@@ -1,20 +1,13 @@
-"""The semantic-cache node pair (GRAPH_PATTERNS.md pattern 22):
-`make_check_semantic_cache_node`/`route_after_cache` (the read side — a
-hit short-circuits straight to a final answer, no LLM call, no
-retrieval) and `make_write_semantic_cache_node` (the write-through side,
-skipped on a hit). Split out of `app/agent/graph.py` purely for file
-size — see that module's own docstring, and `app/agent/graph_retrieval.py`
-for the sibling split (`make_retrieve_context_node`). No behavior change
-from the pre-split single-file version.
+"""Semantic-cache node pair (GRAPH_PATTERNS.md pattern 22):
+`make_check_semantic_cache_node`/`route_after_cache` (read side — a hit
+short-circuits to a final answer, no LLM call, no retrieval) and
+`make_write_semantic_cache_node` (write-through side, skipped on a hit).
+Split out of `app/agent/graph.py` for file size (see graph_retrieval.py
+for the sibling split).
 
-`_default_cache_get`/`_default_cache_set` (the swappable, real-Redis
-defaults each factory falls back to) deliberately stayed IN `graph.py`
-rather than moving here — `tests/conftest.py`'s autouse fixtures
-monkeypatch `graph._default_cache_get`/`graph._default_cache_set` on
-every single test run, and `app/agent/graph_build.py` reads them via
-`graph_module._default_cache_get`/`.default_cache_set` for the identical
-reason (see that file's own comment) — so they need to keep living on
-the `app.agent.graph` module object itself, imported from there below.
+`_default_cache_get`/`_default_cache_set` stay in `graph.py` itself
+(imported here) because `tests/conftest.py` and `graph_build.py`
+monkeypatch/read them as `graph.<name>` — moving them would break that.
 """
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Literal
@@ -40,23 +33,15 @@ def make_check_semantic_cache_node(
     """
 
     async def check_semantic_cache(state: State) -> dict:
-        """A hit short-circuits straight to a final AIMessage — no LLM
-        call, no retrieval — which is the entire latency point of a
-        semantic cache. `cache_hit` is threaded through so
-        write_semantic_cache can skip redundantly re-caching an answer
-        that was already served from cache (see its docstring).
+        """A hit short-circuits to a final AIMessage — no LLM call, no
+        retrieval — the entire point of a semantic cache. `cache_hit` lets
+        write_semantic_cache skip re-caching an answer already served
+        from cache.
 
-        A miss returns `{}` (no state change) and normal routing continues
-        to retrieve_context — same "degrade to the ordinary path, never
-        fail the turn" shape retrieve_context itself uses for a Qdrant
-        outage; semantic_cache.get already swallows its own failures and
-        returns None for both a real miss and a degraded lookup, so this
-        node doesn't need its own try/except on top.
-
-        `cache_get` is an async `Callable` — the real implementation
-        (app/retrieval/semantic_cache.py) awaits a real `redis.asyncio.Redis`
-        client directly now, so this just awaits it in place; tests inject
-        async fakes (see tests/agent/test_nodes.py).
+        A miss returns `{}` and routing continues to retrieve_context;
+        `semantic_cache.get` already swallows its own failures (a real
+        miss and a degraded lookup both return None), so no try/except
+        is needed here.
         """
         last_human = _last_human_message(state["messages"])
         if last_human is None:
@@ -88,18 +73,11 @@ def make_write_semantic_cache_node(
 
     async def write_semantic_cache(state: State) -> dict:
         """Only reached once a turn is confirmed final (route_after_check's
-        non-retry branch) — never caches a rejected-too-short answer that's
-        about to be retried.
+        non-retry branch) — never caches an answer about to be retried.
 
-        Skips the write entirely when `cache_hit` is set: a turn served
-        from cache has nothing new to learn — re-embedding the same query
-        and re-writing the same answer back to Redis would just be wasted
-        work on what's supposed to be the FAST path (see
-        check_semantic_cache's docstring). Only a genuine miss — a real
-        agent turn that ran retrieve_context + the LLM — writes here.
-
-        `cache_set` is an async `Callable` — same reasoning as
-        check_semantic_cache's `cache_get`.
+        Skips the write when `cache_hit` is set: nothing new to learn from
+        a cache-served turn, and re-writing would waste work on the FAST
+        path. Only a genuine miss (a real agent turn) writes here.
         """
         if state.get("cache_hit"):
             return {}
