@@ -17,7 +17,7 @@ help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-up:  ## Start all services (ollama, litellm, qdrant, langfuse, postgres, minio)
+up:  ## Start all services (litellm, qdrant, langfuse, postgres, minio; talks to a native macOS Ollama on the host, see litellm-config.yaml)
 	docker compose up -d
 
 up-app:  ## Start infra + the containerized app itself (api, agent-worker, ingest-worker; see Dockerfile)
@@ -29,9 +29,9 @@ sandbox-up: sandbox-build  ## Start the containerized, authenticated OpenSandbox
 sandbox-build:  ## Build the shared sandbox base image (docker/sandbox.Dockerfile — python:3.12-slim + numpy + pandas, non-root, no network egress) that SANDBOX_IMAGE (app/core/config.py) references. Shared by every domain's sandbox tools, not ops-specific. A plain `docker build`, not a docker-compose service — opensandbox-server pulls it by tag from the same host Docker daemon it already has via its bind-mounted socket. Run again after editing that Dockerfile.
 	docker build -t agent-core-demo-sandbox:latest -f docker/sandbox.Dockerfile .
 
-pull-models:  ## Download the Ollama chat + embedding models
-	docker compose exec ollama ollama pull qwen2.5:3b
-	docker compose exec ollama ollama pull nomic-embed-text
+pull-models:  ## Download the chat + embedding models onto the native macOS Ollama this stack talks to (see litellm-config.yaml)
+	ollama pull qwen2.5:3b
+	ollama pull nomic-embed-text
 
 ingest:  ## Embed sample docs and upsert them into Qdrant
 	python -m scripts.seed
