@@ -84,6 +84,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
@@ -129,16 +130,20 @@ def crawl4ai_server() -> dict[str, str]:
     return ensure_crawl4ai()
 
 
-@pytest.fixture(scope="session")
-def real_stack() -> Iterator[str]:
-    postgres = ensure_postgres()
-    redis = ensure_redis()
-    qdrant = ensure_qdrant()
-    ollama = ensure_ollama(TEST_LLM_MODEL)
-    ml_service = ensure_ml_service()
-
-    port = _free_port()
-    base_url = f"http://127.0.0.1:{port}"
+def _build_app_env(
+    postgres: dict[str, str],
+    redis: dict[str, str],
+    qdrant: dict[str, str],
+    ollama: dict[str, str],
+    ml_service: dict[str, str],
+    *,
+    embed_model: str | None = None,
+) -> dict[str, str]:
+    """Shared env both `real_stack` and `real_stack_with_retrieval` build
+    the api/agent-worker subprocesses from — same dependency wiring, only
+    `embed_model` differs between them. Split out so the two fixtures can't
+    silently drift apart on everything BUT the one thing that's actually
+    supposed to differ."""
     env = {
         **os.environ,
         "CHECKPOINTER_DATABASE_URL": postgres["checkpointer_database_url"],
@@ -153,23 +158,6 @@ def real_stack() -> Iterator[str]:
         "OPENAI_API_BASE": ollama["openai_api_base"],
         "OPENAI_API_KEY": "sk-not-checked-by-ollama",
         "CHAT_MODEL": ollama["model"],
-        # Deliberately NOT setting EMBED_MODEL here (leaving the app
-        # subprocess's own default, which resolves to nothing real on this
-        # Ollama container): every real turn calls retrieve_context ->
-        # search_docs -> hybrid_search -> embed_text unconditionally
-        # (GRAPH_PATTERNS.md pattern 20), and retrieve_context's own
-        # try/except degrades a failure there to empty context rather than
-        # failing the turn (app/agent/tools.py::gather_context's own
-        # docstring) — so this was never load-bearing for
-        # test_chat_ui.py's calculator/remember prompts, which don't need
-        # retrieval to pass. Tried making it real anyway for full-path
-        # coverage; reverted after a real CI run timed out — turned out
-        # NOT to be the (sole) cause, see REQUEST_TIMEOUT_SECONDS below,
-        # but it's still needless added latency for what these two tests
-        # actually need. tests/live/test_qdrant_real.py still gets a real
-        # embedding model — via its own fixture, independent of this
-        # subprocess entirely.
-        #
         # REQUEST_TIMEOUT_SECONDS: widened from the 60s default (already
         # made a real, deliberately configurable `app/core/config.py`
         # setting for exactly this reason, not a test-only hack) — a real
@@ -181,7 +169,17 @@ def real_stack() -> Iterator[str]:
         # want to know about that.
         "REQUEST_TIMEOUT_SECONDS": "180",
     }
+    if embed_model:
+        env["EMBED_MODEL"] = embed_model
+    return env
 
+
+def _start_app_processes(env: dict[str, str]) -> Iterator[str]:
+    """Starts the api/agent-worker subprocesses `env` describes and yields
+    the api's base_url once ready — the part `real_stack`/
+    `real_stack_with_retrieval` share after building their own env."""
+    port = _free_port()
+    base_url = f"http://127.0.0.1:{port}"
     api_proc = subprocess.Popen(
         [
             sys.executable, "-m", "uvicorn", "app.api.main:app",
@@ -207,6 +205,112 @@ def real_stack() -> Iterator[str]:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=10)
+
+
+@pytest.fixture(scope="session")
+def real_stack() -> Iterator[str]:
+    postgres = ensure_postgres()
+    redis = ensure_redis()
+    qdrant = ensure_qdrant()
+    ollama = ensure_ollama(TEST_LLM_MODEL)
+    ml_service = ensure_ml_service()
+    # Deliberately NOT a real EMBED_MODEL here (see
+    # real_stack_with_retrieval below for the fixture that IS): every real
+    # turn calls retrieve_context -> search_docs -> hybrid_search ->
+    # embed_text unconditionally (GRAPH_PATTERNS.md pattern 20), and
+    # retrieve_context's own try/except degrades a failure there to empty
+    # context rather than failing the turn (app/agent/tools.py::
+    # gather_context's own docstring) — so this was never load-bearing for
+    # this fixture's own calculator/remember prompts, which don't need
+    # retrieval to pass, and skipping it keeps those two tests as cheap as
+    # they've always been. Tried making it real here once before for full-
+    # path coverage; reverted after a real CI run timed out — turned out
+    # NOT to be the (sole) cause (see REQUEST_TIMEOUT_SECONDS in
+    # _build_app_env), but it was still needless added latency for what
+    # these two tests actually need.
+    env = _build_app_env(postgres, redis, qdrant, ollama, ml_service)
+    yield from _start_app_processes(env)
+
+
+def _seed_retrieval_data(env: dict[str, str]) -> None:
+    """Populates Qdrant's docs + skills collections the same way a real
+    deployment does (`make ingest`/`make index-skills`) — run as
+    subprocesses against `env` (pointed at THIS fixture's own Qdrant/Ollama
+    containers), not called in-process, so this never needs to monkeypatch
+    this test process's own already-imported `app.retrieval.embeddings`/
+    `qdrant_store` module state (tests/live/test_qdrant_real.py's own
+    fixture does that instead, for a different, in-process use case).
+    `check=True`: a seeding failure must fail fast here, not surface later
+    as a confusing "why did search_docs/skill_search return nothing" in
+    whatever test actually runs."""
+    for module in ("scripts.seed", "scripts.index_skills"):
+        subprocess.run(
+            [sys.executable, "-m", module],
+            env=env,
+            cwd=str(_REPO_ROOT),
+            check=True,
+            timeout=120,
+        )
+
+
+@contextmanager
+def _private_redis() -> Iterator[dict[str, str]]:
+    """A dedicated Redis container for `real_stack_with_retrieval` —
+    deliberately NOT `tests/containers.py::ensure_redis()`'s shared/cached
+    one. Real, reproduced bug this avoids: `real_stack`'s own agent-worker
+    (AGENT_DOMAIN defaults to "ecorp" for both fixtures, unchanged) stays
+    connected to that shared Redis for the WHOLE session, and Redis
+    Streams' consumer-group delivery is round-robin across every connected
+    worker regardless of which fixture started it or what env IT was
+    given — so a request published through THIS fixture's own API could
+    get silently claimed by `real_stack`'s own worker instead, which has
+    no real EMBED_MODEL. Caught live: `search_docs`/`skill_search` turns
+    intermittently failed with "model \"embed\" not found" — the exact
+    symptom of a request landing on the WRONG worker, not a config typo
+    (the seeded-into-Qdrant data and this fixture's own worker's env were
+    both already correct). A private Redis makes the collision structurally
+    impossible: only this fixture's own worker is ever connected to it, so
+    there is no second consumer to lose a race to. Not registered with
+    tests/containers.py's own shared-container cache/teardown machinery on
+    purpose — its lifecycle is scoped to exactly this fixture, via a plain
+    try/finally, not the whole test session's shared containers."""
+    from testcontainers.redis import RedisContainer
+
+    container = RedisContainer(image="redis/redis-stack-server:latest")
+    container.start()  # blocks on a real PING — see RedisContainer._connect
+    try:
+        host = container.get_container_host_ip()
+        port = int(container.get_exposed_port(6379))
+        yield {"redis_url": f"redis://{host}:{port}"}
+    finally:
+        container.stop()
+
+
+@pytest.fixture(scope="session")
+def real_stack_with_retrieval() -> Iterator[str]:
+    """Same shape as `real_stack`, but with a REAL embedding model
+    (`EMBED_MODEL=nomic-embed-text`, already pulled into the shared Ollama
+    container by `ensure_ollama` regardless of which fixture asks for it —
+    see that helper's own docstring), Qdrant actually seeded
+    (`_seed_retrieval_data`), and its own PRIVATE Redis (`_private_redis`,
+    see its own docstring for why sharing `real_stack`'s is a real bug, not
+    just untidy) — for tests that need `search_docs` (real citations),
+    `skill_search`/`use_skill` (both Qdrant-backed, same as search_docs),
+    or `run_subagent` (the bundled `researcher` subagent calls
+    search_docs/query_employees itself) to return real, non-empty results
+    rather than the degraded-empty-context path `real_stack` deliberately
+    accepts for its own simpler calculator/remember prompts. A separate,
+    session-scoped fixture rather than changing `real_stack` itself — the
+    seeding step and the real embedding calls both cost real time neither
+    of `real_stack`'s two existing tests need to pay."""
+    postgres = ensure_postgres()
+    qdrant = ensure_qdrant()
+    ollama = ensure_ollama(TEST_LLM_MODEL)
+    ml_service = ensure_ml_service()
+    with _private_redis() as redis:
+        env = _build_app_env(postgres, redis, qdrant, ollama, ml_service, embed_model=ollama["embed_model"])
+        _seed_retrieval_data(env)
+        yield from _start_app_processes(env)
 
 
 def _wait_until_ready(base_url: str, api_proc: subprocess.Popen, timeout: float = 120.0) -> None:
