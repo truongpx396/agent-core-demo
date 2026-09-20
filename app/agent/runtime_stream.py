@@ -3,7 +3,8 @@ content assembly (`_build_human_content`), Langfuse trace open
 (`_open_trace`), the `astream_events` event-translation core
 (`_run_graph_stream`), and the public streaming entry points
 (`astream_events_turn`, `astream_events_turn_unattended`,
-`astream_events_resume`, `cancel_run`, `get_session_messages`). Split out
+`astream_events_resume`, `cancel_run`, `get_session_messages`,
+`get_pending_approval`). Split out
 of `app/agent/runtime.py` for file size only (see that module's
 docstring); `runtime_legacy_stream.py` holds the sibling
 `@asynccontextmanager` variant.
@@ -31,7 +32,7 @@ from langgraph.types import Command
 
 from app.agent import runtime as runtime_module
 from app.agent.graph_compaction import COMPACTION_MARKER_KEY
-from app.agent.graph_hitl import CANCEL_SENTINEL, resumability_error_async
+from app.agent.graph_hitl import CANCEL_SENTINEL, paused_approval_async, resumability_error_async
 from app.core import metrics
 from app.core.config import CHAT_MODEL, REQUEST_TIMEOUT_SECONDS
 from app.core.errors import ErrorCode, ErrorEnvelope, TurnCancelled
@@ -481,6 +482,43 @@ async def astream_events_turn(
         yield {"type": "error", "content": envelope.message, **envelope.to_dict()}
         return
     graph = await runtime_module.init_graph_async()
+    pending = await paused_approval_async(graph, {"configurable": {"thread_id": thread_id}})
+    if pending is not None:
+        # A new turn arriving while this thread is still paused at
+        # human_approval — "double texting" onto an approval gate
+        # (LangGraph Platform's own term for a new message mid-run; the
+        # open-source library leaves handling it to the app, see
+        # docs.langchain.com/langsmith/double-texting).
+        if pending["resumable"]:
+            # Refuse rather than silently cancel: a pending tool_call here
+            # is, by construction, non-read_only (TOOL_CAPABILITIES) — an
+            # AUTO-cancel on the caller's behalf could discard a mutating
+            # action a caller who didn't know it was pending (a second
+            # tab, Telegram, a bare API call, a race before the web UI's
+            # own session-switcher reshow resolves) never chose to drop.
+            # The web UI's own composer already disables itself while
+            # paused (`!activeTurn` guard) and re-shows this exact pause
+            # on return (GET .../pending_approval), so a caller that goes
+            # through it never reaches this branch at all; this is the
+            # explicit refusal for everything else.
+            envelope = ErrorEnvelope(
+                code=ErrorCode.PENDING_APPROVAL,
+                message="This conversation has a pending approval — approve, reject, or cancel it before sending a new message.",
+                details={"tool_calls": pending["tool_calls"]},
+            )
+            yield {"type": "error", "content": envelope.message, **envelope.to_dict()}
+            return
+        # checkpoint_incompatible (schema/topology changed since this
+        # thread paused) — refusing here would strand the thread
+        # permanently: cancel_run refuses for the identical reason
+        # (Command(resume=...) needs to locate the interrupted task in
+        # the CURRENT graph object, same as resuming would), so there is
+        # no action any caller could take to unblock it. Proceeding is
+        # the only path that makes progress; surfaced rather than silent.
+        yield {
+            "type": "system_note",
+            "content": "A previous pending approval on this conversation could not be resumed after an app update; starting a new request.",
+        }
     await runtime_module._ensure_seeded_async(graph, thread_id)
     await runtime_module._upsert_session(ctx, thread_id, text)
     trace, callbacks = _open_trace("chat-turn-stream", thread_id, text)
@@ -621,3 +659,24 @@ async def get_session_messages(thread_id: str) -> list[dict]:
         if text:
             messages.append({"role": role, "text": text})
     return messages
+
+
+async def get_pending_approval(thread_id: str) -> dict | None:
+    """Session-switcher pause check
+    (`GET /chat/sessions/{thread_id}/pending_approval`, app/api/main.py) —
+    lets the web UI re-show the approve/reject banner when the user
+    returns to a thread that's still paused at human_approval, instead of
+    looking idle (its own `activeTurn` is in-memory JS state a page
+    reload/session switch never repopulates; `get_session_messages` above
+    already skips a tool-calling `AIMessage` with no text, so a paused
+    turn otherwise renders as if nothing happened after the user's last
+    message).
+
+    No `ctx`, same reasoning as `get_session_messages`. Returns `None` if
+    not paused, else `{"tool_calls": [...], "resumable": bool}` —
+    `resumable=False` means `state_schema_version` no longer matches this
+    build (see `resumability_error_async`'s docstring); the caller should
+    show that as unresumable rather than a working Approve button.
+    """
+    graph = await runtime_module.init_graph_async()
+    return await paused_approval_async(graph, {"configurable": {"thread_id": thread_id}})

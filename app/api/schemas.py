@@ -62,6 +62,17 @@ class SessionMessage(BaseModel):
     text: str = Field(..., description="The message's text content.")
 
 
+class PendingApproval(BaseModel):
+    tool_calls: list[dict] = Field(
+        ..., description="The tool call(s) awaiting approval, same shape as the approval_required SSE event."
+    )
+    resumable: bool = Field(
+        ...,
+        description="False if this checkpoint's state_schema_version no longer matches the running "
+        "build — approve/reject would be refused; the caller should show it as unresumable, not a working button.",
+    )
+
+
 class HealthResponse(BaseModel):
     status: str = "ok"
 

@@ -18,6 +18,7 @@ class ErrorCode(str, Enum):
     MODERATION_BLOCKED = "moderation_blocked"
     CHECKPOINT_LOST = "checkpoint_lost"
     CHECKPOINT_INCOMPATIBLE = "checkpoint_incompatible"
+    PENDING_APPROVAL = "pending_approval"
     UNATTENDED_PAUSE = "unattended_pause"
     CANCELLED = "cancelled"
     COST_CEILING_EXCEEDED = "cost_ceiling_exceeded"
