@@ -10,10 +10,13 @@ name: Deploy
 # what's running on a droplet that already exists.
 #
 # Needs these repo secrets (infra/README.md has the full setup):
-#   DROPLET_HOST  — infra/terraform's reserved_ip output
-#   DEPLOY_SSH_KEY — private half of terraform.tfvars' deploy_ssh_public_key
+#   DROPLET_HOST     — infra/terraform's reserved_ip output
+#   OBS_DROPLET_HOST — infra/terraform's observability_reserved_ip output
+#   DEPLOY_SSH_KEY   — private half of terraform.tfvars' deploy_ssh_public_key,
+#                      authorized on BOTH droplets (same CI deploy identity)
 # GHCR auth uses the workflow's own GITHUB_TOKEN (packages: write below) —
-# no separate registry secret needed.
+# no separate registry secret needed. deploy-observability below needs no
+# GHCR login at all — it only ever pulls off-the-shelf public images.
 on:
   workflow_run:
     workflows: ["CI"]
@@ -105,9 +108,10 @@ jobs:
 
       # Config/compose files only — never .env (see docker-compose.prod.yml's
       # own header: secrets live only on the droplet, created once by hand).
-      # --delete is scoped to postgres-init/ specifically, not the whole
-      # target dir, so it can't ever touch the operator-managed .env
-      # sitting alongside these files in /opt/agent-core-demo.
+      # --delete is scoped to postgres-init/ and observability/ specifically,
+      # not the whole target dir, so it can't ever touch the
+      # operator-managed .env sitting alongside these files in
+      # /opt/agent-core-demo.
       - name: Sync compose/config files to the droplet
         run: |
           rsync -az -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
@@ -116,6 +120,13 @@ jobs:
           rsync -az --delete -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
             postgres-init/ \
             deploy@${{ secrets.DROPLET_HOST }}:/opt/agent-core-demo/postgres-init/
+          # otel-collector-agent + promtail configs (docker-compose.prod.yml's
+          # observability sidecars) — this app droplet only ever needs its
+          # OWN agent-side configs, not the gateway-side ones the
+          # deploy-observability job below ships to the other droplet.
+          rsync -az --delete -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
+            observability/ \
+            deploy@${{ secrets.DROPLET_HOST }}:/opt/agent-core-demo/observability/
 
       - name: Pull new images and restart
         env:
@@ -133,3 +144,47 @@ jobs:
           ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts \
             deploy@${{ secrets.DROPLET_HOST }} \
             "timeout 90 bash -c 'until curl -sf http://localhost:8000/health/ready; do sleep 3; done'"
+
+  # Independent of build-and-push/deploy above — this stack (Prometheus/
+  # Loki/Grafana/Alertmanager/otel-collector) only ever uses off-the-shelf
+  # images, nothing built from this repo, and runs on the SEPARATE
+  # observability droplet (infra/terraform's digitalocean_droplet.observability).
+  # Reuses the same DEPLOY_SSH_KEY as the app droplet's deploy job — see
+  # this workflow's own header on why that's not a separate secret.
+  deploy-observability:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install SSH key
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.OBS_DROPLET_HOST }}" >> ~/.ssh/known_hosts
+
+      # Never .env here either — GRAFANA_ADMIN_PASSWORD/OBS_DOMAIN_NAME are
+      # created once by hand on this droplet too (infra/README.md), same
+      # posture as the app droplet's own .env.
+      - name: Sync compose/config files to the droplet
+        run: |
+          rsync -az -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
+            docker-compose.observability.prod.yml Caddyfile.observability \
+            deploy@${{ secrets.OBS_DROPLET_HOST }}:/opt/agent-core-observability/
+          rsync -az --delete -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
+            observability/ \
+            deploy@${{ secrets.OBS_DROPLET_HOST }}:/opt/agent-core-observability/observability/
+
+      - name: Pull new images and restart
+        run: |
+          ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts \
+            deploy@${{ secrets.OBS_DROPLET_HOST }} \
+            "cd /opt/agent-core-observability && \
+             docker compose -f docker-compose.observability.prod.yml pull && \
+             docker compose -f docker-compose.observability.prod.yml up -d --remove-orphans && \
+             docker image prune -f"

@@ -1,0 +1,22 @@
+# Reverse proxy + TLS termination for `grafana` (docker-compose.observability.prod.yml)
+# on the SEPARATE observability droplet — same shape as the root
+# `Caddyfile`'s handling of `api`, see that file's own comment for the full
+# reasoning (OBS_SITE_ADDRESS here plays the exact same role
+# CADDY_SITE_ADDRESS does there, resolved at the compose layer, not by
+# Caddy's own placeholder syntax).
+#
+# Prometheus/Alertmanager/Loki get no site block at all here — they're
+# never meant to be public; Grafana reaches them over this droplet's own
+# internal Docker network (see observability/grafana/provisioning/datasources/datasources.yml).
+# Auth is Grafana's own (GRAFANA_ADMIN_PASSWORD, not a Caddy basic_auth
+# layer) — one login, not two.
+{$OBS_SITE_ADDRESS} {
+	reverse_proxy grafana:3000
+
+	encode gzip
+
+	log {
+		output stdout
+		format json
+	}
+}

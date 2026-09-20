@@ -21,7 +21,29 @@
 # verified against Caddy's own docs that ACME can't issue a cert for an IP
 # address at all.
 {$CADDY_SITE_ADDRESS} {
-	reverse_proxy api:8000 {
+	reverse_proxy {
+		# `dynamic a` re-resolves the `api` service name on every
+		# `refresh` interval and treats every A record Docker Compose's
+		# embedded DNS returns as a live upstream — the actual mechanism
+		# that makes `docker compose -f docker-compose.prod.yml up -d
+		# --scale api=N` load-balance at all (a single static
+		# `reverse_proxy api:8000` — what this used to be — only ever
+		# reaches ONE of the N replicas). Safe at the current default of
+		# one replica too: one A record behaves identically to a static
+		# upstream, so this doesn't force scaling a decision.
+		dynamic a {
+			name api
+			port 8000
+			refresh 5s
+		}
+
+		# Active health check so a replica that's draining (SIGTERM,
+		# see docker-compose.prod.yml's `api` stop_grace_period) or
+		# still starting up stops receiving new requests quickly,
+		# rather than only being caught passively after a failed request.
+		health_uri /health/ready
+		health_interval 10s
+
 		# SSE (POST /chat/stream/queued) needs the proxy to not buffer/
 		# chunk-coalesce the response — Caddy streams by default, but
 		# flush_interval -1 makes that explicit rather than relying on

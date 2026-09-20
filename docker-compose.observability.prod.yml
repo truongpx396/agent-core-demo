@@ -1,0 +1,111 @@
+# Prod counterpart of docker-compose.observability.yml, run on the
+# SEPARATE, smaller observability droplet infra/terraform provisions
+# (digitalocean_droplet.observability) — deliberately not co-located with
+# the app droplet, so a metrics/logs spike can't compete with it for
+# CPU/mem and losing this box never touches the app's own data. Deployed by
+# .github/workflows/deploy.yml's `deploy-observability` job, independently
+# of the app droplet's own deploy job.
+#
+# Unlike the dev file, nothing here bridges via `host.docker.internal` —
+# the app droplet reaches IN to this droplet instead, over the two ports
+# infra/terraform/main.tf's digitalocean_firewall.observability scopes to
+# the DO VPC's own CIDR: OTLP (4318, from the app droplet's
+# otel-collector-agent) and Loki's push endpoint (3100, from the app
+# droplet's promtail). See docker-compose.prod.yml's own observability
+# sidecars for the other half of this topology.
+#
+# Grafana is the only thing meant for a human browser (fronted by `caddy`
+# below, real auth via GRAFANA_ADMIN_PASSWORD — not the dev file's
+# anonymous-viewer/admin-admin defaults); Prometheus/Alertmanager/Loki
+# publish no host port at all, reached only over this droplet's own
+# internal Docker network.
+name: agent-core-observability
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./observability/otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4318:4318"   # OTLP HTTP — what the app droplet's otel-collector-agent forwards to
+    # No 4317 (gRPC)/8889 host-published here (unlike the dev file) — the
+    # app droplet only ever speaks OTLP/HTTP, and 8889 (this collector's own
+    # Prometheus exporter) is only ever scraped by `prometheus` below, over
+    # the internal network.
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./observability/prometheus/prometheus.prod.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+    restart: unless-stopped
+    depends_on:
+      - otel-collector
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    restart: unless-stopped
+    volumes:
+      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+
+  loki:
+    image: grafana/loki:latest
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    volumes:
+      - ./observability/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki:/loki
+    ports:
+      - "3100:3100"   # Loki push — what the app droplet's promtail pushes to
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      # No GF_AUTH_ANONYMOUS_ENABLED here (unlike the dev file) — this
+      # instance is reachable from the public internet via `caddy` below,
+      # so anonymous viewing is off; a real login is required.
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+
+  # Reverse proxy + TLS termination, fronting Grafana only — same pattern
+  # as docker-compose.prod.yml's own `caddy` service in front of `api`.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      OBS_SITE_ADDRESS: ${OBS_DOMAIN_NAME:-:80}
+    volumes:
+      - ./Caddyfile.observability:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - grafana
+
+volumes:
+  prometheus:
+  alertmanager:
+  loki:
+  grafana:
+  caddy_data:
+  caddy_config:

@@ -49,13 +49,25 @@ variable "ssh_key_fingerprints" {
 }
 
 variable "admin_ip_cidrs" {
-  description = "CIDR blocks allowed to reach SSH (22) and the app's direct debug port (8000). Find yours with `curl -s ifconfig.me`. Never leave this as 0.0.0.0/0."
+  description = "CIDR blocks allowed to reach SSH (22, both droplets) and Grafana's direct debug port (3000, observability droplet only). Find yours with `curl -s ifconfig.me`. Never leave this as 0.0.0.0/0."
   type        = list(string)
 
   validation {
     condition     = !contains(var.admin_ip_cidrs, "0.0.0.0/0") && !contains(var.admin_ip_cidrs, "::/0")
     error_message = "admin_ip_cidrs must not be world-open — SSH/debug access should be scoped to known operator IPs."
   }
+}
+
+variable "obs_droplet_size" {
+  description = "Droplet size slug for the separate observability box (Prometheus/Loki/Grafana/Alertmanager/otel-collector, docker-compose.observability.prod.yml) — deliberately smaller than the app droplet."
+  type        = string
+  default     = "s-2vcpu-4gb"
+}
+
+variable "obs_domain_name" {
+  description = "Optional FQDN for Grafana's public URL, same empty-means-plain-HTTP-only fallback as domain_name — Caddy on the observability droplet requests a real Let's Encrypt cert for it when set. The actual OBS_DOMAIN_NAME Caddy acts on lives in that droplet's own .env, set independently of this variable."
+  type        = string
+  default     = ""
 }
 
 variable "domain_name" {
@@ -71,7 +83,7 @@ variable "enable_backups" {
 }
 
 variable "deploy_user" {
-  description = "Unprivileged Linux user created by cloud-init that owns /opt/agent-core-demo and runs `docker compose` there; the CI deploy workflow SSHes in as this user."
+  description = "Unprivileged Linux user created by cloud-init on BOTH droplets, owning /opt/agent-core-demo (app droplet) or /opt/agent-core-observability (observability droplet) and running `docker compose` there; the CI deploy workflow SSHes in as this user on each."
   type        = string
   default     = "deploy"
 }

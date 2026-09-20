@@ -26,3 +26,9 @@ droplet_size = "s-4vcpu-8gb"
 # droplet's actual DOMAIN_NAME is set independently in its own .env, see
 # infra/README.md.
 domain_name = ""
+
+# Separate, smaller droplet for Prometheus/Loki/Grafana/Alertmanager (see
+# docker-compose.observability.prod.yml) — s-2vcpu-4gb/"" (plain HTTP) are
+# both fine defaults, uncomment only to change them.
+# obs_droplet_size = "s-2vcpu-4gb"
+# obs_domain_name  = ""

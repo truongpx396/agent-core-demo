@@ -1,10 +1,13 @@
 #cloud-config
 # First-boot provisioning only (see main.tf's lifecycle comment) — installs
-# Docker, a non-root deploy identity, and host-level hardening. It does NOT
-# ship any application code or secrets; .github/workflows/deploy.yml pushes
-# docker-compose.prod.yml + config + the built image via SSH/GHCR after this
-# has run, and the operator creates /opt/agent-core-demo/.env by hand on
-# first deploy (see infra/README.md) — secrets never pass through user_data,
+# Docker, a non-root deploy identity, and host-level hardening. Shared by
+# BOTH droplets main.tf provisions (app, observability) via `app_dir`/
+# `ufw_tcp_ports`, so this Docker-install/hardening boilerplate isn't
+# duplicated across two near-identical templates. It does NOT ship any
+# application code or secrets; .github/workflows/deploy.yml pushes compose
+# files + config + (for the app droplet) the built image via SSH/GHCR after
+# this has run, and the operator creates <app_dir>/.env by hand on first
+# deploy (see infra/README.md) — secrets never pass through user_data,
 # which DigitalOcean stores as plain, retrievable droplet metadata.
 package_update: true
 package_upgrade: true
@@ -52,14 +55,14 @@ runcmd:
   - ufw default deny incoming
   - ufw default allow outgoing
   - ufw allow OpenSSH
-  - ufw allow 80/tcp
-  - ufw allow 443/tcp
-  - ufw allow 8000/tcp
+%{ for port in ufw_tcp_ports ~}
+  - ufw allow ${port}/tcp
+%{ endfor ~}
   - ufw --force enable
 
   - systemctl enable --now fail2ban
 
-  - mkdir -p /opt/agent-core-demo
-  - chown ${deploy_user}:${deploy_user} /opt/agent-core-demo
+  - mkdir -p ${app_dir}
+  - chown ${deploy_user}:${deploy_user} ${app_dir}
 
-final_message: "agent-core-demo droplet ready after $UPTIME seconds"
+final_message: "${app_dir} droplet ready after $UPTIME seconds"
