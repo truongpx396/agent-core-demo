@@ -81,23 +81,55 @@ def _defers_instead_of_acting(content: str) -> bool:
 # Two full ```...``` fenced blocks (open+close each) = 4 total ``` markers.
 _FABRICATED_OUTPUT_FENCE_THRESHOLD = 4
 
+# Strips fenced content before _CLAIMS_EXECUTION_RE runs, below — the
+# narration this catches ("Running the calculation...", "Output:") has
+# only ever appeared in the surrounding PROSE in every real case seen
+# (introducing/following a fence), never inside the code itself, so this
+# costs no true-positive detection while ruling out a code SAMPLE's own
+# content (e.g. a literal `console.log` call) ever being misread as a
+# claim of having actually run something.
+_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+
+# The actual "as if this really ran" signal a fabricated script+output
+# pair is narrated with in every real case caught so far — see this
+# function's own docstring for why the fence count ALONE isn't enough.
+_CLAIMS_EXECUTION_RE = re.compile(
+    r"\b(?:running|executing)\b|\b(?:output|result)s?\s*(?::|\s+(?:is|was|are|were)\b)",
+    re.IGNORECASE,
+)
+
 
 def _fabricates_tool_output(content: str) -> bool:
     """True when a tool-call-free final answer contains 2+ markdown code
-    fences — the "here's the script, here's its output" shape presented
-    as if run_command_in_sandbox actually ran, with no real tool_calls
-    entry. A single code block (e.g. explaining a formula) is normal; two
-    or more is the shape of a fabricated script-plus-output pair.
+    fences AND narrates them as if actually executed (`_CLAIMS_EXECUTION_RE`)
+    — the "here's the script, here's its output" shape presented as if
+    run_command_in_sandbox actually ran, with no real tool_calls entry.
 
     Real bug, found live: after a sandbox approval was declined, the model
     invented both a script and its "output," narrated in PRESENT tense
     ("Running the calculation...") so `_defers_instead_of_acting` never
     caught it — and the fabricated math didn't even match the fabricated
     code (claimed 43750.00 for a calc that's actually 36450.00), yet
-    passed every other check."""
+    passed every other check.
+
+    The fence-count check ALONE, without the execution-claim requirement,
+    is a real false positive found live: asked to showcase markdown
+    formatting, the model correctly produced several purely illustrative
+    fenced examples (no execution claimed anywhere) and got flagged as
+    fabrication anyway, retried twice into the identical "problem," and
+    fell back to a generic "I wasn't able to..." message for a wholly
+    legitimate request (Langfuse trace `f8b1675b`, 2026-09-20). A single
+    code block (e.g. explaining a formula) was already exempt via the
+    fence threshold; this exempts a MULTI-block but purely illustrative
+    answer the same way, without giving up the real detection — every
+    true-positive case on record narrates execution in the surrounding
+    prose (see `_CLAIMS_EXECUTION_RE`'s own comment)."""
     if not content or not isinstance(content, str):
         return False
-    return content.count("```") >= _FABRICATED_OUTPUT_FENCE_THRESHOLD
+    if content.count("```") < _FABRICATED_OUTPUT_FENCE_THRESHOLD:
+        return False
+    prose = _FENCE_RE.sub("", content)
+    return bool(_CLAIMS_EXECUTION_RE.search(prose))
 
 
 # Matches a markdown REFERENCE-DEFINITION line ("[1]: link/text") — never

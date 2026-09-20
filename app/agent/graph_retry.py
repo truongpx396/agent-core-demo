@@ -123,6 +123,33 @@ def retry_output(state: State) -> dict:
 # compute it.
 _TRUST_CONTENT_RETRY_REASONS = frozenset({"too_short", "uncited"})
 
+_GENERIC_NO_ANSWER_MESSAGE = (
+    "I wasn't able to put together a full answer to that just now "
+    "— could you try rephrasing, or asking again?"
+)
+
+
+def _no_answer_message(reason: str | None) -> str:
+    """A slightly more specific fallback than `_GENERIC_NO_ANSWER_MESSAGE`
+    for the reasons where naming what actually went wrong is genuinely
+    actionable for the user — never for `leaked_prompt` (the one reason
+    with a security dimension: confirming a leak attempt registered would
+    just help someone iterate a jailbreak, see `_retry_reason`'s own
+    docstring) or `misattributed` (no user-facing action differs from the
+    generic case), and never one that quotes/describes the rejected
+    content itself, only the CATEGORY of problem."""
+    if reason == "fabricated":
+        return (
+            "I wasn't able to verify that with a real result, so I don't "
+            "want to guess — try asking me to actually run or look that "
+            "up, or rephrase your question."
+        )
+    if reason == "skipped_tool":
+        return "I wasn't able to complete a required step for that request — could you try again, or add a bit more detail?"
+    if reason == "deferred":
+        return "I described what I'd do instead of actually doing it — try asking again and I'll go ahead with it."
+    return _GENERIC_NO_ANSWER_MESSAGE
+
 
 # --- Node: retry loop gave up — reached via route_after_check when the SAME
 # rejection reason repeats MAX_CONSECUTIVE_SAME_RETRY_REASON times in a row.
@@ -141,10 +168,7 @@ def make_retry_exhausted_node(emit_message: bool = True):
             # reflects this exact content; nothing to override.
             return {}
         if emit_message:
-            content = (
-                "I wasn't able to put together a full answer to that just now "
-                "— could you try rephrasing, or asking again?"
-            )
+            content = _no_answer_message(state.get("last_retry_reason"))
         else:
             # Silenced for run_subagent: NOT a no-op like the trusted
             # branch above — content here is untrusted, so it's blanked
@@ -202,10 +226,7 @@ def make_no_answer_fallback_node(emit_message: bool = True, system_prompt: str =
             "ungrounded_claims_count": fresh["ungrounded_claims_count"],
         }
         if not trustworthy:
-            content = (
-                "I wasn't able to put together a full answer to that just now "
-                "— could you try rephrasing, or asking again?"
-            )
+            content = _no_answer_message(fresh["last_retry_reason"])
             updates["messages"] = [AIMessage(content=content)]
         elif "messages" in fresh:
             # check_output may have mechanically inserted a missing

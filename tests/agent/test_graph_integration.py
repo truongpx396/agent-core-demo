@@ -403,7 +403,7 @@ class TestRetryExhaustedPath:
             {"messages": [HumanMessage(content="who works in engineering?")]},
             config=_config(),
         )
-        assert "wasn't able to put together" in result["messages"][-1].content
+        assert "try asking again and I'll go ahead with it" in result["messages"][-1].content
         assert result["iterations"] == 2
         assert result["last_retry_reason"] == "deferred"
         assert result["retry_reason_repeat_count"] == 2

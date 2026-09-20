@@ -964,6 +964,30 @@ class TestFabricatesToolOutput:
         result = graph_routing.check_output(state)
         assert result["fabricated_tool_output"] is False
 
+    def test_ignores_multiple_purely_illustrative_code_blocks(self):
+        """Real false positive, found live (Langfuse trace `f8b1675b`,
+        2026-09-20): asked to showcase markdown formatting, the model
+        correctly produced several fenced examples (a language-tagged
+        block nested inside an outer one, plus a python snippet) with NO
+        claim any of them were actually run — pure fence-counting flagged
+        it as fabrication anyway, and it retried into the identical
+        "problem" twice before falling back to the generic no-answer
+        message for a wholly legitimate request. Distinguishing feature
+        from test_flags_a_script_and_a_fabricated_output_block above:
+        no "running"/"output:"-style execution narration anywhere."""
+        content = (
+            "Sure! Here is a comprehensive example with various types of "
+            "Markdown features including code blocks and more:\n\n"
+            "```markdown\n# Example\n\n"
+            "Here's an example of code blocks with syntax highlighting:\n\n"
+            "```javascript\nfunction greet(name) {\n"
+            "    console.log(`Hello, ${name}!`);\n}\n```\n\n"
+            "```python\ndef add_numbers(a, b):\n    return a + b\n```\n```\n"
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph_routing.check_output(state)
+        assert result["fabricated_tool_output"] is False
+
     def test_outranks_deferred_instead_of_acting_when_both_could_apply(self):
         """fabricated is checked before deferred in _retry_reason's
         priority chain — presenting a fake result is worse than merely
@@ -1586,7 +1610,7 @@ class TestNoAnswerFallback:
         result = no_answer(state)
 
         assert "messages" in result
-        assert "wasn't able to put together" in result["messages"][0].content
+        assert "try asking again and I'll go ahead with it" in result["messages"][0].content
         assert "run this script" not in result["messages"][0].content
 
     def test_a_fabricated_answer_gets_replaced_too(self):
@@ -1605,7 +1629,7 @@ class TestNoAnswerFallback:
         result = no_answer(state)
 
         assert "messages" in result
-        assert "wasn't able to put together" in result["messages"][0].content
+        assert "wasn't able to verify that with a real result" in result["messages"][0].content
 
     def test_emit_message_false_skips_everything_for_the_nested_subagent_case(self):
         """run_subagent's own nested graphs (emit_no_answer_message=False)
