@@ -48,11 +48,24 @@ def configure_telemetry(service_name: str) -> None:
     """Idempotent — a second call in the same process is a no-op (this
     process's own guard; OTel's `set_meter_provider` would just warn and
     ignore it anyway, but checking first keeps that warning out of normal
-    single-call operation)."""
+    single-call operation).
+
+    A blank `OTEL_EXPORTER_OTLP_ENDPOINT` skips setup entirely, leaving
+    the OTel API's own default no-op MeterProvider in place —
+    app/core/metrics.py's `get_meter(...)` proxy already tolerates that
+    (see this module's own docstring: it just defers real instrument
+    creation forever, never raising). For a real subprocess with no
+    otel-collector anywhere nearby to receive anything (see that
+    setting's own comment, app/core/config.py) — not something a real
+    deployment would ever set."""
     global _configured
     if _configured:
         return
     _configured = True
+
+    if not OTEL_EXPORTER_OTLP_ENDPOINT:
+        logger.info("telemetry_disabled", extra={"service_name": service_name})
+        return
 
     endpoint = f"{OTEL_EXPORTER_OTLP_ENDPOINT.rstrip('/')}/v1/metrics"
     exporter = OTLPMetricExporter(endpoint=endpoint)

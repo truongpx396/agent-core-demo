@@ -193,6 +193,14 @@ def _build_app_env(
         # decision-to-delegate and synthesis-of-the-result calls on either
         # side of it.
         "SUBAGENT_TIMEOUT_SECONDS": "240",
+        # Disables OTel metrics export (app/core/telemetry.py's own
+        # blank-endpoint short-circuit) — this subprocess genuinely enters
+        # app/api/main.py's lifespan, so it WOULD otherwise retry a real
+        # OTLP export every ~15s for its entire lifetime against a
+        # collector that doesn't exist anywhere in this fixture, pure
+        # guaranteed-to-fail noise (and a little real overhead) for as
+        # long as this session-scoped fixture stays alive.
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "",
     }
     if embed_model:
         env["EMBED_MODEL"] = embed_model

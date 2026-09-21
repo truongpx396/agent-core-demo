@@ -301,7 +301,19 @@ class Settings(BaseSettings):
     # /v1/metrics suffix; configure_telemetry appends it). Points at the
     # shared otel-collector in a real deployment; localhost:4318 matches
     # this file's usual "host talks to docker-compose service via published
-    # port" pattern.
+    # port" pattern. Empty string disables telemetry export entirely
+    # (configure_telemetry's own short-circuit) — tests/live/conftest.py
+    # and tests/integration/test_worker_scaling.py both set this, since
+    # their real uvicorn/agent_worker SUBPROCESSES genuinely enter
+    # app/api/main.py's lifespan (unlike the fast test suite's in-process
+    # ASGI client) with no otel-collector sidecar anywhere nearby to
+    # receive anything — real CI noise, caught live: every ~15s for each
+    # subprocess's entire lifetime, "Transient error ... Connection
+    # refused ... retrying in Ns" cluttering every test-live log, pure
+    # guaranteed-to-fail overhead competing for CPU in an already
+    # CPU-constrained environment (this fixture's Ollama container is
+    # itself CPU-only — see that module's own REQUEST_TIMEOUT_SECONDS
+    # comment).
     otel_exporter_otlp_endpoint: str = "http://localhost:4318"
 
 
