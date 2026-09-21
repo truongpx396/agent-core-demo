@@ -179,6 +179,28 @@ def _build_app_env(
         # real margin above that without making a genuinely stuck turn wait
         # forever.
         "REQUEST_TIMEOUT_SECONDS": "420",
+        # SUBAGENT_TIMEOUT_SECONDS: a SEPARATE, INNER wall-clock cap
+        # (app/agent/subagent_tools.py) on just the nested subagent's own
+        # run, independent of REQUEST_TIMEOUT_SECONDS above — real CI
+        # failure, caught live (test-live, 2026-09-21): widening the OUTER
+        # request timeout to 420s never helped
+        # test_a_subagent_delegates_and_returns_a_real_answer, because the
+        # 45s production default on THIS inner timeout was firing first,
+        # well before the outer budget was ever in play (a `tool_failed`/
+        # `TimeoutError` on run_subagent itself, not a
+        # "[error: Request exceeded Ns timeout]"). 240s leaves the
+        # remaining ~180s of the 420s outer budget for the parent's own
+        # decision-to-delegate and synthesis-of-the-result calls on either
+        # side of it.
+        "SUBAGENT_TIMEOUT_SECONDS": "240",
+        # Disables OTel metrics export (app/core/telemetry.py's own
+        # blank-endpoint short-circuit) — this subprocess genuinely enters
+        # app/api/main.py's lifespan, so it WOULD otherwise retry a real
+        # OTLP export every ~15s for its entire lifetime against a
+        # collector that doesn't exist anywhere in this fixture, pure
+        # guaranteed-to-fail noise (and a little real overhead) for as
+        # long as this session-scoped fixture stays alive.
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "",
     }
     if embed_model:
         env["EMBED_MODEL"] = embed_model

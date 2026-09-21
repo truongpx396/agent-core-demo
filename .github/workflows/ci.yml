@@ -182,7 +182,51 @@ jobs:
           key: ollama-models-${{ runner.os }}-${{ env.TEST_LLM_MODEL }}
         env:
           TEST_LLM_MODEL: qwen2.5:3b
-      - run: pytest -n auto -m "llm or e2e or crawl" -q
+      # TWO separate pytest invocations, not one combined
+      # `-m "llm or e2e or crawl"` run — real bug, root-caused live
+      # (2026-09-21, after two different attempted fixes elsewhere didn't
+      # help): `llm`/`crawl` tests are `async def` (pytest-asyncio-managed),
+      # `e2e` tests are plain sync `def` driving pytest-playwright's SYNC
+      # API, which runs its own event loop internally. Mixing both kinds
+      # under one `-n auto` run lets xdist schedule an `e2e` test and an
+      # async test onto the SAME worker process — once that happens,
+      # Playwright's own internal event-loop management leaves that
+      # worker's asyncio state corrupted for pytest-asyncio's own Runner,
+      # and every SUBSEQUENT async test scheduled onto that same worker
+      # fails with `RuntimeError: Runner.run() cannot be called from a
+      # running event loop` (or its teardown-time sibling) regardless of
+      # what it actually tests — reproduced directly, repeatedly, hitting
+      # 4-6 completely unrelated tests across different files in a single
+      # real run. Two separate invocations guarantee full PROCESS
+      # isolation between the two kinds — no worker ever runs both. Both
+      # still share the same underlying Postgres/Redis/Qdrant/Ollama
+      # containers via tests/containers.py's own cross-invocation cache
+      # (that's what it's for); the second invocation pays a modest
+      # extra startup cost rebuilding them after the first's teardown,
+      # traded for this being a real, direct fix rather than more
+      # guesswork at the actual root cause.
+      - run: pytest -n auto -m "llm or crawl" -q
+        env:
+          TEST_LLM_MODEL: qwen2.5:3b
+      # No `-n auto` here, deliberately: `real_stack`/`real_stack_with_
+      # retrieval` (tests/live/conftest.py) are session-scoped PER XDIST
+      # WORKER PROCESS, not shared across workers — under `-n auto`,
+      # MULTIPLE workers could each spin up their own `real_stack`
+      # instance simultaneously, all pointed at the SAME shared, cached
+      # Redis (tests/containers.py's own `_acquire("redis", ...)`),
+      # reintroducing the exact cross-worker Streams consumer-group
+      # contention `real_stack_with_retrieval`'s own dedicated
+      # `_private_redis()` was built to avoid — but `real_stack` itself
+      # was never given that same protection, since it was written
+      # assuming a single instance ever exists at a time. Caught live
+      # testing this same split locally (`-n 4 -m e2e`): all 6 e2e tests
+      # failed, several with empty answers and the same "model \"embed\"
+      # not found" signature as the original cross-worker bug. `e2e`
+      # tests are already this suite's expensive tier (real browser + real
+      # inference, only 6 of them) — running them serially sidesteps the
+      # whole multi-worker-fixture-instance risk entirely rather than
+      # chasing a second fix for it.
+      - run: pytest -m e2e -q
         env:
           TEST_LLM_MODEL: qwen2.5:3b
 
