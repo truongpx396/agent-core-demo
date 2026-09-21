@@ -138,6 +138,51 @@ def _cache_paths(key: str) -> tuple[Path, Path]:
     return root / f"{_CACHE_PREFIX}-{key}.json", root / f"{_CACHE_PREFIX}-{key}.lock"
 
 
+# A marker FILE, not a plain Python global — `pytest_sessionfinish`
+# (tests/conftest.py) needs to tell "this invocation never touched the
+# shared cache at all" apart from "this invocation used it and should tear
+# down its share," but under pytest-xdist (CI's `test-live` job: `-n
+# auto`) the process that actually calls `_acquire` (a WORKER) and the
+# process that reaches `pytest_sessionfinish`'s teardown check (the
+# CONTROLLER — see that function's own docstring) are DIFFERENT OS
+# processes with separate memory, so a plain in-memory flag set by one is
+# invisible to the other; an earlier version of this fix used exactly that
+# and would have silently disabled teardown for every xdist run, including
+# every real CI run of `test-live`, without ever raising an error. A
+# WORKER's own `os.getppid()` is the xdist CONTROLLER's pid (workers are
+# its direct subprocesses — xdist sets `PYTEST_XDIST_WORKER` in a worker's
+# own environment, the documented way to detect this); a plain,
+# non-distributed run has no controller, so it uses its own pid instead.
+# Either way, `pytest_sessionfinish` (always running as the controller, or
+# standing in for one) checks for a marker under its OWN pid — written by
+# whichever process(es) actually called `_acquire`, be that itself or one
+# of its worker children.
+#
+# Real bug, caught live: an ordinary `pytest -q` run (no live/e2e/
+# integration marker, never calls any `ensure_*()` here) still hit
+# `pytest_sessionfinish` -> `teardown_all()` unconditionally, which tore
+# down the ENTIRE shared cache — including a real Postgres/Qdrant/Ollama a
+# SEPARATE, still-running `tests/live/` pytest invocation was actively
+# using — the moment the unrelated run finished. The existing `workerinput`
+# guard only protects against an xdist WORKER finishing early within one
+# invocation; it had no defense at all against a second, independent
+# pytest process racing in like this. Doesn't fully solve the reverse case
+# (two live-marked invocations overlapping still race, same as before) —
+# but that's a narrower, avoidable "don't do that" case; a routine
+# fast-suite run wiping out a concurrent live run's containers is the
+# common, surprising one this closes.
+def _controller_pid() -> int:
+    return os.getppid() if "PYTEST_XDIST_WORKER" in os.environ else os.getpid()
+
+
+def _used_marker(pid: int) -> Path:
+    return _shared_root() / f"{_CACHE_PREFIX}-used-by-{pid}"
+
+
+def _mark_cache_used() -> None:
+    _used_marker(_controller_pid()).touch(exist_ok=True)
+
+
 def _acquire(key: str, start: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     """Run `start()` exactly once across every xdist worker of this pytest
     run (see module docstring); every call, including the first, returns
@@ -147,6 +192,7 @@ def _acquire(key: str, start: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     `-x` run, a canceled CI job) is a real possibility, not just a theoretical
     one, so a dead reference is discarded and `start()` runs again rather
     than handing back a connection string nothing is listening on."""
+    _mark_cache_used()
     cache_file, lock_file = _cache_paths(key)
     with FileLock(str(lock_file)):
         if cache_file.exists():
@@ -157,6 +203,19 @@ def _acquire(key: str, start: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         info = start()
         cache_file.write_text(json.dumps(info))
         return info
+
+
+def used_shared_cache() -> bool:
+    """True when THIS invocation (this process, or — under xdist — one of
+    its own worker children) called `_acquire` at least once this session.
+    Only meaningful called from the controller/non-distributed process —
+    see `pytest_sessionfinish`'s own use of this. Consumes (deletes) its
+    own marker file so it never accumulates under `_shared_root()` across
+    many invocations."""
+    marker = _used_marker(_controller_pid())
+    used = marker.exists()
+    marker.unlink(missing_ok=True)
+    return used
 
 
 def teardown_all() -> None:

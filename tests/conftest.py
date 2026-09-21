@@ -205,9 +205,21 @@ def pytest_sessionfinish(session, exitstatus):
     reaches its own `pytest_sessionfinish` after every worker has finished
     and reported back) or a plain, non-distributed run — the one correct
     place, in both cases, to actually tear down.
+
+    Also skips entirely when THIS process never called any `ensure_*()` —
+    see `tests.containers.used_shared_cache`'s own docstring for the real
+    incident this guards against: an ordinary `pytest -q` run (no live/e2e/
+    integration marker selected) still reached this function and tore down
+    a real Postgres/Qdrant/Ollama a SEPARATE, concurrently-running `tests/
+    live/` invocation was actively using, the moment the unrelated run
+    finished — the shared cache is a fixed path across ALL invocations
+    against this repo (see tests/containers.py's module docstring), not
+    scoped to just this one.
     """
     if hasattr(session.config, "workerinput"):
         return
-    from tests.containers import teardown_all
+    from tests.containers import teardown_all, used_shared_cache
 
+    if not used_shared_cache():
+        return
     teardown_all()
