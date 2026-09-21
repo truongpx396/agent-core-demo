@@ -9,14 +9,15 @@ model_list:
   - model_name: chat
     litellm_params:
       model: ollama_chat/qwen2.5:3b
-      # host.docker.internal, not the "ollama" service name: this targets a
-      # native macOS Ollama on the host, not the docker-compose container.
-      # Docker Desktop on Mac can't pass Metal/GPU through to a container,
-      # so the containerized Ollama runs CPU-only — verified empirically at
-      # ~9x slower per-turn (10.76s vs 1.18s total on a 575-token RAG-sized
-      # prompt, same model, warm) than the native install hitting GPU
-      # ("100% GPU" per `ollama ps`). The docker ollama container is still
-      # up (see its service block) purely to serve open-webui's own chat UI.
+      # host.docker.internal: this targets a native macOS Ollama on the
+      # host, not a docker-compose container — there is no containerized
+      # Ollama in this stack. Docker Desktop on Mac can't pass Metal/GPU
+      # through to a container, so a containerized Ollama would run
+      # CPU-only — verified empirically at ~9x slower per-turn (10.76s vs
+      # 1.18s total on a 575-token RAG-sized prompt, same model, warm) than
+      # the native install hitting GPU ("100% GPU" per `ollama ps`).
+      # open-webui (docker-compose.yml) also points at this same host
+      # Ollama, so every model only needs to be pulled once, natively.
       api_base: http://host.docker.internal:11434
       # Ollama's own runtime default (verified via `ollama ps`: 4096, NOT
       # the 32768 qwen2.5:3b actually supports per `ollama show`) — nothing
@@ -34,12 +35,33 @@ model_list:
       # against qwen2.5:3b's own rated max (32768 per `ollama show`) —
       # real headroom (768 tokens), not a round-number guess.
       num_ctx: 32000
+      # Bounds a SINGLE completion's own length — a real, reproduced gap
+      # without this: an open-ended "showcase many examples" prompt sent
+      # qwen2.5:3b into a verbatim repetition loop (a known small-model
+      # failure mode) that ran until app/core/config.py's
+      # REQUEST_TIMEOUT_SECONDS (60s wall-clock) finally killed the whole
+      # turn — nothing bounded the call itself by output length, only by
+      # time. `num_predict`, Ollama's own max-output-tokens option
+      # (LiteLLM's ollama_chat provider passes it straight through, same
+      # as num_ctx above), cuts a runaway generation off after a token
+      # count instead, in a few seconds rather than the full minute — 2048
+      # is generous for this app's own concise assistant answers (a real
+      # multi-paragraph reply with a code sample rarely clears a few
+      # hundred tokens) while still firmly bounding the worst case.
+      # `repeat_penalty` (Ollama default 1.1) is bumped to make the
+      # repetition loop itself less likely in the first place, not just
+      # capped once it starts — 1.3 is a commonly-used value for reducing
+      # verbatim repetition without visibly hurting normal coherence.
+      num_predict: 2048
+      repeat_penalty: 1.3
   # A second chat entry used purely as a fallback target for "chat".
   - model_name: chat-backup
     litellm_params:
       model: ollama_chat/qwen2.5:3b
       api_base: http://host.docker.internal:11434
       num_ctx: 32000
+      num_predict: 2048
+      repeat_penalty: 1.3
   # Vision-capable alias slot (GRAPH_PATTERNS.md pattern 44) — "chat" above
   # (qwen2.5:3b) has no vision capability, so an attached image is carried
   # through the pipeline correctly but the model can't actually see it.
@@ -62,7 +84,11 @@ model_list:
   - model_name: vision
     litellm_params:
       model: ollama_chat/qwen2.5vl:3b
-      api_base: http://ollama:11434
+      api_base: http://host.docker.internal:11434
+      # Same runaway-generation guard as "chat" above — same underlying
+      # small-model risk, independent of whether an image is attached.
+      num_predict: 2048
+      repeat_penalty: 1.3
   # Embedding model (alias "embed" -> Ollama nomic-embed-text)
   - model_name: embed
     litellm_params:

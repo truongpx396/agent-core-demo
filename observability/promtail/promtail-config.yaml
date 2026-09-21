@@ -28,7 +28,7 @@ scrape_configs:
         refresh_interval: 5s
     relabel_configs:
       - source_labels: [__meta_docker_container_label_com_docker_compose_service]
-        regex: "^(api|agent-worker|agent-worker-support|agent-worker-ops|agent-worker-sales|ingest-worker|litellm|postgres|redis|qdrant|minio|ollama|langfuse-web|open-webui|postgres-exporter|redis-exporter)$"
+        regex: "^(api|agent-worker|agent-worker-support|agent-worker-ops|agent-worker-sales|ingest-worker|litellm|postgres|redis|qdrant|minio|langfuse-web|open-webui|postgres-exporter|redis-exporter)$"
         action: keep
       - source_labels: [__meta_docker_container_name]
         regex: "/(.*)"
@@ -42,8 +42,8 @@ scrape_configs:
       # line for every service this app runs as a container (api,
       # agent-worker, ingest-worker) — parse it so `level`/`logger` are real
       # Loki labels a dashboard/alert can filter on, not just buried text.
-      # A container that logs plain text (ollama, qdrant, postgres, ...)
-      # just skips these stages harmlessly (json stage no-ops on non-JSON).
+      # A container that logs plain text (qdrant, postgres, ...) just
+      # skips these stages harmlessly (json stage no-ops on non-JSON).
       - json:
           expressions:
             level: level

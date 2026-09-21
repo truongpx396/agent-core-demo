@@ -91,6 +91,47 @@ async def resumability_error_async(graph, config: dict) -> str | None:
     return _resumability_error_from_state(await graph.aget_state(config))
 
 
+async def paused_approval_async(graph, config: dict) -> dict | None:
+    """Is `config`'s thread currently parked at a real human_approval
+    interrupt? Returns `None` if not (the common case for both an ordinary
+    new turn and a session-switcher reload), else `{"tool_calls": [...],
+    "resumable": bool}`.
+
+    Two callers, same shape needed for opposite reasons:
+    - `astream_events_turn` (runtime_stream.py) — checked before starting a
+      BRAND-NEW turn, so a fresh message can't silently blow past a
+      pending approval: LangGraph's own `.astream(new_input, config)`
+      restarts flatly from `__start__` and never revisits an unresumed
+      interrupted task, leaving its `tool_calls` dangling with no matching
+      `ToolMessage` forever (verified directly against a real paused
+      thread). `resumable=True` here means "safe to auto-cancel via
+      `cancel_run` before proceeding"; `False` means the checkpoint is
+      schema-incompatible, so even cancelling can't cleanly resume into it.
+    - `GET /chat/sessions/{thread_id}/pending_approval` (app/api/main.py)
+      — checked when the session switcher loads a thread, so returning to
+      a paused conversation re-shows the approve/reject UI instead of
+      silently looking idle (the web UI's own `activeTurn` is in-memory
+      JS state that a page reload/session switch never repopulates).
+
+    Deliberately NOT `resumability_error_async`: that increments
+    `agent_checkpoint_issue_total{reason="checkpoint_lost"}` on "nothing
+    pending" — the overwhelmingly common result for both callers above —
+    which would drown out that metric's actual signal (someone tried to
+    resume/cancel a thread that wasn't paused at all, a real anomaly).
+    """
+    state = await graph.aget_state(config)
+    if not state.next or not any(task.interrupts for task in state.tasks):
+        return None
+    tool_calls: list = []
+    for task in state.tasks:
+        for intr in task.interrupts:
+            tool_calls = intr.value.get("tool_calls", [])
+            break
+        if tool_calls:
+            break
+    return {"tool_calls": tool_calls, "resumable": _resumability_error_from_state(state) is None}
+
+
 CANCEL_SENTINEL = "cancelled"  # app/agent/runtime_stream.py::cancel_run resumes a paused run with this value
 
 

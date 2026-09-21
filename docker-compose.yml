@@ -44,32 +44,6 @@ x-app-env: &app-env
   OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4318
 
 services:
-  # --- LLM + embeddings, fully local ---
-  ollama:
-    image: ollama/ollama:latest
-    # No host port published: this container is CPU-only (Docker Desktop on
-    # Mac can't pass Metal/GPU through), so app/litellm-config.yaml now
-    # targets a native macOS Ollama on the host's :11434 instead (real GPU
-    # acceleration — see litellm-config.yaml's api_base comments). This
-    # container stays up only to serve open-webui's OLLAMA_BASE_URL
-    # (internal docker-network hostname "ollama", unaffected by dropping
-    # the host port publish).
-    environment:
-      # Default keep_alive is 5m — normal chat pacing (read a reply, think,
-      # type the next message) easily exceeds that, so the ~2.4GB chat model
-      # unloads between turns and the next message pays a ~10s reload before
-      # prefill even starts (verified empirically: load_duration alone was
-      # 10.27s of a 13.01s cold call). Keeping it loaded for an hour trades
-      # idle RAM for eliminating that reload tax during a dev/demo session.
-      OLLAMA_KEEP_ALIVE: 60m
-    volumes:
-      - ollama:/root/.ollama
-    healthcheck:
-      test: ["CMD-SHELL", "ollama list || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
   # --- LiteLLM proxy: single OpenAI-compatible endpoint for the app ---
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
@@ -100,19 +74,21 @@ services:
       postgres:
         condition: service_healthy
 
-  # --- Open WebUI: browser-based chat UI talking directly to Ollama ---
+  # --- Open WebUI: browser-based chat UI talking directly to a native
+  # macOS Ollama on the host (see litellm-config.yaml's api_base comments
+  # on the "chat" model — same host instance, no containerized Ollama in
+  # this stack) ---
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     ports:
       - "8080:8080"
     environment:
-      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
       WEBUI_AUTH: "false"          # disable login for local dev convenience
     volumes:
       - open-webui:/app/backend/data
-    depends_on:
-      ollama:
-        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # so OLLAMA_BASE_URL resolves on native Linux Docker too
 
   # --- Vector database ---
   qdrant:
@@ -633,7 +609,6 @@ services:
         condition: service_started
 
 volumes:
-  ollama:
   qdrant:
   postgres:
   open-webui:

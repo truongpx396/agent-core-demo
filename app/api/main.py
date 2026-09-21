@@ -23,6 +23,10 @@ Endpoints:
                               X-Domain, most recent first (session switcher)
 - GET  /chat/sessions/{thread_id}/messages -> that thread's transcript
                               (404 if it belongs to a different domain)
+- GET  /chat/sessions/{thread_id}/pending_approval -> null, or the tool
+                              call(s) still awaiting approval on this
+                              thread — lets the web UI re-show that prompt
+                              after a reload/session switch
 - GET  /usage             -> this caller's tenant usage/cost, including the
                               rolling-24h number _tenant_over_daily_budget checks
 - POST /ingest/upload     -> upload PDF/DOCX documents; each becomes its own
@@ -71,7 +75,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 
 from app.agent import sessions, sql_store, usage_ledger
 from app.agent.runtime import close_checkpointer_pool, init_graph_async
-from app.agent.runtime_stream import get_session_messages
+from app.agent.runtime_stream import get_pending_approval, get_session_messages
 from app.api import (
     health as health_checks,  # `health` is also this module's own liveness endpoint name below
 )
@@ -81,6 +85,7 @@ from app.api.schemas import (
     ChatRequest,
     HealthResponse,
     IngestUploadResult,
+    PendingApproval,
     ReadinessResponse,
     ResumeRequest,
     SessionMessage,
@@ -362,6 +367,21 @@ async def chat_session_messages(
     if not await sessions.session_belongs_to(ctx, thread_id, domain):
         raise HTTPException(status_code=404, detail="session not found")
     return await get_session_messages(thread_id)  # type: ignore[return-value]  # same response_model coercion note as chat_sessions above
+
+
+@app.get("/chat/sessions/{thread_id}/pending_approval", response_model=PendingApproval | None)
+async def chat_session_pending_approval(
+    thread_id: str, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
+) -> PendingApproval | None:
+    """Lets the session switcher re-show the approve/reject UI for a thread
+    that's still paused at human_approval, instead of it looking idle —
+    `switchToSession` (index.html) calls this alongside .../messages on
+    every switch. Same `session_belongs_to` authorization boundary as
+    that endpoint, and for the same reason (get_pending_approval itself
+    has no tenant/principal/domain of its own to check)."""
+    if not await sessions.session_belongs_to(ctx, thread_id, domain):
+        raise HTTPException(status_code=404, detail="session not found")
+    return await get_pending_approval(thread_id)  # type: ignore[return-value]  # same response_model coercion note as chat_sessions above
 
 
 @app.get("/usage", response_model=UsageResponse)

@@ -75,7 +75,16 @@ class Settings(BaseSettings):
     # `make index-skills`.
     skills_dir: str = "skills"
     skills_collection: str = "skills"
-    skills_search_top_k: int = 3
+    # 1, not a more generous top-K: live-verified (tests/live/
+    # test_chat_ui.py::test_a_skill_is_found_and_followed, qwen2.5:3b, this
+    # app's own real default) that even ONE distractor candidate alongside
+    # the genuinely correct match is enough to make this small a model
+    # hedge into "none of these are suitable" instead of committing to it
+    # — k=2 reproduced the exact same failure as k=3; only k=1 (no
+    # alternatives shown at all) passed reliably. Trades away a second
+    # chance to correct an imperfect top-1 ranking for a small model that
+    # commits confidently instead of second-guessing a right answer.
+    skills_search_top_k: int = 1
 
     # Subagents (app/agent/subagents.py, pattern 46) — bundled AGENT.md files,
     # each a scoped nested agent run `run_subagent` can delegate to.

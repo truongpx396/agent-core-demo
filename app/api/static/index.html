@@ -867,7 +867,7 @@ function renderBlock(block) {
   // placeholder passes through untouched, rather than getting wrapped in
   // a <p> (which would be redundant for a header, or invalid nesting
   // around the eventual <pre>).
-  if (lines.length === 1 && /^(<h[1-3]>.*<\/h[1-3]>| B\d+ )$/.test(lines[0])) {
+  if (lines.length === 1 && /^(<h[1-3]>.*<\/h[1-3]>|\u0000B\d+\u0000)$/.test(lines[0])) {
     return lines[0];
   }
   const isOrdered = lines.every((l) => /^\s*\d+\.\s+/.test(l));
@@ -891,19 +891,45 @@ function renderBlock(block) {
 function renderMarkdown(raw) {
   const codeBlocks = [];
   const inlineCode = [];
+  const escaped = [];
 
   let html = escapeHtml(raw);
 
   // Fenced code blocks first, pulled out (as an opaque placeholder) before
-  // anything else can transform their contents.
+  // anything else can transform their contents. Delimited with \u0000, a
+  // NUL byte no real markdown/model text will ever contain — NOT spaces
+  // (a real, reproduced bug: a placeholder immediately after a "1. "/"- "
+  // list marker had its OWN leading padding space greedily eaten by
+  // renderBlock's `\s+`-based prefix-stripping regex below, e.g. "1.
+  // `search_docs`: ..." losing its space before the placeholder, so the
+  // final restore regex's required leading space no longer matched and
+  // "search_docs" rendered as the literal, un-restored text "I0" instead
+  // — verified directly against a real numbered-list answer). \u0000
+  // isn't whitespace (`\s` doesn't match it), so no whitespace-trimming
+  // regex anywhere in this pipeline can ever consume it.
   html = html.replace(/```[^\n]*\n([\s\S]*?)```/g, (_, code) => {
     codeBlocks.push(code.replace(/\n$/, ""));
-    return ` B${codeBlocks.length - 1} `;
+    return `\u0000B${codeBlocks.length - 1}\u0000`;
   });
-  // Inline code, same reasoning.
+  // Backslash escapes ("\`" etc.) — BEFORE inline code below, not after:
+  // a model describing triple backticks literally as "(\`\`\`)" rather
+  // than opening a real code span needs its backslash-escaped backtick
+  // treated as inert text, not a real delimiter — otherwise the inline-
+  // code regex below pairs it with whatever unrelated backtick comes
+  // next (a real, reproduced bug: one such mention left every later
+  // single-backtick-wrapped example in the SAME answer — `_`, `*`, `--`,
+  // `#`... — pairing with the wrong partner, swallowing most of the rest
+  // of the message into one wildly mismatched, mangled <code> span).
+  // Fenced blocks are already extracted above, so this never touches an
+  // escape meant to be shown literally INSIDE real code.
+  html = html.replace(/\\([`*_[\]#\\-])/g, (_, ch) => {
+    escaped.push(ch);
+    return `\u0000E${escaped.length - 1}\u0000`;
+  });
+  // Inline code, same reasoning as fenced blocks above.
   html = html.replace(/`([^`\n]+)`/g, (_, code) => {
     inlineCode.push(code);
-    return ` I${inlineCode.length - 1} `;
+    return `\u0000I${inlineCode.length - 1}\u0000`;
   });
 
   // Links: [text](url). Runs before bold/italic so a bracketed link label
@@ -923,6 +949,17 @@ function renderMarkdown(raw) {
   // as literal asterisks.
   html = html.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+  // Underscore is CommonMark's other emphasis marker ("_x_"/"__x__") —
+  // same bold-before-italic order as "*"/"**" above. Unlike asterisk,
+  // this REQUIRES a non-word boundary on both sides (a crude but
+  // effective approximation of GFM's actual "intra-word underscore"
+  // rule): this app's answers constantly mention real snake_case
+  // identifiers (search_docs, use_skill, agent_worker, ...), and a plain
+  // "_x_" regex would happily italicize "docs" in the middle of
+  // "search_docs_now" the moment two underscores land in one word —
+  // common here, not a rare edge case, given this app's own domain.
+  html = html.replace(/(?<!\w)__([^_\n]+)__(?!\w)/g, "<strong>$1</strong>");
+  html = html.replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, "<em>$1</em>");
 
   html = html.replace(/^### (.*)$/gm, "<h3>$1</h3>");
   html = html.replace(/^## (.*)$/gm, "<h2>$1</h2>");
@@ -932,8 +969,13 @@ function renderMarkdown(raw) {
 
   // Restore code — already HTML-escaped (it went through escapeHtml
   // before extraction above), so this is safe to insert verbatim now.
-  html = html.replace(/ B(\d+) /g, (_, i) => `<pre><code>${codeBlocks[i]}</code></pre>`);
-  html = html.replace(/ I(\d+) /g, (_, i) => `<code>${inlineCode[i]}</code>`);
+  html = html.replace(/\u0000B(\d+)\u0000/g, (_, i) => `<pre><code>${codeBlocks[i]}</code></pre>`);
+  html = html.replace(/\u0000I(\d+)\u0000/g, (_, i) => `<code>${inlineCode[i]}</code>`);
+  // Restore backslash-escaped characters as plain literal text (already
+  // HTML-escaped above, same as code) — AFTER code, so one could
+  // legitimately sit right next to a real code span without the two
+  // placeholder families colliding.
+  html = html.replace(/\u0000E(\d+)\u0000/g, (_, i) => escaped[i]);
 
   return html;
 }
@@ -1144,16 +1186,15 @@ function finishTurn() {
   loadSessions();
 }
 
-async function send(text, image) {
-  addMessage("user", image ? `${text}\n[attached image: ${image.label}]` : text);
-  input.value = "";
-  imageUrlEl.value = "";
-  clearAttachedImage();
-  sendBtn.disabled = true;
-  stopBtn.hidden = false;
-  sessionSelect.disabled = true;
-
-  const { el: assistantEl, textEl: assistantTextEl, draftEl, statusEl, activityEl } = addAssistantMessage();
+// Shared by send() (a brand-new turn) and restorePendingApproval() (the
+// session switcher re-showing a pause found via GET .../pending_approval)
+// — both need the SAME event-handling/resume logic driving the SAME
+// assistant bubble, so a resumed tool call/answer appends to the bubble
+// the user is looking at whether that bubble came from a live send() or
+// was reconstructed on page load. Previously inlined in send() alone —
+// see its own header comment (now here) for why one closure has to serve
+// both the initial turn and any later /chat/resume round trip.
+function createTurnHandlers(threadId, { el: assistantEl, textEl: assistantTextEl, draftEl, statusEl, activityEl }) {
   // `assistantText` is the CONFIRMED final answer — assistantTextEl is
   // written to exactly once, by promote() below, never incrementally.
   // `draftText` is whatever the CURRENT, not-yet-confirmed attempt has
@@ -1235,6 +1276,14 @@ async function send(text, image) {
       // immediately), so this is a best-effort "why did that pause happen"
       // signal, not something that needs to linger.
       setStatus(statusEl, "Summarizing older messages");
+    } else if (event.type === "system_note") {
+      // A housekeeping note about this thread's PRIOR state, not this
+      // turn's own progress (today: astream_events_turn's
+      // checkpoint_incompatible path — a stale pending approval an app
+      // update left un-resumable, so it's being left as-is rather than
+      // refused forever with no way out) — a persistent line, not a
+      // transient status like "compacted" above.
+      addMessage("system", event.content);
     } else if (event.type === "tool_start") {
       setStatus(statusEl, `Using ${event.tool}`);
       addToolActivityLine(activityEl, event.tool, event.args);
@@ -1255,6 +1304,20 @@ async function send(text, image) {
       promote();
       setStatus(statusEl, null);
       if (activeTurn) activeTurn.phase = "paused";
+      // Nothing is in flight while paused (unlike streaming, above) — a
+      // wait for a human decision can be arbitrarily long (see
+      // astream_events_resume's own docstring), so switching to a
+      // different conversation, or starting a new one, is safe here and
+      // must not stay locked out just because THIS thread is waiting.
+      // resume() below re-disables it for its own brief round trip.
+      sessionSelect.disabled = false;
+      // A brand-new thread's FIRST turn pausing here never reaches
+      // finishTurn() (the only other loadSessions() call site) — but
+      // _upsert_session (runtime_stream.py::astream_events_turn) already
+      // wrote this thread's row server-side before the graph even ran, so
+      // the switcher just needs telling. Not awaited: this only refreshes
+      // the <option> list, nothing the approval UI rendered above depends on.
+      loadSessions();
       renderApprovalButtons(assistantEl, assistantTextEl, event.tool_calls, (approved) => {
         resume(approved);
       });
@@ -1262,33 +1325,51 @@ async function send(text, image) {
       // over; sendBtn/stopBtn stay in their "a turn is active" state
       // until the resume below reaches a real terminal event.
     } else if (event.type === "error") {
-      setStatus(statusEl, null);
       assistantTextEl.classList.remove("muted-restatement");
       draftEl.textContent = "";
-      if (event.code === "cancelled") {
-        // A deliberate stop, not a failure — rendered as a quiet status
-        // line, not an alarming error message (the user already knows
-        // they clicked Stop).
-        assistantTextEl.textContent = assistantText || draftText || "Stopped.";
+      // Only reachable with a still-visible approval box via the
+      // top-level Stop button (renderApprovalButtons removes it BEFORE
+      // calling resume() for its own Approve/Reject clicks) — clicking
+      // Stop cancels the run server-side (cancel_run) but never touches
+      // this element, so without this it sits there, stale, offering a
+      // decision that would now just fail (resumability_error_async's
+      // own checkpoint_lost) if clicked.
+      assistantEl.querySelector(".approval")?.remove();
+      if (assistantText || draftText) {
+        // Partial content already streamed — NEVER silently discard
+        // that the turn didn't actually finish, by falling back to
+        // JUST the partial text as if it were the real answer (a real,
+        // reproduced bug: a runaway/repetitive generation cut off by
+        // REQUEST_TIMEOUT_SECONDS rendered identically to a normal,
+        // complete answer, since this used to drop event.content
+        // entirely whenever there was already text to fall back on).
+        // Reuses .status (normally hidden once a turn settles, not
+        // cleared here) to show it, rather than a new element/style.
+        promote();
+        setStatus(
+          statusEl,
+          event.code === "cancelled" ? "Stopped before finishing." : `Interrupted: ${event.content}`
+        );
       } else {
-        assistantTextEl.textContent = assistantText || draftText || `[error: ${event.content}]`;
+        setStatus(statusEl, null);
+        assistantTextEl.textContent = event.code === "cancelled" ? "Stopped." : `[error: ${event.content}]`;
       }
       finishTurn();
     } else if (event.type === "done") {
+      assistantEl.querySelector(".approval")?.remove(); // same Stop-while-paused case as "error" above
       promote();
       finishTurn();
     }
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
-  // Set now (handleEvent above is defined but not yet called) — the Stop
-  // button reads activeTurn.handleEvent to pump /chat/cancel's own SSE
-  // response through the SAME rendering logic when this turn is paused.
-  activeTurn = { threadId, phase: "streaming", handleEvent };
-
   async function resume(approved) {
     setStatus(statusEl, approved ? "Resuming" : "Cancelling that action");
     if (activeTurn) activeTurn.phase = "streaming";
+    // Re-lock the switcher for this round trip's own duration — mirrors
+    // send()'s initial disable; approval_required's handler above is what
+    // frees it while genuinely paused, not this function.
+    sessionSelect.disabled = true;
     try {
       const response = await fetch("/chat/resume", {
         method: "POST",
@@ -1309,6 +1390,40 @@ async function send(text, image) {
     }
   }
 
+  // Exposed so send()'s own initial /chat/stream/queued round trip (not
+  // routed through resume() above) can finish the SAME "still unstuck
+  // even with no explicit terminal event" handling, and render the same
+  // fallback text on a network-level failure — without reaching into
+  // this closure's private assistantText/draftText itself.
+  function finalize() {
+    promote();
+    finishTurn();
+  }
+  function fail(err) {
+    assistantTextEl.textContent = assistantText || draftText || `[error: ${err}]`;
+    finishTurn();
+  }
+
+  return { handleEvent, resume, finalize, fail };
+}
+
+async function send(text, image) {
+  addMessage("user", image ? `${text}\n[attached image: ${image.label}]` : text);
+  input.value = "";
+  imageUrlEl.value = "";
+  clearAttachedImage();
+  sendBtn.disabled = true;
+  stopBtn.hidden = false;
+  sessionSelect.disabled = true;
+
+  const bubble = addAssistantMessage();
+  const { handleEvent, finalize, fail } = createTurnHandlers(threadId, bubble);
+
+  // Set now (handleEvent above is defined but not yet called) — the Stop
+  // button reads activeTurn.handleEvent to pump /chat/cancel's own SSE
+  // response through the SAME rendering logic when this turn is paused.
+  activeTurn = { threadId, phase: "streaming", handleEvent };
+
   try {
     const response = await fetch("/chat/stream/queued", {
       method: "POST",
@@ -1320,19 +1435,46 @@ async function send(text, image) {
       }),
     });
     await pumpSSE(response, handleEvent);
-    // Same "still unstuck even with no explicit terminal event" guard as
-    // resume() above — covers a paused turn too: if the pump ended on
-    // approval_required, activeTurn.phase is now "paused" and MUST stay
-    // active (not finished here); only tidy up if nothing is pending.
+    // Covers a paused turn too: if the pump ended on approval_required,
+    // activeTurn.phase is now "paused" and MUST stay active (not
+    // finished here); only tidy up if nothing is pending.
     if (activeTurn && activeTurn.phase !== "paused") {
-      promote();
-      finishTurn();
+      finalize();
     }
   } catch (err) {
-    setStatus(statusEl, null);
-    assistantTextEl.textContent = assistantText || draftText || `[error: ${err}]`;
-    finishTurn();
+    setStatus(bubble.statusEl, null);
+    fail(err);
   }
+}
+
+// Re-shows the approve/reject UI for a thread the session switcher just
+// loaded that's STILL paused at human_approval (GET .../pending_approval)
+// — activeTurn is in-memory JS state a page reload/session switch never
+// repopulates, so without this the pause looks resolved even though the
+// server is still sitting on it (runtime_stream.py::get_pending_approval).
+// `pending` is that endpoint's own response shape: {tool_calls, resumable}.
+function restorePendingApproval(threadId, pending) {
+  const bubble = addAssistantMessage();
+  setStatus(bubble.statusEl, null);
+  if (!pending.resumable) {
+    // state_schema_version no longer matches this build (an app update
+    // landed while this was paused) — approve/reject would be refused
+    // server-side too (resumability_error_async), so don't offer a
+    // button that can only fail; the next message on this thread will
+    // clear it (astream_events_turn's own checkpoint_incompatible path).
+    bubble.textEl.textContent =
+      "A pending approval on this conversation could not be resumed after an app update.";
+    return;
+  }
+  const { handleEvent, resume } = createTurnHandlers(threadId, bubble);
+  sendBtn.disabled = true; // don't offer to double-text THIS thread; see astream_events_turn's own refusal
+  stopBtn.hidden = false;
+  // sessionSelect stays enabled: nothing is in flight for a restored
+  // pause (same reasoning as approval_required's own handler) — the
+  // whole point of restoring it is that the user can leave and come back
+  // again later, not that they're now stuck here.
+  activeTurn = { threadId, phase: "paused", handleEvent };
+  renderApprovalButtons(bubble.el, bubble.textEl, pending.tool_calls, (approved) => resume(approved));
 }
 
 // A replayed message from GET /chat/sessions/{thread_id}/messages — a
@@ -1387,7 +1529,23 @@ async function loadSessions() {
 // Not used for starting a new conversation (the "+ New conversation"
 // option's own handler below just resets threadId directly, since there's
 // nothing to fetch for a thread_id that doesn't exist yet).
+// Clears turn UI left over from a PAUSED conversation being navigated
+// away from — a live STREAMING turn can never reach either call site
+// below (sessionSelect stays disabled for that whole duration, see
+// send()'s own initial disable and approval_required's handler, the only
+// place that frees it again). Without this, switching from thread A's
+// restored/live pause to thread B would leave sendBtn/stopBtn locked onto
+// thread A forever, and a Stop click on thread B would cancel the WRONG
+// thread (activeTurn.threadId still A).
+function resetTurnUi() {
+  activeTurn = null;
+  sendBtn.disabled = false;
+  stopBtn.hidden = true;
+  sessionSelect.disabled = false;
+}
+
 async function switchToSession(newThreadId) {
+  resetTurnUi();
   threadId = newThreadId;
   messagesEl.innerHTML = "";
   try {
@@ -1402,8 +1560,28 @@ async function switchToSession(newThreadId) {
       else addStaticAssistantMessage(m.text);
     }
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    await checkPendingApproval(newThreadId);
   } catch (_err) {
     addMessage("system", "Could not load that conversation.");
+  }
+}
+
+// Best-effort: a failed check just means the approval banner won't
+// re-show on this load. The user isn't stuck either way — sending a new
+// message on this thread now gets a clear refusal instead of silently
+// corrupting the transcript (see astream_events_turn's own
+// ErrorCode.PENDING_APPROVAL), so the worst case is an error telling
+// them to come back and resolve this pause, not silent data loss.
+async function checkPendingApproval(tid) {
+  try {
+    const response = await fetch(`/chat/sessions/${encodeURIComponent(tid)}/pending_approval`, {
+      headers: headers(),
+    });
+    if (!response.ok) return;
+    const pending = await response.json();
+    if (pending) restorePendingApproval(tid, pending);
+  } catch (_err) {
+    // See function-level comment above.
   }
 }
 
@@ -1415,6 +1593,7 @@ sessionSelect.addEventListener("change", () => {
     // "+ New conversation" — a fresh, not-yet-persisted thread_id; the
     // switcher will pick it up once its first turn completes (finishTurn
     // calls loadSessions() again).
+    resetTurnUi();
     threadId = randomId();
     messagesEl.innerHTML = "";
   }

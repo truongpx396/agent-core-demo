@@ -247,6 +247,11 @@ provisioned dashboards and a starter alert rule set — see
 
 - Docker + Docker Compose
 - Python 3.11+
+- [Ollama](https://ollama.com) installed and running natively on the host
+  (`ollama serve`) — this stack has no containerized Ollama; `litellm-config.yaml`
+  and `open-webui` both reach it via `host.docker.internal:11434` for real
+  GPU acceleration (Docker Desktop on Mac can't pass Metal through to a
+  container)
 - ~2 GB disk for the Ollama models (first run only)
 - ~1 GB disk for the local hybrid-search/rerank models (`fastembed`'s BM25 +
   cross-encoder, downloaded once on first use, cached after)
@@ -260,7 +265,8 @@ cd agent-core-demo
 cp .env.example .env
 pip install -r requirements.txt
 
-# 2. Start the stack (ollama, litellm, qdrant, langfuse, postgres, redis)
+# 2. Start the stack (litellm, qdrant, langfuse, postgres, redis — talks to
+#    the native Ollama from Prerequisites, not a container)
 #    A fresh postgres volume auto-runs postgres-init/*.sql, creating the
 #    `appdata` DB query_employees reads (see postgres-init/02-appdata.sql).
 make up

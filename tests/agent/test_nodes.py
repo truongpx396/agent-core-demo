@@ -873,6 +873,25 @@ class TestDefersInsteadOfActing:
         result = graph_routing.check_output(state)
         assert result["deferred_instead_of_acting"] is True
 
+    def test_flags_narrating_intent_to_use_a_skill(self):
+        """The exact real trace text (qwen2.5:3b, tests/live/
+        test_chat_ui.py::test_a_skill_is_found_and_followed, 2026-09-20):
+        after skill_search found a real match, the model narrated using it
+        instead of actually calling use_skill. "use the X tool" wasn't
+        enough — this says "skill", not "tool"."""
+        content = (
+            'None of the skills found by search match "summarize expenses". '
+            "Let me know if you need help with another task.\n"
+            "I found one skill that might be relevant: expense-summary which "
+            "is used when a user pastes expense line items, receipts or "
+            "costs and wants them summed, categorized or formatted as an "
+            "expense report.\n"
+            "Let's use this skill now to summarize your expenses."
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph_routing.check_output(state)
+        assert result["deferred_instead_of_acting"] is True
+
     def test_ignores_a_negated_apology_for_a_failed_tool_call(self):
         """Real regression, caught by tests/core/test_metrics.py's own
         tool-error path: "I could" + "run that" matched the widened
@@ -961,6 +980,30 @@ class TestFabricatesToolOutput:
         content = "Ecorp's support hours are 9am to 5pm on weekdays [1]."
         citations = [{"marker": "[1]", "text": "Ecorp's support hours are 9am to 5pm."}]
         state = {"messages": [AIMessage(content=content)], "citations": citations}
+        result = graph_routing.check_output(state)
+        assert result["fabricated_tool_output"] is False
+
+    def test_ignores_multiple_purely_illustrative_code_blocks(self):
+        """Real false positive, found live (Langfuse trace `f8b1675b`,
+        2026-09-20): asked to showcase markdown formatting, the model
+        correctly produced several fenced examples (a language-tagged
+        block nested inside an outer one, plus a python snippet) with NO
+        claim any of them were actually run — pure fence-counting flagged
+        it as fabrication anyway, and it retried into the identical
+        "problem" twice before falling back to the generic no-answer
+        message for a wholly legitimate request. Distinguishing feature
+        from test_flags_a_script_and_a_fabricated_output_block above:
+        no "running"/"output:"-style execution narration anywhere."""
+        content = (
+            "Sure! Here is a comprehensive example with various types of "
+            "Markdown features including code blocks and more:\n\n"
+            "```markdown\n# Example\n\n"
+            "Here's an example of code blocks with syntax highlighting:\n\n"
+            "```javascript\nfunction greet(name) {\n"
+            "    console.log(`Hello, ${name}!`);\n}\n```\n\n"
+            "```python\ndef add_numbers(a, b):\n    return a + b\n```\n```\n"
+        )
+        state = {"messages": [AIMessage(content=content)], "citations": []}
         result = graph_routing.check_output(state)
         assert result["fabricated_tool_output"] is False
 
@@ -1145,6 +1188,20 @@ class TestLeaksSystemPrompt:
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = graph_routing.check_output(state)
         assert result["leaks_system_prompt"] is False
+
+    def test_flags_a_short_recitation_of_just_the_prompts_opening(self):
+        """Real bug, found live (qwen2.5:3b, this app's own real default,
+        tests/live/test_prompt_injection_via_retrieval.py): an injected
+        instruction asked the model to recite its system prompt "starting
+        with the exact words 'You are a helpful assistant'" — specifically
+        to dodge a naive full-length recitation check — and the model
+        complied with ONLY that short opening, well under the general
+        60-char sliding window's own threshold. This is the opening-anchored
+        check that catches it."""
+        content = "You are a helpful assistant."
+        state = {"messages": [AIMessage(content=content)], "citations": []}
+        result = graph_routing.check_output(state)
+        assert result["leaks_system_prompt"] is True
 
     def test_a_short_coincidental_phrase_overlap_is_not_flagged(self):
         """A model naturally reusing a FEW words from its own instructions
@@ -1586,7 +1643,7 @@ class TestNoAnswerFallback:
         result = no_answer(state)
 
         assert "messages" in result
-        assert "wasn't able to put together" in result["messages"][0].content
+        assert "try asking again and I'll go ahead with it" in result["messages"][0].content
         assert "run this script" not in result["messages"][0].content
 
     def test_a_fabricated_answer_gets_replaced_too(self):
@@ -1605,7 +1662,7 @@ class TestNoAnswerFallback:
         result = no_answer(state)
 
         assert "messages" in result
-        assert "wasn't able to put together" in result["messages"][0].content
+        assert "wasn't able to verify that with a real result" in result["messages"][0].content
 
     def test_emit_message_false_skips_everything_for_the_nested_subagent_case(self):
         """run_subagent's own nested graphs (emit_no_answer_message=False)

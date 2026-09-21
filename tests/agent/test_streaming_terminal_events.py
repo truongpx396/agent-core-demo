@@ -366,7 +366,7 @@ class TestRetryExhaustedReplacesAlreadyStreamedContent:
 
         token_events = [e for e in events if e["type"] == "token"]
         streamed_text = "".join(e["content"] for e in token_events)
-        assert "wasn't able to put together" in streamed_text
+        assert "try asking again and I'll go ahead with it" in streamed_text
 
         types_in_order = [e["type"] for e in events]
         # One retry from retry_output (round 1 rejected), one from
@@ -377,7 +377,7 @@ class TestRetryExhaustedReplacesAlreadyStreamedContent:
         # fallback as a fresh token event — not silence, and not the
         # graph just ending with nothing more shown.
         assert types_in_order[last_retry_idx + 1] == "token"
-        assert "wasn't able to put together" in events[last_retry_idx + 1]["content"]
+        assert "try asking again and I'll go ahead with it" in events[last_retry_idx + 1]["content"]
 
 
 class TestRetryExhaustedTrustsAttributionOnlyFailures:
