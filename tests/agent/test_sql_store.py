@@ -134,6 +134,14 @@ class TestConnectionPool:
 
     def setup_method(self):
         sql_store._pool = None
+        # A fresh Lock too, not just the pool: _pool_lock is a
+        # process-lifetime singleton in production (one persistent event
+        # loop for the whole process) but pytest-asyncio gives every test
+        # function its own fresh loop — reset it here for the same reason
+        # `_pool` itself is reset, so a lock left "locked" by one test
+        # (e.g. a cancelled/failed task never reaching its `async with`
+        # exit) can't hang every later test's `_get_pool()` call forever.
+        sql_store._pool_lock = asyncio.Lock()
 
     def teardown_method(self):
         # Plain sync, not async def: pytest's own xunit-style setup_method/
@@ -206,3 +214,48 @@ class TestConnectionPool:
         await _touch()
 
         assert len(created) == 2
+
+    async def test_concurrent_first_callers_only_construct_one_pool(self, monkeypatch):
+        """Regression guard for the exact race _pool_lock exists to close:
+        without it, N concurrent first-callers (agent_worker.py's own
+        AGENT_WORKER_MAX_CONCURRENCY right after a fresh process starts)
+        could each pass the `_pool is None` check before any of them
+        finishes `await pool.open(...)`, each construct their own
+        AsyncConnectionPool, and each overwrite the module global — every
+        loser's pool then leaks (close_pool() only ever sees whichever one
+        `_pool` currently points to). `open()` awaiting a real
+        `asyncio.Event` (not returning instantly) is what actually gives
+        concurrent callers a window to race in — a synchronous fake
+        wouldn't exercise the bug this guards."""
+        created = []
+        may_finish_opening = asyncio.Event()
+
+        class _FakePool:
+            def __init__(self, *a, **kw):
+                created.append(1)
+
+            async def open(self, wait=True):
+                await may_finish_opening.wait()
+
+            def connection(self):
+                return _FakeConnCM("a-connection")
+
+            async def close(self):
+                pass
+
+        monkeypatch.setattr(sql_store, "AsyncConnectionPool", _FakePool)
+
+        async def _get_value():
+            async with sql_store.get_connection() as conn:
+                return conn
+
+        async def _run():
+            tasks = [asyncio.create_task(_get_value()) for _ in range(5)]
+            await asyncio.sleep(0)  # let every task reach `await pool.open(...)` before any finishes
+            may_finish_opening.set()
+            return await asyncio.gather(*tasks)
+
+        results = await _run()
+
+        assert len(created) == 1
+        assert all(r == "a-connection" for r in results)

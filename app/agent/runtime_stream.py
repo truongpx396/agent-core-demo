@@ -25,6 +25,7 @@ this same file, so it already resolves dynamically against this module's
 own globals. Tests patch `app.agent.runtime_stream._open_trace` directly.
 """
 import asyncio
+import logging
 import time
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -41,6 +42,8 @@ from app.core import metrics
 from app.core.config import CHAT_MODEL, REQUEST_TIMEOUT_SECONDS
 from app.core.errors import ErrorCode, ErrorEnvelope, TurnCancelled
 from app.core.security import SecurityCtx
+
+logger = logging.getLogger(__name__)
 
 try:
     from langfuse.callback import CallbackHandler
@@ -485,58 +488,101 @@ async def astream_events_turn(
         envelope = runtime_module._tenant_budget_envelope()
         yield {"type": "error", "content": envelope.message, **envelope.to_dict()}
         return
-    graph = await runtime_module.init_graph_async()
-    pending = await paused_approval_async(graph, {"configurable": {"thread_id": thread_id}})
-    if pending is not None:
-        # A new turn arriving while this thread is still paused at
-        # human_approval — "double texting" onto an approval gate
-        # (LangGraph Platform's own term for a new message mid-run; the
-        # open-source library leaves handling it to the app, see
-        # docs.langchain.com/langsmith/double-texting).
-        if pending["resumable"]:
-            # Refuse rather than silently cancel: a pending tool_call here
-            # is, by construction, non-read_only (TOOL_CAPABILITIES) — an
-            # AUTO-cancel on the caller's behalf could discard a mutating
-            # action a caller who didn't know it was pending (a second
-            # tab, Telegram, a bare API call, a race before the web UI's
-            # own session-switcher reshow resolves) never chose to drop.
-            # The web UI's own composer already disables itself while
-            # paused (`!activeTurn` guard) and re-shows this exact pause
-            # on return (GET .../pending_approval), so a caller that goes
-            # through it never reaches this branch at all; this is the
-            # explicit refusal for everything else.
-            envelope = ErrorEnvelope(
-                code=ErrorCode.PENDING_APPROVAL,
-                message="This conversation has a pending approval — approve, reject, or cancel it before sending a new message.",
-                details={"tool_calls": pending["tool_calls"]},
-            )
-            yield {"type": "error", "content": envelope.message, **envelope.to_dict()}
-            return
-        # checkpoint_incompatible (schema/topology changed since this
-        # thread paused) — refusing here would strand the thread
-        # permanently: cancel_run refuses for the identical reason
-        # (Command(resume=...) needs to locate the interrupted task in
-        # the CURRENT graph object, same as resuming would), so there is
-        # no action any caller could take to unblock it. Proceeding is
-        # the only path that makes progress; surfaced rather than silent.
-        yield {
-            "type": "system_note",
-            "content": "A previous pending approval on this conversation could not be resumed after an app update; starting a new request.",
+    # Reserves this turn's worst-case cost against the tenant's in-flight
+    # total for the rest of this generator's life (released in `finally`
+    # below, unconditionally) — see runtime.py::_reserve_turn_budget's own
+    # docstring for the race this closes: without it, a sibling turn for
+    # the same tenant starting moments later would see the exact same
+    # `spent` this turn's own check just read, since usage_ledger only
+    # gets this turn's real cost once it's done.
+    reserved_budget = await runtime_module._reserve_turn_budget(ctx)
+    try:
+        graph = await runtime_module.init_graph_async()
+        pending = await paused_approval_async(graph, {"configurable": {"thread_id": thread_id}})
+        if pending is not None:
+            # A new turn arriving while this thread is still paused at
+            # human_approval — "double texting" onto an approval gate
+            # (LangGraph Platform's own term for a new message mid-run; the
+            # open-source library leaves handling it to the app, see
+            # docs.langchain.com/langsmith/double-texting).
+            if pending["resumable"]:
+                # Refuse rather than silently cancel: a pending tool_call here
+                # is, by construction, non-read_only (TOOL_CAPABILITIES) — an
+                # AUTO-cancel on the caller's behalf could discard a mutating
+                # action a caller who didn't know it was pending (a second
+                # tab, Telegram, a bare API call, a race before the web UI's
+                # own session-switcher reshow resolves) never chose to drop.
+                # The web UI's own composer already disables itself while
+                # paused (`!activeTurn` guard) and re-shows this exact pause
+                # on return (GET .../pending_approval), so a caller that goes
+                # through it never reaches this branch at all; this is the
+                # explicit refusal for everything else.
+                envelope = ErrorEnvelope(
+                    code=ErrorCode.PENDING_APPROVAL,
+                    message="This conversation has a pending approval — approve, reject, or cancel it before sending a new message.",
+                    details={"tool_calls": pending["tool_calls"]},
+                )
+                yield {"type": "error", "content": envelope.message, **envelope.to_dict()}
+                return
+            # checkpoint_incompatible (schema/topology changed since this
+            # thread paused) — refusing here would strand the thread
+            # permanently: cancel_run refuses for the identical reason
+            # (Command(resume=...) needs to locate the interrupted task in
+            # the CURRENT graph object, same as resuming would), so there is
+            # no action any caller could take to unblock it. Proceeding is
+            # the only path that makes progress; surfaced rather than silent.
+            yield {
+                "type": "system_note",
+                "content": "A previous pending approval on this conversation could not be resumed after an app update; starting a new request.",
+            }
+        await runtime_module._ensure_seeded_async(graph, thread_id)
+        await runtime_module._upsert_session(ctx, thread_id, text)
+        trace, callbacks = _open_trace("chat-turn-stream", thread_id, text)
+        cfg = {
+            "configurable": {"thread_id": thread_id, "ctx": ctx},
+            "callbacks": callbacks,
+            "recursion_limit": runtime_module.RECURSION_LIMIT,
         }
-    await runtime_module._ensure_seeded_async(graph, thread_id)
-    await runtime_module._upsert_session(ctx, thread_id, text)
-    trace, callbacks = _open_trace("chat-turn-stream", thread_id, text)
-    cfg = {
-        "configurable": {"thread_id": thread_id, "ctx": ctx},
-        "callbacks": callbacks,
-        "recursion_limit": runtime_module.RECURSION_LIMIT,
-    }
-    graph_input = {
-        "messages": [HumanMessage(content=_build_human_content(text, images))],
-        "require_approval": require_approval,
-    }
-    async for event in _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=cancel_check):
-        yield event
+        graph_input = {
+            "messages": [HumanMessage(content=_build_human_content(text, images))],
+            "require_approval": require_approval,
+        }
+        async for event in _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=cancel_check):
+            yield event
+    finally:
+        # Fire-and-forget, NOT awaited: this generator's caller
+        # (agent_worker.py::_process_turn) only releases its own
+        # per-thread lock (queue.py::acquire_thread_lock) once THIS
+        # generator is fully exhausted — awaiting a real Postgres round
+        # trip here would sit between "terminal event already published
+        # to the results stream" and "thread lock released," a window a
+        # caller reacting immediately to that terminal event (e.g. POST
+        # /chat/resume fired the instant a client sees approval_required)
+        # can land in, getting spuriously rejected as THREAD_BUSY even
+        # though the turn it's resuming already finished from its own
+        # point of view. Reproduced directly:
+        # tests/integration/test_worker_scaling.py's real-subprocess HITL
+        # test started failing intermittently once this await was added.
+        # Safe to detach: _release_turn_budget already fails open
+        # internally (never raises in practice), and a reservation that
+        # takes a few extra milliseconds to clear is harmless — it's not
+        # on any correctness-critical path, only in_flight_reservation's
+        # own read, which also tolerates staleness up to
+        # RESERVATION_STALE_AFTER_MINUTES.
+        release_task = asyncio.create_task(
+            runtime_module._release_turn_budget(ctx, reserved_budget)
+        )
+        release_task.add_done_callback(_log_if_release_task_failed)
+
+
+def _log_if_release_task_failed(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning(
+            "tenant_budget_release_task_failed", extra={"error_class": type(exc).__name__}
+        )
 
 
 async def astream_events_turn_unattended(

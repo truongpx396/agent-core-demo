@@ -84,11 +84,26 @@ class FakeRedis:
         self.streams.pop(key, None)
         self.kv.pop(key, None)
 
-    async def set(self, key, value, ex=None):
+    async def set(self, key, value, ex=None, nx=False):
+        if nx and key in self.kv:
+            return None
         self.kv[key] = value
+        if ex is not None:
+            self.expiries[key] = ex
+        return True
 
     async def get(self, key):
         return self.kv.get(key)
+
+    async def eval(self, script, numkeys, *keys_and_args):
+        """Only ever called with queue.py's own `_RELEASE_LOCK_SCRIPT`
+        (compare-and-delete) — reimplements just that, not a real Lua
+        interpreter, same "just enough" scope as every other method here."""
+        key, token = keys_and_args[0], keys_and_args[1]
+        if self.kv.get(key) == token:
+            del self.kv[key]
+            return 1
+        return 0
 
 
 class TestGetClient:
@@ -266,6 +281,54 @@ class TestCancelFlag:
     async def test_clear_on_a_never_set_thread_id_does_not_raise(self):
         client = FakeRedis()
         await queue.clear_cancel_flag(client, "never-set")  # must not raise
+
+
+class TestThreadLock:
+    """Mutual exclusion across job kinds on one thread_id — see queue.py's
+    own module docstring for the checkpoint-fork race this exists to
+    close."""
+
+    async def test_acquire_succeeds_when_free(self):
+        client = FakeRedis()
+        assert await queue.acquire_thread_lock(client, "t1", "token-a") is True
+
+    async def test_a_second_acquire_while_held_fails(self):
+        client = FakeRedis()
+        assert await queue.acquire_thread_lock(client, "t1", "token-a") is True
+        assert await queue.acquire_thread_lock(client, "t1", "token-b") is False
+
+    async def test_acquire_sets_a_ttl_so_a_crashed_holder_self_heals(self):
+        client = FakeRedis()
+        await queue.acquire_thread_lock(client, "t1", "token-a")
+        assert client.expiries[queue.thread_lock_key("t1")] == queue.THREAD_LOCK_TTL_SECONDS
+
+    async def test_release_then_acquire_by_someone_else_succeeds(self):
+        client = FakeRedis()
+        await queue.acquire_thread_lock(client, "t1", "token-a")
+        await queue.release_thread_lock(client, "t1", "token-a")
+        assert await queue.acquire_thread_lock(client, "t1", "token-b") is True
+
+    async def test_release_with_the_wrong_token_does_not_remove_a_different_holders_lock(self):
+        """The scenario the compare-and-delete script exists for: token-a's
+        own lock already expired and token-b legitimately acquired it —
+        token-a's (late) release must not evict token-b."""
+        client = FakeRedis()
+        await queue.acquire_thread_lock(client, "t1", "token-a")
+        del client.kv[queue.thread_lock_key("t1")]  # simulate TTL expiry
+        await queue.acquire_thread_lock(client, "t1", "token-b")
+
+        await queue.release_thread_lock(client, "t1", "token-a")
+
+        assert client.kv[queue.thread_lock_key("t1")] == "token-b"
+
+    async def test_locks_are_scoped_to_their_own_thread_id(self):
+        client = FakeRedis()
+        await queue.acquire_thread_lock(client, "t1", "token-a")
+        assert await queue.acquire_thread_lock(client, "t2", "token-b") is True
+
+    async def test_release_on_a_never_acquired_thread_id_does_not_raise(self):
+        client = FakeRedis()
+        await queue.release_thread_lock(client, "never-locked", "token-a")  # must not raise
 
 
 class TestPublishResultAndReadResults:

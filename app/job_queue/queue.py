@@ -27,6 +27,20 @@ can stop an ACTIVELY STREAMING turn (which has no queued job to target,
 unlike one paused at human_approval — see `agent_worker.py`'s `"cancel"`
 dispatch for that case).
 
+A second per-THREAD mechanism: the thread lock (`thread_lock_key`/
+`acquire_thread_lock`/`release_thread_lock`) — mutual exclusion across
+every job kind touching one `thread_id`'s checkpoint. The consumer-group
+split above guarantees no ONE request is delivered twice, but says
+nothing about two DIFFERENT requests (a double-submit, a client retry, a
+resume racing a new turn) landing on the SAME thread_id at the same real
+moment, possibly on two different worker replicas. Two such jobs both
+read the checkpointer's "latest" state as their parent and both write a
+child from it — whichever commits last silently wins, and the other
+job's turn vanishes from the thread's visible history. `agent_worker.py`
+acquires this lock before running ANY job for a thread_id and rejects a
+losing job fast (`ErrorCode.THREAD_BUSY`) rather than queueing it behind
+the winner, so a double-submit never produces two real turns.
+
 This module only wraps queue mechanics (publish/read, group setup) — it
 doesn't know what a "turn" or "event" IS. Producer: `app/api/main.py`
 (`POST /chat/stream/queued`, `/chat/resume`, `/chat/cancel`). Consumer:
@@ -38,7 +52,7 @@ from typing import cast
 
 import redis.asyncio as redis
 
-from app.core.config import REDIS_MAX_CONNECTIONS, REDIS_URL
+from app.core.config import REDIS_MAX_CONNECTIONS, REDIS_URL, REQUEST_TIMEOUT_SECONDS
 from app.core.security import SecurityCtx
 
 logger = logging.getLogger(__name__)
@@ -54,10 +68,25 @@ logger = logging.getLogger(__name__)
 StreamReadResponse = list[tuple[str, list[tuple[str, dict[str, str]]]]]
 
 CONSUMER_GROUP = "agent-workers"
+TERMINAL_EVENT_TYPES = frozenset({"done", "error", "approval_required"})  # the
+# last event type `runtime_stream.py::_run_graph_stream` ever yields for a
+# given job — shared by `read_results` (stop reading) and
+# `agent_worker.py`'s handlers (release `acquire_thread_lock` the INSTANT
+# one of these is published, not after their own generator's later
+# cleanup work finishes — see agent_worker.py::process_request's
+# `release_lock` docstring for the race this closes).
 RESULTS_STREAM_TTL_SECONDS = 300  # an abandoned results stream self-expires after 5 minutes
 CANCEL_FLAG_TTL_SECONDS = 60  # outlasts any gap between a worker's cancel-check
 # polls; short enough that a flag nobody consumed (thread finished before
 # /chat/cancel ran) doesn't linger and spuriously cancel a later turn.
+THREAD_LOCK_TTL_SECONDS = REQUEST_TIMEOUT_SECONDS * 2  # a safety net, not the
+# normal release path (agent_worker.py always releases explicitly in a
+# `finally`) — outlives the longest legitimate "turn" job (bounded by
+# REQUEST_TIMEOUT_SECONDS's own _iterate_with_timeout) plus a wide margin
+# for a "resume" job, which isn't wrapped in that same timeout. Bounds how
+# long a worker that dies mid-turn can wedge its thread_id: the lock
+# self-expires and a later job can proceed, instead of every future job on
+# that thread getting THREAD_BUSY forever.
 
 _client: redis.Redis | None = None
 
@@ -233,6 +262,46 @@ async def clear_cancel_flag(client: redis.Redis, thread_id: str) -> None:
     await client.delete(cancel_flag_key(thread_id))
 
 
+def thread_lock_key(thread_id: str) -> str:
+    return f"agent:lock:{thread_id}"
+
+
+# Compare-and-delete, not a bare DEL: a bare delete on the RELEASE side
+# could remove a DIFFERENT holder's lock if this one's TTL already expired
+# (e.g. a turn that ran longer than THREAD_LOCK_TTL_SECONDS) and a new job
+# already acquired it in between — the classic Redis distributed-lock
+# release bug. The GET-then-DEL must be one atomic server-side op (Lua),
+# not two separate round trips, or that exact race reopens between them.
+_RELEASE_LOCK_SCRIPT = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("del", KEYS[1])
+end
+return 0
+"""
+
+
+async def acquire_thread_lock(client: redis.Redis, thread_id: str, token: str) -> bool:
+    """Mutual exclusion across every job kind (`"turn"`/`"resume"`/
+    `"cancel"`) touching one thread_id's checkpoint, across every worker
+    replica sharing this Redis — see this module's own docstring for the
+    checkpoint-fork race this closes. `SET NX` is itself atomic (unlike
+    a separate GET-then-SET), so ACQUIRE needs no script the way RELEASE
+    does. `token` (the caller's own fresh uuid4 per acquire, never reused)
+    is what lets `release_thread_lock` tell "I still hold this" apart from
+    "this expired and a different job now holds it."""
+    return bool(
+        await client.set(thread_lock_key(thread_id), token, nx=True, ex=THREAD_LOCK_TTL_SECONDS)
+    )
+
+
+async def release_thread_lock(client: redis.Redis, thread_id: str, token: str) -> None:
+    """No-ops (not an error) if `token` doesn't match the current holder —
+    that's the expected shape once THREAD_LOCK_TTL_SECONDS has passed and
+    a later job already acquired it; this caller no longer holds anything
+    worth releasing."""
+    await client.eval(_RELEASE_LOCK_SCRIPT, 1, thread_lock_key(thread_id), token)
+
+
 async def publish_result(client: redis.Redis, request_id: str, event: dict) -> None:
     """Consumer side: append one typed event (same shapes
     `runtime_stream.py::_run_graph_stream` yields — token, tool_start,
@@ -266,7 +335,7 @@ async def read_results(client: redis.Redis, request_id: str, *, block_ms: int = 
             last_id = entry_id
             event = json.loads(fields["payload"])
             yield event
-            if event.get("type") in ("done", "error", "approval_required"):
+            if event.get("type") in TERMINAL_EVENT_TYPES:
                 return
 
 

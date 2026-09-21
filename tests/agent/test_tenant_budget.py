@@ -103,6 +103,82 @@ class TestTenantOverDailyBudget:
         assert captured["tenant"] == TEST_CTX["tenant"]
         assert captured["since"] is not None
 
+    async def test_true_when_ledger_spend_plus_in_flight_reservations_meet_the_limit(
+        self, monkeypatch
+    ):
+        """The actual race this closes: N concurrent turns for the same
+        tenant would all see the SAME persisted `spent` (none of their own
+        cost is recorded yet) — in_flight_reservation is what lets this
+        function see the turns already running and refuse regardless."""
+        from app.agent import usage_ledger
+
+        async def fake_usage_summary(*a, **kw):
+            return {"total_cost_usd": 6.0, "total_tokens": 100}
+
+        async def fake_in_flight_reservation(tenant):
+            return 4.5  # e.g. 9 concurrent turns each reserving MAX_COST_USD_PER_TURN=0.5
+
+        monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
+        monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(usage_ledger, "in_flight_reservation", fake_in_flight_reservation)
+
+        assert await agent._tenant_over_daily_budget(TEST_CTX) is True
+
+    async def test_false_when_ledger_spend_plus_reservations_both_stay_under_the_limit(
+        self, monkeypatch
+    ):
+        from app.agent import usage_ledger
+
+        async def fake_usage_summary(*a, **kw):
+            return {"total_cost_usd": 6.0, "total_tokens": 100}
+
+        async def fake_in_flight_reservation(tenant):
+            return 1.0
+
+        monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
+        monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(usage_ledger, "in_flight_reservation", fake_in_flight_reservation)
+
+        assert await agent._tenant_over_daily_budget(TEST_CTX) is False
+
+class TestReserveAndReleaseTurnBudget:
+    """runtime.py's thin wrappers around usage_ledger's reservation
+    primitives — astream_events_turn calls these directly (see
+    TestEntryPointsRefuseBeforeTouchingTheGraph below for the entry-point
+    wiring itself)."""
+
+    async def test_reserve_returns_the_per_turn_ceiling_on_success(self, monkeypatch):
+        from app.agent import usage_ledger
+
+        async def fake_reserve_budget(ctx, amount):
+            assert amount == agent.MAX_COST_USD_PER_TURN
+            return True
+
+        monkeypatch.setattr(usage_ledger, "reserve_budget", fake_reserve_budget)
+        assert await agent._reserve_turn_budget(TEST_CTX) == agent.MAX_COST_USD_PER_TURN
+
+    async def test_reserve_returns_zero_when_the_reservation_itself_fails(self, monkeypatch):
+        from app.agent import usage_ledger
+
+        async def fake_reserve_budget(ctx, amount):
+            return False
+
+        monkeypatch.setattr(usage_ledger, "reserve_budget", fake_reserve_budget)
+        assert await agent._reserve_turn_budget(TEST_CTX) == 0.0
+
+    async def test_release_forwards_to_usage_ledger_with_the_same_amount(self, monkeypatch):
+        from app.agent import usage_ledger
+
+        captured = {}
+
+        async def fake_release(ctx, amount):
+            captured.update(ctx=ctx, amount=amount)
+
+        monkeypatch.setattr(usage_ledger, "release_budget_reservation", fake_release)
+        await agent._release_turn_budget(TEST_CTX, 0.5)
+
+        assert captured == {"ctx": TEST_CTX, "amount": 0.5}
+
 
 class _GraphTouchedError(AssertionError):
     pass

@@ -12,14 +12,23 @@ support-only pool). Running several domains means running several worker
 POOLS; `app/api/main.py` stays one unified process, routing by `X-Domain`.
 
 `run()` runs up to `_MAX_CONCURRENCY` turns at once per process
-(`asyncio.Semaphore`-bounded `create_task` per job). Safe because a turn
-holds no in-process state a sibling could corrupt: conversation state
-lives in Postgres via the checkpointer, tenant-scoped resources are
-per-call/pooled, and `bind_request_id`'s `ContextVar` is copied per-task by
-`asyncio.create_task`, not shared. `_MAX_CONCURRENCY` lets the slow parts
-(LLM calls, tool execution) of several turns overlap — it doesn't
-eliminate the checkpointer's own finer-grained serialization point (see
-`app/agent/runtime.py::_open_checkpointer`).
+(`asyncio.Semaphore`-bounded `create_task` per job). Safe across DIFFERENT
+thread_ids because a turn holds no in-process state a sibling could
+corrupt: conversation state lives in Postgres via the checkpointer,
+tenant-scoped resources are per-call/pooled, and `bind_request_id`'s
+`ContextVar` is copied per-task by `asyncio.create_task`, not shared.
+`_MAX_CONCURRENCY` lets the slow parts (LLM calls, tool execution) of
+several turns overlap — it doesn't eliminate the checkpointer's own
+finer-grained serialization point (see `app/agent/runtime.py::_open_checkpointer`).
+
+For the SAME thread_id, two jobs are NOT independent even though neither
+holds shared in-process state: both would read the checkpointer's latest
+state as their own parent and both write a child from it, so whichever
+commits last silently wins — `process_request` acquires
+`queue.py::acquire_thread_lock` before running any job specifically to
+rule this out (across this process's own concurrent tasks AND across
+other worker replicas sharing the same Redis), rejecting a losing job
+with `ErrorCode.THREAD_BUSY` rather than letting it run.
 
 Three job kinds share this stream (`payload["kind"]`, default `"turn"` for
 backward compatibility):
@@ -74,12 +83,15 @@ from app.core.telemetry import configure_telemetry
 from app.domains.registry import resolve_domain
 from app.job_queue.queue import (
     CONSUMER_GROUP,
+    TERMINAL_EVENT_TYPES,
     StreamReadResponse,
+    acquire_thread_lock,
     clear_cancel_flag,
     ensure_consumer_group,
     get_client,
     is_cancelled,
     publish_result,
+    release_thread_lock,
     requests_stream_key,
 )
 
@@ -97,7 +109,7 @@ _READ_COUNT = _MAX_CONCURRENCY
 _BLOCK_MS = 5000
 
 
-async def _process_turn(client, request_id: str, payload: dict) -> None:
+async def _process_turn(client, request_id: str, payload: dict, release_lock) -> None:
     thread_id = payload["thread_id"]
     # A stale flag from an EARLIER turn on this thread_id (e.g. /chat/cancel
     # raced with that turn already finishing on its own) must not
@@ -115,17 +127,32 @@ async def _process_turn(client, request_id: str, payload: dict) -> None:
         images=payload.get("images") or None,
         cancel_check=cancel_check,
     ):
+        if event.get("type") in TERMINAL_EVENT_TYPES:
+            # Released BEFORE publishing, not after: publish_result itself
+            # awaits a SECOND Redis round trip after its xadd (a TTL
+            # refresh via `expire`) before returning — a reader polling via
+            # `xread` can already see the xadd'd event and act on it (e.g.
+            # POST /chat/resume fired the moment a client observes
+            # approval_required) while that second round trip, and this
+            # generator's own remaining cleanup, are still in flight.
+            # Releasing first closes the window completely: by the time
+            # ANY client could possibly observe this event, the lock is
+            # already free. See process_request's `release_lock` docstring
+            # for the real failure rate each ordering measured at.
+            await release_lock()
         await publish_result(client, request_id, event)
 
 
-async def _process_resume(client, request_id: str, payload: dict) -> None:
+async def _process_resume(client, request_id: str, payload: dict, release_lock) -> None:
     async for event in astream_events_resume(
         payload["thread_id"], payload["approved"], payload["ctx"]
     ):
+        if event.get("type") in TERMINAL_EVENT_TYPES:
+            await release_lock()  # see _process_turn's own comment on this
         await publish_result(client, request_id, event)
 
 
-async def _process_cancel(client, request_id: str, payload: dict) -> None:
+async def _process_cancel(client, request_id: str, payload: dict, release_lock) -> None:
     """Cancels a PAUSED turn only — an actively-streaming one is a no-op
     here (`cancel_run` reports "nothing to cancel", same as a thread never
     paused at all; see module docstring)."""
@@ -135,6 +162,7 @@ async def _process_cancel(client, request_id: str, payload: dict) -> None:
         event = {"type": "error", "content": envelope.message, **envelope.to_dict()}
     else:
         event = {"type": "done"}
+    await release_lock()  # single-shot job, always terminal — see _process_turn's own comment
     await publish_result(client, request_id, event)
 
 
@@ -144,16 +172,77 @@ _DISPATCH = {"turn": _process_turn, "resume": _process_resume, "cancel": _proces
 async def process_request(client, entry_id: str, fields: dict) -> None:
     """Dispatch one job by `payload["kind"]` and stream its events back —
     always ack, even on failure: a redelivered, already-attempted request
-    would re-run the same side-effecting tool calls twice."""
+    would re-run the same side-effecting tool calls twice.
+
+    Every job kind first acquires `queue.py::acquire_thread_lock` for its
+    `thread_id` — this module's own docstring notes a turn holds no
+    IN-PROCESS state a sibling could corrupt, which is true of THIS
+    process's memory but not of the shared Postgres checkpointer two
+    DIFFERENT jobs on the SAME thread_id both write through (a
+    double-submit, a retry, or a resume racing a fresh turn — nothing
+    upstream of this dispatcher rules that out, and it can just as easily
+    land on two different worker replicas as on two tasks here). A thread
+    already busy fails FAST with `ErrorCode.THREAD_BUSY` instead of
+    silently queueing behind the in-flight job, which would let a
+    double-submit produce two real turns instead of one.
+
+    The handler itself calls `release_lock` (passed in below) BEFORE
+    publishing a terminal event, not after, and not this function waiting
+    for the handler to fully RETURN. Both weaker orderings were tried and
+    measured against a real 40-way concurrent HITL pause/resume load
+    (tests/integration/test_worker_scaling.py) before landing on this one:
+    releasing in this function's own `finally` (waiting for the handler to
+    fully return) left ~1/3 of resumes spuriously rejected as THREAD_BUSY;
+    releasing right after publishing the terminal event (but still
+    awaiting `publish_result` first) cut that to ~1/8 but didn't close it —
+    `publish_result` itself awaits a SECOND Redis round trip (a TTL
+    refresh) after its `xadd`, and a reader polling via `xread` can already
+    see the xadd'd event during that second round trip. Only releasing
+    BEFORE calling `publish_result` at all closes the window completely:
+    by the time any client could possibly observe the terminal event, the
+    lock is unconditionally already free."""
     payload = json.loads(fields["payload"])
     request_id = payload["request_id"]
     kind = payload.get("kind", "turn")
     handler = _DISPATCH.get(kind)
+    lock_token = uuid.uuid4().hex
+    lock_released = False
+
+    async def release_lock() -> None:
+        """Idempotent — safe to call from the handler (the normal path,
+        right after a terminal event) AND from this function's own
+        `finally` below (the safety net for a handler that raises before
+        ever reaching a terminal event, or a legacy/future handler that
+        forgets to call it itself). The `nonlocal` guard avoids a wasted
+        second Redis round trip on the common path; `release_thread_lock`
+        itself is also safe to call twice regardless (compare-and-delete
+        against `lock_token`), so this is belt-and-suspenders, not load-bearing."""
+        nonlocal lock_released
+        if lock_released:
+            return
+        lock_released = True
+        await release_thread_lock(client, thread_id, lock_token)
+
     with bind_request_id(request_id):
         try:
+            thread_id = payload["thread_id"]
             if handler is None:
                 raise ValueError(f"unknown job kind: {kind!r}")
-            await handler(client, request_id, payload)
+            if not await acquire_thread_lock(client, thread_id, lock_token):
+                envelope = ErrorEnvelope(
+                    code=ErrorCode.THREAD_BUSY,
+                    message="Another turn is already in progress on this conversation. Please wait for it to finish.",
+                )
+                await publish_result(
+                    client,
+                    request_id,
+                    {"type": "error", "content": envelope.message, **envelope.to_dict()},
+                )
+                return
+            try:
+                await handler(client, request_id, payload, release_lock)
+            finally:
+                await release_lock()
         except Exception as exc:  # noqa: BLE001 - the queue must keep moving regardless
             logger.warning(
                 "agent_worker_turn_failed",

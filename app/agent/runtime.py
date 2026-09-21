@@ -49,6 +49,7 @@ from app.core.config import (
     CHECKPOINTER_DATABASE_URL,
     CHECKPOINTER_POOL_MAX_SIZE,
     MAX_COST_USD_PER_TENANT_PER_DAY,
+    MAX_COST_USD_PER_TURN,
 )
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.security import SecurityCtx, valid_ctx
@@ -59,6 +60,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _graph = None
+_graph_lock = asyncio.Lock()  # guards _graph's construction, not its use — see
+# init_graph_async's own docstring: _open_checkpointer()/build_graph() run
+# between the `if _graph is None` check and the `_graph = ...` write, so
+# without this lock several concurrent first-callers could each pass the
+# None check, each open their own checkpointer pool, and each overwrite
+# _graph, leaking every loser's pool the same way sql_store.py::_get_pool's
+# own identical guard exists to prevent. Every current production caller
+# happens to prime this sequentially before any concurrent turn dispatch
+# begins (agent_worker.py's run(), telegram.py's poll loop, chat.py's CLI
+# loop, FastAPI's lifespan) — so this lock is a hardening, not a fix for a
+# live incident, but the pattern is identical to sql_store.py's, which IS
+# reachable, so closing both consistently is cheap insurance against a
+# future caller (e.g. a direct in-process turn endpoint) reintroducing it.
 _domain_name = "ecorp"  # this process's domain (app/domains/registry.py); stamps
 # app/agent/sessions.py's chat_sessions.domain column — the graph itself only needs
 # the manifest/tools, already baked into _graph by build_graph().
@@ -87,9 +101,22 @@ async def _tenant_over_daily_budget(ctx: SecurityCtx | None) -> bool:
     from MAX_COST_USD_PER_TURN (graph_routing.py::should_continue), which only
     tracks one turn's own total — this is the cross-turn accumulator.
 
+    `spent` (usage_ledger's own persisted sum) only reflects turns that have
+    already COMPLETED and recorded their cost — a sibling turn for the same
+    tenant that's already running hasn't landed its row yet, so without
+    counting it too, N concurrent turns could all read the same stale
+    `spent`, all pass, and all proceed (a check-then-act race, not just a
+    theoretical one: astream_events_turn reserves MAX_COST_USD_PER_TURN via
+    `_reserve_turn_budget` for the duration of every turn it actually runs,
+    specifically so this function can add that in-flight total here and
+    catch a burst of concurrent turns the ledger alone would miss).
+
     Fails OPEN if the ledger read fails, so a ledger outage doesn't also take
     down every turn (same posture as usage_ledger.record_usage and the
-    semantic_cache/moderation read paths).
+    semantic_cache/moderation read paths). `in_flight_reservation` has its
+    own independent fail-open (returns 0.0), so a reservation-table hiccup
+    degrades this back to the pre-reservation, ledger-only check rather than
+    also failing the whole function.
     """
     if not valid_ctx(ctx):
         return False
@@ -104,16 +131,20 @@ async def _tenant_over_daily_budget(ctx: SecurityCtx | None) -> bool:
         )
         return False
 
-    if spent >= MAX_COST_USD_PER_TENANT_PER_DAY:
+    reserved = await usage_ledger.in_flight_reservation(ctx["tenant"])
+    projected = spent + reserved
+
+    if projected >= MAX_COST_USD_PER_TENANT_PER_DAY:
         metrics.agent_tenant_budget_exceeded_total.inc()
         return True
-    if spent >= _TENANT_BUDGET_WARNING_FRACTION * MAX_COST_USD_PER_TENANT_PER_DAY:
+    if projected >= _TENANT_BUDGET_WARNING_FRACTION * MAX_COST_USD_PER_TENANT_PER_DAY:
         metrics.agent_tenant_budget_warning_total.inc()
         logger.warning(
             "tenant_approaching_daily_budget",
             extra={
                 "tenant": ctx["tenant"],
                 "spent_usd": spent,
+                "reserved_usd": reserved,
                 "limit_usd": MAX_COST_USD_PER_TENANT_PER_DAY,
             },
         )
@@ -125,6 +156,35 @@ def _tenant_budget_envelope() -> ErrorEnvelope:
         code=ErrorCode.TENANT_BUDGET_EXCEEDED,
         message="This tenant's daily usage budget has been reached. Please try again later.",
     )
+
+
+async def _reserve_turn_budget(ctx: SecurityCtx | None) -> float:
+    """Called once a turn has passed `_tenant_over_daily_budget` and is
+    about to actually run — reserves MAX_COST_USD_PER_TURN (the hard cap
+    graph_routing.py::should_continue already enforces per turn, so it's
+    always a safe upper bound on what this turn could cost) against this
+    tenant's in-flight total. Returns the amount actually reserved (0.0 if
+    `ctx` is invalid or the reservation write itself failed) — callers pass
+    this straight to `_release_turn_budget` in a `finally`, so a failed
+    reservation and a real one both round-trip correctly (releasing 0.0 is
+    a no-op)."""
+    from app.agent import usage_ledger
+
+    if await usage_ledger.reserve_budget(ctx, MAX_COST_USD_PER_TURN):
+        return MAX_COST_USD_PER_TURN
+    return 0.0
+
+
+async def _release_turn_budget(ctx: SecurityCtx | None, amount: float) -> None:
+    """Reverses `_reserve_turn_budget` — called unconditionally once a
+    turn ends (success, failure, or timeout), never only on success: the
+    reservation's whole job is to cover the WINDOW while this turn is
+    running, not to track whether it actually succeeded (usage_ledger's
+    own `record_usage`, called separately, is the real accounting for a
+    completed turn)."""
+    from app.agent import usage_ledger
+
+    await usage_ledger.release_budget_reservation(ctx, amount)
 
 
 async def _upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> None:
@@ -227,10 +287,13 @@ async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "Dom
     Each process still serves exactly one domain for its lifetime.
     """
     global _graph, _domain_name
-    if _graph is None:
-        _domain_name = _resolve_domain_name(manifest)
-        saver = await _open_checkpointer()
-        _graph = build_graph(checkpointer=saver, manifest=manifest, domain=domain)
+    if _graph is not None:
+        return _graph
+    async with _graph_lock:
+        if _graph is None:  # re-check: another caller may have finished while this one waited for the lock
+            _domain_name = _resolve_domain_name(manifest)
+            saver = await _open_checkpointer()
+            _graph = build_graph(checkpointer=saver, manifest=manifest, domain=domain)
     return _graph
 
 
