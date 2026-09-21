@@ -338,7 +338,33 @@ def _setup_checkpointer_schema_once(checkpointer_url: str) -> None:
         async with AsyncPostgresSaver.from_conn_string(checkpointer_url) as saver:
             await saver.setup()
 
-    asyncio.run(_setup())
+    # A bare `asyncio.new_event_loop()` + `run_until_complete()` + `close()`,
+    # NOT `asyncio.run(_setup())` — real bug, found live (test-live CI,
+    # 2026-09-21): `asyncio.run()`/`asyncio.Runner` calls
+    # `asyncio.set_event_loop(...)` on entry and `asyncio.set_event_loop(None)`
+    # on exit (verified against CPython's own asyncio/runners.py) — a
+    # THREAD-GLOBAL mutation, not scoped to this call. This function runs
+    # inside `ensure_postgres`, a plain sync fixture shared by every
+    # `tests/live/` file (sync e2e tests AND `async def` pytest-asyncio
+    # tests alike) under `-n auto` — whichever xdist WORKER happens to win
+    # the cross-worker cache-miss race for Postgres executes this exactly
+    # once, and a plain `asyncio.run()` there left that worker's
+    # thread-global event-loop registry cleared out from under
+    # pytest-asyncio's own scoped Runner, surfacing on every SUBSEQUENT
+    # unrelated async test scheduled onto that same worker as `RuntimeError:
+    # Runner.run() cannot be called from a running event loop` — 4 tests in
+    # completely different files (test_qdrant_real.py,
+    # test_prompt_injection_via_retrieval.py,
+    # test_domain_crawl_tools_live.py) failed identically this way in one
+    # real run, none of them actually broken. A throwaway loop that never
+    # registers itself as the thread's current loop sidesteps this
+    # entirely — `_setup()`'s own body only needs a loop to run ON, never
+    # `asyncio.get_event_loop()`'s global registry.
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_setup())
+    finally:
+        loop.close()
 
 
 def ensure_redis() -> dict[str, str]:
