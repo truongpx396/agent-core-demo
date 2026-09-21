@@ -179,6 +179,20 @@ def _build_app_env(
         # real margin above that without making a genuinely stuck turn wait
         # forever.
         "REQUEST_TIMEOUT_SECONDS": "420",
+        # SUBAGENT_TIMEOUT_SECONDS: a SEPARATE, INNER wall-clock cap
+        # (app/agent/subagent_tools.py) on just the nested subagent's own
+        # run, independent of REQUEST_TIMEOUT_SECONDS above — real CI
+        # failure, caught live (test-live, 2026-09-21): widening the OUTER
+        # request timeout to 420s never helped
+        # test_a_subagent_delegates_and_returns_a_real_answer, because the
+        # 45s production default on THIS inner timeout was firing first,
+        # well before the outer budget was ever in play (a `tool_failed`/
+        # `TimeoutError` on run_subagent itself, not a
+        # "[error: Request exceeded Ns timeout]"). 240s leaves the
+        # remaining ~180s of the 420s outer budget for the parent's own
+        # decision-to-delegate and synthesis-of-the-result calls on either
+        # side of it.
+        "SUBAGENT_TIMEOUT_SECONDS": "240",
     }
     if embed_model:
         env["EMBED_MODEL"] = embed_model

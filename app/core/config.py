@@ -139,6 +139,19 @@ class Settings(BaseSettings):
     # model's inference time on shared CI can exceed the 60s local default.
     request_timeout_seconds: int = 60
 
+    # Wall-clock cap on ONE nested subagent run (app/agent/subagent_tools.py,
+    # GRAPH_PATTERNS.md pattern 46) — same operational-timeout category as
+    # request_timeout_seconds above, not a spend/safety ceiling, so it's
+    # configurable the same way. Used to be a hardcoded module constant;
+    # moved here after a real CI failure (test-live, 2026-09-21):
+    # tests/live/conftest.py already widens request_timeout_seconds for a
+    # small model's CPU-only inference in that fixture's Ollama container,
+    # but had no way to reach this SEPARATE, inner timeout at all — a real
+    # run_subagent turn's own nested agent decision alone was measured
+    # taking well over 45s under that same CPU-only constraint, so the
+    # outer widening never helped the one timeout actually firing.
+    subagent_timeout_seconds: int = 45
+
     # Object storage for uploaded documents (app/ingestion/object_store.py) —
     # MinIO, self-hosted S3-compatible (docker-compose's `minio` service).
     # Defaults match that service's own MINIO_ROOT_USER/MINIO_ROOT_PASSWORD.
@@ -323,6 +336,7 @@ MAX_COST_USD_PER_TURN = settings.max_cost_usd_per_turn
 MAX_SUBAGENT_COST_USD_PER_RUN = settings.max_subagent_cost_usd_per_run
 MAX_COST_USD_PER_TENANT_PER_DAY = settings.max_cost_usd_per_tenant_per_day
 REQUEST_TIMEOUT_SECONDS = settings.request_timeout_seconds
+SUBAGENT_TIMEOUT_SECONDS = settings.subagent_timeout_seconds
 TELEGRAM_BOT_TOKEN = settings.telegram_bot_token
 AGENT_DOMAIN = settings.agent_domain
 PROMETHEUS_URL = settings.prometheus_url

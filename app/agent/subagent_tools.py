@@ -55,6 +55,7 @@ from app.core.config import (
     MAX_SUBAGENT_COST_USD_PER_RUN,
     OPENAI_API_BASE,
     OPENAI_API_KEY,
+    SUBAGENT_TIMEOUT_SECONDS,
 )
 from app.core.scrubbing import scrub
 from app.core.security import DEFAULT_POLICY, valid_ctx
@@ -66,9 +67,15 @@ from app.core.security import DEFAULT_POLICY, valid_ctx
 # more instructions loaded into THIS agent's context (that's skill_search/
 # use_skill). All tool-safety validation lives HERE (owns TOOL_CAPABILITIES);
 # app/agent/subagents.py stays a pure, domain-agnostic disk parser.
-SUBAGENT_TIMEOUT_SECONDS = 45  # wall-clock cap on one nested subagent run —
-# same soft-timeout mechanism as TOOL_TIMEOUT_SECONDS, just longer since a
+#
+# SUBAGENT_TIMEOUT_SECONDS (imported above, app/core/config.py) — same
+# soft-timeout mechanism as TOOL_TIMEOUT_SECONDS, just longer since a
 # multi-step nested loop needs more time than a single tool call.
+# Settings-backed (not a bare module constant here anymore) for the same
+# reason REQUEST_TIMEOUT_SECONDS is: a slow backend has a legitimate
+# reason to widen a pure operational timeout — see that setting's own
+# comment in app/core/config.py for the real CI failure that motivated
+# moving this one too.
 
 # Compiled nested graph + bound LLM client, reused across calls — topology/
 # LLM/tools/manifest are static per (domain, subagent_name), so rebuilding
