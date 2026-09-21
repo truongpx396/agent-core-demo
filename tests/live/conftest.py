@@ -99,7 +99,7 @@ from tests.containers import (
     ensure_redis,
 )
 
-TEST_LLM_MODEL = os.environ.get("TEST_LLM_MODEL", "qwen2.5:1.5b")
+TEST_LLM_MODEL = os.environ.get("TEST_LLM_MODEL", "qwen2.5:3b")
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -164,10 +164,21 @@ def _build_app_env(
         # CI run measured a single real `qwen2.5:1.5b` tool-calling turn
         # taking 67.7s end to end, past the 60s default that's comfortably
         # enough headroom on this demo's own local, GPU-backed dev setup.
-        # 180s leaves real margin without masking a GENUINE hang (a turn
-        # that's actually stuck, not just slow) — this suite would still
-        # want to know about that.
-        "REQUEST_TIMEOUT_SECONDS": "180",
+        # TEST_LLM_MODEL later moved to `qwen2.5:3b` (this demo's own real
+        # default, litellm-config.yaml) after the 1.5b model proved too
+        # unreliable at chaining a SECOND real tool decision within one
+        # turn (skill_search -> use_skill, run_subagent) — but this
+        # fixture's Ollama is a plain `testcontainers.ollama.OllamaContainer`
+        # with no GPU passthrough (Docker Desktop on macOS can't pass Metal
+        # through to a Linux container), so it runs CPU-only inference:
+        # verified directly via `docker stats` showing >1300% CPU during a
+        # real run. A run_subagent turn chains THREE real model round trips
+        # inside one request (parent's tool-call decision -> a full nested
+        # subagent run -> parent's synthesis of that result) and measured
+        # over 180s end to end on 3b under CPU-only inference — 420s leaves
+        # real margin above that without making a genuinely stuck turn wait
+        # forever.
+        "REQUEST_TIMEOUT_SECONDS": "420",
     }
     if embed_model:
         env["EMBED_MODEL"] = embed_model

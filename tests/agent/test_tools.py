@@ -596,6 +596,16 @@ class TestSkillSearch:
         assert captured["collection"] == SKILLS_COLLECTION
 
     async def test_formats_hits_as_name_and_description(self, monkeypatch):
+        """SKILLS_SEARCH_TOP_K is 1 in real production (live-verified: even
+        one distractor candidate alongside a correct match makes qwen2.5:3b
+        hedge into "none of these are suitable" instead of committing to
+        it — see that setting's own comment in app/core/config.py), so a
+        real skill_search call never actually sees more than one hit to
+        format. `_format_skill_hits` itself is still generic multi-hit
+        formatting logic, so this monkeypatches top-k back up to 2 just for
+        this test to keep exercising that, without changing what a real
+        call does."""
+        monkeypatch.setattr(tools, "SKILLS_SEARCH_TOP_K", 2)
         hits = [
             _FakeHit({"name": "onboarding-brief", "description": "Compose a new-hire brief."}),
             _FakeHit({"name": "expense-summary", "description": "Summarize expense line items."}),

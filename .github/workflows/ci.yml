@@ -181,10 +181,10 @@ jobs:
           path: ~/.cache/agent-core-demo-ollama-models
           key: ollama-models-${{ runner.os }}-${{ env.TEST_LLM_MODEL }}
         env:
-          TEST_LLM_MODEL: qwen2.5:1.5b
+          TEST_LLM_MODEL: qwen2.5:3b
       - run: pytest -n auto -m "llm or e2e or crawl" -q
         env:
-          TEST_LLM_MODEL: qwen2.5:1.5b
+          TEST_LLM_MODEL: qwen2.5:3b
 
   promptfoo:
     # Black-box prompt regression against the real domain system prompts —

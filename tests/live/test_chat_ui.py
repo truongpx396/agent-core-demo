@@ -36,6 +36,8 @@ skill's own tool calls, or the parent's tool-call decision -> a full
 NESTED subagent turn -> the parent's synthesis of that result), not just
 the one/two RESPONSE_TIMEOUT_MS already budgets for.
 """
+import re
+
 import pytest
 
 # `pytest.importorskip`, not a plain top-level import: `playwright` is only
@@ -56,7 +58,13 @@ expect = playwright_sync_api.expect
 pytestmark = pytest.mark.e2e
 
 RESPONSE_TIMEOUT_MS = 210_000
-MULTI_STEP_RESPONSE_TIMEOUT_MS = 300_000
+# Comfortably above tests/live/conftest.py's own REQUEST_TIMEOUT_SECONDS
+# (420s, tuned for a run_subagent turn's THREE chained real model round
+# trips under this fixture's CPU-only Ollama container — see that
+# constant's own comment) — otherwise this suite's own assertion would
+# time out first and report a misleading "element never appeared" instead
+# of the real, more informative `[error: Request exceeded 420s timeout]`.
+MULTI_STEP_RESPONSE_TIMEOUT_MS = 600_000
 
 
 def _send(page: Page, text: str) -> None:
@@ -94,7 +102,17 @@ def test_a_mutating_tool_call_pauses_for_approval_and_resumes_on_approve(page: P
 
     answer = page.locator(".msg.assistant .answer-text").last
     expect(answer).to_be_visible(timeout=RESPONSE_TIMEOUT_MS)
-    expect(approve_button).not_to_be_visible()
+    # No explicit timeout here used to mean Playwright's 5s default — real
+    # bug, caught live: `.answer-text` becomes visible as soon as the FIRST
+    # streamed chunk arrives, not when the turn actually finishes; the
+    # Approve button is only removed on the turn's terminal `done`/`error`
+    # event (see index.html's own handleEvent), which can trail well behind
+    # that first chunk once post-approval synthesis itself takes a while
+    # (qwen2.5:3b under this fixture's CPU-only Ollama container — see
+    # tests/live/conftest.py's own REQUEST_TIMEOUT_SECONDS comment). Always
+    # racy in theory; only ever masked by how fast the old 1.5b model's
+    # synthesis finished after that first chunk.
+    expect(approve_button).not_to_be_visible(timeout=RESPONSE_TIMEOUT_MS)
 
 
 def test_a_read_only_tool_call_returns_real_data(page: Page, real_stack: str):
@@ -126,7 +144,11 @@ def test_a_grounded_answer_shows_a_real_citation(page: Page, real_stack_with_ret
     _send(page, "What are Ecorp's support hours? Use the search_docs tool.")
 
     answer = page.locator(".msg.assistant .answer-text").last
-    expect(answer).to_contain_text("9am", timeout=RESPONSE_TIMEOUT_MS)
+    # A regex, not a literal "9am": real bug, caught live — the model's
+    # OWN phrasing genuinely varies run to run ("9am" vs "9 AM" vs
+    # "9:00 AM"), all equally correct answers a literal, case-sensitive
+    # substring check would wrongly fail.
+    expect(answer).to_contain_text(re.compile(r"9\s*am", re.IGNORECASE), timeout=RESPONSE_TIMEOUT_MS)
     citation = page.locator(".citations .citation-item").first
     expect(citation).to_be_visible()
     expect(citation).to_contain_text("Support Hours")

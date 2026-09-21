@@ -32,7 +32,11 @@ from langgraph.types import Command
 
 from app.agent import runtime as runtime_module
 from app.agent.graph_compaction import COMPACTION_MARKER_KEY
-from app.agent.graph_hitl import CANCEL_SENTINEL, paused_approval_async, resumability_error_async
+from app.agent.graph_hitl import (
+    CANCEL_SENTINEL,
+    paused_approval_async,
+    resumability_error_async,
+)
 from app.core import metrics
 from app.core.config import CHAT_MODEL, REQUEST_TIMEOUT_SECONDS
 from app.core.errors import ErrorCode, ErrorEnvelope, TurnCancelled
