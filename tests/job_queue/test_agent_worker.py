@@ -387,7 +387,13 @@ class TestConcurrentDispatch:
         async def _dispatch_all():
             tasks = []
             for i in range(num_jobs):
-                entry_id, fields = _entry(request_id=f"r{i}")
+                # Distinct thread_ids: these jobs are meant to prove
+                # WORKER-level concurrency (the semaphore bound), not
+                # same-thread races — process_request's own per-thread
+                # lock (TestSameThreadJobsAreSerialized below) would
+                # otherwise reject every job but the first here and this
+                # test would never reach peak == max_concurrency.
+                entry_id, fields = _entry(request_id=f"r{i}", thread_id=f"t{i}")
                 await semaphore.acquire()
                 task = asyncio.create_task(
                     agent_worker._process_with_limit(client, entry_id, fields, semaphore)
@@ -406,6 +412,171 @@ class TestConcurrentDispatch:
         assert len(client.acked) == num_jobs
         for i in range(num_jobs):
             events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key(f"r{i}")]]
+            assert events == [{"type": "done"}]
+
+
+class TestSameThreadJobsAreSerialized:
+    """process_request's per-thread lock (queue.py::acquire_thread_lock) —
+    the fix for the checkpoint-fork race two jobs on the SAME thread_id
+    used to be able to hit (see agent_worker.py's own module docstring):
+    both would read the checkpointer's latest state as their parent and
+    both write a child from it, silently corrupting whichever one lost.
+    Distinct from TestConcurrentDispatch above, which proves DIFFERENT
+    thread_ids genuinely overlap — this proves the SAME thread_id does
+    NOT, by design."""
+
+    async def test_a_second_turn_on_the_same_thread_is_rejected_fast_not_queued(self, monkeypatch):
+        handler_started = asyncio.Event()
+        release_handler = asyncio.Event()
+        calls = []
+
+        async def fake_turn(text, thread_id, ctx, require_approval=False, images=None, cancel_check=None):
+            calls.append(1)
+            handler_started.set()
+            await release_handler.wait()
+            yield {"type": "done"}
+
+        monkeypatch.setattr(agent_worker, "astream_events_turn", fake_turn)
+        client = FakeRedis()
+        entry_id_1, fields_1 = _entry(request_id="r1", thread_id="same-thread")
+        entry_id_2, fields_2 = _entry(request_id="r2", thread_id="same-thread")
+
+        first = asyncio.create_task(agent_worker.process_request(client, entry_id_1, fields_1))
+        await handler_started.wait()  # first job now genuinely holds the lock
+        await agent_worker.process_request(client, entry_id_2, fields_2)  # second, while first is still in flight
+        release_handler.set()
+        await first
+
+        # The second job never even reached the graph — rejected before
+        # calling astream_events_turn at all.
+        assert calls == [1]
+        r2_events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r2")]]
+        assert len(r2_events) == 1
+        assert r2_events[0]["type"] == "error"
+        assert r2_events[0]["code"] == "thread_busy"
+        # Still acked — a rejected job must not be redelivered either.
+        assert entry_id_2 in client.acked
+        r1_events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r1")]]
+        assert r1_events == [{"type": "done"}]
+
+    async def test_lock_releases_at_the_terminal_event_not_after_trailing_cleanup(self, monkeypatch):
+        """Regression guard for the real bug found in
+        tests/integration/test_worker_scaling.py's real-subprocess HITL
+        test: the FIRST version of this fix released the lock in
+        process_request's own outer `finally` (after `handler()` fully
+        returned), which still left a window between "terminal event
+        published, client can already act on it" and "lock actually
+        freed" — wide enough that ~1/3 of a real 40-way concurrent
+        pause/resume load got spuriously rejected as THREAD_BUSY. The fix
+        releases the lock the INSTANT the handler publishes a terminal
+        event, before the underlying astream_events_turn generator's own
+        trailing cleanup (Langfuse trace close, budget-release bookkeeping)
+        even runs. Proven here by making that trailing cleanup slow and
+        observable: a second job on the same thread must succeed WHILE
+        it's still in progress, not after."""
+        trailing_cleanup_started = asyncio.Event()
+        release_trailing_cleanup = asyncio.Event()
+        calls = 0
+
+        async def fake_turn(text, thread_id, ctx, require_approval=False, images=None, cancel_check=None):
+            # Only the FIRST call (r1) does the slow trailing-cleanup
+            # dance — r2 reuses this same monkeypatched function (both
+            # jobs target the same thread_id), and must complete
+            # immediately so this test can prove IT succeeded while r1's
+            # own cleanup was still in progress, not get dragged into it.
+            nonlocal calls
+            calls += 1
+            is_first_call = calls == 1
+            yield {"type": "done"}
+            if is_first_call:
+                # Simulates astream_events_turn's own post-yield cleanup
+                # (runtime_stream.py's fire-and-forget budget-release task
+                # creation, closing the Langfuse trace) — genuinely slow
+                # here so a premature-release regression would show up
+                # directly.
+                trailing_cleanup_started.set()
+                await release_trailing_cleanup.wait()
+
+        monkeypatch.setattr(agent_worker, "astream_events_turn", fake_turn)
+        client = FakeRedis()
+        entry_id_1, fields_1 = _entry(request_id="r1", thread_id="same-thread")
+        entry_id_2, fields_2 = _entry(request_id="r2", thread_id="same-thread")
+
+        first = asyncio.create_task(agent_worker.process_request(client, entry_id_1, fields_1))
+        await trailing_cleanup_started.wait()  # "done" already published; first job's own cleanup still running
+        await agent_worker.process_request(client, entry_id_2, fields_2)
+        release_trailing_cleanup.set()
+        await first
+
+        r2_events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r2")]]
+        assert r2_events == [{"type": "done"}], (
+            "the second job was rejected while the first was still in its own "
+            "trailing cleanup — the lock was released too late"
+        )
+
+    async def test_a_turn_and_a_resume_on_the_same_thread_also_exclude_each_other(self, monkeypatch):
+        """The lock is keyed by thread_id, not by job kind — a resume
+        racing a fresh turn on the same thread_id is exactly the "double
+        texting onto a paused thread" scenario runtime_stream.py's own
+        PENDING_APPROVAL handling already guards at the graph level; this
+        proves the dispatcher-level lock backs it up too."""
+        handler_started = asyncio.Event()
+        release_handler = asyncio.Event()
+
+        async def fake_turn(text, thread_id, ctx, require_approval=False, images=None, cancel_check=None):
+            handler_started.set()
+            await release_handler.wait()
+            yield {"type": "done"}
+
+        async def fake_resume(thread_id, approved, ctx):
+            yield {"type": "done"}
+
+        monkeypatch.setattr(agent_worker, "astream_events_turn", fake_turn)
+        monkeypatch.setattr(agent_worker, "astream_events_resume", fake_resume)
+        client = FakeRedis()
+        entry_id_1, fields_1 = _entry(kind="turn", request_id="r1", thread_id="same-thread")
+        entry_id_2, fields_2 = _entry(kind="resume", request_id="r2", thread_id="same-thread")
+
+        turn_task = asyncio.create_task(agent_worker.process_request(client, entry_id_1, fields_1))
+        await handler_started.wait()
+        await agent_worker.process_request(client, entry_id_2, fields_2)
+        release_handler.set()
+        await turn_task
+
+        r2_events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r2")]]
+        assert r2_events[0]["code"] == "thread_busy"
+
+    async def test_a_third_job_proceeds_normally_once_the_lock_is_released(self, monkeypatch):
+        async def fake_turn(text, thread_id, ctx, require_approval=False, images=None, cancel_check=None):
+            yield {"type": "done"}
+
+        monkeypatch.setattr(agent_worker, "astream_events_turn", fake_turn)
+        client = FakeRedis()
+        entry_id_1, fields_1 = _entry(request_id="r1", thread_id="same-thread")
+        entry_id_2, fields_2 = _entry(request_id="r2", thread_id="same-thread")
+
+        await agent_worker.process_request(client, entry_id_1, fields_1)  # runs and releases
+        await agent_worker.process_request(client, entry_id_2, fields_2)  # lock is free again
+
+        r2_events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r2")]]
+        assert r2_events == [{"type": "done"}]
+
+    async def test_different_thread_ids_never_contend(self, monkeypatch):
+        async def fake_turn(text, thread_id, ctx, require_approval=False, images=None, cancel_check=None):
+            yield {"type": "done"}
+
+        monkeypatch.setattr(agent_worker, "astream_events_turn", fake_turn)
+        client = FakeRedis()
+        entry_id_1, fields_1 = _entry(request_id="r1", thread_id="thread-a")
+        entry_id_2, fields_2 = _entry(request_id="r2", thread_id="thread-b")
+
+        await asyncio.gather(
+            agent_worker.process_request(client, entry_id_1, fields_1),
+            agent_worker.process_request(client, entry_id_2, fields_2),
+        )
+
+        for rid in ("r1", "r2"):
+            events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key(rid)]]
             assert events == [{"type": "done"}]
 
 

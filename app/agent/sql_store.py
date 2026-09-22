@@ -10,6 +10,7 @@ parameterized (`%s`, psycopg's escaping) and always includes `WHERE
 tenant = %s` from `SecurityCtx`, never caller-supplied text — same
 pre-filter discipline as `qdrant_store.py::hybrid_search`.
 """
+import asyncio
 from contextlib import asynccontextmanager
 
 from psycopg_pool import AsyncConnectionPool
@@ -32,14 +33,30 @@ from app.core.config import APPDATA_DATABASE_URL
 # functions rather than sharing a real pool across separate asyncio.run()
 # calls.
 _pool: AsyncConnectionPool | None = None
+# Guards _pool's construction, not its use: `await pool.open(wait=True)`
+# below means the `if _pool is None` check and the `_pool = pool` write
+# are NOT atomic w.r.t. the event loop — without this lock, several
+# concurrent first-callers (exactly what agent_worker.py's own
+# AGENT_WORKER_MAX_CONCURRENCY produces right after a fresh process starts
+# serving its first batch of turns, before anything has opened this pool
+# yet) could each pass the None check, each construct and open their OWN
+# AsyncConnectionPool, and each overwrite `_pool` — every loser's pool is
+# then unreachable (close_pool() only ever sees whichever one `_pool`
+# currently points to) and leaks up to `max_size` live Postgres
+# connections for the rest of the process's life. The lock makes a losing
+# caller AWAIT the winner instead of repeating its work.
+_pool_lock = asyncio.Lock()
 
 
 async def _get_pool() -> AsyncConnectionPool:
     global _pool
-    if _pool is None:
-        pool = AsyncConnectionPool(APPDATA_DATABASE_URL, min_size=1, max_size=10, open=False)
-        await pool.open(wait=True)
-        _pool = pool
+    if _pool is not None:
+        return _pool
+    async with _pool_lock:
+        if _pool is None:  # re-check: another caller may have finished while this one waited for the lock
+            pool = AsyncConnectionPool(APPDATA_DATABASE_URL, min_size=1, max_size=10, open=False)
+            await pool.open(wait=True)
+            _pool = pool
     return _pool
 
 

@@ -76,9 +76,23 @@ def reset_agent_singleton(monkeypatch):
     )
     agent_module._graph = None
     agent_module._checkpointer_pool = None
+    # A FRESH Lock, not just left alone: _graph_lock is a process-lifetime
+    # singleton in production (created once at import time, used on the
+    # one persistent event loop a real process holds for its whole life —
+    # safe there by construction). Under pytest-asyncio, every test
+    # function gets its OWN fresh event loop, but this module-level lock
+    # object would otherwise survive across all of them; if any test's
+    # task were ever torn down while holding it (a hard test failure, a
+    # cancelled gather branch that doesn't unwind cleanly), every LATER
+    # test calling init_graph_async() while _graph is None would hang
+    # forever waiting on a lock nothing will ever release. A new Lock per
+    # test closes that window the same way resetting _graph/_checkpointer_pool
+    # already does for the state it guards.
+    agent_module._graph_lock = asyncio.Lock()
     yield
     agent_module._graph = None
     agent_module._checkpointer_pool = None
+    agent_module._graph_lock = asyncio.Lock()
 
 
 def _fake_llm():
@@ -107,6 +121,33 @@ class TestInitGraphAsync:
             assert second is first
 
         await _check()
+
+    async def test_concurrent_first_callers_only_open_one_checkpointer_pool(self, monkeypatch):
+        """Regression guard for the race `_graph_lock` exists to close:
+        `init_graph_async`'s guard (`if _graph is None: ... await ...`) has
+        an await between the check and the write — without the lock, N
+        concurrent first-callers (a burst of requests right after a cold
+        start, or several agent_worker.py-style tasks all reaching this
+        before anything has primed the singleton) could each pass the None
+        check, each open their own AsyncConnectionPool via
+        _open_checkpointer(), and each overwrite _graph/_checkpointer_pool
+        — every loser's pool then leaks. Wraps the real _open_checkpointer
+        to count calls (rather than faking it entirely) so this still
+        exercises a real checkpointer/pool open underneath, same "real
+        Postgres, no LLM" spirit as the rest of this file."""
+        real_open = agent_module._open_checkpointer
+        calls = []
+
+        async def _counting_open():
+            calls.append(1)
+            return await real_open()
+
+        monkeypatch.setattr(agent_module, "_open_checkpointer", _counting_open)
+
+        graphs = await asyncio.gather(*(agent_module.init_graph_async() for _ in range(8)))
+
+        assert len(calls) == 1
+        assert all(g is graphs[0] for g in graphs)
 
 
 class TestDurabilityAcrossRestart:

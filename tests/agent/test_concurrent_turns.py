@@ -20,7 +20,7 @@ GenericFakeChatModel, same technique test_durable_checkpoint.py already
 uses) — no live Ollama/LiteLLM dependency, so this runs in ordinary CI, not
 just by hand against `make up`.
 
-Six angles, one per test class below:
+Seven angles, one per test class below:
 - TestNoCrossContaminationUnderConcurrency: N turns on N different THREADS,
   run truly concurrently against the real pooled checkpointer — does each
   thread's checkpointed history end up containing ONLY its own message?
@@ -52,6 +52,16 @@ Six angles, one per test class below:
   real hybrid-search hit ONLY ITS OWN documents, the same tenant-isolation
   question TestSemanticCacheIsolationUnderConcurrency asks of Redis, asked
   here of Qdrant's own tenant-scoped filter instead?
+- TestSameThreadTurnsAreSerializedNotCorrupted: the complementary case to
+  every class above — those all prove DIFFERENT thread_ids/tenants stay
+  isolated under concurrency; this proves the SAME thread_id does NOT
+  silently fork its checkpoint when two real "turn" jobs race it through
+  the real queue/worker dispatch. Before `app/job_queue/queue.py::acquire_thread_lock`
+  existed, both jobs would read the checkpointer's latest state as their
+  own parent and both write a child from it, so whichever committed last
+  would silently win and the other job's message would vanish from the
+  thread's visible history — never caught by any class above, since none
+  of them ever put two jobs on the SAME thread_id at the same moment.
 
 A real, reachable embedding backend is deliberately never required for any
 of this (`_fake_embed_text` below) — every real embedding call in this app
@@ -181,8 +191,13 @@ def _echoing_llm(respond: Callable[[list[BaseMessage]], AIMessage]):
 @pytest.fixture(autouse=True)
 def reset_agent_singleton(monkeypatch):
     """Same fixture as tests/agent/test_durable_checkpoint.py — see that
-    file's docstring for why `_graph`/`_checkpointer_pool` (module-level
-    singletons) need resetting before and after every test here too.
+    file's docstring for why `_graph`/`_checkpointer_pool`/`_graph_lock`
+    (module-level singletons) need resetting before and after every test
+    here too — this file's own `asyncio.gather`-heavy tests (every class
+    below runs several turns concurrently) are exactly the shape most
+    likely to leave `_graph_lock` stuck if a gathered task were ever torn
+    down while holding it, so this reset matters here at least as much as
+    in that file.
 
     Also resets subagent_tools' own `_subagent_graph_cache`: this file's
     TestSubagentCallUnderConcurrency drives the REAL `run_subagent` tool
@@ -201,10 +216,12 @@ def reset_agent_singleton(monkeypatch):
     )
     agent_module._graph = None
     agent_module._checkpointer_pool = None
+    agent_module._graph_lock = asyncio.Lock()
     subagent_tools.reset_subagent_graph_cache()
     yield
     agent_module._graph = None
     agent_module._checkpointer_pool = None
+    agent_module._graph_lock = asyncio.Lock()
     subagent_tools.reset_subagent_graph_cache()
 
 
@@ -608,6 +625,112 @@ class TestWorkerConcurrencyAgainstTheRealQueue:
             f"concurrent (a single turn alone takes ~{single_turn_estimate:.2f}s, so "
             f"{n} run serially would take ~{serial_estimate:.2f}s)"
         )
+
+
+class TestSameThreadTurnsAreSerializedNotCorrupted:
+    """The complementary case to every OTHER class in this file: those all
+    put N turns on N DIFFERENT thread_ids/tenants and check they stay
+    isolated. This puts TWO real "turn" jobs on the SAME thread_id through
+    the real queue/worker dispatch at the same real moment — before
+    `app/job_queue/queue.py::acquire_thread_lock` existed, both would read
+    the checkpointer's latest state as their own parent and both write a
+    child from it, so whichever committed last would silently win and the
+    other job's message would vanish from the thread's visible history.
+    Proves the fix: exactly one job runs (the other is rejected fast with
+    `ErrorCode.THREAD_BUSY`, never reaching the graph at all), and the
+    checkpointed thread ends up with exactly the winner's own message —
+    never zero (both rejected), never two (a fork)."""
+
+    @pytest.fixture(autouse=True)
+    def real_redis_for_queue(self, monkeypatch):
+        """Same isolation technique as
+        TestWorkerConcurrencyAgainstTheRealQueue's own fixture above — see
+        that one's docstring for why each binding needs its own patch."""
+        info = ensure_redis()
+        stream = f"agent:requests:test:{uuid.uuid4()}"
+        group = f"agent-workers:test:{uuid.uuid4()}"
+        monkeypatch.setattr(queue, "REDIS_URL", info["redis_url"])
+        monkeypatch.setattr(queue, "_client", None)
+        monkeypatch.setattr(queue, "requests_stream_key", lambda domain="ecorp": stream)
+        monkeypatch.setattr(queue, "CONSUMER_GROUP", group)
+        monkeypatch.setattr(agent_worker, "REQUESTS_STREAM", stream)
+        monkeypatch.setattr(agent_worker, "CONSUMER_GROUP", group)
+        yield
+        queue._client = None
+
+    async def test_two_concurrent_turns_on_one_thread_one_wins_one_is_rejected(self, monkeypatch):
+        # delay=0.05 (same technique as TestWorkerConcurrencyAgainstTheRealQueue
+        # above) keeps the winning job's handler genuinely in flight long
+        # enough for the loser's acquire_thread_lock call to land while
+        # the lock is still held — without it, both jobs could complete so
+        # fast the race window never actually opens.
+        _install_fake_graph(monkeypatch, _fixed_llm("A sufficiently long final answer.", delay=0.05))
+
+        async def _run():
+            graph = await agent_module.init_graph_async()
+            client = queue.get_client()
+            await queue.ensure_consumer_group(client)
+
+            thread_id = str(uuid.uuid4())
+            request_ids = [str(uuid.uuid4()) for _ in range(2)]
+            for i, rid in enumerate(request_ids):
+                await queue.publish_request(
+                    client,
+                    request_id=rid,
+                    text=f"message {i}",
+                    thread_id=thread_id,
+                    ctx=_ctx("tenant-same-thread"),
+                )
+
+            response = await client.xreadgroup(
+                agent_worker.CONSUMER_GROUP,
+                "test-consumer",
+                {agent_worker.REQUESTS_STREAM: ">"},
+                count=2,
+            )
+            _, entries = response[0]
+            assert len(entries) == 2
+
+            # The exact dispatch shape agent_worker.py::run uses — see
+            # TestWorkerConcurrencyAgainstTheRealQueue above for why.
+            semaphore = asyncio.Semaphore(2)
+            tasks = []
+            for entry_id, fields in entries:
+                await semaphore.acquire()
+                tasks.append(
+                    asyncio.create_task(
+                        agent_worker._process_with_limit(client, entry_id, fields, semaphore)
+                    )
+                )
+            await asyncio.gather(*tasks)
+
+            results = {
+                rid: [event async for event in queue.read_results(client, rid)]
+                for rid in request_ids
+            }
+            state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+            return results, state
+
+        results, state = await run_with_checkpointer_cleanup(_run)
+
+        outcomes = {rid: events[-1] for rid, events in results.items()}
+        done_count = sum(1 for e in outcomes.values() if e["type"] == "done")
+        busy_count = sum(1 for e in outcomes.values() if e.get("code") == "thread_busy")
+        assert done_count == 1, outcomes
+        assert busy_count == 1, outcomes
+
+        # The checkpoint was never forked: exactly the WINNING turn's own
+        # message made it into the thread's visible history — a fork would
+        # show up here as either 2 (both jobs' messages, on divergent
+        # branches merged by this read) or, in other orderings, the
+        # loser's message instead of the winner's. Either way, "exactly
+        # one, and it's a real message" is the only correct outcome.
+        human_texts = [m.content for m in state.values["messages"] if isinstance(m, HumanMessage)]
+        assert len(human_texts) == 1, (
+            f"expected exactly the winning turn's own message, got {human_texts} — "
+            "a checkpoint fork would show up here as something other than exactly one"
+        )
+        assert human_texts[0] in {"message 0", "message 1"}
 
 
 class TestHITLApprovalUnderConcurrency:
