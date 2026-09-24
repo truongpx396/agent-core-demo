@@ -95,6 +95,14 @@ _OPS: dict[type, Callable[..., float]] = {
 # Qdrant call, or a pathological expression like `2**99999999999`, could
 # otherwise stall — or exhaust memory — the turn indefinitely).
 TOOL_TIMEOUT_SECONDS = 15
+
+# Length budget for add_note/remember: bounds the BM25 sparse-embedding cost
+# per write (embed_sparse has no internal truncation, unlike the ml-service
+# ONNX models — see _sparse_vector_or_none) and keeps a note/memory citable
+# in a prompt without ballooning it.
+_MAX_NOTE_TITLE_CHARS = 200
+_MAX_NOTE_CONTENT_CHARS = 4000
+_MAX_MEMORY_CONTENT_CHARS = 2000
 _TOOL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=8, thread_name_prefix="tool-timeout"
 )
@@ -303,14 +311,22 @@ def _citation_records(hits: list, offset: int = 0) -> list[dict]:
     return records
 
 
-def _sparse_vector_or_none(text: str) -> tuple[list[int], list[float]] | None:
+async def _sparse_vector_or_none(text: str) -> tuple[list[int], list[float]] | None:
     """Best-effort BM25 sparse vector for a write path: if the sparse model
     fails to load/embed, the write still succeeds dense-only
     (`qdrant_store.build_point` treats `sparse_vector=None` as dense-only)
     rather than blocking a write on a hybrid-search quality concern — same
-    degrade-don't-block posture as hybrid_search's read side."""
+    degrade-don't-block posture as hybrid_search's read side.
+
+    `embed_sparse` is local ONNX/CPU compute (`app/retrieval/embeddings.py`),
+    so it's dispatched via `asyncio.to_thread` here too, same as
+    `qdrant_store.py::hybrid_search`'s read-side call — a bare sync call
+    would otherwise block every OTHER turn sharing this process's event
+    loop for the embed's duration, and (worse) a `_arun_with_timeout`
+    caller has no `await` point during a bare sync call for its
+    `asyncio.wait_for` timeout to actually cancel."""
     try:
-        return embed_sparse(text)
+        return await asyncio.to_thread(embed_sparse, text)
     except Exception:  # noqa: BLE001 - degrade to dense-only, never block the write
         return None
 
@@ -427,8 +443,8 @@ async def ask_clarification(question: str, options: list[str]) -> str:
 
 
 class AddNoteArgs(BaseModel):
-    title: str = Field(..., description="Short title for the note.")
-    content: str = Field(..., description="The note's text.")
+    title: str = Field(..., max_length=_MAX_NOTE_TITLE_CHARS, description="Short title for the note.")
+    content: str = Field(..., max_length=_MAX_NOTE_CONTENT_CHARS, description="The note's text.")
     topic: Topic = Field(
         ..., description="Must be one of: langgraph, qdrant, company."
     )
@@ -453,7 +469,7 @@ async def _add_note_impl(title: str, content: str, topic: Topic, ctx: SecurityCt
     point = qdrant_store.build_point(
         point_id=str(uuid.uuid4()),
         dense_vector=await embed_text(text),
-        sparse_vector=_sparse_vector_or_none(text),
+        sparse_vector=await _sparse_vector_or_none(text),
         payload={
             "text": text,
             "topic": topic.value,
@@ -486,7 +502,9 @@ async def add_note(
 
 class RememberArgs(BaseModel):
     content: str = Field(
-        ..., description="The fact to remember about this conversation/user."
+        ...,
+        max_length=_MAX_MEMORY_CONTENT_CHARS,
+        description="The fact to remember about this conversation/user.",
     )
 
     @field_validator("content")
@@ -510,7 +528,7 @@ async def _remember_impl(content: str, ctx: SecurityCtx) -> str:
     point = qdrant_store.build_point(
         point_id=str(uuid.uuid4()),
         dense_vector=await embed_text(content),
-        sparse_vector=_sparse_vector_or_none(content),
+        sparse_vector=await _sparse_vector_or_none(content),
         payload={
             "text": content,
             "kind": "memory",

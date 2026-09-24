@@ -17,6 +17,7 @@ public (mirrors `app/core/security.py`'s fail-closed discipline).
 # ingestor.socket.getaddrinfo, and since `socket` is a shared module in
 # sys.modules, that mutation is visible to url_safety.py too (where the
 # actual lookup now runs).
+import asyncio
 import html.parser
 import logging
 import socket  # noqa: F401
@@ -48,7 +49,7 @@ class IngestRefused(Exception):
     (app/core/metrics.py)."""
 
 
-def _sparse_vectors_or_none(
+async def _sparse_vectors_or_none(
     texts: list[str],
 ) -> Sequence[tuple[list[int], list[float]] | None] | None:
     """Best-effort sparse leg for a WHOLE document at once — same
@@ -56,12 +57,18 @@ def _sparse_vectors_or_none(
     helper: a BM25 hiccup costs the document's sparse recall (still
     findable dense-only), not the whole ingest.
 
+    `embed_sparse_batch` is local ONNX/CPU compute, dispatched via
+    `asyncio.to_thread` — a bare sync call here would block every OTHER
+    in-flight job's I/O on this worker's event loop for the whole batch
+    (same reasoning `ingest_worker.py`'s own docstring already gives for
+    offloading download/extraction).
+
     Returns `Sequence` rather than `list` so `embed_sparse_batch`'s
     `list[tuple[...]]` can be returned as-is on success — `list` is
     invariant (mypy can't treat `list[X]` as `list[X | None]`), `Sequence`
     is covariant; the one caller only reads this by index."""
     try:
-        return embed_sparse_batch(texts)
+        return await asyncio.to_thread(embed_sparse_batch, texts)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "sparse embedding unavailable for this ingest; writing dense-only",
@@ -108,7 +115,7 @@ async def ingest_text(
 
     child_texts = [child_text for parent in parents for child_text in parent.children]
     total = len(child_texts)
-    sparse_vectors = _sparse_vectors_or_none(child_texts)
+    sparse_vectors = await _sparse_vectors_or_none(child_texts)
 
     dense_vectors: list[list[float]] = []
     for start in range(0, total, EMBED_BATCH_SIZE):
