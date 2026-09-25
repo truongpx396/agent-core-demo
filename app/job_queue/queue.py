@@ -434,3 +434,32 @@ async def publish_dead_letter(
         maxlen=DEAD_LETTER_MAXLEN,
         approximate=True,
     )
+
+
+RECLAIM_ATTEMPTS_FIELD = "_reclaim_attempts"  # leading underscore: an internal
+# bookkeeping field on the job payload, never set by a real producer
+# (publish_request/publish_resume_request/publish_cancel_request never
+# write it) — only by republish_job below, and only read by
+# agent_worker.py's own retry-cap check.
+
+
+async def republish_job(client: redis.Redis, *, requests_stream: str, payload: dict) -> str:
+    """Re-enqueues `payload` onto `requests_stream` as a brand-new entry —
+    the recovery half of a reclaim decided safe to retry (see
+    `app/job_queue/agent_worker.py::_handle_reclaimed_job`/
+    `_is_safe_to_retry_turn` for that decision). A fresh XADD rather than
+    any Streams-native redelivery, deliberately: the retried job then goes
+    through the exact same `xreadgroup` → `process_request`/`process_job`
+    path as any first attempt, no separate "resumed job" code path to keep
+    correct. Reuses the original `request_id`/`job_id` (mutates
+    `payload[RECLAIM_ATTEMPTS_FIELD]` in place, everything else untouched)
+    so the caller still listening on that request's own results stream
+    transparently sees whatever the retry produces — success, or eventually
+    another error — without needing to notice a retry happened at all.
+    """
+    payload[RECLAIM_ATTEMPTS_FIELD] = payload.get(RECLAIM_ATTEMPTS_FIELD, 0) + 1
+    # decode_responses=True (get_client's own contract) means this is
+    # always str at runtime; redis-py's stubs just type xadd's return
+    # wider than that (see StreamReadResponse's own comment on the same
+    # gap).
+    return cast(str, await client.xadd(requests_stream, {"payload": json.dumps(payload)}))

@@ -352,7 +352,9 @@ class TestHandleReclaimedJob:
     async def test_publishes_an_error_archives_and_acks(self):
         client = FakeRedis()
         entry_id, fields = _entry(job_id="j9", filename="report.pdf")
-        before = _count(ingest_worker.metrics.agent_worker_job_reclaimed_total, queue="ingest")
+        before = _count(
+            ingest_worker.metrics.agent_worker_job_reclaimed_total, queue="ingest", outcome="dead_lettered"
+        )
 
         await ingest_worker._handle_reclaimed_job(client, entry_id, fields)
 
@@ -367,7 +369,9 @@ class TestHandleReclaimedJob:
 
         assert client.acked == [entry_id]
         assert (
-            _count(ingest_worker.metrics.agent_worker_job_reclaimed_total, queue="ingest")
+            _count(
+                ingest_worker.metrics.agent_worker_job_reclaimed_total, queue="ingest", outcome="dead_lettered"
+            )
             == before + 1
         )
 

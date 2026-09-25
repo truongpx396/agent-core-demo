@@ -241,12 +241,16 @@ class Settings(BaseSettings):
     # entries abandoned by a worker that died mid-job (app/job_queue/queue.py::
     # reclaim_stale_entries) — a worker crash otherwise leaves that entry
     # permanently PENDING, unacked and never redelivered, silently losing
-    # the request (see GRAPH_PATTERNS.md's "Extending Further" list). Every
-    # reclaimed entry is surfaced as an error to its own results stream and
-    # moved to a dead-letter stream rather than blindly re-run — re-running
-    # a "turn"/ingest job that already got partway through side-effecting
-    # tool calls or vector upserts would duplicate them, the same reason
-    # process_request/process_job always ack instead of ever redelivering.
+    # the request (see GRAPH_PATTERNS.md's "Extending Further" list).
+    # Reclaimed "cancel" jobs and "turn" jobs PROVEN not to have completed
+    # a mutating/outward tool call yet (agent_worker.py::
+    # _is_safe_to_retry_turn) are silently republished; everything else
+    # (a "turn" that did run one, "resume" jobs, ingest jobs) is instead
+    # surfaced as an error on its own results stream and archived to a
+    # dead-letter stream — re-running one of THOSE could duplicate an
+    # already-applied side effect (a sent email, an upserted chunk), the
+    # same reason process_request/process_job always ack instead of ever
+    # blindly redelivering.
     worker_reclaim_interval_seconds: int = 60
 
     # How long an entry must sit claimed-but-unacked before its original
@@ -265,6 +269,16 @@ class Settings(BaseSettings):
     # generous accordingly, not derived from request_timeout_seconds the
     # way the agent worker's own default is.
     ingest_worker_reclaim_idle_seconds: int = 900
+
+    # Cap on how many times a single job may be automatically re-published
+    # after being reclaimed from a crashed worker (agent_worker.py::
+    # _handle_reclaimed_job), even when it's otherwise judged safe to
+    # retry — bounds the damage a "poison pill" request (one that reliably
+    # crashes whichever worker picks it up) can do: without a cap it would
+    # loop crash-worker/reclaim/retry forever instead of eventually
+    # landing in the dead-letter stream for a human to look at. 1 means
+    # "try again exactly once."
+    max_auto_reclaim_retries: int = 1
 
     # Cap on app/job_queue/queue.py::get_client()'s connection pool —
     # redis-py's default (100) is easy to blow through since every
@@ -394,6 +408,7 @@ INGEST_WORKER_MAX_CONCURRENCY = settings.ingest_worker_max_concurrency
 WORKER_RECLAIM_INTERVAL_SECONDS = settings.worker_reclaim_interval_seconds
 AGENT_WORKER_RECLAIM_IDLE_SECONDS = settings.agent_worker_reclaim_idle_seconds
 INGEST_WORKER_RECLAIM_IDLE_SECONDS = settings.ingest_worker_reclaim_idle_seconds
+MAX_AUTO_RECLAIM_RETRIES = settings.max_auto_reclaim_retries
 REDIS_MAX_CONNECTIONS = settings.redis_max_connections
 CORS_ALLOWED_ORIGINS = settings.cors_allowed_origins
 MAX_UPLOAD_SIZE_MB = settings.max_upload_size_mb

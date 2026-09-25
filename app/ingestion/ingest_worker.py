@@ -212,7 +212,11 @@ async def _handle_reclaimed_job(client, entry_id: str, fields: dict) -> None:
                     ),
                 },
             )
-    metrics.agent_worker_job_reclaimed_total.labels(queue="ingest").inc()
+    # outcome is always "dead_lettered": ingest jobs are never auto-retried
+    # (see this module's own docstring on why, unlike agent_worker.py's
+    # "turn"/"cancel" jobs) — the label still carries it so this metric's
+    # shape stays consistent across both queues.
+    metrics.agent_worker_job_reclaimed_total.labels(queue="ingest", outcome="dead_lettered").inc()
     await publish_dead_letter(
         client,
         requests_stream=INGEST_REQUESTS_STREAM,

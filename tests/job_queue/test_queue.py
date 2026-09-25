@@ -509,3 +509,47 @@ class TestPublishDeadLetter:
                 reason="worker_lost",
             )
         assert len(client.streams[queue.dead_letter_stream_key("s")]) <= queue.DEAD_LETTER_MAXLEN
+
+
+class TestRepublishJob:
+    """The recovery half of a reclaim decided safe to retry — see
+    app/job_queue/agent_worker.py::_handle_reclaimed_job for the safety
+    decision this is only the mechanics for."""
+
+    async def test_publishes_a_fresh_entry_with_the_same_payload(self):
+        client = FakeRedis()
+        payload = {"kind": "turn", "request_id": "r1", "thread_id": "t1"}
+
+        await queue.republish_job(client, requests_stream="s", payload=payload)
+
+        entries = client.streams["s"]
+        assert len(entries) == 1
+        republished = json.loads(entries[0][1]["payload"])
+        assert republished["request_id"] == "r1"
+        assert republished["thread_id"] == "t1"
+
+    async def test_stamps_and_increments_the_reclaim_attempts_counter(self):
+        client = FakeRedis()
+        payload = {"kind": "turn", "request_id": "r1"}
+
+        await queue.republish_job(client, requests_stream="s", payload=payload)
+        first = json.loads(client.streams["s"][0][1]["payload"])
+        assert first[queue.RECLAIM_ATTEMPTS_FIELD] == 1
+
+        # A second retry (e.g. a still-crashing worker) increments again,
+        # rather than resetting — this is what agent_worker.py's own
+        # MAX_AUTO_RECLAIM_RETRIES cap compares against.
+        await queue.republish_job(client, requests_stream="s", payload=first)
+        second = json.loads(client.streams["s"][1][1]["payload"])
+        assert second[queue.RECLAIM_ATTEMPTS_FIELD] == 2
+
+    async def test_mutates_the_passed_in_payload_dict_in_place(self):
+        """agent_worker.py relies on this: it reads payload["kind"]/
+        thread_id etc. from the SAME dict both before and after calling
+        this, so the attempts counter must land on that object, not a copy."""
+        client = FakeRedis()
+        payload = {"kind": "cancel", "request_id": "r1"}
+
+        await queue.republish_job(client, requests_stream="s", payload=payload)
+
+        assert payload[queue.RECLAIM_ATTEMPTS_FIELD] == 1
