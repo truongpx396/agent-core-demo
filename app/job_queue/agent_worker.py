@@ -55,24 +55,32 @@ every worker in the pool) periodically sweeps for exactly that via
 provably safe:
 - `"cancel"` — always safe (cancelling is inherently idempotent: it either
   still applies, or there's nothing left to cancel and it's a no-op either
-  way) — silently republished via `queue.py::republish_job`.
+  way).
+- `"resume"` — also always safe, since `app/agent/tool_idempotency.py`
+  started guarding every `mutating`/`outward` tool: a resume continues an
+  EXISTING checkpoint from its `human_approval` pause, re-invoking whichever
+  tool calls were already pending under the exact SAME `tool_call_id`s (the
+  pause happens before those calls run) — any that already completed just
+  return their cached result instead of running again. Before that
+  guarantee existed, "resume" was deliberately excluded here (no fresh
+  `HumanMessage` boundary the way "turn" has, so there was no cheap way to
+  tell "did the just-approved call already run") — tool-level idempotency
+  is what closed that gap, not anything added to this function itself.
 - `"turn"` — safe only if `_is_safe_to_retry_turn` finds no completed
   `mutating`/`outward` tool call (per this domain's own
   `DomainPlugin.tool_capabilities()`) in the thread's checkpointed state
   since its last `HumanMessage` — i.e. the crash happened before this turn
   did anything irreversible (most commonly: during LLM inference, the
-  single slowest and most frequent step). Also silently republished, up to
-  `MAX_AUTO_RECLAIM_RETRIES` attempts (`queue.py::RECLAIM_ATTEMPTS_FIELD`
-  on the payload) — beyond that, or once a mutating/outward call is found,
-  falls through to the case below.
-- `"resume"`, and anything not provably safe — surfaced as a `WORKER_LOST`
-  error on the job's own results stream, archived to a dead-letter stream
-  (`queue.py::dead_letter_stream_key`) for inspection/manual replay, and
-  acked. `"resume"` specifically is never auto-retried: unlike `"turn"` it
-  has no fresh `HumanMessage` marking where it started (it continues an
-  existing paused thread), so there's no cheap, reliable boundary to check
-  "did the just-approved tool call already run" against — and getting that
-  wrong is exactly the case human_approval exists to gate.
+  single slowest and most frequent step). Tool-level idempotency does NOT
+  extend to this case: a retried "turn" re-asks the LLM from scratch, which
+  gets brand-new tool_call_ids unrelated to whatever the crashed attempt's
+  own tool_calls were, so dedup can never "catch" a duplicate there.
+- Every safe case above is silently republished via `queue.py::republish_job`,
+  up to `MAX_AUTO_RECLAIM_RETRIES` attempts (`queue.py::RECLAIM_ATTEMPTS_FIELD`
+  on the payload) — beyond that, or once a "turn" is found to have already
+  run a mutating/outward call, it's surfaced as a `WORKER_LOST` error on the
+  job's own results stream and archived to a dead-letter stream
+  (`queue.py::dead_letter_stream_key`) for inspection/manual replay.
 
 `astream_events_turn_unattended` (auto-declines any pause) stays available
 for a genuinely fire-and-forget caller; nothing in this codebase routes
@@ -400,7 +408,7 @@ async def _handle_reclaimed_job(
         },
     )
 
-    safe_to_retry = kind == "cancel" or (
+    safe_to_retry = kind in ("cancel", "resume") or (
         kind == "turn"
         and thread_id is not None
         and await _is_safe_to_retry_turn(graph, tool_capabilities, thread_id)

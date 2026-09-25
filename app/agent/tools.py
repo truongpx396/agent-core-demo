@@ -55,10 +55,10 @@ import uuid
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Literal
+from typing import Annotated, Literal
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool, InjectedToolCallId, tool
 
 # `ChatOpenAI` isn't constructed in THIS file anymore (moved to
 # subagent_tools.py's `_run_subagent_impl` fallback) — kept as a deliberate
@@ -70,6 +70,7 @@ from langchain_openai import ChatOpenAI  # noqa: F401
 from pydantic import BaseModel, Field, field_validator
 
 from app.agent import skills as skills_module
+from app.agent.tool_idempotency import idempotent
 from app.core.config import (
     SKILLS_COLLECTION,
     SKILLS_SEARCH_TOP_K,
@@ -448,6 +449,14 @@ class AddNoteArgs(BaseModel):
     topic: Topic = Field(
         ..., description="Must be one of: langgraph, qdrant, company."
     )
+    # Injected by ToolNode, never shown to the LLM — must be declared on
+    # the args_schema itself (LangChain's InjectedToolCallId detection
+    # scans args_schema fields, unlike `config: RunnableConfig` which scans
+    # the raw function signature). Lets add_note run through
+    # tool_idempotency.idempotent(): a reclaimed, retried job re-invoking
+    # this exact tool call (same id) gets the first call's own result back
+    # instead of writing a second, duplicate note.
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("title", "content")
     @classmethod
@@ -484,7 +493,11 @@ async def _add_note_impl(title: str, content: str, topic: Topic, ctx: SecurityCt
 
 @tool(args_schema=AddNoteArgs)
 async def add_note(
-    title: str, content: str, topic: Topic, config: RunnableConfig
+    title: str,
+    content: str,
+    topic: Topic,
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> str:
     """Add a new note to the knowledge base so future searches can find it.
 
@@ -497,7 +510,13 @@ async def add_note(
     ctx = _ctx_or_refuse(config, "write_note")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_add_note_impl, title, content, topic, ctx)
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="add_note",
+        fn=lambda: _arun_with_timeout(_add_note_impl, title, content, topic, ctx),
+    )
 
 
 class RememberArgs(BaseModel):
@@ -506,6 +525,8 @@ class RememberArgs(BaseModel):
         max_length=_MAX_MEMORY_CONTENT_CHARS,
         description="The fact to remember about this conversation/user.",
     )
+    # See AddNoteArgs's own tool_call_id field for why this is here.
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("content")
     @classmethod
@@ -542,7 +563,9 @@ async def _remember_impl(content: str, ctx: SecurityCtx) -> str:
 
 
 @tool(args_schema=RememberArgs)
-async def remember(content: str, config: RunnableConfig) -> str:
+async def remember(
+    content: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Save a fact about this user/conversation for future turns and
     sessions to recall — e.g. a stated preference or a piece of context
     they'll likely reference again.
@@ -556,7 +579,13 @@ async def remember(content: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "write_memory")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_remember_impl, content, ctx)
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="remember",
+        fn=lambda: _arun_with_timeout(_remember_impl, content, ctx),
+    )
 
 
 async def recall_memories(ctx: SecurityCtx | None, query: str) -> str:

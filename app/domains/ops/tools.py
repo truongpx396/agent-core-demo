@@ -16,10 +16,13 @@ All tools are `async def`, matching app/agent/tools.py's async-first
 design (store queries, HTTP clients, and the sandbox MCP session all await
 real I/O).
 """
+from typing import Annotated
+
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import tool
+from langchain_core.tools import InjectedToolCallId, tool
 from pydantic import BaseModel, Field, field_validator
 
+from app.agent.tool_idempotency import idempotent
 from app.agent.tools import _arun_with_timeout
 from app.core.security import SecurityCtx, valid_ctx
 from app.domains import notify, sandbox_session
@@ -96,6 +99,7 @@ async def fetch_metrics_summary(config: RunnableConfig) -> str:
 class PostToTeamChannelArgs(BaseModel):
     channel: str = Field(..., description="Which team channel, e.g. 'ops-digest' or 'ops-alerts'.")
     message: str = Field(..., description="The message to post.")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("channel", "message")
     @classmethod
@@ -110,7 +114,9 @@ async def _post_to_team_channel_impl(channel: str, message: str) -> str:
 
 
 @tool(args_schema=PostToTeamChannelArgs)
-async def post_to_team_channel(channel: str, message: str, config: RunnableConfig) -> str:
+async def post_to_team_channel(
+    channel: str, message: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Post a message to a team channel — e.g. a metrics digest or an
     anomaly you found during an investigation. This reaches OUTSIDE this
     app's own corpus (a real deployment would post to Slack), unlike the
@@ -120,7 +126,13 @@ async def post_to_team_channel(channel: str, message: str, config: RunnableConfi
     ctx = _ctx_or_refuse(config, "post_to_channel")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_post_to_team_channel_impl, channel, message)
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="post_to_team_channel",
+        fn=lambda: _arun_with_timeout(_post_to_team_channel_impl, channel, message),
+    )
 
 
 class LogIncidentArgs(BaseModel):
@@ -128,6 +140,7 @@ class LogIncidentArgs(BaseModel):
     detail: str | None = Field(
         default=None, description="Optional: the specific numbers/evidence behind this incident."
     )
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("summary")
     @classmethod
@@ -143,14 +156,25 @@ async def _log_incident_impl(summary: str, detail: str | None, ctx: SecurityCtx)
 
 
 @tool(args_schema=LogIncidentArgs)
-async def log_incident(summary: str, config: RunnableConfig, detail: str | None = None) -> str:
+async def log_incident(
+    summary: str,
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    detail: str | None = None,
+) -> str:
     """Record a real anomaly found during an investigation as a durable
     incident — use this once you've confirmed something is actually wrong
     (past its alert-matching threshold), not for every routine check."""
     ctx = _ctx_or_refuse(config, "log_incident")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_log_incident_impl, summary, detail, ctx)
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="log_incident",
+        fn=lambda: _arun_with_timeout(_log_incident_impl, summary, detail, ctx),
+    )
 
 
 class ListRecentIncidentsArgs(BaseModel):
@@ -184,6 +208,7 @@ async def list_recent_incidents(config: RunnableConfig, status: str | None = Non
 class ResolveIncidentArgs(BaseModel):
     incident_id: int = Field(..., description="The incident number to resolve.")
     resolution: str = Field(..., description="What fixed it, or why it's no longer a concern.")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("resolution")
     @classmethod
@@ -201,17 +226,26 @@ async def _resolve_incident_impl(incident_id: int, resolution: str, ctx: Securit
 
 
 @tool(args_schema=ResolveIncidentArgs)
-async def resolve_incident(incident_id: int, resolution: str, config: RunnableConfig) -> str:
+async def resolve_incident(
+    incident_id: int, resolution: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Mark a previously logged incident resolved, with what fixed it or
     why it's no longer a concern."""
     ctx = _ctx_or_refuse(config, "resolve_incident")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_resolve_incident_impl, incident_id, resolution, ctx)
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="resolve_incident",
+        fn=lambda: _arun_with_timeout(_resolve_incident_impl, incident_id, resolution, ctx),
+    )
 
 
 class CheckVendorStatusPageArgs(BaseModel):
     url: str = Field(..., description="A vendor/dependency's public status page (https:// only).")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
 
 async def _check_vendor_status_page_impl(url: str) -> str:
@@ -219,7 +253,9 @@ async def _check_vendor_status_page_impl(url: str) -> str:
 
 
 @tool(args_schema=CheckVendorStatusPageArgs)
-async def check_vendor_status_page(url: str, config: RunnableConfig) -> str:
+async def check_vendor_status_page(
+    url: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Read a vendor/upstream-dependency's public status page LIVE (real
     headless-browser render) — use this to check whether an anomaly you
     found via fetch_metrics_summary correlates with a known incident on
@@ -245,8 +281,14 @@ async def check_vendor_status_page(url: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "check_vendor_status")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(
-        _check_vendor_status_page_impl, url, _timeout_seconds=CRAWL_TOOL_TIMEOUT_SECONDS
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="check_vendor_status_page",
+        fn=lambda: _arun_with_timeout(
+            _check_vendor_status_page_impl, url, _timeout_seconds=CRAWL_TOOL_TIMEOUT_SECONDS
+        ),
     )
 
 
@@ -271,6 +313,7 @@ def _thread_id_from_config(config: RunnableConfig | None) -> str:
 
 class RunCommandInSandboxArgs(BaseModel):
     command: str = Field(..., description="A shell command to run, e.g. a Python one-liner or script.")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("command")
     @classmethod
@@ -297,7 +340,9 @@ async def _run_command_in_sandbox_impl(command: str, thread_id: str, ctx: Securi
 
 
 @tool(args_schema=RunCommandInSandboxArgs)
-async def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
+async def run_command_in_sandbox(
+    command: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Run a shell command inside an isolated, disposable sandbox —
     use this for grep/diff/cat and other plain shell tasks (diffing two
     configs, reading a file with `cat <path>`). For actual PYTHON
@@ -324,17 +369,24 @@ async def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "run_command_in_sandbox")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(
-        _run_command_in_sandbox_impl,
-        command,
-        _thread_id_from_config(config),
-        ctx,
-        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="run_command_in_sandbox",
+        fn=lambda: _arun_with_timeout(
+            _run_command_in_sandbox_impl,
+            command,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        ),
     )
 
 
 class RunPythonInSandboxArgs(BaseModel):
     script: str = Field(..., description="Python source code to run, as plain text (not a shell command).")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("script")
     @classmethod
@@ -351,7 +403,9 @@ async def _run_python_in_sandbox_impl(script: str, thread_id: str, ctx: Security
 
 
 @tool(args_schema=RunPythonInSandboxArgs)
-async def run_python_in_sandbox(script: str, config: RunnableConfig) -> str:
+async def run_python_in_sandbox(
+    script: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Run real Python computation calculator's plain arithmetic can't
     do (recomputing a statistic from raw readings, parsing a pasted log
     dump, diffing two configs) — use this, not run_command_in_sandbox,
@@ -377,17 +431,24 @@ async def run_python_in_sandbox(script: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "run_python_in_sandbox")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(
-        _run_python_in_sandbox_impl,
-        script,
-        _thread_id_from_config(config),
-        ctx,
-        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="run_python_in_sandbox",
+        fn=lambda: _arun_with_timeout(
+            _run_python_in_sandbox_impl,
+            script,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        ),
     )
 
 
 class ReadSandboxFileArgs(BaseModel):
     path: str = Field(..., description="Path of the file to read inside the sandbox.")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
 
 async def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -> str:
@@ -397,7 +458,9 @@ async def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -
 
 
 @tool(args_schema=ReadSandboxFileArgs)
-async def read_sandbox_file(path: str, config: RunnableConfig) -> str:
+async def read_sandbox_file(
+    path: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Read a text file from this investigation's sandbox (e.g. a
     script's output written to disk, or a file written earlier with
     write_sandbox_file). Same auto-created, per-investigation sandbox
@@ -410,18 +473,25 @@ async def read_sandbox_file(path: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "read_sandbox_file")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(
-        _read_sandbox_file_impl,
-        path,
-        _thread_id_from_config(config),
-        ctx,
-        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="read_sandbox_file",
+        fn=lambda: _arun_with_timeout(
+            _read_sandbox_file_impl,
+            path,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        ),
     )
 
 
 class WriteSandboxFileArgs(BaseModel):
     path: str = Field(..., description="Destination path for the file inside the sandbox.")
     content: str = Field(..., description="The file's full text content.")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
 
 async def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx: SecurityCtx) -> str:
@@ -431,7 +501,9 @@ async def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx:
 
 
 @tool(args_schema=WriteSandboxFileArgs)
-async def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
+async def write_sandbox_file(
+    path: str, content: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Write a text file into this investigation's sandbox (e.g. stage
     a script before running it with run_command_in_sandbox, or a log
     dump/config to diff). Same auto-created, per-investigation sandbox
@@ -440,13 +512,19 @@ async def write_sandbox_file(path: str, content: str, config: RunnableConfig) ->
     ctx = _ctx_or_refuse(config, "write_sandbox_file")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(
-        _write_sandbox_file_impl,
-        path,
-        content,
-        _thread_id_from_config(config),
-        ctx,
-        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="write_sandbox_file",
+        fn=lambda: _arun_with_timeout(
+            _write_sandbox_file_impl,
+            path,
+            content,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        ),
     )
 
 
