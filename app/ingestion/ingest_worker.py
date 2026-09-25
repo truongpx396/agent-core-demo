@@ -11,6 +11,13 @@ chunk/embed/upsert pipeline every ingest path shares
 (`ingestor.py::ingest_text`) — this worker only owns the download/dispatch/
 queue plumbing.
 
+A worker that dies mid-job leaves its entry pending for the consumer group
+forever unless something reclaims it — `_reclaim_loop` (run alongside the
+main read loop by every worker in the pool) does that via `XAUTOCLAIM`,
+same mechanism and "never blindly redeliver" policy as
+`app/job_queue/agent_worker.py`'s own reclaim loop; see
+`_handle_reclaimed_job`'s docstring for why.
+
 `run()` runs up to `_MAX_CONCURRENCY` jobs at once per process (an
 `asyncio.Semaphore`-bounded `create_task` per job, acquired before the task
 is created — same shape and reasoning as `agent_worker.py::run()`). Safe
@@ -49,7 +56,12 @@ import uuid
 from pathlib import Path
 from typing import cast
 
-from app.core.config import INGEST_WORKER_MAX_CONCURRENCY
+from app.core import metrics
+from app.core.config import (
+    INGEST_WORKER_MAX_CONCURRENCY,
+    INGEST_WORKER_RECLAIM_IDLE_SECONDS,
+    WORKER_RECLAIM_INTERVAL_SECONDS,
+)
 from app.core.logging_config import bind_request_id, configure_logging
 from app.core.telemetry import configure_telemetry
 from app.ingestion import ingestor, object_store
@@ -61,7 +73,11 @@ from app.ingestion.ingest_queue import (
     get_client,
     publish_result,
 )
-from app.job_queue.queue import StreamReadResponse
+from app.job_queue.queue import (
+    StreamReadResponse,
+    publish_dead_letter,
+    reclaim_stale_entries,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +173,82 @@ async def _process_with_limit(
         semaphore.release()
 
 
+async def _handle_reclaimed_job(client, entry_id: str, fields: dict) -> None:
+    """One entry `_reclaim_loop` found idle past
+    `INGEST_WORKER_RECLAIM_IDLE_SECONDS` — its original worker almost
+    certainly died mid-job (crashed, OOM-killed) before ever reaching
+    `process_job`'s own ack. NOT re-run: it may already have upserted some
+    chunks into the vector index, and redelivering it would duplicate them
+    — the same reason `process_job` always acks instead of ever letting a
+    failure be retried. Same policy as `agent_worker.py`'s own
+    `_handle_reclaimed_job`: surface an error, archive to a dead-letter
+    stream, ack."""
+    try:
+        payload = json.loads(fields["payload"])
+    except (KeyError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "ingest_worker_reclaimed_payload_unreadable",
+            extra={"entry_id": entry_id, "error_class": type(exc).__name__},
+        )
+        payload = {}
+    else:
+        job_id = payload.get("job_id")
+        logger.warning(
+            "ingest_worker_job_reclaimed",
+            # NOT "filename" — that key collides with LogRecord's own
+            # built-in attribute of the same name and raises KeyError from
+            # inside logging's makeRecord.
+            extra={"entry_id": entry_id, "job_id": job_id, "upload_filename": payload.get("filename")},
+        )
+        if job_id:
+            await publish_result(
+                client,
+                job_id,
+                {
+                    "type": "error",
+                    "content": (
+                        "The worker processing this upload stopped responding "
+                        "before it finished. Please upload it again."
+                    ),
+                },
+            )
+    metrics.agent_worker_job_reclaimed_total.labels(queue="ingest").inc()
+    await publish_dead_letter(
+        client,
+        requests_stream=INGEST_REQUESTS_STREAM,
+        entry_id=entry_id,
+        payload=payload,
+        reason="worker_lost",
+    )
+    await client.xack(INGEST_REQUESTS_STREAM, INGEST_CONSUMER_GROUP, entry_id)
+
+
+async def _reclaim_loop(client, stop_event: asyncio.Event) -> None:
+    """Same shape and reasoning as `agent_worker.py::_reclaim_loop` — see
+    there for why this doesn't just redeliver a reclaimed job, and why a
+    transient Redis error here is logged and retried next interval rather
+    than ending the loop."""
+    min_idle_ms = INGEST_WORKER_RECLAIM_IDLE_SECONDS * 1000
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=WORKER_RECLAIM_INTERVAL_SECONDS)
+            return  # stop_event was set during the wait — shutting down
+        except TimeoutError:
+            pass  # normal case: interval elapsed, run a pass below
+        try:
+            entries = await reclaim_stale_entries(
+                client,
+                stream=INGEST_REQUESTS_STREAM,
+                group=INGEST_CONSUMER_GROUP,
+                consumer=CONSUMER_NAME,
+                min_idle_ms=min_idle_ms,
+            )
+            for entry_id, fields in entries:
+                await _handle_reclaimed_job(client, entry_id, fields)
+        except Exception as exc:  # noqa: BLE001 - one bad pass must not end reclaim for this process's whole life
+            logger.warning("ingest_worker_reclaim_pass_failed", extra={"error_class": type(exc).__name__})
+
+
 async def run() -> None:
     loop = asyncio.get_running_loop()
     # asyncio.to_thread borrows the loop's DEFAULT executor
@@ -184,10 +276,14 @@ async def run() -> None:
     # Graceful shutdown — same reasoning as agent_worker.py's run(): SIGTERM/
     # SIGINT stops this worker from claiming a NEW job but never interrupts
     # one in flight (a redelivered job would re-embed/re-upsert the same
-    # chunks — see process_job's docstring).
+    # chunks — see process_job's docstring). A worker that dies WITHOUT this
+    # graceful path still abandons its claimed entry — _reclaim_loop below,
+    # run by every replica in the pool, recovers from that case.
     stop_event = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop_event.set)
+
+    reclaim_task = asyncio.create_task(_reclaim_loop(client, stop_event))
 
     # Bounds jobs this process runs at once. Acquired BEFORE the task is
     # created, so a full semaphore also backpressures reading: entries stay
@@ -223,6 +319,7 @@ async def run() -> None:
     # mid-job — see the graceful-shutdown comment above.
     if in_flight:
         await asyncio.gather(*in_flight)
+    await reclaim_task  # stop_event already set above, so this returns promptly
     await client.aclose()
 
 

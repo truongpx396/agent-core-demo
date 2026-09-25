@@ -46,10 +46,16 @@ backward compatibility):
   cancel-flag mechanism, see `POST /chat/cancel` in app/api/main.py).
 
 For each job: publish every yielded event to the request's results stream,
-then ack so it's never redelivered. A worker that dies mid-turn leaves its
-request unacknowledged (pending for the group, reclaimable via
-XCLAIM/XAUTOCLAIM) — not wired up here; this module targets independent
-scaling, not full exactly-once fault tolerance.
+then ack so it's never redelivered. A worker that dies mid-job (crash, OOM
+kill, host failure) before reaching that ack leaves its request pending for
+the group forever — `_reclaim_loop` (run alongside the main read loop by
+every worker in the pool) periodically sweeps for exactly that via
+`queue.py::reclaim_stale_entries` (XAUTOCLAIM) and hands each one to
+`_handle_reclaimed_job`, which surfaces a `WORKER_LOST` error to the job's
+own results stream, archives it to a dead-letter stream
+(`queue.py::dead_letter_stream_key`) for inspection/manual replay, and acks
+it — never blindly re-run, same "an already-attempted job might have
+already produced a side effect" reasoning as the ack-always policy above.
 
 `astream_events_turn_unattended` (auto-declines any pause) stays available
 for a genuinely fire-and-forget caller; nothing in this codebase routes
@@ -76,7 +82,13 @@ from app.agent.runtime_stream import (
     astream_events_turn,
     cancel_run,
 )
-from app.core.config import AGENT_DOMAIN, AGENT_WORKER_MAX_CONCURRENCY
+from app.core import metrics
+from app.core.config import (
+    AGENT_DOMAIN,
+    AGENT_WORKER_MAX_CONCURRENCY,
+    AGENT_WORKER_RECLAIM_IDLE_SECONDS,
+    WORKER_RECLAIM_INTERVAL_SECONDS,
+)
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.logging_config import bind_request_id, configure_logging
 from app.core.telemetry import configure_telemetry
@@ -90,7 +102,9 @@ from app.job_queue.queue import (
     ensure_consumer_group,
     get_client,
     is_cancelled,
+    publish_dead_letter,
     publish_result,
+    reclaim_stale_entries,
     release_thread_lock,
     requests_stream_key,
 )
@@ -265,6 +279,89 @@ async def _process_with_limit(
         semaphore.release()
 
 
+async def _handle_reclaimed_job(client, entry_id: str, fields: dict) -> None:
+    """One entry `_reclaim_loop` found idle past
+    `AGENT_WORKER_RECLAIM_IDLE_SECONDS` — its original consumer almost
+    certainly died before ever reaching `process_request`'s own ack (a live
+    worker acks well within that margin; see the config field's own
+    docstring for the sizing). NOT re-run: an in-flight "turn" may already
+    have executed a side-effecting tool call, so blindly redelivering it
+    here would risk running it twice — the exact thing `process_request`'s
+    always-ack policy exists to prevent. Instead: surface a clear failure to
+    whoever's still listening, archive the job for manual inspection/
+    replay, and ack it so it's never reclaimed again."""
+    try:
+        payload = json.loads(fields["payload"])
+    except (KeyError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "agent_worker_reclaimed_payload_unreadable",
+            extra={"entry_id": entry_id, "error_class": type(exc).__name__},
+        )
+        payload = {}
+    else:
+        request_id = payload.get("request_id")
+        thread_id = payload.get("thread_id")
+        kind = payload.get("kind", "turn")
+        logger.warning(
+            "agent_worker_job_reclaimed",
+            extra={"entry_id": entry_id, "request_id": request_id, "thread_id": thread_id, "kind": kind},
+        )
+        if request_id:
+            envelope = ErrorEnvelope(
+                code=ErrorCode.WORKER_LOST,
+                message=(
+                    "The worker handling this request stopped responding "
+                    "before it finished. Please try again."
+                ),
+            )
+            await publish_result(
+                client,
+                request_id,
+                {"type": "error", "content": envelope.message, **envelope.to_dict()},
+            )
+        # Deliberately NOT releasing thread_id's lock here: no token to
+        # compare-and-delete against (the dead worker held it, not us), and
+        # AGENT_WORKER_RECLAIM_IDLE_SECONDS' default is chosen to already
+        # exceed THREAD_LOCK_TTL_SECONDS, so by the time a job is reclaimed
+        # its lock has already self-expired via that TTL — see both
+        # settings' own docstrings in app/core/config.py.
+    metrics.agent_worker_job_reclaimed_total.labels(queue="agent").inc()
+    await publish_dead_letter(
+        client, requests_stream=REQUESTS_STREAM, entry_id=entry_id, payload=payload, reason="worker_lost"
+    )
+    await client.xack(REQUESTS_STREAM, CONSUMER_GROUP, entry_id)
+
+
+async def _reclaim_loop(client, stop_event: asyncio.Event) -> None:
+    """Runs for this whole process's life, alongside `run()`'s own read
+    loop: every `WORKER_RECLAIM_INTERVAL_SECONDS`, sweeps this domain's
+    requests stream for entries abandoned by a worker that died mid-job
+    (any replica's reclaim loop can claim any OTHER replica's abandoned
+    entry — `XAUTOCLAIM` operates on the whole consumer group, not just
+    this process's own pending list). A transient Redis error is logged and
+    retried next interval rather than raised — the one thing worse than a
+    slow reclaim pass is no reclaim pass ever again for this process."""
+    min_idle_ms = AGENT_WORKER_RECLAIM_IDLE_SECONDS * 1000
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=WORKER_RECLAIM_INTERVAL_SECONDS)
+            return  # stop_event was set during the wait — shutting down
+        except TimeoutError:
+            pass  # normal case: interval elapsed, run a pass below
+        try:
+            entries = await reclaim_stale_entries(
+                client,
+                stream=REQUESTS_STREAM,
+                group=CONSUMER_GROUP,
+                consumer=CONSUMER_NAME,
+                min_idle_ms=min_idle_ms,
+            )
+            for entry_id, fields in entries:
+                await _handle_reclaimed_job(client, entry_id, fields)
+        except Exception as exc:  # noqa: BLE001 - one bad pass must not end reclaim for this process's whole life
+            logger.warning("agent_worker_reclaim_pass_failed", extra={"error_class": type(exc).__name__})
+
+
 async def run() -> None:
     manifest, domain = resolve_domain(AGENT_DOMAIN)  # fails loud on a typo'd AGENT_DOMAIN
     await init_graph_async(manifest=manifest, domain=domain)  # opens the durable
@@ -279,12 +376,16 @@ async def run() -> None:
     # Graceful shutdown: SIGTERM/SIGINT sets this instead of killing the
     # loop mid-read. Checked only BETWEEN xreadgroup calls, never inside
     # the entries loop, so every already-claimed job runs to completion and
-    # gets acked before exit (there's no XCLAIM/XAUTOCLAIM redelivery here —
-    # see module docstring — so an abandoned job has no automatic recovery).
+    # gets acked before exit. A worker that dies WITHOUT this graceful path
+    # (killed, crashed) still leaves an abandoned entry behind, same as
+    # ever — that's what _reclaim_loop below, run by every replica in the
+    # pool, recovers from.
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop_event.set)
+
+    reclaim_task = asyncio.create_task(_reclaim_loop(client, stop_event))
 
     # Bounds jobs this process runs at once. Acquired BEFORE the task is
     # created, so a full semaphore also backpressures reading: entries stay
@@ -319,6 +420,7 @@ async def run() -> None:
     # it mid-turn — see the graceful-shutdown comment above.
     if in_flight:
         await asyncio.gather(*in_flight)
+    await reclaim_task  # stop_event already set above, so this returns promptly
     await client.aclose()
     # Same reasoning as app/api/main.py's lifespan shutdown: a turn may have
     # opened sql_store.py's connection pool; leaving it open past exit

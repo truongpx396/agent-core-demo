@@ -352,6 +352,17 @@ agent_moderation_total = Counter(
 )  # outcome: allowed | blocked_injection | blocked_denylist | blocked_ml_injection |
 # error (degraded — treated as allowed)
 
+agent_worker_job_reclaimed_total = Counter(
+    "agent_worker_job_reclaimed_total",
+    "Jobs reclaimed via XAUTOCLAIM after their original worker died mid-job "
+    "(app/job_queue/queue.py::reclaim_stale_entries) — surfaced as an error "
+    "to the job's own results stream and archived to a dead-letter stream "
+    "rather than blindly re-run, since re-running could duplicate "
+    "already-applied side effects. Any sustained rate here means workers "
+    "are crashing, not that recovery is working as intended.",
+    ["queue"],
+)  # queue: agent | ingest
+
 agent_moderation_ml_degraded_total = Counter(
     "agent_moderation_ml_degraded_total",
     "Turns where the ML injection-classifier layer (app/agent/moderation.py's "

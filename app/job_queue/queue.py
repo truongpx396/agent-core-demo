@@ -347,3 +347,90 @@ async def delete_results_stream(client: redis.Redis, request_id: str) -> None:
         await client.delete(results_stream_key(request_id))
     except Exception as exc:  # noqa: BLE001 - cleanup is optional, never worth failing a turn over
         logger.warning("queue_results_cleanup_failed", extra={"error_class": type(exc).__name__})
+
+
+# --- Crash recovery for a requests stream's consumer group (agent_worker.py
+# and ingest_worker.py both use these against their own stream/group) ---
+#
+# Neither worker's own xreadgroup loop redelivers on failure — process_request/
+# process_job always ack, even on an exception, specifically so a redelivered
+# job never re-runs already-applied side effects (a duplicated tool call, a
+# duplicated vector upsert). That leaves exactly one failure mode uncovered:
+# the WORKER PROCESS ITSELF dying mid-job (OOM kill, host failure, a bug that
+# segfaults the interpreter) before it ever reaches its own try/finally.
+# Redis never learns that job failed — the entry just sits in the consumer
+# group's Pending Entries List forever, unacked and undelivered to anyone
+# else, and whoever's waiting on its results stream hangs until their own
+# client-side timeout.
+#
+# The fix is NOT to blindly redeliver it either, for the same duplicate-
+# side-effect reason above — a job reclaimed this way is instead surfaced
+# as a failure (an error event on its own results stream) and archived to a
+# dead-letter stream for operator inspection/manual replay, then acked so
+# it's never attempted again. See agent_worker.py's/ingest_worker.py's own
+# reclaim loops for the policy; this module only owns the Streams mechanics.
+DEAD_LETTER_MAXLEN = 1000  # approx-trimmed (see publish_dead_letter) — bounds
+# growth for an unattended deployment; operators pull recent entries, not
+# the full history.
+
+
+def dead_letter_stream_key(requests_stream: str) -> str:
+    return f"{requests_stream}:dead"
+
+
+async def reclaim_stale_entries(
+    client: redis.Redis,
+    *,
+    stream: str,
+    group: str,
+    consumer: str,
+    min_idle_ms: int,
+    count: int = 50,
+) -> list[tuple[str, dict[str, str]]]:
+    """Drains every entry in `stream`'s `group` that's been claimed but not
+    acked for at least `min_idle_ms` — a worker taking that long to still be
+    legitimately working one is presumed dead, not slow (callers pick
+    `min_idle_ms` well above their own longest legitimate job, see
+    app/core/config.py's `*_reclaim_idle_seconds`). Uses `XAUTOCLAIM`, which
+    atomically claims matching entries under `consumer` as a side effect —
+    the caller must handle (ack or otherwise resolve) every entry this
+    returns, or it'll simply become idle under its new owner and get
+    reclaimed again next pass.
+
+    Paginates via XAUTOCLAIM's own cursor until it returns `"0-0"` (drained
+    for this pass), same loop shape as any Redis SCAN-family cursor.
+    """
+    claimed: list[tuple[str, dict[str, str]]] = []
+    cursor = "0-0"
+    while True:
+        response = await client.xautoclaim(
+            stream, group, consumer, min_idle_ms, start_id=cursor, count=count
+        )
+        # redis-py returns [next_cursor, [[id, fields], ...], deleted_ids] on
+        # modern Redis (the third element — entries claimed then found
+        # already trimmed from the stream — is irrelevant here, nothing to
+        # ack for an entry that no longer exists); older servers omit it.
+        cursor, entries = response[0], response[1]
+        claimed.extend((entry_id, fields) for entry_id, fields in entries)
+        if cursor == "0-0":
+            return claimed
+
+
+async def publish_dead_letter(
+    client: redis.Redis, *, requests_stream: str, entry_id: str, payload: dict, reason: str
+) -> None:
+    """Archives one reclaimed (presumed-crashed-worker) job for operator
+    inspection or manual replay. Callers ack the original entry separately,
+    afterward — once that ack happens the entry is gone from its source
+    stream's pending-entries list for good, so this archive is the only
+    remaining record of it."""
+    await client.xadd(
+        dead_letter_stream_key(requests_stream),
+        {
+            "original_entry_id": entry_id,
+            "reason": reason,
+            "payload": json.dumps(payload),
+        },
+        maxlen=DEAD_LETTER_MAXLEN,
+        approximate=True,
+    )

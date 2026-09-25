@@ -25,6 +25,7 @@ class ErrorCode(str, Enum):
     TENANT_BUDGET_EXCEEDED = "tenant_budget_exceeded"
     THREAD_BUSY = "thread_busy"
     NO_PROGRESS = "no_progress"
+    WORKER_LOST = "worker_lost"
     INTERNAL = "internal"
 
 

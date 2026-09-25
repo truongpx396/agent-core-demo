@@ -9,7 +9,12 @@ import asyncio
 import json
 
 from app.job_queue import agent_worker
-from app.job_queue.queue import CONSUMER_GROUP, results_stream_key
+from app.job_queue.queue import (
+    CONSUMER_GROUP,
+    dead_letter_stream_key,
+    results_stream_key,
+)
+from tests.conftest import metric_value as _count
 from tests.job_queue.test_queue import FakeRedis
 
 REQUESTS_STREAM = agent_worker.REQUESTS_STREAM  # this test module's worker
@@ -578,6 +583,104 @@ class TestSameThreadJobsAreSerialized:
         for rid in ("r1", "r2"):
             events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key(rid)]]
             assert events == [{"type": "done"}]
+
+
+class TestHandleReclaimedJob:
+    """`_handle_reclaimed_job` is what `_reclaim_loop` calls for every entry
+    `queue.py::reclaim_stale_entries` finds abandoned by a dead worker —
+    see that loop's own docstring for why this surfaces+archives instead of
+    ever redelivering the job to run again (a duplicate side-effect risk)."""
+
+    async def test_publishes_a_worker_lost_error_archives_and_acks(self, monkeypatch):
+        client = FakeRedis()
+        entry_id, fields = _entry(kind="turn", request_id="r1", thread_id="t1")
+        before = _count(agent_worker.metrics.agent_worker_job_reclaimed_total, queue="agent")
+
+        await agent_worker._handle_reclaimed_job(client, entry_id, fields)
+
+        events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r1")]]
+        assert len(events) == 1
+        assert events[0]["type"] == "error"
+        assert events[0]["code"] == "worker_lost"
+
+        dead = client.streams[dead_letter_stream_key(agent_worker.REQUESTS_STREAM)]
+        assert len(dead) == 1
+        assert dead[0][1]["original_entry_id"] == entry_id
+        assert json.loads(dead[0][1]["payload"])["request_id"] == "r1"
+
+        assert client.acked == [entry_id]
+        assert (
+            _count(agent_worker.metrics.agent_worker_job_reclaimed_total, queue="agent")
+            == before + 1
+        )
+
+    async def test_covers_non_turn_kinds_too(self, monkeypatch):
+        """The lock a reclaimed job held is scoped by thread_id, not job
+        kind — reclaim must handle whichever kind was abandoned, not just
+        "turn" (_handle_reclaimed_job never branches on `kind` at all, but
+        this guards against a future change that assumes "turn")."""
+        client = FakeRedis()
+        entry_id, fields = _entry(kind="resume", request_id="r2", thread_id="t2")
+
+        await agent_worker._handle_reclaimed_job(client, entry_id, fields)
+
+        events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r2")]]
+        assert events[0]["code"] == "worker_lost"
+        assert client.acked == [entry_id]
+
+    async def test_an_unreadable_payload_still_acks_and_dead_letters_without_raising(self):
+        client = FakeRedis()
+        entry_id = "9-0"
+        fields = {"payload": "not valid json"}
+
+        await agent_worker._handle_reclaimed_job(client, entry_id, fields)  # must not raise
+
+        assert client.acked == [entry_id]
+        dead = client.streams[dead_letter_stream_key(agent_worker.REQUESTS_STREAM)]
+        assert len(dead) == 1
+
+
+class TestReclaimLoop:
+    async def test_reclaims_an_abandoned_entry_then_stops_when_signalled(self, monkeypatch):
+        monkeypatch.setattr(agent_worker, "WORKER_RECLAIM_INTERVAL_SECONDS", 0.01)
+        client = FakeRedis()
+        entry_id, fields = _entry(request_id="r5", thread_id="t5")
+        client.streams[agent_worker.REQUESTS_STREAM] = [(entry_id, fields)]
+        client._delivered[entry_id] = 999_999_999  # already long abandoned
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(agent_worker._reclaim_loop(client, stop_event))
+        await asyncio.sleep(0.05)  # let at least one pass run
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1)
+
+        events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r5")]]
+        assert events[0]["code"] == "worker_lost"
+        assert entry_id in client.acked
+
+    async def test_a_redis_error_during_a_pass_does_not_kill_the_loop(self, monkeypatch):
+        """One bad reclaim pass (a transient Redis blip) must not end
+        reclaim coverage for this whole worker process's life — the next
+        interval should still run."""
+        monkeypatch.setattr(agent_worker, "WORKER_RECLAIM_INTERVAL_SECONDS", 0.01)
+        client = FakeRedis()
+        calls = []
+
+        async def flaky_reclaim(*a, **kw):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("redis blip")
+            return []
+
+        monkeypatch.setattr(agent_worker, "reclaim_stale_entries", flaky_reclaim)
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(agent_worker._reclaim_loop(client, stop_event))
+        await asyncio.sleep(0.05)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1)
+
+        assert len(calls) >= 2  # survived the first pass's failure and ran again
 
 
 async def _noop_async(*args, **kwargs):

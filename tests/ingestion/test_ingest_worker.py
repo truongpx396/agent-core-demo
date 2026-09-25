@@ -12,6 +12,8 @@ import threading
 import time
 
 from app.ingestion import ingest_queue, ingest_worker
+from app.job_queue.queue import dead_letter_stream_key
+from tests.conftest import metric_value as _count
 from tests.job_queue.test_queue import FakeRedis
 
 TEST_CTX = {"tenant": "ecorp", "principal": "p1", "claims": {}}
@@ -338,3 +340,84 @@ class TestConcurrentDispatch:
         for i in range(num_jobs):
             events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key(f"j{i}")]]
             assert events == [{"type": "started"}, {"type": "done", "chunks": 1}]
+
+
+class TestHandleReclaimedJob:
+    """`_handle_reclaimed_job` is what `_reclaim_loop` calls for every entry
+    `queue.py::reclaim_stale_entries` finds abandoned by a dead worker —
+    same policy as app/job_queue/agent_worker.py's own version: never
+    redeliver (an abandoned job may already have upserted chunks), instead
+    surface an error, archive to a dead-letter stream, and ack."""
+
+    async def test_publishes_an_error_archives_and_acks(self):
+        client = FakeRedis()
+        entry_id, fields = _entry(job_id="j9", filename="report.pdf")
+        before = _count(ingest_worker.metrics.agent_worker_job_reclaimed_total, queue="ingest")
+
+        await ingest_worker._handle_reclaimed_job(client, entry_id, fields)
+
+        events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j9")]]
+        assert len(events) == 1
+        assert events[0]["type"] == "error"
+
+        dead = client.streams[dead_letter_stream_key(ingest_queue.INGEST_REQUESTS_STREAM)]
+        assert len(dead) == 1
+        assert dead[0][1]["original_entry_id"] == entry_id
+        assert json.loads(dead[0][1]["payload"])["job_id"] == "j9"
+
+        assert client.acked == [entry_id]
+        assert (
+            _count(ingest_worker.metrics.agent_worker_job_reclaimed_total, queue="ingest")
+            == before + 1
+        )
+
+    async def test_an_unreadable_payload_still_acks_and_dead_letters_without_raising(self):
+        client = FakeRedis()
+        entry_id = "9-0"
+        fields = {"payload": "not valid json"}
+
+        await ingest_worker._handle_reclaimed_job(client, entry_id, fields)  # must not raise
+
+        assert client.acked == [entry_id]
+        dead = client.streams[dead_letter_stream_key(ingest_queue.INGEST_REQUESTS_STREAM)]
+        assert len(dead) == 1
+
+
+class TestReclaimLoop:
+    async def test_reclaims_an_abandoned_entry_then_stops_when_signalled(self, monkeypatch):
+        monkeypatch.setattr(ingest_worker, "WORKER_RECLAIM_INTERVAL_SECONDS", 0.01)
+        client = FakeRedis()
+        entry_id, fields = _entry(job_id="j10")
+        client.streams[ingest_queue.INGEST_REQUESTS_STREAM] = [(entry_id, fields)]
+        client._delivered[entry_id] = 999_999_999  # already long abandoned
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(ingest_worker._reclaim_loop(client, stop_event))
+        await asyncio.sleep(0.05)  # let at least one pass run
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1)
+
+        events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j10")]]
+        assert events[0]["type"] == "error"
+        assert entry_id in client.acked
+
+    async def test_a_redis_error_during_a_pass_does_not_kill_the_loop(self, monkeypatch):
+        monkeypatch.setattr(ingest_worker, "WORKER_RECLAIM_INTERVAL_SECONDS", 0.01)
+        client = FakeRedis()
+        calls = []
+
+        async def flaky_reclaim(*a, **kw):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("redis blip")
+            return []
+
+        monkeypatch.setattr(ingest_worker, "reclaim_stale_entries", flaky_reclaim)
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(ingest_worker._reclaim_loop(client, stop_event))
+        await asyncio.sleep(0.05)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1)
+
+        assert len(calls) >= 2  # survived the first pass's failure and ran again
