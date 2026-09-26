@@ -54,6 +54,7 @@ default identity — so real auth later is a gateway config change, not a
 rewrite here.
 """
 import asyncio
+import hashlib
 import json
 import uuid
 from contextlib import asynccontextmanager
@@ -94,6 +95,7 @@ from app.api.schemas import (
 )
 from app.core import metrics
 from app.core.config import (
+    CHAT_SUBMIT_DEDUP_TTL_SECONDS,
     CORS_ALLOWED_ORIGINS,
     MAX_COST_USD_PER_TENANT_PER_DAY,
     MAX_UPLOAD_FILES_PER_REQUEST,
@@ -223,16 +225,29 @@ async def health_ready(response: Response) -> ReadinessResponse:
 
 def _queued_sse_response(client, request_id: str) -> StreamingResponse:
     """Shared by every queue-backed endpoint below (new turn, resume,
-    cancel): relay one job's results stream as SSE frames, cleaning up on a
-    terminal event. Factored out since only how the JOB gets published
-    differs between the three."""
+    cancel): relay one job's results stream as SSE frames.
+
+    Deliberately does NOT eagerly delete the results stream on a terminal
+    event (an earlier version did) — real bug, found via a test exercising
+    `POST /chat/stream/queued`'s own submission dedup
+    (`claim_or_get_existing_submission`): a dedup HIT means two independent
+    callers can legitimately read the exact SAME `request_id`'s results
+    stream, one having started well after the other. Eager deletion
+    assumed exactly one reader ever existed per `request_id` — true before
+    dedup, false now — so whichever reader saw the terminal event FIRST
+    deleted the stream out from under the other, which then read an empty
+    stream forever (a real client would eventually time out; the hermetic
+    test that caught this, using a non-blocking fake Redis, hung outright).
+    `RESULTS_STREAM_TTL_SECONDS` already bounds a stream's lifetime
+    regardless (`queue.py::publish_result` refreshes it on every write) —
+    relying on that alone costs a few minutes of otherwise-idle Redis
+    memory per turn, in exchange for correctness under a second reader
+    arriving at any point before that TTL elapses.
+    """
 
     async def generate():
-        try:
-            async for event in queue.read_results(client, request_id):
-                yield f"data: {json.dumps(event)}\n\n"
-        finally:
-            await queue.delete_results_stream(client, request_id)
+        async for event in queue.read_results(client, request_id):
+            yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(
         generate(),
@@ -267,18 +282,37 @@ async def chat_stream_queued(
     requests stream this is published onto — only a worker pool booted with
     a matching `AGENT_DOMAIN` reads it, letting one API process serve every
     running domain.
+
+    Deduplicated against an identical (`thread_id`, `message`, `images`)
+    resubmission within `CHAT_SUBMIT_DEDUP_TTL_SECONDS`
+    (`queue.py::claim_or_get_existing_submission`) — a client's own retry
+    of this exact call reuses the first attempt's `request_id` and SSE
+    stream rather than publishing (and running) a second, independent
+    turn. See that function's own docstring for why the thread lock alone
+    doesn't already cover this.
     """
     client = queue.get_client()
-    request_id = uuid.uuid4().hex
-    await queue.publish_request(
+    digest = hashlib.sha256(
+        json.dumps([req.message, req.images or []]).encode()
+    ).hexdigest()
+    candidate_request_id = uuid.uuid4().hex
+    request_id, is_new = await queue.claim_or_get_existing_submission(
         client,
-        request_id=request_id,
-        text=req.message,
         thread_id=req.thread_id,
-        ctx=ctx,
-        domain=domain,
-        images=req.images or None,
+        digest=digest,
+        request_id=candidate_request_id,
+        ttl_seconds=CHAT_SUBMIT_DEDUP_TTL_SECONDS,
     )
+    if is_new:
+        await queue.publish_request(
+            client,
+            request_id=request_id,
+            text=req.message,
+            thread_id=req.thread_id,
+            ctx=ctx,
+            domain=domain,
+            images=req.images or None,
+        )
     return _queued_sse_response(client, request_id)
 
 

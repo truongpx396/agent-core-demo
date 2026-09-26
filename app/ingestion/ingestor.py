@@ -18,6 +18,7 @@ public (mirrors `app/core/security.py`'s fail-closed discipline).
 # sys.modules, that mutation is visible to url_safety.py too (where the
 # actual lookup now runs).
 import asyncio
+import hashlib
 import html.parser
 import logging
 import socket  # noqa: F401
@@ -40,6 +41,33 @@ logger = logging.getLogger(__name__)
 _ALLOWED_FILE_SUFFIXES = {".txt", ".md"}
 _MAX_URL_BYTES = 2_000_000  # 2 MB — bounded fetch size, part of the SSRF/DoS guard
 _URL_TIMEOUT_SECONDS = 10
+
+# Fixed, arbitrary namespace for uuid5's content-addressed point ids below —
+# any constant works (uuid5 only needs SOME namespace to combine with the
+# name), it just has to never change once chosen, or every already-ingested
+# point's id would silently shift out from under it.
+_POINT_ID_NAMESPACE = uuid.UUID("6f0d6b1e-6d0f-4b6e-9f0a-7e9c1a2b3c4d")
+
+
+def _content_point_id(tenant: str, source: str, index: int, text: str) -> str:
+    """A point id derived entirely from WHAT is being written, not a random
+    draw — re-ingesting byte-identical content (a retried/reclaimed job, or
+    a client's double-submitted upload) always recomputes the exact same
+    id at the exact same position, so `qdrant_store.upsert`'s upsert-by-id
+    semantics silently overwrite the earlier write instead of duplicating
+    it. `index` (this chunk's position in the document) is included
+    alongside a hash of `text` itself: position alone would already be
+    stable across an identical re-ingest, but folding the content in too
+    means a chunking-algorithm change that shifts what lands at the same
+    position gets a fresh id instead of silently overwriting a mismatched
+    older chunk. `tenant` is included so two tenants who happen to upload
+    identical content never collide onto the same point — this ISN'T a
+    correctness boundary Qdrant itself enforces (payload-filtered, not a
+    separate collection per tenant), so the id space must keep it apart on
+    its own.
+    """
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    return uuid.uuid5(_POINT_ID_NAMESPACE, f"{tenant}|{source}|{index}|{digest}").hex
 
 
 class IngestRefused(Exception):
@@ -104,6 +132,14 @@ async def ingest_text(
     `async def` callback, awaited directly — no thread-bridging needed
     since this function and `embed_texts`/`qdrant_store.upsert` all run on
     the caller's own event loop.
+
+    Safe to call twice with byte-identical `text`/`source`/`ctx` — every
+    point's id is derived from that content (`_content_point_id`), not a
+    random draw, so a repeat (a retried ingest job, a client's
+    double-submitted upload) upserts onto the SAME ids instead of creating
+    duplicates. This is what makes it safe for `app/ingestion/ingest_worker.py`'s
+    own reclaim loop to auto-retry a crashed job rather than only ever
+    dead-lettering it.
     """
     if not valid_ctx(ctx):
         metrics.agent_ingest_refused_total.labels(reason="no_ctx").inc()
@@ -141,7 +177,7 @@ async def ingest_text(
                 payload["topic"] = topic
             points.append(
                 qdrant_store.build_point(
-                    point_id=uuid.uuid4().hex,
+                    point_id=_content_point_id(ctx["tenant"], source, i, child_text),
                     dense_vector=dense_vectors[i],
                     payload=payload,
                     sparse_vector=sparse_vectors[i] if sparse_vectors is not None else None,

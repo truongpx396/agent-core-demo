@@ -174,7 +174,15 @@ class TestChatStreamQueued:
         assert any('"type": "token"' in c and '"content": "hi"' in c for c in chunks)
         assert any('"type": "done"' in c for c in chunks)
 
-    async def test_deletes_the_results_stream_once_a_terminal_event_is_seen(self, monkeypatch):
+    async def test_does_not_delete_the_results_stream_after_a_terminal_event(self, monkeypatch):
+        """Deliberately the OPPOSITE of what this used to assert — see
+        _queued_sse_response's own docstring for the real bug an eager
+        delete here caused once POST /chat/stream/queued's submission
+        dedup could give two independent callers the same request_id: the
+        first to see the terminal event would delete the stream out from
+        under a second, still-reading (or not-yet-started) caller, which
+        then read an empty stream forever. Relies on
+        RESULTS_STREAM_TTL_SECONDS for eventual cleanup instead."""
         client = FakeRedis()
         monkeypatch.setattr(queue, "get_client", lambda: client)
 
@@ -190,7 +198,8 @@ class TestChatStreamQueued:
             return request_id
 
         request_id = await _run()
-        assert queue.results_stream_key(request_id) in client.deleted
+        assert queue.results_stream_key(request_id) not in client.deleted
+        assert queue.results_stream_key(request_id) in client.expiries  # TTL still governs cleanup
 
     async def test_publishes_attached_images_onto_the_request(self, monkeypatch):
         """GRAPH_PATTERNS.md pattern 44 — images ride the same request
@@ -227,8 +236,112 @@ class TestChatStreamQueued:
 
         await _run()
         assert queue.requests_stream_key("ecorp") not in client.streams
-        published = client.streams[queue.requests_stream_key("support")]
-        assert len(published) == 1
+
+
+class TestChatStreamQueuedSubmissionDedup:
+    """The fix for a real gap the thread lock alone doesn't cover: a
+    double-submit that arrives AFTER the first attempt already finished
+    races nothing, so without this it would run as a second, independent
+    turn — see queue.py::claim_or_get_existing_submission's own
+    docstring."""
+
+    async def test_an_identical_resubmission_reuses_the_same_request_id_and_publishes_only_once(
+        self, monkeypatch
+    ):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        req = ChatRequest(message="hello", thread_id="t1")
+        await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+        await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+
+        published = client.streams[queue.requests_stream_key("ecorp")]
+        assert len(published) == 1  # the second call never published a second job
+
+    async def test_a_different_message_on_the_same_thread_is_not_deduplicated(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        await api.chat_stream_queued(
+            ChatRequest(message="hello", thread_id="t1"), ctx=TEST_CTX, domain="ecorp"
+        )
+        await api.chat_stream_queued(
+            ChatRequest(message="goodbye", thread_id="t1"), ctx=TEST_CTX, domain="ecorp"
+        )
+
+        published = client.streams[queue.requests_stream_key("ecorp")]
+        assert len(published) == 2
+
+    async def test_the_same_message_on_a_different_thread_is_not_deduplicated(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        await api.chat_stream_queued(
+            ChatRequest(message="hello", thread_id="t1"), ctx=TEST_CTX, domain="ecorp"
+        )
+        await api.chat_stream_queued(
+            ChatRequest(message="hello", thread_id="t2"), ctx=TEST_CTX, domain="ecorp"
+        )
+
+        published = client.streams[queue.requests_stream_key("ecorp")]
+        assert len(published) == 2
+
+    async def test_a_different_images_list_is_not_deduplicated(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        await api.chat_stream_queued(
+            ChatRequest(message="what is this?", thread_id="t1"), ctx=TEST_CTX, domain="ecorp"
+        )
+        await api.chat_stream_queued(
+            ChatRequest(message="what is this?", thread_id="t1", images=["https://example.com/cat.png"]),
+            ctx=TEST_CTX,
+            domain="ecorp",
+        )
+
+        published = client.streams[queue.requests_stream_key("ecorp")]
+        assert len(published) == 2
+
+    async def test_the_resubmission_streams_the_same_underlying_turns_events(self, monkeypatch):
+        """The whole point, not just an internal bookkeeping detail: a
+        caller that double-submitted must still get the REAL turn's actual
+        events back on its own SSE connection, not an empty/orphaned one."""
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        req = ChatRequest(message="hello", thread_id="t1")
+        first_response = await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+        second_response = await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+
+        request_id = json.loads(client.streams[queue.requests_stream_key("ecorp")][0][1]["payload"])[
+            "request_id"
+        ]
+        await queue.publish_result(client, request_id, {"type": "token", "content": "hi"})
+        await queue.publish_result(client, request_id, {"type": "done"})
+
+        first_chunks = [chunk async for chunk in first_response.body_iterator]
+        second_chunks = [chunk async for chunk in second_response.body_iterator]
+
+        for chunks in (first_chunks, second_chunks):
+            assert any('"content": "hi"' in c for c in chunks)
+            assert any('"type": "done"' in c for c in chunks)
+
+    async def test_after_the_dedup_window_a_resubmission_is_treated_as_fresh(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+        monkeypatch.setattr(api, "CHAT_SUBMIT_DEDUP_TTL_SECONDS", 10)
+
+        req = ChatRequest(message="hello", thread_id="t1")
+        await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+
+        # Simulate the dedup key's own TTL having already expired.
+        digest = api.hashlib.sha256(json.dumps(["hello", []]).encode()).hexdigest()
+        del client.kv[queue._submission_dedup_key("t1", digest)]
+
+        await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+
+        published = client.streams[queue.requests_stream_key("ecorp")]
+        assert len(published) == 2
 
 
 class TestChatResume:

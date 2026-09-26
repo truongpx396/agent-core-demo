@@ -670,6 +670,33 @@ class TestIsSafeToRetryTurn:
     async def test_an_unreadable_checkpoint_fails_closed(self):
         assert await agent_worker._is_safe_to_retry_turn(RaisingGraph(), {}, "t1") is False
 
+    async def test_a_turn_that_already_produced_a_final_answer_is_not_safe(self):
+        """Closes a real, narrower gap: a plain Q&A turn with NO tool
+        calls at all that fully finished (usage already recorded via
+        _record_turn_metrics) but crashed before this job's own ack would
+        otherwise be judged "safe" by the tool-call check alone and
+        blindly re-run — wasting a second LLM call and double-recording
+        that turn's usage cost for no benefit."""
+        graph = FakeGraph(
+            {"t1": [HumanMessage(content="what's 2+2?"), AIMessage(content="4")]}
+        )
+        assert await agent_worker._is_safe_to_retry_turn(graph, {}, "t1") is False
+
+    async def test_a_turn_still_holding_pending_tool_calls_is_not_yet_completed(self):
+        """An AIMessage that itself REQUESTS tool calls (not yet executed
+        — no ToolMessage exists for it) means the crash happened before
+        the tools even ran, not after the turn finished — must not be
+        confused with a genuinely completed final answer."""
+        graph = FakeGraph(
+            {
+                "t1": [
+                    HumanMessage(content="add a note about X"),
+                    AIMessage(content="", tool_calls=[{"name": "add_note", "args": {}, "id": "c1"}]),
+                ]
+            }
+        )
+        assert await agent_worker._is_safe_to_retry_turn(graph, {"add_note": "mutating"}, "t1") is True
+
 
 class TestHandleReclaimedJob:
     """`_handle_reclaimed_job` is what `_reclaim_loop` calls for every entry

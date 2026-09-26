@@ -66,15 +66,21 @@ provably safe:
   `HumanMessage` boundary the way "turn" has, so there was no cheap way to
   tell "did the just-approved call already run") — tool-level idempotency
   is what closed that gap, not anything added to this function itself.
-- `"turn"` — safe only if `_is_safe_to_retry_turn` finds no completed
+- `"turn"` — safe only if `_is_safe_to_retry_turn` finds BOTH no completed
   `mutating`/`outward` tool call (per this domain's own
-  `DomainPlugin.tool_capabilities()`) in the thread's checkpointed state
-  since its last `HumanMessage` — i.e. the crash happened before this turn
-  did anything irreversible (most commonly: during LLM inference, the
-  single slowest and most frequent step). Tool-level idempotency does NOT
-  extend to this case: a retried "turn" re-asks the LLM from scratch, which
-  gets brand-new tool_call_ids unrelated to whatever the crashed attempt's
-  own tool_calls were, so dedup can never "catch" a duplicate there.
+  `DomainPlugin.tool_capabilities()`) AND no already-produced final answer
+  (`_turn_already_completed`) in the thread's checkpointed state since its
+  last `HumanMessage` — i.e. the crash happened before this turn did
+  anything irreversible OR finished at all (most commonly: during LLM
+  inference, the single slowest and most frequent step). The
+  already-completed check exists because a turn can finish (and have its
+  usage/cost already recorded, `runtime_stream.py::_record_turn_metrics`)
+  with ZERO tool calls — the tool-call check alone would call that "safe"
+  and blindly re-run a turn that had nothing left to do, double-recording
+  its cost. Tool-level idempotency does NOT extend to either case: a
+  retried "turn" re-asks the LLM from scratch, which gets brand-new
+  tool_call_ids unrelated to whatever the crashed attempt's own tool_calls
+  were, so dedup can never "catch" a duplicate there.
 - Every safe case above is silently republished via `queue.py::republish_job`,
   up to `MAX_AUTO_RECLAIM_RETRIES` attempts (`queue.py::RECLAIM_ATTEMPTS_FIELD`
   on the payload) — beyond that, or once a "turn" is found to have already
@@ -100,7 +106,7 @@ import socket
 import uuid
 from typing import cast
 
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent import sql_store
 from app.agent.runtime import close_checkpointer_pool, init_graph_async
@@ -309,11 +315,30 @@ async def _process_with_limit(
         semaphore.release()
 
 
+def _turn_already_completed(turn_messages: list) -> bool:
+    """True if the last message in this turn's own slice is a real final
+    `AIMessage` (content produced, no pending `tool_calls`) — i.e. the
+    graph already reached `check_output`/`END` (or a safety-net fallback)
+    for this turn, which means `runtime_stream.py::_record_turn_metrics`
+    already ran and recorded this turn's usage/cost. Retrying from scratch
+    would re-run the whole LLM call again for an answer that already
+    exists, silently double-recording that cost for no benefit — a real,
+    if narrow, gap: `_is_safe_to_retry_turn`'s own tool-call check alone
+    says nothing about whether the turn had already finished, so a
+    zero-tool-call turn that crashed in the thin window between finishing
+    and this job's own ack used to be judged safe and blindly re-run."""
+    if not turn_messages:
+        return False
+    last = turn_messages[-1]
+    return isinstance(last, AIMessage) and not last.tool_calls
+
+
 async def _is_safe_to_retry_turn(graph, tool_capabilities: dict[str, str], thread_id: str) -> bool:
     """True only if this thread's checkpointed state proves nothing
-    irreversible happened yet for its most recent turn — i.e. re-running
-    that turn from scratch (a fresh `astream_events_turn` call) cannot
-    duplicate a real side effect.
+    irreversible AND nothing already-finished happened for its most recent
+    turn — i.e. re-running that turn from scratch (a fresh
+    `astream_events_turn` call) cannot duplicate a real side effect or
+    double-record a completed turn's usage cost.
 
     Reads the checkpoint via `graph.aget_state` (never re-runs anything —
     same read-only call `app/agent/runtime_stream.py::get_session_messages`/
@@ -322,21 +347,25 @@ async def _is_safe_to_retry_turn(graph, tool_capabilities: dict[str, str], threa
     `HumanMessage` before anything else runs, everything after that message
     belongs to the most recent turn only — whether that's the crashed one,
     or (if the crash happened before even that got checkpointed) a
-    DIFFERENT, already-completed turn. Either way, a `ToolMessage` after it
-    whose tool is `mutating`/`outward` (capability missing from the mapping
-    defaults to `outward` — fail closed, same default `graph_routing.py`
-    itself uses) means something irreversible already ran and must not run
-    again.
+    DIFFERENT, already-completed turn. Two things make it unsafe:
+    - `_turn_already_completed` — the turn already produced its final
+      answer (see that function's own docstring for the double-billing gap
+      this closes).
+    - A `ToolMessage` after the last `HumanMessage` whose tool is
+      `mutating`/`outward` (capability missing from the mapping defaults to
+      `outward` — fail closed, same default `graph_routing.py` itself
+      uses) — something irreversible already ran and must not run again.
 
     Deliberately conservative in one specific edge case: if the crash
     happened SO early no checkpoint for the new turn was ever written, this
     falls back to inspecting the PRECEDING (unrelated, already-completed)
-    turn instead — which may itself contain a mutating/outward call and
-    report "not safe" even though the crashed turn genuinely never started.
-    That's a false negative (dead-letters something that was actually fine
-    to retry), never a false positive, so it's an acceptable cost for not
-    needing separate bookkeeping of "where did this turn's own messages
-    start."
+    turn instead — which is, by definition, always `_turn_already_completed`
+    (it did finish) and may itself contain a mutating/outward call — so it
+    reports "not safe" even though the crashed turn genuinely never
+    started. That's a false negative (dead-letters something that was
+    actually fine to retry), never a false positive, so it's an acceptable
+    cost for not needing separate bookkeeping of "where did this turn's own
+    messages start."
 
     Fails closed (returns False) if the checkpoint itself can't be read —
     no existing caller in this codebase handles a corrupt (not just
@@ -359,7 +388,10 @@ async def _is_safe_to_retry_turn(graph, tool_capabilities: dict[str, str], threa
     )
     if last_human_index is None:
         return True  # this thread never even reached its first turn
-    for message in messages[last_human_index + 1 :]:
+    turn_messages = messages[last_human_index + 1 :]
+    if _turn_already_completed(turn_messages):
+        return False
+    for message in turn_messages:
         # `message.name or ""` handles the (untyped-as-impossible-but-not
         # enforced) case of a nameless ToolMessage the same as an unknown
         # tool: no match in `tool_capabilities` -> the "outward" fail-closed

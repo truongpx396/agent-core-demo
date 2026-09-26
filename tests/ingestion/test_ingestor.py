@@ -76,6 +76,74 @@ class TestIngestText:
             assert "parent_id" in point.payload
             assert "parent_text" in point.payload
 
+    async def test_reingesting_identical_content_produces_the_same_point_ids(self, monkeypatch):
+        """The actual fix this proves: a retried/reclaimed ingest job, or a
+        client's double-submitted upload, re-runs ingest_text with the
+        SAME text/source/ctx — point ids must land on the exact same
+        values both times so qdrant_store.upsert overwrites rather than
+        duplicates. See ingestor.py::_content_point_id's own docstring."""
+        _mock_embeddings(monkeypatch)
+        text = "Paragraph one about checkpointers.\n\nParagraph two about Qdrant."
+
+        first = {}
+        _mock_upsert(monkeypatch, first)
+        await ingestor.ingest_text(text, title="My Doc", ctx=TEST_CTX, source="upload:report.pdf")
+
+        second = {}
+        _mock_upsert(monkeypatch, second)
+        await ingestor.ingest_text(text, title="My Doc", ctx=TEST_CTX, source="upload:report.pdf")
+
+        first_ids = [p.id for p in first["points"]]
+        second_ids = [p.id for p in second["points"]]
+        assert first_ids == second_ids
+        assert len(set(first_ids)) == len(first_ids)  # no accidental collision between DIFFERENT chunks
+
+    async def test_different_content_produces_different_point_ids(self, monkeypatch):
+        _mock_embeddings(monkeypatch)
+
+        first = {}
+        _mock_upsert(monkeypatch, first)
+        await ingestor.ingest_text("Some original content here.", title="T", ctx=TEST_CTX, source="text")
+
+        second = {}
+        _mock_upsert(monkeypatch, second)
+        await ingestor.ingest_text("Completely different content.", title="T", ctx=TEST_CTX, source="text")
+
+        assert {p.id for p in first["points"]}.isdisjoint({p.id for p in second["points"]})
+
+    async def test_different_tenants_never_collide_onto_the_same_point_id(self, monkeypatch):
+        """tenant is folded into the id specifically so two tenants
+        uploading byte-identical content never silently share (and
+        overwrite) one another's point — see _content_point_id's own
+        docstring."""
+        _mock_embeddings(monkeypatch)
+        other_ctx = {"tenant": "other-co", "principal": "p2", "claims": {}}
+        text = "Identical content, different tenants."
+
+        first = {}
+        _mock_upsert(monkeypatch, first)
+        await ingestor.ingest_text(text, title="T", ctx=TEST_CTX, source="text")
+
+        second = {}
+        _mock_upsert(monkeypatch, second)
+        await ingestor.ingest_text(text, title="T", ctx=other_ctx, source="text")
+
+        assert {p.id for p in first["points"]}.isdisjoint({p.id for p in second["points"]})
+
+    async def test_different_source_produces_different_point_ids_for_the_same_text(self, monkeypatch):
+        _mock_embeddings(monkeypatch)
+        text = "Same text, different place it came from."
+
+        first = {}
+        _mock_upsert(monkeypatch, first)
+        await ingestor.ingest_text(text, title="T", ctx=TEST_CTX, source="upload:a.pdf")
+
+        second = {}
+        _mock_upsert(monkeypatch, second)
+        await ingestor.ingest_text(text, title="T", ctx=TEST_CTX, source="upload:b.pdf")
+
+        assert {p.id for p in first["points"]}.isdisjoint({p.id for p in second["points"]})
+
     async def test_sparse_embedding_failure_degrades_to_dense_only(self, monkeypatch):
         async def fake_embed_texts(texts):
             return [[0.1] for _ in texts]

@@ -39,7 +39,14 @@ child from it — whichever commits last silently wins, and the other
 job's turn vanishes from the thread's visible history. `agent_worker.py`
 acquires this lock before running ANY job for a thread_id and rejects a
 losing job fast (`ErrorCode.THREAD_BUSY`) rather than queueing it behind
-the winner, so a double-submit never produces two real turns.
+the winner — but only while both are genuinely CONCURRENT: a retry that
+arrives after the first job already finished races nothing, the lock is
+free again, and (without the third mechanism below) would run as a
+second, fully independent turn.
+
+A third per-THREAD mechanism: submission dedup
+(`claim_or_get_existing_submission`) — closes exactly that gap, for
+`POST /chat/stream/queued` specifically. See its own docstring.
 
 This module only wraps queue mechanics (publish/read, group setup) — it
 doesn't know what a "turn" or "event" IS. Producer: `app/api/main.py`
@@ -300,6 +307,57 @@ async def release_thread_lock(client: redis.Redis, thread_id: str, token: str) -
     a later job already acquired it; this caller no longer holds anything
     worth releasing."""
     await client.eval(_RELEASE_LOCK_SCRIPT, 1, thread_lock_key(thread_id), token)
+
+
+# --- A THIRD per-thread mechanism: submission dedup — closes a gap the
+# thread lock above does NOT: that lock only rules out two jobs for the
+# SAME thread_id running CONCURRENTLY. A double-submit (a client's own
+# network-level retry, or a double-click) that arrives AFTER the first
+# attempt already finished races nothing — the lock is free again, so the
+# retry runs as a genuinely new, independent turn: a second LLM call, with
+# its own fresh tool_call_ids, that can execute a real mutating tool call a
+# SECOND time (app/agent/tool_idempotency.py can't catch this either — its
+# dedup is keyed by tool_call_id, and an independently-decided second turn
+# never reuses the first's). `claim_or_get_existing_submission` closes that
+# specific window: identical (thread_id, text, images) submitted twice
+# within `ttl_seconds` reuses the FIRST attempt's own request_id instead of
+# publishing a second `"turn"` job, so the retrying caller's SSE connection
+# transparently gets that same turn's real events instead of either a
+# duplicate execution or a bare THREAD_BUSY error.
+def _submission_dedup_key(thread_id: str, digest: str) -> str:
+    return f"chat:submit_dedup:{thread_id}:{digest}"
+
+
+async def claim_or_get_existing_submission(
+    client: redis.Redis, *, thread_id: str, digest: str, request_id: str, ttl_seconds: int
+) -> tuple[str, bool]:
+    """`digest` is the caller's own stable hash of whatever makes two
+    submissions "the same" (text + images, for `POST /chat/stream/queued`)
+    — this function doesn't compute it, just claims a slot for it.　Returns
+    `(request_id_to_use, is_new_submission)`: the atomic `SET NX EX` either
+    lands (this is the first submission this window has seen — proceed to
+    publish a real job under `request_id`) or it doesn't (an identical
+    submission already claimed this window — reuse ITS request_id, and the
+    caller must NOT publish a second job).
+
+    Narrow accepted race: if the key expires between this call's failed
+    `SET` and its follow-up `GET` (a window of at most a few ms), this
+    falls back to claiming it fresh under the caller's OWN `request_id`
+    rather than looping — functionally identical to that key never having
+    existed at all, just resolved on this call instead of forcing a retry.
+    """
+    key = _submission_dedup_key(thread_id, digest)
+    claimed = bool(await client.set(key, request_id, nx=True, ex=ttl_seconds))
+    if claimed:
+        return request_id, True
+    existing = await client.get(key)
+    if existing is None:
+        await client.set(key, request_id, ex=ttl_seconds)
+        return request_id, True
+    # decode_responses=True (get_client's own contract) means this is
+    # always str at runtime; see StreamReadResponse's own comment on the
+    # same redis-py stub-typing gap.
+    return cast(str, existing), False
 
 
 async def publish_result(client: redis.Redis, request_id: str, event: dict) -> None:
