@@ -14,9 +14,13 @@ queue plumbing.
 A worker that dies mid-job leaves its entry pending for the consumer group
 forever unless something reclaims it — `_reclaim_loop` (run alongside the
 main read loop by every worker in the pool) does that via `XAUTOCLAIM`,
-same mechanism and "never blindly redeliver" policy as
-`app/job_queue/agent_worker.py`'s own reclaim loop; see
-`_handle_reclaimed_job`'s docstring for why.
+same mechanism as `app/job_queue/agent_worker.py`'s own reclaim loop.
+Unlike that one, a reclaimed ingest job is always safe to silently
+re-publish (capped by `MAX_AUTO_RECLAIM_RETRIES`): `ingestor.ingest_text`'s
+own Qdrant point ids are derived from content, not a random draw
+(`_content_point_id`), so re-running the job upserts onto the exact same
+ids instead of duplicating whatever the crashed attempt already wrote —
+see `_handle_reclaimed_job`'s own docstring.
 
 `run()` runs up to `_MAX_CONCURRENCY` jobs at once per process (an
 `asyncio.Semaphore`-bounded `create_task` per job, acquired before the task
@@ -60,6 +64,7 @@ from app.core import metrics
 from app.core.config import (
     INGEST_WORKER_MAX_CONCURRENCY,
     INGEST_WORKER_RECLAIM_IDLE_SECONDS,
+    MAX_AUTO_RECLAIM_RETRIES,
     WORKER_RECLAIM_INTERVAL_SECONDS,
 )
 from app.core.logging_config import bind_request_id, configure_logging
@@ -74,9 +79,11 @@ from app.ingestion.ingest_queue import (
     publish_result,
 )
 from app.job_queue.queue import (
+    RECLAIM_ATTEMPTS_FIELD,
     StreamReadResponse,
     publish_dead_letter,
     reclaim_stale_entries,
+    republish_job,
 )
 
 logger = logging.getLogger(__name__)
@@ -110,10 +117,14 @@ def _make_progress_reporter(client, job_id: str):
 
 async def process_job(client, entry_id: str, fields: dict) -> None:
     """Run one ingest job and publish its outcome — always ack, even on
-    failure, same "never redeliver an already-attempted job" reasoning as
-    `agent_worker.py::process_request`: a redelivered job would re-embed
-    and re-upsert the same document's chunks, duplicating them in the
-    index."""
+    failure, same shape as `agent_worker.py::process_request`. Not because
+    a retry would duplicate anything (`ingestor.ingest_text`'s point ids
+    are content-derived now, so re-running is safe — see
+    `_handle_reclaimed_job`'s own docstring, which DOES retry on this
+    same basis): a failure here (a corrupt file, a bad extraction) is
+    usually deterministic, so blindly retrying within this same attempt
+    would just fail again — surfacing the error immediately and letting
+    the caller decide whether to re-upload is the more useful behavior."""
     payload = json.loads(fields["payload"])
     job_id = payload["job_id"]
     with bind_request_id(job_id):
@@ -177,12 +188,19 @@ async def _handle_reclaimed_job(client, entry_id: str, fields: dict) -> None:
     """One entry `_reclaim_loop` found idle past
     `INGEST_WORKER_RECLAIM_IDLE_SECONDS` — its original worker almost
     certainly died mid-job (crashed, OOM-killed) before ever reaching
-    `process_job`'s own ack. NOT re-run: it may already have upserted some
-    chunks into the vector index, and redelivering it would duplicate them
-    — the same reason `process_job` always acks instead of ever letting a
-    failure be retried. Same policy as `agent_worker.py`'s own
-    `_handle_reclaimed_job`: surface an error, archive to a dead-letter
-    stream, ack."""
+    `process_job`'s own ack. Always safe to silently republish now
+    (`queue.py::republish_job`, capped by `MAX_AUTO_RECLAIM_RETRIES`, same
+    poison-pill protection as `agent_worker.py`'s own version): every point
+    `ingestor.ingest_text` writes has an id derived entirely from its own
+    content (`_content_point_id`), never a random draw, so re-running the
+    SAME job from scratch upserts onto the exact same ids instead of
+    duplicating whatever the crashed attempt already wrote — unlike a
+    reclaimed agent "turn", there's no equivalent to a mutating TOOL call
+    to check for here; the job's only side effect (the Qdrant upsert) IS
+    the idempotent operation. Only once `MAX_AUTO_RECLAIM_RETRIES` is
+    exhausted (a job that keeps crashing whichever worker picks it up) does
+    this fall back to surfacing an error and archiving to a dead-letter
+    stream, same as before this guarantee existed."""
     try:
         payload = json.loads(fields["payload"])
     except (KeyError, json.JSONDecodeError) as exc:
@@ -190,39 +208,49 @@ async def _handle_reclaimed_job(client, entry_id: str, fields: dict) -> None:
             "ingest_worker_reclaimed_payload_unreadable",
             extra={"entry_id": entry_id, "error_class": type(exc).__name__},
         )
-        payload = {}
-    else:
-        job_id = payload.get("job_id")
-        logger.warning(
-            "ingest_worker_job_reclaimed",
-            # NOT "filename" — that key collides with LogRecord's own
-            # built-in attribute of the same name and raises KeyError from
-            # inside logging's makeRecord.
-            extra={"entry_id": entry_id, "job_id": job_id, "upload_filename": payload.get("filename")},
+        await _dead_letter_reclaimed_ingest_job(client, entry_id, {}, reason="unreadable_payload")
+        return
+
+    job_id = payload.get("job_id")
+    attempts = payload.get(RECLAIM_ATTEMPTS_FIELD, 0)
+    logger.warning(
+        "ingest_worker_job_reclaimed",
+        # NOT "filename" — that key collides with LogRecord's own built-in
+        # attribute of the same name and raises KeyError from inside
+        # logging's makeRecord.
+        extra={
+            "entry_id": entry_id,
+            "job_id": job_id,
+            "upload_filename": payload.get("filename"),
+            "attempts": attempts,
+        },
+    )
+
+    if attempts < MAX_AUTO_RECLAIM_RETRIES:
+        await republish_job(client, requests_stream=INGEST_REQUESTS_STREAM, payload=payload)
+        metrics.agent_worker_job_reclaimed_total.labels(queue="ingest", outcome="retried").inc()
+        await client.xack(INGEST_REQUESTS_STREAM, INGEST_CONSUMER_GROUP, entry_id)
+        return
+
+    if job_id:
+        await publish_result(
+            client,
+            job_id,
+            {
+                "type": "error",
+                "content": (
+                    "The worker processing this upload kept failing after "
+                    "multiple attempts. Please upload it again."
+                ),
+            },
         )
-        if job_id:
-            await publish_result(
-                client,
-                job_id,
-                {
-                    "type": "error",
-                    "content": (
-                        "The worker processing this upload stopped responding "
-                        "before it finished. Please upload it again."
-                    ),
-                },
-            )
-    # outcome is always "dead_lettered": ingest jobs are never auto-retried
-    # (see this module's own docstring on why, unlike agent_worker.py's
-    # "turn"/"cancel" jobs) — the label still carries it so this metric's
-    # shape stays consistent across both queues.
+    await _dead_letter_reclaimed_ingest_job(client, entry_id, payload, reason="worker_lost")
+
+
+async def _dead_letter_reclaimed_ingest_job(client, entry_id: str, payload: dict, *, reason: str) -> None:
     metrics.agent_worker_job_reclaimed_total.labels(queue="ingest", outcome="dead_lettered").inc()
     await publish_dead_letter(
-        client,
-        requests_stream=INGEST_REQUESTS_STREAM,
-        entry_id=entry_id,
-        payload=payload,
-        reason="worker_lost",
+        client, requests_stream=INGEST_REQUESTS_STREAM, entry_id=entry_id, payload=payload, reason=reason
     )
     await client.xack(INGEST_REQUESTS_STREAM, INGEST_CONSUMER_GROUP, entry_id)
 

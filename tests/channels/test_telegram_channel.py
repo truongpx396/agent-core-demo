@@ -15,6 +15,7 @@ import pytest
 
 from app.channels import telegram as telegram_channel
 from app.core.errors import ErrorCode, ErrorEnvelope
+from tests.job_queue.test_queue import FakeRedis
 
 
 class _FakeResponse:
@@ -232,6 +233,11 @@ class TestRun:
         monkeypatch.setattr(telegram_channel, "AGENT_DOMAIN", "support")
         monkeypatch.setattr(telegram_channel, "resolve_domain", _fake_resolve_domain)
         monkeypatch.setattr(telegram_channel, "init_graph_async", _fake_init_graph_async)
+        # run() now loads the persisted offset (get_redis_client) BEFORE
+        # opening the httpx client below — without this mock, this test
+        # would silently reach whatever real Redis happens to be running
+        # on this machine instead of staying hermetic.
+        monkeypatch.setattr(telegram_channel, "get_redis_client", lambda: FakeRedis())
         monkeypatch.setattr(telegram_channel.httpx, "AsyncClient", _RaisingAsyncClient)
 
         with pytest.raises(_StopHere):
@@ -239,3 +245,136 @@ class TestRun:
 
         assert resolved_with["name"] == "support"
         assert primed_with == {"manifest": fake_manifest, "domain": "fake-domain"}
+
+
+class TestOffsetPersistence:
+    """`_load_offset`/`_save_offset` are the fix for a real bug: `offset`
+    used to live only in a local variable inside run(), so any process
+    restart reset it to 0 and Telegram would redeliver every update it
+    still remembers — every already-handled message since the last
+    restart, each producing a fresh duplicate turn and reply to a real
+    user. See run()'s own docstring for the full reasoning."""
+
+    async def test_load_returns_zero_when_nothing_persisted_yet(self):
+        client = FakeRedis()
+        assert await telegram_channel._load_offset(client, "ecorp") == 0
+
+    async def test_save_then_load_round_trips(self):
+        client = FakeRedis()
+        await telegram_channel._save_offset(client, "ecorp", 12345)
+        assert await telegram_channel._load_offset(client, "ecorp") == 12345
+
+    async def test_offsets_are_scoped_per_domain(self):
+        """Each domain runs as its own process/bot token — a support
+        channel's offset must never leak into (or be clobbered by) a
+        sales channel's, even sharing the same Redis."""
+        client = FakeRedis()
+        await telegram_channel._save_offset(client, "support", 10)
+        await telegram_channel._save_offset(client, "sales", 20)
+
+        assert await telegram_channel._load_offset(client, "support") == 10
+        assert await telegram_channel._load_offset(client, "sales") == 20
+
+
+class TestRunPersistsOffsetAcrossPolls:
+    async def test_resumes_from_the_previously_persisted_offset(self, monkeypatch):
+        """A fresh process must pick up where the last one left off, not
+        restart from 0 (Telegram's own update history) — the actual
+        regression this whole fix exists for."""
+
+        class _StopHere(BaseException):
+            """BaseException, not Exception: raised from INSIDE getUpdates,
+            which run()'s own poll loop wraps in a broad
+            `except Exception` (a real poll failure must not kill the
+            loop) — an ordinary Exception here would just be swallowed and
+            retried forever instead of ending this test."""
+
+        redis_client = FakeRedis()
+        await telegram_channel._save_offset(redis_client, "ecorp", 500)
+        seen_offsets = []
+
+        class _RecordingThenStoppingClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get(self, url, params=None):
+                seen_offsets.append(params["offset"])
+                raise _StopHere()
+
+        monkeypatch.setattr(telegram_channel, "TELEGRAM_BOT_TOKEN", "fake-token")
+        monkeypatch.setattr(telegram_channel, "AGENT_DOMAIN", "ecorp")
+        monkeypatch.setattr(
+            telegram_channel, "resolve_domain", lambda name: (type("M", (), {"name": name})(), "d")
+        )
+
+        async def _fake_init_graph_async(manifest=None, domain=None):
+            return None
+
+        monkeypatch.setattr(telegram_channel, "init_graph_async", _fake_init_graph_async)
+        monkeypatch.setattr(telegram_channel, "get_redis_client", lambda: redis_client)
+        monkeypatch.setattr(telegram_channel.httpx, "AsyncClient", _RecordingThenStoppingClient)
+
+        with pytest.raises(_StopHere):
+            await telegram_channel.run()
+
+        assert seen_offsets == [500]
+
+    async def test_persists_the_new_offset_after_each_message_is_handled(self, monkeypatch):
+        """`_save_offset` is called from the `for update in updates:` body,
+        NOT inside run()'s narrow `except Exception` around getUpdates —
+        raising from there (rather than from a second getUpdates call)
+        stops the loop right after the one behavior this test cares about,
+        without depending on run()'s own retry/sleep mechanics at all."""
+
+        class _StopHere(Exception):
+            pass
+
+        redis_client = FakeRedis()
+        real_save_offset = telegram_channel._save_offset
+
+        async def _save_offset_then_stop(client, domain, offset):
+            await real_save_offset(client, domain, offset)
+            raise _StopHere()
+
+        class _OneBatchClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get(self, url, params=None):
+                return _FakeResponse({"result": [{"update_id": 777, "message": _message()}]})
+
+            async def post(self, url, json=None):
+                return _FakeResponse({"ok": True})
+
+        fake_astream, _ = _fake_astream([{"type": "token", "content": "ok"}])
+        monkeypatch.setattr(telegram_channel, "astream_events_turn_unattended", fake_astream)
+        monkeypatch.setattr(telegram_channel, "TELEGRAM_BOT_TOKEN", "fake-token")
+        monkeypatch.setattr(telegram_channel, "AGENT_DOMAIN", "ecorp")
+        monkeypatch.setattr(
+            telegram_channel, "resolve_domain", lambda name: (type("M", (), {"name": name})(), "d")
+        )
+
+        async def _fake_init_graph_async(manifest=None, domain=None):
+            return None
+
+        monkeypatch.setattr(telegram_channel, "init_graph_async", _fake_init_graph_async)
+        monkeypatch.setattr(telegram_channel, "get_redis_client", lambda: redis_client)
+        monkeypatch.setattr(telegram_channel, "_save_offset", _save_offset_then_stop)
+        monkeypatch.setattr(telegram_channel.httpx, "AsyncClient", _OneBatchClient)
+
+        with pytest.raises(_StopHere):
+            await telegram_channel.run()
+
+        assert await telegram_channel._load_offset(redis_client, "ecorp") == 778

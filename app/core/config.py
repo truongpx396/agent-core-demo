@@ -210,6 +210,19 @@ class Settings(BaseSettings):
     # semantic_cache.py/moderation.py.
     rate_limit_per_minute: int = 30
 
+    # How long POST /chat/stream/queued's own submission-dedup window stays
+    # open (app/job_queue/queue.py::claim_or_get_existing_submission) — an
+    # identical (thread_id, text, images) resubmission within this window
+    # reuses the first attempt's request_id instead of publishing a second,
+    # independent turn (see that function's own docstring for the gap this
+    # closes: the thread lock alone doesn't cover a retry that arrives
+    # after the first attempt already finished). Short on purpose: long
+    # enough to absorb a client's own network-level retry (typically well
+    # under a few seconds), short enough that a user who genuinely re-sends
+    # the exact same short message on purpose a bit later isn't silently
+    # merged into their earlier one.
+    chat_submit_dedup_ttl_seconds: int = 10
+
     # Concurrent turns ONE agent_worker.py process runs at once
     # (asyncio.Semaphore-bounded). Env-configurable so load tests can dial it
     # without a redeploy — production sizing depends on the downstream LLM
@@ -402,6 +415,7 @@ MINIO_SECRET_KEY = settings.minio_secret_key
 MINIO_BUCKET = settings.minio_bucket
 MINIO_SECURE = settings.minio_secure
 RATE_LIMIT_PER_MINUTE = settings.rate_limit_per_minute
+CHAT_SUBMIT_DEDUP_TTL_SECONDS = settings.chat_submit_dedup_ttl_seconds
 AGENT_WORKER_MAX_CONCURRENCY = settings.agent_worker_max_concurrency
 CHECKPOINTER_POOL_MAX_SIZE = settings.checkpointer_pool_max_size
 INGEST_WORKER_MAX_CONCURRENCY = settings.ingest_worker_max_concurrency

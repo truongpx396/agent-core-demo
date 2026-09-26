@@ -39,6 +39,7 @@ import logging
 import signal
 
 import httpx
+import redis.asyncio as redis
 
 from app.agent import sql_store
 from app.agent.runtime import close_checkpointer_pool, init_graph_async
@@ -48,6 +49,7 @@ from app.core.logging_config import configure_logging
 from app.core.security import SecurityCtx
 from app.core.telemetry import configure_telemetry
 from app.domains.registry import resolve_domain
+from app.job_queue.queue import get_client as get_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,30 @@ _MESSAGE_CHAR_LIMIT = 4000  # under Telegram's real 4096-UTF16-unit cap, with he
 
 def _api_url(method: str) -> str:
     return f"{_API_BASE}/bot{TELEGRAM_BOT_TOKEN}/{method}"
+
+
+def _offset_key(domain: str) -> str:
+    return f"telegram:offset:{domain}"
+
+
+async def _load_offset(client: redis.Redis, domain: str) -> int:
+    """The durable half of the fix for a real bug: `offset` used to live
+    only in a local variable, so any process restart reset it to 0 and
+    Telegram would redeliver EVERY update it still remembers (its own
+    retention window, not bounded by anything this app controls) — every
+    already-handled message since the last restart, each producing a fresh
+    duplicate turn and reply to a real user. Reading the last persisted
+    value here (0 if this domain has never polled before) closes that."""
+    raw = await client.get(_offset_key(domain))
+    return int(raw) if raw is not None else 0
+
+
+async def _save_offset(client: redis.Redis, domain: str, offset: int) -> None:
+    """Called AFTER a message is handled, not before — see run()'s own
+    comment on why persisting only once handling has actually succeeded is
+    the safer failure mode (at-least-once/possible-duplicate-reply beats
+    at-most-once/silently-dropped-message for a chat bot)."""
+    await client.set(_offset_key(domain), str(offset))
 
 
 def _thread_id_for_chat(chat_id: int) -> str:
@@ -147,11 +173,18 @@ async def handle_message(client: httpx.AsyncClient, message: dict) -> None:
 
 async def run() -> None:
     """The long-poll loop: fetch updates since the last offset, handle each
-    sequentially (one chat at a time), then advance `offset` past the batch
-    — a message is never replayed after a successful reply, but IS retried
-    (at-least-once) if the process dies mid-batch. Sequential is a
-    deliberate demo-scope choice; a real deployment fanning out to many
-    concurrent chats would want a worker pool.
+    sequentially (one chat at a time), then advance AND PERSIST `offset`
+    past each one — a message is never replayed after a successful reply,
+    and (since `offset` is now durable in Redis, not just a local variable)
+    a process restart resumes from the last one actually handled instead of
+    redelivering every update Telegram still remembers. A crash between
+    finishing `handle_message` and the persisting `_save_offset` call below
+    still means that one message gets redelivered and re-handled on
+    restart (a duplicate reply) — accepted as the right tradeoff over the
+    alternative (persist BEFORE handling), which would silently drop a
+    user's message forever if the crash happened while handling it.
+    Sequential is a deliberate demo-scope choice; a real deployment fanning
+    out to many concurrent chats would want a worker pool.
     """
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError(
@@ -164,7 +197,8 @@ async def run() -> None:
     # AGENT_DOMAIN resolved to — it must be bound to the same loop driving
     # it (see runtime.py).
     await init_graph_async(manifest=manifest, domain=domain)
-    offset = 0
+    redis_client = get_redis_client()
+    offset = await _load_offset(redis_client, AGENT_DOMAIN)
 
     # Graceful shutdown: SIGTERM/SIGINT stops new getUpdates polls but never
     # interrupts a message already being handled (same shape as
@@ -191,10 +225,11 @@ async def run() -> None:
                 continue
 
             for update in updates:
-                offset = update["update_id"] + 1
                 message = update.get("message")
                 if message:
                     await handle_message(client, message)
+                offset = update["update_id"] + 1
+                await _save_offset(redis_client, AGENT_DOMAIN, offset)
 
     logger.info("telegram_channel_stopping")
     # Same reasoning as app/api/main.py's lifespan shutdown: handle_message

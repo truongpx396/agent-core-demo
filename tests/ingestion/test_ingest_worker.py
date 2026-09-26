@@ -344,36 +344,57 @@ class TestConcurrentDispatch:
 
 class TestHandleReclaimedJob:
     """`_handle_reclaimed_job` is what `_reclaim_loop` calls for every entry
-    `queue.py::reclaim_stale_entries` finds abandoned by a dead worker —
-    same policy as app/job_queue/agent_worker.py's own version: never
-    redeliver (an abandoned job may already have upserted chunks), instead
-    surface an error, archive to a dead-letter stream, and ack."""
+    `queue.py::reclaim_stale_entries` finds abandoned by a dead worker.
+    Always safely retried now (up to MAX_AUTO_RECLAIM_RETRIES) — see this
+    module's own docstring for why re-running `ingest_text` is safe
+    (content-derived point ids, app/ingestion/ingestor.py::_content_point_id) —
+    with dead-lettering as the fallback only once retries are exhausted."""
 
-    async def test_publishes_an_error_archives_and_acks(self):
+    async def test_republishes_the_job_instead_of_dead_lettering_by_default(self):
         client = FakeRedis()
         entry_id, fields = _entry(job_id="j9", filename="report.pdf")
         before = _count(
-            ingest_worker.metrics.agent_worker_job_reclaimed_total, queue="ingest", outcome="dead_lettered"
+            ingest_worker.metrics.agent_worker_job_reclaimed_total, queue="ingest", outcome="retried"
         )
 
         await ingest_worker._handle_reclaimed_job(client, entry_id, fields)
 
-        events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j9")]]
+        # No error surfaced, nothing dead-lettered — the caller listening on
+        # j9's results stream stays blocked, transparently waiting for the
+        # retry's own real outcome instead.
+        assert ingest_queue.results_stream_key("j9") not in client.streams
+        assert dead_letter_stream_key(ingest_queue.INGEST_REQUESTS_STREAM) not in client.streams
+        assert client.acked == [entry_id]
+
+        republished = client.streams[ingest_queue.INGEST_REQUESTS_STREAM]
+        assert len(republished) == 1
+        new_payload = json.loads(republished[0][1]["payload"])
+        assert new_payload["job_id"] == "j9"
+        assert new_payload["_reclaim_attempts"] == 1
+        assert (
+            _count(ingest_worker.metrics.agent_worker_job_reclaimed_total, queue="ingest", outcome="retried")
+            == before + 1
+        )
+
+    async def test_dead_letters_once_retries_are_exhausted(self, monkeypatch):
+        monkeypatch.setattr(ingest_worker, "MAX_AUTO_RECLAIM_RETRIES", 1)
+        client = FakeRedis()
+        entry_id, fields = _entry(job_id="j11", filename="report.pdf")
+        payload = json.loads(fields["payload"])
+        payload["_reclaim_attempts"] = 1  # already retried once
+        fields = {"payload": json.dumps(payload)}
+
+        await ingest_worker._handle_reclaimed_job(client, entry_id, fields)
+
+        events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j11")]]
         assert len(events) == 1
         assert events[0]["type"] == "error"
 
         dead = client.streams[dead_letter_stream_key(ingest_queue.INGEST_REQUESTS_STREAM)]
         assert len(dead) == 1
         assert dead[0][1]["original_entry_id"] == entry_id
-        assert json.loads(dead[0][1]["payload"])["job_id"] == "j9"
-
+        assert json.loads(dead[0][1]["payload"])["job_id"] == "j11"
         assert client.acked == [entry_id]
-        assert (
-            _count(
-                ingest_worker.metrics.agent_worker_job_reclaimed_total, queue="ingest", outcome="dead_lettered"
-            )
-            == before + 1
-        )
 
     async def test_an_unreadable_payload_still_acks_and_dead_letters_without_raising(self):
         client = FakeRedis()
@@ -388,11 +409,18 @@ class TestHandleReclaimedJob:
 
 
 class TestReclaimLoop:
-    async def test_reclaims_an_abandoned_entry_then_stops_when_signalled(self, monkeypatch):
+    async def test_reclaims_and_republishes_an_abandoned_entry_then_stops_when_signalled(self, monkeypatch):
         monkeypatch.setattr(ingest_worker, "WORKER_RECLAIM_INTERVAL_SECONDS", 0.01)
         client = FakeRedis()
-        entry_id, fields = _entry(job_id="j10")
-        client.streams[ingest_queue.INGEST_REQUESTS_STREAM] = [(entry_id, fields)]
+        _, fields = _entry(job_id="j10")
+        # Via xadd + xreadgroup (not a direct `client.streams[...] = ...`
+        # splice) so the entry gets a real, distinct id from FakeRedis's own
+        # counter — this test's own retry republishes a second entry onto
+        # the same stream, and a collision with `entry_id` would make the
+        # two indistinguishable (same reasoning as agent_worker.py's own
+        # equivalent test).
+        entry_id = await client.xadd(ingest_queue.INGEST_REQUESTS_STREAM, fields)
+        await client.xreadgroup("some-other-group", "dead-consumer", {ingest_queue.INGEST_REQUESTS_STREAM: ">"})
         client._delivered[entry_id] = 999_999_999  # already long abandoned
 
         stop_event = asyncio.Event()
@@ -401,9 +429,13 @@ class TestReclaimLoop:
         stop_event.set()
         await asyncio.wait_for(task, timeout=1)
 
-        events = [json.loads(f["payload"]) for _, f in client.streams[ingest_queue.results_stream_key("j10")]]
-        assert events[0]["type"] == "error"
         assert entry_id in client.acked
+        assert ingest_queue.results_stream_key("j10") not in client.streams  # no error surfaced
+        republished = [
+            f for eid, f in client.streams[ingest_queue.INGEST_REQUESTS_STREAM] if eid != entry_id
+        ]
+        assert len(republished) == 1
+        assert json.loads(republished[0]["payload"])["job_id"] == "j10"
 
     async def test_a_redis_error_during_a_pass_does_not_kill_the_loop(self, monkeypatch):
         monkeypatch.setattr(ingest_worker, "WORKER_RECLAIM_INTERVAL_SECONDS", 0.01)
