@@ -7,9 +7,17 @@ monkeypatched so these never touch a real graph/LLM.
 """
 import asyncio
 import json
+from types import SimpleNamespace
+
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.job_queue import agent_worker
-from app.job_queue.queue import CONSUMER_GROUP, results_stream_key
+from app.job_queue.queue import (
+    CONSUMER_GROUP,
+    dead_letter_stream_key,
+    results_stream_key,
+)
+from tests.conftest import metric_value as _count
 from tests.job_queue.test_queue import FakeRedis
 
 REQUESTS_STREAM = agent_worker.REQUESTS_STREAM  # this test module's worker
@@ -578,6 +586,279 @@ class TestSameThreadJobsAreSerialized:
         for rid in ("r1", "r2"):
             events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key(rid)]]
             assert events == [{"type": "done"}]
+
+
+class FakeGraph:
+    """Stands in for the real compiled graph's `aget_state` — just enough
+    to drive `_is_safe_to_retry_turn` without a real checkpointer/Postgres.
+    `states` maps thread_id -> the message list that thread's checkpoint
+    would report; a thread with no entry behaves like one that was never
+    checkpointed at all (empty `.values`)."""
+
+    def __init__(self, states: dict | None = None):
+        self._states = states or {}
+
+    async def aget_state(self, config):
+        thread_id = config["configurable"]["thread_id"]
+        return SimpleNamespace(values={"messages": self._states.get(thread_id, [])})
+
+
+class RaisingGraph:
+    async def aget_state(self, config):
+        raise RuntimeError("checkpoint deserialization failed")
+
+
+class TestIsSafeToRetryTurn:
+    """`_is_safe_to_retry_turn` is the safety check standing between "a
+    crashed worker's turn" and "silently running it again" — see this
+    module's own docstring for why only `mutating`/`outward` tool calls
+    (never `read_only` ones) make that unsafe."""
+
+    async def test_no_checkpoint_at_all_is_safe(self):
+        graph = FakeGraph()  # thread never seen -> empty state
+        assert await agent_worker._is_safe_to_retry_turn(graph, {}, "t1") is True
+
+    async def test_a_human_message_with_nothing_after_it_is_safe(self):
+        graph = FakeGraph({"t1": [HumanMessage(content="hi")]})
+        assert await agent_worker._is_safe_to_retry_turn(graph, {}, "t1") is True
+
+    async def test_a_completed_read_only_tool_call_is_safe(self):
+        graph = FakeGraph(
+            {"t1": [HumanMessage(content="hi"), ToolMessage(content="42", name="calculator", tool_call_id="c1")]}
+        )
+        assert (
+            await agent_worker._is_safe_to_retry_turn(graph, {"calculator": "read_only"}, "t1")
+            is True
+        )
+
+    async def test_a_completed_mutating_tool_call_is_not_safe(self):
+        graph = FakeGraph(
+            {"t1": [HumanMessage(content="add a note"), ToolMessage(content="ok", name="add_note", tool_call_id="c1")]}
+        )
+        assert (
+            await agent_worker._is_safe_to_retry_turn(graph, {"add_note": "mutating"}, "t1")
+            is False
+        )
+
+    async def test_a_tool_missing_from_capabilities_fails_closed_as_outward(self):
+        """Same default `graph_routing.py`'s own gate uses for an
+        undeclared tool — never assume unknown means safe."""
+        graph = FakeGraph(
+            {"t1": [HumanMessage(content="hi"), ToolMessage(content="ok", name="mystery_tool", tool_call_id="c1")]}
+        )
+        assert await agent_worker._is_safe_to_retry_turn(graph, {}, "t1") is False
+
+    async def test_only_looks_after_the_most_recent_human_message(self):
+        """A mutating tool call from an EARLIER, already-completed turn on
+        this same thread must not poison the safety check for a later,
+        still-fresh turn that hasn't touched any tool yet."""
+        graph = FakeGraph(
+            {
+                "t1": [
+                    HumanMessage(content="add a note"),
+                    ToolMessage(content="ok", name="add_note", tool_call_id="c1"),
+                    AIMessage(content="Done."),
+                    HumanMessage(content="what's the weather"),  # this turn's own message
+                ]
+            }
+        )
+        assert (
+            await agent_worker._is_safe_to_retry_turn(graph, {"add_note": "mutating"}, "t1")
+            is True
+        )
+
+    async def test_an_unreadable_checkpoint_fails_closed(self):
+        assert await agent_worker._is_safe_to_retry_turn(RaisingGraph(), {}, "t1") is False
+
+
+class TestHandleReclaimedJob:
+    """`_handle_reclaimed_job` is what `_reclaim_loop` calls for every entry
+    `queue.py::reclaim_stale_entries` finds abandoned by a dead worker — see
+    this module's own docstring for the full per-kind policy. `graph`/
+    `tool_capabilities` below default to an empty `FakeGraph()`/`{}` (i.e.
+    "nothing ran yet") except where a test needs otherwise."""
+
+    async def test_a_turn_that_never_ran_a_tool_is_silently_retried_not_dead_lettered(self):
+        client = FakeRedis()
+        entry_id, fields = _entry(kind="turn", request_id="r1", thread_id="t1")
+        before_retried = _count(agent_worker.metrics.agent_worker_job_reclaimed_total, queue="agent", outcome="retried")
+
+        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph(), tool_capabilities={})
+
+        # No error surfaced, nothing dead-lettered — the caller listening on
+        # r1's results stream stays blocked, transparently waiting for the
+        # retry's own real outcome instead.
+        assert results_stream_key("r1") not in client.streams
+        assert dead_letter_stream_key(agent_worker.REQUESTS_STREAM) not in client.streams
+        assert client.acked == [entry_id]
+
+        republished = client.streams[agent_worker.REQUESTS_STREAM]
+        assert len(republished) == 1
+        new_payload = json.loads(republished[0][1]["payload"])
+        assert new_payload["request_id"] == "r1"
+        assert new_payload["_reclaim_attempts"] == 1
+        assert (
+            _count(agent_worker.metrics.agent_worker_job_reclaimed_total, queue="agent", outcome="retried")
+            == before_retried + 1
+        )
+
+    async def test_a_turn_that_already_ran_a_mutating_tool_is_dead_lettered_not_retried(self):
+        client = FakeRedis()
+        entry_id, fields = _entry(kind="turn", request_id="r2", thread_id="t2")
+        graph = FakeGraph(
+            {"t2": [HumanMessage(content="hi"), ToolMessage(content="ok", name="add_note", tool_call_id="c1")]}
+        )
+
+        await agent_worker._handle_reclaimed_job(
+            client, entry_id, fields, graph=graph, tool_capabilities={"add_note": "mutating"}
+        )
+
+        events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r2")]]
+        assert events[0]["code"] == "worker_lost"
+        dead = client.streams[dead_letter_stream_key(agent_worker.REQUESTS_STREAM)]
+        assert len(dead) == 1
+        assert client.acked == [entry_id]
+        assert agent_worker.REQUESTS_STREAM not in client.streams or all(
+            json.loads(f["payload"]).get("request_id") != "r2"
+            for _, f in client.streams.get(agent_worker.REQUESTS_STREAM, [])
+        )  # never republished
+
+    async def test_a_turn_already_at_the_retry_cap_is_dead_lettered_even_though_safe(self, monkeypatch):
+        """A "poison pill" job that keeps crashing whichever worker picks
+        it up must eventually land in the dead letter stream for a human,
+        not loop crash/reclaim/retry forever."""
+        monkeypatch.setattr(agent_worker, "MAX_AUTO_RECLAIM_RETRIES", 1)
+        client = FakeRedis()
+        entry_id, fields = _entry(kind="turn", request_id="r3", thread_id="t3")
+        payload = json.loads(fields["payload"])
+        payload["_reclaim_attempts"] = 1  # already retried once
+        fields = {"payload": json.dumps(payload)}
+
+        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph(), tool_capabilities={})
+
+        events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r3")]]
+        assert events[0]["code"] == "worker_lost"
+        assert len(client.streams[dead_letter_stream_key(agent_worker.REQUESTS_STREAM)]) == 1
+
+    async def test_a_resume_is_never_auto_retried_even_with_an_empty_checkpoint(self):
+        """"resume" has no fresh HumanMessage boundary to check against —
+        see this module's own docstring for why it's never a candidate for
+        auto-retry regardless of what the checkpoint shows."""
+        client = FakeRedis()
+        entry_id, fields = _entry(kind="resume", request_id="r4", thread_id="t4")
+
+        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph(), tool_capabilities={})
+
+        events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r4")]]
+        assert events[0]["code"] == "worker_lost"
+        assert client.acked == [entry_id]
+
+    async def test_a_cancel_is_always_auto_retried(self):
+        """Cancelling is inherently idempotent — safe regardless of
+        checkpoint state, no inspection needed at all."""
+        client = FakeRedis()
+        entry_id, fields = _entry(kind="cancel", request_id="r5", thread_id="t5")
+
+        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph(), tool_capabilities={})
+
+        assert results_stream_key("r5") not in client.streams
+        assert dead_letter_stream_key(agent_worker.REQUESTS_STREAM) not in client.streams
+        assert client.acked == [entry_id]
+        republished = client.streams[agent_worker.REQUESTS_STREAM]
+        assert json.loads(republished[0][1]["payload"])["kind"] == "cancel"
+
+    async def test_an_unreadable_payload_still_acks_and_dead_letters_without_raising(self):
+        client = FakeRedis()
+        entry_id = "9-0"
+        fields = {"payload": "not valid json"}
+
+        await agent_worker._handle_reclaimed_job(
+            client, entry_id, fields, graph=FakeGraph(), tool_capabilities={}
+        )  # must not raise
+
+        assert client.acked == [entry_id]
+        dead = client.streams[dead_letter_stream_key(agent_worker.REQUESTS_STREAM)]
+        assert len(dead) == 1
+
+
+class TestReclaimLoop:
+    async def test_reclaims_a_dead_lettered_kind_end_to_end_then_stops_when_signalled(self, monkeypatch):
+        """"resume" is used here specifically because it's dead-lettered
+        unconditionally — proves the loop's own wiring (reclaim -> handle ->
+        stop) without needing to also drive the turn-safety check."""
+        monkeypatch.setattr(agent_worker, "WORKER_RECLAIM_INTERVAL_SECONDS", 0.01)
+        client = FakeRedis()
+        entry_id, fields = _entry(kind="resume", request_id="r5", thread_id="t5")
+        client.streams[agent_worker.REQUESTS_STREAM] = [(entry_id, fields)]
+        client._delivered[entry_id] = 999_999_999  # already long abandoned
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            agent_worker._reclaim_loop(client, stop_event, graph=FakeGraph(), tool_capabilities={})
+        )
+        await asyncio.sleep(0.05)  # let at least one pass run
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1)
+
+        events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r5")]]
+        assert events[0]["code"] == "worker_lost"
+        assert entry_id in client.acked
+
+    async def test_reclaims_a_retryable_turn_end_to_end(self, monkeypatch):
+        monkeypatch.setattr(agent_worker, "WORKER_RECLAIM_INTERVAL_SECONDS", 0.01)
+        client = FakeRedis()
+        _, fields = _entry(kind="turn", request_id="r6", thread_id="t6")
+        # Via xadd + xreadgroup (not a direct `client.streams[...] = ...`
+        # splice like the sibling test above) so the entry gets a REAL,
+        # distinct id from FakeRedis's own counter — needed here because
+        # this test's own retry republishes a second entry onto the same
+        # stream, and a collision with `entry_id` would make the two
+        # indistinguishable.
+        entry_id = await client.xadd(agent_worker.REQUESTS_STREAM, fields)
+        await client.xreadgroup("some-other-group", "dead-consumer", {agent_worker.REQUESTS_STREAM: ">"})
+        client._delivered[entry_id] = 999_999_999
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            agent_worker._reclaim_loop(client, stop_event, graph=FakeGraph(), tool_capabilities={})
+        )
+        await asyncio.sleep(0.05)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1)
+
+        assert entry_id in client.acked
+        assert results_stream_key("r6") not in client.streams  # no error surfaced
+        republished = [
+            f for eid, f in client.streams[agent_worker.REQUESTS_STREAM] if eid != entry_id
+        ]
+        assert len(republished) == 1
+        assert json.loads(republished[0]["payload"])["request_id"] == "r6"
+
+    async def test_a_redis_error_during_a_pass_does_not_kill_the_loop(self, monkeypatch):
+        """One bad reclaim pass (a transient Redis blip) must not end
+        reclaim coverage for this whole worker process's life — the next
+        interval should still run."""
+        monkeypatch.setattr(agent_worker, "WORKER_RECLAIM_INTERVAL_SECONDS", 0.01)
+        client = FakeRedis()
+        calls = []
+
+        async def flaky_reclaim(*a, **kw):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("redis blip")
+            return []
+
+        monkeypatch.setattr(agent_worker, "reclaim_stale_entries", flaky_reclaim)
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            agent_worker._reclaim_loop(client, stop_event, graph=FakeGraph(), tool_capabilities={})
+        )
+        await asyncio.sleep(0.05)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1)
+
+        assert len(calls) >= 2  # survived the first pass's failure and ran again
 
 
 async def _noop_async(*args, **kwargs):

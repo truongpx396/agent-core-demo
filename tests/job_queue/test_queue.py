@@ -31,15 +31,21 @@ class FakeRedis:
         self.deleted: list[str] = []
         self.kv: dict[str, str] = {}  # plain SET/GET/DELETE keys — the cancel flag
         self._counter = 0
-        self._delivered: set[str] = set()
+        # entry_id -> simulated idle time in ms since last delivery/claim.
+        # Real Redis derives this from a wall clock; tests instead set it
+        # directly (e.g. `client._delivered[entry_id] = 999_999`) to
+        # simulate "abandoned long enough to reclaim" without a fake clock.
+        self._delivered: dict[str, int] = {}
 
     def _next_id(self) -> str:
         self._counter += 1
         return f"{self._counter}-0"
 
-    async def xadd(self, stream, fields):
+    async def xadd(self, stream, fields, maxlen=None, approximate=True):
         entry_id = self._next_id()
         self.streams.setdefault(stream, []).append((entry_id, dict(fields)))
+        if maxlen is not None:
+            self.streams[stream] = self.streams[stream][-maxlen:]
         return entry_id
 
     async def xgroup_create(self, stream, group, id="0", mkstream=False):
@@ -69,9 +75,27 @@ class FakeRedis:
                 entries = entries[:count]
             if entries:
                 for eid, _ in entries:
-                    self._delivered.add(eid)
+                    self._delivered[eid] = 0
                 result.append((key, entries))
         return result
+
+    async def xautoclaim(self, stream, group, consumer, min_idle_time, start_id="0-0", count=None):
+        """Just enough of real XAUTOCLAIM for queue.py::reclaim_stale_entries:
+        claims (and returns) every pending, unacked entry whose simulated
+        idle time (see `_delivered`'s own docstring) is at least
+        `min_idle_time` ms. Always drains in one pass (returns cursor
+        "0-0"), unlike real Redis's paginated form — reclaim_stale_entries's
+        own loop still works correctly against that, it just never repeats."""
+        claimed = [
+            (eid, f)
+            for eid, f in self.streams.get(stream, [])
+            if eid in self._delivered and eid not in self.acked and self._delivered[eid] >= min_idle_time
+        ]
+        if count:
+            claimed = claimed[:count]
+        for eid, _ in claimed:
+            self._delivered[eid] = 0  # claimed entries reset to freshly-delivered
+        return ["0-0", claimed, []]
 
     async def xack(self, stream, group, entry_id):
         self.acked.append(entry_id)
@@ -395,3 +419,137 @@ class TestDeleteResultsStream:
                 raise RuntimeError("connection reset")
 
         await queue.delete_results_stream(_RaisingClient(), "r1")  # must not raise
+
+
+class TestReclaimStaleEntries:
+    """queue.py's crash-recovery primitive: finds entries a dead worker
+    claimed but never acked. See app/job_queue/agent_worker.py's/
+    app/ingestion/ingest_worker.py's own `_reclaim_loop` for the policy
+    built on top of this (never blindly redeliver — surface + dead-letter);
+    this only tests the Streams mechanics."""
+
+    async def test_an_entry_idle_past_the_threshold_is_claimed(self):
+        client = FakeRedis()
+        entry_id = await client.xadd("s", {"payload": "p1"})
+        await client.xreadgroup("g", "c1", {"s": ">"})  # delivered, now pending
+        client._delivered[entry_id] = 999_999  # simulate: abandoned a long time ago
+
+        claimed = await queue.reclaim_stale_entries(
+            client, stream="s", group="g", consumer="c2", min_idle_ms=100
+        )
+
+        assert [eid for eid, _ in claimed] == [entry_id]
+
+    async def test_an_entry_still_within_the_idle_threshold_is_left_alone(self):
+        """A job genuinely still being worked (not yet idle long enough to
+        presume its worker dead) must not be swept up — that would race a
+        live, in-progress handler."""
+        client = FakeRedis()
+        entry_id = await client.xadd("s", {"payload": "p1"})
+        await client.xreadgroup("g", "c1", {"s": ">"})
+        client._delivered[entry_id] = 50  # only just delivered
+
+        claimed = await queue.reclaim_stale_entries(
+            client, stream="s", group="g", consumer="c2", min_idle_ms=100_000
+        )
+
+        assert claimed == []
+
+    async def test_an_already_acked_entry_is_never_reclaimed(self):
+        client = FakeRedis()
+        entry_id = await client.xadd("s", {"payload": "p1"})
+        await client.xreadgroup("g", "c1", {"s": ">"})
+        client._delivered[entry_id] = 999_999
+        await client.xack("s", "g", entry_id)
+
+        claimed = await queue.reclaim_stale_entries(
+            client, stream="s", group="g", consumer="c2", min_idle_ms=100
+        )
+
+        assert claimed == []
+
+    async def test_a_never_delivered_entry_is_not_reclaimed(self):
+        """A fresh, still-queued entry (never even read by xreadgroup) has
+        no pending-entry idle time at all — nothing to reclaim."""
+        client = FakeRedis()
+        await client.xadd("s", {"payload": "p1"})
+
+        claimed = await queue.reclaim_stale_entries(
+            client, stream="s", group="g", consumer="c2", min_idle_ms=0
+        )
+
+        assert claimed == []
+
+
+class TestPublishDeadLetter:
+    async def test_archives_the_payload_under_the_streams_own_dead_letter_key(self):
+        client = FakeRedis()
+        await queue.publish_dead_letter(
+            client,
+            requests_stream=queue.requests_stream_key("ecorp"),
+            entry_id="7-0",
+            payload={"kind": "turn", "request_id": "r1"},
+            reason="worker_lost",
+        )
+        entries = client.streams[queue.dead_letter_stream_key(queue.requests_stream_key("ecorp"))]
+        assert len(entries) == 1
+        fields = entries[0][1]
+        assert fields["original_entry_id"] == "7-0"
+        assert fields["reason"] == "worker_lost"
+        assert json.loads(fields["payload"]) == {"kind": "turn", "request_id": "r1"}
+
+    async def test_is_capped_by_maxlen(self):
+        client = FakeRedis()
+        for i in range(queue.DEAD_LETTER_MAXLEN + 10):
+            await queue.publish_dead_letter(
+                client,
+                requests_stream="s",
+                entry_id=f"{i}-0",
+                payload={},
+                reason="worker_lost",
+            )
+        assert len(client.streams[queue.dead_letter_stream_key("s")]) <= queue.DEAD_LETTER_MAXLEN
+
+
+class TestRepublishJob:
+    """The recovery half of a reclaim decided safe to retry — see
+    app/job_queue/agent_worker.py::_handle_reclaimed_job for the safety
+    decision this is only the mechanics for."""
+
+    async def test_publishes_a_fresh_entry_with_the_same_payload(self):
+        client = FakeRedis()
+        payload = {"kind": "turn", "request_id": "r1", "thread_id": "t1"}
+
+        await queue.republish_job(client, requests_stream="s", payload=payload)
+
+        entries = client.streams["s"]
+        assert len(entries) == 1
+        republished = json.loads(entries[0][1]["payload"])
+        assert republished["request_id"] == "r1"
+        assert republished["thread_id"] == "t1"
+
+    async def test_stamps_and_increments_the_reclaim_attempts_counter(self):
+        client = FakeRedis()
+        payload = {"kind": "turn", "request_id": "r1"}
+
+        await queue.republish_job(client, requests_stream="s", payload=payload)
+        first = json.loads(client.streams["s"][0][1]["payload"])
+        assert first[queue.RECLAIM_ATTEMPTS_FIELD] == 1
+
+        # A second retry (e.g. a still-crashing worker) increments again,
+        # rather than resetting — this is what agent_worker.py's own
+        # MAX_AUTO_RECLAIM_RETRIES cap compares against.
+        await queue.republish_job(client, requests_stream="s", payload=first)
+        second = json.loads(client.streams["s"][1][1]["payload"])
+        assert second[queue.RECLAIM_ATTEMPTS_FIELD] == 2
+
+    async def test_mutates_the_passed_in_payload_dict_in_place(self):
+        """agent_worker.py relies on this: it reads payload["kind"]/
+        thread_id etc. from the SAME dict both before and after calling
+        this, so the attempts counter must land on that object, not a copy."""
+        client = FakeRedis()
+        payload = {"kind": "cancel", "request_id": "r1"}
+
+        await queue.republish_job(client, requests_stream="s", payload=payload)
+
+        assert payload[queue.RECLAIM_ATTEMPTS_FIELD] == 1
