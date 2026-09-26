@@ -367,6 +367,17 @@ agent_worker_job_reclaimed_total = Counter(
     ["queue", "outcome"],
 )  # queue: agent | ingest; outcome: retried | dead_lettered
 
+agent_tool_dedup_degraded_total = Counter(
+    "agent_tool_dedup_degraded_total",
+    "Mutating/outward tool calls where app/agent/tool_idempotency.py::idempotent "
+    "couldn't reach its own dedup store (a connection failure, or a failure "
+    "to persist the result after a successful call) and fell back to "
+    "running the tool unprotected instead — same degrade-don't-fail-the-turn "
+    "posture as agent_moderation_ml_degraded_total. A sustained rate here "
+    "narrows the window in which a reclaimed 'resume' retry could duplicate "
+    "a side effect, since dedup wasn't actually available to catch it.",
+)
+
 agent_moderation_ml_degraded_total = Counter(
     "agent_moderation_ml_degraded_total",
     "Turns where the ML injection-classifier layer (app/agent/moderation.py's "

@@ -12,11 +12,13 @@ touching Postgres. All tools are `async def`, matching that module's
 async-first design.
 """
 from enum import Enum
+from typing import Annotated
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import tool
+from langchain_core.tools import InjectedToolCallId, tool
 from pydantic import BaseModel, Field, field_validator
 
+from app.agent.tool_idempotency import idempotent
 from app.agent.tools import _arun_with_timeout
 from app.core.security import SecurityCtx, valid_ctx
 from app.domains import notify, sandbox_session
@@ -72,6 +74,7 @@ class CreateTicketArgs(BaseModel):
     subject: str = Field(..., description="Short summary of the customer's issue.")
     description: str = Field(..., description="Full description, including anything the customer already told you.")
     priority: TicketPriority = Field(default=TicketPriority.normal)
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("subject", "description")
     @classmethod
@@ -96,7 +99,11 @@ async def _create_ticket_impl(
 
 @tool(args_schema=CreateTicketArgs)
 async def create_ticket(
-    subject: str, description: str, config: RunnableConfig, priority: TicketPriority = TicketPriority.normal
+    subject: str,
+    description: str,
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    priority: TicketPriority = TicketPriority.normal,
 ) -> str:
     """Open a new Tier-1 support ticket for the current customer. Use this
     when the knowledge base doesn't resolve the issue and it needs to be
@@ -104,7 +111,13 @@ async def create_ticket(
     ctx = _ctx_or_refuse(config, "create_ticket")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_create_ticket_impl, subject, description, priority, ctx)
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="create_ticket",
+        fn=lambda: _arun_with_timeout(_create_ticket_impl, subject, description, priority, ctx),
+    )
 
 
 class CheckTicketStatusArgs(BaseModel):
@@ -135,6 +148,7 @@ async def check_ticket_status(ticket_id: int, config: RunnableConfig) -> str:
 class EscalateToHumanArgs(BaseModel):
     ticket_id: int = Field(..., description="The ticket number to escalate.")
     reason: str = Field(..., description="Why this is beyond Tier-1 scope — be specific.")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("reason")
     @classmethod
@@ -156,7 +170,9 @@ async def _escalate_to_human_impl(ticket_id: int, reason: str, ctx: SecurityCtx)
 
 
 @tool(args_schema=EscalateToHumanArgs)
-async def escalate_to_human(ticket_id: int, reason: str, config: RunnableConfig) -> str:
+async def escalate_to_human(
+    ticket_id: int, reason: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Hand an existing ticket off to a human agent — use this for anything
     outside Tier-1 scope (refunds, account changes, anything the knowledge
     base doesn't cover, or a customer explicitly asking for a person).
@@ -165,7 +181,13 @@ async def escalate_to_human(ticket_id: int, reason: str, config: RunnableConfig)
     ctx = _ctx_or_refuse(config, "escalate_to_human")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_escalate_to_human_impl, ticket_id, reason, ctx)
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="escalate_to_human",
+        fn=lambda: _arun_with_timeout(_escalate_to_human_impl, ticket_id, reason, ctx),
+    )
 
 
 class ListMyTicketsArgs(BaseModel):
@@ -197,6 +219,7 @@ async def list_my_tickets(config: RunnableConfig) -> str:
 class AddTicketCommentArgs(BaseModel):
     ticket_id: int = Field(..., description="The ticket number to add a follow-up comment to.")
     comment: str = Field(..., description="Additional detail the customer just provided.")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("comment")
     @classmethod
@@ -214,20 +237,29 @@ async def _add_ticket_comment_impl(ticket_id: int, comment: str, ctx: SecurityCt
 
 
 @tool(args_schema=AddTicketCommentArgs)
-async def add_ticket_comment(ticket_id: int, comment: str, config: RunnableConfig) -> str:
+async def add_ticket_comment(
+    ticket_id: int, comment: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Add more detail to an existing ticket the customer already opened —
     use this when they follow up with extra information rather than
     opening a duplicate ticket for the same issue."""
     ctx = _ctx_or_refuse(config, "add_ticket_comment")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_add_ticket_comment_impl, ticket_id, comment, ctx)
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="add_ticket_comment",
+        fn=lambda: _arun_with_timeout(_add_ticket_comment_impl, ticket_id, comment, ctx),
+    )
 
 
 class FetchExternalReferenceArgs(BaseModel):
     url: str = Field(
         ..., description="A third-party page relevant to the customer's issue (https:// only) — e.g. a link they shared."
     )
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
 
 async def _fetch_external_reference_impl(url: str) -> str:
@@ -235,7 +267,9 @@ async def _fetch_external_reference_impl(url: str) -> str:
 
 
 @tool(args_schema=FetchExternalReferenceArgs)
-async def fetch_external_reference(url: str, config: RunnableConfig) -> str:
+async def fetch_external_reference(
+    url: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Read a customer-linked or otherwise relevant third-party page LIVE
     (real headless-browser render) for THIS turn's answer — e.g. the
     customer links the API/webhook doc that doesn't match what they're
@@ -248,8 +282,14 @@ async def fetch_external_reference(url: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "fetch_external_reference")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(
-        _fetch_external_reference_impl, url, _timeout_seconds=CRAWL_TOOL_TIMEOUT_SECONDS
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="fetch_external_reference",
+        fn=lambda: _arun_with_timeout(
+            _fetch_external_reference_impl, url, _timeout_seconds=CRAWL_TOOL_TIMEOUT_SECONDS
+        ),
     )
 
 
@@ -274,6 +314,7 @@ def _thread_id_from_config(config: RunnableConfig | None) -> str:
 
 class RunCommandInSandboxArgs(BaseModel):
     command: str = Field(..., description="A shell command to run, e.g. a Python one-liner or script.")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("command")
     @classmethod
@@ -300,7 +341,9 @@ async def _run_command_in_sandbox_impl(command: str, thread_id: str, ctx: Securi
 
 
 @tool(args_schema=RunCommandInSandboxArgs)
-async def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
+async def run_command_in_sandbox(
+    command: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Run a shell command inside an isolated, disposable sandbox —
     use this for plain shell tasks (grep/diff, reading a file with
     `cat <path>`), NOT for Python computation — for actually PARSING a
@@ -322,17 +365,24 @@ async def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "run_command_in_sandbox")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(
-        _run_command_in_sandbox_impl,
-        command,
-        _thread_id_from_config(config),
-        ctx,
-        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="run_command_in_sandbox",
+        fn=lambda: _arun_with_timeout(
+            _run_command_in_sandbox_impl,
+            command,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        ),
     )
 
 
 class RunPythonInSandboxArgs(BaseModel):
     script: str = Field(..., description="Python source code to run, as plain text (not a shell command).")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("script")
     @classmethod
@@ -349,7 +399,9 @@ async def _run_python_in_sandbox_impl(script: str, thread_id: str, ctx: Security
 
 
 @tool(args_schema=RunPythonInSandboxArgs)
-async def run_python_in_sandbox(script: str, config: RunnableConfig) -> str:
+async def run_python_in_sandbox(
+    script: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Run real Python computation to actually PARSE a customer-pasted
     error log, stack trace, or webhook/JSON payload (count occurrences
     of an error code, pull out the real exception type, validate the
@@ -379,17 +431,24 @@ async def run_python_in_sandbox(script: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "run_python_in_sandbox")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(
-        _run_python_in_sandbox_impl,
-        script,
-        _thread_id_from_config(config),
-        ctx,
-        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="run_python_in_sandbox",
+        fn=lambda: _arun_with_timeout(
+            _run_python_in_sandbox_impl,
+            script,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        ),
     )
 
 
 class ReadSandboxFileArgs(BaseModel):
     path: str = Field(..., description="Path of the file to read inside the sandbox.")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
 
 async def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -> str:
@@ -399,7 +458,9 @@ async def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -
 
 
 @tool(args_schema=ReadSandboxFileArgs)
-async def read_sandbox_file(path: str, config: RunnableConfig) -> str:
+async def read_sandbox_file(
+    path: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Read a text file from this conversation's sandbox (e.g. a
     script's output written to disk, or a file written earlier with
     write_sandbox_file). Same auto-created sandbox as
@@ -412,18 +473,25 @@ async def read_sandbox_file(path: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "read_sandbox_file")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(
-        _read_sandbox_file_impl,
-        path,
-        _thread_id_from_config(config),
-        ctx,
-        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="read_sandbox_file",
+        fn=lambda: _arun_with_timeout(
+            _read_sandbox_file_impl,
+            path,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        ),
     )
 
 
 class WriteSandboxFileArgs(BaseModel):
     path: str = Field(..., description="Destination path for the file inside the sandbox.")
     content: str = Field(..., description="The file's full text content.")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
 
 async def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx: SecurityCtx) -> str:
@@ -433,7 +501,9 @@ async def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx:
 
 
 @tool(args_schema=WriteSandboxFileArgs)
-async def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
+async def write_sandbox_file(
+    path: str, content: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Write a text file into this conversation's sandbox (e.g. stage
     a big pasted log dump before parsing it with run_command_in_sandbox,
     rather than passing all of it inline in a command string). Same
@@ -443,13 +513,19 @@ async def write_sandbox_file(path: str, content: str, config: RunnableConfig) ->
     ctx = _ctx_or_refuse(config, "write_sandbox_file")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(
-        _write_sandbox_file_impl,
-        path,
-        content,
-        _thread_id_from_config(config),
-        ctx,
-        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="write_sandbox_file",
+        fn=lambda: _arun_with_timeout(
+            _write_sandbox_file_impl,
+            path,
+            content,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        ),
     )
 
 

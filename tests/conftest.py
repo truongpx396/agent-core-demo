@@ -48,21 +48,23 @@ suite from ~10s (locally, against a real docker-compose Postgres) to
 ~20+ minutes in CI (see GRAPH_PATTERNS.md pattern 46's note on the
 recursion_limit fix found the same way).
 
-Patched at `usage_ledger.get_connection`/`sessions.get_connection` — each
-module's OWN `from app.agent.sql_store import get_connection` binding, not
+Patched at `usage_ledger.get_connection`/`sessions.get_connection`/
+`tool_idempotency.get_connection` — each module's OWN
+`from app.agent.sql_store import get_connection` binding, not
 `sql_store.get_connection` itself (a `from X import Y` binding is a
 separate reference; patching the origin module wouldn't reach it) — and
 specifically NOT the higher-level functions themselves
 (`_tenant_over_daily_budget`, `usage_summary`, `upsert_session`,
-`record_usage`), because tests/agent/test_tenant_budget.py and
-tests/agent/test_sessions.py test several of those AS the function under
-test, monkeypatching `get_connection` locally to inject their own fake —
-this fixture's patch is simply overridden by theirs within the same test,
-so both guarantees hold together. Raises immediately rather than trying
-to fabricate a query-shape-correct fake row for every possible query this
-could ever run — every call site already independently degrades on a
-connection FAILURE by design, so this exercises that same, already-tested
-real path instead of inventing a new one.
+`record_usage`, `idempotent`), because tests/agent/test_tenant_budget.py,
+tests/agent/test_sessions.py, and tests/agent/test_tool_idempotency.py test
+several of those AS the function under test, monkeypatching `get_connection`
+locally to inject their own fake — this fixture's patch is simply
+overridden by theirs within the same test, so both guarantees hold
+together. Raises immediately rather than trying to fabricate a
+query-shape-correct fake row for every possible query this could ever run —
+every call site already independently degrades on a connection FAILURE by
+design, so this exercises that same, already-tested real path instead of
+inventing a new one.
 
 `TEST_CTX`: a valid SecurityCtx (app/core/security.py) every test that drives a
 turn through validate_input needs — route_after_validation fails closed
@@ -182,10 +184,15 @@ def mock_semantic_cache(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def mock_appdata_postgres(monkeypatch):
-    from app.agent import sessions, usage_ledger
+    from app.agent import sessions, tool_idempotency, usage_ledger
 
     monkeypatch.setattr(usage_ledger, "get_connection", _no_postgres_in_tests)
     monkeypatch.setattr(sessions, "get_connection", _no_postgres_in_tests)
+    # tool_idempotency.idempotent() degrades the SAME way (see its own
+    # module docstring) — every mutating/outward tool test in this suite
+    # exercises that real fail-open path by default, same guarantee as the
+    # two modules above, rather than needing its own per-test mock.
+    monkeypatch.setattr(tool_idempotency, "get_connection", _no_postgres_in_tests)
 
 
 def pytest_sessionfinish(session, exitstatus):

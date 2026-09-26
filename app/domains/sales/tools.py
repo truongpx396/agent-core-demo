@@ -12,11 +12,13 @@ reviews and sends it, same "no send button" boundary as
 add_note/remember and support/tools.py's escalate_to_human.
 """
 from datetime import UTC, datetime, timedelta
+from typing import Annotated
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import tool
+from langchain_core.tools import InjectedToolCallId, tool
 from pydantic import BaseModel, Field, field_validator
 
+from app.agent.tool_idempotency import idempotent
 from app.agent.tools import _arun_with_timeout
 from app.core.security import SecurityCtx, valid_ctx
 from app.domains import notify, sandbox_session
@@ -66,6 +68,10 @@ class LogLeadInteractionArgs(BaseModel):
     name: str = Field(..., description="The lead's name.")
     contact: str = Field(..., description="Email, phone, or channel handle — the lead's stable identifier.")
     notes: str = Field(..., description="What was said/asked in this interaction.")
+    # Injected by ToolNode, never shown to the LLM — see app/agent/tools.py's
+    # AddNoteArgs for the full explanation. Lets this tool run through
+    # tool_idempotency.idempotent().
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("name", "contact", "notes")
     @classmethod
@@ -81,20 +87,33 @@ async def _log_lead_interaction_impl(name: str, contact: str, notes: str, ctx: S
 
 
 @tool(args_schema=LogLeadInteractionArgs)
-async def log_lead_interaction(name: str, contact: str, notes: str, config: RunnableConfig) -> str:
+async def log_lead_interaction(
+    name: str,
+    contact: str,
+    notes: str,
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> str:
     """Record an inbound interaction with a lead — finds the existing lead
     by contact or creates a new one. Call this for every meaningful inbound
     message before deciding what to do next."""
     ctx = _ctx_or_refuse(config, "log_lead_interaction")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_log_lead_interaction_impl, name, contact, notes, ctx)
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="log_lead_interaction",
+        fn=lambda: _arun_with_timeout(_log_lead_interaction_impl, name, contact, notes, ctx),
+    )
 
 
 class ScheduleFollowupArgs(BaseModel):
     contact: str = Field(..., description="The lead's contact — must already have been logged via log_lead_interaction.")
     due_in_days: int = Field(..., ge=0, le=365, description="How many days from now this follow-up is due.")
     note: str = Field(..., description="What to do/say at follow-up time.")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("note")
     @classmethod
@@ -113,14 +132,26 @@ async def _schedule_followup_impl(contact: str, due_in_days: int, note: str, ctx
 
 
 @tool(args_schema=ScheduleFollowupArgs)
-async def schedule_followup(contact: str, due_in_days: int, note: str, config: RunnableConfig) -> str:
+async def schedule_followup(
+    contact: str,
+    due_in_days: int,
+    note: str,
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> str:
     """Schedule a future follow-up for a lead. scripts/followup_sweep.py
     (run via cron) picks these up once due and drafts a nudge for a human
     to review and send."""
     ctx = _ctx_or_refuse(config, "schedule_followup")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_schedule_followup_impl, contact, due_in_days, note, ctx)
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="schedule_followup",
+        fn=lambda: _arun_with_timeout(_schedule_followup_impl, contact, due_in_days, note, ctx),
+    )
 
 
 class PackageLeadBriefArgs(BaseModel):
@@ -159,6 +190,7 @@ class HandoffToHumanArgs(BaseModel):
     contact: str = Field(..., description="The lead's contact to hand off.")
     brief_summary: str = Field(..., description="A short summary of why this lead is ready for a rep — usually built from package_lead_brief's output.")
     reason: str = Field(..., description="Why now — what made this lead 'hot'.")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("brief_summary", "reason")
     @classmethod
@@ -180,14 +212,26 @@ async def _handoff_to_human_impl(contact: str, brief_summary: str, reason: str, 
 
 
 @tool(args_schema=HandoffToHumanArgs)
-async def handoff_to_human(contact: str, brief_summary: str, reason: str, config: RunnableConfig) -> str:
+async def handoff_to_human(
+    contact: str,
+    brief_summary: str,
+    reason: str,
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> str:
     """Mark a lead 'hot' and hand it to a human rep with a packaged brief
     — use this once a lead is ready to talk to a person, never to send
     anything to the lead itself."""
     ctx = _ctx_or_refuse(config, "handoff_to_human")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_handoff_to_human_impl, contact, brief_summary, reason, ctx)
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="handoff_to_human",
+        fn=lambda: _arun_with_timeout(_handoff_to_human_impl, contact, brief_summary, reason, ctx),
+    )
 
 
 class ListPendingFollowupsArgs(BaseModel):
@@ -221,6 +265,7 @@ async def list_pending_followups(config: RunnableConfig, contact: str | None = N
 class MarkLeadLostArgs(BaseModel):
     contact: str = Field(..., description="The lead's contact to mark lost.")
     reason: str = Field(..., description="Why this lead isn't converting — be specific.")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("reason")
     @classmethod
@@ -238,7 +283,9 @@ async def _mark_lead_lost_impl(contact: str, reason: str, ctx: SecurityCtx) -> s
 
 
 @tool(args_schema=MarkLeadLostArgs)
-async def mark_lead_lost(contact: str, reason: str, config: RunnableConfig) -> str:
+async def mark_lead_lost(
+    contact: str, reason: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Close out a lead that has clearly decided not to buy or gone
     unresponsive — cancels its pending follow-ups so it stops surfacing in
     the sweep. Use this instead of leaving a dead lead's follow-ups
@@ -246,7 +293,13 @@ async def mark_lead_lost(contact: str, reason: str, config: RunnableConfig) -> s
     ctx = _ctx_or_refuse(config, "mark_lead_lost")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_mark_lead_lost_impl, contact, reason, ctx)
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="mark_lead_lost",
+        fn=lambda: _arun_with_timeout(_mark_lead_lost_impl, contact, reason, ctx),
+    )
 
 
 class EnrichLeadFromWebsiteArgs(BaseModel):
@@ -254,6 +307,7 @@ class EnrichLeadFromWebsiteArgs(BaseModel):
         ..., description="The lead's contact — must already have been logged via log_lead_interaction."
     )
     url: str = Field(..., description="The lead's company website (https:// only).")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
 
 async def _enrich_lead_from_website_impl(contact: str, url: str, ctx: SecurityCtx) -> str:
@@ -271,7 +325,9 @@ async def _enrich_lead_from_website_impl(contact: str, url: str, ctx: SecurityCt
 
 
 @tool(args_schema=EnrichLeadFromWebsiteArgs)
-async def enrich_lead_from_website(contact: str, url: str, config: RunnableConfig) -> str:
+async def enrich_lead_from_website(
+    contact: str, url: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Crawl a lead's company website (real headless-browser render, so it
     works on JS-rendered marketing/SPA sites) and add a firmographic
     research summary to their notes — use this BEFORE package_lead_brief/
@@ -283,8 +339,14 @@ async def enrich_lead_from_website(contact: str, url: str, config: RunnableConfi
     ctx = _ctx_or_refuse(config, "enrich_lead")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(
-        _enrich_lead_from_website_impl, contact, url, ctx, _timeout_seconds=CRAWL_TOOL_TIMEOUT_SECONDS
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="enrich_lead_from_website",
+        fn=lambda: _arun_with_timeout(
+            _enrich_lead_from_website_impl, contact, url, ctx, _timeout_seconds=CRAWL_TOOL_TIMEOUT_SECONDS
+        ),
     )
 
 
@@ -308,6 +370,7 @@ def _thread_id_from_config(config: RunnableConfig | None) -> str:
 
 class RunCommandInSandboxArgs(BaseModel):
     command: str = Field(..., description="A shell command to run, e.g. a Python one-liner or script.")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("command")
     @classmethod
@@ -334,7 +397,9 @@ async def _run_command_in_sandbox_impl(command: str, thread_id: str, ctx: Securi
 
 
 @tool(args_schema=RunCommandInSandboxArgs)
-async def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
+async def run_command_in_sandbox(
+    command: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Run a shell command inside an isolated, disposable sandbox —
     use this for plain shell tasks only, NOT for Python computation.
     For real deal-economics math calculator's plain arithmetic can't
@@ -360,17 +425,24 @@ async def run_command_in_sandbox(command: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "run_command_in_sandbox")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(
-        _run_command_in_sandbox_impl,
-        command,
-        _thread_id_from_config(config),
-        ctx,
-        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="run_command_in_sandbox",
+        fn=lambda: _arun_with_timeout(
+            _run_command_in_sandbox_impl,
+            command,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        ),
     )
 
 
 class RunPythonInSandboxArgs(BaseModel):
     script: str = Field(..., description="Python source code to run, as plain text (not a shell command).")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("script")
     @classmethod
@@ -387,7 +459,9 @@ async def _run_python_in_sandbox_impl(script: str, thread_id: str, ctx: Security
 
 
 @tool(args_schema=RunPythonInSandboxArgs)
-async def run_python_in_sandbox(script: str, config: RunnableConfig) -> str:
+async def run_python_in_sandbox(
+    script: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Run real deal-economics math calculator's plain arithmetic
     can't do: a multi-year contract with an annual escalation % and
     volume-discount tiers, not just one flat expression. STOP: if this
@@ -417,17 +491,24 @@ async def run_python_in_sandbox(script: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "run_python_in_sandbox")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(
-        _run_python_in_sandbox_impl,
-        script,
-        _thread_id_from_config(config),
-        ctx,
-        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="run_python_in_sandbox",
+        fn=lambda: _arun_with_timeout(
+            _run_python_in_sandbox_impl,
+            script,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        ),
     )
 
 
 class ReadSandboxFileArgs(BaseModel):
     path: str = Field(..., description="Path of the file to read inside the sandbox.")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
 
 async def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -> str:
@@ -437,7 +518,9 @@ async def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -
 
 
 @tool(args_schema=ReadSandboxFileArgs)
-async def read_sandbox_file(path: str, config: RunnableConfig) -> str:
+async def read_sandbox_file(
+    path: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Read a text file from this conversation's sandbox (e.g. a
     script's output written to disk, or a file written earlier with
     write_sandbox_file). Same auto-created sandbox as
@@ -450,18 +533,25 @@ async def read_sandbox_file(path: str, config: RunnableConfig) -> str:
     ctx = _ctx_or_refuse(config, "read_sandbox_file")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(
-        _read_sandbox_file_impl,
-        path,
-        _thread_id_from_config(config),
-        ctx,
-        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="read_sandbox_file",
+        fn=lambda: _arun_with_timeout(
+            _read_sandbox_file_impl,
+            path,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        ),
     )
 
 
 class WriteSandboxFileArgs(BaseModel):
     path: str = Field(..., description="Destination path for the file inside the sandbox.")
     content: str = Field(..., description="The file's full text content.")
+    tool_call_id: Annotated[str, InjectedToolCallId]
 
 
 async def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx: SecurityCtx) -> str:
@@ -471,7 +561,9 @@ async def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx:
 
 
 @tool(args_schema=WriteSandboxFileArgs)
-async def write_sandbox_file(path: str, content: str, config: RunnableConfig) -> str:
+async def write_sandbox_file(
+    path: str, content: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
+) -> str:
     """Write a text file into this conversation's sandbox (e.g. stage
     a script before running it with run_command_in_sandbox, or a
     chunk of crawled page text too big to pass inline). Same
@@ -481,13 +573,19 @@ async def write_sandbox_file(path: str, content: str, config: RunnableConfig) ->
     ctx = _ctx_or_refuse(config, "write_sandbox_file")
     if ctx is None:
         return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(
-        _write_sandbox_file_impl,
-        path,
-        content,
-        _thread_id_from_config(config),
-        ctx,
-        _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+    return await idempotent(
+        tool_call_id=tool_call_id,
+        ctx=ctx,
+        config=config,
+        tool_name="write_sandbox_file",
+        fn=lambda: _arun_with_timeout(
+            _write_sandbox_file_impl,
+            path,
+            content,
+            _thread_id_from_config(config),
+            ctx,
+            _timeout_seconds=sandbox_session.SANDBOX_CALL_TIMEOUT_SECONDS,
+        ),
     )
 
 

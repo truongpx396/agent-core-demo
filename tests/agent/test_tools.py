@@ -68,18 +68,20 @@ def _cfg(ctx=TEST_CTX):
 class TestAddNoteArgsValidation:
     def test_blank_title_rejected(self):
         with pytest.raises(ValueError):
-            AddNoteArgs(title="   ", content="some content", topic=Topic.company)
+            AddNoteArgs(title="   ", content="some content", topic=Topic.company, tool_call_id="c1")
 
     def test_blank_content_rejected(self):
         with pytest.raises(ValueError):
-            AddNoteArgs(title="a title", content="  ", topic=Topic.company)
+            AddNoteArgs(title="a title", content="  ", topic=Topic.company, tool_call_id="c1")
 
     def test_invalid_topic_rejected(self):
         with pytest.raises(ValueError):
-            AddNoteArgs(title="a title", content="content", topic="not_a_real_topic")
+            AddNoteArgs(title="a title", content="content", topic="not_a_real_topic", tool_call_id="c1")
 
     def test_valid_args_construct(self):
-        args = AddNoteArgs(title="Refunds", content="30-day window.", topic=Topic.company)
+        args = AddNoteArgs(
+            title="Refunds", content="30-day window.", topic=Topic.company, tool_call_id="c1"
+        )
         assert args.title == "Refunds"
         assert args.topic is Topic.company
 
@@ -180,11 +182,27 @@ class TestAddNoteImpl:
         monkeypatch.setattr(tools, "embed_text", fake_embed_text)
         monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1], [1.0]))
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
+        # No dedup-store mocking needed here: tests/conftest.py's
+        # mock_appdata_postgres fixture already forces
+        # tool_idempotency.idempotent() onto its own fail-open path
+        # (Postgres unavailable in this suite by design) — proving that
+        # this call still reaches the real impl and returns its result IS
+        # this test's own point.
 
         result = await add_note.ainvoke(
-            {"title": "T", "content": "C", "topic": "langgraph"}, config=_cfg()
+            {
+                "name": "add_note",
+                "args": {"title": "T", "content": "C", "topic": "langgraph"},
+                "id": "call-1",
+                "type": "tool_call",
+            },
+            config=_cfg(),
         )
-        assert "T" in result
+        # Invoked via the full ToolCall shape (needed to supply
+        # tool_call_id), so .ainvoke wraps the return value in a
+        # ToolMessage rather than handing back the bare string a plain-dict
+        # invocation would — same as run_subagent's own .ainvoke test.
+        assert "T" in result.content
 
     async def test_refuses_without_ctx(self, monkeypatch):
         upserted = []
@@ -194,9 +212,16 @@ class TestAddNoteImpl:
 
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        result = await add_note.ainvoke({"title": "T", "content": "C", "topic": "langgraph"})
+        result = await add_note.ainvoke(
+            {
+                "name": "add_note",
+                "args": {"title": "T", "content": "C", "topic": "langgraph"},
+                "id": "call-1",
+                "type": "tool_call",
+            }
+        )
 
-        assert "Refused" in result
+        assert "Refused" in result.content
         assert upserted == []  # never reached Qdrant
 
 
@@ -315,10 +340,10 @@ class TestSearchDocsCtx:
 class TestRememberArgsValidation:
     def test_blank_content_rejected(self):
         with pytest.raises(ValueError):
-            RememberArgs(content="   ")
+            RememberArgs(content="   ", tool_call_id="c1")
 
     def test_valid_content_constructs(self):
-        assert RememberArgs(content="likes dark roast coffee").content
+        assert RememberArgs(content="likes dark roast coffee", tool_call_id="c1").content
 
 
 class TestRememberImpl:
@@ -351,9 +376,16 @@ class TestRememberImpl:
 
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        result = await remember.ainvoke({"content": "likes dark roast coffee"})
+        result = await remember.ainvoke(
+            {
+                "name": "remember",
+                "args": {"content": "likes dark roast coffee"},
+                "id": "call-1",
+                "type": "tool_call",
+            }
+        )
 
-        assert "Refused" in result
+        assert "Refused" in result.content
         assert upserted == []
 
 

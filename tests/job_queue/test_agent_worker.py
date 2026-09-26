@@ -740,18 +740,24 @@ class TestHandleReclaimedJob:
         assert events[0]["code"] == "worker_lost"
         assert len(client.streams[dead_letter_stream_key(agent_worker.REQUESTS_STREAM)]) == 1
 
-    async def test_a_resume_is_never_auto_retried_even_with_an_empty_checkpoint(self):
-        """"resume" has no fresh HumanMessage boundary to check against —
-        see this module's own docstring for why it's never a candidate for
-        auto-retry regardless of what the checkpoint shows."""
+    async def test_a_resume_is_always_auto_retried_now_that_tools_are_idempotent(self):
+        """Unlike "turn", "resume" needs no checkpoint inspection at all —
+        it continues an EXISTING checkpoint's already-pending tool_calls
+        under their own original tool_call_ids, and every mutating/outward
+        tool now dedupes on that id (app/agent/tool_idempotency.py), so
+        re-invoking one that already completed just returns its cached
+        result instead of running again. Graph/capabilities are irrelevant
+        here on purpose — nothing about this decision reads them."""
         client = FakeRedis()
         entry_id, fields = _entry(kind="resume", request_id="r4", thread_id="t4")
 
         await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph(), tool_capabilities={})
 
-        events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r4")]]
-        assert events[0]["code"] == "worker_lost"
+        assert results_stream_key("r4") not in client.streams
+        assert dead_letter_stream_key(agent_worker.REQUESTS_STREAM) not in client.streams
         assert client.acked == [entry_id]
+        republished = client.streams[agent_worker.REQUESTS_STREAM]
+        assert json.loads(republished[0][1]["payload"])["kind"] == "resume"
 
     async def test_a_cancel_is_always_auto_retried(self):
         """Cancelling is inherently idempotent — safe regardless of
@@ -783,18 +789,25 @@ class TestHandleReclaimedJob:
 
 class TestReclaimLoop:
     async def test_reclaims_a_dead_lettered_kind_end_to_end_then_stops_when_signalled(self, monkeypatch):
-        """"resume" is used here specifically because it's dead-lettered
-        unconditionally — proves the loop's own wiring (reclaim -> handle ->
-        stop) without needing to also drive the turn-safety check."""
+        """A "turn" that already ran a mutating tool is used here
+        specifically because it's the one case still dead-lettered
+        unconditionally (every other kind is now retried — see this
+        module's own docstring) — proves the loop's own wiring
+        (reclaim -> handle -> stop) without needing a separate scenario."""
         monkeypatch.setattr(agent_worker, "WORKER_RECLAIM_INTERVAL_SECONDS", 0.01)
         client = FakeRedis()
-        entry_id, fields = _entry(kind="resume", request_id="r5", thread_id="t5")
+        entry_id, fields = _entry(kind="turn", request_id="r5", thread_id="t5")
         client.streams[agent_worker.REQUESTS_STREAM] = [(entry_id, fields)]
         client._delivered[entry_id] = 999_999_999  # already long abandoned
+        graph = FakeGraph(
+            {"t5": [HumanMessage(content="hi"), ToolMessage(content="ok", name="add_note", tool_call_id="c1")]}
+        )
 
         stop_event = asyncio.Event()
         task = asyncio.create_task(
-            agent_worker._reclaim_loop(client, stop_event, graph=FakeGraph(), tool_capabilities={})
+            agent_worker._reclaim_loop(
+                client, stop_event, graph=graph, tool_capabilities={"add_note": "mutating"}
+            )
         )
         await asyncio.sleep(0.05)  # let at least one pass run
         stop_event.set()
