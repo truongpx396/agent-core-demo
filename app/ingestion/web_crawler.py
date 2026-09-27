@@ -41,6 +41,13 @@ check `result.success`/`result.error_message` on failure. A failed
 navigation's `error_message` is a multi-line internals dump — truncated to
 its first line before reaching a tool result/prompt, both for readability
 and to avoid leaking server-side paths to the model.
+
+`_crawl` retries a bare connection failure against the crawl4ai container
+itself (never a per-URL navigation failure — that's `result.success=False`,
+a real answer, not a dropped connection) and, via
+`app/core/resilience.py::CircuitBreaker`, fails fast once enough of those
+have happened in a row instead of letting every subsequent call pay the
+full connect-timeout while the container is down.
 """
 import logging
 
@@ -50,9 +57,17 @@ from crawl4ai.docker_client import Crawl4aiDockerClient
 from crawl4ai.docker_client import RequestError as Crawl4aiRequestError
 
 from app.core.config import CRAWL4AI_API_TOKEN, CRAWL4AI_SERVER_URL
+from app.core.resilience import CircuitBreaker, CircuitOpenError
 from app.core.url_safety import assert_safe_url
 
 logger = logging.getLogger(__name__)
+
+_CRAWL4AI_BREAKER = CircuitBreaker(name="crawl4ai", failure_threshold=3, cooldown_seconds=30.0)
+_CRAWL4AI_RETRY_ATTEMPTS = 3  # 1 initial + 2 retries — a render is read-only
+# (nothing to duplicate by trying again), so retrying a bare connection
+# failure is unambiguously safe here, unlike a sandbox command_run (see
+# app/core/resilience.py's own module docstring for why THAT isn't retried).
+_CRAWL4AI_RETRY_BASE_DELAY_SECONDS = 0.5
 
 CRAWL_TIMEOUT_SECONDS = 30  # headless-browser render is slower than a bare
 # GET (ingestor.py's _URL_TIMEOUT_SECONDS=10). Passed to crawl4ai as
@@ -84,16 +99,33 @@ async def _crawl(url: str) -> str:
         page_timeout=CRAWL_TIMEOUT_SECONDS * 1000,  # crawl4ai takes milliseconds
         verbose=False,
     )
-    async with Crawl4aiDockerClient(
-        base_url=CRAWL4AI_SERVER_URL, timeout=CRAWL_TOOL_TIMEOUT_SECONDS, verbose=False
-    ) as client:
-        # Static pre-shared token, set directly (see module docstring) —
-        # not through .authenticate()'s unrelated /token+email flow.
-        client._http_client.headers["Authorization"] = f"Bearer {CRAWL4AI_API_TOKEN}"
-        try:
-            result = await client.crawl([url], crawler_config=run_config)
-        except (Crawl4aiConnectionError, Crawl4aiRequestError) as exc:
-            raise CrawlFailed(f"could not reach the crawl4ai server for {url}: {exc}") from exc
+
+    async def _attempt():
+        # A fresh client (and connection pool) per attempt — a retry after
+        # a dropped connection shouldn't reuse whatever socket just failed.
+        async with Crawl4aiDockerClient(
+            base_url=CRAWL4AI_SERVER_URL, timeout=CRAWL_TOOL_TIMEOUT_SECONDS, verbose=False
+        ) as client:
+            # Static pre-shared token, set directly (see module docstring) —
+            # not through .authenticate()'s unrelated /token+email flow.
+            client._http_client.headers["Authorization"] = f"Bearer {CRAWL4AI_API_TOKEN}"
+            return await client.crawl([url], crawler_config=run_config)
+
+    try:
+        result = await _CRAWL4AI_BREAKER.call(
+            _attempt,
+            # Only a bare connection failure is retried — Crawl4aiRequestError
+            # means the server DID respond, just with an error status (a bad
+            # request on our end, or an internal crawl4ai failure), which a
+            # second identical request won't fix.
+            retry_on=(Crawl4aiConnectionError,),
+            attempts=_CRAWL4AI_RETRY_ATTEMPTS,
+            base_delay=_CRAWL4AI_RETRY_BASE_DELAY_SECONDS,
+        )
+    except (Crawl4aiConnectionError, Crawl4aiRequestError) as exc:
+        raise CrawlFailed(f"could not reach the crawl4ai server for {url}: {exc}") from exc
+    except CircuitOpenError as exc:
+        raise CrawlFailed(str(exc)) from exc
     if not result.success:
         first_line = (result.error_message or "unknown error").strip().splitlines()[0]
         raise CrawlFailed(f"could not render {url}: {first_line}")

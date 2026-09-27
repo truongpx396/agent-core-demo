@@ -15,8 +15,18 @@ convention (e.g. tests/mcp/test_mcp_client.py mocks `_list_remote_tools`/
   server. That result shape (`result.success`, `result.error_message`,
   a str-compatible `result.markdown`) was verified empirically against a
   real crawl before this module was written — see its own docstring.
+
+`TestCrawl` also gets a fresh `_CRAWL4AI_BREAKER` per test (the
+`_fresh_breaker` fixture below), so one test's failures never carry over —
+via shared module-level circuit-breaker state — into another; see
+app/core/resilience.py's own docstring for what that breaker does.
+`_CRAWL4AI_RETRY_BASE_DELAY_SECONDS` is monkeypatched down too, so the
+retry tests don't actually wait out real backoff delays.
 """
 
+import pytest
+
+from app.core.resilience import CircuitBreaker
 from app.core.url_safety import UnsafeURLError
 from app.ingestion import web_crawler
 
@@ -49,6 +59,40 @@ class _FakeClient:
 def _fake_client_class(result=None, raises=None):
     def factory(*args, **kwargs):
         return _FakeClient(result=result, raises=raises)
+
+    return factory
+
+
+class _FlakyThenOkClient:
+    """Raises `raises` for its first `fail_times` constructions, then
+    returns `result` — simulates a connection that recovers on retry
+    (each retry in _crawl builds a brand-new Crawl4aiDockerClient)."""
+
+    calls = {"count": 0}
+
+    def __init__(self, result=None, raises=None, fail_times=1):
+        _FlakyThenOkClient.calls["count"] += 1
+        self._result = result
+        self._raises = raises if _FlakyThenOkClient.calls["count"] <= fail_times else None
+        self._http_client = type("_H", (), {"headers": {}})()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    async def crawl(self, urls, crawler_config=None, **kwargs):
+        if self._raises is not None:
+            raise self._raises
+        return self._result
+
+
+def _flaky_then_ok_client_class(result=None, raises=None, fail_times=1):
+    _FlakyThenOkClient.calls = {"count": 0}
+
+    def factory(*args, **kwargs):
+        return _FlakyThenOkClient(result=result, raises=raises, fail_times=fail_times)
 
     return factory
 
@@ -104,6 +148,13 @@ class TestRenderUrlToMarkdown:
 
 
 class TestCrawl:
+    @pytest.fixture(autouse=True)
+    def _fresh_breaker(self, monkeypatch):
+        monkeypatch.setattr(
+            web_crawler, "_CRAWL4AI_BREAKER", CircuitBreaker(name="crawl4ai", failure_threshold=3, cooldown_seconds=30.0)
+        )
+        monkeypatch.setattr(web_crawler, "_CRAWL4AI_RETRY_BASE_DELAY_SECONDS", 0.001)
+
     async def test_returns_markdown_on_success(self, monkeypatch):
         monkeypatch.setattr(
             web_crawler,
@@ -173,3 +224,59 @@ class TestCrawl:
             assert "could not reach the crawl4ai server" in str(exc)
         else:
             raise AssertionError("expected CrawlFailed")
+
+    async def test_retries_a_connection_failure_then_succeeds(self, monkeypatch):
+        """A dropped connection to the crawl4ai container on the first
+        attempt (e.g. the container mid-restart) recovers on an immediate
+        retry — see app/core/resilience.py's own docstring."""
+        monkeypatch.setattr(
+            web_crawler,
+            "Crawl4aiDockerClient",
+            _flaky_then_ok_client_class(
+                result=_FakeResult(success=True, markdown="# Recovered"),
+                raises=web_crawler.Crawl4aiConnectionError("Cannot connect to server"),
+                fail_times=1,
+            ),
+        )
+
+        result = await web_crawler._crawl("https://example.com")
+
+        assert result == "# Recovered"
+        assert _FlakyThenOkClient.calls["count"] == 2  # one failed attempt, one successful retry
+
+    async def test_does_not_retry_a_request_error(self, monkeypatch):
+        """Unlike a connection failure, the server DID respond here — with
+        an error — so a second identical request wouldn't change anything."""
+        monkeypatch.setattr(
+            web_crawler,
+            "Crawl4aiDockerClient",
+            _flaky_then_ok_client_class(
+                raises=web_crawler.Crawl4aiRequestError("Server error 401: unauthorized"), fail_times=999
+            ),
+        )
+
+        with pytest.raises(web_crawler.CrawlFailed):
+            await web_crawler._crawl("https://example.com")
+
+        assert _FlakyThenOkClient.calls["count"] == 1
+
+    async def test_circuit_breaker_fails_fast_after_repeated_connection_failures(self, monkeypatch):
+        monkeypatch.setattr(
+            web_crawler,
+            "Crawl4aiDockerClient",
+            _flaky_then_ok_client_class(
+                raises=web_crawler.Crawl4aiConnectionError("Cannot connect to server"), fail_times=999
+            ),
+        )
+
+        for _ in range(3):  # _CRAWL4AI_BREAKER's failure_threshold
+            with pytest.raises(web_crawler.CrawlFailed):
+                await web_crawler._crawl("https://example.com")
+
+        calls_before_breaker_open = _FlakyThenOkClient.calls["count"]
+
+        with pytest.raises(web_crawler.CrawlFailed) as exc_info:
+            await web_crawler._crawl("https://example.com")
+
+        assert _FlakyThenOkClient.calls["count"] == calls_before_breaker_open  # never touched the network
+        assert "not retrying" in str(exc_info.value)

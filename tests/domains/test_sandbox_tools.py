@@ -13,11 +13,29 @@ tool set).
 via `_arun_with_timeout` — see that module's own docstring), so every call
 below runs through `asyncio.run(...)`, this repo's established pattern for
 exercising async code from a plain `def test_...`.
+
+Every test gets a fresh `_OPENSANDBOX_BREAKER` (the `_fresh_breaker`
+fixture below) so one test's failures can never carry over — via shared
+module-level circuit-breaker state — into another; see
+app/core/resilience.py's own docstring for what that breaker does.
+`_OPENSANDBOX_RETRY_BASE_DELAY_SECONDS` is also monkeypatched down to keep
+the retry tests from actually waiting out real backoff delays.
 """
 import sys
 
+import pytest
+
+from app.core.resilience import CircuitBreaker
 from app.domains import sandbox_tools
 from app.mcp import client as mcp_client
+
+
+@pytest.fixture(autouse=True)
+def _fresh_breaker(monkeypatch):
+    monkeypatch.setattr(
+        sandbox_tools, "_OPENSANDBOX_BREAKER", CircuitBreaker(name="opensandbox_mcp", failure_threshold=3, cooldown_seconds=30.0)
+    )
+    monkeypatch.setattr(sandbox_tools, "_OPENSANDBOX_RETRY_BASE_DELAY_SECONDS", 0.001)
 
 
 async def test_passes_the_configured_domain_protocol_and_api_key_to_the_bridge(monkeypatch):
@@ -107,3 +125,62 @@ async def test_degraded_result_never_raises_even_when_logging(monkeypatch, caplo
     tools, caps = await sandbox_tools.load_sandbox_tools()
 
     assert (tools, caps) == ([], {})
+
+
+async def test_retries_once_on_a_connection_failure_then_succeeds(monkeypatch):
+    """The exact scenario app/core/resilience.py exists for: the bridge
+    subprocess started but opensandbox-server hadn't finished booting on
+    the FIRST attempt — a second, immediate attempt finds it up."""
+    calls = {"count": 0}
+    fake_tools, fake_caps = ["command_run"], {"command_run": "outward"}
+
+    async def flaky(**kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise ConnectionRefusedError("opensandbox-server not up yet")
+        return fake_tools, fake_caps
+
+    monkeypatch.setattr(mcp_client, "load_remote_tools", flaky)
+
+    tools, caps = await sandbox_tools.load_sandbox_tools()
+
+    assert (tools, caps) == (fake_tools, fake_caps)
+    assert calls["count"] == 2
+
+
+async def test_does_not_retry_a_non_connection_failure(monkeypatch):
+    calls = {"count": 0}
+
+    async def raise_not_found(**kwargs):
+        calls["count"] += 1
+        raise FileNotFoundError("opensandbox-mcp not found on PATH")
+
+    monkeypatch.setattr(mcp_client, "load_remote_tools", raise_not_found)
+
+    tools, caps = await sandbox_tools.load_sandbox_tools()
+
+    assert (tools, caps) == ([], {})
+    assert calls["count"] == 1  # a missing bridge script won't fix itself on retry
+
+
+async def test_circuit_breaker_fails_fast_after_repeated_connection_failures(monkeypatch):
+    """Three (_OPENSANDBOX_BREAKER's failure_threshold) calls that each
+    exhaust their own retry all fail — the FOURTH must short-circuit
+    without even invoking load_remote_tools again."""
+    calls = {"count": 0}
+
+    async def always_refuses(**kwargs):
+        calls["count"] += 1
+        raise ConnectionRefusedError("opensandbox-server unreachable")
+
+    monkeypatch.setattr(mcp_client, "load_remote_tools", always_refuses)
+
+    for _ in range(3):
+        assert await sandbox_tools.load_sandbox_tools() == ([], {})
+
+    calls_before_breaker_open = calls["count"]
+
+    tools, caps = await sandbox_tools.load_sandbox_tools()
+
+    assert (tools, caps) == ([], {})  # still degrades the same way from the caller's side
+    assert calls["count"] == calls_before_breaker_open  # but never touched the network this time

@@ -85,7 +85,14 @@ async def load_raw_sandbox_tools() -> dict[str, BaseTool]:
     opensandbox-server finished starting made every sandbox tool invisible
     for that process's whole life, with the model hallucinating a
     nonexistent tool name to route around the gap (Langfuse trace
-    806125c9). Every caller shares the same dict; nothing mutates it."""
+    806125c9). Every caller shares the same dict; nothing mutates it.
+
+    `load_sandbox_tools` itself (app/domains/sandbox_tools.py) now also
+    retries a bare connection failure once and circuit-breaks after
+    repeated ones, so a still-booting opensandbox-server is more often
+    resolved WITHIN one of these calls, not just eventually across many —
+    this cache's own "never latch onto empty" behavior remains the
+    fallback for whatever that retry doesn't catch."""
     global _raw_sandbox_tools_cache
     if not _raw_sandbox_tools_cache:
         raw_tools, _capabilities = await load_sandbox_tools()
