@@ -31,6 +31,19 @@ it there. Must degrade, never crash, if opensandbox-mcp is missing or the
 bridge hangs: wrapped in `_arun_with_timeout`, all exceptions caught,
 degrading to `([], {})` with a logged warning.
 
+A connection-shaped failure (`ConnectionError`/`TimeoutError` — a bridge
+subprocess that started but couldn't yet reach `opensandbox-server`, or one
+that hung past `_SANDBOX_LIST_TIMEOUT_SECONDS`) gets one retry via
+`app/core/resilience.py::CircuitBreaker` before giving up — enough to ride
+out the server still finishing its own boot, the exact scenario
+`sandbox_session.py`'s own "never cache an empty result" comment already
+exists to tolerate on the CALLER's side. Any other exception (e.g.
+`FileNotFoundError` — the bridge script genuinely isn't there) is never
+retried: that failure will look identical a second later. Once
+`_OPENSANDBOX_BREAKER` has seen enough consecutive exhausted-retry failures,
+further calls fail fast (no subprocess spawn at all) until its cooldown
+elapses — see that module's own docstring for why.
+
 ## Disclosed gap: no SecurityCtx, no tenant scoping
 Same limitation as any remote MCP tool (app/mcp/client.py) — no
 `RunnableConfig`/`SecurityCtx` channel over MCP. Acceptable here since a
@@ -46,12 +59,20 @@ from langchain_core.tools import BaseTool
 
 from app.agent.tools import _arun_with_timeout
 from app.core.config import OPENSANDBOX_API_KEY, OPENSANDBOX_MCP_DOMAIN
+from app.core.resilience import CircuitBreaker
 from app.mcp import client as mcp_client
 
 logger = logging.getLogger(__name__)
 
 _SANDBOX_LIST_TIMEOUT_SECONDS = 10  # backstop against a hung bridge
 # process; catalog listing is normally near-instant (see module docstring).
+
+_OPENSANDBOX_BREAKER = CircuitBreaker(name="opensandbox_mcp", failure_threshold=3, cooldown_seconds=30.0)
+_OPENSANDBOX_RETRY_ATTEMPTS = 2  # 1 initial + 1 retry — enough to ride out
+# opensandbox-server still finishing its own boot without piling multiple
+# _SANDBOX_LIST_TIMEOUT_SECONDS-long waits onto every early call once the
+# breaker above is what actually protects a sustained outage.
+_OPENSANDBOX_RETRY_BASE_DELAY_SECONDS = 1.0
 
 # scripts/opensandbox_mcp_bridge.py, not the packaged opensandbox-mcp CLI
 # directly: that CLI can't set ConnectionConfig(use_server_proxy=True),
@@ -73,7 +94,7 @@ async def load_sandbox_tools() -> tuple[list[BaseTool], dict[str, str]]:
     `sandbox_session.py::load_raw_sandbox_tools`, is async too) instead of
     dispatching to a worker thread and blocking that loop.
     """
-    try:
+    async def _attempt():
         return await _arun_with_timeout(
             mcp_client.load_remote_tools,
             command=sys.executable,
@@ -85,6 +106,14 @@ async def load_sandbox_tools() -> tuple[list[BaseTool], dict[str, str]]:
             capability_overrides={},  # explicit: never trust OpenSandbox's
             # own capability annotations (see module docstring).
             _timeout_seconds=_SANDBOX_LIST_TIMEOUT_SECONDS,
+        )
+
+    try:
+        return await _OPENSANDBOX_BREAKER.call(
+            _attempt,
+            retry_on=(ConnectionError, TimeoutError),
+            attempts=_OPENSANDBOX_RETRY_ATTEMPTS,
+            base_delay=_OPENSANDBOX_RETRY_BASE_DELAY_SECONDS,
         )
     except Exception as exc:  # noqa: BLE001 - a missing/hung bridge must degrade, never crash
         logger.warning(

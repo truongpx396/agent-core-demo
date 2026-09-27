@@ -464,6 +464,34 @@ agent_subagent_duration_seconds = Histogram(
     labelnames=["subagent"],
 )
 
+agent_tool_retry_total = Counter(
+    "agent_tool_retry_total",
+    "Retry attempts made by app/core/resilience.py::CircuitBreaker.call after a "
+    "transient (retry_on-listed) failure — counted per retry, not per call, so this "
+    "can run well ahead of agent_circuit_breaker_opened_total under a brief blip "
+    "every retry recovers from before the breaker ever trips.",
+    ["dependency"],
+)  # dependency: opensandbox_mcp | crawl4ai
+
+agent_circuit_breaker_opened_total = Counter(
+    "agent_circuit_breaker_opened_total",
+    "A CircuitBreaker (app/core/resilience.py) tripped open after failure_threshold "
+    "consecutive calls to one dependency each exhausted their own retries — that "
+    "dependency is presumed down, and every call to it fails fast with "
+    "CircuitOpenError instead of retrying, until its cooldown elapses. A sustained "
+    "rate here means a real outage of a shared local dependency (opensandbox-server, "
+    "crawl4ai), not a per-tenant/per-request problem.",
+    ["dependency"],
+)
+
+agent_circuit_breaker_rejected_total = Counter(
+    "agent_circuit_breaker_rejected_total",
+    "Calls rejected immediately with CircuitOpenError while a breaker was already "
+    "open — each one is a call that would otherwise have paid the dependency's full "
+    "connect-timeout for a failure the breaker already knows is coming.",
+    ["dependency"],
+)
+
 
 class MetricsCallbackHandler(BaseCallbackHandler):
     """Records tool-call/tool-error counts AND a structured per-call audit
