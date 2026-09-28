@@ -66,6 +66,47 @@ async def test_create_ticket_always_scopes_to_tenant_and_returns_the_new_id(monk
     assert ticket_id == 42
     assert "tenant" in fake.captured["sql"]
     assert fake.captured["params"][0] == "ecorp"
+    assert fake.captured["params"][-1] is None  # tool_call_id defaults to None
+
+
+async def test_create_ticket_passes_the_tool_call_id_through(monkeypatch):
+    fake = _FakeConnection(row=(42,))
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
+
+    await store.create_ticket(
+        "ecorp", "alice", "Login broken", "Can't log in", "high", tool_call_id="call-1"
+    )
+
+    assert fake.captured["params"][-1] == "call-1"
+
+
+async def test_create_ticket_a_repeated_tool_call_id_returns_the_original_row_not_a_duplicate(
+    monkeypatch,
+):
+    """ON CONFLICT (tool_call_id) DO NOTHING firing (no row RETURNING'd)
+    falls back to reading back the existing ticket's id — proves the
+    exactly-once-at-the-row guarantee postgres-init/14-tool-call-id-columns.sql
+    exists for, without a live Postgres."""
+
+    class _ConflictThenSelect:
+        def __init__(self):
+            self.captured_sqls = []
+
+        async def execute(self, sql, params):
+            self.captured_sqls.append(sql)
+            if sql.strip().startswith("INSERT"):
+                return _FakeCursor(None)
+            return _FakeCursor((9,))
+
+    fake = _ConflictThenSelect()
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
+
+    ticket_id = await store.create_ticket(
+        "ecorp", "alice", "Login broken", "Can't log in", "high", tool_call_id="call-1"
+    )
+
+    assert ticket_id == 9
+    assert len(fake.captured_sqls) == 2
 
 
 async def test_get_ticket_scopes_to_tenant_and_id(monkeypatch):

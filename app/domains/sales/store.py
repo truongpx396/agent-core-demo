@@ -47,19 +47,39 @@ async def get_lead(tenant: str, contact: str) -> dict | None:
         return dict(zip(columns, row, strict=True)) if row else None
 
 
-async def add_followup(tenant: str, contact: str, due_at: datetime, note: str, created_by: str) -> int | None:
+async def add_followup(
+    tenant: str,
+    contact: str,
+    due_at: datetime,
+    note: str,
+    created_by: str,
+    tool_call_id: str | None = None,
+) -> int | None:
     """Schedules a follow-up for `contact`. Returns None if no lead exists
     yet for this tenant/contact, so the tool impl can tell the model to
-    log the interaction first."""
+    log the interaction first.
+
+    `tool_call_id` (postgres-init/14-tool-call-id-columns.sql) — same
+    exactly-once-at-the-row shape as support/store.py::create_ticket's own
+    docstring: `None` (the default) behaves exactly as before."""
     lead = await get_lead(tenant, contact)
     if lead is None:
         return None
     sql = (
-        "INSERT INTO crm_followups (tenant, lead_id, due_at, note, created_by) "
-        "VALUES (%s, %s, %s, %s, %s) RETURNING id"
+        "INSERT INTO crm_followups (tenant, lead_id, due_at, note, created_by, tool_call_id) "
+        "VALUES (%s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (tool_call_id) DO NOTHING RETURNING id"
     )
     async with get_connection() as conn:
-        cur = await conn.execute(sql, [tenant, lead["id"], due_at, note, created_by])
+        cur = await conn.execute(
+            sql, [tenant, lead["id"], due_at, note, created_by, tool_call_id]
+        )
+        row = await cur.fetchone()
+        if row is not None:
+            return int(row[0])
+        cur = await conn.execute(
+            "SELECT id FROM crm_followups WHERE tool_call_id = %s", [tool_call_id]
+        )
         (followup_id,) = await cur.fetchone()
         return int(followup_id)
 

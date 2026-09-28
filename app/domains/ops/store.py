@@ -11,15 +11,28 @@ app's own operational metrics have no per-tenant dimension to inherit
 from app.agent.sql_store import get_connection
 
 
-async def log_incident(opened_by: str, summary: str, detail: str | None) -> int:
+async def log_incident(
+    opened_by: str, summary: str, detail: str | None, tool_call_id: str | None = None
+) -> int:
     """Insert one new incident, always `status='open'`. Returns the new
-    incident's id (fresh, never caller-targeted)."""
+    incident's id (fresh, never caller-targeted).
+
+    `tool_call_id` (postgres-init/14-tool-call-id-columns.sql) — same
+    exactly-once-at-the-row shape as support/store.py::create_ticket's own
+    docstring: `None` (the default) behaves exactly as before."""
     sql = (
-        "INSERT INTO ops_incidents (opened_by, summary, detail) "
-        "VALUES (%s, %s, %s) RETURNING id"
+        "INSERT INTO ops_incidents (opened_by, summary, detail, tool_call_id) "
+        "VALUES (%s, %s, %s, %s) "
+        "ON CONFLICT (tool_call_id) DO NOTHING RETURNING id"
     )
     async with get_connection() as conn:
-        cur = await conn.execute(sql, [opened_by, summary, detail])
+        cur = await conn.execute(sql, [opened_by, summary, detail, tool_call_id])
+        row = await cur.fetchone()
+        if row is not None:
+            return int(row[0])
+        cur = await conn.execute(
+            "SELECT id FROM ops_incidents WHERE tool_call_id = %s", [tool_call_id]
+        )
         (incident_id,) = await cur.fetchone()
         return int(incident_id)
 

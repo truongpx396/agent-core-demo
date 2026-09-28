@@ -123,9 +123,13 @@ class ScheduleFollowupArgs(BaseModel):
         return v
 
 
-async def _schedule_followup_impl(contact: str, due_in_days: int, note: str, ctx: SecurityCtx) -> str:
+async def _schedule_followup_impl(
+    contact: str, due_in_days: int, note: str, ctx: SecurityCtx, tool_call_id: str
+) -> str:
     due_at = datetime.now(UTC) + timedelta(days=due_in_days)
-    followup_id = await store.add_followup(ctx["tenant"], contact, due_at, note, ctx["principal"])
+    followup_id = await store.add_followup(
+        ctx["tenant"], contact, due_at, note, ctx["principal"], tool_call_id=tool_call_id
+    )
     if followup_id is None:
         return f"No lead found for contact {contact!r} — log an interaction with them first."
     return f"Follow-up #{followup_id} scheduled for {due_at.date().isoformat()}: {note}"
@@ -150,7 +154,9 @@ async def schedule_followup(
         ctx=ctx,
         config=config,
         tool_name="schedule_followup",
-        fn=lambda: _arun_with_timeout(_schedule_followup_impl, contact, due_in_days, note, ctx),
+        fn=lambda: _arun_with_timeout(
+            _schedule_followup_impl, contact, due_in_days, note, ctx, tool_call_id
+        ),
     )
 
 

@@ -450,6 +450,14 @@ agent_upload_rejected_total = Counter(
     ["reason"],
 )  # reason: bad_file_type | too_large | too_many_files
 
+agent_upload_failed_total = Counter(
+    "agent_upload_failed_total",
+    "POST /ingest/upload files that failed AFTER an accepted upload attempt "
+    "(MinIO write or job publish) — distinct from agent_upload_rejected_total, "
+    "which is pre-write validation only",
+    ["reason"],
+)  # reason: storage_error
+
 agent_subagent_run_total = Counter(
     "agent_subagent_run_total",
     "run_subagent calls (app/agent/tools.py, GRAPH_PATTERNS.md pattern 46) by "

@@ -110,6 +110,49 @@ async def test_add_followup_scopes_to_tenant_and_the_leads_id(monkeypatch):
 
     assert followup_id == 9
     assert fake.captured["params"][:2] == ["ecorp", 5]
+    assert fake.captured["params"][-1] is None  # tool_call_id defaults to None
+
+
+async def test_add_followup_passes_the_tool_call_id_through(monkeypatch):
+    monkeypatch.setattr(store, "get_lead", _fake_get_lead({"id": 5}))
+    fake = _FakeConnection(row=(9,))
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
+
+    await store.add_followup(
+        "ecorp", "jordan@example.com", "2099-01-01", "nudge", "rep-1", tool_call_id="call-1"
+    )
+
+    assert fake.captured["params"][-1] == "call-1"
+
+
+async def test_add_followup_a_repeated_tool_call_id_returns_the_original_row_not_a_duplicate(
+    monkeypatch,
+):
+    """ON CONFLICT (tool_call_id) DO NOTHING firing (no row RETURNING'd)
+    falls back to reading back the existing follow-up's id — proves the
+    exactly-once-at-the-row guarantee postgres-init/14-tool-call-id-columns.sql
+    exists for, without a live Postgres."""
+    monkeypatch.setattr(store, "get_lead", _fake_get_lead({"id": 5}))
+
+    class _ConflictThenSelect:
+        def __init__(self):
+            self.captured_sqls = []
+
+        async def execute(self, sql, params):
+            self.captured_sqls.append(sql)
+            if sql.strip().startswith("INSERT"):
+                return _FakeCursor(None)
+            return _FakeCursor((11,))
+
+    fake = _ConflictThenSelect()
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
+
+    followup_id = await store.add_followup(
+        "ecorp", "jordan@example.com", "2099-01-01", "nudge", "rep-1", tool_call_id="call-1"
+    )
+
+    assert followup_id == 11
+    assert len(fake.captured_sqls) == 2
 
 
 async def test_due_followups_scopes_to_tenant_and_pending_status(monkeypatch):

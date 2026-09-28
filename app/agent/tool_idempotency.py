@@ -34,6 +34,15 @@ block every mutating/outward tool call in the app on it. This is a
 defense-in-depth layer for a rare compounding failure (a crash-recovery
 retry landing exactly while the dedup store is ALSO down), never a
 precondition for a tool call to work at all.
+
+A second, DIFFERENT gap this module cannot close by keying on
+`tool_call_id`: `fn()`'s own soft timeout (`_arun_with_timeout`) firing
+AFTER its underlying write already committed on the far side, but before
+this module's own closing `UPDATE` runs. A retry from there arrives under
+a BRAND NEW tool_call_id (a fresh LLM decision), which no tool_call_id
+keyed defense can ever recognize as "the same one again" — see
+`MutatingToolTimedOut`'s own docstring for how this is handled instead
+(steering the agent to verify, not deduplicating after the fact).
 """
 import logging
 from collections.abc import Awaitable, Callable
@@ -49,6 +58,39 @@ logger = logging.getLogger(__name__)
 
 def _thread_id_from_config(config: RunnableConfig | None) -> str | None:
     return (config or {}).get("configurable", {}).get("thread_id")
+
+
+class MutatingToolTimedOut(Exception):
+    """Raised by `idempotent()` in place of the `TimeoutError` `fn()`
+    itself raised, when that `fn()` is a mutating/outward tool's own
+    `_arun_with_timeout(...)` call.
+
+    Why this needs its own type: `_arun_with_timeout`'s own docstring
+    already names the risk — `asyncio.wait_for` cancels the AWAITING
+    task, not necessarily whatever `fn()` is awaiting underneath, so the
+    real side effect (an INSERT, a Qdrant upsert) can commit on the far
+    side of a slow store even though this call reports failure. That's a
+    DIFFERENT window than the crash-replay race this module's own
+    `idempotent`/`_claim_or_cached_result` docstrings already discuss:
+    those are about the SAME tool_call_id being seen twice. Here, the
+    agent sees a plain tool failure and, if it decides to retry, does so
+    with a BRAND NEW tool_call_id — one `tool_call_dedup`'s own
+    tool_call_id-keyed claim has never seen before, so it can't catch a
+    second real side effect this way no matter how it's hardened.
+
+    `graph_utils.py::_friendly_tool_error` special-cases this type to
+    steer the agent toward checking whether the effect already landed
+    (e.g. a matching list/status/read tool) instead of blindly retrying —
+    the one general defense that works regardless of which specific
+    mutating/outward tool this was, without needing a per-tool business
+    key.
+    """
+
+    def __init__(self, tool_name: str):
+        self.tool_name = tool_name
+        super().__init__(
+            f"{tool_name} timed out — its side effect may already have been applied"
+        )
 
 
 async def _claim_or_cached_result(tool_call_id: str, ctx: SecurityCtx, config: RunnableConfig, tool_name: str) -> str | None:
@@ -123,7 +165,15 @@ async def idempotent(
         logger.info("tool_call_deduplicated", extra={"tool_call_id": tool_call_id, "tool_name": tool_name})
         return cached
 
-    result = await fn()
+    try:
+        result = await fn()
+    except TimeoutError as exc:
+        # Only fn()'s own soft timeout is re-raised as this distinguishable
+        # type (see MutatingToolTimedOut's own docstring) — any other
+        # exception from fn() means the tool genuinely failed before doing
+        # anything, so the plain, generic error message is already correct
+        # for it.
+        raise MutatingToolTimedOut(tool_name) from exc
     try:
         async with get_connection() as conn:
             await conn.execute(
@@ -136,3 +186,24 @@ async def idempotent(
         )
         metrics.agent_tool_dedup_degraded_total.inc()
     return result
+
+
+async def sweep_stale_rows(*, older_than_hours: int) -> int:
+    """Deletes `tool_call_dedup` rows older than `older_than_hours`.
+    Meant for a periodic cron sweep (`scripts/tool_call_dedup_sweep.py`),
+    never the hot path `idempotent()` itself runs.
+
+    postgres-init/13-tool-call-dedup.sql creates this table with no
+    retention of its own: every mutating/outward tool call ever made
+    accumulates here, full result text included, forever, without this.
+    Only ever needs to outlive `AGENT_WORKER_RECLAIM_IDLE_SECONDS` (the
+    longest a genuine crash-recovery replay can lag behind the original
+    attempt) by a wide margin — the sweep script's own default is generous
+    accordingly. Returns the number of rows deleted.
+    """
+    async with get_connection() as conn:
+        cur = await conn.execute(
+            "DELETE FROM tool_call_dedup WHERE created_at < now() - make_interval(hours => %s)",
+            [older_than_hours],
+        )
+        return cur.rowcount

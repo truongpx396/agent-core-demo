@@ -29,6 +29,7 @@ from langgraph.errors import GraphBubbleUp
 from pydantic import SecretStr
 
 from app.agent import graph as graph_module
+from app.agent.tool_idempotency import MutatingToolTimedOut
 from app.agent.tools import TOOLS
 
 logger = logging.getLogger(__name__)
@@ -142,7 +143,32 @@ def _instrumented(node_name: str):
 
 def _friendly_tool_error(error: Exception) -> str:
     """Turned into a ToolMessage by ToolNode's handle_tool_errors instead of
-    propagating and killing the run — the agent sees this on its next turn."""
+    propagating and killing the run — the agent sees this on its next turn.
+
+    `MutatingToolTimedOut` (app/agent/tool_idempotency.py) gets its own
+    message: a plain "try a different approach" is actively dangerous
+    advice for a mutating/outward tool's soft timeout, since the
+    underlying write may well have already committed — "try again" here
+    means "retry with a brand new tool_call_id," which is exactly the one
+    case nothing keyed on tool_call_id can catch. Steering the agent to
+    verify first is the general defense, since it doesn't depend on which
+    tool this was.
+
+    ToolNode calls this with only the exception (`handler(e)` —
+    `langgraph.prebuilt.tool_node._handle_tool_error`), never the tool
+    call itself, which is why this dispatches on the exception's TYPE
+    rather than on a tool name/capability lookup.
+    """
+    if isinstance(error, MutatingToolTimedOut):
+        return (
+            f"{error.tool_name} timed out, but its effect may already have been "
+            "applied on the far side of that timeout before this failure was "
+            "reported. Do NOT blindly call it again with the same arguments — "
+            "a retry would run under a brand new call id, invisible to this "
+            "app's own duplicate-call detection. First check whether it already "
+            "happened, using a read-only tool for this domain (e.g. a status/"
+            "list tool), and only retry if it clearly did not."
+        )
     return f"Tool failed ({type(error).__name__}: {error}). Try a different approach."
 
 

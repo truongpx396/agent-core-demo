@@ -11,6 +11,8 @@ connection's underlying table would.
 """
 from contextlib import asynccontextmanager
 
+import pytest
+
 from app.agent import tool_idempotency
 from app.core import metrics
 from tests.conftest import TEST_CTX
@@ -205,6 +207,48 @@ class TestIdempotent:
         assert result == "the real answer"
         assert _count(metrics.agent_tool_dedup_degraded_total) == before + 1
 
+    async def test_a_timeout_from_fn_is_re_raised_as_mutating_tool_timed_out(self, monkeypatch):
+        """fn()'s own soft timeout (TimeoutError) is NOT the same gap as
+        the crash-replay race the other tests above cover — a retry from
+        here arrives under a brand new tool_call_id, which no dedup keyed
+        on tool_call_id can ever recognize. idempotent() re-raises it as
+        MutatingToolTimedOut so graph_utils.py::_friendly_tool_error can
+        steer the agent instead of silently swallowing the ambiguity."""
+        store = _FakeDedupStore()
+        monkeypatch.setattr(tool_idempotency, "get_connection", _fake_get_connection(store))
+
+        async def fn():
+            raise TimeoutError("Postgres was slow")
+
+        with pytest.raises(tool_idempotency.MutatingToolTimedOut) as exc_info:
+            await tool_idempotency.idempotent(
+                tool_call_id="call-1", ctx=TEST_CTX, config=_cfg(), tool_name="create_ticket", fn=fn
+            )
+
+        assert exc_info.value.tool_name == "create_ticket"
+        # The claim itself still stands (result IS NULL) — a genuine
+        # crash-recovery replay under this SAME tool_call_id still falls
+        # through to "run fn() again" (the accepted race above), not a
+        # second, independent duplicate-write path.
+        assert store.rows["call-1"]["result"] is None
+
+    async def test_a_non_timeout_exception_from_fn_propagates_unchanged(self, monkeypatch):
+        """Only TimeoutError gets the special MutatingToolTimedOut
+        treatment — a tool that genuinely failed for some other reason
+        (e.g. a validation error) didn't ambiguously commit anything, so
+        the plain exception (and _friendly_tool_error's generic message)
+        is already correct for it."""
+        store = _FakeDedupStore()
+        monkeypatch.setattr(tool_idempotency, "get_connection", _fake_get_connection(store))
+
+        async def fn():
+            raise ValueError("bad input")
+
+        with pytest.raises(ValueError):
+            await tool_idempotency.idempotent(
+                tool_call_id="call-1", ctx=TEST_CTX, config=_cfg(), tool_name="create_ticket", fn=fn
+            )
+
     async def test_thread_id_is_optional_when_config_has_none(self, monkeypatch):
         store = _FakeDedupStore()
         monkeypatch.setattr(tool_idempotency, "get_connection", _fake_get_connection(store))
@@ -217,3 +261,33 @@ class TestIdempotent:
         )
 
         assert store.rows["call-1"]["thread_id"] is None
+
+
+class TestSweepStaleRows:
+    """sweep_stale_rows — the retention sweep scripts/tool_call_dedup_sweep.py
+    runs on a cron; this table has no other cleanup mechanism (see that
+    script's own docstring)."""
+
+    async def test_issues_a_delete_with_the_given_retention_window(self, monkeypatch):
+        captured = {}
+
+        class _FakeCursor:
+            rowcount = 3
+
+        class _FakeConnection:
+            async def execute(self, sql, params):
+                captured["sql"] = sql
+                captured["params"] = params
+                return _FakeCursor()
+
+        @asynccontextmanager
+        async def fake_get_connection():
+            yield _FakeConnection()
+
+        monkeypatch.setattr(tool_idempotency, "get_connection", fake_get_connection)
+
+        deleted = await tool_idempotency.sweep_stale_rows(older_than_hours=24)
+
+        assert deleted == 3
+        assert "DELETE FROM tool_call_dedup" in captured["sql"]
+        assert captured["params"] == [24]

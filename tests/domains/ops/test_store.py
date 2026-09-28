@@ -63,7 +63,45 @@ async def test_log_incident_returns_the_new_id(monkeypatch):
     incident_id = await store.log_incident("ops-user", "latency spike", "p95 at 45s")
 
     assert incident_id == 1
-    assert fake.captured["params"] == ["ops-user", "latency spike", "p95 at 45s"]
+    assert fake.captured["params"] == ["ops-user", "latency spike", "p95 at 45s", None]
+
+
+async def test_log_incident_passes_the_tool_call_id_through(monkeypatch):
+    fake = _FakeConnection(row=(1,))
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
+
+    await store.log_incident("ops-user", "latency spike", "p95 at 45s", tool_call_id="call-1")
+
+    assert fake.captured["params"] == ["ops-user", "latency spike", "p95 at 45s", "call-1"]
+
+
+async def test_log_incident_a_repeated_tool_call_id_returns_the_original_row_not_a_duplicate(
+    monkeypatch,
+):
+    """ON CONFLICT (tool_call_id) DO NOTHING firing (no row RETURNING'd)
+    falls back to reading back the existing incident's id — proves the
+    exactly-once-at-the-row guarantee postgres-init/14-tool-call-id-columns.sql
+    exists for, without a live Postgres."""
+
+    class _ConflictThenSelect:
+        def __init__(self):
+            self.captured_sqls = []
+
+        async def execute(self, sql, params):
+            self.captured_sqls.append(sql)
+            if sql.strip().startswith("INSERT"):
+                return _FakeCursor(None)  # ON CONFLICT DO NOTHING -> no RETURNING row
+            return _FakeCursor((7,))  # the SELECT fallback finds the original row
+
+    fake = _ConflictThenSelect()
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
+
+    incident_id = await store.log_incident(
+        "ops-user", "latency spike", "p95 at 45s", tool_call_id="call-1"
+    )
+
+    assert incident_id == 7
+    assert len(fake.captured_sqls) == 2
 
 
 async def test_list_recent_incidents_defaults_to_no_status_filter(monkeypatch):

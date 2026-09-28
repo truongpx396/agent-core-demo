@@ -405,6 +405,52 @@ class TestPublishResultAndReadResults:
         await queue.publish_result(client, "r1", {"type": "done"})
         assert client.expiries[queue.results_stream_key("r1")] == queue.RESULTS_STREAM_TTL_SECONDS
 
+    async def test_without_a_deadline_never_publishing_anything_would_hang(self):
+        """Documents the exact bug first_event_deadline_seconds exists to
+        close — not run to completion (it would hang the test suite):
+        confirms FakeRedis's own xread returns instantly-empty rather than
+        truly blocking, which is what makes the no-deadline loop below
+        spin forever instead of eventually timing out on its own."""
+        client = FakeRedis()
+        response = await client.xread({queue.results_stream_key("nobody-publishes-here"): "0"}, block=5000, count=10)
+        assert response == []  # instant, not a real 5s block — see docstring above
+
+    async def test_a_first_event_deadline_yields_one_error_event_and_stops(self):
+        client = FakeRedis()  # nothing ever published to "r1"
+        events = [
+            event
+            async for event in queue.read_results(client, "r1", first_event_deadline_seconds=0.05)
+        ]
+        assert len(events) == 1
+        assert events[0]["type"] == "error"
+        assert "r1" in events[0]["content"]
+
+    async def test_a_first_event_deadline_never_fires_once_a_real_event_has_arrived(self):
+        """The deadline only ever guards the wait for the FIRST event —
+        once one real event has landed, a slow-but-genuinely-running job
+        must not be cut short partway through."""
+        client = FakeRedis()
+        await queue.publish_result(client, "r1", {"type": "token", "content": "a"})
+        await queue.publish_result(client, "r1", {"type": "done"})
+
+        events = [
+            event
+            async for event in queue.read_results(client, "r1", first_event_deadline_seconds=0.001)
+        ]
+
+        assert events == [
+            {"type": "token", "content": "a"},
+            {"type": "done"},
+        ]
+
+    async def test_no_deadline_given_preserves_the_old_wait_forever_behavior(self):
+        """Default (`first_event_deadline_seconds=None`) — every existing
+        caller that doesn't opt in keeps its exact prior behavior."""
+        client = FakeRedis()
+        await queue.publish_result(client, "r1", {"type": "done"})
+        events = [event async for event in queue.read_results(client, "r1")]
+        assert events == [{"type": "done"}]
+
 
 class TestDeleteResultsStream:
     async def test_deletes_the_key(self):

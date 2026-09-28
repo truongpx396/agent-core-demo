@@ -33,6 +33,7 @@ class _FakeMinioClient:
         self.made_buckets = []
         self.put_calls = []
         self.get_calls = []
+        self.removed = []
         self._stored: dict[str, bytes] = {}
 
     def bucket_exists(self, name):
@@ -52,6 +53,10 @@ class _FakeMinioClient:
     def get_object(self, bucket, object_name, **kw):
         self.get_calls.append({"bucket": bucket, "object_name": object_name})
         return _FakeResponse(self._stored.get(object_name, b""))
+
+    def remove_object(self, bucket, object_name):
+        self.removed.append(object_name)
+        self._stored.pop(object_name, None)
 
 
 @pytest.fixture(autouse=True)
@@ -166,3 +171,27 @@ class TestDownloadBytes:
 
         assert fake._last.closed is True
         assert fake._last.released is True
+
+
+class TestDeleteObject:
+    """delete_object — the compensating-delete side of app/api/main.py::
+    ingest_upload: a file that reached MinIO but never got a job published
+    must not linger as an orphaned blob."""
+
+    def test_removes_the_given_key(self, monkeypatch):
+        fake = _FakeMinioClient(bucket_exists=True)
+        monkeypatch.setattr(object_store, "get_client", lambda: fake)
+        object_store.upload_bytes("k1", b"data")
+
+        object_store.delete_object("k1")
+
+        assert fake.removed == ["k1"]
+
+    def test_never_raises_even_if_the_client_errors(self, monkeypatch):
+        class _RaisingClient(_FakeMinioClient):
+            def remove_object(self, bucket, object_name):
+                raise RuntimeError("minio unreachable")
+
+        monkeypatch.setattr(object_store, "get_client", lambda: _RaisingClient())
+
+        object_store.delete_object("k1")  # must not raise

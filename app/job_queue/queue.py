@@ -55,6 +55,7 @@ doesn't know what a "turn" or "event" IS. Producer: `app/api/main.py`
 """
 import json
 import logging
+import time
 from typing import cast
 
 import redis.asyncio as redis
@@ -360,6 +361,25 @@ async def claim_or_get_existing_submission(
     return cast(str, existing), False
 
 
+async def release_submission_claim(client: redis.Redis, *, thread_id: str, digest: str) -> None:
+    """Compensating delete for a claim `claim_or_get_existing_submission`
+    just won (`is_new_submission=True`) whose own job then failed to
+    publish — app/api/main.py::chat_stream_queued's only caller. Without
+    this, a claim can outlive the job it was meant to guard: the key
+    keeps pointing at a `request_id` no job was ever published under, so
+    any resubmission inside `ttl_seconds` gets `is_new=False` and streams
+    a results stream nobody will ever write to (closed independently by
+    `read_results`'s own `first_event_deadline_seconds`, but this avoids
+    even reaching that path on the common failure). No-ops harmlessly if
+    the key already expired or was never set — same "best-effort, never
+    worth failing the caller over" posture as `delete_results_stream`.
+    """
+    try:
+        await client.delete(_submission_dedup_key(thread_id, digest))
+    except Exception as exc:  # noqa: BLE001 - cleanup is optional, never worth masking the original publish failure
+        logger.warning("queue_submission_claim_release_failed", extra={"error_class": type(exc).__name__})
+
+
 async def publish_result(client: redis.Redis, request_id: str, event: dict) -> None:
     """Consumer side: append one typed event (same shapes
     `runtime_stream.py::_run_graph_stream` yields — token, tool_start,
@@ -370,7 +390,13 @@ async def publish_result(client: redis.Redis, request_id: str, event: dict) -> N
     await client.expire(key, RESULTS_STREAM_TTL_SECONDS)
 
 
-async def read_results(client: redis.Redis, request_id: str, *, block_ms: int = 5000):
+async def read_results(
+    client: redis.Redis,
+    request_id: str,
+    *,
+    block_ms: int = 5000,
+    first_event_deadline_seconds: float | None = None,
+):
     """Producer side: yield each event published for `request_id`, in
     order, blocking up to `block_ms` per read, until a terminal event
     (`type` is `done`, `error`, or `approval_required`) is seen. Treating
@@ -381,13 +407,44 @@ async def read_results(client: redis.Redis, request_id: str, *, block_ms: int = 
     without this the generator would block forever waiting for a done/error
     a paused worker will never send. A caller that stops iterating early
     just leaves the stream to expire via TTL.
+
+    `first_event_deadline_seconds`, when given, bounds ONLY the wait for
+    the FIRST event ever published here — not the whole job. Without it,
+    `if not response: continue` below loops forever the moment nobody is
+    ever going to publish anything (no agent-worker running for this
+    domain at all, or a submission-dedup claim left pointing at a
+    request_id whose own publish then failed — see app/api/main.py's
+    compensating delete for that case), silently hanging whatever's
+    iterating this generator (an open SSE connection) instead of ever
+    erroring. Once a real event has arrived the deadline is cleared for
+    the rest of this call — a legitimately long-running job (bounded by
+    its OWN worker-side timeout, or not bounded at all for an ingest job)
+    is never cut short here. On expiry, yields one `error` event (the
+    same terminal shape a real worker-reported failure takes, so every
+    existing caller already knows how to render it) and returns.
     """
     key = results_stream_key(request_id)
     last_id = "0"
+    deadline = (
+        time.monotonic() + first_event_deadline_seconds
+        if first_event_deadline_seconds is not None
+        else None
+    )
     while True:
+        if deadline is not None and time.monotonic() >= deadline:
+            yield {
+                "type": "error",
+                "content": (
+                    f"No response for {request_id!r} after "
+                    f"{first_event_deadline_seconds:.0f}s — is an agent-worker "
+                    "running for this domain?"
+                ),
+            }
+            return
         response = cast(StreamReadResponse, await client.xread({key: last_id}, block=block_ms, count=10))
         if not response:
             continue  # no new entries within block_ms — poll again
+        deadline = None  # a real event arrived — no longer "nobody is listening"
         _, entries = response[0]
         for entry_id, fields in entries:
             last_id = entry_id
