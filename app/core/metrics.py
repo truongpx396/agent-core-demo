@@ -487,8 +487,21 @@ agent_circuit_breaker_opened_total = Counter(
 agent_circuit_breaker_rejected_total = Counter(
     "agent_circuit_breaker_rejected_total",
     "Calls rejected immediately with CircuitOpenError while a breaker was already "
-    "open — each one is a call that would otherwise have paid the dependency's full "
-    "connect-timeout for a failure the breaker already knows is coming.",
+    "open (including one already in CircuitState.HALF_OPEN, i.e. a trial call was "
+    "already in flight) — each one is a call that would otherwise have paid the "
+    "dependency's full connect-timeout for a failure the breaker already knows is "
+    "coming, or piled a second concurrent probe onto a dependency still proving "
+    "itself healthy.",
+    ["dependency"],
+)
+
+agent_circuit_breaker_half_open_total = Counter(
+    "agent_circuit_breaker_half_open_total",
+    "A CircuitBreaker's cooldown elapsed and it admitted exactly one trial call "
+    "(CircuitState.HALF_OPEN) to decide whether to fully close or re-open — every "
+    "OTHER call arriving before that trial resolves is rejected instead of also "
+    "being admitted (agent_circuit_breaker_rejected_total), so this dependency "
+    "never gets hit with a burst the instant its cooldown expires.",
     ["dependency"],
 )
 

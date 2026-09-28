@@ -18,7 +18,7 @@ import asyncio
 import pytest
 
 from app.core import metrics
-from app.core.resilience import CircuitBreaker, CircuitOpenError
+from app.core.resilience import CircuitBreaker, CircuitOpenError, CircuitState
 from tests.conftest import metric_value as _count
 
 
@@ -195,3 +195,133 @@ class TestCircuitBreakerOpening:
         with pytest.raises(CircuitOpenError):
             await breaker.call(always_fails, retry_on=(_Boom,), attempts=1, base_delay=0.001)
         assert state["count"] == calls_before
+
+
+class TestCircuitStateTransitions:
+    """`.state` (`CircuitState.CLOSED`/`OPEN`/`HALF_OPEN`) made explicit —
+    same transitions `TestCircuitBreakerOpening` already covers by
+    behavior, asserted here directly against the enum."""
+
+    async def test_starts_closed(self):
+        assert CircuitBreaker("dep-state-a").state is CircuitState.CLOSED
+
+    async def test_moves_to_open_after_threshold_failures(self):
+        breaker = CircuitBreaker("dep-state-b", failure_threshold=1, cooldown_seconds=60)
+        always_fails, _ = _calls(fail_times=99)
+
+        with pytest.raises(_Boom):
+            await breaker.call(always_fails, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+
+        assert breaker.state is CircuitState.OPEN
+
+    async def test_moves_to_half_open_the_instant_cooldown_elapses(self):
+        """Asserted from OUTSIDE `.call()` — via a slow trial `fn` held open
+        with an event — so this observes the HALF_OPEN state itself, not
+        just its eventual CLOSED/OPEN outcome (already covered above)."""
+        breaker = CircuitBreaker("dep-state-c", failure_threshold=1, cooldown_seconds=0.02)
+        always_fails, _ = _calls(fail_times=99)
+        with pytest.raises(_Boom):
+            await breaker.call(always_fails, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+
+        await asyncio.sleep(0.03)
+
+        release_trial = asyncio.Event()
+
+        async def slow_trial():
+            return await release_trial.wait()
+
+        trial_task = asyncio.create_task(
+            breaker.call(slow_trial, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+        )
+        try:
+            async def _wait_for_half_open():
+                while breaker.state is not CircuitState.HALF_OPEN:
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(_wait_for_half_open(), timeout=1)
+            assert breaker.state is CircuitState.HALF_OPEN
+        finally:
+            release_trial.set()
+            await trial_task
+
+
+class TestHalfOpenSingleFlight:
+    """The gap the plain-timestamp version of this breaker used to leave
+    open: once cooldown elapses, EVERY concurrently-arriving caller used to
+    see the same "cooldown has passed" snapshot and get admitted as its own
+    trial — a burst hitting a dependency that's only just allowed to prove
+    itself healthy again, not the single gentle probe a real half-open
+    state is supposed to be. `_before_call` now flips CircuitState under
+    `_lock` before releasing it, so only the FIRST caller to observe
+    cooldown-elapsed becomes the trial; every other one is rejected the
+    same as a still-open breaker.
+    """
+
+    async def test_a_second_caller_is_rejected_while_the_trial_is_in_flight(self):
+        breaker = CircuitBreaker("dep-k", failure_threshold=1, cooldown_seconds=0.02)
+        first_fails, _ = _calls(fail_times=99)
+        with pytest.raises(_Boom):
+            await breaker.call(first_fails, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+
+        await asyncio.sleep(0.03)  # cooldown elapses
+
+        trial_started = asyncio.Event()
+        release_trial = asyncio.Event()
+
+        async def slow_trial():
+            trial_started.set()
+            await release_trial.wait()
+            return "ok"
+
+        trial_task = asyncio.create_task(
+            breaker.call(slow_trial, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+        )
+        await trial_started.wait()  # the trial is now genuinely in flight
+        assert breaker.state is CircuitState.HALF_OPEN
+
+        # A second caller arriving while that trial is still unresolved
+        # must be rejected outright — NOT admitted as a second, concurrent
+        # trial — and must never invoke its own fn.
+        second_fn, second_state = _calls(fail_times=0)
+        before_rejected = _count(metrics.agent_circuit_breaker_rejected_total, dependency="dep-k")
+        with pytest.raises(CircuitOpenError):
+            await breaker.call(second_fn, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+        assert second_state["count"] == 0
+        assert _count(metrics.agent_circuit_breaker_rejected_total, dependency="dep-k") == before_rejected + 1
+
+        release_trial.set()
+        assert await trial_task == "ok"
+        assert breaker.state is CircuitState.CLOSED  # the (only) trial succeeded
+
+    async def test_exactly_one_half_open_metric_per_cooldown_even_with_concurrent_arrivals(self):
+        breaker = CircuitBreaker("dep-l", failure_threshold=1, cooldown_seconds=0.02)
+        first_fails, _ = _calls(fail_times=99)
+        with pytest.raises(_Boom):
+            await breaker.call(first_fails, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+
+        await asyncio.sleep(0.03)
+        before_half_open = _count(metrics.agent_circuit_breaker_half_open_total, dependency="dep-l")
+
+        trial_started = asyncio.Event()
+        release_trial = asyncio.Event()
+
+        async def slow_trial():
+            trial_started.set()
+            return await release_trial.wait()
+
+        trial_task = asyncio.create_task(
+            breaker.call(slow_trial, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+        )
+        await trial_started.wait()  # don't race the "losers" below against _before_call itself
+
+        # Several more callers race in while the trial is still pending —
+        # none of them should ALSO be counted as admitted half-open trials.
+        losers, _ = _calls(fail_times=99)
+        for _ in range(3):
+            with pytest.raises(CircuitOpenError):
+                await breaker.call(losers, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+
+        release_trial.set()
+        await trial_task
+
+        assert _count(metrics.agent_circuit_breaker_half_open_total, dependency="dep-l") == before_half_open + 1
