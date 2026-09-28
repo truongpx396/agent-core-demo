@@ -1,9 +1,10 @@
 """Tests for app/job_queue/agent_worker.py's process_request — the Redis Streams
 consumer side of GRAPH_PATTERNS.md pattern 43, dispatching by
-`payload["kind"]` (`"turn"` | `"resume"` | `"cancel"`). Reuses
-tests/job_queue/test_queue.py's FakeRedis; the actual graph-running functions
-(`astream_events_turn`/`astream_events_resume`/`cancel_run`) are
-monkeypatched so these never touch a real graph/LLM.
+`payload["kind"]` (`"turn"` | `"turn_continue"` | `"resume"` | `"cancel"`).
+Reuses tests/job_queue/test_queue.py's FakeRedis; the actual graph-running
+functions (`astream_events_turn`/`astream_events_continue_turn`/
+`astream_events_resume`/`cancel_run`) are monkeypatched so these never touch
+a real graph/LLM.
 """
 import asyncio
 import json
@@ -231,6 +232,49 @@ class TestProcessRequestTurn:
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r2")]]
         assert events == [{"type": "error", "content": "graph blew up"}]
+        assert client.acked == [entry_id]
+
+
+class TestProcessRequestTurnContinue:
+    """`"turn_continue"` is never produced by a real producer — only by
+    `_handle_reclaimed_job` flipping a reclaimed `"turn"`'s own kind before
+    republishing (see that function's and `_classify_reclaimed_turn`'s own
+    docstrings). Dispatch here just needs to prove `process_request` wires
+    it to `astream_events_continue_turn` with the right args, same shape as
+    `TestProcessRequestTurn`/`TestProcessRequestResume`'s own coverage."""
+
+    async def test_dispatches_to_astream_events_continue_turn_with_the_right_args(self, monkeypatch):
+        captured = {}
+
+        async def fake_continue(thread_id, ctx, cancel_check=None):
+            captured.update(thread_id=thread_id, ctx=ctx)
+            yield {"type": "done"}
+
+        monkeypatch.setattr(agent_worker, "astream_events_continue_turn", fake_continue)
+        client = FakeRedis()
+        ctx = {"tenant": "ecorp", "principal": "p1", "claims": {}}
+        entry_id, fields = _entry(kind="turn_continue", request_id="r10", thread_id="t10", ctx=ctx)
+
+        await agent_worker.process_request(client, entry_id, fields)
+
+        assert captured == {"thread_id": "t10", "ctx": ctx}
+        events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r10")]]
+        assert events == [{"type": "done"}]
+        assert client.acked == [entry_id]
+
+    async def test_a_continue_failure_publishes_an_error_and_still_acks(self, monkeypatch):
+        async def failing_continue(thread_id, ctx, cancel_check=None):
+            raise RuntimeError("checkpoint gone")
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(agent_worker, "astream_events_continue_turn", failing_continue)
+        client = FakeRedis()
+        entry_id, fields = _entry(kind="turn_continue", request_id="r11", thread_id="t11")
+
+        await agent_worker.process_request(client, entry_id, fields)
+
+        events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r11")]]
+        assert events == [{"type": "error", "content": "checkpoint gone"}]
         assert client.acked == [entry_id]
 
 
@@ -590,17 +634,28 @@ class TestSameThreadJobsAreSerialized:
 
 class FakeGraph:
     """Stands in for the real compiled graph's `aget_state` — just enough
-    to drive `_is_safe_to_retry_turn` without a real checkpointer/Postgres.
+    to drive `_classify_reclaimed_turn` without a real checkpointer/Postgres.
     `states` maps thread_id -> the message list that thread's checkpoint
     would report; a thread with no entry behaves like one that was never
-    checkpointed at all (empty `.values`)."""
+    checkpointed at all (empty `.values`). `paused` marks a thread_id as
+    checkpointed mid a REAL `human_approval` interrupt (`state.next`
+    truthy AND `state.tasks[i].interrupts` non-empty — see
+    `graph_hitl.py::_resumability_error_from_state`'s own docstring on why
+    both are checked, not `state.next` alone)."""
 
-    def __init__(self, states: dict | None = None):
+    def __init__(self, states: dict | None = None, paused: set | None = None):
         self._states = states or {}
+        self._paused = paused or set()
 
     async def aget_state(self, config):
         thread_id = config["configurable"]["thread_id"]
-        return SimpleNamespace(values={"messages": self._states.get(thread_id, [])})
+        messages = self._states.get(thread_id, [])
+        if thread_id in self._paused:
+            task = SimpleNamespace(interrupts=[SimpleNamespace(value={"tool_calls": []})])
+            return SimpleNamespace(
+                values={"messages": messages}, next=("human_approval",), tasks=[task]
+            )
+        return SimpleNamespace(values={"messages": messages}, next=(), tasks=[])
 
 
 class RaisingGraph:
@@ -608,49 +663,42 @@ class RaisingGraph:
         raise RuntimeError("checkpoint deserialization failed")
 
 
-class TestIsSafeToRetryTurn:
-    """`_is_safe_to_retry_turn` is the safety check standing between "a
+class TestClassifyReclaimedTurn:
+    """`_classify_reclaimed_turn` is the safety check standing between "a
     crashed worker's turn" and "silently running it again" — see this
-    module's own docstring for why only `mutating`/`outward` tool calls
-    (never `read_only` ones) make that unsafe."""
+    module's own docstring for the three outcomes and why a mutating/
+    outward tool call already having run no longer makes it unsafe (it
+    just means retry via CONTINUATION, `"retry_continue"`, rather than a
+    fresh restart)."""
 
-    async def test_no_checkpoint_at_all_is_safe(self):
+    async def test_no_checkpoint_at_all_is_retried_fresh(self):
         graph = FakeGraph()  # thread never seen -> empty state
-        assert await agent_worker._is_safe_to_retry_turn(graph, {}, "t1") is True
+        assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "retry_fresh"
 
-    async def test_a_human_message_with_nothing_after_it_is_safe(self):
+    async def test_a_human_message_with_nothing_after_it_is_continued(self):
         graph = FakeGraph({"t1": [HumanMessage(content="hi")]})
-        assert await agent_worker._is_safe_to_retry_turn(graph, {}, "t1") is True
+        assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "retry_continue"
 
-    async def test_a_completed_read_only_tool_call_is_safe(self):
+    async def test_a_completed_read_only_tool_call_is_continued(self):
         graph = FakeGraph(
             {"t1": [HumanMessage(content="hi"), ToolMessage(content="42", name="calculator", tool_call_id="c1")]}
         )
-        assert (
-            await agent_worker._is_safe_to_retry_turn(graph, {"calculator": "read_only"}, "t1")
-            is True
-        )
+        assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "retry_continue"
 
-    async def test_a_completed_mutating_tool_call_is_not_safe(self):
+    async def test_a_completed_mutating_tool_call_is_continued_not_dead_lettered(self):
+        """The core fix: a turn that already ran a mutating tool used to
+        be judged unsafe outright and dead-lettered. It's now judged
+        SAFE-VIA-CONTINUATION instead — `astream_events_continue_turn`
+        never re-asks the LLM, so the already-completed tool call is never
+        re-executed regardless of what it was."""
         graph = FakeGraph(
             {"t1": [HumanMessage(content="add a note"), ToolMessage(content="ok", name="add_note", tool_call_id="c1")]}
         )
-        assert (
-            await agent_worker._is_safe_to_retry_turn(graph, {"add_note": "mutating"}, "t1")
-            is False
-        )
-
-    async def test_a_tool_missing_from_capabilities_fails_closed_as_outward(self):
-        """Same default `graph_routing.py`'s own gate uses for an
-        undeclared tool — never assume unknown means safe."""
-        graph = FakeGraph(
-            {"t1": [HumanMessage(content="hi"), ToolMessage(content="ok", name="mystery_tool", tool_call_id="c1")]}
-        )
-        assert await agent_worker._is_safe_to_retry_turn(graph, {}, "t1") is False
+        assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "retry_continue"
 
     async def test_only_looks_after_the_most_recent_human_message(self):
-        """A mutating tool call from an EARLIER, already-completed turn on
-        this same thread must not poison the safety check for a later,
+        """A tool call from an EARLIER, already-completed turn on this
+        same thread must not poison the classification for a later,
         still-fresh turn that hasn't touched any tool yet."""
         graph = FakeGraph(
             {
@@ -662,27 +710,25 @@ class TestIsSafeToRetryTurn:
                 ]
             }
         )
-        assert (
-            await agent_worker._is_safe_to_retry_turn(graph, {"add_note": "mutating"}, "t1")
-            is True
-        )
+        assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "retry_continue"
 
-    async def test_an_unreadable_checkpoint_fails_closed(self):
-        assert await agent_worker._is_safe_to_retry_turn(RaisingGraph(), {}, "t1") is False
+    async def test_an_unreadable_checkpoint_is_dead_lettered(self):
+        assert await agent_worker._classify_reclaimed_turn(RaisingGraph(), "t1") == "dead_letter"
 
-    async def test_a_turn_that_already_produced_a_final_answer_is_not_safe(self):
+    async def test_a_turn_that_already_produced_a_final_answer_is_dead_lettered(self):
         """Closes a real, narrower gap: a plain Q&A turn with NO tool
         calls at all that fully finished (usage already recorded via
         _record_turn_metrics) but crashed before this job's own ack would
-        otherwise be judged "safe" by the tool-call check alone and
-        blindly re-run — wasting a second LLM call and double-recording
-        that turn's usage cost for no benefit."""
+        otherwise be judged retryable and blindly re-run — wasting a
+        second LLM call and double-recording that turn's usage cost for no
+        benefit. Nothing to CONTINUE either (state.next is empty), so
+        dead-letter, not retry_continue, is the only sound outcome."""
         graph = FakeGraph(
             {"t1": [HumanMessage(content="what's 2+2?"), AIMessage(content="4")]}
         )
-        assert await agent_worker._is_safe_to_retry_turn(graph, {}, "t1") is False
+        assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "dead_letter"
 
-    async def test_a_turn_still_holding_pending_tool_calls_is_not_yet_completed(self):
+    async def test_a_turn_still_holding_pending_tool_calls_is_continued(self):
         """An AIMessage that itself REQUESTS tool calls (not yet executed
         — no ToolMessage exists for it) means the crash happened before
         the tools even ran, not after the turn finished — must not be
@@ -695,22 +741,36 @@ class TestIsSafeToRetryTurn:
                 ]
             }
         )
-        assert await agent_worker._is_safe_to_retry_turn(graph, {"add_note": "mutating"}, "t1") is True
+        assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "retry_continue"
+
+    async def test_a_turn_paused_at_a_real_interrupt_is_dead_lettered(self):
+        """A "turn" job only ever reaches this function if it was
+        reclaimed (its worker died before process_request's own ack), and
+        a healthy worker acks a job that reaches a pause the same as one
+        that finishes — so finding a real human_approval interrupt here
+        means the crash landed in the narrow sliver strictly AFTER it
+        fired. `astream_events_continue_turn` has no resume value to give
+        it (that's `astream_events_resume`'s job), so this is dead-lettered
+        rather than blindly continued."""
+        graph = FakeGraph(
+            {"t1": [HumanMessage(content="do the risky thing")]}, paused={"t1"}
+        )
+        assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "dead_letter"
 
 
 class TestHandleReclaimedJob:
     """`_handle_reclaimed_job` is what `_reclaim_loop` calls for every entry
     `queue.py::reclaim_stale_entries` finds abandoned by a dead worker — see
-    this module's own docstring for the full per-kind policy. `graph`/
-    `tool_capabilities` below default to an empty `FakeGraph()`/`{}` (i.e.
-    "nothing ran yet") except where a test needs otherwise."""
+    this module's own docstring for the full per-kind policy. `graph`
+    below defaults to an empty `FakeGraph()` (i.e. "nothing ran yet")
+    except where a test needs otherwise."""
 
-    async def test_a_turn_that_never_ran_a_tool_is_silently_retried_not_dead_lettered(self):
+    async def test_a_turn_that_never_ran_a_tool_is_retried_fresh(self):
         client = FakeRedis()
         entry_id, fields = _entry(kind="turn", request_id="r1", thread_id="t1")
         before_retried = _count(agent_worker.metrics.agent_worker_job_reclaimed_total, queue="agent", outcome="retried")
 
-        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph(), tool_capabilities={})
+        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph())
 
         # No error surfaced, nothing dead-lettered — the caller listening on
         # r1's results stream stays blocked, transparently waiting for the
@@ -723,30 +783,53 @@ class TestHandleReclaimedJob:
         assert len(republished) == 1
         new_payload = json.loads(republished[0][1]["payload"])
         assert new_payload["request_id"] == "r1"
+        assert new_payload["kind"] == "turn"  # thread never checkpointed anything -> fresh restart, not continue
         assert new_payload["_reclaim_attempts"] == 1
         assert (
             _count(agent_worker.metrics.agent_worker_job_reclaimed_total, queue="agent", outcome="retried")
             == before_retried + 1
         )
 
-    async def test_a_turn_that_already_ran_a_mutating_tool_is_dead_lettered_not_retried(self):
+    async def test_a_turn_that_already_ran_a_mutating_tool_is_retried_via_continue(self):
+        """The core fix: this used to be dead-lettered outright. It's now
+        republished as `"turn_continue"` (`astream_events_continue_turn`)
+        instead — safe because that continues the exact checkpointed run
+        rather than re-asking the LLM from scratch, so the already-run
+        mutating tool call is never re-executed."""
         client = FakeRedis()
         entry_id, fields = _entry(kind="turn", request_id="r2", thread_id="t2")
         graph = FakeGraph(
             {"t2": [HumanMessage(content="hi"), ToolMessage(content="ok", name="add_note", tool_call_id="c1")]}
         )
 
-        await agent_worker._handle_reclaimed_job(
-            client, entry_id, fields, graph=graph, tool_capabilities={"add_note": "mutating"}
-        )
+        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=graph)
 
-        events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r2")]]
+        assert results_stream_key("r2") not in client.streams  # no error surfaced — the retry's own outcome will publish it
+        assert dead_letter_stream_key(agent_worker.REQUESTS_STREAM) not in client.streams
+        assert client.acked == [entry_id]
+        republished = client.streams[agent_worker.REQUESTS_STREAM]
+        assert len(republished) == 1
+        new_payload = json.loads(republished[0][1]["payload"])
+        assert new_payload["request_id"] == "r2"
+        assert new_payload["kind"] == "turn_continue"
+
+    async def test_a_turn_that_already_finished_is_dead_lettered_not_retried(self):
+        """The one "turn" case still dead-lettered unconditionally: nothing
+        left to continue (state.next is empty), and restarting fresh would
+        double-record this turn's already-recorded usage/cost."""
+        client = FakeRedis()
+        entry_id, fields = _entry(kind="turn", request_id="r2b", thread_id="t2b")
+        graph = FakeGraph({"t2b": [HumanMessage(content="2+2?"), AIMessage(content="4")]})
+
+        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=graph)
+
+        events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r2b")]]
         assert events[0]["code"] == "worker_lost"
         dead = client.streams[dead_letter_stream_key(agent_worker.REQUESTS_STREAM)]
         assert len(dead) == 1
         assert client.acked == [entry_id]
         assert agent_worker.REQUESTS_STREAM not in client.streams or all(
-            json.loads(f["payload"]).get("request_id") != "r2"
+            json.loads(f["payload"]).get("request_id") != "r2b"
             for _, f in client.streams.get(agent_worker.REQUESTS_STREAM, [])
         )  # never republished
 
@@ -761,7 +844,7 @@ class TestHandleReclaimedJob:
         payload["_reclaim_attempts"] = 1  # already retried once
         fields = {"payload": json.dumps(payload)}
 
-        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph(), tool_capabilities={})
+        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph())
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r3")]]
         assert events[0]["code"] == "worker_lost"
@@ -773,12 +856,12 @@ class TestHandleReclaimedJob:
         under their own original tool_call_ids, and every mutating/outward
         tool now dedupes on that id (app/agent/tool_idempotency.py), so
         re-invoking one that already completed just returns its cached
-        result instead of running again. Graph/capabilities are irrelevant
-        here on purpose — nothing about this decision reads them."""
+        result instead of running again. The graph is irrelevant here on
+        purpose — nothing about this decision reads it."""
         client = FakeRedis()
         entry_id, fields = _entry(kind="resume", request_id="r4", thread_id="t4")
 
-        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph(), tool_capabilities={})
+        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph())
 
         assert results_stream_key("r4") not in client.streams
         assert dead_letter_stream_key(agent_worker.REQUESTS_STREAM) not in client.streams
@@ -792,7 +875,7 @@ class TestHandleReclaimedJob:
         client = FakeRedis()
         entry_id, fields = _entry(kind="cancel", request_id="r5", thread_id="t5")
 
-        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph(), tool_capabilities={})
+        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph())
 
         assert results_stream_key("r5") not in client.streams
         assert dead_letter_stream_key(agent_worker.REQUESTS_STREAM) not in client.streams
@@ -805,9 +888,7 @@ class TestHandleReclaimedJob:
         entry_id = "9-0"
         fields = {"payload": "not valid json"}
 
-        await agent_worker._handle_reclaimed_job(
-            client, entry_id, fields, graph=FakeGraph(), tool_capabilities={}
-        )  # must not raise
+        await agent_worker._handle_reclaimed_job(client, entry_id, fields, graph=FakeGraph())  # must not raise
 
         assert client.acked == [entry_id]
         dead = client.streams[dead_letter_stream_key(agent_worker.REQUESTS_STREAM)]
@@ -816,26 +897,21 @@ class TestHandleReclaimedJob:
 
 class TestReclaimLoop:
     async def test_reclaims_a_dead_lettered_kind_end_to_end_then_stops_when_signalled(self, monkeypatch):
-        """A "turn" that already ran a mutating tool is used here
-        specifically because it's the one case still dead-lettered
-        unconditionally (every other kind is now retried — see this
-        module's own docstring) — proves the loop's own wiring
-        (reclaim -> handle -> stop) without needing a separate scenario."""
+        """A "turn" that already finished is used here specifically because
+        it's the one "turn" case still dead-lettered unconditionally
+        (nothing left to continue, and restarting fresh would double-bill
+        it — see this module's own docstring) — proves the loop's own
+        wiring (reclaim -> handle -> stop) without needing a separate
+        scenario."""
         monkeypatch.setattr(agent_worker, "WORKER_RECLAIM_INTERVAL_SECONDS", 0.01)
         client = FakeRedis()
         entry_id, fields = _entry(kind="turn", request_id="r5", thread_id="t5")
         client.streams[agent_worker.REQUESTS_STREAM] = [(entry_id, fields)]
         client._delivered[entry_id] = 999_999_999  # already long abandoned
-        graph = FakeGraph(
-            {"t5": [HumanMessage(content="hi"), ToolMessage(content="ok", name="add_note", tool_call_id="c1")]}
-        )
+        graph = FakeGraph({"t5": [HumanMessage(content="hi"), AIMessage(content="done")]})
 
         stop_event = asyncio.Event()
-        task = asyncio.create_task(
-            agent_worker._reclaim_loop(
-                client, stop_event, graph=graph, tool_capabilities={"add_note": "mutating"}
-            )
-        )
+        task = asyncio.create_task(agent_worker._reclaim_loop(client, stop_event, graph=graph))
         await asyncio.sleep(0.05)  # let at least one pass run
         stop_event.set()
         await asyncio.wait_for(task, timeout=1)
@@ -844,7 +920,11 @@ class TestReclaimLoop:
         assert events[0]["code"] == "worker_lost"
         assert entry_id in client.acked
 
-    async def test_reclaims_a_retryable_turn_end_to_end(self, monkeypatch):
+    async def test_reclaims_a_turn_via_continue_end_to_end(self, monkeypatch):
+        """A "turn" that already ran a mutating tool call, reclaimed
+        end-to-end, must come out republished as `"turn_continue"` — not
+        dead-lettered (the old behavior) and not a plain `"turn"` restart
+        (which would mint new tool_call_ids and risk re-running that call)."""
         monkeypatch.setattr(agent_worker, "WORKER_RECLAIM_INTERVAL_SECONDS", 0.01)
         client = FakeRedis()
         _, fields = _entry(kind="turn", request_id="r6", thread_id="t6")
@@ -857,11 +937,12 @@ class TestReclaimLoop:
         entry_id = await client.xadd(agent_worker.REQUESTS_STREAM, fields)
         await client.xreadgroup("some-other-group", "dead-consumer", {agent_worker.REQUESTS_STREAM: ">"})
         client._delivered[entry_id] = 999_999_999
+        graph = FakeGraph(
+            {"t6": [HumanMessage(content="hi"), ToolMessage(content="ok", name="add_note", tool_call_id="c1")]}
+        )
 
         stop_event = asyncio.Event()
-        task = asyncio.create_task(
-            agent_worker._reclaim_loop(client, stop_event, graph=FakeGraph(), tool_capabilities={})
-        )
+        task = asyncio.create_task(agent_worker._reclaim_loop(client, stop_event, graph=graph))
         await asyncio.sleep(0.05)
         stop_event.set()
         await asyncio.wait_for(task, timeout=1)
@@ -872,7 +953,9 @@ class TestReclaimLoop:
             f for eid, f in client.streams[agent_worker.REQUESTS_STREAM] if eid != entry_id
         ]
         assert len(republished) == 1
-        assert json.loads(republished[0]["payload"])["request_id"] == "r6"
+        republished_payload = json.loads(republished[0]["payload"])
+        assert republished_payload["request_id"] == "r6"
+        assert republished_payload["kind"] == "turn_continue"
 
     async def test_a_redis_error_during_a_pass_does_not_kill_the_loop(self, monkeypatch):
         """One bad reclaim pass (a transient Redis blip) must not end
@@ -891,9 +974,7 @@ class TestReclaimLoop:
         monkeypatch.setattr(agent_worker, "reclaim_stale_entries", flaky_reclaim)
 
         stop_event = asyncio.Event()
-        task = asyncio.create_task(
-            agent_worker._reclaim_loop(client, stop_event, graph=FakeGraph(), tool_capabilities={})
-        )
+        task = asyncio.create_task(agent_worker._reclaim_loop(client, stop_event, graph=FakeGraph()))
         await asyncio.sleep(0.05)
         stop_event.set()
         await asyncio.wait_for(task, timeout=1)

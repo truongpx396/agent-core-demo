@@ -505,7 +505,7 @@ async def republish_job(client: redis.Redis, *, requests_stream: str, payload: d
     """Re-enqueues `payload` onto `requests_stream` as a brand-new entry —
     the recovery half of a reclaim decided safe to retry (see
     `app/job_queue/agent_worker.py::_handle_reclaimed_job`/
-    `_is_safe_to_retry_turn` for that decision). A fresh XADD rather than
+    `_classify_reclaimed_turn` for that decision). A fresh XADD rather than
     any Streams-native redelivery, deliberately: the retried job then goes
     through the exact same `xreadgroup` → `process_request`/`process_job`
     path as any first attempt, no separate "resumed job" code path to keep
