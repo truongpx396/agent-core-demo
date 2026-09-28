@@ -15,11 +15,16 @@ SAME logical invocation being attempted again — never two different
 intended actions colliding.
 
 Scope, deliberately narrow: this makes ONE invocation exactly-once. It does
-NOT make a whole crashed "turn" safe to blindly retry from scratch — a
-fresh `astream_events_turn` call re-asks the LLM, which gets brand-new
+NOT make a whole crashed "turn" safe to blindly retry via a fresh
+`astream_events_turn` call — that re-asks the LLM, which gets brand-new
 tool_call_ids unrelated to whatever the crashed attempt did, so dedup here
-can never "catch" that case. `agent_worker.py::_is_safe_to_retry_turn`
-still exists, unchanged, for exactly that reason — see its own docstring.
+can never "catch" that case. `agent_worker.py` instead reclaims a crashed
+"turn" by CONTINUING its exact checkpointed run
+(`astream_events_continue_turn`, `graph.astream_events(None, ...)`) rather
+than restarting it — same reasoning as this module's own opening
+paragraph, generalized from "resume" to any crashed turn; see
+`_classify_reclaimed_turn`'s and `astream_events_continue_turn`'s own
+docstrings.
 
 Fails OPEN on its own storage failure — same posture, and same reason, as
 `app/agent/usage_ledger.py`/`app/agent/sessions.py`'s own `get_connection()`

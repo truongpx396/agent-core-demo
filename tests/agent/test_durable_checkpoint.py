@@ -40,7 +40,7 @@ import uuid
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.agent import runtime as agent_module
@@ -453,6 +453,106 @@ class TestAsyncSeeding:
             return await stream_module.cancel_run(str(uuid.uuid4()), TEST_CTX)
 
         assert await _run() is False
+
+
+class TestAstreamEventsContinueTurn:
+    """`astream_events_continue_turn` (crash-recovery counterpart to
+    astream_events_turn/_resume, app/job_queue/agent_worker.py's
+    `"turn_continue"` kind) — the core claim under test: continuing a
+    checkpoint whose last superstep already ran a real tool call does NOT
+    re-execute that tool, unlike restarting via a fresh astream_events_turn
+    call (which would mint a brand-new tool_call_id and run it again).
+    Verified against a REAL AsyncPostgresSaver + a REAL tool (`calculator`,
+    not a stub), the same rigor this file already applies to
+    resume/cancel_run above.
+
+    `interrupt_after=["tools"]` on a plain `graph.ainvoke(...)` simulates
+    "the worker crashed right after the tool ran, before the agent's
+    follow-up call": the tool genuinely executes and its `ToolMessage`
+    genuinely gets checkpointed, then the run stops — exactly what a real
+    process crash at that point would leave behind. This is NOT a
+    human_approval interrupt (`state.tasks[i].interrupts` is empty), which
+    is exactly what lets `astream_events_continue_turn` proceed instead of
+    refusing (see its own docstring on that guard)."""
+
+    async def test_continuing_does_not_re_execute_an_already_completed_tool_call(
+        self, monkeypatch
+    ):
+        from app.agent import tools as tools_module
+
+        calls = []
+        real_impl = tools_module._calculator_impl
+
+        async def _counting_impl(expression: str) -> str:
+            calls.append(expression)
+            return await real_impl(expression)
+
+        # calculator's own body looks up `_calculator_impl` as a bare name
+        # in THIS module's globals at call time (both live in
+        # app/agent/tools.py), so patching the module attribute — not the
+        # name calculator.py imported it under — takes effect.
+        monkeypatch.setattr(tools_module, "_calculator_impl", _counting_impl)
+
+        def _calculator_llm():
+            return GenericFakeChatModel(
+                messages=iter(
+                    [
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {"name": "calculator", "args": {"expression": "2 + 2"}, "id": "c1"}
+                            ],
+                        ),
+                        AIMessage(content="The answer is 4, a sufficiently long final answer."),
+                    ]
+                )
+            )
+
+        monkeypatch.setattr(
+            agent_module,
+            "build_graph",
+            lambda checkpointer=None, manifest=None, domain=None: build_graph(
+                GraphDeps(llm=_calculator_llm()), checkpointer=checkpointer
+            ),
+        )
+
+        async def _run():
+            graph = await agent_module.init_graph_async()
+            thread_id = str(uuid.uuid4())
+            cfg = {"configurable": {"thread_id": thread_id, "ctx": TEST_CTX}}
+
+            # Simulated crash: the tool call genuinely runs and checkpoints,
+            # then execution stops before the agent's follow-up call.
+            await graph.ainvoke(
+                {"messages": [HumanMessage(content="what is 2 + 2?")]},
+                config=cfg,
+                interrupt_after=["tools"],
+            )
+            mid_state = await graph.aget_state(cfg)
+            assert mid_state.next, "should still have work left"
+            assert not any(
+                t.interrupts for t in mid_state.tasks
+            ), "must NOT be a real human_approval interrupt for this test's premise to hold"
+
+            events = [
+                event
+                async for event in stream_module.astream_events_continue_turn(thread_id, TEST_CTX)
+            ]
+
+            final_state = await graph.aget_state(cfg)
+            return events, final_state
+
+        events, final_state = await _run()
+
+        assert not any(e["type"] == "error" for e in events)
+        assert events[-1]["type"] == "done"
+        assert calls == ["2 + 2"]  # ran exactly once — NOT re-executed by the continuation
+        tool_messages = [
+            m
+            for m in final_state.values["messages"]
+            if isinstance(m, ToolMessage) and m.tool_call_id == "c1"
+        ]
+        assert len(tool_messages) == 1
 
 
 class TestResumabilityError:

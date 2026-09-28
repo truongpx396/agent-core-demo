@@ -3,8 +3,8 @@ content assembly (`_build_human_content`), Langfuse trace open
 (`_open_trace`), the `astream_events` event-translation core
 (`_run_graph_stream`), and the public streaming entry points
 (`astream_events_turn`, `astream_events_turn_unattended`,
-`astream_events_resume`, `cancel_run`, `get_session_messages`,
-`get_pending_approval`). Split out
+`astream_events_resume`, `astream_events_continue_turn`, `cancel_run`,
+`get_session_messages`, `get_pending_approval`). Split out
 of `app/agent/runtime.py` for file size only (see that module's
 docstring); `runtime_legacy_stream.py` holds the sibling
 `@asynccontextmanager` variant.
@@ -649,6 +649,77 @@ async def astream_events_resume(thread_id: str, approved: bool, ctx: SecurityCtx
         "recursion_limit": runtime_module.RECURSION_LIMIT,
     }
     async for event in _run_graph_stream(graph, Command(resume=approved), cfg, trace):
+        yield event
+
+
+async def astream_events_continue_turn(thread_id: str, ctx: SecurityCtx, cancel_check=None):
+    """Continues a `"turn"` that already started (its `HumanMessage` is
+    checkpointed) but crashed before finishing — streaming counterpart to
+    `graph.astream_events(None, config)`. The ONLY caller is
+    `agent_worker.py`'s reclaim path, for a `"turn"` job
+    `_classify_reclaimed_turn` proved is genuinely mid-flight: not paused
+    at `human_approval` (that's `astream_events_resume`'s job), not
+    already finished (nothing to continue).
+
+    Why this is safe even if the crashed attempt already ran a
+    mutating/outward tool call, unconditionally, with no per-tool
+    capability check needed: passing `None` as input (vs a fresh
+    `{"messages": [...]}` dict) tells LangGraph's Pregel loop to set
+    `is_resuming=True` and proceed from wherever THIS checkpoint's own
+    unfinished superstep left off, matching any already-recorded task
+    write (verified directly against the installed `langgraph==0.2.76`'s
+    `pregel/loop.py::Loop._match_writes`, fed from
+    `checkpoint_pending_writes` — persisted per-task in Postgres by
+    `AsyncPostgresSaver`, not just at full-superstep boundaries) instead
+    of re-executing it. A tool call that already completed is never run
+    twice; the loop just moves on to whatever comes after it. This is the
+    exact mechanism that already makes `astream_events_resume` safe to
+    blindly retry, extended here to an ordinary crashed turn.
+
+    Contrast with re-issuing a brand-new `astream_events_turn` call
+    instead (what a naive crash-recovery retry would do): passing REAL
+    input hits `Loop._first`'s OTHER branch, which explicitly discards any
+    unfinished-task writes from the previous checkpoint and starts a fresh
+    superstep sequence from the graph's entry edges — a brand-new `agent`
+    call with brand-new `tool_call_id`s unrelated to the crashed attempt's
+    own. `app/agent/tool_idempotency.py` dedupes by `tool_call_id`, so it
+    can't catch a duplicate there — which is exactly why restarting a turn
+    that already ran a mutating tool used to be treated as unsafe
+    (dead-lettered) rather than retried. Continuing instead of restarting
+    closes that gap structurally rather than by scanning for which tools
+    are dangerous to repeat.
+
+    No budget re-check/re-reservation and no `_ensure_seeded_async`/
+    `_upsert_session` here, deliberately — same posture as
+    `astream_events_resume`: this thread is already mid-turn, not
+    starting a new one.
+    """
+    graph = await runtime_module.init_graph_async()
+    cfg_probe = {"configurable": {"thread_id": thread_id}}
+    state = await graph.aget_state(cfg_probe)
+    if state.next and any(task.interrupts for task in state.tasks):
+        # The crashed attempt reached human_approval's interrupt() but
+        # died before its own ack (`process_request` acks a job the
+        # instant its generator finishes — reaching a real pause counts —
+        # so a "turn" job only ever gets reclaimed if the crash happened
+        # strictly before that point; this is the sliver where it happened
+        # strictly after). Feeding a bare `None` into an interrupted task
+        # supplies no resume value — that path belongs to
+        # `astream_events_resume`'s `Command(resume=...)`, not this one.
+        envelope = ErrorEnvelope(
+            code=ErrorCode.PENDING_APPROVAL,
+            message="This turn paused for approval right before a worker crash — resume or cancel it instead of retrying.",
+        )
+        yield {"type": "error", "content": envelope.message, **envelope.to_dict()}
+        return
+
+    trace, callbacks = _open_trace("chat-turn-stream-continue", thread_id, "continue(crash-recovery)")
+    cfg = {
+        "configurable": {"thread_id": thread_id, "ctx": ctx},
+        "callbacks": callbacks,
+        "recursion_limit": runtime_module.RECURSION_LIMIT,
+    }
+    async for event in _run_graph_stream(graph, None, cfg, trace, cancel_check=cancel_check):
         yield event
 
 
