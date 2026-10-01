@@ -210,7 +210,16 @@ class CircuitBreaker:
                     f"flight — try again shortly."
                 )
             else:  # OPEN
-                remaining = self.cooldown_seconds - (time.monotonic() - self._opened_at)
+                # OPEN is only ever entered together with `_opened_at` being set (see
+                # `_record_failure`, same lock), so None can't happen. If that invariant were
+                # ever broken, treat the cooldown as already elapsed — admit the single trial,
+                # which either closes the breaker or re-opens it with a real timestamp — rather
+                # than raise a bare TypeError out of the caller's own call path.
+                opened_at = self._opened_at
+                elapsed = (
+                    time.monotonic() - opened_at if opened_at is not None else self.cooldown_seconds
+                )
+                remaining = self.cooldown_seconds - elapsed
                 if remaining > 0:
                     admit_as_trial = False
                     reject_message = (

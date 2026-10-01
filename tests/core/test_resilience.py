@@ -325,3 +325,25 @@ class TestHalfOpenSingleFlight:
         await trial_task
 
         assert _count(metrics.agent_circuit_breaker_half_open_total, dependency="dep-l") == before_half_open + 1
+
+
+class TestOpenWithoutATimestamp:
+    async def test_an_open_breaker_missing_its_timestamp_admits_a_trial_instead_of_crashing(self):
+        """`_opened_at` is always set together with entering OPEN (see
+        `_record_failure`, same lock), so this state is unreachable through the
+        public API — forced directly here to pin the fail-safe. Before the
+        guard, `_before_call` did `float - None` and raised a bare `TypeError`
+        out of the caller's own call path (the same line mypy flagged in CI as
+        `Unsupported operand types for - ("float" and "None")`). Treating the
+        cooldown as elapsed admits the single trial instead, which either
+        closes the breaker or re-opens it with a real timestamp."""
+        breaker = CircuitBreaker("dep-no-timestamp", failure_threshold=1, cooldown_seconds=60)
+        breaker._state = CircuitState.OPEN
+        breaker._opened_at = None
+        fn, state = _calls()
+
+        result = await breaker.call(fn, retry_on=(_Boom,), attempts=1, base_delay=0.001)
+
+        assert result == "ok"
+        assert state["count"] == 1
+        assert breaker.state is CircuitState.CLOSED
