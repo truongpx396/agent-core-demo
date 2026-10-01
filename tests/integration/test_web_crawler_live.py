@@ -18,10 +18,13 @@ the real graph through a human_approval interrupt). `crawl4ai_server`
 "self-skip only if Docker itself isn't reachable" contract every other
 testcontainers-managed fixture in this suite already has.
 
-https://example.com is used as the fixed target — IANA's own minimal,
-stable reference page, not expected to change shape or rate-limit, the
-same kind of fixed external target this repo's own tests/ingestion/
-test_ingestor.py docstrings assume is safe to rely on for a real fetch.
+The target is `tests/containers.py::CRAWL_TARGET_URL` (IANA's own reference
+page about example domains), not https://example.com — that page was
+redesigned into a JS-animated, heading-less page and no longer renders the
+text this test looked for; see that constant's comment for the history. A
+third-party page can never be made fully immune to that, which is why it is
+defined once, shared with tests/live/test_domain_crawl_tools_live.py, and
+asserted only on its static heading.
 
 Only the SUCCESS path is exercised live here — a genuine browser-level
 navigation failure (as opposed to this app's own pre-flight SSRF guard,
@@ -41,6 +44,7 @@ in-process call_tool.
 import pytest
 
 from app.ingestion import web_crawler
+from tests.containers import CRAWL_TARGET_HEADING, CRAWL_TARGET_URL
 
 pytestmark = pytest.mark.integration
 
@@ -60,6 +64,6 @@ def _use_crawl4ai_server(monkeypatch, crawl4ai_server):
 
 
 async def test_renders_a_real_page_to_markdown():
-    result = await web_crawler.render_url_to_markdown("https://example.com")
+    result = await web_crawler.render_url_to_markdown(CRAWL_TARGET_URL)
 
-    assert "Example Domain" in result
+    assert CRAWL_TARGET_HEADING in result

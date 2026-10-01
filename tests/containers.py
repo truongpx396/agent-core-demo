@@ -426,6 +426,21 @@ def ensure_qdrant() -> dict[str, str]:
     return _acquire("qdrant", _start)
 
 
+# The page every REAL-browser crawl test renders (tests/integration/test_web_crawler_live.py,
+# tests/live/test_domain_crawl_tools_live.py) and the heading its markdown must contain. One shared
+# definition, so the next time a third-party page changes under these tests it is a one-line fix.
+#
+# History: these tests used https://example.com and asserted "Example Domain". That page was
+# redesigned between 2026-09-28 (CI green) and 2026-10-01 (CI red): it now ships no <h1> — the
+# words survive only in <title> — plus a script that injects translated paragraphs into the DOM,
+# so crawl4ai's markdown of the RENDERED page no longer contains them (reproduced locally against
+# the pinned crawl4ai 0.9.3: "Thisdomainisforuse…" followed by Arabic). IANA's own reference page
+# about example domains has a static <h1> and is documentation, not a demo placeholder. Its
+# heading, "Example Domains", also contains the old assertion's text.
+CRAWL_TARGET_URL = "https://www.iana.org/help/example-domains"
+CRAWL_TARGET_HEADING = "Example Domains"
+
+
 def ensure_crawl4ai() -> dict[str, str]:
     """Real crawl4ai server (same image docker-compose.yml's own `crawl4ai`
     service uses) — the real headless-Chromium rendering backend behind
