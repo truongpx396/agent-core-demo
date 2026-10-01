@@ -60,6 +60,10 @@ they delete volumes or kill running processes.
   `GRAPH_PATTERNS.md` / README update. Disclose a gap you leave open rather than omitting it.
 - Commits use `fix:`/`feat:`/`test:`/`docs:`/`infra:`/`chore:` prefixes; the body states the
   failure mode and root cause. Work on a topic branch and open a PR to `main`.
+- After opening a PR, check its CI (`gh pr checks <n>`, add `--watch` to wait; `test-live` and
+  `deepeval` take 10+ min) and report the result — don't call the work done while checks are
+  pending or red. A red check isn't automatically yours: compare it with `main`'s latest run
+  (`gh run list --branch main --workflow ci.yml`) and say which failures are pre-existing.
 - Keep changes reviewable: one logical change per PR, aiming for ≤ ~400 hand-written lines with
   ~1,000 as the ceiling (generated, lock and scaffold files don't count). If a task will exceed
   that, propose a split before writing code — Spec Kit's task phases are natural PR boundaries —
