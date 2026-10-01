@@ -52,6 +52,7 @@ from app.domains.ops.domain import OPS_DOMAIN_PLUGIN, OPS_MANIFEST
 from app.domains.support.domain import SUPPORT_DOMAIN_PLUGIN, SUPPORT_MANIFEST
 from app.ingestion import web_crawler
 from tests.conftest import TEST_CTX
+from tests.containers import CRAWL_TARGET_HEADING, CRAWL_TARGET_URL
 
 pytestmark = pytest.mark.crawl
 
@@ -76,7 +77,7 @@ def _fake_llm_returning(*responses):
 
 async def test_check_vendor_status_page_actually_crawls_once_approved():
     llm = _fake_llm_returning(
-        _tool_call("check_vendor_status_page", {"url": "https://example.com"}),
+        _tool_call("check_vendor_status_page", {"url": CRAWL_TARGET_URL}),
         AIMessage(content="Their status page shows no ongoing incident."),
     )
     g = build_graph(GraphDeps(llm=llm), manifest=OPS_MANIFEST, domain=OPS_DOMAIN_PLUGIN)
@@ -91,12 +92,12 @@ async def test_check_vendor_status_page_actually_crawls_once_approved():
     assert not (await g.aget_state(config)).next  # finished, not paused
 
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
-    assert any("Example Domain" in m.content for m in tool_messages)
+    assert any(CRAWL_TARGET_HEADING in m.content for m in tool_messages)
 
 
 async def test_fetch_external_reference_actually_crawls_once_approved():
     llm = _fake_llm_returning(
-        _tool_call("fetch_external_reference", {"url": "https://example.com"}),
+        _tool_call("fetch_external_reference", {"url": CRAWL_TARGET_URL}),
         AIMessage(content="Here's what that page says."),
     )
     g = build_graph(GraphDeps(llm=llm), manifest=SUPPORT_MANIFEST, domain=SUPPORT_DOMAIN_PLUGIN)
@@ -112,4 +113,4 @@ async def test_fetch_external_reference_actually_crawls_once_approved():
     assert not (await g.aget_state(config)).next  # finished, not paused
 
     tool_messages = [m for m in result["messages"] if m.type == "tool"]
-    assert any("Example Domain" in m.content for m in tool_messages)
+    assert any(CRAWL_TARGET_HEADING in m.content for m in tool_messages)

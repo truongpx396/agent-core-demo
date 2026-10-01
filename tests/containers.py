@@ -274,6 +274,15 @@ def ensure_postgres() -> dict[str, str]:
             password="langfuse",
             dbname="langfuse",  # matches docker-compose.yml's POSTGRES_DB, so postgres-init's `\connect appdata` etc. resolve identically
         ).with_volume_mapping(str(_POSTGRES_INIT_DIR), "/docker-entrypoint-initdb.d", mode="ro")
+        # Sized for the stack this container hosts, not left at Postgres's default 100:
+        # tests/integration/test_worker_scaling.py runs 5 agent_worker processes + the API, and
+        # EACH holds up to two pools (appdata `max_size=10`, checkpointer
+        # `CHECKPOINTER_POOL_MAX_SIZE=10`) — 6 x 20 = 120 potential connections before counting
+        # health probes or whatever other tests are using this same shared container. Under
+        # 250 concurrent turns that exceeded 100 in CI ("FATAL: sorry, too many clients already"),
+        # pool checkouts timed out, and 245/250 turns came back with an empty answer even though
+        # every HTTP response was 200. See WORKER_CONCURRENCY.md's "Postgres connection budget".
+        container.with_command("postgres -c max_connections=300")
         container.start()  # blocks until the container's own psql-based readiness check succeeds — see this module's own verification of that
         host = container.get_container_host_ip()
         port = int(container.get_exposed_port(5432))
@@ -424,6 +433,21 @@ def ensure_qdrant() -> dict[str, str]:
         }
 
     return _acquire("qdrant", _start)
+
+
+# The page every REAL-browser crawl test renders (tests/integration/test_web_crawler_live.py,
+# tests/live/test_domain_crawl_tools_live.py) and the heading its markdown must contain. One shared
+# definition, so the next time a third-party page changes under these tests it is a one-line fix.
+#
+# History: these tests used https://example.com and asserted "Example Domain". That page was
+# redesigned between 2026-09-28 (CI green) and 2026-10-01 (CI red): it now ships no <h1> — the
+# words survive only in <title> — plus a script that injects translated paragraphs into the DOM,
+# so crawl4ai's markdown of the RENDERED page no longer contains them (reproduced locally against
+# the pinned crawl4ai 0.9.3: "Thisdomainisforuse…" followed by Arabic). IANA's own reference page
+# about example domains has a static <h1> and is documentation, not a demo placeholder. Its
+# heading, "Example Domains", also contains the old assertion's text.
+CRAWL_TARGET_URL = "https://www.iana.org/help/example-domains"
+CRAWL_TARGET_HEADING = "Example Domains"
 
 
 def ensure_crawl4ai() -> dict[str, str]:

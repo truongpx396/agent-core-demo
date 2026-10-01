@@ -179,6 +179,17 @@ def _build_app_env(
         # real margin above that without making a genuinely stuck turn wait
         # forever.
         "REQUEST_TIMEOUT_SECONDS": "420",
+        # CHAT_FIRST_RESPONSE_DEADLINE_SECONDS (app/core/config.py, default 30s, added in #57):
+        # how long the API waits for a queued job's FIRST event before giving up with an `error`
+        # event ("No response for ... is an agent-worker running for this domain?"). Same
+        # CPU-only-Ollama reasoning as REQUEST_TIMEOUT_SECONDS above: the first event can trail a
+        # cold model load by far more than 30s, and the first browser test to hit a fresh
+        # container pays it. CI showed exactly that — the calculator and citation E2Es, which
+        # passed before #57, failed with that error in the answer box. The first event cannot
+        # legitimately take longer than the whole request is allowed to, so it gets the same
+        # ceiling; 30s stays the production default, where "nobody is listening" is the case
+        # it exists to catch.
+        "CHAT_FIRST_RESPONSE_DEADLINE_SECONDS": "420",
         # SUBAGENT_TIMEOUT_SECONDS: a SEPARATE, INNER wall-clock cap
         # (app/agent/subagent_tools.py) on just the nested subagent's own
         # run, independent of REQUEST_TIMEOUT_SECONDS above — real CI
