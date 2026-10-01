@@ -192,9 +192,18 @@ def test_a_subagent_delegates_and_returns_a_real_answer(page: Page, real_stack_w
     seeded data) is the simpler, still-correct choice."""
     page.goto(real_stack_with_retrieval)
 
+    # The delegated task names the tool and the filter on purpose, the same way the sibling
+    # test above says "Use the query_employees tool." What this test proves is DELEGATION (a
+    # nested run completing and folding its result back), not whether qwen2.5:3b can work out
+    # that a job title is only reachable through `department`: `query_employees` filters on
+    # `department` and on NAME, so an unguided nested run searches the name column for
+    # "Support Lead", gets "No matching employees found.", and answers that no such person
+    # exists. That is what this test did on 8 consecutive CI runs (2026-09-21 onward), each
+    # burning the full 10-minute timeout, until the task was made explicit.
     _send(
         page,
-        "Use the researcher subagent to look up who Ecorp's Support Lead is.",
+        "Use the researcher subagent to look up who Ecorp's Support Lead is. Tell it to use "
+        "the query_employees tool and filter by the Support department.",
     )
 
     answer = page.locator(".msg.assistant .answer-text").last
