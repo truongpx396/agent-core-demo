@@ -45,9 +45,11 @@ to loadtest/fake_llm_server.py — both real, at real concurrency, across
 the same 5 real worker processes.
 """
 import asyncio
+import collections
 import json
 import os
 import random
+import re
 import socket
 import subprocess
 import sys
@@ -234,6 +236,17 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
         # tests/live/conftest.py's own real_stack widens it for real
         # (Ollama) latency.
         "REQUEST_TIMEOUT_SECONDS": str(_CLIENT_TIMEOUT_SECONDS),
+        # Same headroom, same reason, for the wait for a job's FIRST event
+        # (app/core/config.py::chat_first_response_deadline_seconds, default 30s, added in
+        # #57 to turn "nobody is listening" into an error instead of a silent hang). This
+        # fixture deliberately saturates a small CI box with a 250-way burst, so a job can
+        # sit unstarted for longer than 30s without anything being wrong. Left at the default
+        # the API gave up on those jobs — emitting an `error` event, i.e. HTTP 200 with NO
+        # answer text — while the workers kept running them (CI: 210 turns ran, 113 were
+        # ever answered to a client, 40 never started). That is the deadline doing its job
+        # in production and measuring the wrong thing here, so this test, which measures
+        # capacity, gets the same ceiling its own HTTP client has.
+        "CHAT_FIRST_RESPONSE_DEADLINE_SECONDS": str(_CLIENT_TIMEOUT_SECONDS),
         # The semantic cache (app/retrieval/semantic_cache.py) goes to real,
         # ephemeral Redis and CAN now genuinely hit (loadtest/fake_llm_server.py's
         # own POST /v1/embeddings route makes embed_text work for real) —
@@ -332,6 +345,22 @@ def _parse_final_answer(sse_text: str) -> str:
     return answer
 
 
+def _parse_error_messages(sse_text: str) -> list[str]:
+    """Every `"error"` event's content from the same SSE body. A failed turn is
+    still HTTP 200 with no answer text, so without surfacing these an assertion on
+    `_parse_final_answer` alone reports only "(expected, '')" and the real reason
+    (a deadline, a worker error, ...) has to be inferred from worker log counts —
+    which is how the first-response-deadline failure had to be diagnosed."""
+    errors = []
+    for line in sse_text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        event = json.loads(line[len("data: ") :])
+        if event["type"] == "error":
+            errors.append(str(event.get("content", ""))[:160])
+    return errors
+
+
 class TestScaledWorkersAbsorbConcurrentLoad:
     async def test_250_concurrent_calculator_turns_all_succeed_with_correct_answers(self, scaled_stack):
         base_url = scaled_stack
@@ -384,9 +413,15 @@ class TestScaledWorkersAbsorbConcurrentLoad:
             for _, body, expected in results
             if str(expected) not in _parse_final_answer(body)
         ]
+        error_events = collections.Counter(
+            re.sub(r"'[0-9a-f-]{8,}'", "'<id>'", message)
+            for _, body, _ in results
+            for message in _parse_error_messages(body)
+        )
         assert not mismatches, (
             f"{len(mismatches)}/{n} turns had a wrong or missing answer "
-            f"(expected, got) — first few: {mismatches[:5]}"
+            f"(expected, got) — first few: {mismatches[:5]}. "
+            f"`error` events seen in those SSE bodies: {dict(error_events) or 'none'}"
         )
 
 
