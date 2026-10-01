@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.prod)",
+      "Read(./CREDENTIALS.local.md)",
+      "Edit(./.env)",
+      "Edit(./.env.prod)",
+      "Edit(./CREDENTIALS.local.md)"
+    ],
+    "ask": [
+      "Bash(make clean*)",
+      "Bash(make clear-*)",
+      "Bash(make obs-clean*)",
+      "Bash(make restart-all*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/ruff-check.sh",
+            "timeout": 20,
+            "statusMessage": "ruff check"
+          }
+        ]
+      }
+    ]
+  }
+}

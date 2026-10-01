@@ -58,18 +58,38 @@ they delete volumes or kill running processes.
   `# noqa` carries a reason. Comments here are long-form on purpose — explain why.
 - A bug fix lands with a regression test that fails without it, plus the matching
   `GRAPH_PATTERNS.md` / README update. Disclose a gap you leave open rather than omitting it.
-- Commits use `fix:`/`feat:`/`test:`/`docs:`/`infra:` prefixes; the body states the failure mode
-  and root cause. Work on a topic branch and open a PR to `main`.
+- Commits use `fix:`/`feat:`/`test:`/`docs:`/`infra:`/`chore:` prefixes; the body states the
+  failure mode and root cause. Work on a topic branch and open a PR to `main`.
+- Keep changes reviewable: one logical change per PR, aiming for ≤ ~400 hand-written lines with
+  ~1,000 as the ceiling (generated, lock and scaffold files don't count). If a task will exceed
+  that, propose a split before writing code — Spec Kit's task phases are natural PR boundaries —
+  and say so when it genuinely can't be split.
+- Files: ~500 lines is a prompt to ask whether a module has two responsibilities, not a hard cap.
+  It doesn't apply to test files, and this repo's long docstrings are intentional. Split by
+  responsibility, never mechanically (no `foo_part2.py`).
 - Verify claims about third-party behavior against the installed source or a real run — the repo
   has been bitten by plausible-sounding assumptions (LangGraph resume semantics, redis-py
   timeouts, psycopg transactions).
 
 ## Don't touch
 
-- `.env`, `CREDENTIALS.local.md` — secrets, gitignored. Never read them into output, logs,
-  commits or docs; edit `.env.example` instead.
+- `.env`, `.env.prod`, `CREDENTIALS.local.md` — secrets, gitignored, and blocked for Claude by
+  `.claude/settings.json`. Never put their contents in output, logs, commits or docs; edit
+  `.env.example` instead.
 - `requirements-lock.txt` — machine-generated from `requirements.txt`; regenerate, don't hand-edit.
 - `checkpoints.sqlite3*`, `.venv/`, `node_modules/`, `.mypy_cache/` — local artifacts.
+
+## Guardrails
+
+`.claude/settings.json` (shared, committed) enforces what prose can't:
+- `deny` on reading or editing `.env`, `.env.prod` and `CREDENTIALS.local.md`.
+- `ask` before `make clean`, `make clear-*`, `make obs-clean` and `make restart-all` — they delete
+  volumes or kill running processes.
+- A `PostToolUse` hook (`.claude/hooks/ruff-check.sh`) runs `ruff check` on each Python file right
+  after it is edited and feeds violations back immediately. It is the fast loop for CI's `lint`
+  gate, not a replacement for it, and it fails open if ruff isn't installed.
+
+Personal overrides go in `.claude/settings.local.json` (gitignored).
 
 ## Spec Kit
 
