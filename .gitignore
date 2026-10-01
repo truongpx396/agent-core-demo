@@ -72,3 +72,7 @@ infra/terraform/crash.log
 # is the committed template and stays unaffected by this glob.
 .env.prod
 
+
+# Claude Code personal overrides (the shared .claude/settings.json, hooks/, rules/ and
+# skills/ ARE committed). The agent folder can hold credentials — keep local state out.
+.claude/settings.local.json
