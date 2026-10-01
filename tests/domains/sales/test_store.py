@@ -60,22 +60,54 @@ def _fake_get_lead(result):
     return get_lead
 
 
-_LEAD_COLUMNS = ("id", "tenant", "name", "contact", "status", "notes", "created_at", "updated_at")
+_LEAD_COLUMNS = ("id", "tenant", "name", "contact", "status", "created_at", "updated_at", "notes")
+
+
+class _SequencedConnection:
+    """Returns one fixed row per call, in order — find_or_create_lead/
+    append_lead_note/mark_lead_lost each issue more than one statement
+    now that notes live in their own table, unlike the single-query
+    functions `_FakeConnection` above already covers."""
+
+    def __init__(self, rows):
+        self._rows = list(rows)
+        self.captured_sqls = []
+        self.captured_params = []
+
+    async def execute(self, sql, params):
+        self.captured_sqls.append(sql)
+        self.captured_params.append(list(params))
+        return _FakeCursor(self._rows.pop(0) if self._rows else None)
 
 
 async def test_find_or_create_lead_always_scopes_to_tenant(monkeypatch):
-    fake = _FakeConnection(row=(1,))
+    fake = _SequencedConnection(rows=[(1,), None])  # lead upsert, then the note insert
     monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
     lead_id = await store.find_or_create_lead("ecorp", "Jordan", "jordan@example.com", "asked about pricing")
 
     assert lead_id == 1
-    assert fake.captured["params"][0] == "ecorp"
+    assert fake.captured_params[0] == ["ecorp", "Jordan", "jordan@example.com"]
+    assert "crm_leads" in fake.captured_sqls[0]
+    assert "notes" not in fake.captured_sqls[0]  # the upsert itself no longer touches notes at all
+
+
+async def test_find_or_create_lead_logs_the_note_as_its_own_row(monkeypatch):
+    fake = _SequencedConnection(rows=[(1,), None])
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
+
+    await store.find_or_create_lead(
+        "ecorp", "Jordan", "jordan@example.com", "asked about pricing", tool_call_id="call-1"
+    )
+
+    assert "INSERT INTO crm_lead_notes" in fake.captured_sqls[1]
+    assert "ON CONFLICT (tool_call_id) DO NOTHING" in fake.captured_sqls[1]
+    assert fake.captured_params[1] == ["ecorp", 1, "asked about pricing", "call-1"]
 
 
 async def test_get_lead_scopes_to_tenant_and_contact(monkeypatch):
     fake = _FakeConnection(
-        row=(1, "ecorp", "Jordan", "jordan@example.com", "new", "notes", "t", "t"),
+        row=(1, "ecorp", "Jordan", "jordan@example.com", "new", "t", "t", "asked about pricing"),
         columns=_LEAD_COLUMNS,
     )
     monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
@@ -83,7 +115,13 @@ async def test_get_lead_scopes_to_tenant_and_contact(monkeypatch):
     lead = await store.get_lead("ecorp", "jordan@example.com")
 
     assert lead["contact"] == "jordan@example.com"
+    # notes now comes back from STRING_AGG over crm_lead_notes (postgres-init/
+    # 15-append-notes-as-rows.sql), not a stored column — proves the dict key
+    # still comes through unchanged either way.
+    assert lead["notes"] == "asked about pricing"
     assert fake.captured["params"] == ["ecorp", "jordan@example.com"]
+    assert "crm_lead_notes" in fake.captured["sql"]
+    assert "GROUP BY" in fake.captured["sql"]
 
 
 async def test_get_lead_returns_none_for_no_match(monkeypatch):
@@ -91,6 +129,37 @@ async def test_get_lead_returns_none_for_no_match(monkeypatch):
     monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
     assert await store.get_lead("ecorp", "nobody@example.com") is None
+
+
+async def test_append_lead_note_returns_false_when_no_lead_exists(monkeypatch):
+    monkeypatch.setattr(store, "get_lead", _fake_get_lead(None))
+
+    assert await store.append_lead_note("ecorp", "nobody@example.com", "did research") is False
+
+
+async def test_append_lead_note_inserts_a_note_row_and_bumps_the_leads_updated_at(monkeypatch):
+    monkeypatch.setattr(store, "get_lead", _fake_get_lead({"id": 5}))
+    fake = _SequencedConnection(rows=[None, None])
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
+
+    result = await store.append_lead_note("ecorp", "jordan@example.com", "did research")
+
+    assert result is True
+    assert "INSERT INTO crm_lead_notes" in fake.captured_sqls[0]
+    assert "ON CONFLICT (tool_call_id) DO NOTHING" in fake.captured_sqls[0]
+    assert fake.captured_params[0] == ["ecorp", 5, "did research", None]
+    assert "crm_leads" in fake.captured_sqls[1]
+    assert "updated_at" in fake.captured_sqls[1]
+
+
+async def test_append_lead_note_passes_the_tool_call_id_through(monkeypatch):
+    monkeypatch.setattr(store, "get_lead", _fake_get_lead({"id": 5}))
+    fake = _SequencedConnection(rows=[None, None])
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
+
+    await store.append_lead_note("ecorp", "jordan@example.com", "did research", tool_call_id="call-1")
+
+    assert fake.captured_params[0] == ["ecorp", 5, "did research", "call-1"]
 
 
 async def test_add_followup_returns_none_when_no_lead_exists(monkeypatch):
@@ -224,7 +293,10 @@ async def test_mark_lead_lost_returns_false_when_no_lead_exists(monkeypatch):
     assert await store.mark_lead_lost("ecorp", "nobody@example.com", "unresponsive") is False
 
 
-async def test_mark_lead_lost_updates_status_and_cancels_pending_followups(monkeypatch):
+async def test_mark_lead_lost_updates_status_logs_a_note_and_cancels_pending_followups(monkeypatch):
+    """The reason is now its own crm_lead_notes row (postgres-init/
+    15-append-notes-as-rows.sql), not appended inline onto the same
+    UPDATE that sets status — three statements, not two."""
     monkeypatch.setattr(store, "get_lead", _fake_get_lead({"id": 5}))
     fake = _FakeConnection()
     executed = []
@@ -240,10 +312,35 @@ async def test_mark_lead_lost_updates_status_and_cancels_pending_followups(monke
     result = await store.mark_lead_lost("ecorp", "jordan@example.com", "went with a competitor")
 
     assert result is True
-    assert len(executed) == 2
-    lead_sql, lead_params = executed[0]
-    assert "status = 'lost'" in lead_sql
-    assert lead_params == ["went with a competitor", "ecorp", "jordan@example.com"]
-    followup_sql, followup_params = executed[1]
+    assert len(executed) == 3
+    status_sql, status_params = executed[0]
+    assert "status = 'lost'" in status_sql
+    assert "notes" not in status_sql  # no longer touches notes directly at all
+    assert status_params == ["ecorp", "jordan@example.com"]
+    note_sql, note_params = executed[1]
+    assert "INSERT INTO crm_lead_notes" in note_sql
+    assert "ON CONFLICT (tool_call_id) DO NOTHING" in note_sql
+    assert note_params == ["ecorp", 5, "went with a competitor", None]
+    followup_sql, followup_params = executed[2]
     assert "crm_followups" in followup_sql
     assert followup_params == ["ecorp", 5]
+
+
+async def test_mark_lead_lost_passes_the_tool_call_id_through_to_the_note(monkeypatch):
+    monkeypatch.setattr(store, "get_lead", _fake_get_lead({"id": 5}))
+    fake = _FakeConnection()
+    executed = []
+    original_execute = fake.execute
+
+    async def _record_execute(sql, params):
+        executed.append(list(params))
+        return await original_execute(sql, params)
+
+    fake.execute = _record_execute
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
+
+    await store.mark_lead_lost(
+        "ecorp", "jordan@example.com", "went with a competitor", tool_call_id="call-1"
+    )
+
+    assert executed[1] == ["ecorp", 5, "went with a competitor", "call-1"]

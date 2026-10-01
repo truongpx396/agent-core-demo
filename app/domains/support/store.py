@@ -1,8 +1,8 @@
-"""Fixed, parameterized queries against `support_tickets`
-(postgres-init/07-support-tickets.sql, 09-support-ticket-notes.sql) —
-the support copilot's system of record. No generated SQL, every query
-explicitly `WHERE tenant = %s`, reusing sql_store's pooled `appdata`
-connection.
+"""Fixed, parameterized queries against `support_tickets`/
+`support_ticket_comments` (postgres-init/07-support-tickets.sql,
+15-append-notes-as-rows.sql) — the support copilot's system of record. No
+generated SQL, every query explicitly `WHERE tenant = %s`, reusing
+sql_store's pooled `appdata` connection.
 """
 from app.agent.sql_store import get_connection
 
@@ -53,11 +53,28 @@ async def create_ticket(
 
 async def get_ticket(tenant: str, ticket_id: int) -> dict | None:
     """One ticket, scoped to `tenant` — a ticket id from another tenant
-    returns None, never that tenant's row."""
+    returns None, never that tenant's row.
+
+    `notes` is computed here, not stored: `STRING_AGG` flattens every
+    `support_ticket_comments` row for this ticket into the SAME single
+    newest-last string shape the old appended-TEXT-column `notes` used to
+    be (`add_comment`'s own docstring explains why that column became
+    rows), so `tools.py::_check_ticket_status_impl` needed no change at
+    all — it still just reads `ticket["notes"]`. `GROUP BY t.id` is valid
+    with every other `t.*` column un-aggregated because grouping by a
+    primary key functionally determines the rest of that same row
+    (standard Postgres behavior, not a correctness gap). The `LEFT JOIN`
+    (not `INNER`) is what lets a ticket with zero comments still return a
+    row, with `notes` coming back `NULL` — same as the old column's
+    default."""
     sql = (
-        "SELECT id, tenant, requester, subject, description, priority, status, "
-        "escalation_reason, notes, created_at, updated_at FROM support_tickets "
-        "WHERE tenant = %s AND id = %s"
+        "SELECT t.id, t.tenant, t.requester, t.subject, t.description, t.priority, "
+        "t.status, t.escalation_reason, t.created_at, t.updated_at, "
+        "STRING_AGG(c.comment, E'\\n' ORDER BY c.created_at) AS notes "
+        "FROM support_tickets t "
+        "LEFT JOIN support_ticket_comments c ON c.ticket_id = t.id AND c.tenant = t.tenant "
+        "WHERE t.tenant = %s AND t.id = %s "
+        "GROUP BY t.id"
     )
     async with get_connection() as conn:
         cur = await conn.execute(sql, [tenant, ticket_id])
@@ -95,14 +112,42 @@ async def escalate_ticket(tenant: str, ticket_id: int, reason: str) -> bool:
         return cur.rowcount > 0
 
 
-async def add_comment(tenant: str, ticket_id: int, comment: str) -> bool:
-    """Appends a customer follow-up to `notes` (running log, newest last),
-    same append shape as `crm_leads.notes`. Returns False if no ticket
-    with that id exists for this tenant."""
-    sql = (
-        "UPDATE support_tickets SET notes = COALESCE(notes || E'\\n', '') || %s, "
-        "updated_at = now() WHERE tenant = %s AND id = %s"
-    )
+async def add_comment(
+    tenant: str, ticket_id: int, comment: str, tool_call_id: str | None = None
+) -> bool:
+    """Inserts one new comment row for `ticket_id`, scoped to `tenant`.
+    Returns False if no ticket with that id exists for this tenant —
+    checked explicitly, rather than relying on the FK, so a bad id never
+    even attempts the insert.
+
+    `tool_call_id` (postgres-init/15-append-notes-as-rows.sql) makes a
+    genuine replay under the same id a no-op (`ON CONFLICT DO NOTHING`)
+    instead of a second, duplicated comment — the same exactly-once-at-
+    the-row shape `create_ticket`'s own docstring explains, finally
+    reachable here now that each comment is its own row instead of text
+    appended onto a shared column. `None` (the default) behaves exactly
+    as before.
+
+    The insert and the `updated_at` bump below are both inside this ONE
+    `async with get_connection()` block on purpose — that block IS a
+    transaction (see get_connection's own docstring), so the two commit
+    or roll back together with no explicit `BEGIN`/`COMMIT` needed."""
     async with get_connection() as conn:
-        cur = await conn.execute(sql, [comment, tenant, ticket_id])
-        return cur.rowcount > 0
+        cur = await conn.execute(
+            "SELECT id FROM support_tickets WHERE tenant = %s AND id = %s", [tenant, ticket_id]
+        )
+        if await cur.fetchone() is None:
+            return False
+        await conn.execute(
+            "INSERT INTO support_ticket_comments (tenant, ticket_id, comment, tool_call_id) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (tool_call_id) DO NOTHING",
+            [tenant, ticket_id, comment, tool_call_id],
+        )
+        # Preserves the old column-append version's side effect (a new
+        # comment bumps the ticket's own updated_at) — harmless to redo
+        # unconditionally even on a no-op conflict above.
+        await conn.execute(
+            "UPDATE support_tickets SET updated_at = now() WHERE tenant = %s AND id = %s",
+            [tenant, ticket_id],
+        )
+        return True

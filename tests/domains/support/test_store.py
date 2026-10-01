@@ -23,7 +23,7 @@ class _FakeCursor:
                 columns
                 or (
                     "id", "tenant", "requester", "subject", "description", "priority",
-                    "status", "escalation_reason", "notes", "created_at", "updated_at",
+                    "status", "escalation_reason", "created_at", "updated_at", "notes",
                 )
             )
         ]
@@ -110,13 +110,21 @@ async def test_create_ticket_a_repeated_tool_call_id_returns_the_original_row_no
 
 
 async def test_get_ticket_scopes_to_tenant_and_id(monkeypatch):
-    fake = _FakeConnection(row=(1, "ecorp", "alice", "s", "d", "normal", "open", None, None, "t", "t"))
+    fake = _FakeConnection(
+        row=(1, "ecorp", "alice", "s", "d", "normal", "open", None, "t", "t", "first\nsecond")
+    )
     monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
     ticket = await store.get_ticket("ecorp", 1)
 
     assert ticket["id"] == 1
+    # notes now comes back from STRING_AGG over support_ticket_comments
+    # (postgres-init/15-append-notes-as-rows.sql), not a stored column —
+    # this proves the dict key still comes through unchanged either way.
+    assert ticket["notes"] == "first\nsecond"
     assert fake.captured["params"] == ["ecorp", 1]
+    assert "support_ticket_comments" in fake.captured["sql"]
+    assert "GROUP BY" in fake.captured["sql"]
 
 
 async def test_get_ticket_returns_none_for_no_match(monkeypatch):
@@ -163,16 +171,59 @@ async def test_list_tickets_for_requester_respects_the_limit_param(monkeypatch):
     assert fake.captured["params"] == ["ecorp", "alice", 3]
 
 
-async def test_add_comment_returns_false_when_no_row_updated(monkeypatch):
-    fake = _FakeConnection(rowcount=0)
+class _SequencedConnection:
+    """Returns one fixed row per call, in order — add_comment issues up to
+    three statements (ticket-exists check, insert, updated_at bump), each
+    needing its own canned response, unlike the single-query functions
+    `_FakeConnection` above already covers."""
+
+    def __init__(self, rows):
+        self._rows = list(rows)
+        self.captured_sqls = []
+        self.captured_params = []
+
+    async def execute(self, sql, params):
+        self.captured_sqls.append(sql)
+        self.captured_params.append(list(params))
+        return _FakeCursor(self._rows.pop(0) if self._rows else None)
+
+
+async def test_add_comment_returns_false_when_no_ticket_exists(monkeypatch):
+    fake = _SequencedConnection(rows=[None])  # the existence check finds nothing
     monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
     assert await store.add_comment("ecorp", 999, "still broken") is False
+    assert len(fake.captured_sqls) == 1  # never reached the INSERT
 
 
-async def test_add_comment_returns_true_and_scopes_to_tenant(monkeypatch):
-    fake = _FakeConnection(rowcount=1)
+async def test_add_comment_inserts_a_comment_row_scoped_to_tenant(monkeypatch):
+    fake = _SequencedConnection(rows=[(1,), None, None])  # exists, insert, updated_at bump
     monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
 
     assert await store.add_comment("ecorp", 1, "still broken") is True
-    assert fake.captured["params"] == ["still broken", "ecorp", 1]
+    insert_sql, insert_params = fake.captured_sqls[1], fake.captured_params[1]
+    assert "INSERT INTO support_ticket_comments" in insert_sql
+    assert "ON CONFLICT (tool_call_id) DO NOTHING" in insert_sql
+    assert insert_params == ["ecorp", 1, "still broken", None]
+
+
+async def test_add_comment_passes_the_tool_call_id_through(monkeypatch):
+    fake = _SequencedConnection(rows=[(1,), None, None])
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
+
+    await store.add_comment("ecorp", 1, "still broken", tool_call_id="call-1")
+
+    assert fake.captured_params[1] == ["ecorp", 1, "still broken", "call-1"]
+
+
+async def test_add_comment_a_repeated_tool_call_id_is_a_no_op_not_a_duplicate(monkeypatch):
+    """The actual fix: ON CONFLICT DO NOTHING means a genuine replay under
+    the same tool_call_id never produces a second comment row — unlike
+    the old column-append version, which doubled the text every time."""
+    fake = _SequencedConnection(rows=[(1,), None, None])
+    monkeypatch.setattr(store, "get_connection", _fake_get_connection(fake))
+
+    result = await store.add_comment("ecorp", 1, "still broken", tool_call_id="call-1")
+
+    assert result is True  # still reports success — the comment IS recorded, just not twice
+    assert len(fake.captured_sqls) == 3  # exists-check, insert (no-ops), updated_at bump — never a second insert

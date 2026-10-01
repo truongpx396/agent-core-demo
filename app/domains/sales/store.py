@@ -1,30 +1,47 @@
-"""Fixed, parameterized queries against `crm_leads`/`crm_followups`
-(postgres-init/08-crm.sql) — the sales concierge's own system of record.
-Same discipline as app/agent/sql_store.py/app/domains/support/store.py: no
-generated SQL, every query explicitly `tenant = %s`, reusing
-app/agent/sql_store.py's own pooled `appdata` connection.
+"""Fixed, parameterized queries against `crm_leads`/`crm_followups`/
+`crm_lead_notes` (postgres-init/08-crm.sql, 15-append-notes-as-rows.sql) —
+the sales concierge's own system of record. Same discipline as
+app/agent/sql_store.py/app/domains/support/store.py: no generated SQL,
+every query explicitly `tenant = %s`, reusing app/agent/sql_store.py's own
+pooled `appdata` connection.
 """
 from datetime import datetime
 
 from app.agent.sql_store import get_connection
 
 
-async def find_or_create_lead(tenant: str, name: str, contact: str, note: str) -> int:
+async def find_or_create_lead(
+    tenant: str, name: str, contact: str, note: str, tool_call_id: str | None = None
+) -> int:
     """One lead per (tenant, contact) — a real upsert via
-    postgres-init/08-crm.sql's unique index, not check-then-insert. A
-    second interaction with the same contact appends to `notes` (running
-    log, newest last) rather than duplicating the lead."""
+    postgres-init/08-crm.sql's unique index, not check-then-insert. Every
+    call also logs `note` as its own row in `crm_lead_notes`
+    (postgres-init/15-append-notes-as-rows.sql) — whether this created a
+    brand-new lead or found an existing one, the caller is reporting one
+    real interaction worth keeping either way. `name` is never updated on
+    an existing lead (only `updated_at`), same as before this split —
+    it's sticky from whichever call first created the row.
+
+    The lead upsert itself needs no `tool_call_id`: now that notes live in
+    their own table, `ON CONFLICT ... DO UPDATE SET updated_at = now()`
+    is naturally idempotent on its own — running it twice for the same
+    contact converges on the same row regardless (no key needed). Only
+    the note insert below does, for the same exactly-once-at-the-row
+    reason `create_ticket`'s own docstring explains."""
     sql = """
-        INSERT INTO crm_leads (tenant, name, contact, notes)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (tenant, contact) DO UPDATE
-            SET notes = crm_leads.notes || E'\\n' || EXCLUDED.notes,
-                updated_at = now()
+        INSERT INTO crm_leads (tenant, name, contact)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (tenant, contact) DO UPDATE SET updated_at = now()
         RETURNING id
     """
     async with get_connection() as conn:
-        cur = await conn.execute(sql, [tenant, name, contact, note])
+        cur = await conn.execute(sql, [tenant, name, contact])
         (lead_id,) = await cur.fetchone()
+        await conn.execute(
+            "INSERT INTO crm_lead_notes (tenant, lead_id, note, tool_call_id) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (tool_call_id) DO NOTHING",
+            [tenant, lead_id, note, tool_call_id],
+        )
         return int(lead_id)
 
 
@@ -36,9 +53,21 @@ async def set_lead_status(tenant: str, contact: str, status: str) -> bool:
 
 
 async def get_lead(tenant: str, contact: str) -> dict | None:
+    """`notes` is computed here, not stored: `STRING_AGG` flattens every
+    `crm_lead_notes` row for this lead into the same single newest-last
+    string shape the old appended-TEXT-column `notes` used to be (see
+    `find_or_create_lead`'s own docstring for why that column became
+    rows) — `tools.py::_package_lead_brief_impl` still just reads
+    `history["notes"]` unchanged. `LEFT JOIN` (not `INNER`) is what lets a
+    lead with zero notes still return a row, with `notes` coming back
+    `NULL` — same as the old column's default."""
     sql = (
-        "SELECT id, tenant, name, contact, status, notes, created_at, updated_at "
-        "FROM crm_leads WHERE tenant = %s AND contact = %s"
+        "SELECT l.id, l.tenant, l.name, l.contact, l.status, l.created_at, l.updated_at, "
+        "STRING_AGG(n.note, E'\\n' ORDER BY n.created_at) AS notes "
+        "FROM crm_leads l "
+        "LEFT JOIN crm_lead_notes n ON n.lead_id = l.id AND n.tenant = l.tenant "
+        "WHERE l.tenant = %s AND l.contact = %s "
+        "GROUP BY l.id"
     )
     async with get_connection() as conn:
         cur = await conn.execute(sql, [tenant, contact])
@@ -106,20 +135,32 @@ async def list_pending_followups(tenant: str, contact: str | None = None) -> lis
         return [dict(zip(columns, row, strict=True)) for row in rows]
 
 
-async def mark_lead_lost(tenant: str, contact: str, reason: str) -> bool:
-    """Closes out a lead: sets `status='lost'`, appends `reason` to
-    `notes`, and cancels its pending follow-ups so followup_sweep.py's
-    cron never nudges a rep about a dead lead. Returns False if no lead
-    exists for this tenant/contact."""
+async def mark_lead_lost(
+    tenant: str, contact: str, reason: str, tool_call_id: str | None = None
+) -> bool:
+    """Closes out a lead: sets `status='lost'`, logs `reason` as a new
+    `crm_lead_notes` row, and cancels its pending follow-ups so
+    followup_sweep.py's cron never nudges a rep about a dead lead.
+    Returns False if no lead exists for this tenant/contact.
+
+    The status/follow-up-cancellation half is naturally idempotent (sets
+    a fixed end state — safe to repeat with no key at all); only the
+    reason-as-a-note half needs `tool_call_id`, now that it's its own row
+    instead of appended inline onto the same UPDATE that used to also
+    touch `notes` directly."""
     lead = await get_lead(tenant, contact)
     if lead is None:
         return False
     async with get_connection() as conn:
         await conn.execute(
-            "UPDATE crm_leads SET status = 'lost', "
-            "notes = COALESCE(notes || E'\\n', '') || %s, updated_at = now() "
+            "UPDATE crm_leads SET status = 'lost', updated_at = now() "
             "WHERE tenant = %s AND contact = %s",
-            [reason, tenant, contact],
+            [tenant, contact],
+        )
+        await conn.execute(
+            "INSERT INTO crm_lead_notes (tenant, lead_id, note, tool_call_id) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (tool_call_id) DO NOTHING",
+            [tenant, lead["id"], reason, tool_call_id],
         )
         await conn.execute(
             "UPDATE crm_followups SET status = 'cancelled' "
@@ -154,19 +195,31 @@ async def mark_followup_done(tenant: str, followup_id: int) -> None:
         await conn.execute(sql, [tenant, followup_id])
 
 
-async def append_lead_note(tenant: str, contact: str, note: str) -> bool:
-    """Appends `note` to an existing lead's running notes log, for a
-    caller that already knows the lead exists (e.g.
+async def append_lead_note(
+    tenant: str, contact: str, note: str, tool_call_id: str | None = None
+) -> bool:
+    """Logs `note` as a new `crm_lead_notes` row for an existing lead, for
+    a caller that already knows the lead exists (e.g.
     tools.py::enrich_lead_from_website appending a crawled summary).
-    Returns False if no lead exists for this tenant/contact."""
+    Returns False if no lead exists for this tenant/contact.
+
+    `tool_call_id` (postgres-init/15-append-notes-as-rows.sql) makes a
+    genuine replay under the same id a no-op instead of a second,
+    duplicated note — same exactly-once-at-the-row shape as
+    `create_ticket`'s own docstring, reachable here now that each note is
+    its own row instead of text appended onto a shared column."""
     lead = await get_lead(tenant, contact)
     if lead is None:
         return False
     async with get_connection() as conn:
         await conn.execute(
-            "UPDATE crm_leads SET notes = COALESCE(notes || E'\\n', '') || %s, "
-            "updated_at = now() WHERE tenant = %s AND contact = %s",
-            [note, tenant, contact],
+            "INSERT INTO crm_lead_notes (tenant, lead_id, note, tool_call_id) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (tool_call_id) DO NOTHING",
+            [tenant, lead["id"], note, tool_call_id],
+        )
+        await conn.execute(
+            "UPDATE crm_leads SET updated_at = now() WHERE tenant = %s AND contact = %s",
+            [tenant, contact],
         )
     return True
 

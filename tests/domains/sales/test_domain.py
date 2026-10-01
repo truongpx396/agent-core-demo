@@ -150,7 +150,7 @@ class TestMandatoryApprovalGate:
         assert (await g.aget_state(_config())).next  # paused, not finished
 
     async def test_approving_runs_log_lead_interaction_and_finishes(self, monkeypatch):
-        async def fake_find_or_create_lead(tenant, name, contact, note):
+        async def fake_find_or_create_lead(tenant, name, contact, note, tool_call_id=None):
             return 3
 
         monkeypatch.setattr(store, "find_or_create_lead", fake_find_or_create_lead)
@@ -192,7 +192,7 @@ class TestListPendingFollowupsAndMarkLeadLost:
         assert result["messages"][-1].content == "No pending follow-ups."
 
     async def test_mark_lead_lost_pauses_for_approval_and_runs_once_approved(self, monkeypatch):
-        async def fake_mark_lead_lost(tenant, contact, reason):
+        async def fake_mark_lead_lost(tenant, contact, reason, tool_call_id=None):
             return True
 
         monkeypatch.setattr(store, "mark_lead_lost", fake_mark_lead_lost)
@@ -240,7 +240,7 @@ async def test_approving_enrich_lead_from_website_runs_it_and_finishes(monkeypat
 
     monkeypatch.setattr(store, "get_lead", fake_get_lead)
 
-    async def fake_append_lead_note(tenant, contact, note):
+    async def fake_append_lead_note(tenant, contact, note, tool_call_id=None):
         return True
 
     monkeypatch.setattr(store, "append_lead_note", fake_append_lead_note)

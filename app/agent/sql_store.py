@@ -66,7 +66,23 @@ async def get_connection():
     exit — commits on normal exit, which `usage_ledger.py::record_usage`
     depends on. Wrapped in its own `@asynccontextmanager` so the pool is
     only looked up (and lazily opened) from inside a real `async with`
-    block."""
+    block.
+
+    This IS a transaction boundary, not just a connection checkout:
+    `AsyncConnectionPool.connection()` wraps the connection in its own
+    `async with conn:`, and `psycopg.AsyncConnection.__aexit__` commits on
+    normal exit / rolls back on exception (connections here are never
+    autocommit — verified against the installed psycopg/psycopg_pool).
+    So every `conn.execute(...)` call made inside ONE `async with
+    get_connection() as conn:` block is already atomic together — see
+    e.g. `app/domains/support/store.py::add_comment` or
+    `app/domains/sales/store.py::mark_lead_lost`, each of which makes
+    several related writes inside a single such block specifically to get
+    this for free, with no explicit `BEGIN`/`COMMIT` needed. The one way
+    to accidentally lose this: splitting what should be one atomic
+    operation across TWO separate `get_connection()` calls — each is its
+    own pool checkout and its own transaction, so they can commit
+    independently, reopening a real crash window between them."""
     pool = await _get_pool()
     async with pool.connection() as conn:
         yield conn

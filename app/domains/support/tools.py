@@ -232,8 +232,10 @@ class AddTicketCommentArgs(BaseModel):
         return v
 
 
-async def _add_ticket_comment_impl(ticket_id: int, comment: str, ctx: SecurityCtx) -> str:
-    updated = await store.add_comment(ctx["tenant"], ticket_id, comment)
+async def _add_ticket_comment_impl(
+    ticket_id: int, comment: str, ctx: SecurityCtx, tool_call_id: str
+) -> str:
+    updated = await store.add_comment(ctx["tenant"], ticket_id, comment, tool_call_id=tool_call_id)
     if not updated:
         return f"No ticket #{ticket_id} found to add a comment to."
     return f"Added your follow-up to ticket #{ticket_id}."
@@ -254,7 +256,7 @@ async def add_ticket_comment(
         ctx=ctx,
         config=config,
         tool_name="add_ticket_comment",
-        fn=lambda: _arun_with_timeout(_add_ticket_comment_impl, ticket_id, comment, ctx),
+        fn=lambda: _arun_with_timeout(_add_ticket_comment_impl, ticket_id, comment, ctx, tool_call_id),
     )
 
 
