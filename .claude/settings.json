@@ -27,6 +27,17 @@
             "statusMessage": "ruff check"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/ci-watch.sh",
+            "asyncRewake": true,
+            "timeout": 3000
+          }
+        ]
       }
     ]
   }
