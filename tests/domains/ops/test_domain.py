@@ -188,7 +188,7 @@ async def test_list_recent_incidents_is_read_only_and_never_pauses(monkeypatch):
 async def test_log_incident_pauses_for_approval_and_runs_once_approved(monkeypatch):
     from app.domains.ops import store
 
-    async def fake_log_incident(opened_by, summary, detail):
+    async def fake_log_incident(opened_by, summary, detail, tool_call_id=None):
         return 3
 
     monkeypatch.setattr(store, "log_incident", fake_log_incident)

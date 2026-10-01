@@ -106,6 +106,48 @@ groups:
           summary: "Resume attempts are being refused"
           description: "agent_checkpoint_issue_total{reason} increased — a checkpoint was lost or schema-incompatible."
 
+      - alert: TeamChannelNotifyFailing
+        expr: increase(agent_team_channel_notify_total{outcome="error"}[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Team-channel notifications have been failing"
+          description: >-
+            agent_team_channel_notify_total{sink,outcome="error"} increased
+            sustained over 15m — this is a saga PIVOT send (an escalation/
+            handoff/incident write already committed; see
+            app/domains/notify.py's own docstring), so a human may be
+            going unnotified about real, already-applied business state.
+            Check SLACK_WEBHOOK_URL / var/team_channel.log permissions.
+
+      - alert: ToolCallDedupDegraded
+        expr: increase(agent_tool_dedup_degraded_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The tool-call idempotency store is degraded"
+          description: >-
+            agent_tool_dedup_degraded_total increased — app/agent/tool_idempotency.py
+            couldn't reach its dedup store and ran a mutating/outward tool
+            call unprotected instead. A crash-recovery replay landing in
+            this exact window could duplicate a real side effect
+            (a ticket, an incident, a sent note).
+
+      - alert: IngestUploadFailing
+        expr: increase(agent_upload_failed_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Uploaded files are failing after acceptance"
+          description: >-
+            agent_upload_failed_total{reason} increased — a file reached
+            POST /ingest/upload but then failed to reach MinIO or publish
+            its ingest job. The object is cleaned up automatically; the
+            underlying storage/Redis issue still needs a look.
+
   - name: agent-core-infra
     rules:
       - alert: ScrapeTargetDown

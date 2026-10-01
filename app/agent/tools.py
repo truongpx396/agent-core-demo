@@ -108,6 +108,29 @@ _TOOL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=8, thread_name_prefix="tool-timeout"
 )
 
+# Fixed, arbitrary namespace for uuid5's content-addressed point ids below —
+# same "any constant works, it just must never change once chosen" rule as
+# app/ingestion/ingestor.py's own _POINT_ID_NAMESPACE (a distinct constant,
+# not reused, so the two id spaces can never collide even on an identical
+# tool_call_id/content coincidence).
+_TOOL_POINT_ID_NAMESPACE = uuid.UUID("3a9e5f2c-8b1d-4c6a-9e3f-2d7b6a1c8f0e")
+
+
+def _tool_call_point_id(tool_call_id: str) -> str:
+    """A Qdrant point id derived from `tool_call_id` alone, not a random
+    draw — closes the same duplicate-write gap `idempotent()`'s own
+    tool_call_dedup claim narrowly accepts as a race (see that module's
+    docstring): if `add_note`/`remember`'s `fn()` runs twice for the SAME
+    tool_call_id (the accepted crash-window race, or any future caller
+    that reopens it), `qdrant_store.upsert`'s upsert-by-id semantics
+    silently overwrite the first point instead of creating a second one.
+    Unlike `ingestor.py::_content_point_id`, no content hash is folded in
+    here — a tool_call_id is already a fresh, unique id per LLM decision
+    (see tool_idempotency.py's own docstring), so there's nothing else
+    worth keying on.
+    """
+    return uuid.uuid5(_TOOL_POINT_ID_NAMESPACE, tool_call_id).hex
+
 # Real bug (Langfuse trace ed435567): the model cited [3] on every sentence
 # of an answer unrelated to what [3] said. hybrid_search's RRF/dense
 # ordering only says "most relevant of what came back," never "relevant
@@ -466,17 +489,22 @@ class AddNoteArgs(BaseModel):
         return v
 
 
-async def _add_note_impl(title: str, content: str, topic: Topic, ctx: SecurityCtx) -> str:
+async def _add_note_impl(
+    title: str, content: str, topic: Topic, ctx: SecurityCtx, tool_call_id: str
+) -> str:
     """Embed and upsert one new point into the knowledge base.
 
     Fixed, single-purpose write: the only variables are the three typed
-    fields above (plus `ctx`, never model-visible). A fresh UUID id (never
-    caller-supplied) means this can only ever *add* a point, never overwrite
-    or target an existing one by guessing its id.
+    fields above (plus `ctx`, never model-visible). The point id is derived
+    from `tool_call_id` (`_tool_call_point_id`), not a random draw — this
+    can still only ever *add* a point (never overwrite or target an
+    existing one by guessing its id, since a caller never controls
+    `tool_call_id`), but a genuine re-run under the SAME tool_call_id now
+    upserts onto the same point instead of duplicating it.
     """
     text = f"{title}: {content}"
     point = qdrant_store.build_point(
-        point_id=str(uuid.uuid4()),
+        point_id=_tool_call_point_id(tool_call_id),
         dense_vector=await embed_text(text),
         sparse_vector=await _sparse_vector_or_none(text),
         payload={
@@ -515,7 +543,7 @@ async def add_note(
         ctx=ctx,
         config=config,
         tool_name="add_note",
-        fn=lambda: _arun_with_timeout(_add_note_impl, title, content, topic, ctx),
+        fn=lambda: _arun_with_timeout(_add_note_impl, title, content, topic, ctx, tool_call_id),
     )
 
 
@@ -536,7 +564,7 @@ class RememberArgs(BaseModel):
         return v
 
 
-async def _remember_impl(content: str, ctx: SecurityCtx) -> str:
+async def _remember_impl(content: str, ctx: SecurityCtx, tool_call_id: str) -> str:
     """Embed and upsert one memory, owned by ctx["principal"] within
     ctx["tenant"] — the only place a memory gets written (see module
     docstring's "Cross-session memory" section).
@@ -544,10 +572,13 @@ async def _remember_impl(content: str, ctx: SecurityCtx) -> str:
     `created_at` (UTC, ISO 8601) is what `Policy.lower`'s retention filter
     (app/core/security.py, GRAPH_PATTERNS.md pattern 33) and
     `app/agent/memory.py::delete_memories` both read — stamped once, here,
-    never caller-supplied.
+    never caller-supplied. The point id is `tool_call_id`-derived
+    (`_tool_call_point_id`, same reasoning as `_add_note_impl`'s own docstring),
+    not a random draw, so a genuine re-run under the same tool_call_id
+    upserts onto the same memory instead of duplicating it.
     """
     point = qdrant_store.build_point(
-        point_id=str(uuid.uuid4()),
+        point_id=_tool_call_point_id(tool_call_id),
         dense_vector=await embed_text(content),
         sparse_vector=await _sparse_vector_or_none(content),
         payload={
@@ -584,7 +615,7 @@ async def remember(
         ctx=ctx,
         config=config,
         tool_name="remember",
-        fn=lambda: _arun_with_timeout(_remember_impl, content, ctx),
+        fn=lambda: _arun_with_timeout(_remember_impl, content, ctx, tool_call_id),
     )
 
 

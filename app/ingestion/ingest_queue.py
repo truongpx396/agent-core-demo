@@ -17,6 +17,7 @@ and runs extraction/ingestion.
 """
 import json
 import logging
+import time
 from typing import cast
 
 import redis.asyncio as redis
@@ -85,16 +86,43 @@ async def publish_result(client: redis.Redis, job_id: str, event: dict) -> None:
     await client.expire(key, RESULTS_STREAM_TTL_SECONDS)
 
 
-async def read_results(client: redis.Redis, job_id: str, *, block_ms: int = 5000):
+async def read_results(
+    client: redis.Redis,
+    job_id: str,
+    *,
+    block_ms: int = 5000,
+    first_event_deadline_seconds: float | None = None,
+):
     """Producer side: yield each event published for `job_id`, in order,
     until a terminal event (`type` is `done` or `error`) is seen, then
-    return — same shape as app/job_queue/queue.py::read_results."""
+    return — same shape as app/job_queue/queue.py::read_results,
+    including its own `first_event_deadline_seconds` (see that function's
+    docstring): bounds only the wait for the FIRST event ever published
+    (i.e. "was this job picked up by any worker at all"), never the
+    job's own real duration — an ingest job's `started` event arrives
+    almost immediately after pickup, well before extraction/embedding,
+    which can legitimately run for minutes on a large file."""
     key = results_stream_key(job_id)
     last_id = "0"
+    deadline = (
+        time.monotonic() + first_event_deadline_seconds
+        if first_event_deadline_seconds is not None
+        else None
+    )
     while True:
+        if deadline is not None and time.monotonic() >= deadline:
+            yield {
+                "type": "error",
+                "content": (
+                    f"No response for job {job_id!r} after "
+                    f"{first_event_deadline_seconds:.0f}s — is an ingest-worker running?"
+                ),
+            }
+            return
         response = cast(StreamReadResponse, await client.xread({key: last_id}, block=block_ms, count=10))
         if not response:
             continue
+        deadline = None  # a real event arrived — no longer "nobody is listening"
         _, entries = response[0]
         for entry_id, fields in entries:
             last_id = entry_id

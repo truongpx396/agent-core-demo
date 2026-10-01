@@ -450,6 +450,14 @@ agent_upload_rejected_total = Counter(
     ["reason"],
 )  # reason: bad_file_type | too_large | too_many_files
 
+agent_upload_failed_total = Counter(
+    "agent_upload_failed_total",
+    "POST /ingest/upload files that failed AFTER an accepted upload attempt "
+    "(MinIO write or job publish) — distinct from agent_upload_rejected_total, "
+    "which is pre-write validation only",
+    ["reason"],
+)  # reason: storage_error
+
 agent_subagent_run_total = Counter(
     "agent_subagent_run_total",
     "run_subagent calls (app/agent/tools.py, GRAPH_PATTERNS.md pattern 46) by "
@@ -504,6 +512,20 @@ agent_circuit_breaker_half_open_total = Counter(
     "never gets hit with a burst the instant its cooldown expires.",
     ["dependency"],
 )
+
+agent_team_channel_notify_total = Counter(
+    "agent_team_channel_notify_total",
+    "app/domains/notify.py::post_to_team_channel attempts by sink and outcome. "
+    "This is a PIVOT transaction (can't be un-sent) backing a human_approval'd "
+    "escalation/handoff/incident-log write that already committed — a failed "
+    "send here used to be a log line only (no metric, so no alert could ever "
+    "fire on it), meaning a human could go unnotified with nothing surfacing "
+    "that fact beyond logs nobody was watching. Still best-effort (the write "
+    "it follows is the real source of truth, pullable via list/status tools "
+    "even if every push fails) — this only makes 'pushes have been failing' "
+    "an observable, alertable fact instead of a silent one.",
+    ["sink", "outcome"],
+)  # sink: local | slack — outcome: ok | error
 
 
 class MetricsCallbackHandler(BaseCallbackHandler):

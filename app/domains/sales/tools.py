@@ -81,8 +81,12 @@ class LogLeadInteractionArgs(BaseModel):
         return v
 
 
-async def _log_lead_interaction_impl(name: str, contact: str, notes: str, ctx: SecurityCtx) -> str:
-    lead_id = await store.find_or_create_lead(ctx["tenant"], name, contact, notes)
+async def _log_lead_interaction_impl(
+    name: str, contact: str, notes: str, ctx: SecurityCtx, tool_call_id: str
+) -> str:
+    lead_id = await store.find_or_create_lead(
+        ctx["tenant"], name, contact, notes, tool_call_id=tool_call_id
+    )
     return f"Logged interaction for lead #{lead_id} ({name}, {contact})."
 
 
@@ -105,7 +109,9 @@ async def log_lead_interaction(
         ctx=ctx,
         config=config,
         tool_name="log_lead_interaction",
-        fn=lambda: _arun_with_timeout(_log_lead_interaction_impl, name, contact, notes, ctx),
+        fn=lambda: _arun_with_timeout(
+            _log_lead_interaction_impl, name, contact, notes, ctx, tool_call_id
+        ),
     )
 
 
@@ -123,9 +129,13 @@ class ScheduleFollowupArgs(BaseModel):
         return v
 
 
-async def _schedule_followup_impl(contact: str, due_in_days: int, note: str, ctx: SecurityCtx) -> str:
+async def _schedule_followup_impl(
+    contact: str, due_in_days: int, note: str, ctx: SecurityCtx, tool_call_id: str
+) -> str:
     due_at = datetime.now(UTC) + timedelta(days=due_in_days)
-    followup_id = await store.add_followup(ctx["tenant"], contact, due_at, note, ctx["principal"])
+    followup_id = await store.add_followup(
+        ctx["tenant"], contact, due_at, note, ctx["principal"], tool_call_id=tool_call_id
+    )
     if followup_id is None:
         return f"No lead found for contact {contact!r} — log an interaction with them first."
     return f"Follow-up #{followup_id} scheduled for {due_at.date().isoformat()}: {note}"
@@ -150,7 +160,9 @@ async def schedule_followup(
         ctx=ctx,
         config=config,
         tool_name="schedule_followup",
-        fn=lambda: _arun_with_timeout(_schedule_followup_impl, contact, due_in_days, note, ctx),
+        fn=lambda: _arun_with_timeout(
+            _schedule_followup_impl, contact, due_in_days, note, ctx, tool_call_id
+        ),
     )
 
 
@@ -275,8 +287,10 @@ class MarkLeadLostArgs(BaseModel):
         return v
 
 
-async def _mark_lead_lost_impl(contact: str, reason: str, ctx: SecurityCtx) -> str:
-    updated = await store.mark_lead_lost(ctx["tenant"], contact, reason)
+async def _mark_lead_lost_impl(
+    contact: str, reason: str, ctx: SecurityCtx, tool_call_id: str
+) -> str:
+    updated = await store.mark_lead_lost(ctx["tenant"], contact, reason, tool_call_id=tool_call_id)
     if not updated:
         return f"No lead found for contact {contact!r} — nothing to mark lost."
     return f"Lead {contact} marked lost ({reason}); its pending follow-ups were cancelled."
@@ -298,7 +312,7 @@ async def mark_lead_lost(
         ctx=ctx,
         config=config,
         tool_name="mark_lead_lost",
-        fn=lambda: _arun_with_timeout(_mark_lead_lost_impl, contact, reason, ctx),
+        fn=lambda: _arun_with_timeout(_mark_lead_lost_impl, contact, reason, ctx, tool_call_id),
     )
 
 
@@ -310,14 +324,16 @@ class EnrichLeadFromWebsiteArgs(BaseModel):
     tool_call_id: Annotated[str, InjectedToolCallId]
 
 
-async def _enrich_lead_from_website_impl(contact: str, url: str, ctx: SecurityCtx) -> str:
+async def _enrich_lead_from_website_impl(
+    contact: str, url: str, ctx: SecurityCtx, tool_call_id: str
+) -> str:
     lead = await store.get_lead(ctx["tenant"], contact)
     if lead is None:
         return f"No lead found for contact {contact!r} — log an interaction with them first."
 
     page_text = await render_url_to_markdown(url)
     note = f"Website research ({url}):\n{page_text}"
-    await store.append_lead_note(ctx["tenant"], contact, note)
+    await store.append_lead_note(ctx["tenant"], contact, note, tool_call_id=tool_call_id)
     return (
         f"Added research from {url} to {lead['name']}'s notes. "
         f"Summary of what was found:\n{page_text[:500]}"
@@ -345,7 +361,12 @@ async def enrich_lead_from_website(
         config=config,
         tool_name="enrich_lead_from_website",
         fn=lambda: _arun_with_timeout(
-            _enrich_lead_from_website_impl, contact, url, ctx, _timeout_seconds=CRAWL_TOOL_TIMEOUT_SECONDS
+            _enrich_lead_from_website_impl,
+            contact,
+            url,
+            ctx,
+            tool_call_id,
+            _timeout_seconds=CRAWL_TOOL_TIMEOUT_SECONDS,
         ),
     )
 

@@ -104,7 +104,9 @@ class TestAddNoteImpl:
         # this patches the one `.upsert` attribute both names resolve to.
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        result = await tools._add_note_impl("Refunds", "30-day window.", Topic.company, TEST_CTX)
+        result = await tools._add_note_impl(
+            "Refunds", "30-day window.", Topic.company, TEST_CTX, "call-1"
+        )
 
         assert "points" in captured
         assert len(captured["points"]) == 1
@@ -140,16 +142,18 @@ class TestAddNoteImpl:
 
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        await tools._add_note_impl("Refunds", "30-day window.", Topic.company, TEST_CTX)
+        await tools._add_note_impl(
+            "Refunds", "30-day window.", Topic.company, TEST_CTX, "call-1"
+        )
 
         point = captured["points"][0]
         assert "sparse" not in point.vector
         assert point.vector["dense"] == [0.1]
 
-    async def test_each_call_gets_a_fresh_id_never_overwriting(self, monkeypatch):
-        """A fresh UUID id per call means add_note can only ever append a
-        point, never target/overwrite an existing one by guessing its id —
-        see _add_note_impl's docstring."""
+    async def test_two_different_tool_call_ids_get_two_different_points(self, monkeypatch):
+        """Two genuinely different calls (different tool_call_id) must
+        never collide onto the same point — see _add_note_impl's
+        docstring."""
         seen_ids = []
 
         async def fake_embed_text(text):
@@ -162,11 +166,34 @@ class TestAddNoteImpl:
         monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1], [1.0]))
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        await tools._add_note_impl("A", "one", Topic.qdrant, TEST_CTX)
-        await tools._add_note_impl("B", "two", Topic.qdrant, TEST_CTX)
+        await tools._add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
+        await tools._add_note_impl("B", "two", Topic.qdrant, TEST_CTX, "call-2")
 
         assert len(seen_ids) == 2
         assert seen_ids[0] != seen_ids[1]
+
+    async def test_the_same_tool_call_id_always_produces_the_same_point_id(self, monkeypatch):
+        """The flip side of the test above: a genuine re-run under the SAME
+        tool_call_id (a crash-recovery replay — see tool_idempotency.py's
+        own accepted-race docstring) must upsert onto the SAME point
+        instead of duplicating the note."""
+        seen_ids = []
+
+        async def fake_embed_text(text):
+            return [0.0]
+
+        async def fake_upsert(points):
+            seen_ids.append(points[0].id)
+
+        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
+        monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1], [1.0]))
+        monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
+
+        await tools._add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
+        await tools._add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
+
+        assert len(seen_ids) == 2
+        assert seen_ids[0] == seen_ids[1]
 
     async def test_run_with_timeout_wraps_the_impl(self, monkeypatch):
         """add_note (the @tool-decorated function) must route through
@@ -359,7 +386,7 @@ class TestRememberImpl:
         monkeypatch.setattr(tools, "embed_text", fake_embed_text)
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        result = await tools._remember_impl("likes dark roast coffee", TEST_CTX)
+        result = await tools._remember_impl("likes dark roast coffee", TEST_CTX, "call-1")
 
         point = captured["points"][0]
         assert point.payload["kind"] == "memory"

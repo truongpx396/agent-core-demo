@@ -150,8 +150,10 @@ class LogIncidentArgs(BaseModel):
         return v
 
 
-async def _log_incident_impl(summary: str, detail: str | None, ctx: SecurityCtx) -> str:
-    incident_id = await store.log_incident(ctx["principal"], summary, detail)
+async def _log_incident_impl(
+    summary: str, detail: str | None, ctx: SecurityCtx, tool_call_id: str
+) -> str:
+    incident_id = await store.log_incident(ctx["principal"], summary, detail, tool_call_id=tool_call_id)
     return f"Incident #{incident_id} logged: {summary}"
 
 
@@ -173,7 +175,7 @@ async def log_incident(
         ctx=ctx,
         config=config,
         tool_name="log_incident",
-        fn=lambda: _arun_with_timeout(_log_incident_impl, summary, detail, ctx),
+        fn=lambda: _arun_with_timeout(_log_incident_impl, summary, detail, ctx, tool_call_id),
     )
 
 

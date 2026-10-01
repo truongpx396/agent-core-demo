@@ -99,6 +99,31 @@ class TestPublishResultAndReadResults:
             == ingest_queue.RESULTS_STREAM_TTL_SECONDS
         )
 
+    async def test_a_first_event_deadline_yields_one_error_event_and_stops(self):
+        """Same fix as app/job_queue/queue.py::read_results — a job_id no
+        ingest-worker ever picks up must not hang GET /ingest/stream/{job_id}
+        forever."""
+        client = FakeRedis()  # nothing ever published to "j1"
+        events = [
+            event
+            async for event in ingest_queue.read_results(client, "j1", first_event_deadline_seconds=0.05)
+        ]
+        assert len(events) == 1
+        assert events[0]["type"] == "error"
+        assert "j1" in events[0]["content"]
+
+    async def test_a_first_event_deadline_never_fires_once_a_real_event_has_arrived(self):
+        client = FakeRedis()
+        await ingest_queue.publish_result(client, "j1", {"type": "started"})
+        await ingest_queue.publish_result(client, "j1", {"type": "done", "chunks": 1})
+
+        events = [
+            event
+            async for event in ingest_queue.read_results(client, "j1", first_event_deadline_seconds=0.001)
+        ]
+
+        assert events == [{"type": "started"}, {"type": "done", "chunks": 1}]
+
 
 class TestDeleteResultsStream:
     async def test_deletes_the_key(self):

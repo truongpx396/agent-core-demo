@@ -223,6 +223,33 @@ class Settings(BaseSettings):
     # merged into their earlier one.
     chat_submit_dedup_ttl_seconds: int = 10
 
+    # Bounds ONLY the wait for the FIRST event ever published to a
+    # queued chat job's own results stream (app/job_queue/queue.py::
+    # read_results's `first_event_deadline_seconds`) — not the whole
+    # turn. Closes a real hang: nothing previously distinguished "a
+    # worker is genuinely still working on this" from "nobody is
+    # listening at all" (no agent-worker process running for this
+    # domain, or a submission-dedup claim left pointing at a request_id
+    # whose publish then failed — see app/api/main.py's own compensating
+    # delete for that case); `if not response: continue` loops forever
+    # in either. Once ANY real event has arrived the job is known alive,
+    # and this bound stops applying — a legitimately slow turn is still
+    # only bounded by request_timeout_seconds, enforced worker-side.
+    # Generous relative to a cold model's first-token latency, the same
+    # margin agent_worker_reclaim_idle_seconds reasons from.
+    chat_first_response_deadline_seconds: int = 30
+
+    # Same idea as chat_first_response_deadline_seconds above, against
+    # app/ingestion/ingest_queue.py's own results stream — but ingest jobs
+    # publish a `started` event almost immediately after picking up a job
+    # (well before extraction/embedding, which CAN legitimately run for
+    # minutes on a large PDF — see ingest_worker_reclaim_idle_seconds's
+    # own comment on why THAT stays deliberately unbounded). This deadline
+    # only ever needs to cover "was this job picked up by any worker at
+    # all," never the job's own real duration, so it stays short despite
+    # ingest's own generally generous timeouts.
+    ingest_first_response_deadline_seconds: int = 30
+
     # Concurrent turns ONE agent_worker.py process runs at once
     # (asyncio.Semaphore-bounded). Env-configurable so load tests can dial it
     # without a redeploy — production sizing depends on the downstream LLM
@@ -416,6 +443,8 @@ MINIO_BUCKET = settings.minio_bucket
 MINIO_SECURE = settings.minio_secure
 RATE_LIMIT_PER_MINUTE = settings.rate_limit_per_minute
 CHAT_SUBMIT_DEDUP_TTL_SECONDS = settings.chat_submit_dedup_ttl_seconds
+CHAT_FIRST_RESPONSE_DEADLINE_SECONDS = settings.chat_first_response_deadline_seconds
+INGEST_FIRST_RESPONSE_DEADLINE_SECONDS = settings.ingest_first_response_deadline_seconds
 AGENT_WORKER_MAX_CONCURRENCY = settings.agent_worker_max_concurrency
 CHECKPOINTER_POOL_MAX_SIZE = settings.checkpointer_pool_max_size
 INGEST_WORKER_MAX_CONCURRENCY = settings.ingest_worker_max_concurrency

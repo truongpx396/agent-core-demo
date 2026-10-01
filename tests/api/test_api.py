@@ -17,9 +17,11 @@ from app.agent import sessions
 from app.api import main as api
 from app.api.main import ui
 from app.api.schemas import CancelRequest, ChatRequest, ResumeRequest
+from app.core import metrics
 from app.ingestion import ingest_queue
 from app.job_queue import queue
 from tests.conftest import TEST_CTX
+from tests.conftest import metric_value as _count
 from tests.job_queue.test_queue import FakeRedis
 
 
@@ -344,6 +346,56 @@ class TestChatStreamQueuedSubmissionDedup:
         assert len(published) == 2
 
 
+class TestChatStreamQueuedPublishFailure:
+    """A failed publish_request AFTER the submission-dedup claim already
+    landed must not leave that claim pointing at a request_id no job was
+    ever published under — see queue.py::release_submission_claim's own
+    docstring for the hang this would otherwise cause a retry into."""
+
+    async def test_a_failed_publish_releases_the_claim_and_still_raises(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        async def _broken_publish(*args, **kwargs):
+            raise ConnectionError("redis unreachable")
+
+        monkeypatch.setattr(queue, "publish_request", _broken_publish)
+
+        req = ChatRequest(message="hello", thread_id="t1")
+        with pytest.raises(ConnectionError):
+            await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+
+        digest = api.hashlib.sha256(json.dumps(["hello", []]).encode()).hexdigest()
+        assert queue._submission_dedup_key("t1", digest) not in client.kv
+
+    async def test_a_retry_after_the_failure_is_treated_as_a_fresh_submission(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+
+        calls = {"n": 0}
+        real_publish = queue.publish_request
+
+        async def _fails_once_then_works(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ConnectionError("redis unreachable")
+            return await real_publish(*args, **kwargs)
+
+        monkeypatch.setattr(queue, "publish_request", _fails_once_then_works)
+
+        req = ChatRequest(message="hello", thread_id="t1")
+        with pytest.raises(ConnectionError):
+            await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+
+        # The retry must publish a real job under a fresh claim, not reuse
+        # the poisoned request_id from the failed attempt (which no job
+        # was ever published under).
+        await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+
+        published = client.streams[queue.requests_stream_key("ecorp")]
+        assert len(published) == 1
+
+
 class TestChatResume:
     """POST /chat/resume — publishes a `"resume"` job onto the SAME
     Redis Stream a new turn uses (app/job_queue/queue.py::publish_resume_request),
@@ -620,17 +672,73 @@ class TestIngestUpload:
         assert [r.filename for r in result] == ["report.pdf", "notes.docx"]
         assert result[0].job_id != result[1].job_id
 
-    async def test_an_unsupported_extension_is_rejected_before_any_upload(self, monkeypatch):
+    async def test_an_unsupported_extension_is_reported_per_file_not_raised(self, monkeypatch):
+        """Changed behavior: a bad extension is now a per-file error entry,
+        not a whole-request 400 — see ingest_upload's own docstring on why
+        one file's problem must not discard another file's already-queued
+        job in the SAME request."""
         uploaded = []
         monkeypatch.setattr(api.object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
 
         files = [_upload_file("spreadsheet.xlsx", b"data", "application/vnd.ms-excel")]
 
-        with pytest.raises(HTTPException) as exc_info:
-            await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+        result = await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
 
-        assert exc_info.value.status_code == 400
         assert uploaded == []  # never reached MinIO
+        assert len(result) == 1
+        assert result[0].filename == "spreadsheet.xlsx"
+        assert result[0].job_id is None
+        assert "xlsx" in result[0].error
+
+    async def test_a_bad_file_alongside_a_good_one_still_queues_the_good_one(self, monkeypatch):
+        uploaded = []
+        monkeypatch.setattr(api.object_store, "upload_bytes", lambda key, *a, **kw: uploaded.append(key))
+
+        async def fake_publish(client, **kw):
+            pass
+
+        monkeypatch.setattr(api.ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(queue, "get_client", lambda: FakeRedis())
+
+        files = [
+            _upload_file("spreadsheet.xlsx", b"data", "application/vnd.ms-excel"),
+            _upload_file("report.pdf", b"pdf-bytes", "application/pdf"),
+        ]
+
+        result = await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+
+        assert len(uploaded) == 1  # only the good file ever reached MinIO
+        assert [r.filename for r in result] == ["spreadsheet.xlsx", "report.pdf"]
+        assert result[0].job_id is None and result[0].error
+        assert result[1].job_id is not None and result[1].error is None
+
+    async def test_a_publish_failure_deletes_the_already_uploaded_object_and_reports_the_file_failed(
+        self, monkeypatch
+    ):
+        """The gap this closes: without cleanup, a file that reached MinIO
+        but never got a job published is an orphaned blob nothing will
+        ever ingest or remove."""
+        deleted = []
+        monkeypatch.setattr(api.object_store, "upload_bytes", lambda *a, **kw: None)
+        monkeypatch.setattr(api.object_store, "delete_object", lambda key: deleted.append(key))
+
+        async def failing_publish(client, **kw):
+            raise ConnectionError("redis unreachable")
+
+        monkeypatch.setattr(api.ingest_queue, "publish_ingest_request", failing_publish)
+        monkeypatch.setattr(queue, "get_client", lambda: FakeRedis())
+
+        before = _count(metrics.agent_upload_failed_total, reason="storage_error")
+
+        files = [_upload_file("report.pdf", b"pdf-bytes", "application/pdf")]
+        result = await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+
+        assert len(deleted) == 1
+        assert deleted[0].endswith("-report.pdf")
+        assert len(result) == 1
+        assert result[0].job_id is None
+        assert result[0].error
+        assert _count(metrics.agent_upload_failed_total, reason="storage_error") == before + 1
 
     async def test_a_path_component_in_the_filename_is_stripped(self, monkeypatch):
         """A client-supplied filename is untrusted input — the object key
@@ -676,10 +784,13 @@ class TestIngestUpload:
         assert exc_info.value.status_code == 400
         assert uploaded == []  # never reached MinIO, not even the first two
 
-    async def test_a_file_over_the_size_cap_is_rejected_before_any_upload(self, monkeypatch):
+    async def test_a_file_over_the_size_cap_is_reported_per_file_not_raised(self, monkeypatch):
         """_read_bounded (app/api/main.py) checks the running total WHILE
-        reading, not after — this only has to prove the outcome (413,
-        never reaches MinIO), not the memory-bounding mechanism itself."""
+        reading, not after — this only has to prove the outcome (never
+        reaches MinIO, reported as this file's own error), not the
+        memory-bounding mechanism itself. Same changed-behavior reasoning
+        as the bad-extension test above: a per-file problem, not a
+        whole-request abort."""
         monkeypatch.setattr(api, "_MAX_UPLOAD_BYTES", 10)  # tiny, so the test payload need not be huge
         monkeypatch.setattr(api, "_UPLOAD_READ_CHUNK_BYTES", 4)
         uploaded = []
@@ -687,11 +798,12 @@ class TestIngestUpload:
 
         files = [_upload_file("report.pdf", b"x" * 100, "application/pdf")]
 
-        with pytest.raises(HTTPException) as exc_info:
-            await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+        result = await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
 
-        assert exc_info.value.status_code == 413
         assert uploaded == []  # never reached MinIO
+        assert len(result) == 1
+        assert result[0].job_id is None
+        assert result[0].error
 
     async def test_a_file_within_the_size_cap_still_uploads(self, monkeypatch):
         monkeypatch.setattr(api, "_MAX_UPLOAD_BYTES", 1000)

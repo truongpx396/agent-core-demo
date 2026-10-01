@@ -56,6 +56,7 @@ rewrite here.
 import asyncio
 import hashlib
 import json
+import logging
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -95,8 +96,10 @@ from app.api.schemas import (
 )
 from app.core import metrics
 from app.core.config import (
+    CHAT_FIRST_RESPONSE_DEADLINE_SECONDS,
     CHAT_SUBMIT_DEDUP_TTL_SECONDS,
     CORS_ALLOWED_ORIGINS,
+    INGEST_FIRST_RESPONSE_DEADLINE_SECONDS,
     MAX_COST_USD_PER_TENANT_PER_DAY,
     MAX_UPLOAD_FILES_PER_REQUEST,
     MAX_UPLOAD_SIZE_MB,
@@ -113,6 +116,7 @@ from app.job_queue import queue
 # service had no logging handler at all, so every `logger.info(...)` call
 # was silently discarded under `make serve` (see logging_config.py).
 configure_logging()
+logger = logging.getLogger(__name__)
 
 
 async def get_ctx(
@@ -223,7 +227,9 @@ async def health_ready(response: Response) -> ReadinessResponse:
     return ReadinessResponse(status="ready" if ready else "degraded", checks=checks)
 
 
-def _queued_sse_response(client, request_id: str) -> StreamingResponse:
+def _queued_sse_response(
+    client, request_id: str, *, first_event_deadline_seconds: float = CHAT_FIRST_RESPONSE_DEADLINE_SECONDS
+) -> StreamingResponse:
     """Shared by every queue-backed endpoint below (new turn, resume,
     cancel): relay one job's results stream as SSE frames.
 
@@ -243,10 +249,21 @@ def _queued_sse_response(client, request_id: str) -> StreamingResponse:
     relying on that alone costs a few minutes of otherwise-idle Redis
     memory per turn, in exchange for correctness under a second reader
     arriving at any point before that TTL elapses.
+
+    `first_event_deadline_seconds` (`queue.py::read_results`'s own param):
+    bounds only the wait for the FIRST event ever published to this
+    request_id's stream — closes a real hang when nobody is ever going to
+    publish anything (no agent-worker running for this domain at all, or
+    a submission-dedup claim left pointing at a request_id whose own
+    publish then failed — see `chat_stream_queued`'s compensating delete
+    below). A legitimately slow-but-alive turn is unaffected: this clears
+    the instant the worker's first real event arrives.
     """
 
     async def generate():
-        async for event in queue.read_results(client, request_id):
+        async for event in queue.read_results(
+            client, request_id, first_event_deadline_seconds=first_event_deadline_seconds
+        ):
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(
@@ -304,15 +321,24 @@ async def chat_stream_queued(
         ttl_seconds=CHAT_SUBMIT_DEDUP_TTL_SECONDS,
     )
     if is_new:
-        await queue.publish_request(
-            client,
-            request_id=request_id,
-            text=req.message,
-            thread_id=req.thread_id,
-            ctx=ctx,
-            domain=domain,
-            images=req.images or None,
-        )
+        try:
+            await queue.publish_request(
+                client,
+                request_id=request_id,
+                text=req.message,
+                thread_id=req.thread_id,
+                ctx=ctx,
+                domain=domain,
+                images=req.images or None,
+            )
+        except Exception:
+            # The claim above already landed — left as-is, it points at a
+            # request_id no job was ever published under, so any retry
+            # within CHAT_SUBMIT_DEDUP_TTL_SECONDS would get is_new=False
+            # and stream a results stream nobody will ever write to.
+            # Release it so a retry claims fresh instead.
+            await queue.release_submission_claim(client, thread_id=req.thread_id, digest=digest)
+            raise
     return _queued_sse_response(client, request_id)
 
 
@@ -477,12 +503,20 @@ async def ingest_upload(
     SEPARATE queue from chat turns (see ingest_queue.py). Each file's
     outcome tracks independently via its own `job_id`
     (`GET /ingest/stream/{job_id}`), so one slow/failing file never blocks
-    the others.
+    the others — including a FAILING one: every per-file problem (bad
+    extension, too-large, a MinIO/Redis error) is caught and reported back
+    as that file's own `IngestUploadResult.error`, rather than raising and
+    losing whatever earlier files in the SAME request already succeeded.
 
-    An unsupported extension, or too many files, is rejected synchronously
-    before any MinIO write. The file-count cap is a UX/abuse guard on this
-    one call, distinct from INGEST_WORKER_MAX_CONCURRENCY — it limits how
-    many jobs one submission creates, not how many a worker runs at once.
+    Only "too many files" is rejected synchronously, before touching any
+    file — a UX/abuse guard on this one call, distinct from
+    INGEST_WORKER_MAX_CONCURRENCY (it limits how many jobs one submission
+    creates, not how many a worker runs at once), and genuinely
+    request-wide rather than per-file.
+
+    A file that uploads to MinIO but then fails to publish its own job is
+    cleaned up (`object_store.delete_object`) rather than left as an
+    orphaned blob nothing will ever ingest or remove.
     """
     if len(files) > MAX_UPLOAD_FILES_PER_REQUEST:
         metrics.agent_upload_rejected_total.labels(reason="too_many_files").inc()
@@ -498,32 +532,67 @@ async def ingest_upload(
         suffix = Path(filename).suffix.lower()
         if suffix not in EXTRACTORS_BY_SUFFIX:
             metrics.agent_upload_rejected_total.labels(reason="bad_file_type").inc()
-            raise HTTPException(
-                status_code=400,
-                detail=f"unsupported file type {suffix!r} for {filename!r} — "
-                f"only {sorted(EXTRACTORS_BY_SUFFIX)} are supported",
+            results.append(
+                IngestUploadResult(
+                    filename=filename,
+                    job_id=None,
+                    error=f"unsupported file type {suffix!r} — only "
+                    f"{sorted(EXTRACTORS_BY_SUFFIX)} are supported",
+                )
             )
-        data = await _read_bounded(upload, filename)
+            continue
+
+        try:
+            data = await _read_bounded(upload, filename)
+        except HTTPException as exc:
+            # _read_bounded's own too-large rejection (already metriced
+            # there) — a per-file problem, not a reason to abort the rest
+            # of this batch.
+            results.append(IngestUploadResult(filename=filename, job_id=None, error=str(exc.detail)))
+            continue
+
         job_id = uuid.uuid4().hex
         object_key = f"{ctx['tenant']}/{job_id}-{filename}"
-        # Blocking MinIO I/O off the event loop — this IS the shared
-        # SSE-serving process, so a large upload must not stall other requests.
-        await asyncio.to_thread(
-            object_store.upload_bytes,
-            object_key,
-            data,
-            upload.content_type or "application/octet-stream",
-        )
-        await ingest_queue.publish_ingest_request(
-            client,
-            job_id=job_id,
-            object_key=object_key,
-            filename=filename,
-            content_type=upload.content_type or "application/octet-stream",
-            ctx=ctx,
-            topic=topic,
-        )
-        results.append(IngestUploadResult(filename=filename, job_id=job_id))
+        try:
+            # Blocking MinIO I/O off the event loop — this IS the shared
+            # SSE-serving process, so a large upload must not stall other requests.
+            await asyncio.to_thread(
+                object_store.upload_bytes,
+                object_key,
+                data,
+                upload.content_type or "application/octet-stream",
+            )
+            await ingest_queue.publish_ingest_request(
+                client,
+                job_id=job_id,
+                object_key=object_key,
+                filename=filename,
+                content_type=upload.content_type or "application/octet-stream",
+                ctx=ctx,
+                topic=topic,
+            )
+        except Exception as exc:  # noqa: BLE001 - one file's storage/queue failure must not sink the whole batch
+            # Best-effort cleanup: harmless even if upload_bytes itself is
+            # what failed (deleting an object that was never created is a
+            # no-op under MinIO/S3 delete semantics).
+            await asyncio.to_thread(object_store.delete_object, object_key)
+            metrics.agent_upload_failed_total.labels(reason="storage_error").inc()
+            logger.warning(
+                # "filename" is a reserved stdlib LogRecord attribute (the
+                # source file of THIS log call) — same collision
+                # app/domains/notify.py's own docstring already notes for
+                # "message"; "upload_filename" instead.
+                "ingest_upload_failed",
+                extra={"upload_filename": filename, "error_class": type(exc).__name__},
+            )
+            results.append(
+                IngestUploadResult(
+                    filename=filename, job_id=None, error=f"failed to queue {filename!r} for ingestion"
+                )
+            )
+            continue
+
+        results.append(IngestUploadResult(filename=filename, job_id=job_id, error=None))
     return results
 
 
@@ -541,7 +610,9 @@ async def ingest_stream(job_id: str) -> StreamingResponse:
 
     async def generate():
         try:
-            async for event in ingest_queue.read_results(client, job_id):
+            async for event in ingest_queue.read_results(
+                client, job_id, first_event_deadline_seconds=INGEST_FIRST_RESPONSE_DEADLINE_SECONDS
+            ):
                 yield f"data: {json.dumps(event)}\n\n"
         finally:
             await ingest_queue.delete_results_stream(client, job_id)

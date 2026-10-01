@@ -64,6 +64,24 @@ def upload_bytes(key: str, data: bytes, content_type: str = "application/octet-s
     client.put_object(MINIO_BUCKET, key, io.BytesIO(data), length=len(data), content_type=content_type)
 
 
+def delete_object(key: str) -> None:
+    """Best-effort compensating delete for a key this process itself just
+    wrote via `upload_bytes` — the caller (`app/api/main.py::ingest_upload`)
+    uses this when the job publish AFTER a successful upload then fails,
+    so the blob doesn't outlive the job that was supposed to consume it.
+    Never raises: a failed cleanup here must not turn an already-reported
+    upload failure into a second, more confusing one — same "cleanup is
+    optional" posture as `queue.py::delete_results_stream`. Idempotent by
+    MinIO's own semantics (removing an already-gone key is a no-op).
+    """
+    try:
+        get_client().remove_object(MINIO_BUCKET, key)
+    except Exception as exc:  # noqa: BLE001 - best-effort cleanup, never worth failing the caller over
+        logger.warning(
+            "object_store_delete_failed", extra={"key": key, "error_class": type(exc).__name__}
+        )
+
+
 def download_bytes(key: str) -> bytes:
     """Read `key` back out. Raises (does not degrade) on a missing key or
     unreachable MinIO — unlike `semantic_cache.py`'s read path, a failure

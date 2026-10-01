@@ -43,7 +43,17 @@ class CancelRequest(BaseModel):
 
 class IngestUploadResult(BaseModel):
     filename: str = Field(..., description="The uploaded file's original name.")
-    job_id: str = Field(..., description="Poll/stream this at GET /ingest/stream/{job_id}.")
+    job_id: str | None = Field(
+        None, description="Poll/stream this at GET /ingest/stream/{job_id}. None if this file failed."
+    )
+    error: str | None = Field(
+        None,
+        description=(
+            "Set instead of job_id if THIS file failed (bad type, upload, or "
+            "publish failure) — other files in the same request still succeed "
+            "independently; see ingest_upload's own docstring."
+        ),
+    )
 
 
 class SessionSummary(BaseModel):

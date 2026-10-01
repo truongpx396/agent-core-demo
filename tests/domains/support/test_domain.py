@@ -242,7 +242,7 @@ class TestMandatoryApprovalGate:
         assert result["messages"][-1].content == "You have no open tickets."
 
     async def test_add_ticket_comment_pauses_for_approval_and_runs_once_approved(self, monkeypatch):
-        async def fake_add_comment(tenant, ticket_id, comment):
+        async def fake_add_comment(tenant, ticket_id, comment, tool_call_id=None):
             return True
 
         monkeypatch.setattr(store, "add_comment", fake_add_comment)
