@@ -274,6 +274,15 @@ def ensure_postgres() -> dict[str, str]:
             password="langfuse",
             dbname="langfuse",  # matches docker-compose.yml's POSTGRES_DB, so postgres-init's `\connect appdata` etc. resolve identically
         ).with_volume_mapping(str(_POSTGRES_INIT_DIR), "/docker-entrypoint-initdb.d", mode="ro")
+        # Sized for the stack this container hosts, not left at Postgres's default 100:
+        # tests/integration/test_worker_scaling.py runs 5 agent_worker processes + the API, and
+        # EACH holds up to two pools (appdata `max_size=10`, checkpointer
+        # `CHECKPOINTER_POOL_MAX_SIZE=10`) — 6 x 20 = 120 potential connections before counting
+        # health probes or whatever other tests are using this same shared container. Under
+        # 250 concurrent turns that exceeded 100 in CI ("FATAL: sorry, too many clients already"),
+        # pool checkouts timed out, and 245/250 turns came back with an empty answer even though
+        # every HTTP response was 200. See WORKER_CONCURRENCY.md's "Postgres connection budget".
+        container.with_command("postgres -c max_connections=300")
         container.start()  # blocks until the container's own psql-based readiness check succeeds — see this module's own verification of that
         host = container.get_container_host_ip()
         port = int(container.get_exposed_port(5432))

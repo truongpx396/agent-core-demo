@@ -220,6 +220,31 @@ Neither is derived from a fixed formula:
   extraction; lower it, and lean on replica count instead, if extraction
   dominates.
 
+## Postgres connection budget
+
+Scaling replicas multiplies Postgres connections, and nothing here enforces
+the ceiling for you. Every process that runs the graph — each `agent-worker`
+replica **and** the API (`init_graph_async()` in its lifespan) — can hold up
+to two pools: the appdata pool (`app/agent/sql_store.py`, `max_size=10`, not
+configurable today) and the checkpointer pool (`CHECKPOINTER_POOL_MAX_SIZE`,
+default `10`). So the worst case is roughly:
+
+    20 × (agent-worker replicas + API replicas)  ≤  max_connections − reserved
+
+Postgres's default `max_connections` is `100` (3 reserved for superusers), which
+only fits about four such processes — before counting anything else sharing the
+server. `docker-compose.prod.yml` does not set it, and that same Postgres also
+serves LiteLLM and Langfuse, so a scaled-out deploy should raise it (or put
+PgBouncer in front) rather than discover the limit under load.
+
+What exhaustion looks like, so it isn't mistaken for something else: pool
+checkouts fail with `FATAL: sorry, too many clients already`, turns then fail
+*inside* an already-open SSE stream, and a client sees HTTP 200 with no answer
+text. That exact failure is what took down
+`tests/integration/test_worker_scaling.py`'s 250-turn test (245 of 250 empty)
+until `tests/containers.py::ensure_postgres` was given `max_connections=300` —
+5 workers + the API alone is 6 × 20 = 120 potential connections.
+
 ## A related-but-different knob: the UI's per-request file cap
 
 `MAX_UPLOAD_FILES_PER_REQUEST` (`app/core/config.py`, default `5`, enforced
