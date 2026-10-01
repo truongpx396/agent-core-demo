@@ -1,0 +1,83 @@
+# CLAUDE.md
+
+A production-shaped, fully local LangGraph RAG agent: LiteLLM proxy → Ollama, Qdrant, Postgres,
+Redis Streams, Langfuse, FastAPI. Three example domains (support, ops, sales) run on one
+unmodified graph. Python 3.13.
+
+Read these before changing behavior; they hold the reasoning this file deliberately omits:
+- `.specify/memory/constitution.md` — the non-negotiable rules. Principles I, II and IV
+  (tenant isolation, mandatory approval, exactly-once side effects) are NON-NEGOTIABLE.
+- `GRAPH_PATTERNS.md` — 50 numbered patterns, each with the real bug that motivated it.
+  "Extending Further" is the honest list of what is and isn't built.
+- `README.md` — architecture, make targets, testing tiers. `WORKER_CONCURRENCY.md` — worker sizing.
+
+## Commands
+
+The Makefile assumes an activated venv: `source .venv/bin/activate`.
+
+```bash
+make lint            # ruff check .          (CI gate)
+make typecheck       # mypy over app/ scripts/ (CI gate)
+make test            # pytest -n auto -q — hermetic, no services needed (CI gate)
+pytest tests/agent/test_tool_idempotency.py::test_name -q   # one test; marked tiers are skipped by default
+make test-integration  # real Postgres/Redis/Qdrant via testcontainers — needs Docker, not `make up`
+make test-live         # real Ollama + full stack + Playwright — needs Docker
+make up                # docker-compose infra (needs a native Ollama on the host, see README)
+make serve             # FastAPI on :8000 (web UI at /)
+make agent-worker      # queue consumer for the Ecorp domain (also agent-worker-{support,ops,sales})
+make chat              # CLI agent; chat-hitl adds approval prompts
+```
+
+`make eval`, `promptfoo`, `garak`, `deepeval`, `test-sandbox` need live models or services and
+are manual by design. Run `make eval` + `make promptfoo` after a prompt, model-alias or
+retrieval change. Don't run `make clean`, `clear-*`, or `restart-all` without being asked —
+they delete volumes or kill running processes.
+
+## Where things live
+
+- `app/agent/` — the graph. `graph.py` (State, nodes, `STATE_SCHEMA_VERSION`), `graph_build.py`
+  (`build_graph`), `graph_routing.py` (`should_continue`), `graph_hitl.py` (approval gate),
+  `runtime*.py` (durable singleton + streaming turns), `tools.py` (`TOOL_CAPABILITIES`),
+  `tool_idempotency.py`, `sql_store.py` (pooled appdata connections), `manifest.py`
+  (`AgentManifest`/`DomainPlugin`).
+- `app/domains/{support,ops,sales}/` — each is `store.py` + `tools.py` + `domain.py`. A new use
+  case follows that shape; it never forks `build_graph()`.
+- `app/job_queue/` — Redis Streams queue and workers. `app/ingestion/` — chunking, crawl, upload.
+- `app/core/` — config, security (`SecurityCtx`), metrics, errors, scrubbing, resilience.
+- `postgres-init/NN-*.sql` — numbered schema; auto-runs on a fresh volume only.
+- `skills/*/SKILL.md`, `subagents/*/AGENT.md` — the agent's own catalogs (not Claude Code's).
+- `observability/prometheus/alerts.yml` — alert rules over `app/core/metrics.py` metrics.
+
+## Working rules
+
+- Any new `mutating`/`outward` tool needs the full checklist in
+  `.claude/rules/side-effect-tools.md` (capability tier, ctx check, `idempotent()`, row-level
+  uniqueness, tenant-scoped SQL, tests). Don't add one without it.
+- Tune a limit or flag through `app/core/config.py` `Settings` and add it to `.env.example`.
+- A broad `except Exception` needs `# noqa: BLE001 - <reason>`; every `# type: ignore[...]` and
+  `# noqa` carries a reason. Comments here are long-form on purpose — explain why.
+- A bug fix lands with a regression test that fails without it, plus the matching
+  `GRAPH_PATTERNS.md` / README update. Disclose a gap you leave open rather than omitting it.
+- Commits use `fix:`/`feat:`/`test:`/`docs:`/`infra:` prefixes; the body states the failure mode
+  and root cause. Work on a topic branch and open a PR to `main`.
+- Verify claims about third-party behavior against the installed source or a real run — the repo
+  has been bitten by plausible-sounding assumptions (LangGraph resume semantics, redis-py
+  timeouts, psycopg transactions).
+
+## Don't touch
+
+- `.env`, `CREDENTIALS.local.md` — secrets, gitignored. Never read them into output, logs,
+  commits or docs; edit `.env.example` instead.
+- `requirements-lock.txt` — machine-generated from `requirements.txt`; regenerate, don't hand-edit.
+- `checkpoints.sqlite3*`, `.venv/`, `node_modules/`, `.mypy_cache/` — local artifacts.
+
+## Spec Kit
+
+This repo uses GitHub Spec Kit: skills in `.claude/skills/speckit-*`, templates and the
+constitution in `.specify/`. Flow: `/speckit-specify` → `/speckit-plan` → `/speckit-tasks` →
+`/speckit-implement`. A plan's Constitution Check must address each principle it touches, and a
+feature that adds a write tool must state its capability tier, tenant scoping and idempotency
+story. Amend the constitution only through `/speckit-constitution` and a PR.
+
+Path-scoped guidance loads automatically from `.claude/rules/`: `side-effect-tools.md`,
+`runtime-reliability.md`, `testing.md`.
