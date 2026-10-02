@@ -1,4 +1,4 @@
--- Session directory for the web UI's session switcher (app/sessions.py) —
+-- Session directory for the web UI's session switcher (app/agent/sessions.py) —
 -- same `appdata` database as employees/usage_ledger (this app's own
 -- operational data lifecycle, GRAPH_PATTERNS.md pattern 26), a new table
 -- rather than reusing usage_ledger (which no-ops on a zero-token/rejected

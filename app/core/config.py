@@ -282,13 +282,18 @@ class Settings(BaseSettings):
     # reclaim_stale_entries) — a worker crash otherwise leaves that entry
     # permanently PENDING, unacked and never redelivered, silently losing
     # the request (see GRAPH_PATTERNS.md's "Extending Further" list).
-    # Reclaimed "cancel" jobs and "turn" jobs PROVEN not to have completed
-    # a mutating/outward tool call yet (agent_worker.py::
-    # _is_safe_to_retry_turn) are silently republished; everything else
-    # (a "turn" that did run one, "resume" jobs, ingest jobs) is instead
-    # surfaced as an error on its own results stream and archived to a
-    # dead-letter stream — re-running one of THOSE could duplicate an
-    # already-applied side effect (a sent email, an upserted chunk), the
+    # Reclaimed "cancel" and "resume" jobs, ingest jobs (idempotent by
+    # construction) and "turn" jobs the checkpoint says are unfinished
+    # (agent_worker.py::_classify_reclaimed_turn — a turn whose own
+    # HumanMessage is checkpointed is CONTINUED, not restarted, so a
+    # completed mutating/outward call is never re-asked of the LLM under a
+    # new tool_call_id) are silently republished, up to
+    # MAX_AUTO_RECLAIM_RETRIES times. Everything else (a "turn" that already
+    # finished or is paused at an approval, an unreadable checkpoint or
+    # payload, or any job out of retries) is instead surfaced as an error on
+    # its own results stream and archived to a dead-letter stream — re-running
+    # one of THOSE could duplicate an already-applied side effect (a sent
+    # email, an upserted chunk) or double-record a finished turn's cost, the
     # same reason process_request/process_job always ack instead of ever
     # blindly redelivering.
     worker_reclaim_interval_seconds: int = 60

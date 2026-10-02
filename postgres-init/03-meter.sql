@@ -1,5 +1,5 @@
--- Real usage/cost ledger (app/meter.py) — the standalone-product default
--- Meter, in the same `appdata` database app/sql_store.py already uses
+-- Real usage/cost ledger (app/agent/usage_ledger.py) — the standalone-product default
+-- Meter, in the same `appdata` database app/agent/sql_store.py already uses
 -- (GRAPH_PATTERNS.md pattern 26). A table, not a new database: this is
 -- the same "this app's own operational data" lifecycle as `employees`.
 \connect appdata
