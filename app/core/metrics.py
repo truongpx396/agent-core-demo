@@ -358,11 +358,13 @@ agent_worker_job_reclaimed_total = Counter(
     "agent_worker_job_reclaimed_total",
     "Jobs reclaimed via XAUTOCLAIM after their original worker died mid-job "
     "(app/job_queue/queue.py::reclaim_stale_entries). 'retried' means the "
-    "job was proven safe to run again (app/job_queue/agent_worker.py::"
-    "_is_safe_to_retry_turn — no mutating/outward tool call had completed "
-    "yet) and was silently republished; 'dead_lettered' means it was "
-    "surfaced as an error on its own results stream and archived instead, "
-    "since re-running it could have duplicated an already-applied side "
+    "job was judged safe to run again (app/job_queue/agent_worker.py::"
+    "_classify_reclaimed_turn — an unfinished turn is continued from its "
+    "checkpoint, not restarted) and was silently republished; "
+    "'dead_lettered' means it was surfaced as an error on its own results "
+    "stream and archived instead (an already-finished or approval-paused "
+    "turn, an unreadable checkpoint, or retries exhausted), since "
+    "re-running it could have duplicated an already-applied side "
     "effect. Any sustained rate here means workers are crashing, not that "
     "recovery is working as intended — 'retried' vs 'dead_lettered' tells "
     "you whether that crashing is at least self-healing.",

@@ -70,7 +70,7 @@ flowchart TB
 
     Runtime --> Moderate
 
-    subgraph agent_sg["LangGraph agent — 18 nodes, safety budgets, HITL gate"]
+    subgraph agent_sg["LangGraph agent — 21 nodes, safety budgets, HITL gate"]
         Moderate["moderate_input"]
         CacheCheck{"semantic cache hit?"}
         Retrieve["retrieve_context"]
@@ -225,7 +225,6 @@ that's an honest signal rather than a bug to paper over.
 Kept honest rather than papered over (full reasoning for each is in
 GRAPH_PATTERNS.md's ["Extending Further"](GRAPH_PATTERNS.md#extending-further) section):
 
-- **Fault-tolerant queue redelivery** — a worker that dies mid-turn leaves that job stuck pending; `XCLAIM`/`XAUTOCLAIM` redelivery (pattern 43) isn't wired up yet
 - **Orchestrated crash-restart / auto-scaling** — `docker-compose --profile app` containerizes workers and shuts them down gracefully, but nothing restarts a *crashed* one or scales replicas on real queue depth; that's a Kubernetes/ECS-shaped concern this app doesn't own an opinion about yet
 - **Real authentication** — `X-Tenant-Id`/`X-Principal-Id` are a trusted-header seam for a gateway to fill in, not authentication themselves; nothing today verifies who's actually behind a request
 - **Per-action authorization within a tenant** — every principal in a tenant currently shares the same write capability; a finer-grained `Policy` reading `ctx["claims"]` would express "this principal may write, that one may only read"
@@ -235,13 +234,31 @@ GRAPH_PATTERNS.md's ["Extending Further"](GRAPH_PATTERNS.md#extending-further) s
 - **A webhook-based Telegram deployment** — long-polling needs no public URL (right for local/demo); a real deployment would switch to `setWebhook`
 - **A fallback node** for the primary LLM path itself
 
-Two items that *were* on this list and are now done: a real HTTP resume flow
+Three items that *were* on this list and are now done: fault-tolerant queue
+redelivery (`XAUTOCLAIM` reclaim, which *continues* a crashed turn from its
+checkpoint rather than restarting it — pattern 43 and the idempotency item in
+"Extending Further"), a real HTTP resume flow
 (`POST /chat/resume`) — an `approval_required` SSE event is fully actionable
 end to end now, not just durably paused — and Grafana dashboards/alerting:
 `docker-compose.observability.yml` (`make obs-up`) is a full, separate
 Grafana + Loki + Prometheus + Alertmanager + otel-collector stack, with two
 provisioned dashboards and a starter alert rule set — see
 [Observability](#observability) below.
+
+### Known gaps
+
+Defects and missing controls found by reviewing the as-built system against the
+[constitution](.specify/memory/constitution.md), each with how it was established, in
+GRAPH_PATTERNS.md's ["Extending Further"](GRAPH_PATTERNS.md#extending-further). The ones
+that touch the non-negotiable principles:
+
+- **Conversation ownership is checked on read, not on send, resume or cancel** — whoever supplies a `thread_id` continues that conversation, and can approve or cancel its pending action (reproduced at the graph level). Telegram ids are `telegram:<chat id>`.
+- **The shipped proxy does not authenticate** — see "Real authentication" above; it also neither sets nor strips the identity headers, so a deployment *must* put an authenticating gateway in front.
+- **Approvals are not attributed** — the gate is enforced but not auditable.
+- **The ops domain is global** and no control decides which tenants may use it; **the dedup lookup is not tenant-scoped**.
+- **A residual duplicate window for the team-channel notification** tools; no test that fails if a write tool drops `idempotent()`.
+
+None of these lets a write run without a human decision; the first lets the *wrong* human make it.
 
 ## Prerequisites
 
