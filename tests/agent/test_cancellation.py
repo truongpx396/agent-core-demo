@@ -16,7 +16,7 @@ import asyncio
 import uuid
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent import runtime as agent_module
 from app.agent import runtime_stream as stream_module
@@ -264,3 +264,114 @@ class TestAstreamEventsTurnRawAsyncioCancellation:
             _count(metrics.agent_requests_total, outcome="cancelled")
             == before_requests_cancelled + 1
         )
+
+
+class TestAstreamEventsResumeCancellation:
+    """Real defect (fixed): `astream_events_resume` took no `cancel_check`, so
+    once a user approved a paused tool call there was no way to stop the turn
+    that followed — `POST /chat/cancel` set the Redis flag, but the worker
+    running the *resume* job never polled it. The approved write, the model
+    call that reads its result and any further tool rounds all ran to the end.
+    Pause -> cancel was covered (`cancel_run`) and a streaming turn was
+    covered (`cancel_check`); the stretch in between was the gap."""
+
+    @staticmethod
+    async def _paused_on_add_note(monkeypatch):
+        """A real graph paused at the mandatory gate for an `add_note` call,
+        with the tool's I/O stubbed to *record* writes — the observable that
+        distinguishes "cancelled before the approved tool ran" from "ran,
+        then reported cancelled"."""
+        from app.agent import tools
+        from app.retrieval import qdrant_store
+
+        writes: list = []
+
+        async def fake_embed_text(text):
+            return [0.0]
+
+        async def fake_upsert(points):
+            writes.append(points)
+
+        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
+        monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
+
+        llm = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "add_note",
+                                "args": {"title": "Refunds", "content": "30 days.", "topic": "company"},
+                                "id": "call_note",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="I've added a note about the refund policy."),
+                ]
+            )
+        )
+        graph = build_graph(GraphDeps(llm=llm))
+
+        async def fake_init_graph_async():
+            return graph
+
+        monkeypatch.setattr(agent_module, "init_graph_async", fake_init_graph_async)
+
+        thread_id = str(uuid.uuid4())
+        cfg = {"configurable": {"thread_id": thread_id, "ctx": TEST_CTX}, "recursion_limit": 50}
+        await graph.ainvoke({"messages": [HumanMessage(content="remember our refund policy")]}, config=cfg)
+        assert (await graph.aget_state(cfg)).next, "premise: the run must be paused at the gate"
+        return graph, thread_id, cfg, writes
+
+    async def test_a_cancel_after_approval_stops_the_turn_before_the_approved_tool_runs(self, monkeypatch):
+        graph, thread_id, cfg, writes = await self._paused_on_add_note(monkeypatch)
+
+        async def always_cancelled():
+            return True
+
+        before = _count(metrics.agent_streaming_cancellation_total)
+        events = [
+            event
+            async for event in stream_module.astream_events_resume(
+                thread_id, True, TEST_CTX, cancel_check=always_cancelled
+            )
+        ]
+
+        assert events[-1]["type"] == "error"
+        assert events[-1]["code"] == ErrorCode.CANCELLED.value
+        assert not any(e["type"] == "done" for e in events)
+        assert writes == [], "a cancelled approval must not perform the approved write"
+        persisted = (await graph.aget_state(cfg)).values["messages"]
+        assert not any(isinstance(m, ToolMessage) for m in persisted)
+        assert _count(metrics.agent_streaming_cancellation_total) == before + 1
+
+    async def test_a_cancel_check_that_never_fires_still_runs_the_approved_tool_once(self, monkeypatch):
+        """The mechanism is additive: wiring `cancel_check` must not change
+        what an approved, uncancelled resume does."""
+        _graph, thread_id, _cfg, writes = await self._paused_on_add_note(monkeypatch)
+
+        async def never_cancelled():
+            return False
+
+        events = [
+            event
+            async for event in stream_module.astream_events_resume(
+                thread_id, True, TEST_CTX, cancel_check=never_cancelled
+            )
+        ]
+
+        assert events[-1]["type"] == "done"
+        assert len(writes) == 1
+
+    async def test_no_cancel_check_resumes_exactly_as_before(self, monkeypatch):
+        """Regression guard: `astream_events_turn_unattended`, chat.py and the
+        API all call `astream_events_resume(thread_id, approved, ctx)` with
+        no `cancel_check` — their behavior must not change."""
+        _graph, thread_id, _cfg, writes = await self._paused_on_add_note(monkeypatch)
+
+        events = [event async for event in stream_module.astream_events_resume(thread_id, True, TEST_CTX)]
+
+        assert events[-1]["type"] == "done"
+        assert len(writes) == 1

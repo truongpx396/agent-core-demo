@@ -379,7 +379,8 @@ async def chat_cancel(
     """Stop a turn, whichever of two states it's in — two independent
     mechanisms fire unconditionally (each a no-op if it doesn't apply):
 
-    1. Actively streaming: sets a short-lived Redis flag
+    1. Actively streaming — a new turn, or the run that follows an approval
+       (`"resume"`): sets a short-lived Redis flag
        (`queue.py::set_cancel_flag`) the worker running that turn polls
        between graph events (`runtime.py`'s `cancel_check`) — its own
        results stream gets the terminal "cancelled" event directly. Keyed

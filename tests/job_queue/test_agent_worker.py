@@ -282,7 +282,7 @@ class TestProcessRequestResume:
     async def test_dispatches_to_astream_events_resume_with_the_right_args(self, monkeypatch):
         captured = {}
 
-        async def fake_resume(thread_id, approved, ctx):
+        async def fake_resume(thread_id, approved, ctx, cancel_check=None):
             captured.update(thread_id=thread_id, approved=approved, ctx=ctx)
             yield {"type": "done"}
 
@@ -298,8 +298,55 @@ class TestProcessRequestResume:
         assert events == [{"type": "done"}]
         assert client.acked == [entry_id]
 
+    async def test_passes_a_working_cancel_check_bound_to_the_thread_id(self, monkeypatch):
+        """A12: without this, `POST /chat/cancel` after an approval set a flag
+        nothing polled — the approved tool and everything after it ran on."""
+        from app.job_queue.queue import set_cancel_flag
+
+        captured = {}
+
+        async def fake_resume(thread_id, approved, ctx, cancel_check=None):
+            captured["cancel_check"] = cancel_check
+            yield {"type": "done"}
+
+        monkeypatch.setattr(agent_worker, "astream_events_resume", fake_resume)
+        client = FakeRedis()
+        entry_id, fields = _entry(kind="resume", request_id="r6", thread_id="t6")
+
+        await agent_worker.process_request(client, entry_id, fields)
+
+        assert captured["cancel_check"] is not None, "the resume must be cancellable"
+        assert await captured["cancel_check"]() is False
+        # Read live, not snapshotted: a cancel pressed WHILE the approved tool runs lands here.
+        await set_cancel_flag(client, "t6")
+        assert await captured["cancel_check"]() is True
+
+    async def test_clears_a_stale_cancel_flag_before_starting(self, monkeypatch):
+        """A flag left from the *streaming* phase that led to this pause (a
+        /chat/cancel that raced the turn pausing on its own) must not cancel
+        the approval the user has since given — the later action is the
+        user's intent. Same reasoning as `_process_turn`'s own clear; the
+        result is captured into a list rather than asserted inside the fake,
+        which `process_request`'s catch-all would swallow."""
+        from app.job_queue.queue import set_cancel_flag
+
+        seen_cancelled = []
+
+        async def fake_resume(thread_id, approved, ctx, cancel_check=None):
+            seen_cancelled.append(await cancel_check())
+            yield {"type": "done"}
+
+        monkeypatch.setattr(agent_worker, "astream_events_resume", fake_resume)
+        client = FakeRedis()
+        entry_id, fields = _entry(kind="resume", request_id="r6", thread_id="t6")
+
+        await set_cancel_flag(client, "t6")
+        await agent_worker.process_request(client, entry_id, fields)
+
+        assert seen_cancelled == [False]
+
     async def test_a_resume_failure_publishes_an_error_and_still_acks(self, monkeypatch):
-        async def failing_resume(thread_id, approved, ctx):
+        async def failing_resume(thread_id, approved, ctx, cancel_check=None):
             raise RuntimeError("checkpoint gone")
             yield  # pragma: no cover
 
