@@ -320,6 +320,18 @@ class Settings(BaseSettings):
     # "try again exactly once."
     max_auto_reclaim_retries: int = 1
 
+    # app/agent/runtime_stream.py::astream_events_turn_unattended — how many
+    # times an UNATTENDED caller (app/channels/telegram.py: no approve/reject UX)
+    # auto-declines a pause on one turn before giving up and CANCELLING the run.
+    # The model can re-request a declined write; each re-request pauses the
+    # conversation again, and an unattended channel can never resolve a pause —
+    # so without a ceiling the conversation was left stranded (every later
+    # message refused with "pending approval"). 3 lets a model that merely
+    # retries once or twice find its way to a plain answer; a model that keeps
+    # asking is cancelled with an explicit "needs a person's approval" reply
+    # rather than looping. Bounded, never unbounded (constitution Principle V).
+    unattended_max_decline_rounds: int = 3
+
     # Cap on app/job_queue/queue.py::get_client()'s connection pool —
     # redis-py's default (100) is easy to blow through since every
     # POST /chat/stream/queued SSE connection holds a pooled connection for
@@ -452,6 +464,7 @@ WORKER_RECLAIM_INTERVAL_SECONDS = settings.worker_reclaim_interval_seconds
 AGENT_WORKER_RECLAIM_IDLE_SECONDS = settings.agent_worker_reclaim_idle_seconds
 INGEST_WORKER_RECLAIM_IDLE_SECONDS = settings.ingest_worker_reclaim_idle_seconds
 MAX_AUTO_RECLAIM_RETRIES = settings.max_auto_reclaim_retries
+UNATTENDED_MAX_DECLINE_ROUNDS = settings.unattended_max_decline_rounds
 REDIS_MAX_CONNECTIONS = settings.redis_max_connections
 CORS_ALLOWED_ORIGINS = settings.cors_allowed_origins
 MAX_UPLOAD_SIZE_MB = settings.max_upload_size_mb
