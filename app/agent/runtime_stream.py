@@ -39,7 +39,11 @@ from app.agent.graph_hitl import (
     resumability_error_async,
 )
 from app.core import metrics
-from app.core.config import CHAT_MODEL, REQUEST_TIMEOUT_SECONDS
+from app.core.config import (
+    CHAT_MODEL,
+    REQUEST_TIMEOUT_SECONDS,
+    UNATTENDED_MAX_DECLINE_ROUNDS,
+)
 from app.core.errors import ErrorCode, ErrorEnvelope, TurnCancelled
 from app.core.security import SecurityCtx
 
@@ -592,25 +596,65 @@ async def astream_events_turn_unattended(
     require_approval: bool = False,
     images: list[str] | None = None,
 ):
-    """astream_events_turn, but auto-declines a single approval_required
-    pause instead of yielding it — for callers with no interactive human on
-    this end of the call: agent_worker.py (Redis Streams consumer, pattern
-    43) and telegram.py (no inline-keyboard approve/reject UX).
+    """astream_events_turn, but auto-declines an approval_required pause
+    instead of yielding it — for callers with no interactive human on this
+    end of the call: telegram.py (no inline-keyboard approve/reject UX) and
+    any fire-and-forget caller (pattern 43). Never approves.
 
-    One-round auto-decline only (pattern 8); a second pause on the same
-    turn is left to the model's own next response.
+    The decline is a LOOP, bounded by `UNATTENDED_MAX_DECLINE_ROUNDS`, not a
+    single round. Real bug (fixed): after the first decline the model can
+    re-request the same gated write, which pauses the conversation again. A
+    single-round version forwarded that second `approval_required` and left
+    the checkpoint paused; an unattended channel cannot resolve a pause, so
+    every later message was refused with "pending approval" and the first
+    message got an empty reply (GRAPH_PATTERNS.md pattern 8). Each decline
+    counts `agent_unattended_pause_total`.
+
+    If the model is still asking once the ceiling is reached, the run is
+    CANCELLED (`cancel_run`) so the conversation is never left paused, and one
+    explicit assistant-visible message says the action needs a person's
+    approval and was not done. Exactly one terminal event is yielded either
+    way. Fails closed throughout: a declined or cancelled action never runs.
     """
     paused = False
-    async for event in astream_events_turn(
-        text, thread_id, ctx, require_approval=require_approval, images=images
+    pending_tools: list[str] = []
+
+    async def _drain(stream):
+        """Forward every event except a pause, which is held back and recorded
+        in `paused`/`pending_tools` (a separate flag: a pause is a pause even
+        if its tool list were somehow empty)."""
+        nonlocal paused
+        paused = False
+        pending_tools.clear()
+        async for event in stream:
+            if event.get("type") == "approval_required":
+                paused = True
+                pending_tools.extend(tc.get("name", "?") for tc in event.get("tool_calls", []))
+                continue
+            yield event
+
+    async for event in _drain(
+        astream_events_turn(text, thread_id, ctx, require_approval=require_approval, images=images)
     ):
-        if event.get("type") == "approval_required":
-            paused = True
-            continue
         yield event
-    if paused:
+
+    declines = 0
+    while paused:
+        if declines >= UNATTENDED_MAX_DECLINE_ROUNDS:
+            names = ", ".join(sorted(set(pending_tools))) or "an action"
+            await cancel_run(thread_id, ctx)
+            yield {
+                "type": "token",
+                "content": (
+                    f"That needs a person's approval ({names}), which this channel can't provide — "
+                    "so it wasn't done."
+                ),
+            }
+            yield {"type": "done"}
+            return
+        declines += 1
         metrics.agent_unattended_pause_total.inc()
-        async for event in astream_events_resume(thread_id, False, ctx):
+        async for event in _drain(astream_events_resume(thread_id, False, ctx)):
             yield event
 
 

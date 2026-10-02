@@ -314,7 +314,9 @@ agent_missing_ctx_total = Counter(
 
 agent_unattended_pause_total = Counter(
     "agent_unattended_pause_total",
-    "Turns auto-declined by astream_events_turn_unattended after pausing at "
+    "Pauses auto-declined by astream_events_turn_unattended (one count per "
+    "decline round — a model that re-requests a declined write is declined "
+    "again, up to UNATTENDED_MAX_DECLINE_ROUNDS) at "
     "a mandatory capability gate — its callers (app/job_queue/agent_worker.py's "
     "queue consumer, app/channels/telegram.py) have no interactive human on "
     "the other end of the call to solicit a real decision from (unlike "

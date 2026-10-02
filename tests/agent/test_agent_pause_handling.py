@@ -10,7 +10,17 @@ auto-decline rather than leave the checkpoint paused forever or silently
 run an unreviewed tool call. See app/agent/runtime.py's matching docstring.
 """
 
+from typing import Any
+
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+
+from app.agent import runtime as agent_module
 from app.agent import runtime_stream as stream_module
+from app.agent.graph import GraphDeps
+from app.agent.graph_build import build_graph
+from app.agent.graph_hitl import paused_approval_async
 from app.core import metrics
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
@@ -94,3 +104,102 @@ class TestAstreamEventsTurnUnattended:
             ]
 
         await _run()
+
+
+class _ScriptedModel(BaseChatModel):
+    """Returns its scripted messages in order. Deliberately has no streaming
+    implementation, so `astream_events` falls back to `ainvoke`:
+    GenericFakeChatModel cannot stream an empty-content tool call ("No
+    generations found in stream"), which is exactly the shape these tests
+    need the model to produce."""
+
+    script: list[Any]
+    idx: int = 0
+
+    @property
+    def _llm_type(self) -> str:
+        return "scripted"
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        msg = self.script[self.idx]
+        self.idx += 1
+        return ChatResult(generations=[ChatGeneration(message=msg)])
+
+
+def _add_note_call(call_id):
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "add_note", "args": {"title": "t", "content": "c", "topic": "company"}, "id": call_id}
+        ],
+    )
+
+
+class TestUnattendedSecondPause:
+    """Real bug (reproduced before this fix): the helper declined ONE pause.
+    If the model then re-requested the same gated write, the conversation
+    paused a SECOND time, that `approval_required` was forwarded (not
+    declined), and the checkpoint stayed paused. An unattended channel has
+    no way to resolve a pause, so every later message was refused with
+    "pending approval" and the user — who had already received an EMPTY reply
+    to the first message — could never recover that conversation. The tests
+    above mock `astream_events_turn`/`astream_events_resume` and so never
+    drove a real graph through a second pause.
+
+    Fails closed throughout: no write ever ran. The defect was liveness, not
+    safety."""
+
+    @staticmethod
+    async def _run(monkeypatch, script, thread_id):
+        graph = build_graph(GraphDeps(llm=_ScriptedModel(script=script)))
+
+        async def fake_init_graph_async(*a, **k):
+            return graph
+
+        monkeypatch.setattr(agent_module, "init_graph_async", fake_init_graph_async)
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (None, []))
+        events = [
+            e async for e in stream_module.astream_events_turn_unattended("please save a note", thread_id, TEST_CTX)
+        ]
+        return graph, events
+
+    async def test_a_second_pause_is_declined_too_and_the_turn_ends_normally(self, monkeypatch):
+        before = _count(metrics.agent_unattended_pause_total)
+        graph, events = await self._run(
+            monkeypatch,
+            [
+                _add_note_call("c1"),
+                _add_note_call("c2"),  # the model re-requests after the first decline
+                AIMessage(content="I couldn't save that note, but here is a complete answer instead."),
+            ],
+            "unattended-1",
+        )
+
+        cfg = {"configurable": {"thread_id": "unattended-1"}}
+        assert await paused_approval_async(graph, cfg) is None, "the thread was left paused"
+        assert [e["type"] for e in events if e["type"] in ("approval_required", "done", "error")] == ["done"]
+        assert "complete answer" in "".join(e["content"] for e in events if e["type"] == "token")
+        assert _count(metrics.agent_unattended_pause_total) == before + 2  # one per decline
+
+        messages = (await graph.aget_state(cfg)).values["messages"]
+        tool_results = [m.content for m in messages if isinstance(m, ToolMessage)]
+        assert tool_results and all("added" not in r for r in tool_results), "a declined write must never run"
+
+    async def test_a_model_that_keeps_requesting_the_write_is_cancelled_with_an_explicit_message(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(stream_module, "UNATTENDED_MAX_DECLINE_ROUNDS", 1)
+        graph, events = await self._run(
+            monkeypatch,
+            [_add_note_call("c1"), _add_note_call("c2"), _add_note_call("c3")],
+            "unattended-2",
+        )
+
+        cfg = {"configurable": {"thread_id": "unattended-2"}}
+        assert await paused_approval_async(graph, cfg) is None, "the thread was left paused"
+        terminal = [e["type"] for e in events if e["type"] in ("approval_required", "done", "error")]
+        assert terminal == ["done"], "exactly one terminal event, and never a dangling approval_required"
+        text = "".join(e["content"] for e in events if e["type"] == "token")
+        assert "approval" in text.lower() and "add_note" in text, f"no explicit explanation: {text!r}"
+        messages = (await graph.aget_state(cfg)).values["messages"]
+        assert not any(isinstance(m, ToolMessage) and "added" in m.content for m in messages)

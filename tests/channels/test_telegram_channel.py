@@ -156,6 +156,22 @@ class TestHandleMessage:
         sent = next(body["text"] for url, body in client.posts if "sendMessage" in url)
         assert "Sources:" in sent
 
+    async def test_a_turn_that_produces_no_text_still_gets_an_explicit_reply_not_silence(self, monkeypatch):
+        """Real bug (reproduced): `_send_message` loops over `range(0, len(text), ...)`,
+        so an EMPTY reply sends nothing at all. A turn whose only output was a
+        swallowed approval pause therefore left the user staring at no reply
+        to their message — contradicting this channel's documented promise
+        that a declined action "gets a real reply explaining it wasn't
+        approved, never a silent write"."""
+        fake, _ = _fake_astream([{"type": "done"}])
+        monkeypatch.setattr(telegram_channel, "astream_events_turn_unattended", fake)
+        client = _FakeAsyncClient()
+
+        await telegram_channel.handle_message(client, _message(text="save a note", chat_id=7))
+
+        sent = [body["text"] for url, body in client.posts if "sendMessage" in url]
+        assert sent and sent[0].strip(), "an empty turn must still produce a visible reply"
+
     async def test_non_text_message_is_skipped_without_calling_astream_events_turn_unattended(self, monkeypatch):
         called = []
 

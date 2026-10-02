@@ -27,8 +27,13 @@ here: no WhatsApp Business credentials to verify it against.
 
 HITL: this channel has no interactive approve/reject UX —
 `astream_events_turn_unattended()` auto-declines a mandatory-capability-gate
-pause for callers with no human on the other end, so a mutating request
-gets a real reply explaining it wasn't approved, never a silent write.
+pause for callers with no human on the other end (repeatedly, up to
+`UNATTENDED_MAX_DECLINE_ROUNDS`, then cancels the run), so a mutating request
+never becomes a silent write and never leaves the conversation paused. The
+user always gets a visible reply: the model's own answer, an explicit "needs a
+person's approval" message, or — if a turn somehow produced no text at all —
+`_NO_REPLY_FALLBACK`. (`_send_message` sends NOTHING for an empty string, so
+without that last guard an empty turn read as the bot ignoring the user.)
 
 Run with: `python -m app.channels.telegram` (Makefile's `telegram`/
 `telegram-support`/`telegram-sales`). Its own process, not started by
@@ -100,6 +105,11 @@ def _ctx_for_user(user_id: int) -> SecurityCtx:
     return {"tenant": DEFAULT_TENANT, "principal": f"telegram:{user_id}", "claims": {}}
 
 
+_NO_REPLY_FALLBACK = (
+    "I wasn't able to put together a reply to that just now — could you try again?"
+)
+
+
 def _format_reply(text: str, citations: list[dict]) -> str:
     if not citations:
         return text
@@ -168,6 +178,8 @@ async def handle_message(client: httpx.AsyncClient, message: dict) -> None:
         pass
 
     reply_text, citations = await _run_turn(text, thread_id, ctx)
+    if not reply_text.strip():
+        reply_text = _NO_REPLY_FALLBACK
     await _send_message(client, chat_id, _format_reply(reply_text, citations))
 
 
