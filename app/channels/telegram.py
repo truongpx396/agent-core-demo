@@ -49,6 +49,7 @@ import redis.asyncio as redis
 from app.agent import sql_store
 from app.agent.runtime import close_checkpointer_pool, init_graph_async
 from app.agent.runtime_stream import astream_events_turn_unattended
+from app.agent.sessions import TELEGRAM_THREAD_PREFIX
 from app.core.config import AGENT_DOMAIN, DEFAULT_TENANT, TELEGRAM_BOT_TOKEN
 from app.core.logging_config import configure_logging
 from app.core.security import SecurityCtx
@@ -94,8 +95,9 @@ async def _save_offset(client: redis.Redis, domain: str, offset: int) -> None:
 def _thread_id_for_chat(chat_id: int) -> str:
     """One durable conversation thread per Telegram chat — stable across
     process restarts (the durable checkpointer), so history survives a
-    bot restart."""
-    return f"telegram:{chat_id}"
+    bot restart. The prefix is shared with `sessions.py` because HTTP callers
+    may never claim an id in this namespace (see `TELEGRAM_THREAD_PREFIX`)."""
+    return f"{TELEGRAM_THREAD_PREFIX}{chat_id}"
 
 
 def _ctx_for_user(user_id: int) -> SecurityCtx:

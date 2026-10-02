@@ -25,6 +25,39 @@ from tests.conftest import metric_value as _count
 from tests.job_queue.test_queue import FakeRedis
 
 
+class _Ownership:
+    """An in-memory stand-in for `chat_sessions` with the SAME semantics the
+    real queries have — first claimant of a thread id owns it, ownership is
+    (tenant, principal, domain) — so these tests exercise the endpoints'
+    use of the check, not Postgres. `claim_session`'s own query shape is
+    pinned in tests/agent/test_sessions.py."""
+
+    def __init__(self):
+        self.rows: dict[str, tuple[str, str, str]] = {}
+
+    @staticmethod
+    def _key(ctx, domain):
+        return (ctx["tenant"], ctx["principal"], domain)
+
+    async def claim(self, ctx, thread_id, title=None, domain="ecorp"):
+        return self.rows.setdefault(thread_id, self._key(ctx, domain)) == self._key(ctx, domain)
+
+    async def belongs(self, ctx, thread_id, domain="ecorp"):
+        return self.rows.get(thread_id) == self._key(ctx, domain)
+
+
+@pytest.fixture(autouse=True)
+def ownership(monkeypatch):
+    """Every test here drives the handlers directly; without this, the
+    ownership check would reach the (test-suite-blocked) appdata Postgres
+    and fail closed. A test that cares claims a thread first via
+    `ownership.rows[...]` / `await ownership.claim(...)`."""
+    fake = _Ownership()
+    monkeypatch.setattr(sessions, "claim_session", fake.claim)
+    monkeypatch.setattr(sessions, "session_belongs_to", fake.belongs)
+    return fake
+
+
 class TestHealthReady:
     """GET /health/ready — see app/api/health.py's own tests for
     check_dependencies() itself; this just checks the HTTP-shape mapping
@@ -111,6 +144,17 @@ class TestUi:
         html = ui()
         assert "X-Domain" in html
         assert 'id="domainSelect"' in html
+
+    def test_changing_the_caller_identity_starts_a_fresh_conversation(self):
+        """A conversation belongs to the tenant+principal that started it and
+        the server 404s any other caller's send on it, so switching identity
+        mid-conversation must not keep sending on the old thread id."""
+        html = ui()
+        assert "function startFreshConversation()" in html
+        for select in ("tenantEl", "principalEl"):
+            line = next(ln for ln in html.splitlines() if f"setupIdentitySelect({select}," in ln)
+            assert "onIdentityChange" in line
+        assert "startFreshConversation();" in html.split("function onIdentityChange()")[1].split("}")[0]
 
 
 class TestGetDomain:
@@ -402,9 +446,10 @@ class TestChatResume:
     not a separate queue; app/job_queue/agent_worker.py dispatches on
     `payload["kind"]`."""
 
-    async def test_publishes_a_resume_job_with_approved_and_thread_id(self, monkeypatch):
+    async def test_publishes_a_resume_job_with_approved_and_thread_id(self, monkeypatch, ownership):
         client = FakeRedis()
         monkeypatch.setattr(queue, "get_client", lambda: client)
+        await ownership.claim(TEST_CTX, "t1")
 
         async def _run():
             req = ResumeRequest(thread_id="t1", approved=True)
@@ -425,9 +470,10 @@ class TestChatResume:
         chunks = await _run()
         assert any('"type": "done"' in c for c in chunks)
 
-    async def test_a_rejection_carries_approved_false(self, monkeypatch):
+    async def test_a_rejection_carries_approved_false(self, monkeypatch, ownership):
         client = FakeRedis()
         monkeypatch.setattr(queue, "get_client", lambda: client)
+        await ownership.claim(TEST_CTX, "t2")
 
         async def _run():
             req = ResumeRequest(thread_id="t2", approved=False)
@@ -443,9 +489,10 @@ class TestChatCancel:
     (app/api/main.py's own docstring): a Redis cancel-flag AND a `"cancel"` job
     published onto the same queue."""
 
-    async def test_sets_the_cancel_flag_and_publishes_a_cancel_job(self, monkeypatch):
+    async def test_sets_the_cancel_flag_and_publishes_a_cancel_job(self, monkeypatch, ownership):
         client = FakeRedis()
         monkeypatch.setattr(queue, "get_client", lambda: client)
+        await ownership.claim(TEST_CTX, "t1")
 
         async def _run():
             req = CancelRequest(thread_id="t1")
@@ -466,6 +513,146 @@ class TestChatCancel:
 
         chunks = await _run()
         assert any('"type": "done"' in c for c in chunks)
+
+
+OTHER_PRINCIPAL = {"tenant": "ecorp", "principal": "mallory", "claims": {}}
+OTHER_TENANT = {"tenant": "evil-co", "principal": TEST_CTX["principal"], "claims": {}}
+
+
+class TestConversationOwnership:
+    """Real defect (fixed): a conversation's state is keyed by `thread_id`
+    alone, and only the two GET endpoints checked who owned it. Send, resume
+    and cancel did not, so whoever supplied an id continued that
+    conversation — read its history through the model, approve or reject its
+    pending action (which then ran under the *resumer's* identity), or stop
+    it. Reproduced at the graph level when the gap was found; these pin the
+    HTTP boundary. Every refusal is the same 404 the GET endpoints give, so a
+    caller can't tell "someone else's" from "doesn't exist"."""
+
+    @pytest.fixture
+    def redis(self, monkeypatch):
+        client = FakeRedis()
+        monkeypatch.setattr(queue, "get_client", lambda: client)
+        return client
+
+    @staticmethod
+    def _nothing_was_published(client):
+        return not client.streams.get(queue.requests_stream_key("ecorp"))
+
+    async def test_a_new_thread_id_is_claimed_by_its_first_sender_who_can_keep_using_it(
+        self, redis, ownership
+    ):
+        await api.chat_stream_queued(ChatRequest(message="hello", thread_id="fresh"), ctx=TEST_CTX, domain="ecorp")
+        await api.chat_stream_queued(ChatRequest(message="and again", thread_id="fresh"), ctx=TEST_CTX, domain="ecorp")
+
+        assert ownership.rows["fresh"] == (TEST_CTX["tenant"], TEST_CTX["principal"], "ecorp")
+        assert len(redis.streams[queue.requests_stream_key("ecorp")]) == 2
+
+    @pytest.mark.parametrize("intruder", [OTHER_PRINCIPAL, OTHER_TENANT], ids=["other-principal", "other-tenant"])
+    async def test_sending_on_someone_elses_thread_is_refused_and_enqueues_nothing(
+        self, redis, ownership, intruder
+    ):
+        await ownership.claim(TEST_CTX, "owned")
+
+        with pytest.raises(HTTPException) as exc:
+            await api.chat_stream_queued(ChatRequest(message="hi", thread_id="owned"), ctx=intruder, domain="ecorp")
+
+        assert exc.value.status_code == 404
+        assert self._nothing_was_published(redis)
+        assert ownership.rows["owned"] == (
+            TEST_CTX["tenant"],
+            TEST_CTX["principal"],
+            "ecorp",
+        ), "a refused send must not take the thread over"
+
+    async def test_a_resubmission_of_the_owners_exact_message_does_not_hand_over_their_stream(
+        self, redis, ownership
+    ):
+        """The submission-dedup key is (thread_id, digest) with no caller in
+        it, so an identical (thread, message) from another caller used to
+        come back with the OWNER's request_id — and read the owner's reply
+        off their results stream. The check must come before that claim."""
+        owner_response = await api.chat_stream_queued(
+            ChatRequest(message="what is my salary?", thread_id="owned"), ctx=TEST_CTX, domain="ecorp"
+        )
+        assert owner_response is not None
+
+        with pytest.raises(HTTPException) as exc:
+            await api.chat_stream_queued(
+                ChatRequest(message="what is my salary?", thread_id="owned"), ctx=OTHER_PRINCIPAL, domain="ecorp"
+            )
+
+        assert exc.value.status_code == 404
+        assert len(redis.streams[queue.requests_stream_key("ecorp")]) == 1, "only the owner's job exists"
+
+    async def test_the_same_principal_under_another_domain_does_not_own_the_thread(self, redis, ownership):
+        await ownership.claim(TEST_CTX, "owned", domain="support")
+
+        with pytest.raises(HTTPException) as exc:
+            await api.chat_stream_queued(ChatRequest(message="hi", thread_id="owned"), ctx=TEST_CTX, domain="sales")
+
+        assert exc.value.status_code == 404
+
+    async def test_resuming_someone_elses_paused_turn_is_refused_and_enqueues_nothing(self, redis, ownership):
+        await ownership.claim(TEST_CTX, "owned")
+
+        with pytest.raises(HTTPException) as exc:
+            await api.chat_resume(ResumeRequest(thread_id="owned", approved=True), ctx=OTHER_PRINCIPAL, domain="ecorp")
+
+        assert exc.value.status_code == 404
+        assert self._nothing_was_published(redis)
+
+    async def test_resuming_a_thread_nobody_owns_is_refused_not_run(self, redis):
+        with pytest.raises(HTTPException) as exc:
+            await api.chat_resume(ResumeRequest(thread_id="never-seen", approved=True), ctx=TEST_CTX, domain="ecorp")
+
+        assert exc.value.status_code == 404
+        assert self._nothing_was_published(redis)
+
+    async def test_cancelling_someone_elses_turn_sets_no_flag_and_enqueues_nothing(self, redis, ownership):
+        """The cancel flag is written by the API itself, straight to Redis,
+        keyed by thread id alone — it bypasses anything the worker checks,
+        so a foreign caller could stop the owner's streaming turn. The check
+        has to sit in front of the flag."""
+        await ownership.claim(TEST_CTX, "owned")
+
+        with pytest.raises(HTTPException) as exc:
+            await api.chat_cancel(CancelRequest(thread_id="owned"), ctx=OTHER_PRINCIPAL, domain="ecorp")
+
+        assert exc.value.status_code == 404
+        assert await queue.is_cancelled(redis, "owned") is False
+        assert self._nothing_was_published(redis)
+
+    async def test_the_owner_can_still_cancel(self, redis, ownership):
+        await ownership.claim(TEST_CTX, "owned")
+
+        await api.chat_cancel(CancelRequest(thread_id="owned"), ctx=TEST_CTX, domain="ecorp")
+
+        assert await queue.is_cancelled(redis, "owned") is True
+
+    async def test_the_telegram_namespace_cannot_be_claimed_over_http(self, redis, ownership):
+        """`telegram:<chat id>` ids are derived by the chat channel, not
+        chosen. If an HTTP caller could claim an unused one first, the real
+        chat user's later messages would continue the squatter's history
+        (the Telegram path has no ownership step of its own)."""
+        with pytest.raises(HTTPException) as exc:
+            await api.chat_stream_queued(
+                ChatRequest(message="hi", thread_id="telegram:123456"), ctx=OTHER_PRINCIPAL, domain="ecorp"
+            )
+
+        assert exc.value.status_code == 404
+        assert "telegram:123456" not in ownership.rows
+        assert self._nothing_was_published(redis)
+
+    async def test_the_owner_of_a_telegram_thread_can_still_continue_it_over_http(self, redis, ownership):
+        telegram_ctx = {"tenant": "ecorp", "principal": "telegram:42", "claims": {}}
+        await ownership.claim(telegram_ctx, "telegram:123456")
+
+        await api.chat_stream_queued(
+            ChatRequest(message="hi", thread_id="telegram:123456"), ctx=telegram_ctx, domain="ecorp"
+        )
+
+        assert len(redis.streams[queue.requests_stream_key("ecorp")]) == 1
 
 
 class TestChatSessions:

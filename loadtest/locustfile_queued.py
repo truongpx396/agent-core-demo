@@ -448,10 +448,14 @@ class HistoryCompactionUser(HttpUser):
 
 
 class CheckpointErrorUser(HttpUser):
-    """Resuming/cancelling a thread_id that was never actually paused (or
-    never existed at all) is the simplest reachable trigger for
-    agent_checkpoint_issue_total{reason="checkpoint_lost"}
-    (app/agent/graph_hitl.py's _resumability_error_from_state)."""
+    """Resuming a thread_id that was never actually paused is the simplest
+    reachable trigger for agent_checkpoint_issue_total{reason="checkpoint_lost"}
+    (app/agent/graph_hitl.py's _resumability_error_from_state). The thread has
+    to EXIST and be this caller's first: POST /chat/resume answers a thread the
+    caller doesn't own — including one that doesn't exist — with a 404 before
+    the request ever reaches a worker (conversation ownership,
+    app/api/main.py::_require_conversation_owner), so a bare random id no
+    longer gets as far as the checkpoint."""
 
     weight = 1
     wait_time = between(1, 3)
@@ -461,11 +465,21 @@ class CheckpointErrorUser(HttpUser):
         self.principal_id = f"user-{uuid.uuid4().hex[:8]}"
 
     @task
-    def resume_unknown_thread(self) -> None:
+    def resume_unpaused_thread(self) -> None:
+        thread_id = str(uuid.uuid4())
+        headers = {"X-Tenant-Id": self.tenant_id, "X-Principal-Id": self.principal_id}
+        # A plain answered turn: claims the thread for this caller and leaves it
+        # finished, i.e. not paused at an approval.
+        self.client.post(
+            "/chat/stream/queued",
+            json={"message": "what is 2 + 2?", "thread_id": thread_id, "images": []},
+            headers=headers,
+            name="/chat/stream/queued [checkpoint_setup]",
+        )
         self.client.post(
             "/chat/resume",
-            json={"thread_id": str(uuid.uuid4()), "approved": True},
-            headers={"X-Tenant-Id": self.tenant_id, "X-Principal-Id": self.principal_id},
+            json={"thread_id": thread_id, "approved": True},
+            headers=headers,
             name="/chat/resume [checkpoint_lost]",
         )
 

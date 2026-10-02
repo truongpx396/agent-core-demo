@@ -239,3 +239,79 @@ class TestSessionBelongsTo:
         await sessions.session_belongs_to(other_ctx, "t1")
 
         assert fake.captured["params"] == ["t1", "other-co", "p9", "ecorp"]
+
+
+class _RecordingConnection:
+    """Records EVERY statement, unlike `_FakeConnection` (last one only) —
+    `claim_session` is an INSERT followed by a SELECT and the pair is the
+    contract."""
+
+    def __init__(self, owned=True):
+        self.statements: list[tuple[str, list]] = []
+        self._owned = owned
+
+    async def execute(self, sql, params):
+        self.statements.append((sql, list(params)))
+        return _FakeCursor([], ("x",), one=(1,) if self._owned else None)
+
+
+class TestClaimSession:
+    """The ownership gate for `POST /chat/stream/queued` (conversation
+    ownership, constitution Principle I). `upsert_session` — what ran before —
+    is `ON CONFLICT (thread_id) DO UPDATE SET last_active_at`, i.e. it never
+    asked WHO owned the row, so anyone naming a thread id continued it."""
+
+    async def test_inserts_only_if_absent_then_checks_the_caller_owns_the_row(self, monkeypatch):
+        fake = _RecordingConnection(owned=True)
+        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+
+        assert await sessions.claim_session(TEST_CTX, "t1", "hello there", domain="sales") is True
+
+        (insert_sql, insert_params), (select_sql, select_params) = fake.statements
+        assert "INSERT INTO chat_sessions" in insert_sql
+        assert "ON CONFLICT (thread_id) DO NOTHING" in insert_sql
+        assert "DO UPDATE" not in insert_sql, "a claim must never touch an existing row"
+        assert insert_params == ["t1", "ecorp", "p1", "hello there", "sales"]
+        assert "tenant = %s" in select_sql and "principal = %s" in select_sql and "domain = %s" in select_sql
+        assert select_params == ["t1", "ecorp", "p1", "sales"]
+
+    async def test_false_when_the_row_belongs_to_someone_else(self, monkeypatch):
+        fake = _RecordingConnection(owned=False)
+        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+
+        assert await sessions.claim_session(TEST_CTX, "t1", "hello") is False
+
+    async def test_title_is_trimmed_and_defaulted_like_upsert_session(self, monkeypatch):
+        fake = _RecordingConnection()
+        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+
+        await sessions.claim_session(TEST_CTX, "t1", "x" * 200)
+        await sessions.claim_session(TEST_CTX, "t2", "   ")
+
+        assert fake.statements[0][1][3] == "x" * sessions.TITLE_MAX_CHARS + "…"
+        assert fake.statements[2][1][3] == "New conversation"
+
+    async def test_false_for_an_invalid_ctx_or_empty_thread_without_querying(self, monkeypatch):
+        fake = _RecordingConnection()
+        monkeypatch.setattr(sessions, "get_connection", _fake_get_connection(fake))
+
+        assert await sessions.claim_session(None, "t1", "hi") is False
+        assert await sessions.claim_session({"tenant": "", "principal": "", "claims": {}}, "t1", "hi") is False
+        assert await sessions.claim_session(TEST_CTX, "", "hi") is False
+        assert fake.statements == []
+
+    async def test_a_store_failure_propagates_instead_of_granting_access(self, monkeypatch):
+        """Unlike `upsert_session` (best-effort bookkeeping that must not fail
+        a turn), this is an AUTHORIZATION decision: when it cannot be made
+        the answer is "no", not "probably fine"."""
+        import pytest
+
+        @asynccontextmanager
+        async def broken_connection():
+            raise ConnectionError("appdata is down")
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(sessions, "get_connection", broken_connection)
+
+        with pytest.raises(ConnectionError):
+            await sessions.claim_session(TEST_CTX, "t1", "hi")

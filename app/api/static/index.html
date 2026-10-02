@@ -1544,6 +1544,18 @@ function resetTurnUi() {
   sessionSelect.disabled = false;
 }
 
+// Starts a brand-new, not-yet-persisted conversation. A conversation belongs to
+// the tenant + principal + domain that started it (app/agent/sessions.py) and
+// the server answers any other caller's send/resume/cancel on it with a 404, so
+// changing the caller's identity has to start a fresh thread — exactly as
+// changing the domain already does below.
+function startFreshConversation() {
+  resetTurnUi();
+  threadId = randomId();
+  messagesEl.innerHTML = "";
+  sessionSelect.value = "";
+}
+
 async function switchToSession(newThreadId) {
   resetTurnUi();
   threadId = newThreadId;
@@ -1593,9 +1605,7 @@ sessionSelect.addEventListener("change", () => {
     // "+ New conversation" — a fresh, not-yet-persisted thread_id; the
     // switcher will pick it up once its first turn completes (finishTurn
     // calls loadSessions() again).
-    resetTurnUi();
-    threadId = randomId();
-    messagesEl.innerHTML = "";
+    startFreshConversation();
   }
 });
 
@@ -1680,8 +1690,12 @@ function setupIdentitySelect(selectEl, storageKey, defaultValue, label, onChange
 // Re-scope the switcher the moment the caller's identity changes — these
 // sessions belong to tenant+principal (app/agent/sessions.py), so a
 // different tenant OR principal has a completely different list.
-setupIdentitySelect(tenantEl, "agent-core-demo:tenants", "ecorp", "tenant", loadSessions);
-setupIdentitySelect(principalEl, "agent-core-demo:principals", "web-user", "principal", loadSessions);
+function onIdentityChange() {
+  startFreshConversation();
+  loadSessions();
+}
+setupIdentitySelect(tenantEl, "agent-core-demo:tenants", "ecorp", "tenant", onIdentityChange);
+setupIdentitySelect(principalEl, "agent-core-demo:principals", "web-user", "principal", onIdentityChange);
 
 // A different domain runs a different manifest/tool set/graph
 // (app/domains/registry.py) — continuing an EXISTING thread_id under it
