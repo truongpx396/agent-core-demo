@@ -49,11 +49,20 @@ _MAX_DISTANCE = 1 - SEMANTIC_CACHE_SIMILARITY_THRESHOLD
 _client: redis.Redis | None = None
 _index_ready = False
 
-# RediSearch TAG queries treat these characters as syntax, not literal text
+# RediSearch TAG queries treat many characters as syntax, not literal text
 # (e.g. an unescaped tenant like "other-co" raises "Syntax error... near
 # other") — every tag value interpolated into a query string must be
 # escaped first, same reason sql_store.py never interpolates unparameterized.
-_TAG_ESCAPE_RE = re.compile(r"([,.<>{}\[\]\"':;!@#$%^&*()\-+=~ ])")
+#
+# Escapes EVERY ASCII character that is not a letter, digit or underscore,
+# rather than a list of the ones known to bite: the first version was exactly
+# such a list (it grew when `other-co` failed) and it missed `|` — the OR
+# operator inside a tag block, so a principal `alice|bob` built
+# `@principal:{alice|bob}`, which also matches bob's cached answers — and the
+# backslash that escapes. Tenant and principal are this cache's whole isolation
+# boundary, so the default is "escape", with the word characters allow-listed.
+# Non-ASCII letters are left alone: they tokenize as part of a word.
+_TAG_ESCAPE_RE = re.compile(r"([\x00-\x2f\x3a-\x40\x5b-\x5e\x60\x7b-\x7f])")
 
 
 def _escape_tag(value: str) -> str:
