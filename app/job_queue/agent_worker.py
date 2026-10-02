@@ -43,7 +43,10 @@ module's OWN reclaim path below:
   actively-streaming turn.
 - `"resume"` — continues a turn paused at human_approval via
   `astream_events_resume`. Any worker in the pool can handle it; the
-  checkpoint lives in Postgres, not worker memory.
+  checkpoint lives in Postgres, not worker memory. Wired with the same
+  `cancel_check` as `"turn"`, so `POST /chat/cancel` also stops the run an
+  approval started (the approved tool, then the model call that reads its
+  result) — a flag left from the earlier streaming phase is cleared first.
 - `"cancel"` — cancels a turn paused at human_approval via `cancel_run`;
   a no-op if the turn was actively streaming instead (that's the
   cancel-flag mechanism, see `POST /chat/cancel` in app/api/main.py).
@@ -239,8 +242,19 @@ async def _process_turn_continue(client, request_id: str, payload: dict, release
 
 
 async def _process_resume(client, request_id: str, payload: dict, release_lock) -> None:
+    thread_id = payload["thread_id"]
+    # Same reasoning as `_process_turn`: a flag left from the streaming phase
+    # that led to this pause (a /chat/cancel that raced the turn pausing on
+    # its own) must not cancel the approval the user has since given — the
+    # later action is the user's intent. A cancel pressed after this point is
+    # set after the clear and is seen by the polling below.
+    await clear_cancel_flag(client, thread_id)
+
+    async def cancel_check() -> bool:
+        return await is_cancelled(client, thread_id)
+
     async for event in astream_events_resume(
-        payload["thread_id"], payload["approved"], payload["ctx"]
+        thread_id, payload["approved"], payload["ctx"], cancel_check=cancel_check
     ):
         if event.get("type") in TERMINAL_EVENT_TYPES:
             await release_lock()  # see _process_turn's own comment on this

@@ -22,10 +22,11 @@ across jobs even on the SAME thread_id:
 
 A separate, per-THREAD mechanism: the cancel flag (`cancel_flag_key`/
 `set_cancel_flag`/`is_cancelled`/`clear_cancel_flag`) — a short-lived key a
-`"turn"` job's worker polls between graph events, so `POST /chat/cancel`
-can stop an ACTIVELY STREAMING turn (which has no queued job to target,
-unlike one paused at human_approval — see `agent_worker.py`'s `"cancel"`
-dispatch for that case).
+`"turn"`/`"turn_continue"`/`"resume"` job's worker polls between graph
+events, so `POST /chat/cancel` can stop an ACTIVELY STREAMING turn (which has
+no queued job to target, unlike one paused at human_approval — see
+`agent_worker.py`'s `"cancel"` dispatch for that case). That includes the run an
+approval started: `"resume"` polls it too.
 
 A second per-THREAD mechanism: the thread lock (`thread_lock_key`/
 `acquire_thread_lock`/`release_thread_lock`) — mutual exclusion across
@@ -251,7 +252,7 @@ def cancel_flag_key(thread_id: str) -> str:
 
 
 async def set_cancel_flag(client: redis.Redis, thread_id: str) -> None:
-    """Signal an ACTIVELY STREAMING `"turn"` job's worker to stop at its
+    """Signal an ACTIVELY STREAMING `"turn"`/`"resume"` job's worker to stop at its
     next cancel-check (`runtime_stream.py::_iterate_with_timeout`'s
     `cancel_check`) — a short-lived flag, not a queued job, since that
     worker is polling this key directly, not waiting on the queue."""

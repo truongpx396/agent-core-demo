@@ -667,10 +667,23 @@ async def astream_events_turn_unattended(
             yield event
 
 
-async def astream_events_resume(thread_id: str, approved: bool, ctx: SecurityCtx):
+async def astream_events_resume(
+    thread_id: str, approved: bool, ctx: SecurityCtx, cancel_check=None
+):
     """Resume a turn paused by astream_events_turn(require_approval=True) —
     streaming counterpart to `graph.invoke(Command(resume=approved), config)`.
     `thread_id` must match the paused turn.
+
+    `cancel_check` (optional) forwards to `_run_graph_stream`, same contract
+    as `astream_events_turn`'s: without it, a `POST /chat/cancel` after the
+    user approved a tool set a flag nothing polled, so the approved write,
+    the model call that reads its result and any further tool rounds all ran
+    to the end. It is polled before the first event, so a cancel that lands
+    between the approval and the worker picking the job up stops the turn
+    *before* the approved tool runs; one that lands later stops it at the
+    next event boundary (an already-running tool call finishes — see
+    `_iterate_with_timeout`). Callers with no cancel path
+    (`astream_events_turn_unattended`, chat.py) pass nothing.
 
     `ctx` is required and re-supplied here rather than reused from the
     original pause: `config["configurable"]` does not persist across a
@@ -701,7 +714,9 @@ async def astream_events_resume(thread_id: str, approved: bool, ctx: SecurityCtx
         "callbacks": callbacks,
         "recursion_limit": runtime_module.RECURSION_LIMIT,
     }
-    async for event in _run_graph_stream(graph, Command(resume=approved), cfg, trace):
+    async for event in _run_graph_stream(
+        graph, Command(resume=approved), cfg, trace, cancel_check=cancel_check
+    ):
         yield event
 
 
