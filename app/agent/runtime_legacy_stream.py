@@ -15,6 +15,7 @@ Reads `init_graph_async`/`_ensure_seeded_async`/`RECURSION_LIMIT` via
 `runtime_module.X` rather than bare imports — same monkeypatch reasoning
 as `runtime_stream.py`'s module docstring.
 """
+import logging
 import time
 from contextlib import asynccontextmanager
 
@@ -30,8 +31,10 @@ from app.agent.runtime_stream import (
 )
 from app.core import metrics
 from app.core.config import REQUEST_TIMEOUT_SECONDS
-from app.core.errors import ErrorCode, ErrorEnvelope
+from app.core.errors import ErrorCode, ErrorEnvelope, internal_error_envelope
 from app.core.security import SecurityCtx
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Alternative: Langfuse via @asynccontextmanager
@@ -143,18 +146,18 @@ async def astream_events_turn_ctx(text: str, thread_id: str, ctx: SecurityCtx):
                 trace.update(output=f"error: {exc}", level="ERROR")
             outcome = "timeout" if isinstance(exc, TimeoutError) else "error"
             await _record_turn_metrics(time.monotonic() - start, outcome)
-            # See _run_graph_stream's matching comment: a bare
-            # asyncio.wait_for timeout has an empty str(exc).
-            message = (
-                f"Request exceeded {REQUEST_TIMEOUT_SECONDS}s timeout"
-                if outcome == "timeout"
-                else str(exc)
-            )
-            envelope = ErrorEnvelope(
-                code=ErrorCode.TIMEOUT if outcome == "timeout" else ErrorCode.INTERNAL,
-                message=message,
-            )
-            yield {"type": "error", "content": message, **envelope.to_dict()}
+            # See _run_graph_stream's matching comments: a bare
+            # asyncio.wait_for timeout has an empty str(exc), and an
+            # unexpected exception's text must never reach the caller.
+            logger.warning("graph_stream_failed", extra={"error_class": type(exc).__name__})
+            if outcome == "timeout":
+                envelope = ErrorEnvelope(
+                    code=ErrorCode.TIMEOUT,
+                    message=f"Request exceeded {REQUEST_TIMEOUT_SECONDS}s timeout",
+                )
+            else:
+                envelope = internal_error_envelope(exc)
+            yield {"type": "error", "content": envelope.message, **envelope.to_dict()}
             return  # exit before the else-branch and done event
 
         if trace:

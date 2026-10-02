@@ -221,7 +221,7 @@ class TestProcessRequestTurn:
 
     async def test_a_failure_publishes_an_error_event_and_still_acks(self, monkeypatch):
         async def failing_turn(text, thread_id, ctx, require_approval=False, images=None, cancel_check=None):
-            raise RuntimeError("graph blew up")
+            raise RuntimeError("could not connect to internal-db-host.example:5432")
             yield  # pragma: no cover - unreachable, makes this a generator
 
         monkeypatch.setattr(agent_worker, "astream_events_turn", failing_turn)
@@ -231,7 +231,14 @@ class TestProcessRequestTurn:
         await agent_worker.process_request(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r2")]]
-        assert events == [{"type": "error", "content": "graph blew up"}]
+        assert len(events) == 1
+        error = events[0]
+        assert error["type"] == "error"
+        # Real defect (fixed): this used to be {"type": "error", "content": str(exc)} — the
+        # raw exception text, with no ErrorCode envelope, forwarded to the caller.
+        assert error["code"] == "internal"
+        assert "internal-db-host" not in json.dumps(error)
+        assert error["details"] == {"error_class": "RuntimeError"}
         assert client.acked == [entry_id]
 
 
@@ -274,7 +281,10 @@ class TestProcessRequestTurnContinue:
         await agent_worker.process_request(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r11")]]
-        assert events == [{"type": "error", "content": "checkpoint gone"}]
+        assert len(events) == 1
+        assert events[0]["type"] == "error"
+        assert events[0]["code"] == "internal"
+        assert "checkpoint gone" not in json.dumps(events[0])
         assert client.acked == [entry_id]
 
 
@@ -310,7 +320,10 @@ class TestProcessRequestResume:
         await agent_worker.process_request(client, entry_id, fields)
 
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r7")]]
-        assert events == [{"type": "error", "content": "checkpoint gone"}]
+        assert len(events) == 1
+        assert events[0]["type"] == "error"
+        assert events[0]["code"] == "internal"
+        assert "checkpoint gone" not in json.dumps(events[0])
         assert client.acked == [entry_id]
 
 
@@ -369,7 +382,10 @@ class TestProcessRequestUnknownKind:
         events = [json.loads(f["payload"]) for _, f in client.streams[results_stream_key("r10")]]
         assert len(events) == 1
         assert events[0]["type"] == "error"
-        assert "not-a-real-kind" in events[0]["content"]
+        # The worker's own diagnostic ("unknown job kind: ...") is for the operator's logs, not
+        # the caller: the caller gets the generic internal envelope.
+        assert events[0]["code"] == "internal"
+        assert "not-a-real-kind" not in json.dumps(events[0])
         assert client.acked == [entry_id]
 
 

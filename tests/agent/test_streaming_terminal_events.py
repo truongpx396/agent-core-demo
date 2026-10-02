@@ -19,6 +19,7 @@ a monkeypatched `init_graph_async` (bypassing the real durable
 checkpointer — already covered separately by tests/agent/test_durable_checkpoint.py)
 since only the EVENT SHAPE is under test here.
 """
+import json
 import uuid
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -637,6 +638,62 @@ async def _stream_events(fake_events, final_messages):
         ]
 
     return await _run()
+
+
+class _RaisingStreamGraph:
+    """`astream_events` raises `exc` as soon as it is iterated — what any
+    unexpected failure inside a turn (a store outage, a driver error, a bug)
+    looks like to `_run_graph_stream`."""
+
+    def __init__(self, exc):
+        self._exc = exc
+
+    async def astream_events(self, graph_input, config=None, version="v2"):
+        raise self._exc
+        yield  # pragma: no cover - makes this an async generator
+
+    async def aget_state(self, cfg):  # pragma: no cover - never reached on the error path
+        raise AssertionError("aget_state must not be called after a failure")
+
+
+async def _stream_raising(exc):
+    cfg = {"configurable": {"thread_id": "fake-thread", "ctx": TEST_CTX}}
+    return [
+        event
+        async for event in stream_module._run_graph_stream(_RaisingStreamGraph(exc), {}, cfg, trace=None)
+    ]
+
+
+class TestAGraphFailureNeverLeaksItsMessageToTheCaller:
+    """Real defect (fixed): the generic `except` in `_run_graph_stream` put
+    `str(exc)` into the caller-facing `error` event, so any unexpected
+    exception's own text — a driver error naming an internal host or a SQL
+    fragment, a library message echoing an input — crossed the trust
+    boundary to whoever was reading the SSE stream. Principle V requires
+    caller-facing errors to use the ErrorCode envelope, and the envelope's
+    message is for the *caller*, not for the operator (who has the logs).
+    There was no test of this path at all."""
+
+    SENTINEL = "could not connect to internal-db-host.example:5432"
+
+    async def test_an_unexpected_exception_yields_a_generic_internal_error_with_no_leaked_text(self):
+        events = await _stream_raising(RuntimeError(self.SENTINEL))
+
+        assert [e["type"] for e in events] == ["error"]
+        error = events[0]
+        assert error["code"] == "internal"
+        assert "internal-db-host" not in json.dumps(error)
+        assert error["content"] == error["message"] and error["message"], "a blank error helps nobody"
+        # Metadata only: the exception CLASS is safe and is what an operator
+        # triaging a client report needs; its message is not.
+        assert error["details"] == {"error_class": "RuntimeError"}
+
+    async def test_a_timeout_still_reports_a_timeout_not_an_internal_error(self):
+        events = await _stream_raising(TimeoutError())
+
+        assert [e["type"] for e in events] == ["error"]
+        assert events[0]["code"] == "timeout"
+        assert "timeout" in events[0]["message"].lower()
 
 
 class TestSubagentEventsDontLeakIntoTheMainStream:
