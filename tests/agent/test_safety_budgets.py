@@ -26,8 +26,11 @@ from app.agent.graph import (
     MAX_SUBAGENT_TOKENS_PER_RUN,
     MAX_TOKENS_PER_TURN,
     MAX_TOOL_CALLS_PER_TURN,
+    GraphDeps,
+    _concat_or_reset,
     validate_input,
 )
+from app.agent.graph_build import build_graph
 from app.agent.graph_compaction import (
     COMPACTION_MARKER_KEY,
     _estimate_tokens,
@@ -67,7 +70,19 @@ class TestPerTurnReset:
         result = validate_input(state, _cfg())
         assert result["iterations"] == 0
         assert result["total_tokens"] == 0
-        assert result["subagent_spend"] == []
+        # None is the reducer's explicit reset marker (a plain [] would be a no-op
+        # through a concatenating reducer) — TestPerTurnResetThroughTheGraph proves
+        # the persisted state really ends up empty.
+        assert result["subagent_spend"] is None
+
+    def test_validate_input_clears_a_previous_turns_cancellation_and_approval(self):
+        """`cancelled`/`approved` are persisted State fields (graph.py), so a
+        cancel on one turn must not decide the routing of a later turn's
+        approval. See TestApprovalAfterAnEarlierCancel for the end-to-end case."""
+        state = {"messages": [HumanMessage(content="hi")], "cancelled": True, "approved": True}
+        result = validate_input(state, _cfg())
+        assert result["cancelled"] is False
+        assert result["approved"] is False
 
     def test_validate_input_generates_a_fresh_run_id_every_turn(self):
         """run_id correlates this turn's node lifecycle logs (_instrumented)
@@ -91,6 +106,124 @@ class TestPerTurnReset:
         state = {"messages": [HumanMessage(content="hi")]}
         result = validate_input(state, {"configurable": {}})
         assert result["ctx"] is None
+
+
+class TestPerTurnResetThroughTheGraph:
+    """Regression tests for a class of bug the unit test above CANNOT see:
+    `validate_input` returning a reset value is not the same as the reset
+    taking effect. What the checkpointed thread state holds after the graph
+    has APPLIED that return value depends on each field's reducer, so these
+    drive the real compiled graph across two turns on one thread and read the
+    persisted state back.
+
+    Real bug (reproduced before this fix): `State.subagent_spend` was declared
+    with `operator.add`, so `validate_input`'s `"subagent_spend": []` added
+    nothing and every earlier turn's delegated spend kept counting toward
+    later turns' MAX_TOKENS_PER_TURN / MAX_COST_USD_PER_TURN ceilings.
+    """
+
+    @staticmethod
+    async def _spend(g, cfg):
+        """The persisted `subagent_spend`, normalized: the checkpointer
+        round-trips each (tokens, cost) tuple as a list, which is a
+        serialization detail these tests are not about."""
+        return [tuple(entry) for entry in (await g.aget_state(cfg)).values["subagent_spend"]]
+
+    @staticmethod
+    def _graph():
+        llm = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="First answer, long enough to pass the output gate."),
+                    AIMessage(content="Second answer, long enough to pass the output gate."),
+                ]
+            )
+        )
+        return build_graph(GraphDeps(llm=llm))
+
+    async def test_subagent_spend_recorded_in_one_turn_does_not_survive_into_the_next(self):
+        g = self._graph()
+        cfg = {"configurable": {"thread_id": "reset-1", "ctx": TEST_CTX}, "recursion_limit": 35}
+
+        await g.ainvoke({"messages": [HumanMessage(content="first question please")]}, config=cfg)
+        # What `run_subagent` does mid-turn: append one (tokens, cost) entry.
+        await g.aupdate_state(cfg, {"subagent_spend": [(3000, 0.25)]})
+        assert await self._spend(g, cfg) == [(3000, 0.25)]
+
+        await g.ainvoke({"messages": [HumanMessage(content="second question please")]}, config=cfg)
+
+        assert await self._spend(g, cfg) == []
+
+    async def test_parallel_subagent_entries_within_one_turn_still_accumulate(self):
+        """The reducer exists so concurrent run_subagent calls can safely
+        list-concatenate instead of racing a read-modify-write; making the
+        field resettable must not break that."""
+        g = self._graph()
+        cfg = {"configurable": {"thread_id": "reset-2", "ctx": TEST_CTX}, "recursion_limit": 35}
+        await g.ainvoke({"messages": [HumanMessage(content="a question please")]}, config=cfg)
+
+        await g.aupdate_state(cfg, {"subagent_spend": [(100, 0.01)]})
+        await g.aupdate_state(cfg, {"subagent_spend": [(200, 0.02)]})
+
+        assert await self._spend(g, cfg) == [(100, 0.01), (200, 0.02)]
+
+
+class TestConcatOrResetReducer:
+    """`State.subagent_spend`'s reducer (graph.py::_concat_or_reset). The
+    concurrency case here is the hermetic twin of
+    tests/agent/test_concurrent_turns.py::TestSubagentCallUnderConcurrency
+    (an `integration`-tier test, so not run by `make test`): it proves that
+    making the field resettable did not cost the race-freedom the reducer
+    exists for."""
+
+    def test_concatenates_updates(self):
+        assert _concat_or_reset([(1, 0.1)], [(2, 0.2)]) == [(1, 0.1), (2, 0.2)]
+
+    def test_a_missing_current_value_counts_as_empty(self):
+        assert _concat_or_reset(None, [(1, 0.1)]) == [(1, 0.1)]
+
+    def test_none_is_the_reset_marker_and_is_never_stored(self):
+        assert _concat_or_reset([(1, 0.1), (2, 0.2)], None) == []
+
+    def test_does_not_mutate_its_inputs(self):
+        current = [(1, 0.1)]
+        _concat_or_reset(current, [(2, 0.2)])
+        assert current == [(1, 0.1)]
+
+    async def test_two_parallel_writers_in_one_superstep_both_land_and_a_later_reset_clears_them(self):
+        from typing import Annotated, TypedDict
+
+        from langgraph.checkpoint.memory import MemorySaver
+        from langgraph.graph import END, START, StateGraph
+
+        class S(TypedDict):
+            spend: Annotated[list[tuple[int, float]], _concat_or_reset]
+
+        def left(state: S) -> dict:
+            return {"spend": [(1, 0.1)]}
+
+        def right(state: S) -> dict:
+            return {"spend": [(2, 0.2)]}
+
+        def noop(state: S) -> dict:
+            return {}
+
+        builder = StateGraph(S)
+        for name, fn in (("left", left), ("right", right), ("join", noop)):
+            builder.add_node(name, fn)
+        builder.add_edge(START, "left")
+        builder.add_edge(START, "right")
+        builder.add_edge("left", "join")
+        builder.add_edge("right", "join")
+        builder.add_edge("join", END)
+        g = builder.compile(checkpointer=MemorySaver())
+        cfg = {"configurable": {"thread_id": "parallel"}}
+
+        result = await g.ainvoke({"spend": []}, config=cfg)
+        assert sorted(tuple(e) for e in result["spend"]) == [(1, 0.1), (2, 0.2)]
+
+        await g.aupdate_state(cfg, {"spend": None})
+        assert (await g.aget_state(cfg)).values["spend"] == []
 
 
 class TestHistoryBudget:

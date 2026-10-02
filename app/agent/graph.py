@@ -41,7 +41,6 @@ file size (no behavior change):
 """
 import functools
 import logging
-import operator
 import os
 import subprocess
 import uuid
@@ -275,6 +274,29 @@ def _graph_version() -> str:
         return "unknown"
 
 
+def _concat_or_reset(
+    current: list[tuple[int, float]] | None, update: list[tuple[int, float]] | None
+) -> list[tuple[int, float]]:
+    """Reducer for `State.subagent_spend`: list-concatenate, or reset on `None`.
+
+    Why not plain `operator.add`: ToolNode runs a turn's tool calls
+    CONCURRENTLY, so several `run_subagent` calls each append one entry via
+    `Command(update=...)`, and a concatenating reducer is what makes that
+    race-free. But a concatenating reducer also makes "reset to []" a no-op —
+    `validate_input` writing `[]` just adds nothing — so every earlier turn's
+    delegated spend silently kept counting toward later turns' token/cost
+    ceilings (a bug reproduced before this reducer existed, and one the old
+    unit test could not see because it asserted `validate_input`'s RETURN
+    value, not the state the reducer produced from it). `None` is the
+    explicit reset marker: it is what `validate_input` writes, and it is
+    never stored (the reducer returns a list). No `Overwrite` exists in the
+    pinned langgraph, hence this.
+    """
+    if update is None:
+        return []
+    return list(current or []) + list(update)
+
+
 class State(TypedDict):
     """Richer state: track messages, context, and flow control."""
 
@@ -285,7 +307,7 @@ class State(TypedDict):
     total_cost_usd: float  # Cumulative $ cost *this turn*, computed from
     # app/agent/usage_ledger.py's PRICE_PER_1K_TOKENS_USD — should_continue enforces
     # MAX_COST_USD_PER_TURN against this (GRAPH_PATTERNS.md pattern 35).
-    subagent_spend: Annotated[list[tuple[int, float]], operator.add]  # One
+    subagent_spend: Annotated[list[tuple[int, float]], _concat_or_reset]  # One
     # (tokens, cost_usd) entry per completed run_subagent call this turn,
     # appended via Command(update=...) from tools.py's run_subagent. The
     # only other reducer field besides `messages`: ToolNode runs multiple
@@ -296,10 +318,13 @@ class State(TypedDict):
     # into should_continue's MAX_TOKENS_PER_TURN/MAX_COST_USD_PER_TURN
     # checks on top of total_tokens/total_cost_usd (pattern 46's disclosed
     # gap), without touching MAX_SUBAGENT_*'s own separate per-run ceiling.
-    # Reset to [] every turn by validate_input, same as total_tokens/
+    # Reset every turn by validate_input (it writes `None`, which
+    # `_concat_or_reset` turns into []), same as total_tokens/
     # total_cost_usd — unlike history_summary, must NOT accumulate turn over turn.
     require_approval: bool  # Opt-in: gate tool calls behind human_approval.
-    approved: bool  # Set by human_approval; read by route_after_approval.
+    approved: bool  # Set by human_approval; read by route_after_approval. Reset
+    # every turn by validate_input (it is not re-run on a resume, so a pause's
+    # own decision is never cleared out from under it).
     cancelled: bool  # Set by human_approval on a cancel decision; read by
     # route_after_approval to end the run outright (GRAPH_PATTERNS.md pattern 36).
     run_id: str  # Per-turn correlation id for node lifecycle logs (see
@@ -416,7 +441,15 @@ def validate_input(state: State, config: RunnableConfig) -> dict:
         "iterations": 0,
         "total_tokens": 0,
         "total_cost_usd": 0.0,
-        "subagent_spend": [],
+        # `None` = the reducer's explicit reset marker (see _concat_or_reset);
+        # writing `[]` through a concatenating reducer would be a no-op.
+        "subagent_spend": None,
+        # A cancel on one turn must not decide the routing of a LATER turn's
+        # approval: `route_after_approval` tests `cancelled` before `approved`,
+        # and nothing else clears either field. Reset here, never on a resume
+        # (a resume re-enters inside human_approval and skips this node).
+        "cancelled": False,
+        "approved": False,
         "run_id": uuid.uuid4().hex[:8],
         "graph_version": _graph_version(),
         "state_schema_version": STATE_SCHEMA_VERSION,
