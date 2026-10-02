@@ -169,6 +169,56 @@ class TestHumanApprovalPath:
         assert "Cancelled" in result["messages"][-1].content
 
 
+class TestApprovalAfterAnEarlierCancel:
+    async def test_an_approval_on_a_later_turn_still_runs_after_an_earlier_cancel_on_the_same_thread(self):
+        """Real bug (reproduced before this fix): `human_approval` sets
+        `State.cancelled = True` on a cancel and nothing ever cleared it.
+        `route_after_approval` checks `cancelled` BEFORE `approved`, so on a
+        LATER pause in the same thread — even one the person APPROVED — the
+        run went straight to `__end__`: the approved tool never ran, the last
+        message was the assistant's own tool request with empty content (a
+        dangling tool_call the next provider call would reject), and the turn
+        reported finished. The existing cancel tests cover the cancel itself
+        and `route_after_approval` in isolation; none ran a second approval on
+        the same thread."""
+        from app.agent.graph_hitl import CANCEL_SENTINEL
+
+        llm = _fake_llm(
+            _tool_call_message("calculator", {"expression": "2+2"}, call_id="call_cancelled"),
+            _tool_call_message("calculator", {"expression": "3+3"}, call_id="call_approved"),
+            AIMessage(content="3 plus 3 equals 6, which is a long enough final answer."),
+        )
+        g = build_graph(GraphDeps(llm=llm))
+        config = _config()
+
+        # Turn 1: pause, then CANCEL.
+        await g.ainvoke(
+            {"messages": [HumanMessage(content="what is 2+2?")], "require_approval": True},
+            config=config,
+        )
+        assert (await g.aget_state(config)).next
+        await g.ainvoke(Command(resume=CANCEL_SENTINEL), config=config)
+        assert not (await g.aget_state(config)).next
+
+        # Turn 2 on the SAME thread: pause, then APPROVE.
+        await g.ainvoke(
+            {"messages": [HumanMessage(content="what is 3+3?")], "require_approval": True},
+            config=config,
+        )
+        assert (await g.aget_state(config)).next, "turn 2 should pause at the approval gate"
+        result = await g.ainvoke(Command(resume=True), config=config)
+
+        state = await g.aget_state(config)
+        tool_results = [
+            m for m in state.values["messages"]
+            if getattr(m, "tool_call_id", None) == "call_approved"
+        ]
+        assert tool_results, "the approved tool call never ran"
+        assert tool_results[0].content == "6"
+        assert result["messages"][-1].content == "3 plus 3 equals 6, which is a long enough final answer."
+        assert not state.values["cancelled"]
+
+
 class TestIterationCap:
     async def test_stops_at_max_iterations_even_if_llm_keeps_calling_tools(self):
         # More tool-call responses than MAX_ITERATIONS allows, to prove the
