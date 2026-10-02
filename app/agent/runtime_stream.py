@@ -44,7 +44,12 @@ from app.core.config import (
     REQUEST_TIMEOUT_SECONDS,
     UNATTENDED_MAX_DECLINE_ROUNDS,
 )
-from app.core.errors import ErrorCode, ErrorEnvelope, TurnCancelled
+from app.core.errors import (
+    ErrorCode,
+    ErrorEnvelope,
+    TurnCancelled,
+    internal_error_envelope,
+)
 from app.core.security import SecurityCtx
 
 logger = logging.getLogger(__name__)
@@ -369,22 +374,26 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
             trace.update(output=f"error: {exc}", level="ERROR")
         outcome = "timeout" if isinstance(exc, TimeoutError) else "error"
         await _record_turn_metrics(time.monotonic() - start, outcome)
-        # asyncio.wait_for's own internal timeout raises a bare
-        # TimeoutError with an empty str(exc); fall back to an explicit
-        # message so the client doesn't get a blank error.
-        message = (
-            f"Request exceeded {REQUEST_TIMEOUT_SECONDS}s timeout"
-            if outcome == "timeout"
-            else str(exc)
-        )
-        envelope = ErrorEnvelope(
-            code=ErrorCode.TIMEOUT if outcome == "timeout" else ErrorCode.INTERNAL,
-            message=message,
-        )
+        # The caller never sees `str(exc)`: an unexpected exception's text
+        # can name an internal host, a SQL fragment or a DSN, and this event
+        # crosses the trust boundary (Principle V, pattern 30). The full
+        # text is on the trace above; the log line below carries the class
+        # only, matching the rest of the repo.
+        logger.warning("graph_stream_failed", extra={"error_class": type(exc).__name__})
+        if outcome == "timeout":
+            # asyncio.wait_for's own internal timeout raises a bare
+            # TimeoutError with an empty str(exc), so the message is spelled
+            # out rather than taken from the exception.
+            envelope = ErrorEnvelope(
+                code=ErrorCode.TIMEOUT,
+                message=f"Request exceeded {REQUEST_TIMEOUT_SECONDS}s timeout",
+            )
+        else:
+            envelope = internal_error_envelope(exc)
         # "content" kept alongside the envelope fields for backward
         # compatibility with existing consumers (chat.py, the web UI) that
         # already read event["content"] — see errors.py's docstring.
-        terminal_event = {"type": "error", "content": message, **envelope.to_dict()}
+        terminal_event = {"type": "error", "content": envelope.message, **envelope.to_dict()}
     else:
         # astream_events() just stops yielding when the run pauses at an
         # interrupt() — no exception, no distinct "paused" event — so

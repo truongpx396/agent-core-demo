@@ -144,7 +144,7 @@ from app.core.config import (
     MAX_AUTO_RECLAIM_RETRIES,
     WORKER_RECLAIM_INTERVAL_SECONDS,
 )
-from app.core.errors import ErrorCode, ErrorEnvelope
+from app.core.errors import ErrorCode, ErrorEnvelope, internal_error_envelope
 from app.core.logging_config import bind_request_id, configure_logging
 from app.core.telemetry import configure_telemetry
 from app.domains.registry import resolve_domain
@@ -348,7 +348,13 @@ async def process_request(client, entry_id: str, fields: dict) -> None:
                 "agent_worker_turn_failed",
                 extra={"request_id": request_id, "kind": kind, "error_class": type(exc).__name__},
             )
-            await publish_result(client, request_id, {"type": "error", "content": str(exc)})
+            # Not `str(exc)`: the caller gets the generic envelope, never the exception's own
+            # text (an internal hostname, a SQL fragment, a DSN — pattern 30). The worker's own
+            # diagnostics, like the unknown-kind ValueError above, are for the operator's logs.
+            envelope = internal_error_envelope(exc)
+            await publish_result(
+                client, request_id, {"type": "error", "content": envelope.message, **envelope.to_dict()}
+            )
         finally:
             await client.xack(REQUESTS_STREAM, CONSUMER_GROUP, entry_id)
 
