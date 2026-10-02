@@ -276,6 +276,35 @@ def _queued_sse_response(
     )
 
 
+async def _require_conversation_owner(
+    ctx: SecurityCtx, thread_id: str, domain: str, *, claim_with: str | None = None
+) -> None:
+    """404 unless `ctx` owns `thread_id` under `domain` — the same refusal the
+    two GET endpoints give, so a caller can't tell "someone else's" from
+    "doesn't exist".
+
+    A conversation's state (checkpoint, cancel flag, thread lock, submission-
+    dedup key) is keyed by `thread_id` alone and the id is client-supplied, so
+    this check is the whole authorization boundary for send, resume and cancel
+    — the worker does not repeat it. It runs BEFORE anything is enqueued or
+    any Redis key is written: `/chat/cancel` writes the cancel flag itself, and
+    the submission-dedup claim is keyed without a caller, so a check placed
+    after either would already have leaked or acted.
+
+    `claim_with` is set only by a send, which may create a new conversation:
+    the first claimant of an id owns it (the message becomes the session
+    title). Resume and cancel only ever act on an existing one, so they
+    verify without claiming. A `telegram:`-prefixed id is never claimable over
+    HTTP — see `sessions.TELEGRAM_THREAD_PREFIX`.
+    """
+    if claim_with is not None and not thread_id.startswith(sessions.TELEGRAM_THREAD_PREFIX):
+        allowed = await sessions.claim_session(ctx, thread_id, claim_with, domain)
+    else:
+        allowed = await sessions.session_belongs_to(ctx, thread_id, domain)
+    if not allowed:
+        raise HTTPException(status_code=404, detail="session not found")
+
+
 @app.post("/chat/stream/queued")
 async def chat_stream_queued(
     req: ChatRequest, ctx: SecurityCtx = Depends(get_ctx), domain: str = Depends(get_domain)
@@ -308,6 +337,7 @@ async def chat_stream_queued(
     turn. See that function's own docstring for why the thread lock alone
     doesn't already cover this.
     """
+    await _require_conversation_owner(ctx, req.thread_id, domain, claim_with=req.message)
     client = queue.get_client()
     digest = hashlib.sha256(
         json.dumps([req.message, req.images or []]).encode()
@@ -357,8 +387,11 @@ async def chat_resume(
     the same `X-Domain` for a given thread_id).
 
     `ctx` is re-supplied here, not reused from the original pause — see
-    `astream_events_resume`'s own docstring for why.
+    `astream_events_resume`'s own docstring for why. It must belong to the
+    conversation's owner: `_require_conversation_owner` is checked first, so
+    approving, rejecting or running another caller's paused action is a 404.
     """
+    await _require_conversation_owner(ctx, req.thread_id, domain)
     client = queue.get_client()
     request_id = uuid.uuid4().hex
     await queue.publish_resume_request(
@@ -393,6 +426,9 @@ async def chat_cancel(
     not a proxy for job-1's effect on the original turn's stream, which the
     caller is expected to already be reading independently.
     """
+    # BEFORE the flag: this endpoint writes the flag straight to Redis, keyed by
+    # thread id alone, so without the check anyone could stop anyone's turn.
+    await _require_conversation_owner(ctx, req.thread_id, domain)
     client = queue.get_client()
     await queue.set_cancel_flag(client, req.thread_id)
     request_id = uuid.uuid4().hex
