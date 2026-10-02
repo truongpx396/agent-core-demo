@@ -103,8 +103,8 @@ zero notes still returns a row.
 | Field | Type | Written by | Lifecycle | Note |
 |-------|------|-----------|-----------|------|
 | `require_approval` | `bool` | caller input | per call | opt-in gate; **not** set by the HTTP surface (the queued `turn` payload defaults it `False`; only the CLI `--hitl` mode sets it) |
-| `approved` | `bool` | `human_approval` | persists; every decision writes it | read by `route_after_approval` |
-| `cancelled` | `bool` | `human_approval` on cancel | **persists forever — never reset (B3)** | `route_after_approval` checks it **before** `approved` |
+| `approved` | `bool` | `human_approval` | every decision writes it; reset to `False` at the start of each new turn by `validate_input` (#62), never on a resume | read by `route_after_approval` |
+| `cancelled` | `bool` | `human_approval` on cancel | **reset to `False` at the start of each new turn by `validate_input`, never on a resume (B3, fixed in #62)** | `route_after_approval` checks it **before** `approved` |
 | `messages` | list | `human_approval` adds one `ToolMessage` per pending call on reject/cancel | per `add_messages` | |
 | `ctx` | `SecurityCtx` | `validate_input` | per turn | **not** re-stamped on resume (resume starts inside `human_approval`); the *tool* reads ctx from the resume call's `config` |
 
@@ -149,7 +149,7 @@ internal `_reclaim_attempts` counter.
     └─ any non-read_only (or undeclared) ───────────► PAUSED (interrupt)
                                                          ├─ approve ──► runs ──► agent
                                                          ├─ reject ───► one ToolMessage per call ──► agent
-                                                         └─ cancel ───► one ToolMessage per call; cancelled=True ──► END   (B3: flag never cleared)
+                                                         └─ cancel ───► one ToolMessage per call; cancelled=True ──► END   (cleared at the next turn's start — B3, fixed in #62)
 ```
 
 ### 8.2 Conversation vs. job
@@ -159,7 +159,7 @@ internal `_reclaim_attempts` counter.
                        │
                        ├─ interrupt ──► paused (lock released BEFORE the terminal event is published)
                        │                  ├─ resume job ─► running (lock held) ─► idle | paused again
-                       │                  ├─ cancel job ─► idle  (cancelled=True persists — B3)
+                       │                  ├─ cancel job ─► idle  (cancelled=True is cleared at the next turn's start — B3, fixed in #62)
                        │                  └─ new message ─► refused: pending_approval (or proceeds if not resumable)
                        └─ worker dies ──► (job unacked) ──► reclaim after 240 s idle ──► classify (§8.3)
 ```
@@ -176,11 +176,11 @@ internal `_reclaim_attempts` counter.
 | otherwise | `retry_continue` ⇒ republish as `turn_continue` (`astream_events(None, …)`) |
 | `_reclaim_attempts ≥ MAX_AUTO_RECLAIM_RETRIES` (1) or not safe | publish `error{code:"worker_lost"}`, archive to DLQ, ack |
 
-### 8.4 Unattended turn (as built — B4)
+### 8.4 Unattended turn (B4 fixed in #63)
 
 ```text
- turn ─► pause #1 ─► auto-decline (resume False) ─► model re-requests ─► pause #2 ─► [event forwarded; NOT declined]
-                                                                                      │
-                                                  chat-app channel: reply '' (nothing sent) ◄─┘   thread stays paused
-                                                  next message ─► error "pending approval — approve, reject, or cancel"  (no UI to do so)
+ turn ─► pause #1 ─► auto-decline (resume False) ─► model re-requests ─► pause #2 ─► auto-decline ─► … (up to UNATTENDED_MAX_DECLINE_ROUNDS)
+                                                                                    │
+                       still asking at the ceiling ─► cancel_run ─► one explicit message "needs a person's approval, not done"
+                       thread is never left paused; exactly one terminal event; every decline counts agent_unattended_pause_total
 ```

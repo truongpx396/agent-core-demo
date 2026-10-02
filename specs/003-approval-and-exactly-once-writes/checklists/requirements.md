@@ -32,7 +32,7 @@
 ## Notes
 
 - **This checklist grades requirements quality, not the system.** Two success criteria are marked
-  *currently not met* (SC-010 and SC-011, bugs B3 and B4). That is deliberate: a criterion the
+  *not met when this spec was written* (SC-010 and SC-011, bugs B3 and B4 — both fixed since, in #62 and #63). That is deliberate: a criterion the
   shipped system fails is more useful stated and flagged than omitted. A spec with failing criteria
   is still complete.
 - **Two defects were reproduced, not inferred.** B3 (a stale "cancelled" marker makes a later
@@ -76,3 +76,5 @@
    delivery and the thread lock **are** tested against a real Redis; what is untested is the target-level `UNIQUE`
    constraints and, newly found, the `XAUTOCLAIM` reclaim path, which only a hand-written fake covers (gap A13, task
    T058).
+
+7. **Iteration 7 (reconciliation, 2026-10-03):** the fixes merged since this spec (#62 B3; #63 B4; #65 A12; #66 A11; #67 feature 002's B2; #68 A7 and the pending-approval endpoint test) were folded into the spec, plan, research, data-model, contracts, quickstart and tasks; SC-005, SC-009, SC-010 and SC-011 are now met; task T005's claim that its six queue tunables have example-environment entries was found to be **false** (none has one — only the setting #63 added) and corrected; Tier 1 was re-run (465 passed, was 400).

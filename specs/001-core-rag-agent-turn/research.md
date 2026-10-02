@@ -154,7 +154,7 @@ Entry format (per the plan skill): **Decision** · **Rationale** · **Alternativ
   *derived* (`MAX_ITERATIONS*2+15`) because a flat 12 raised `GraphRecursionError` on an ordinary
   multi-tool question before `MAX_ITERATIONS` was reached.
 - **Counters reset** in `validate_input` every turn but not on an approval resume (otherwise the
-  budgets would apply to the *lifetime* of a thread). **Exception — bug B1 (verified):**
+  budgets would apply to the *lifetime* of a thread). **Exception — bug B1 (verified; fixed in #62):**
   `subagent_spend` is the one field with an append-only reducer (`operator.add`, chosen so
   concurrent parallel `run_subagent` calls can safely list-concatenate instead of racing a
   read-modify-write). Writing `[]` through that reducer adds nothing, so the documented per-turn
@@ -303,9 +303,9 @@ Entry format (per the plan skill): **Decision** · **Rationale** · **Alternativ
 - **Rationale**: A caller must be able to switch on `code` ("retry" vs "don't"); the model must
   not have to re-parse JSON into prose. Checked against every `"type": "error"` emitter, the
   envelope is **not** universal (plan A2): six registry members are never emitted, and three
-  `error` paths — refused resume, first-event deadline, and the worker catch-all that forwards raw
-  `str(exc)` — carry no `code`. The catch-all is the one that can show a caller internal
-  exception text.
+  `error` paths — refused resume, first-event deadline, and the worker catch-all that forwarded raw
+  `str(exc)` — carried no `code`. The catch-all was the one that could show a caller internal
+  exception text; it was fixed in #64 (the other two remain).
 - **Evidence**: `app/core/errors.py`; pattern 30; `tests/core/test_errors.py`.
 
 ## R20. Model access through aliases; a patched proxy is load-bearing
@@ -327,8 +327,8 @@ Entry format (per the plan skill): **Decision** · **Rationale** · **Alternativ
 |----|------|--------------|
 | D1 | Reorder entry nodes so moderation precedes compaction | Topology change; needs `test_routing.py` + quickstart updated in the same PR |
 | A1 | Alert on `agent_moderation_ml_degraded_total` (and optionally `agent_context_retrieval_degraded_total`) | Changes `alerts.yml`; outside a docs-only batch |
-| A2 | Wrap the three envelope-bypassing `error` paths (catch-all first: generic message, real one logged) and emit-or-retire the six unemitted `ErrorCode` members | Changes observable payloads for every consumer; needs a test per path |
-| B1 | **Bug**: make `subagent_spend` genuinely reset per turn + add a graph-level regression test (see R10) | Fix needs a reducer decision; a bug fix needs its own PR with the failing-first test (CLAUDE.md working rules) |
+| A2 | **Partly done (#64: the catch-alls).** Remaining: wrap the refused-resume and first-event-deadline `error` paths and emit-or-retire the six unemitted `ErrorCode` members | Changes observable payloads for every consumer; needs a test per path |
+| B1 | **Done — #62.** `subagent_spend` now resets per turn (reset-aware reducer) with graph-level regression tests (see R10) | Fix needs a reducer decision; a bug fix needs its own PR with the failing-first test (CLAUDE.md working rules) |
 | G3 | Make the answer-cache key conversation-aware (see R16) | Needs a decision on the key; the right fix is a product trade-off between hit rate and wrong-context risk |
 | G1 | Remove the `Semaphore` lock workaround once langgraph#7269 ships | Upstream-dependent |
 | G2 | Image-aware moderation | Needs a vision-capable moderation model (pattern 44, *Extending Further*) |

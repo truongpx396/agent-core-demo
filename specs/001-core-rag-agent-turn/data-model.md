@@ -47,7 +47,7 @@ shape is versioned by `STATE_SCHEMA_VERSION` (currently **1**).
 | `iterations` | `int` | **R** | `agent` (+1) | Ceiling `MAX_ITERATIONS = 10`. Stays 0 only if the turn never reached `agent` (used to classify the outcome `rejected`). |
 | `total_tokens` | `int` | **R** | `agent` | From `usage_metadata`; missing usage ⇒ 0 ⇒ ceiling never trips (fail-open, disclosed). |
 | `total_cost_usd` | `float` | **R** | `agent` | `tokens/1000 × PRICE_PER_1K_TOKENS_USD[CHAT_MODEL]` (unlisted alias = $0). |
-| `subagent_spend` | `list[tuple[int, float]]` (reducer `operator.add`) | **intended R — actually A (bug B1)** | `run_subagent` | One `(tokens, cost)` per completed delegation. Folded into the token/cost ceilings in `should_continue`. `validate_input` writes `[]`, which is a **no-op through `operator.add`**; reproduced: prior turns' entries survive. See spec *Known gaps* and `research.md` R10. |
+| `subagent_spend` | `list[tuple[int, float]]` (reducer `_concat_or_reset`: concatenate, or `None` resets) | **R** (was A until bug B1 was fixed in #62) | `run_subagent` | One `(tokens, cost)` per completed delegation. Folded into the token/cost ceilings in `should_continue`. `validate_input` writes `None`, which the reducer treats as a reset; concurrent delegations still concatenate. Graph-level tests: `tests/agent/test_safety_budgets.py::TestPerTurnResetThroughTheGraph`. |
 | `run_id` | `str` (8 hex) | **R** | `validate_input` | Correlation id for logs/metrics; regenerated every turn, **not** on resume. |
 | `require_approval` | `bool` | **S** | caller input | Opt-in gate; the mandatory gate does not read it (feature 003). |
 | `approved` | `bool` | persists | `human_approval` | Not reset per turn; every `human_approval` outcome writes it explicitly. (Feature 003.) |

@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-02
 
-**Status**: Implemented (retrospective)
+**Status**: Implemented (retrospective) — reconciled 2026-10-03 against the fixes merged since (#62, #64, #68, #69); see *Resolved since this spec was written*
 
 **Input**: User description: "Core RAG agent turn pipeline (retrospective spec of the as-built system): a user asks a question in a conversation and receives a streamed, source-cited answer from a local, tool-using assistant. Every turn is bounded (rounds, tool fan-out, tokens, cost, wall-clock, repeated actions), screened before any spend, quality-gated before delivery, and resumable across restarts; long conversations are compacted rather than growing without limit."
 
@@ -367,8 +367,8 @@ confirm the question is still answered normally.
   wall-clock-limited (default 60 s); a tool timeout becomes a message to the assistant, a turn
   timeout becomes a terminal error.
 - **FR-019**: Per-turn counters MUST reset at the start of every new turn and MUST NOT reset
-  when a paused turn resumes. **As built, this holds for every counter except the running total
-  of delegated sub-run spend, which is not actually reset — see *Known gaps* (bug B1).**
+  when a paused turn resumes. (Until #62 one counter — the running total of delegated sub-run spend — was not
+  actually reset; see *Resolved since this spec was written*, bug B1.)
 - **FR-020**: Tool results MUST have credentials scrubbed before reaching the assistant or any
   trace; tool results with no inherent row limit MUST carry a per-tool cap and be visibly marked
   when truncated.
@@ -515,18 +515,6 @@ confirm the question is still answered normally.
   summarization call happens before screening. It is bounded (once per ceiling trip, over old
   turns, never over the new message) but it is a literal deviation. See `plan.md` Complexity
   Tracking.
-- **Bug B1 — delegated sub-run spend is never reset between turns (verified by reproduction).**
-  The running list of sub-run spend is declared with an append-only (`operator.add`) reducer, so
-  the per-turn "reset to empty" written at turn start adds nothing and leaves the previous
-  turns' entries in place. Reproduced with a fake model and an in-memory checkpointer: after a
-  sub-run's `(3000 tokens, $0.25)` entry was recorded in turn 1, the stored list was still
-  `[(3000, 0.25)]` after turn 2 began. Because the parent's token and cost ceilings add that
-  list to the current turn's own usage (FR-013), spend from earlier turns keeps counting against
-  every later turn on the same conversation, so a long conversation that uses delegation can
-  trip its ceiling earlier and earlier. Not reproduced all the way to a tripped ceiling. The
-  existing unit test asserts the reset node's *return value* (`tests/agent/test_safety_budgets.py`
-  line 70), which cannot see the reducer, so it passes. Not fixed here (docs-only batch); the fix
-  and a graph-level regression test are in `tasks.md`.
 - **G3 — The answer cache is keyed on the latest message text only.** Found by reading the code, not
   reproduced, and not mentioned in the existing docs: a context-dependent follow-up ("pls be more
   detailed", "and for support?") can match an answer cached for an unrelated earlier conversation
@@ -543,13 +531,20 @@ confirm the question is still answered normally.
   `unattended_pause`) because those outcomes are delivered as a user-visible message plus a normal
   `done`, distinguishable only by counters; and two (`checkpoint_lost`, `checkpoint_incompatible`)
   because a refused resume is an `error` event whose *text* starts with the code name but which
-  carries no `code` field. Separately, two more `error` paths bypass the envelope entirely: the
-  wait for a first worker event timing out ("is an agent-worker running for this domain?"), and
-  the worker's catch-all, which forwards the raw exception text (`str(exc)`) to the caller. A
-  client therefore cannot reliably branch on `code`, and the catch-all can surface internal
-  exception text. See `contracts/error-envelope.md`.
+  carries no `code` field. Separately, one more `error` path bypasses the envelope: the wait for a first worker event
+  timing out ("is an agent-worker running for this domain?"). A client therefore cannot reliably
+  branch on `code`. (The worker's catch-all, which forwarded raw exception text to the caller, was
+  fixed in #64 — see *Resolved since this spec was written*.) See `contracts/error-envelope.md`.
 - First-use seeding of a conversation's fixed instructions checks stored state first, but the
   check-then-write is not atomic; correctness relies on the one-active-turn-per-conversation
   guarantee above.
 - Concurrent writers to one conversation are serialized by the transport tier, not by this
   pipeline; this feature assumes at most one active turn per conversation.
+
+### Resolved since this spec was written
+
+These were *Known gaps* in the first version of this spec. Each was fixed test-first in a later pull request; the findings are kept so the history is not lost.
+
+- **Bug B1 — delegated sub-run spend was never reset between turns — fixed in #62.** The running list was declared with an append-only reducer, so the per-turn "reset to empty" added nothing and earlier turns' spend kept counting against later turns' ceilings (reproduced: `[(3000, 0.25)]` still stored after turn 2 began). The unit test for the reset asserted the node's *return value*, which cannot see a reducer. The list now has a reset-aware reducer (`_concat_or_reset` in `app/agent/graph.py`: concatenate, or `None` resets) that stays race-free for parallel delegations; `validate_input` writes `None`. Regression tests assert the state read back from the compiled graph across two turns: `tests/agent/test_safety_budgets.py::TestPerTurnResetThroughTheGraph` and `TestConcatOrResetReducer`. No state-schema bump (no field added or removed).
+- **A2, the worker catch-all — fixed in #64.** Any unexpected exception put its own text into the caller-facing `error` event (a driver message naming an internal host, a SQL fragment, a library echoing input) — in the stream core, in the legacy stream and in the worker's catch-all, which also carried no `code`. One builder, `internal_error_envelope(exc)` in `app/core/errors.py` (a fixed message plus `details={"error_class": …}`), now serves all three; the full text stays on the trace and the log line carries the class only. Tests: `tests/agent/test_streaming_terminal_events.py::TestAGraphFailureNeverLeaksItsMessageToTheCaller` and the updated `tests/job_queue/test_agent_worker.py` (four tests had asserted the leak). **Still open under A2**: the six unemitted codes, a refused resume without a `code`, and the first-event deadline (tasks T081–T083). The *ingest* worker's catch-all still forwards `str(exc)` — feature 006, B10.
+- **A3, the answer cache's tag escaping — made explicit in #68 and a real defect fixed in #69.** #68 added hermetic tenant- and principal-scoping tests (`tests/retrieval/test_semantic_cache.py`). Writing them exposed that the escape set did not cover `|` (the OR operator inside a tag block) or the backslash, so a principal such as `alice|bob` built a filter that also matched `bob`'s cached answers — a Principle I defect (exploitable only where a principal string is user-influenced; the trusted-header seam already lets a caller *claim* an identity). #69 escapes every ASCII character that is not a letter, digit or underscore, with `tests/retrieval/test_semantic_cache_tag_escaping.py` and a real-Redis `tests/integration/test_semantic_cache_tag_escaping_real_redis.py`.

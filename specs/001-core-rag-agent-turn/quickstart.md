@@ -23,7 +23,7 @@ pytest tests/agent/test_routing.py tests/agent/test_safety_budgets.py tests/agen
        tests/core/test_errors.py -q
 ```
 
-**Expected** (observed 2026-10-02): `324 passed`. A stream of
+**Expected** (observed 2026-10-03, after #62–#69): `335 passed` (was `324` on 2026-10-02). A stream of
 `Unexpected error occurred … langfuse.com/support` lines is the Langfuse client failing to reach
 a server that is not running; it is noise, not a failure.
 
@@ -39,9 +39,9 @@ a server that is not running; it is noise, not a failure.
 | FR-009/010 one terminal event, `retry`/`compacted`/`followups`/`citations` events | `test_streaming_terminal_events.py` |
 | FR-033 envelope shape | `core/test_errors.py` |
 
-> **Do not read a green Tier 1 as proof of bug B1.** `test_safety_budgets.py::TestPerTurnReset`
-> asserts what `validate_input` *returns*, which is why it passes while the stored list is not
-> reset. See scenario 6.
+> **A reset must be asserted on the graph's stored state, not on `validate_input`'s return value** —
+> `test_safety_budgets.py::TestPerTurnReset` asserts the latter and could not see bug B1 (fixed in #62).
+> `TestPerTurnResetThroughTheGraph` is the test that can. See scenario 6.
 
 ## Tier 2 — Real Postgres / Redis / Qdrant (Docker, no model)
 
@@ -100,7 +100,7 @@ make promptfoo    # after any prompt, model-alias or retrieval change
 **Expected**: every case passes ≥ 80% of repetitions (4 of 5) **and** ≥ 95% of all citation
 markers across the golden set are real — **SC-004**. Deliberately not a CI gate.
 
-## Scenario 6 — Confirm the known bug B1 (expected: it reproduces)
+## Scenario 6 — Confirm bug B1 is fixed (expected: it no longer reproduces)
 
 Hermetic, no services. In a scratch Python session (do not commit):
 
@@ -109,8 +109,8 @@ Hermetic, no services. In a scratch Python session (do not commit):
 3. Run a second turn on the same thread.
 4. Read `(await g.aget_state(cfg)).values["subagent_spend"]`.
 
-**Observed 2026-10-02**: `[[3000, 0.25]]` — the per-turn reset did not happen. **Fixed when**: it is
-`[]`. The fix needs a graph-level regression test (this scenario) in `tasks.md`.
+**Observed 2026-10-02 (before #62)**: `[[3000, 0.25]]` — the per-turn reset did not happen. **Since #62** it is
+`[]`; this scenario is now the regression test `tests/agent/test_safety_budgets.py::TestPerTurnResetThroughTheGraph`.
 
 ## Troubleshooting
 

@@ -27,7 +27,7 @@ natural language by design and never uses this shape.
 |--------|----------|--------------------|---------|
 | `timeout` | yes | `runtime_stream.py` (`_run_graph_stream`, generic `except` when the exception is a `TimeoutError`) | Whole-turn wall-clock limit exceeded. |
 | `cancelled` | yes | `runtime_stream.py` (`TurnCancelled`), `agent_worker.py::_process_cancel` | A user-initiated stop. Modeled as a terminal `error`, not a separate event type. |
-| `internal` | yes | `runtime_stream.py` (generic `except`), `runtime_legacy_stream.py` | Unexpected failure. **Note:** `message` here is `str(exc)` — see "Known deviations". |
+| `internal` | yes | `runtime_stream.py` (generic `except`), `runtime_legacy_stream.py` | Unexpected failure. `message` is a fixed text and `details.error_class` names the exception class — never `str(exc)` (fixed in #64, via `internal_error_envelope` in `app/core/errors.py`). |
 | `pending_approval` | yes | `runtime_stream.py::astream_events_turn` and `::astream_events_continue_turn` | A new message arrived while the conversation is paused at an approval; or a crashed turn that had reached the pause. (Feature 003.) |
 | `tenant_budget_exceeded` | yes | `runtime.py::_tenant_budget_envelope`, via `astream_events_turn` | The tenant's rolling-24 h spend reached its daily cap; refused before any model work. |
 | `thread_busy` | yes | `agent_worker.py::process_request` | Another job is already running on this conversation. |
@@ -53,15 +53,10 @@ natural language by design and never uses this shape.
 3. **First-event deadline** (`queue.py::read_results`) yields
    `{"type": "error", "content": "No response for '<id>' after 30s — is an agent-worker running for this domain?"}`
    with no `code`.
-4. **Worker catch-all** (`agent_worker.py::process_request`) yields
-   `{"type": "error", "content": str(exc)}` with no `code`. This forwards the raw exception text
-   to the caller and so can expose internal detail (hostnames, SQL fragments, library messages).
-   Recommended migration: `ErrorEnvelope(code=INTERNAL, message=<generic>)` to the caller, real
-   exception to the log (metadata only).
-5. `INTERNAL` itself (`runtime_stream.py`) also uses `str(exc)` as the message.
+4. ~~**Worker catch-all** forwarded `str(exc)` with no `code`~~ — **fixed in #64**: it now emits the `internal` envelope (fixed message, `details.error_class`), as do the stream core and the legacy stream (formerly item 5). The *ingest* worker's catch-all still forwards `str(exc)` (feature 006, B10).
 
-Constitution Principle V requires caller-facing errors to use the envelope; items 2–5 are literal
-deviations tracked as plan item **A2**.
+Constitution Principle V requires caller-facing errors to use the envelope; items 2–3 are the literal
+deviations still tracked as plan item **A2**.
 
 ## Consumer guidance
 

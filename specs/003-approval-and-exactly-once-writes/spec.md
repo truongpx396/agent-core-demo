@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-02
 
-**Status**: Implemented (retrospective) — with two reproduced defects, see *Known gaps* B3 and B4
+**Status**: Implemented (retrospective) — reconciled 2026-10-03: the two reproduced defects (B3, B4), the post-approval cancel gap (A12), the missing write-tool contract test (A7) and the stale crash-recovery docs (A11) were fixed in #62, #63, #65, #68 and #66; see *Resolved since this spec was written*
 
 **Input**: User description: "Mandatory human approval and exactly-once side effects (retrospective spec of the as-built system): every tool declares whether it only reads, mutates, or reaches outward; any non-read-only action pauses for an explicit human decision that no setting can bypass; a pause is durable, resumable and cancellable; unattended callers decline rather than approve; and every write is safe to run twice for the same logical action — through call-id idempotency, row-level uniqueness at the target, deterministic ids, verify-don't-retry on timeouts, and crash recovery that continues rather than restarts a turn."
 
@@ -15,8 +15,8 @@
 > with a hermetic harness while writing it (B3, B4); a third gap (no tool-level test that every
 > write tool is wrapped, A7) was found by auditing every declared write tool. All are in *Known
 > gaps*. Companion specs: `001-core-rag-agent-turn` (the pipeline whose routing sends calls to the
-> gate) and `002-tenant-isolation-and-memory` (identity and ownership; B2 there interacts with B3
-> and the approval authority here).
+> gate) and `002-tenant-isolation-and-memory` (identity and ownership; its B2 — conversation ownership — interacted with B3
+> and the approval authority here, and was fixed in #67).
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -200,8 +200,8 @@ delegation tool.
 3. **Given** a scheduled job needs a write, **When** it runs, **Then** it calls the domain's write
    function directly and never the agent loop.
 4. **Given** an unattended turn pauses a *second* time after the first decline, **When** the model
-   re-requests the action, **Then** *(intended)* the conversation is not left stranded. **As built it
-   is — see B4.**
+   re-requests the action, **Then** the conversation is not left stranded: the decline repeats up to `UNATTENDED_MAX_DECLINE_ROUNDS` and the run is then
+   cancelled with one explicit message (bug B4, fixed in #63).
 
 ---
 
@@ -220,7 +220,7 @@ correctly. It ranks last because it concerns future change, not today's behavior
 **Independent Test**: Audit every tool declared as mutating or outward: each declares its tier and goes
 through the exactly-once wrapper (all 15 statically declared tools, plus the four sandbox tools in
 each of the three domains that expose them, at audit time). For a new tool, the checklist's tests fail
-if the wrapper or identity check is omitted *(not yet enforced — see A7)*.
+if the wrapper or identity check is omitted *(enforced by `tests/domains/test_write_tools_contract.py` since #68 — see A7)*.
 
 **Acceptance Scenarios**:
 
@@ -245,8 +245,8 @@ if the wrapper or identity check is omitted *(not yet enforced — see A7)*.
   duplicate for pure inserts, appends and vector points.
 - A timeout in a *read-only* listing may be retried automatically; a write is never retried
   automatically.
-- A conversation approved after being cancelled earlier — see B3.
-- An unattended channel whose model re-requests a declined write — see B4.
+- A conversation approved after being cancelled earlier → the approved action runs (bug B3, fixed in #62: a cancel affects only the run it cancelled).
+- An unattended channel whose model re-requests a declined write → declined again, up to a round cap, then the run is cancelled and the user is told (bug B4, fixed in #63).
 - A resume arriving while the original worker is still streaming the turn is refused as "no paused
   run" rather than starting a competing execution.
 
@@ -279,14 +279,13 @@ if the wrapper or identity check is omitted *(not yet enforced — see A7)*.
   its saved-state schema version equals the running build's; a difference in build identity alone MUST
   NOT be refusal.
 - **FR-009**: A resume request MUST re-supply the resumer's identity; identity MUST NOT be taken from
-  the original pause. *(Who may resume is feature 002's ownership gap, B2.)*
+  the original pause. *(Who may resume is feature 002's ownership rule, B2, enforced at the API since #67.)*
 - **FR-010**: A new message to a conversation paused and resumable MUST be refused with a
   "pending approval" error listing the pending actions, and MUST NOT auto-cancel or discard them. If the
   pause is not resumable the message MUST proceed with a visible system note.
 - **FR-011**: Cancel MUST work in both states: for an actively streaming turn, by a cooperative flag
   checked between events (so it takes effect at the next event boundary); for a paused turn, by a
-  distinct third decision. Cancel MUST never be rate-limited. **As built, the streaming case is not
-  honored for a turn that is streaming after an approval — see A12.**
+  distinct third decision. Cancel MUST never be rate-limited. (A turn streaming after an approval became cancellable in #65 — see A12.)
 - **FR-012**: A person returning to a conversation MUST be able to retrieve its pending approval and
   whether it is resumable.
 
@@ -381,20 +380,20 @@ if the wrapper or identity check is omitted *(not yet enforced — see A7)*.
 - **SC-004**: 100% of messages sent to a paused, resumable conversation receive the pending-approval
   refusal; none is silently dropped and none auto-cancels the pending action.
 - **SC-005**: After a cancel of a paused conversation, or of a new or continued streaming turn, the
-  assistant produces no further output for that run and the gated action does not run. **Not met for a turn
-  streaming after an approval (A12).**
+  assistant produces no further output for that run and the gated action does not run. (Met for a turn streaming after an
+  approval since #65 — A12.)
 - **SC-006**: A worker crash after a write completed never yields a second write: the turn is continued,
   or the job is archived with a lost-worker error — never restarted from the question.
 - **SC-007**: Unattended callers perform zero writes; every auto-decline is counted.
 - **SC-008**: A degraded exactly-once store is visible to an operator: an alert fires once the
   degradation has persisted for 15 minutes.
 - **SC-009**: Every tool declared mutating or outward is routed through the exactly-once wrapper (all 15
-  statically declared tools and the four sandbox tools in each of the three domains, at audit). *Not
-  yet enforced by a test (A7).*
+  statically declared tools and the four sandbox tools in each of the three domains, at audit). *Enforced by
+  `tests/domains/test_write_tools_contract.py` since #68 (A7).*
 - **SC-010**: A conversation that was cancelled once still accepts, and runs, an approved action on a
-  later turn. **Currently not met — see B3.**
+  later turn. (Met since #62 — B3.)
 - **SC-011**: An unattended conversation is never left in a state where the user can neither continue nor
-  recover it. **Currently not met on the chat-app channel — see B4.**
+  recover it. (Met since #63 — B4.)
 
 ## Assumptions & Known Gaps
 
@@ -417,37 +416,11 @@ if the wrapper or identity check is omitted *(not yet enforced — see A7)*.
 
 **Known gaps (disclosed, with how each was established)**
 
-- **Bug B3 — a cancelled conversation cannot approve a later action (reproduced).** The "cancelled"
-  marker is set when a paused action is cancelled and is never cleared, including at the start of the
-  next turn. Reproduced with a fake model and an in-memory store: after one cancelled approval, a later
-  turn on the same conversation paused, the person **approved**, and the run ended immediately — no
-  action result was produced, the last message was the assistant's own tool request with empty content,
-  and the run reported finished. The approved action silently did not run. By reading, the dangling tool
-  request then sits in the conversation's history, which a real model provider would reject on the next
-  call; that consequence was **not** reproduced. The marker is checked before the approval flag, so it
-  wins. The existing tests cover the cancel itself and the routing function in isolation, not a later
-  approval on the same conversation. Not fixed here.
-- **Bug B4 — an unattended conversation can be stranded (reproduced at function level).** The unattended
-  path declines *one* pause. If the model then re-requests the same gated action, the conversation
-  pauses a second time and stays paused. The chat-app channel ignores that second pause, so (a) the
-  user receives **no reply at all** to their first message (an empty reply sends nothing), contradicting
-  the channel's documented promise of "a real reply explaining it wasn't approved", and (b) every later
-  message is refused with "pending approval — approve, reject, or cancel it", which that channel offers
-  no way to do — so the conversation is stuck. The precondition (the model re-requesting after a decline)
-  is model behavior; the stuck state is system behavior. The helper's own documentation says a second
-  pause is "left to the model's own next response", which does not match what the code does. Reproduced
-  with a scripted model that requests the write twice; not reproduced against a real model or a real
-  chat-app connection.
-- **A7 — nothing pins that every write tool is wrapped.** An audit of all 15 statically declared mutating or
-  outward tools (and the four sandbox tools in each of the three domains) found each routes through the
-  wrapper, but no test fails if an edit drops it: tests cover the
-  wrapper itself and the *default* tool set's declarations; the domain write tools have no tool-level
-  tests of "refuses without identity" or "goes through the wrapper" (the checklist asks for them).
 - **E2 — the exactly-once lookup is not tenant-scoped.** A call id already seen returns the stored result
   regardless of which tenant stored it (the table's tenant column is metadata). Safe only under the
   uniqueness assumption above; a collision would return another tenant's result text. Cross-reference
   feature 002.
-- **The refusal of a new message to a paused conversation has no test (found by `/speckit-analyze`).**
+- **The refusal of a new message to a paused conversation has no test (found by `/speckit-analyze`; the API-level read of the pending approval, FR-012, was covered in #68).**
   FR-010 — never auto-cancel, list the pending actions — is a MUST that nothing exercises: the paused-state
   check, the "not resumable" note path, the same refusal on a continued turn, and the identity the resumed
   action runs under are all untested (task T050). The behavior was read from the code, not run.
@@ -456,9 +429,6 @@ if the wrapper or identity check is omitted *(not yet enforced — see A7)*.
   pagination. The only tests of it use a hand-written stand-in that its own documentation says implements "just
   enough" and is not paginated like the real one; no integration test touches it. Delivery to exactly one worker
   and the per-conversation lock *are* tested against a real broker. Not reproduced against a real broker.
-- **The project's own documentation is out of date on crash recovery (A11).** `GRAPH_PATTERNS.md` and two
-  code comments still describe a safety check that was removed; they say a turn that already ran a write
-  is refused, whereas the system now *continues* such a turn from its saved state (FR-024).
 - **R1 — a residual duplicate window remains for effects without a target row.** If a second run sees the
   first's record still in flight (empty result), it runs the write itself. Inserts, appends and
   vector-store writes are protected by the target-level rule; an outward action such as sending a
@@ -467,19 +437,23 @@ if the wrapper or identity check is omitted *(not yet enforced — see A7)*.
 - **No business-key uniqueness.** Two different call ids for what is semantically one request both take
   effect (deliberate: what counts as "the same ticket" is a product decision).
 - **A10 — approvals are not attributed.** A decision is counted by outcome only; who approved, when, and for
-  which action is not recorded. Combined with feature 002's B2, any caller who can name a conversation
-  can resolve its pending approval, and an approved action runs under the *resumer's* identity.
+  which action is not recorded. Feature 002's B2 — any caller who could name a conversation could resolve its pending approval, and an
+  approved action ran under the *resumer's* identity — was fixed in #67, so only the owner can; but who approved, and when, is still not recorded.
 - **A9 — exactly-once records are only removed by a manually run sweep** (default 24 h retention); nothing
   schedules it.
 - **A failed job is acknowledged**, so it is not repeated — safe against duplicate writes, but the caller
   must resubmit; the job is not archived (only unsafe-to-retry *reclaimed* jobs are).
 - **Cancellation of a streaming turn is cooperative**: it takes effect at the next event boundary and does
   not interrupt a tool already running.
-- **A turn that is streaming *after an approval* cannot be cancelled (A12, by reading the code).** The
-  cooperative cancel check is wired only into new-turn and continued-turn jobs; the resume job and the
-  resume entry point take no cancel check. A cancel request during the post-approval run finds no paused
-  run (the cancel job reports "nothing to cancel") and the flag it sets is never read, so the approved
-  action and any follow-on model rounds run to completion or the turn timeout. Not reproduced against a
-  running stack.
 - The one-shot operations-investigation script has no resume loop, so a gated action ends with an empty
   answer and nothing written (disclosed in the script itself).
+
+### Resolved since this spec was written
+
+These were *Known gaps* in the first version of this spec. Each was fixed (test-first, confirmed failing on the old code) in a later pull request; the findings are kept so the history is not lost. **No gap here ever allowed an unreviewed write**; B3 and B4 were liveness defects.
+
+- **Bug B3 — a cancelled conversation could not approve a later action — fixed in #62.** The "cancelled" marker was set when a paused action was cancelled and never cleared, and the routing checked it *before* the approval flag, so after one cancelled approval a later pause that the person **approved** ended the run at once: no tool result, and the last message the assistant's own tool request (a dangling request a real provider would reject on the next call). The per-turn reset now also clears `cancelled` and `approved`; a resume re-enters inside the approval node and skips the reset, so a pause's own decision is never cleared. Regression test: `tests/agent/test_graph_integration.py::TestHumanApprovalPath::test_an_approval_on_a_later_turn_still_runs_after_an_earlier_cancel_on_the_same_thread`. The existing cancel and routing tests had covered each in isolation but never a second approval on the same thread.
+- **Bug B4 — an unattended conversation could be stranded — fixed in #63.** The unattended path declined *one* pause; if the model re-requested the gated write the conversation paused a second time and the chat channel ignored it, so the user got **no reply** and every later message was refused with a "pending approval" the channel could not resolve. The decline is now a loop bounded by `UNATTENDED_MAX_DECLINE_ROUNDS` (default 3; each round counts `agent_unattended_pause_total`); if the model is still asking at the ceiling the run is **cancelled** (`cancel_run`) so the conversation is never left paused, and one explicit message says the action needs a person's approval and was not done. Exactly one terminal event either way; fails closed throughout. Tests: `tests/agent/test_agent_pause_handling.py::TestUnattendedSecondPause` and `tests/channels/test_telegram_channel.py`.
+- **A12 — a turn streaming after an approval could not be cancelled — fixed in #65.** The cooperative cancel check was wired only into new-turn and continued-turn jobs; the resume job took none, so a cancel after approval found nothing paused and the flag was never read. `astream_events_resume` now takes a `cancel_check` and `_process_resume` wires it and clears a stale flag left by the streaming phase (the approval is the later, stronger signal). `cancel_check` is polled before the first event, so a cancel that lands before the worker picks the job up stops the turn **before the approved write**; a later one stops it at the next event boundary (an already-running tool call still finishes). Tests: `tests/agent/test_cancellation.py::TestAstreamEventsResumeCancellation` and the updated `tests/job_queue/test_agent_worker.py`.
+- **A7 — nothing pinned that every write tool is wrapped — closed in #68.** `tests/domains/test_write_tools_contract.py` enumerates every non-`read_only` tool of every domain plugin from the registry (a tool a plugin leaves unmapped counts as `outward`, as `should_continue` treats it) and, for each of 56 cases, asserts it refuses without a valid identity and does nothing, and routes its real work through `idempotent()` with the injected call id and its own name. It is **mutation-checked** (removing `idempotent()` from `create_ticket`, renaming a key, dropping a refusal each failed by name) and a new write tool without sample arguments fails with a pointer to `.claude/rules/side-effect-tools.md`. It pins that tools are *wired* to the guarantees, not that `idempotent()` is itself exactly-once or that each store's uniqueness holds.
+- **A11 — the docs described a safety check that no longer exists — fixed in #66.** `GRAPH_PATTERNS.md` and two code comments said a reclaimed turn is retried only if no mutating call completed; that function is gone and such a turn is now continued. The docs and comments now say so, and the same change corrected other drift (the recursion limit, the node count, the ingest-reclaim policy, moved file paths) and listed the then-known gaps in "Extending Further".

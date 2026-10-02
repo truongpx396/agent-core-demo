@@ -184,7 +184,7 @@ Format: **Decision** · **Rationale** · **Alternatives considered** · **Eviden
 - **Rationale**: The checkpointer's own tables carry no tenant/principal, and parsing owner out of
   its blob format would be fragile across version bumps. `get_session_messages`/
   `get_pending_approval` therefore take no ctx and delegate ownership to the *caller* — which is
-  precisely the seam B2 falls through (R15).
+  precisely the seam B2 fell through (R15; closed in #67).
 - **Evidence**: `app/agent/sessions.py`, `app/agent/runtime_stream.py`, `app/api/main.py`;
   `tests/agent/test_sessions.py`, `tests/agent/test_session_messages.py`.
 
@@ -196,7 +196,7 @@ Format: **Decision** · **Rationale** · **Alternatives considered** · **Eviden
   them. It does **not** extend to `thread_id`, which the *client* chooses.
 - **Evidence**: `app/api/main.py::ingest_stream` docstring; `queue.py::results_stream_key`.
 
-## R15. FINDING B2 — the conversation checkpoint is keyed by `thread_id` alone
+## R15. FINDING B2 — the conversation checkpoint is keyed by `thread_id` alone *(fixed in #67 — candidate fix 2, with the Telegram prefix reserved; fix 3 is still open)*
 
 - **What was found**: `session_belongs_to` is called from exactly two places in `app/`: the
   transcript and pending-approval `GET`s. `POST /chat/stream/queued`, `/chat/resume`, `/chat/cancel`
@@ -271,7 +271,7 @@ identity — the fail-closed rule applies to the HTTP path.
 
 | Id | Item | Why deferred |
 |----|------|--------------|
-| B2 | Close the conversation-ownership gap (R15) with the failing two-tenant test first | Structural decision (namespace vs. per-endpoint check) and a data migration; its own PR |
+| B2 | **Done — #67** (per-endpoint check with claim-on-first-use). Still open: worker-side defence in depth (R15 fix 3, task T043) | Decision taken in #67: the API check is the boundary |
 | A3 | A runnable operator entry point for memory deletion | Needs a decision on how an operator authenticates the data-subject request |
 | A4 | Extend real-backend isolation proof to what is *not* covered today (memories by owner and retention, `HasId` ∧ tenant, the relational stores, the session directory, the cache's principal axis); verify the two comment-only Qdrant behaviors. Documents and the cache's tenant axis are already proven in `tests/agent/test_concurrent_turns.py` | Needs Docker; cheap but outside a docs batch |
 | A5 | Prominent deployment warning (and/or a header-stripping + auth-gateway reference config) | Needs a decision on which gateway the project endorses |

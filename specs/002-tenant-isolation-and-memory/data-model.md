@@ -47,7 +47,7 @@ raises `NotImplementedError` (their data is relational).
 | Postgres | `chat_sessions` | list: `tenant ∧ principal ∧ domain`; owner check: `thread_id ∧ tenant ∧ principal ∧ domain` | `sessions.list_sessions`, `session_belongs_to` | `tests/agent/test_sessions.py` | none |
 | Postgres | `usage_ledger`, `tenant_budget_reservations` | `tenant` | `usage_ledger.py` | `tests/agent/test_usage_ledger.py` | none |
 | Redis | Cached answer | `@tenant:{T} ∧ @principal:{P}` (both `_escape_tag`ged) | `semantic_cache.get` | via node tests (mocked) | `test_concurrent_turns.py::TestSemanticCacheIsolationUnderConcurrency` — tenant axis only, real Redis Stack, hyphenated tenant names; **principal axis: none** (feature 001 A3, downgraded) |
-| Postgres `checkpointer` | Conversation state | **none — keyed by `thread_id` only** | — | — | `test_concurrent_turns.py::TestNoCrossContaminationUnderConcurrency` proves *concurrent separate threads* do not mix; **ownership across callers: none** (**B2**) |
+| Postgres `checkpointer` | Conversation state | **none — keyed by `thread_id` only** | — | — | `test_concurrent_turns.py::TestNoCrossContaminationUnderConcurrency` proves *concurrent separate threads* do not mix; **ownership across callers: enforced at the API on send, resume and cancel (B2, fixed in #67); not repeated in the worker** |
 | Postgres | `tool_call_dedup` | lookup by `tool_call_id` only; `tenant` is metadata | `tool_idempotency._claim_or_cached_result` | `tests/agent/test_tool_idempotency.py` | none (**E2**, feature 003) |
 | Postgres | `ops_incidents` | **none — global by design**; attributed by `opened_by` | `app/domains/ops/store.py` | `tests/domains/ops/` | — (**E1**) |
 
@@ -97,8 +97,7 @@ Point id `uuid5(ns, tool_call_id).hex` ⇒ a replay of the same call upserts ont
 
 Index `(tenant, principal, domain, last_active_at DESC)`. Upsert is
 `ON CONFLICT (thread_id) DO UPDATE SET last_active_at = now()` — so a second caller on an existing
-`thread_id` **does not change the owner** (the row stays the first caller's), which is why the
-directory cannot by itself stop B2: it is never consulted on those paths.
+`thread_id` **does not change the owner** (the row stays the first caller's). It could not by itself stop B2 because it was never consulted on the send, resume and cancel paths; since #67 `claim_session` (an insert that does nothing on conflict, then a scoped read) is.
 
 ### 3.4 Cached answer (Redis Stack) — see feature 001 data-model §3.3
 
@@ -138,7 +137,8 @@ counts `refused`.
  unseen thread_id ──first turn start──► claimed (chat_sessions row: tenant, principal, domain) ──► owned
                                                                                                     │
    GET messages / GET pending_approval ── session_belongs_to(ctx, thread_id, domain) ──► 200 | 404 ┘
-   POST send / POST resume / POST cancel / worker job ─────────────────────────────────► NO CHECK  (B2)
+   POST send (claims if new) / POST resume / POST cancel ── _require_conversation_owner ─► 202 | 404   (#67)
+   worker job ────────────────────────────────────────────────────────────────────────► NO CHECK  (relies on the API)
 ```
 
 State that is keyed by `thread_id` alone (and therefore not isolated by caller): the checkpoint

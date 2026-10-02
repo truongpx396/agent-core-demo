@@ -20,7 +20,7 @@ the one that is missing (plan A4), so test tasks are central, not optional.
 - **`[x]`** = built and present in the repository on 2026-10-02; the path is where it lives.
 - **`[ ]`** = a **disclosed gap that is not built**. Where it fixes a defect the **failing test is
   written first** (CLAUDE.md working rules): write it, watch it fail on current code, then fix.
-- Open ids: **B2** conversation-ownership defect · **A3** no deletion entry point · **A4** real-backend
+- Open ids: ~~**B2** conversation-ownership defect~~ (fixed in #67; T043 worker-side defence in depth remains) · **A3** no deletion entry point · **A4** real-backend
   isolation proof only partial · **A5** no authentication/header handling in the shipped proxy ·
   **E1** ungoverned, deliberately-global ops domain · **R3** policy-contract wording. See
   plan.md *Complexity Tracking* and research.md *Deferred*.
@@ -116,7 +116,7 @@ Tier 1 `test_security.py`, `test_sql_store.py`).
 
 - [ ] T032 [P] [US2] **A5 — deployment warning (docs-only, do first)**: add a prominent *"Identity headers are not authentication"* subsection to README *Deploying to production* and to `infra/README.md` stating that the shipped `Caddyfile` forwards to the API with **no** authentication and does not set or strip `X-Tenant-Id` / `X-Principal-Id`, so a deployment MUST put an authenticating gateway in front that sets both and discards client-supplied copies; add a commented example (`request_header -X-Tenant-Id` / `-X-Principal-Id` + a `forward_auth` stub) to `Caddyfile`; mention it in `.env.prod.example`
 - [ ] T033 [US2] **E1 — decide and record**: should a tenant be allowed to name any registered `X-Domain`? Either (a) add a per-tenant domain allowlist checked in `app/api/main.py::get_domain` (config in `app/core/config.py` + `.env.example`; failing test first in `tests/api/test_api.py`), or (b) carve a documented exception for the deliberately global `ops_incidents` data into `.specify/memory/constitution.md` Principle I through `/speckit-constitution` and a PR (a constitution amendment is MINOR or PATCH, never weakening a NON-NEGOTIABLE rule without maintainer sign-off). Record the decision in research.md R18 and delete plan row **E1**
-- [ ] T034 [US2] **FR-003 — write the missing HTTP test (found by `/speckit-analyze`; hermetic)**: no test asserts that a request lacking an identity header is rejected — the existing `test_sends_the_trusted_identity_headers` only checks that the UI page mentions the header names. Add to `tests/api/test_api.py` a test using `fastapi.testclient.TestClient(app)` (constructed *without* `with`, so the lifespan does not run, as the file already assumes) that `GET /usage` and `POST /chat/stream/queued` return **422** when `X-Tenant-Id` is absent, when `X-Principal-Id` is absent, and when both are absent, and that an *empty* header value is not accepted as a tenant. Pins FR-003, US2 scenario 1 and SC-002's first refusal path
+- [x] T034 [US2] **FR-003 — the missing HTTP test** (#68): `tests/api/test_identity_headers.py` — `test_a_request_missing_an_identity_header_is_rejected_before_the_handler` and `test_an_empty_identity_value_passes_the_header_check_but_is_not_a_valid_ctx`. The planned assertion that an *empty* value is rejected was wrong: it is accepted at the boundary and refused downstream (every consumer fails closed on an invalid identity); the test pins the actual behavior and the gap is recorded as advisory **A6**
 
 **Checkpoint**: US2 is complete as to *shape*; real authentication remains out of scope (README Roadmap).
 
@@ -144,15 +144,15 @@ Tier 1 `test_security.py`, `test_sql_store.py`).
 > Do T040–T041 before any fix. Candidate designs and their trade-offs: research.md R15; acceptance
 > criteria: [contracts/conversation-ownership.md](./contracts/conversation-ownership.md).
 
-- [ ] T040 [US3] **B2 — write the failing tests first** (hermetic, handlers called directly per the repo's style in `tests/api/test_api.py`): add `tests/api/test_conversation_ownership.py` asserting that for a `thread_id` owned by tenant A / principal alice, a request from tenant B / principal mallory to `chat_stream_queued`, `chat_resume` and `chat_cancel` (a) is rejected with **404 `session not found`** (identical to the read endpoints), and (b) does **not** call `queue.publish_request` / `publish_resume_request` / `publish_cancel_request` nor `set_cancel_flag`; plus a positive case that a **brand-new** `thread_id` is accepted and claimed by its first caller. Add the worker-level twin in `tests/job_queue/test_agent_worker.py`: a `process_request` job whose `ctx` does not own `thread_id` publishes an `error` event and never invokes its handler. All must fail on current code
-- [ ] T041 [US3] **B2 — decide the design** (record in research.md R15): (1) namespace the checkpoint key at the API boundary (`thread_id = hash(tenant, principal, domain, client_thread_id)`) so a client cannot address another's checkpoint — also changes the keys in `app/job_queue/queue.py` (`thread_lock_key`, `cancel_flag_key`), `app/agent/sessions.py`, and Telegram's `_thread_id_for_chat`, and needs a legacy-id read-through; or (2) check ownership on every thread-addressed endpoint with atomic claim-on-first-use (`INSERT … ON CONFLICT DO NOTHING` into `chat_sessions` before publishing, then compare owner); plus (3) worker-side verification as the safety net under either. State the migration story for existing conversations
-- [ ] T042 [US3] **B2 — implement the API-side fix** chosen in T041 in `app/api/main.py` (`chat_stream_queued`, `chat_resume`, `chat_cancel`) and, if needed, `app/agent/sessions.py` (a `claim_or_check_session(ctx, thread_id, domain)` helper returning owned/claimed/foreign). Reuse the existing 404 so existence is not disclosed. Keep PR ≤ ~400 hand-written lines; split the migration into its own PR if it exceeds that
-- [ ] T043 [US3] **B2 — worker-side defense in depth** in `app/job_queue/agent_worker.py::process_request`: before running any job kind (`turn`, `turn_continue`, `resume`, `cancel`) verify `session_belongs_to(payload["ctx"], payload["thread_id"], AGENT_DOMAIN)` (allowing a first-use claim for `turn`), and on failure publish an `ErrorEnvelope` (feature 001 A2 shape — generic message) and ack; makes T040's worker test pass
-- [ ] T044 [P] [US3] **B2 — Telegram regression**: add a test to the existing `tests/channels/test_telegram_channel.py` that `app/channels/telegram.py`'s derived `telegram:<chat_id>` thread still resolves to the same conversation for the same user after the fix, and that the same id cannot be continued through the HTTP API by a different tenant
-- [ ] T045 [US3] **B2 — docs and disclosure**: update `GRAPH_PATTERNS.md` pattern 17 ("Multi-Tenant Isolation") and pattern 49 with the ownership rule, remove the *Known gaps* B2 paragraph in spec.md and the **B2** row in plan.md *Complexity Tracking*, update [contracts/conversation-ownership.md](./contracts/conversation-ownership.md) "As built" column, and put the failure mode (a caller supplying another's `thread_id` continued, approved or cancelled that conversation) and root cause (the checkpoint, lock and cancel flag are keyed by `thread_id` alone) in the commit body
-- [ ] T046 [P] [US3] **FR-012 — write the missing pending-approval endpoint test (found by `/speckit-analyze`; hermetic)**: `GET /chat/sessions/{thread_id}/pending_approval` has no API-level test (`grep pending_approval tests/api/test_api.py` is empty). Add to `tests/api/test_api.py`, mirroring the transcript endpoint's existing tests (`test_404s_when_owned_by_a_different_domain`): an owned thread returns the `get_pending_approval` result (`{tool_calls, resumable}`), and a thread owned by another principal, another tenant, another domain, or nobody returns the identical **404 `session not found`** without calling `get_pending_approval`
+- [x] T040 [US3] **B2 — failing tests first** (#67): `tests/api/test_api.py::TestConversationOwnership` (a new id is claimed by its first sender; sending, resuming or cancelling on someone else's thread is refused and enqueues nothing; a resubmission of the owner's exact message does not hand over their stream; another domain does not own it; a thread nobody owns is refused, not run; a cancel by a non-owner sets no flag; the owner can still cancel; the chat channel's namespace cannot be claimed over HTTP but its owner can continue it), `tests/agent/test_sessions.py::TestClaimSession` and, against a real database, `tests/agent/test_sessions_real_postgres.py` (first claimant owns it; two racing claimants cannot both win; the ownership read agrees with the claim). The planned `tests/api/test_conversation_ownership.py` was not created
+- [x] T041 [US3] **B2 — design decided** (#67, recorded in `specs/002-tenant-isolation-and-memory/research.md` R15): a per-endpoint check with claim-on-first-use (candidate 2), not a namespaced checkpoint key; the chat channel's `telegram:` prefix is reserved against claiming over HTTP
+- [x] T042 [US3] **B2 — API-side fix** (#67): `_require_conversation_owner` in `app/api/main.py`, run first on `chat_stream_queued`, `chat_resume` and `chat_cancel`; `sessions.claim_session` and `TELEGRAM_THREAD_PREFIX` in `app/agent/sessions.py`; fails closed (500) on a store error; one 404 for every refusal; the web page starts a fresh conversation on an identity change in `app/api/static/index.html`
+- [ ] T043 [US3] **B2 — worker-side defense in depth (still open)**: in `app/job_queue/agent_worker.py::process_request`, before running any job kind (`turn`, `turn_continue`, `resume`, `cancel`), verify `session_belongs_to(payload["ctx"], payload["thread_id"], AGENT_DOMAIN)` (allowing a first-use claim for `turn`) so a producer that is not the API cannot bypass the check. #67 chose the API as the whole boundary and says so in `_require_conversation_owner`'s docstring; this is hardening, not a known hole
+- [x] T044 [P] [US3] **B2 — Telegram regression** (#67): the chat channel's `telegram:<chat_id>` namespace cannot be claimed over HTTP and its owner can still continue it — `tests/api/test_api.py::TestConversationOwnership` (`…the_telegram_namespace_cannot_be_claimed_over_http`, `…the_owner_of_a_telegram_thread_can_still_continue_it_over_http`); the planned test in `tests/channels/test_telegram_channel.py` was not added
+- [x] T045 [US3] **B2 — docs and disclosure** (#67): `GRAPH_PATTERNS.md` patterns 17 and 49, README; spec *Known gaps* B2 moved to *Resolved since this spec was written*, plan row B2 moved likewise; `contracts/conversation-ownership.md` updated
+- [x] T046 [P] [US3] **FR-012 — the missing pending-approval endpoint test** (#68): `tests/api/test_pending_approval_endpoint.py` — the owner gets the pending tool calls and whether they can be resumed; a non-paused thread reports none; everyone else gets the same 404 and the pause is never read
 
-**Checkpoint**: US3 equals FR-012 only after T040–T045; until then SC-008 holds for reads, not for continuation.
+**Checkpoint**: US3 equals FR-012 (T040–T042, T044–T046 landed in #67 and #68); SC-008 now holds for continuation as well as reads. T043 is hardening.
 
 ---
 
@@ -234,7 +234,7 @@ re-filtered every time.
 - [x] T064 [P] Pattern entries with their motivating bugs — patterns 15, 17, 18, 19, 21, 22, 33, 49 — in `GRAPH_PATTERNS.md`; isolation and memory described in `README.md`
 - [ ] T065 [P] **Disclose every gap in the project docs now (docs-only, no code)** — Constitution Principle VIII requires known limitations in the README *Roadmap* or *Extending Further*, and none of these is there today except "Real authentication": add to README *Roadmap* and `GRAPH_PATTERNS.md` *Extending Further* one entry each for **B2** (conversation ownership unchecked on send/resume/cancel; reproduced at graph level), **A5** (shipped proxy provides no authentication), **A3** (memory deletion has no entry point; retention is read-time only), **A4** (real-backend isolation proof covers only documents and the cache's tenant axis), **E1** (ops domain global and ungoverned), and the shared-tenant Telegram identity. Land this PR before any fix so the gaps are visible while they are open
 - [x] T066 [P] Ran `/speckit-analyze` (read-only) over `spec.md`, `plan.md`, `tasks.md` on 2026-10-02 and reconciled what it found — see this feature's `checklists/requirements.md` *Validation iterations* for the findings, the corrections made, and the items deliberately left for a decision (requirement-id traceability tags; `promtool check rules` in CI)
-- [ ] T067 Run `specs/002-tenant-isolation-and-memory/quickstart.md` Tier 2 and Tier 3 on a machine with Docker and a native Ollama (Tier 1 was run on 2026-10-02: 371 passed) and record the result in the PR that closes the open follow-ups; do **not** cite Tier 2 as isolation evidence until T022 lands
+- [ ] T067 Run `specs/002-tenant-isolation-and-memory/quickstart.md` Tier 2 and Tier 3 on a machine with Docker and a native Ollama (Tier 1: 371 passed on 2026-10-02, 444 on 2026-10-03 after #67–#69) and record the result in the PR that closes the open follow-ups; do **not** cite Tier 2 as isolation evidence until T022 lands
 
 ---
 
@@ -256,8 +256,8 @@ CLAUDE.md: one logical change per PR, ≤ ~400 hand-written lines.
 | PR | Tasks | Touches | Notes |
 |----|-------|---------|-------|
 | 1 | T065, T032 | README, `GRAPH_PATTERNS.md`, `infra/README.md`, `Caddyfile` comments | docs-only; do first |
-| 2 | T040–T043, T045 (B2 core) | `app/api/main.py`, `app/agent/sessions.py`, `app/job_queue/agent_worker.py`, tests | test-first; decision T041 gates it; may split API vs worker |
-| 3 | T044 | Telegram regression test | after PR 2 |
+| 2 | T040–T042, T045 (B2 core) | **done — #67** | T043 (the worker) remains, as a separate small change |
+| 3 | T044 | **done — #67** | — |
 | 4 | T022–T023 (A4) | new integration test, `app/core/security.py` comment | needs Docker; independent of PR 2 |
 | 5 | T054–T055 (A3) | `scripts/delete_memories.py`, Makefile, tests | independent |
 | 6 | T063 | `app/agent/tools.py`, `tests/agent/test_tools.py` | independent, tiny |
@@ -298,8 +298,7 @@ the conversation checkpoint, added earlier for durability (feature 001), was nev
 ### Closing the open follow-ups (what to do next)
 
 1. **PR 1 now** — disclosure costs nothing and turns an unknown risk into a tracked one.
-2. **PR 2 (B2)**, test-first, after deciding T041. It is the only item that lets one caller affect
-   another's data.
+2. ~~PR 2 (B2)~~ — done in #67 (the only item that let one caller affect another's data); T043 remains as hardening.
 3. **PR 4 (A4)** — converts Principle I from believed to proven for reads and verifies the two
    comment-only Qdrant behaviors; it may *change the spec* if (a) in T023 is false.
 4. **PRs 5–7** — operability, attribution, policy.
@@ -308,12 +307,12 @@ the conversation checkpoint, added earlier for durability (feature 001), was nev
 ### MVP scope
 
 User Story 1 + 2 (T001–T031) is the minimum isolation story; **US3** is required to honor owner
-scoping, and **B2 must be closed before the system is exposed to mutually untrusting tenants** —
-the constitution makes Principle I non-negotiable and B2 is a literal violation of it.
+scoping, and **B2 had to be closed before the system is exposed to mutually untrusting tenants** —
+the constitution makes Principle I non-negotiable and B2 was a literal violation of it; it was closed in #67.
 
 ## Notes
 
-- `[x]` means "present", not "re-verified today" — only Tier 1 (371 passed) was re-run on 2026-10-02.
+- `[x]` means "present", not "re-verified today" — only Tier 1 was re-run — 371 passed on 2026-10-02 and 444 passed on 2026-10-03 after #67–#69.
 - Tier 3 and the real-backend claims are **not** verified by this batch.
 - Features 001 (the pipeline) and 003 (the approval gate and exactly-once writes) own behavior this
   feature merely relies on; tasks touching them say so and do not restate them.

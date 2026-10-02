@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-02
 
-**Status**: Implemented (retrospective) — with one verified isolation gap, see *Known gaps* B2
+**Status**: Implemented (retrospective) — reconciled 2026-10-03: the one verified isolation gap (B2) was fixed in #67; see *Resolved since this spec was written*
 
 **Input**: User description: "Tenant isolation and cross-session memory (retrospective spec of the as-built system): every read and write is scoped to the caller's tenant (and, for personal data such as memories and conversations, to the owner); identity is stamped once at a trusted boundary and never derived from message content, tool arguments or model output; missing or malformed identity is refused, never defaulted. Users can have the assistant remember facts across conversations, but only through an explicit, approved write; remembered facts are re-filtered by tenant and owner on every recall, expire after a retention period, and can be deleted by an operator with an audit trail."
 
@@ -12,7 +12,7 @@
 > `6089718`) from the code, the constitution (Principle I is NON-NEGOTIABLE, Principle VI covers
 > memory) and `GRAPH_PATTERNS.md` patterns 17, 18, 19, 21, 22, 33. It describes what the system
 > does today. Where the as-built behavior falls short of the principle it is meant to satisfy, the
-> shortfall is stated in *Known gaps* with how it was established — one of them (B2) by running a
+> shortfall is stated in *Known gaps* with how it was established — one of them (B2, fixed in #67 after this spec was written) by running a
 > hermetic reproduction. Companion specs: `001-core-rag-agent-turn` (the pipeline that consumes
 > identity) and `003-approval-and-exactly-once-writes` (the gate every memory write passes).
 
@@ -223,8 +223,8 @@ and confirm a tenant-B search cannot find it; add a note and confirm it carries 
   scope; neither can substitute for it.
 - A tenant name containing characters that are syntax in the answer cache's query language (for
   example a hyphen, as in `other-co`) → still matches only itself (escaped).
-- A conversation id supplied by the client is *reused by a different tenant* → see *Known gaps* B2;
-  this is the case the system does **not** currently stop on the continue/resume/cancel paths.
+- A conversation id supplied by the client is *reused by a different tenant* → refused with the same 404 on send,
+  resume and cancel (bug B2, fixed in #67; see *Resolved since this spec was written*). A new id is claimed by its first sender.
 - Two principals share one tenant's documents but not each other's memories → documents are
   tenant-wide by design; memories are owner-scoped.
 - The memory-deletion count and the delete itself are two separate store calls → a memory written
@@ -270,8 +270,9 @@ and confirm a tenant-B search cannot find it; add a note and confirm it carries 
 - **FR-012**: A person's conversation list MUST be scoped to tenant, principal and domain.
   Reading a conversation's transcript or pending-approval state MUST first check that the
   conversation belongs to the caller (tenant, principal, domain) and MUST answer an unowned or
-  non-existent conversation identically (404). **As built, this check exists only on those two
-  read endpoints** — see B2.
+  non-existent conversation identically (404). Sending a message to, resuming or cancelling a conversation MUST make the same check first — before anything is
+  enqueued or written — claiming a new id for its first sender. (Until #67 the check existed only on those two read
+  endpoints; see bug B2.)
 - **FR-013**: A tenant's usage and cost figures MUST be scoped to that tenant; no endpoint may
   return another tenant's spend.
 
@@ -327,7 +328,7 @@ and confirm a tenant-B search cannot find it; add a note and confirm it carries 
 - **Memory**: A fact a person asked the assistant to keep: owner-scoped, timestamped, expiring,
   deletable.
 - **Conversation (Session)**: A person's thread; listed per tenant+principal+domain; its stored
-  state is not itself keyed by owner (see B2).
+  state is not itself keyed by owner — the owner check on every thread-addressed endpoint (#67) is what protects it, and the worker does not repeat it.
 - **Cached Answer**: A stored answer keyed by meaning, tenant and principal.
 - **Deletion Audit Record**: A counter increment (outcome only) plus a structured log line.
 
@@ -349,8 +350,9 @@ and confirm a tenant-B search cannot find it; add a note and confirm it carries 
   the person never asks to remember anything, the number of stored memories stays zero.
 - **SC-007**: Two tenants ingesting byte-identical content end with two independent sets of
   records; neither ingestion changes what the other tenant sees.
-- **SC-008**: A request for another person's conversation transcript or pending-approval state
-  returns a response indistinguishable from a request for a conversation that does not exist.
+- **SC-008**: A request for another person's conversation — its transcript, its pending-approval state, or a
+  send, resume or cancel on it — returns a response indistinguishable from a request for a conversation that
+  does not exist, and enqueues and writes nothing (met since #67; before it, only the two reads were).
 
 ## Assumptions & Known Gaps
 
@@ -376,21 +378,6 @@ and confirm a tenant-B search cannot find it; add a note and confirm it carries 
 
 **Known gaps (disclosed, with how each was established)**
 
-- **Bug B2 — a conversation id is not ownership-checked when a message is sent, a paused turn is
-  resumed, or a turn is cancelled (reproduced at the graph level; endpoint behavior established by
-  reading the code).** The ownership check exists only on the transcript and pending-approval read
-  endpoints. The send-message, resume and cancel endpoints never call it, and the worker does not
-  check either. A conversation's stored state is keyed by the conversation id alone, so whoever
-  supplies that id continues that conversation. Reproduced with a fake model and an in-memory
-  store: tenant A's conversation was continued by tenant B (different tenant and principal) on the
-  same id; tenant A's earlier message was part of the history tenant B's turn ran on, and the
-  stored identity switched to tenant B. Consequences, by reading: a caller who knows or guesses
-  another's id can read (via the model) that history, and can approve/reject/cancel their pending
-  action — an approved action would run under the *resumer's* identity, not the owner's. The id is
-  client-supplied (a UUID by default, but any string is accepted, e.g. `qs-1`), so "unguessable" is
-  a convention, not a guarantee; and on the chat-app channel the id is not random at all — it is
-  derived from the chat id (`telegram:<chat id>`), a small predictable integer, in the default
-  shared tenant. Not reproduced end-to-end against a running stack. Not fixed here.
 - **Real authentication is not built, and the shipped production proxy does not provide it.** The
   README's Roadmap says so. Reading the production reverse-proxy configuration shipped in the
   repository confirms it forwards straight to the API with no authentication and no handling
@@ -422,7 +409,8 @@ and confirm a tenant-B search cannot find it; add a note and confirm it carries 
   cache (a second tenant's first ask never hits another tenant's entry; the tenant names there contain a
   hyphen, so it also exercises the escaping fix). **Nothing** tests against a real service: memory scoping
   by owner or retention, the narrowing-by-id rule, the relational stores, the session directory, the
-  cache's *principal* axis, or conversation ownership (B2). Those are proven only by filter-construction
+  cache's *principal* axis against a real cache (hermetic tenant and principal tests exist since #68, and a real-cache
+  escaping test since #69), or the session directory beyond the claim (real-database claim tests exist since #67). The rest are proven only by filter-construction
   and query-text unit tests (the constitution already records the fake-cursor limitation for relational
   stores). *This bullet originally said no real-backend test existed; that was wrong — my search covered
   only two test directories — and was corrected after `/speckit-analyze`.*
@@ -437,3 +425,16 @@ and confirm a tenant-B search cannot find it; add a note and confirm it carries 
 - The policy contract states it is pure ("no I/O, no clock"), but the memory filter reads the
   current time to compute the retention cutoff. Harmless for isolation; the contract wording is
   inaccurate.
+
+### Resolved since this spec was written
+
+These were *Known gaps* or missing tests in the first version of this spec. Each was closed in a later pull request; the findings are kept so the history is not lost.
+
+- **Bug B2 — a conversation id was not ownership-checked when a message was sent, a paused turn resumed or a turn cancelled — fixed in #67.** A conversation's state (checkpoint, cancel flag, thread lock, submission-dedup key) is keyed by the client-supplied conversation id alone, and only the two `GET` endpoints checked who owned it, so whoever named an id continued that conversation: read its history through the model, approve or reject its pending action (which then ran under the *resumer's* identity), stop it, and — through the submission-dedup key, which has no caller in it — get the owner's request id back and read the owner's reply. Reproduced at the graph level when found. The check is now `_require_conversation_owner` in `app/api/main.py`, run **first** on all three endpoints, before anything is enqueued or any Redis key is written: send claims a new id atomically for its first sender (`sessions.claim_session`: an insert that does nothing on conflict, then a scoped read, so two callers racing cannot both win) and verifies an existing one; resume and cancel verify without claiming. It **fails closed** (a store error is a 500, never a default-allow), every refusal is the same `404 session not found` the reads give, and an id with the chat channel's reserved `telegram:` prefix can never be *claimed* over HTTP (its owner may still continue it). The web page starts a fresh conversation when the caller identity changes. Tests: `tests/api/test_api.py::TestConversationOwnership` (ten cases, incl. the dedup stream and the Telegram namespace), `tests/agent/test_sessions.py::TestClaimSession` and, against a real database, `tests/agent/test_sessions_real_postgres.py`. **Residual**: the worker does not repeat the check (it is "the whole authorization boundary" at the API — task T043 stays open as defence in depth), and a conversation whose session row was never written cannot be resumed or cancelled.
+- **FR-003 had no HTTP test — closed in #68.** `tests/api/test_identity_headers.py` sends a request without the identity headers. Writing it found that the spec's assumption was wrong: **an empty header value is accepted** by the identity dependency (the header is *present*, so the framework is satisfied). Isolation still holds because every consumer fails closed on an invalid identity (graph, tools, session and cache lookups); the test pins the *actual* behavior. Recorded as advisory **A6** below.
+- **FR-012's pending-approval read had no API-level test — closed in #68.** `tests/api/test_pending_approval_endpoint.py` (owner gets the pending calls and whether they can be resumed; a non-paused thread reports none; everyone else gets the same 404 and the pause is never read).
+- **The answer cache's tag escaping — closed in #68 and #69.** Hermetic tenant- and principal-scoping tests (`tests/retrieval/test_semantic_cache.py`) exposed that `|` and the backslash were not escaped, so a principal `alice|bob` built a filter that also matched `bob`'s cached answers (Principle I; exploitable only where a principal string is user-influenced). #69 escapes every ASCII character that is not a letter, digit or underscore, with a real-cache test. See feature 001.
+
+### New known gap found while reconciling
+
+- **A6 — an empty identity header value is accepted at the boundary (established by reading and pinned by a test in #68).** `GET /usage` or a send with `X-Tenant-Id:` empty passes the header check and yields an identity that every consumer then treats as invalid and refuses, so no data is exposed; but the boundary itself does not reject it, and the load test's invalid-identity scenario relies on empty values flowing through. Whether the boundary should be stricter (a 422 at the dependency) is a separate decision.

@@ -20,7 +20,7 @@ pytest tests/core/test_security.py tests/agent/test_memory.py tests/agent/test_s
        tests/ingestion/test_ingestor.py tests/agent/test_tools.py tests/api/test_api.py tests/domains -q
 ```
 
-**Expected** (observed 2026-10-02): `371 passed`.
+**Expected** (observed 2026-10-03, after #67–#69): `444 passed` (was `371` on 2026-10-02).
 
 | Requirement | Evidence |
 |-------------|----------|
@@ -33,9 +33,9 @@ pytest tests/core/test_security.py tests/agent/test_memory.py tests/agent/test_s
 | FR-019/FR-018 `remember`: writes owner-stamped memory; registered as a tool | `test_tools.py` |
 | FR-023/FR-024 deletion: one selector, tenant-scoped, counted, audited | `test_memory.py` |
 
-## Scenario B2 — Reproduce the conversation-ownership gap (hermetic; expected: it reproduces)
+## Scenario B2 — Confirm the conversation-ownership gap is closed (graph level: it still reproduces by design; the API now refuses first)
 
-Establishes that a conversation's state is partitioned by `thread_id` alone. No services. In a
+Establishes that a conversation's *graph state* is partitioned by `thread_id` alone — still true, which is why the **API** owner check (#67) is the boundary. No services. In a
 scratch Python session (do not commit):
 
 1. `build_graph(GraphDeps(llm=<GenericFakeChatModel with two plain answers>, search_docs=<async
@@ -46,10 +46,11 @@ scratch Python session (do not commit):
    "mallory", …}` and message `"what did we discuss earlier?"`.
 4. Read `(await g.aget_state({"configurable": {"thread_id": "T"}})).values`.
 
-**Observed 2026-10-02**: both human messages are in the thread's history (tenant A's included in the
-context tenant B's turn ran on) and `state["ctx"]` is now tenant B's. **Fixed when**: the second turn
-cannot address tenant A's thread (it either runs on a fresh, B-owned history or is refused). This
-scenario is the failing test the fix PR starts with.
+**Observed 2026-10-02 (graph level)**: both human messages are in the thread's history (tenant A's included in the
+context tenant B's turn ran on) and `state["ctx"]` is now tenant B's — the graph itself does not check owners. **Since #67** the
+API refuses tenant B's send, resume and cancel on tenant A's thread with the same `404` as a thread that does not exist, before
+anything is enqueued: run `pytest tests/api/test_api.py::TestConversationOwnership -q` for the HTTP-level proof and
+`pytest tests/agent/test_sessions_real_postgres.py -q` (Docker) for the atomic claim.
 
 ## Tier 2 — Real Postgres / Redis Stack / Qdrant (Docker, no model)
 

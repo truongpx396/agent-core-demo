@@ -41,8 +41,8 @@ the original turn's domain). All respond with the SSE vocabulary of feature 001.
 
 Request: `{"thread_id": string, "approved": bool}`. Rate-limited (30/min per tenant). Published as a `resume`
 job; any worker in the domain's pool may handle it. **Identity is re-supplied by this request** — the pause does
-not remember it; the pending action runs under *this* request's identity. **[defect — feature 002 B2]**: nothing
-verifies the caller owns `thread_id`.
+not remember it; the pending action runs under *this* request's identity. **[feature 002 B2 — fixed in #67]**: the API now verifies the caller owns `thread_id` first
+(`404 session not found` otherwise, before anything is enqueued); the worker does not repeat the check.
 
 | Situation | Stream |
 |-----------|--------|
@@ -61,8 +61,7 @@ its next event boundary, ending it with `error{code:"cancelled", message:"Cancel
 `cancel` job — if the conversation is paused, resumes it with the cancel sentinel and the job's own stream ends
 `error{code:"cancelled"}`; if nothing is paused it ends `done`.
 
-**[defect A12]**: a turn streaming **after an approval** has no cancel check, so (1) is never read and (2) finds
-nothing paused — it cannot be cancelled. A running tool is never interrupted by (1) in any case.
+A turn streaming **after an approval** is now cancellable too (fixed in #65): the resume job wires the same cancel check and clears a stale flag, so (1) is read from the first event. A running tool is never interrupted by (1) in any case.
 
 ### `GET /chat/sessions/{thread_id}/pending_approval`
 
@@ -81,16 +80,14 @@ Owner-checked: another caller's id ⇒ **404** (feature 002).
 
 ## 5. Unattended callers
 
-A caller with no human uses `astream_events_turn_unattended`: on the **first** `approval_required` it resumes with
-`approved:false` and counts `agent_unattended_pause_total`; it never approves. **[defect B4]**: a second pause
-(model re-requests the action) is forwarded, not declined, and an unattended channel that ignores it is left with
-an empty reply and a thread it cannot recover. The chat-app channel documents *"gets a real reply explaining it
-wasn't approved"*; as built, that holds for the first decline only if the model then answers instead of
-re-requesting.
+A caller with no human uses `astream_events_turn_unattended`: on each `approval_required` it resumes with
+`approved:false` and counts `agent_unattended_pause_total`; it never approves. The decline is a **loop bounded by `UNATTENDED_MAX_DECLINE_ROUNDS`**
+(default 3); if the model is still re-requesting at the ceiling the run is **cancelled** and one explicit message says the action needs a
+person's approval and was not done — the thread is never left paused (fixed in #63; formerly defect B4).
 
-## 6. The `cancelled` marker **[defect B3]**
+## 6. The `cancelled` marker *(defect B3 — fixed in #62)*
 
-`human_approval` sets `State.cancelled = True` on a cancel. Nothing resets it. `route_after_approval` tests it
+`human_approval` sets `State.cancelled = True` on a cancel. `validate_input` now resets it (and `approved`) at the start of every new turn — **not** on a resume. Historically nothing reset it: `route_after_approval` tests it
 **first**:
 
 ```text
@@ -99,9 +96,9 @@ approved   → "tools"
 otherwise  → "agent"
 ```
 
-Observed (reproduced): after a cancel on turn 1, an **approved** pause on turn 2 of the same thread ends the run
+Observed before #62 (reproduced): after a cancel on turn 1, an **approved** pause on turn 2 of the same thread ends the run
 with no tool result; the last message is the assistant's own tool request. **Required behavior** (spec SC-010): a
-cancel affects only the run it cancelled. Fix: reset `cancelled` per turn, **not** on a resume.
+cancel affects only the run it cancelled. Fix (done): reset `cancelled` per turn, **not** on a resume.
 
 ## 7. Invariants a change must preserve
 

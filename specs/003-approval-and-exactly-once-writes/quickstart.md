@@ -8,8 +8,8 @@ A validation guide: what to run, what you should see, which requirement it prove
 > **Read this first.** A green Tier 1 proves routing, the wrapper's logic, store statement *shape* and reclaim
 > classification. It does **not** prove that a real `UNIQUE`/`ON CONFLICT` behaves, nor the real `XAUTOCLAIM`
 > reclaim path (consumer-group *delivery* and the thread lock are tested against real Redis in Tier 2)
-> — and it did **not** catch B3 or B4, which Scenarios B3 and B4 below reproduce. The two failing scenarios are
-> expected to fail *as the system stands*.
+> — and it did **not** catch B3 or B4, which Scenarios B3 and B4 below reproduced. Both were fixed in #62 and #63; the scenarios are
+> now the regression tests named in each (expected: they pass).
 
 ---
 
@@ -22,7 +22,7 @@ pytest tests/agent/test_routing.py tests/agent/test_tool_idempotency.py tests/ag
        tests/job_queue tests/domains tests/scripts/test_tool_call_dedup_sweep.py tests/channels -q
 ```
 
-**Expected** (observed 2026-10-02): `400 passed`.
+**Expected** (observed 2026-10-03, after #62–#69): `465 passed` (was `400` on 2026-10-02).
 
 | Requirement | Evidence |
 |-------------|----------|
@@ -50,7 +50,7 @@ make test-integration
 processes, writing to a real Qdrant — **SC-001/SC-003/SC-006**). *Not run while writing this spec.*
 **Nothing here proves the target-level `UNIQUE` constraints or the real `XAUTOCLAIM` reclaim** (the worker subprocesses in `test_worker_scaling.py` do hit a real `tool_call_dedup`, but nothing asserts on it) — see the manual checks below.
 
-## Scenario B3 — Reproduce: a cancelled conversation cannot approve a later action (hermetic; expected: it reproduces)
+## Scenario B3 — Confirm a cancelled conversation can approve a later action (hermetic; fixed in #62 — expected: it no longer reproduces)
 
 In a scratch Python session (do not commit), with no services:
 
@@ -63,12 +63,12 @@ In a scratch Python session (do not commit), with no services:
    `Command(resume=True)`.
 4. Read the final state.
 
-**Observed 2026-10-02**: after step 3 the run is finished (`next == ()`), `cancelled` is still `True`, there is **no**
+**Observed 2026-10-02 (before #62)**: after step 3 the run is finished (`next == ()`), `cancelled` is still `True`, there is **no**
 `ToolMessage` for the approved call, and the last message is the assistant's own tool request with empty content.
-**Fixed when**: step 3 produces the tool result and a final answer, and `cancelled` is `False` at the start of turn
-2. This is the failing test the B3 fix starts with.
+**Since #62**: step 3 produces the tool result and a final answer, and `cancelled` is `False` at the start of turn 2 —
+`tests/agent/test_graph_integration.py::TestHumanApprovalPath::test_an_approval_on_a_later_turn_still_runs_after_an_earlier_cancel_on_the_same_thread`.
 
-## Scenario B4 — Reproduce: an unattended conversation stranded by a second pause (hermetic; expected: it reproduces)
+## Scenario B4 — Confirm an unattended conversation is not stranded by a second pause (hermetic; fixed in #63 — expected: it no longer reproduces)
 
 1. Use the real `app.channels.telegram._run_turn`, a scripted model whose first two replies each request the
    mutating `add_note` tool (a third reply is a plain answer), an in-memory graph returned by a patched
@@ -77,10 +77,11 @@ In a scratch Python session (do not commit), with no services:
 2. Run message 1 (`"please save a note"`) for the thread `telegram:42`; then call `paused_approval_async` on it.
 3. Run message 2 (`"hello? are you there?"`).
 
-**Observed 2026-10-02**: message 1 → the channel's reply text is `''` (nothing would be sent) and the thread is
+**Observed 2026-10-02 (before #63)**: message 1 → the channel's reply text is `''` (nothing would be sent) and the thread is
 **paused at `add_note`**; message 2 → *"This conversation has a pending approval — approve, reject, or cancel it
-before sending a new message."* — which the channel offers no way to do. **Fixed when**: the thread is never left
-paused and the user receives an explicit "that action needs approval and wasn't approved" reply.
+before sending a new message."* — which the channel offers no way to do. **Since #63**: the thread is never left
+paused and the user receives an explicit "that action needs approval and wasn't approved" reply —
+`tests/agent/test_agent_pause_handling.py::TestUnattendedSecondPause`.
 
 ## Tier 3 — Full local stack, manual walk-through
 
@@ -140,5 +141,5 @@ increments), then restart it.
   ("Use create_ticket to open a ticket with subject …").
 - *Step 5 reports `thread_busy`*: the original worker has not yet released the lock; retry in a moment (the lock is
   released *before* the terminal event, so this means a turn is genuinely still running).
-- *Scenario B3/B4 do not reproduce*: confirm you are not on a branch that already fixed them.
+- *Scenario B3/B4 do not reproduce*: expected — they were fixed in #62 and #63.
 - *Do not* run `make clean`, `clear-*` or `restart-all` while validating.

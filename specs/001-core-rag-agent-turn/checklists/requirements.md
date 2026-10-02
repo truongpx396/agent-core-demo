@@ -85,3 +85,5 @@
    check) — both reworded; (c) gap ids D1/G2/G3/A2 were used in plan/research/tasks but unlabeled in the spec — labeled;
    (d) advisory A3 downgraded (see iteration 6's note). Left for a decision, not changed: requirement-id tags in tasks
    (traceability), and `promtool check rules` in CI.
+
+8. **Iteration 8 (reconciliation, 2026-10-03):** the fixes merged since this spec (#62 B1; #64 A2's worker catch-all; #68 and #69 A3 and the cache's tag-escaping defect) were folded into the spec, plan, research, data-model, contract, quickstart and tasks; the *Known gaps* paragraph for B1 became *Resolved since this spec was written*; A2 was narrowed to what remains (the six unemitted codes, a refused resume without a `code`, the first-event deadline); Tier 1 was re-run (335 passed, was 324).
