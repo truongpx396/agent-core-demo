@@ -61,6 +61,7 @@ from typing import cast
 
 import redis.asyncio as redis
 
+from app.core import metrics
 from app.core.config import REDIS_MAX_CONNECTIONS, REDIS_URL, REQUEST_TIMEOUT_SECONDS
 from app.core.security import SecurityCtx
 
@@ -433,6 +434,10 @@ async def read_results(
     )
     while True:
         if deadline is not None and time.monotonic() >= deadline:
+            # Nobody picked this job up. Counted so a total outage — which is a
+            # stream of these, one per request — can be alerted on
+            # (WorkerUnreachable, observability/prometheus/alerts.yml).
+            metrics.agent_worker_unreachable_total.labels(queue="agent").inc()
             yield {
                 "type": "error",
                 "content": (

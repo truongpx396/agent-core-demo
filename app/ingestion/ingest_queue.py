@@ -22,6 +22,7 @@ from typing import cast
 
 import redis.asyncio as redis
 
+from app.core import metrics
 from app.core.security import SecurityCtx
 from app.job_queue.queue import (
     StreamReadResponse,
@@ -111,6 +112,8 @@ async def read_results(
     )
     while True:
         if deadline is not None and time.monotonic() >= deadline:
+            # Same signal as app/job_queue/queue.py::read_results — see there.
+            metrics.agent_worker_unreachable_total.labels(queue="ingest").inc()
             yield {
                 "type": "error",
                 "content": (

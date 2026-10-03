@@ -121,6 +121,23 @@ groups:
             going unnotified about real, already-applied business state.
             Check SLACK_WEBHOOK_URL / var/team_channel.log permissions.
 
+      - alert: WorkerUnreachable
+        expr: increase(agent_worker_unreachable_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queued jobs are being picked up by nobody"
+          description: >-
+            agent_worker_unreachable_total{queue} increased — a queued chat
+            or ingest job published no event at all within its first-event
+            deadline, i.e. no worker took it. One is a stuck request; a
+            sustained stream of them is a worker pool that answers nothing
+            (no agent-worker running for that domain, or no ingest-worker),
+            where every caller gets an error and nothing else notices. Check
+            `docker compose ps`, the worker logs, and the consumer group's
+            pending count on the requests stream.
+
       - alert: ToolCallDedupDegraded
         expr: increase(agent_tool_dedup_degraded_total[15m]) > 0
         for: 15m
