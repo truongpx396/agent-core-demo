@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.agent.tool_idempotency import idempotent
 from app.agent.tools import _arun_with_timeout
 from app.core.security import SecurityCtx, valid_ctx
+from app.core.untrusted import frame_untrusted
 from app.domains import notify, sandbox_session
 from app.domains.policy import ActionAllowlistPolicy
 from app.domains.sales import store
@@ -170,14 +171,38 @@ class PackageLeadBriefArgs(BaseModel):
     contact: str = Field(..., description="The lead's contact to brief on.")
 
 
+# What `package_lead_brief` will replay of a lead's notes, in characters. A single
+# website-research note can be 20,000 characters (the crawler's own cap) and every
+# `enrich_lead_from_website` adds another, so an uncapped replay grew with each
+# enrichment — 59,150 characters after three. Roughly 2,000 tokens is room for
+# the notes a rep actually wrote plus the newest research, and a small model's
+# context is not the place for the rest.
+BRIEF_NOTES_MAX_CHARS = 8_000
+
+
+def _bounded_notes(notes: str) -> str:
+    """The newest `BRIEF_NOTES_MAX_CHARS` of `notes` (they are aggregated
+    oldest-first), with the cut stated so a reader doesn't take the start of
+    the text for the start of the history. Cuts the aggregate, not each note:
+    the aggregate is one string by the time it reaches here, and the newest
+    material is what a handoff needs."""
+    if len(notes) <= BRIEF_NOTES_MAX_CHARS:
+        return notes
+    return f"[earlier notes omitted — the newest {BRIEF_NOTES_MAX_CHARS} characters follow]\n{notes[-BRIEF_NOTES_MAX_CHARS:]}"
+
+
 async def _package_lead_brief_impl(contact: str, ctx: SecurityCtx) -> str:
     history = await store.lead_history(ctx["tenant"], contact)
     if history is None:
         return f"No lead found for contact {contact!r}."
+    # Notes are untrusted: they include whole crawled pages (enrichment) and
+    # text a lead wrote, and this tool is read-only so it runs without an
+    # approval. Framed as data and bounded, however many accumulated.
+    notes = _bounded_notes(history["notes"]) if history["notes"] else ""
     lines = [
         f"Lead: {history['name']} ({history['contact']})",
         f"Status: {history['status']}",
-        f"Notes:\n{history['notes'] or '(none)'}",
+        f"Notes:\n{frame_untrusted(notes) if notes else '(none)'}",
     ]
     if history["followups"]:
         lines.append("Follow-ups:")
@@ -336,7 +361,7 @@ async def _enrich_lead_from_website_impl(
     await store.append_lead_note(ctx["tenant"], contact, note, tool_call_id=tool_call_id)
     return (
         f"Added research from {url} to {lead['name']}'s notes. "
-        f"Summary of what was found:\n{page_text[:500]}"
+        f"Summary of what was found:\n{frame_untrusted(page_text[:500])}"
     )
 
 
