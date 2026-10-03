@@ -97,6 +97,10 @@ def _flaky_then_ok_client_class(result=None, raises=None, fail_times=1):
     return factory
 
 
+async def _guard_allows(url):
+    return None
+
+
 class TestRenderUrlToMarkdown:
     async def test_refuses_unsafe_urls_before_ever_crawling(self, monkeypatch):
         async def poison_pill(url):
@@ -112,6 +116,7 @@ class TestRenderUrlToMarkdown:
             raise AssertionError("expected UnsafeURLError")
 
     async def test_returns_the_crawled_markdown(self, monkeypatch):
+        monkeypatch.setattr(web_crawler, "assert_safe_url_async", _guard_allows)  # no live DNS in the default suite
         async def fake_crawl(url):
             return "# Hello"
 
@@ -122,6 +127,7 @@ class TestRenderUrlToMarkdown:
         assert result == "# Hello"
 
     async def test_truncates_markdown_past_the_size_cap(self, monkeypatch):
+        monkeypatch.setattr(web_crawler, "assert_safe_url_async", _guard_allows)  # no live DNS in the default suite
         long_text = "x" * (web_crawler._MAX_MARKDOWN_CHARS + 500)
 
         async def fake_crawl(url):
@@ -135,6 +141,7 @@ class TestRenderUrlToMarkdown:
         assert "[truncated" in result
 
     async def test_does_not_truncate_markdown_under_the_size_cap(self, monkeypatch):
+        monkeypatch.setattr(web_crawler, "assert_safe_url_async", _guard_allows)  # no live DNS in the default suite
         short_text = "hello world"
 
         async def fake_crawl(url):

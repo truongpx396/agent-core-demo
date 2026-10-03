@@ -58,7 +58,7 @@ from crawl4ai.docker_client import RequestError as Crawl4aiRequestError
 
 from app.core.config import CRAWL4AI_API_TOKEN, CRAWL4AI_SERVER_URL
 from app.core.resilience import CircuitBreaker, CircuitOpenError
-from app.core.url_safety import assert_safe_url
+from app.core.url_safety import assert_safe_url_async
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +142,7 @@ async def render_url_to_markdown(url: str) -> str:
     "ingest" (nothing writes to Qdrant), so the calling tool's normal
     exception handling is enough.
     """
-    assert_safe_url(url)
+    await assert_safe_url_async(url)
     text = await _crawl(url)
     if len(text) > _MAX_MARKDOWN_CHARS:
         text = text[:_MAX_MARKDOWN_CHARS] + "\n\n[truncated: page content exceeds the fetch limit]"
