@@ -27,7 +27,7 @@ from pydantic import SecretStr
 
 from app.agent.usage_ledger import record_usage
 from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_API_KEY
-from app.core.logging_config import configure_logging
+from app.core.job_runtime import scheduled_job
 from app.core.security import SecurityCtx
 from app.domains import notify
 from app.domains.sales import store
@@ -96,7 +96,11 @@ async def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm=None) -> list[str
     return drafts
 
 
+def main() -> None:
+    with scheduled_job("agent-core-followup-sweep"):
+        drafts = asyncio.run(run_followup_sweep())
+        print(f"Drafted {len(drafts)} follow-up nudge(s)." if drafts else "No follow-ups due.")
+
+
 if __name__ == "__main__":
-    configure_logging()
-    drafts = asyncio.run(run_followup_sweep())
-    print(f"Drafted {len(drafts)} follow-up nudge(s)." if drafts else "No follow-ups due.")
+    main()

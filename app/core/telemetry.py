@@ -42,6 +42,7 @@ _LATENCY_BUCKETS_SECONDS = (0.5, 1.0, 2.5, 5.0, 10.0, 15.0, 30.0, 60.0, 90.0, 12
 _ITERATION_BUCKETS = (1, 2, 3, 4, 5, 7, 10, 15)
 
 _configured = False
+_provider: MeterProvider | None = None
 
 
 def configure_telemetry(service_name: str) -> None:
@@ -58,7 +59,7 @@ def configure_telemetry(service_name: str) -> None:
     otel-collector anywhere nearby to receive anything (see that
     setting's own comment, app/core/config.py) — not something a real
     deployment would ever set."""
-    global _configured
+    global _configured, _provider
     if _configured:
         return
     _configured = True
@@ -67,6 +68,21 @@ def configure_telemetry(service_name: str) -> None:
         logger.info("telemetry_disabled", extra={"service_name": service_name})
         return
 
+    _provider = _build_provider(service_name)
+    metrics_api.set_meter_provider(_provider)
+    logger.info(
+        "telemetry_configured",
+        extra={
+            "service_name": service_name,
+            "otlp_endpoint": f"{OTEL_EXPORTER_OTLP_ENDPOINT.rstrip('/')}/v1/metrics",
+        },
+    )
+
+
+def _build_provider(service_name: str) -> MeterProvider:
+    """The OTLP-exporting `MeterProvider` `configure_telemetry` installs. A
+    separate function so a test can build one against a local endpoint without
+    touching OTel's call-once global."""
     endpoint = f"{OTEL_EXPORTER_OTLP_ENDPOINT.rstrip('/')}/v1/metrics"
     exporter = OTLPMetricExporter(endpoint=endpoint)
     reader = PeriodicExportingMetricReader(exporter, export_interval_millis=15000)
@@ -86,13 +102,29 @@ def configure_telemetry(service_name: str) -> None:
         ),
     ]
 
-    provider = MeterProvider(
+    return MeterProvider(
         resource=Resource.create({"service.name": service_name}),
         metric_readers=[reader],
         views=views,
     )
-    metrics_api.set_meter_provider(provider)
-    logger.info(
-        "telemetry_configured",
-        extra={"service_name": service_name, "otlp_endpoint": endpoint},
-    )
+
+
+def shutdown_telemetry() -> None:
+    """Push whatever has been recorded, then stop the exporter. For a
+    short-lived process (a cron job): the exporter pushes on a 15 s timer, so a
+    job that finishes sooner would otherwise export NOTHING — and the metrics
+    that matter most from an unattended job are its failures (spec 008, B22).
+    Idempotent, a no-op if telemetry was never configured, and never raises: an
+    unreachable collector must not turn a finished job into a failed one."""
+    global _provider
+    provider, _provider = _provider, None
+    if provider is None:
+        return
+    try:
+        provider.force_flush()
+    except Exception as exc:  # noqa: BLE001 - a flush failing must not fail the job
+        logger.warning("telemetry_flush_failed", extra={"error_class": type(exc).__name__})
+    try:
+        provider.shutdown()
+    except Exception as exc:  # noqa: BLE001 - same
+        logger.warning("telemetry_shutdown_failed", extra={"error_class": type(exc).__name__})

@@ -29,7 +29,7 @@ from pydantic import SecretStr
 
 from app.agent.usage_ledger import record_usage
 from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_API_KEY
-from app.core.logging_config import configure_logging
+from app.core.job_runtime import scheduled_job
 from app.core.security import SecurityCtx
 from app.domains import notify
 from app.domains.ops import metrics_client
@@ -95,6 +95,10 @@ async def run_digest(llm=None) -> str:
     return summary
 
 
+def main() -> None:
+    with scheduled_job("agent-core-ops-digest"):
+        print(asyncio.run(run_digest()))
+
+
 if __name__ == "__main__":
-    configure_logging()
-    print(asyncio.run(run_digest()))
+    main()
