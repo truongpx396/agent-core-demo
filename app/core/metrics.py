@@ -462,6 +462,17 @@ agent_upload_failed_total = Counter(
     ["reason"],
 )  # reason: storage_error
 
+agent_worker_unreachable_total = Counter(
+    "agent_worker_unreachable_total",
+    "Queued jobs whose results stream received no event at all within the "
+    "first-event deadline (app/job_queue/queue.py and app/ingestion/ingest_queue.py "
+    "read_results) — nobody picked the job up. One of these is a stuck request; a "
+    "stream of them is a worker pool that answers nothing (none running for a "
+    "domain, or all of them dead), which until this metric produced one error per "
+    "caller and no signal an alert could use",
+    ["queue"],
+)  # queue: agent | ingest
+
 agent_subagent_run_total = Counter(
     "agent_subagent_run_total",
     "run_subagent calls (app/agent/tools.py, GRAPH_PATTERNS.md pattern 46) by "
