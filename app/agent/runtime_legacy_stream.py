@@ -29,7 +29,7 @@ from app.agent.runtime_stream import (
     _text_content,
     _turn_outcome,
 )
-from app.core import metrics
+from app.core import metrics, tracing
 from app.core.config import REQUEST_TIMEOUT_SECONDS
 from app.core.errors import ErrorCode, ErrorEnvelope, internal_error_envelope
 from app.core.security import SecurityCtx
@@ -63,25 +63,21 @@ async def _langfuse_trace(name: str, session_id: str, input_text: str):
     callbacks: list = [metrics.MetricsCallbackHandler()]
     if CallbackHandler is not None:
         try:
-            from langfuse import Langfuse
-            lf = Langfuse()
-            trace = lf.trace(name=name, session_id=session_id, input=input_text)
-            # stateful_client, not trace_id — see the matching note in
-            # astream_events_turn.
-            callbacks.append(
-                CallbackHandler(stateful_client=trace, session_id=session_id)
-            )
+            # Shared process-wide client (app/core/tracing.py) — see the note
+            # in runtime_stream._open_trace.
+            lf = tracing.get_langfuse()
+            if lf is not None:
+                trace = lf.trace(name=name, session_id=session_id, input=input_text)
+                # stateful_client, not trace_id — see the matching note in
+                # astream_events_turn.
+                callbacks.append(
+                    CallbackHandler(stateful_client=trace, session_id=session_id)
+                )
         except Exception:  # noqa: BLE001, S110 — Langfuse optional
             pass
-    try:
-        yield trace, callbacks
-    finally:
-        if trace:
-            try:
-                from langfuse import Langfuse
-                Langfuse().flush()
-            except Exception:  # noqa: BLE001, S110 - best-effort flush on the way out
-                pass
+    # No flush on exit from the block: the shared client sends in the
+    # background and is flushed at process exit (app/core/tracing.py).
+    yield trace, callbacks
 
 
 async def astream_events_turn_ctx(text: str, thread_id: str, ctx: SecurityCtx):
