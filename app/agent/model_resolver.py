@@ -11,8 +11,18 @@ config change), but means the biggest lever on output quality (a gateway
 remap) can change without any recorded artifact reflecting it. Resolving
 it here keeps model choice invisible to routing but visible to forensics
 (usage_ledger.py).
+
+Async, with a short negative cache. The first version was a plain synchronous
+`httpx.get` called from `usage_ledger.record_usage`, which runs on the event loop
+at the end of every completed turn: a slow LiteLLM froze every other turn,
+stream and health check on that worker for the length of the lookup (measured:
+a 0.5 s answer stalled a concurrent heartbeat for 0.56 s), and while LiteLLM was
+down EVERY recorded turn paid a fresh 5 s timeout for an answer that could not
+have changed (spec 008, B19). Now the request is awaited, and a lookup that
+failed, or found no such alias, is not repeated for `FAILED_LOOKUP_RETRY_SECONDS`.
 """
 import logging
+import time
 
 import httpx
 
@@ -22,6 +32,14 @@ logger = logging.getLogger(__name__)
 
 _cache: dict[str, str] = {}
 
+# How long a lookup that failed (proxy unreachable, bad response) or found no
+# such alias is remembered, per alias. Long enough that an outage costs one
+# timeout per interval instead of one per turn; short enough that a proxy that
+# comes back is noticed within a minute. Successes are cached for the process's
+# life, as before.
+FAILED_LOOKUP_RETRY_SECONDS = 60.0
+_failed_at: dict[str, float] = {}
+
 
 def _admin_base_url() -> str:
     """LiteLLM's admin endpoints (GET /model/info) live at the proxy
@@ -30,28 +48,35 @@ def _admin_base_url() -> str:
     return OPENAI_API_BASE.removesuffix("/v1").removesuffix("/")
 
 
-def resolve_model(alias: str) -> str | None:
+async def resolve_model(alias: str) -> str | None:
     """Best-effort, cached-per-process lookup. Returns `None` on any
     failure (LiteLLM unreachable, alias not found, bad response shape) —
-    observability only, never something that blocks or fails a turn.
-    """
+    observability only, never something that blocks or fails a turn. A failure
+    is remembered for `FAILED_LOOKUP_RETRY_SECONDS` so a down proxy is asked
+    about once per interval, not once per turn."""
     if alias in _cache:
         return _cache[alias]
+    failed_at = _failed_at.get(alias)
+    if failed_at is not None and time.monotonic() - failed_at < FAILED_LOOKUP_RETRY_SECONDS:
+        return None
     try:
-        response = httpx.get(
-            f"{_admin_base_url()}/model/info",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-            timeout=5,
-        )
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.get(
+                f"{_admin_base_url()}/model/info",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+            )
         response.raise_for_status()
         for entry in response.json().get("data", []):
             if entry.get("model_name") == alias:
                 resolved = entry.get("litellm_params", {}).get("model")
                 if resolved:
                     _cache[alias] = resolved
+                    _failed_at.pop(alias, None)
                     return resolved
+        _failed_at[alias] = time.monotonic()
         return None
     except Exception as exc:  # noqa: BLE001
+        _failed_at[alias] = time.monotonic()
         logger.warning(
             "model resolution failed; continuing without it",
             extra={"alias": alias, "error_class": type(exc).__name__},

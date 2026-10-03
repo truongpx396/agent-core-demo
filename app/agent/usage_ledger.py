@@ -57,7 +57,7 @@ async def record_usage(
     # The resolved CONCRETE model behind `model_alias` (GRAPH_PATTERNS.md
     # pattern 38) — None if resolution itself degrades (LiteLLM
     # unreachable, alias unknown); never blocks the write.
-    resolved_model = resolve_model(model_alias)
+    resolved_model = await resolve_model(model_alias)
     try:
         async with get_connection() as conn:
             await conn.execute(

@@ -10,6 +10,9 @@ instead — via `GraphDeps(search_docs=fake)`/`GraphDeps(cache_get=fake, ...)`
 `graph_cache.make_check_semantic_cache_node(fake)` (node-level) — which simply
 bypasses these defaults.
 
+`mock_model_resolver` is the same guarantee for `usage_ledger.record_usage`'s
+model-alias lookup against LiteLLM (see that fixture).
+
 `mock_ml_moderation` is the same guarantee for `app/agent/moderation.py`'s
 ML injection-classifier layer: `moderate_input` runs on every full-graph
 turn, unconditionally, and `moderation.screen`'s ML layer is a real HTTP
@@ -193,6 +196,25 @@ def mock_appdata_postgres(monkeypatch):
     # exercises that real fail-open path by default, same guarantee as the
     # two modules above, rather than needing its own per-test mock.
     monkeypatch.setattr(tool_idempotency, "get_connection", _no_postgres_in_tests)
+
+
+@pytest.fixture(autouse=True)
+def mock_model_resolver(monkeypatch):
+    """`usage_ledger.record_usage` resolves the chat alias to its concrete model
+    over HTTP (LiteLLM's `GET /model/info`) on every completed turn. Without
+    this, the "hermetic" suite made a real request to whatever answers on the
+    configured proxy address — so a result depended on whether a LiteLLM
+    happened to be running on the machine, the same class of leak
+    `mock_ml_moderation` closes for the ML service. Patches the CALLER's own
+    binding (`usage_ledger.resolve_model`), so tests/agent/test_model_resolver.py
+    still exercises the real resolver."""
+
+    async def _no_model_resolution(alias):
+        return None
+
+    from app.agent import usage_ledger
+
+    monkeypatch.setattr(usage_ledger, "resolve_model", _no_model_resolution)
 
 
 def pytest_sessionfinish(session, exitstatus):
