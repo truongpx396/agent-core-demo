@@ -50,7 +50,7 @@ Format: **Decision** · **Rationale** · **Alternatives considered** · **Eviden
 - **Rationale**: A rejection still gives the model a turn to react ("rejected — try something else"). A
   human changing their mind needs a *guarantee* the run stops: "a caller-initiated abort, deliberately
   distinct from rejection".
-- **Consequence recorded**: the marker is a persistent `State` field that nothing resets — **B3** (R22).
+- **Consequence recorded**: the marker is a persistent `State` field that nothing resets — **B3** (R22; fixed in #62).
 - **Evidence**: `app/agent/graph_hitl.py`; pattern 36; `tests/agent/test_routing.py::TestRouteAfterApproval`.
 
 ### R5. A durable pause, and "paused" is not `state.next`
@@ -90,7 +90,7 @@ Format: **Decision** · **Rationale** · **Alternatives considered** · **Eviden
 - **Rationale**: Verified empirically that `config["configurable"]` does not persist across a resume, so
   whoever resolves the approval must re-assert identity. The code notes "a stricter check — e.g. resuming
   principal must match the pausing tenant — would go here too"; it is **not built**, which is how feature
-  002's B2 and an approved write running under the *resumer's* identity arise.
+  002's B2 and an approved write running under the *resumer's* identity arose (B2 was closed in #67 by an owner check at the API, not by this check).
 - **Evidence**: `app/agent/runtime_stream.py::astream_events_resume`.
 
 ### R8. Cancel has two mechanisms for two states
@@ -103,7 +103,7 @@ Format: **Decision** · **Rationale** · **Alternatives considered** · **Eviden
   Cooperative cancel takes effect only at the next event boundary and does not interrupt a tool already
   running. `/chat/cancel` is excluded from rate limiting ("stopping a runaway turn must never itself be
   throttled").
-- **Gap A12 (by reading)**: `_process_turn` and `_process_turn_continue` clear any stale flag and pass a
+- **Gap A12 (by reading; fixed in #65)**: `_process_turn` and `_process_turn_continue` clear any stale flag and pass a
   `cancel_check`; `_process_resume` does neither, and `astream_events_resume(thread_id, approved, ctx)` has no
   cancel-check parameter. A turn streaming *after* an approval therefore ignores the flag, and the cancel job
   then finds nothing paused. Clearing a stale flag at the start of a turn is deliberate (a flag nobody consumed
@@ -127,7 +127,7 @@ Format: **Decision** · **Rationale** · **Alternatives considered** · **Eviden
   `scripts/followup_sweep.py`; pattern 46/47. `scripts/ops_investigate.py` is a deliberate honest limit: a
   gated call in its one-shot graph simply ends with an empty answer and no write.
 
-### R10. FINDING B4 — one-round auto-decline can strand a conversation
+### R10. FINDING B4 — one-round auto-decline can strand a conversation *(fixed in #63)*
 
 - **What was found**: the helper declines the *first* pause and then forwards every event of the resume
   stream, including a **second** `approval_required` if the model re-requests the gated action. The chat-app
@@ -142,7 +142,7 @@ Format: **Decision** · **Rationale** · **Alternatives considered** · **Eviden
   is system behavior. The helper's docstring ("a second pause on the same turn is left to the model's own next
   response") does not match what it does.
 - **Safety**: fails closed — no write occurs.
-- **Candidate fixes (none built)**: (1) loop the decline while the stream ends on `approval_required`, with a
+- **Candidate fixes (1)+(2) were built in #63**: (1) loop the decline while the stream ends on `approval_required`, with a
   small round cap; (2) when the stream ends on a pause the caller cannot resolve, auto-**cancel** the run
   (`cancel_run`) so the thread is never left paused, and reply with an explicit "that action needs approval and
   wasn't approved" message; (3) make the channel itself detect an `approval_required` and say so. (1)+(2) is
@@ -324,7 +324,7 @@ a new write path states its duplicate story up front.*
 
 ## Part C — Findings from verifying the as-built system
 
-### R23. FINDING B3 — a cancelled marker that never clears
+### R23. FINDING B3 — a cancelled marker that never clears *(fixed in #62)*
 
 - **What was found**: `human_approval` returns `{"messages": …, "approved": False, "cancelled": True}` on a cancel.
   `validate_input` resets ~20 per-turn `State` fields but **not** `cancelled` (nor `approved`), and no other node
@@ -340,7 +340,7 @@ a new write path states its duplicate story up front.*
 - **Why tests missed it**: `test_cancelled_tool_call_ends_the_turn_without_reaching_agent_again` and
   `TestRouteAfterApproval` assert the cancel path and the routing function in isolation; none runs a *second*
   approval on the same thread.
-- **Fix (not built)**: reset `cancelled` (and `approved`) in `validate_input` — **not** on a resume, since a resume
+- **Fix (built in #62)**: reset `cancelled` (and `approved`) in `validate_input` — **not** on a resume, since a resume
   must see the state the pause left. Failing test first: cancel on turn 1, approve on turn 2 of the same thread,
   assert the `ToolMessage` for the approved call exists and `cancelled` is `False` at the start of turn 2.
 
@@ -353,7 +353,7 @@ reuses ids like `call_1`) would return another tenant's stored result text. The 
 (`AND tenant = %s`) changes a collision from "return the cached result" to "run the write", so it needs a
 deliberate decision.
 
-### R25. FINDING A7 — nothing pins the wrapper on every write tool
+### R25. FINDING A7 — nothing pins the wrapper on every write tool *(closed in #68 by `tests/domains/test_write_tools_contract.py`)*
 
 A script matched every non-`read_only` name in the four `TOOL_CAPABILITIES` mappings against
 `idempotent(tool_name=…)` call sites: all 15 are wrapped, and so are the four sandbox tools in each of ops, sales
@@ -362,7 +362,7 @@ itself and of the *default* tool set's declarations (`test_every_tool_in_TOOLS_h
 tool modules have no tool-level tests of "refuses without ctx" or "routes through `idempotent()`", although
 `.claude/rules/side-effect-tools.md` asks for them. A single generic test over every domain plugin would close it.
 
-### R27. FINDING A11 — documentation still describes a removed safety check
+### R27. FINDING A11 — documentation still describes a removed safety check *(fixed in #66)*
 
 `_is_safe_to_retry_turn` no longer exists in `app/` (only `_classify_reclaimed_turn` and `_turn_already_completed`
 do), yet `GRAPH_PATTERNS.md` "Extending Further" (three entries, around lines 504, 505 and 509) still says a
@@ -376,8 +376,8 @@ misunderstand the metric.
 ### R26. FINDING A10 — approvals are unattributed
 
 `human_approval` increments `agent_human_approval_total{decision}` and nothing else: no row records who decided,
-when, or for which tool calls. Together with feature 002's B2 (the resumer is not verified as the owner) and R7
-(an approved write runs under the resumer's ctx), the gate controls *whether* a write happens but leaves no
+when, or for which tool calls. Together with R7
+(an approved write runs under the resumer's ctx; feature 002's B2 — the resumer was not verified as the owner — was fixed in #67), the gate controls *whether* a write happens but leaves no
 auditable trail of *who allowed it*.
 
 ---
@@ -386,15 +386,15 @@ auditable trail of *who allowed it*.
 
 | Id | Item | Why deferred |
 |----|------|--------------|
-| B3 | Reset `cancelled`/`approved` per turn (not on resume) + a same-thread cancel-then-approve regression test | Bug fix needs its own PR, test first |
-| B4 | Never leave an unattended thread paused; reply explicitly; test with a model that re-requests | Needs a decision between decline-loop, auto-cancel and channel-side handling |
-| A7 | A generic contract test over every domain write tool | Cheap; outside a docs batch |
+| B3 | **Done — #62** (reset per turn, not on resume; same-thread cancel-then-approve regression test) | — |
+| B4 | **Done — #63** (decline loop with a round cap, then cancel and an explicit reply) | — |
+| A7 | **Done — #68** (`tests/domains/test_write_tools_contract.py`) | — |
 | E2 | Tenant-scope the dedup lookup (or document the uniqueness assumption in the migration) | Policy decision on collision semantics |
 | R1 | Send-once key for team-channel messages, or disclose the window | Needs a store and a product decision |
-| A8 | Alerts for stranded unattended conversations / pause rate | After B4 |
+| A8 | Alerts for a rising unattended-pause rate | Unblocked by #63 |
 | A9 | Schedule or document the dedup sweep; table-size gauge | Deployment-specific |
 | A10 | Approvals audit record | Retention/PII decision |
-| A11 | Correct `GRAPH_PATTERNS.md` "Extending Further" and two code comments that still describe the removed `_is_safe_to_retry_turn` | Docs-only; do first |
-| A12 | Make a post-approval streaming turn cancellable (cancel check through `astream_events_resume`) | Test first; touches resume signature and worker |
+| A11 | **Done — #66** | — |
+| A12 | **Done — #65** | — |
 | — | Integration test of the target-level `UNIQUE`/`ON CONFLICT` constraints (consumer-group delivery and the thread lock already have real-Redis tests) | Constitution VII known gap; needs Docker |
 | A13 | Integration test of the real `XAUTOCLAIM` reclaim path (`reclaim_stale_entries`, incl. pagination) — today only a fake that differs from real Redis | Needs Docker; small |

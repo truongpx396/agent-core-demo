@@ -21,7 +21,7 @@ each is proven today, so the gaps are visible.
 | S8 | **Personal data adds the owner** (`owner = principal`); retention is applied **at read time**. | memories, sessions | `test_security.py`, `test_sessions.py` | missing-field range semantic unverified |
 | S9 | **Unknown/missing ctx ⇒ refuse, never default.** The tool re-checks even if the entry node did. | every tool | routing + tool tests | — |
 | S10 | **Metrics about an isolation event carry no tenant/principal labels**; the structured log may. | deletion, refusals | `agent_memory_deletion_total` | — |
-| S11 | State addressed by a **client-chosen key** (`thread_id`) needs an **ownership check on every path that reads or mutates it**. | checkpoint, lock, cancel flag | transcript + pending-approval only | **B2** — send/resume/cancel/worker unchecked |
+| S11 | State addressed by a **client-chosen key** (`thread_id`) needs an **ownership check on every path that reads or mutates it**. | checkpoint, lock, cancel flag | transcript, pending-approval, send (claim), resume, cancel — at the API | **fixed in #67**; the worker does not repeat it (T043) |
 
 ## Verification recipe for S1–S8 (what the *missing* real-backend tests should do — documents and the cache's tenant axis are already covered by `tests/agent/test_concurrent_turns.py`)
 

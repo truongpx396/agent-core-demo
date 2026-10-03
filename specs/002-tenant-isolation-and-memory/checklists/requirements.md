@@ -33,7 +33,7 @@
 
 - **This checklist grades requirements quality, not the system.** A spec can be well-formed while
   the system it describes has gaps. This feature's *Known gaps* section records one verified
-  isolation gap (B2), a deployment-level authentication gap, and four smaller ones; none of them
+  isolation gap (B2 — fixed in #67), a deployment-level authentication gap, and four smaller ones; none of them
   make the spec incomplete — they are the point of writing it retrospectively.
 - **Evidence levels are stated per gap**: B2 was reproduced at the graph level (fake model,
   in-memory store) and its endpoint behavior established by reading the code; it was *not*
@@ -43,7 +43,7 @@
   a deliberately generic reference; file-level evidence lives in `plan.md` and `research.md`.
 - **Success criteria SC-001…SC-008 are outcomes, not implementation.** Note SC-008 is satisfied for
   *reads* of another person's conversation; B2 shows the equivalent guarantee does not hold for
-  *continuing* one.
+  *continuing* one — until #67 closed it (SC-008 now covers send, resume and cancel).
 - Items marked incomplete require spec updates before `/speckit-clarify` or `/speckit-plan`.
   None are incomplete.
 
@@ -70,3 +70,5 @@
    Redis Stack. The spec's *Known gaps*, plan Principle VII/A4, research, data-model §2, the quickstart, the
    scoping contract and task T022 now say what is and is not covered. (Lesson recorded: grepping two directories
    is not grepping the suite.)
+
+5. **Iteration 5 (reconciliation, 2026-10-03):** the fixes merged since this spec (#67 B2; #68 FR-003 and FR-012 tests, the cache scope tests; #69 the cache's tag escaping) were folded into the spec, plan, contracts, quickstart and tasks; B2 moved to *Resolved since this spec was written*; one new advisory (A6, an empty identity header is accepted) was recorded; Tier 1 was re-run (444 passed, was 371).

@@ -18,9 +18,9 @@ see* (`lower`, producing a Qdrant `Filter`). Documents scope to `tenant`; memori
 read-automatic (folded into the pre-fetch), and deletable only by an operator-called function with
 an audit trail.
 
-The one structural hole this plan records honestly: the conversation **checkpoint** is keyed by
-`thread_id` alone and the ownership check that compensates for that exists only on two read
-endpoints (**B2**, Principle I deviation).
+The one structural hole this plan recorded honestly — the conversation **checkpoint** is keyed by
+`thread_id` alone and the ownership check that compensates for that existed only on two read
+endpoints (**B2**, Principle I deviation) — was closed in #67 with an owner check on send, resume and cancel.
 
 ## Technical Context
 
@@ -70,7 +70,7 @@ something real to prove against; Telegram users all share the default tenant.
 
 | # | Principle | Touched? | Verdict | Evidence / gap |
 |---|-----------|----------|---------|----------------|
-| I | Fail-closed tenant isolation (NN) | **Primary** | **PASS with 1 deviation (B2) and 2 deliberate exceptions** | **PASS parts**: ctx only from `config["configurable"]["ctx"]` (`app/agent/graph.py::validate_input`); scoping inside the store query — Qdrant `Policy.lower` applied in **each** `Prefetch` (`app/retrieval/qdrant_store.py::_build_filter`, `hybrid_search`), SQL `WHERE tenant = %s` (`app/agent/sql_store.py::query_employees`, `app/domains/*/store.py`), cache TAG filter (`app/retrieval/semantic_cache.py`); every tool re-checks ctx (`app/agent/tools.py::_ctx_or_refuse`, `app/mcp/server.py`); child tables carry `tenant` (`postgres-init/15-…`, `08-crm.sql`); missing ctx ⇒ refusal (`route_after_validation` → `reject_context`). **Deviation B2**: the checkpoint read on the send/resume/cancel paths is not scoped to the caller — see Complexity Tracking. **Exception E1**: `ops_incidents` is deliberately global (`postgres-init/10-ops-incidents.sql` header). **Exception E2**: `tool_call_dedup` is looked up by call id alone (`app/agent/tool_idempotency.py::_claim_or_cached_result`; owner: feature 003). |
+| I | Fail-closed tenant isolation (NN) | **Primary** | **PASS with 2 deliberate exceptions** *(the deviation B2 was fixed in #67)* | **PASS parts**: ctx only from `config["configurable"]["ctx"]` (`app/agent/graph.py::validate_input`); scoping inside the store query — Qdrant `Policy.lower` applied in **each** `Prefetch` (`app/retrieval/qdrant_store.py::_build_filter`, `hybrid_search`), SQL `WHERE tenant = %s` (`app/agent/sql_store.py::query_employees`, `app/domains/*/store.py`), cache TAG filter (`app/retrieval/semantic_cache.py`); every tool re-checks ctx (`app/agent/tools.py::_ctx_or_refuse`, `app/mcp/server.py`); child tables carry `tenant` (`postgres-init/15-…`, `08-crm.sql`); missing ctx ⇒ refusal (`route_after_validation` → `reject_context`). **Former deviation B2 — fixed in #67**: the checkpoint read on the send/resume/cancel paths was not scoped to the caller; every thread-addressed endpoint now checks (and, on send, claims) ownership first — see *Resolved since this spec was written*. **Exception E1**: `ops_incidents` is deliberately global (`postgres-init/10-ops-incidents.sql` header). **Exception E2**: `tool_call_dedup` is looked up by call id alone (`app/agent/tool_idempotency.py::_claim_or_cached_result`; owner: feature 003). |
 | II | Mandatory approval (NN) | Yes — memory write | **PASS** (owner: 003) | `remember` and `add_note` are `mutating` in `TOOL_CAPABILITIES` (`app/agent/tools.py`), so `should_continue` routes them through `human_approval` unconditionally. |
 | III | Fixed, typed tools | Yes | **PASS** | `args_schema` on `remember` (`max_length=2000`, blank rejected), `add_note`, `query_employees` (closed `Department` enum, no `execute(sql)`); write identity derived by code (`_tool_call_point_id` uuid5, `_content_point_id`); no agent-facing delete (`app/agent/memory.py` module docstring). |
 | IV | Exactly-once side effects (NN) | Yes — memory write | **PASS** (owner: 003) | `remember` wraps `idempotent(...)` and uses a `tool_call_id`-derived point id, so a replay upserts onto the same point. |
@@ -84,6 +84,8 @@ Governance ("A violation that cannot be avoided MUST be recorded and justified i
 Tracking, not merged silently"). B2 *can* be avoided, so it is recorded as an **open defect**, not
 justified. The plan proceeds because this is a retrospective description of shipped code, not a
 merge request; the constitution's gate would block a PR that introduced B2.
+
+**Reconciliation (2026-10-03)**: B2 is fixed (#67); the gate result above describes the state when this plan was written.
 
 **Post-design re-check (after `research.md`, `data-model.md`, `contracts/`)**: unchanged on B2; the
 contracts make the unchecked paths explicit (see `contracts/conversation-ownership.md` endpoint
@@ -161,10 +163,21 @@ the structural reason B2 exists.
 
 | Violation / advisory | Why Needed | Simpler Alternative Rejected Because |
 |----------------------|------------|-------------------------------------|
-| **B2 (defect, open)** — conversation state is keyed by `thread_id` alone; `session_belongs_to` guards only `GET …/messages` and `GET …/pending_approval`. Send, resume and cancel never check, nor does the worker. Reproduced at graph level; Telegram ids are `telegram:<chat_id>`. | Not needed — an accident of putting the ownership check in the HTTP read handlers because the checkpointer "has no tenant/principal to check against" (`get_session_messages` docstring). | Fix options in `research.md` R15. The structural one (namespace the checkpoint key by tenant+principal so a client *cannot address* another's thread) removes the need for a per-endpoint check but changes cancel-flag, lock and session keys and Telegram's id. A per-endpoint check is smaller but must also cover first-use claiming of a new id. Either is its own PR (tasks.md). |
 | **E1** — `ops_incidents` is not tenant-scoped; the ops domain is reachable by any caller who names it in `X-Domain`. | Documented design: incidents concern the platform's own metrics, which have no tenant dimension (SQL header, `app/domains/ops/store.py` docstring). | A tenant column would be meaningless. What *is* missing is authorizing which tenants may use the domain at all (per-action/per-domain authorization, README Roadmap). Not a constitution wording the code satisfies; flagged so the constitution can either carve out the exception or the gap can be closed. |
 | **E2** — `tool_call_dedup` lookup is `WHERE tool_call_id = %s` with no tenant predicate. | Provider-assigned call ids are assumed globally unique; the table's `tenant` column is observability metadata only. | Adding `AND tenant = %s` is one line, but changes what a cross-tenant id collision means (a miss ⇒ a second real write). Owned and tracked by feature 003. |
 | **A3** — the deletion function has no caller (no script, endpoint, make target). | Pattern 33 deliberately kept deletion out of the agent; the "real data-subject-request script" it anticipates was never written. | A thin `scripts/` entry point (like `scripts/tool_call_dedup_sweep.py`) is small; left as a task, not built in a docs batch. |
 | **A4 (partial)** — real-backend isolation proof covers documents and the cache's tenant axis only; memories (owner, retention), relational stores, sessions and the cache's principal axis are proven only by hermetic tests; two third-party behaviors are asserted only in comments. | Hermetic tiers were the priority; the existing real-backend tests were written for concurrency, not isolation per se; the constitution already records the fake-cursor gap for SQL stores. | `tests/containers.py` already provides real Qdrant/Postgres/Redis Stack and the existing suite shows the pattern; extending it to the missing stores is cheap and is what turns Principle I from "believed" to "proven" for them. |
 | **A5** — shipped production proxy neither authenticates nor sets/strips identity headers. | The repo ships the app's trust seam, not the gateway; README Roadmap lists real authentication as unbuilt. | Adding header-stripping in `Caddyfile` is cheap (`request_header -X-Tenant-Id` …) but meaningless without an authenticator that sets them; the honest minimum is a prominent deployment warning (task). |
 | **A6** — no alert on the deletion path. | Not applicable while A3 stands. | Revisit when A3 is closed. |
+
+### Resolved since this spec was written
+
+| Id | What was wrong | Fixed in | Evidence |
+|----|----------------|----------|----------|
+| **B2** | send, resume and cancel never checked who owned a conversation id; whoever named an id continued that conversation | #67 | `_require_conversation_owner` in `app/api/main.py`; `sessions.claim_session`; `tests/api/test_api.py::TestConversationOwnership`, `tests/agent/test_sessions.py::TestClaimSession`, `tests/agent/test_sessions_real_postgres.py` |
+
+### New advisory found while reconciling
+
+| Advisory | Why Needed | Simpler Alternative Rejected Because |
+|----------|------------|-------------------------------------|
+| **A6** — an empty identity header value is accepted by the identity dependency (it fails closed downstream) | The dependency checks presence, not content; every consumer re-checks validity (Principle I's fail-closed rule). | Rejecting an empty value at the dependency is a one-line change but alters the load test's invalid-identity scenario and what "present" means for the demo UI; a decision, not a defect. |

@@ -32,7 +32,7 @@ hermetic tier (fake Redis).
 |--------|---------|------|---------------|
 | `turn` | `astream_events_turn` (attended; wired with a cancel check) | a new turn | via classification |
 | `turn_continue` | `astream_events_continue_turn` | the crashed turn's checkpointed run (`astream_events(None, …)`) | via classification |
-| `resume` | `astream_events_resume` | approve/reject a paused call (**no** cancel check — A12) | **always** (a call that already ran returns its cached result) |
+| `resume` | `astream_events_resume` | approve/reject a paused call (wired with a cancel check and a stale-flag clear since #65 — A12) | **always** (a call that already ran returns its cached result) |
 | `cancel` | `cancel_run` | cancels a *paused* conversation | **always** |
 
 ## Mutual exclusion: one active job per conversation

@@ -44,8 +44,7 @@ table list; a child table carries its own `tenant` column.
 2. **Tool test**: refuses with no ctx; declares the right tier; goes through `idempotent()`.
 3. Update `GRAPH_PATTERNS.md` (and *Extending Further* if a gap was closed or left).
 
-**Gap A7**: item 2 is prose only for the domain tools — there is no test that iterates the plugins. A generic one
-is specified in `tasks.md`.
+**Gap A7 — closed in #68**: item 2 is now enforced for every domain write tool by `tests/domains/test_write_tools_contract.py`, which enumerates the tools from the registry (an unmapped tool counts as `outward`), checks each refuses without a valid identity and routes through `idempotent()` with the injected call id and its own name, and fails a new tool that has no sample arguments with a pointer to this checklist. It pins that tools are *wired*, not that `idempotent()` or each store's uniqueness holds.
 
 ## Duplicate story (Constitution "Spec Kit gates")
 

@@ -22,8 +22,9 @@ tests at the cheapest tier that can prove a behavior, so test tasks are not opti
 - **`[ ]`** = a **disclosed gap that is not built**. Each one is a real, separately mergeable
   change. Where it fixes a bug, the **failing test comes first** (CLAUDE.md working rules): write
   it, watch it fail on current code, then fix.
-- Open task ids: **B1** bug, **D1** constitution deviation, **A1/A2/A3** advisories, **G3** gap
-  (see plan.md *Complexity Tracking* and research.md *Deferred*).
+- Open task ids: **D1** constitution deviation, **A1** advisory, **A2** advisory (partly — the catch-alls were fixed in #64), **G3** gap
+  (see plan.md *Complexity Tracking* and research.md *Deferred*). **Closed since this file was written:** B1 (#62),
+  A2's catch-alls (#64), A3 (#68, #69).
 - Paths are repo-relative. `tests/...` paths for `integration`/`llm` tiers need Docker/a model.
 
 ## Format: `[ID] [P?] [Story] Description`
@@ -155,11 +156,11 @@ with one terminal outcome and a moved counter (quickstart Tier 1).
 
 ### Open follow-ups for User Story 3 (not built)
 
-- [ ] T055 [US3] **B1 — write the failing test first**: in `tests/agent/test_safety_budgets.py` add `TestSubagentSpendResetsAtTurnStart` that (a) builds the graph with fake deps via `build_graph(GraphDeps(...))`, (b) runs a turn on a thread, (c) `await g.aupdate_state(cfg, {"subagent_spend": [(3000, 0.25)]})`, (d) runs a second turn on the **same** thread, and (e) asserts `(await g.aget_state(cfg)).values["subagent_spend"] == []`. It must fail on current code (observed `[[3000, 0.25]]`). Assert on **graph state**, not on `validate_input`'s return value — that is exactly what the existing `TestPerTurnReset` does and why it cannot see the bug. See quickstart *Scenario 6*.
-- [ ] T056 [US3] **B1 — fix**: replace the `operator.add` reducer on `State.subagent_spend` in `app/agent/graph.py` with one that still list-concatenates concurrent `Command(update={"subagent_spend": [...]})` writes from `app/agent/subagent_tools.py` (line ~519) and `app/agent/subagent_domain_tools.py` (line ~115) but can be reset (e.g. a reducer that treats a module-level sentinel as "replace with `[]`"), and have `validate_input` emit that reset. Keep `tests/agent/test_concurrent_turns.py::…two_parallel_subagent_calls_in_one_turn_both_land_in_subagent_spend` green. Decide whether `STATE_SCHEMA_VERSION` needs a bump (stored values stay lists of pairs, so likely not) and state the reasoning in the PR.
-- [ ] T057 [US3] **B1 — docs**: correct the `State.subagent_spend` comment ("Reset to [] every turn by validate_input") in `app/agent/graph.py`, the "disclosed gap" text in `GRAPH_PATTERNS.md` pattern 46, remove spec *Known gaps* bug B1 and the "As built…" clause in FR-019, delete plan row **B1**; commit body states the failure mode (spend from earlier turns counted against later turns' ceilings) and root cause (an append-only reducer cannot express "reset")
+- [x] T055 [US3] **B1 — regression tests** (written first, confirmed failing on the old code; #62): graph-level tests in `tests/agent/test_safety_budgets.py` — `TestPerTurnResetThroughTheGraph` (`…subagent_spend_recorded_in_one_turn_does_not_survive_into_the_next`, `…parallel_subagent_entries_within_one_turn_still_accumulate`) and `TestConcatOrResetReducer` — asserting the state read back from the compiled graph across two turns, never `validate_input`'s return value. See quickstart *Scenario 6*
+- [x] T056 [US3] **B1 — fix** (#62): a reset-aware reducer `_concat_or_reset` on `State.subagent_spend` in `app/agent/graph.py` (concatenate, or `None` resets; concurrent `run_subagent` writes stay race-free) and `validate_input` writes `None`; `STATE_SCHEMA_VERSION` not bumped (no field added or removed)
+- [x] T057 [US3] **B1 — docs** (#62): the `State.subagent_spend` comment and `GRAPH_PATTERNS.md` patterns 10 and 46 corrected; spec *Known gaps* B1 moved to *Resolved since this spec was written*; plan row B1 moved likewise
 
-**Checkpoint**: US3 fully matches FR-019 once T055–T057 land.
+**Checkpoint**: US3 fully matches FR-019 (T055–T057 landed in #62).
 
 ---
 
@@ -234,8 +235,8 @@ and the matching counter (SC-008).
 
 ### Open follow-ups for User Story 6 (not built)
 
-- [ ] T079 [US6] **A2 — write the failing test first** (security-relevant, do first): in `tests/job_queue/test_agent_worker.py` make a handler raise `RuntimeError("could not connect to internal-db-host.example:5432")` (a sentinel hostname string — no credential-shaped value, so secret scanners stay quiet) and assert the published `error` event has `code == "internal"` and that **neither** `content` nor `message` contains the exception text
-- [ ] T080 [US6] **A2 — fix the worker catch-all**: in `app/job_queue/agent_worker.py::process_request` replace `{"type": "error", "content": str(exc)}` with an `ErrorEnvelope(code=ErrorCode.INTERNAL, message=<generic, user-safe text>)`; the real exception stays in the existing `agent_worker_turn_failed` log line (class name only — never message content)
+- [x] T079 [US6] **A2 — failing tests first** (#64): `tests/agent/test_streaming_terminal_events.py::TestAGraphFailureNeverLeaksItsMessageToTheCaller` (a hostname-shaped sentinel must not appear anywhere in the serialized event; `code == "internal"`; `details == {"error_class": "RuntimeError"}`; a `TimeoutError` still reports `timeout`) and the updated worker tests in `tests/job_queue/test_agent_worker.py` (four had asserted the leak)
+- [x] T080 [US6] **A2 — fix the catch-alls** (#64): `internal_error_envelope(exc)` in `app/core/errors.py` (fixed message + `details={"error_class": …}`, never `str(exc)`) used by `app/agent/runtime_stream.py::_run_graph_stream`, `app/agent/runtime_legacy_stream.py` and `app/job_queue/agent_worker.py::process_request`; the real text stays on the trace and the log line carries the class only. **Not covered**: the ingest worker's catch-all (feature 006, B10)
 - [ ] T081 [P] [US6] **A2 — first-event deadline**: failing test in `tests/job_queue/test_queue.py`, then wrap the `read_results` deadline error in `app/job_queue/queue.py` in an envelope. Decide and record in `contracts/error-envelope.md` whether to reuse `ErrorCode.TIMEOUT` (with `details={"kind":"no_first_event"}`) or add a new member; keep `content` unchanged so existing clients keep working
 - [ ] T082 [P] [US6] **A2 — refused resume**: failing test in `tests/agent/test_durable_checkpoint.py::TestResumabilityError`, then make `app/agent/runtime_stream.py::astream_events_resume` emit `ErrorCode.CHECKPOINT_LOST` / `CHECKPOINT_INCOMPATIBLE` (return the code from `app/agent/graph_hitl.py::_resumability_error_from_state` instead of parsing a text prefix); keep the `content` text and the trailing `done` so current clients are unaffected
 - [ ] T083 [US6] **A2 — decide emit-or-retire** for the four never-emitted codes (`moderation_blocked`, `cost_ceiling_exceeded`, `no_progress`, `unattended_pause`): either emit them (changes the SSE contract — needs UI/CLI/Telegram review) or remove them from `app/core/errors.py`; update `tests/core/test_errors.py`, `contracts/error-envelope.md`, spec FR-033/*Known gaps*, and plan row **A2** to match
@@ -261,7 +262,7 @@ and the matching counter (SC-008).
 
 ### Open follow-ups for User Story 7 (not built)
 
-- [ ] T087 [P] [US7] **A3 (downgraded) — make the `_escape_tag` guarantee explicit and cover the principal axis.** The fix for pattern 22's "`other-co` raised a syntax error" is exercised only *incidentally*: the real-Redis test `tests/agent/test_concurrent_turns.py::TestSemanticCacheIsolationUnderConcurrency` uses hyphenated tenants (`tenant-a`/`tenant-b`), so an unescaped tag would degrade to a miss and fail its first assertion — but nothing names the behavior, no hermetic test pins it, and the **principal** axis is untested. Add (a) a hermetic unit test in `tests/retrieval/test_semantic_cache.py` (new file) that `_escape_tag("other-co")` escapes the hyphen and that a tenant or principal containing RediSearch syntax characters (`-`, `.`, `@`, space) is escaped in the query string `get()` builds; (b) one case in the existing real-Redis class (or a new `integration` test using `tests/containers.py::ensure_redis()`, already Redis Stack) proving a *different principal in the same tenant* gets a miss
+- [x] T087 [P] [US7] **A3 — the `_escape_tag` guarantee made explicit** (#68, #69): hermetic `tests/retrieval/test_semantic_cache.py` (tenant and principal scoping, fail-closed incomplete ctx), `tests/retrieval/test_semantic_cache_tag_escaping.py` and the real-Redis `tests/integration/test_semantic_cache_tag_escaping_real_redis.py`. Writing it exposed a real defect — `|` and `\` were not escaped, so a principal `alice|bob` built a filter that also matched `bob`'s entries — fixed in #69 by escaping every ASCII character that is not a letter, digit or underscore
 - [ ] T088 [US7] **G3 — write the failing test first**: in `tests/agent/test_nodes.py` (or `test_graph_integration.py`) cache a normal answer for "what are the support hours?", then in a **new thread** of the same principal send the vague follow-up "pls be more detailed" whose cached counterpart came from an unrelated conversation; assert the cached answer is **not** served. Reproduce first — this gap was found by reading, not by running
 - [ ] T089 [US7] **G3 — fix**: decide among (a) fold the same prior-question enrichment `app/agent/graph_messages.py::_retrieval_query` already uses into the cache key, symmetrically in `make_check_semantic_cache_node` and `make_write_semantic_cache_node` (`app/agent/graph_cache.py`); (b) skip the cache for messages `_retrieval_query` classes as vague; (c) key on `(message, thread_id)`. Record the choice (hit-rate vs. wrong-context risk) in `research.md` R16, then update spec *Known gaps*, `GRAPH_PATTERNS.md` pattern 22, and delete plan/research G3 rows
 
@@ -277,7 +278,7 @@ and the matching counter (SC-008).
 - [x] T091 [P] Metric-backed alert rules (`HighTurnErrorRate`, `HighTurnLatencyP95`, `RetrievalDegraded`, `SemanticCacheErrors`, `CheckpointIssues`, `ModerationBlockSpike`, `RateLimitRejectionSpike`) in `observability/prometheus/alerts.yml`
 - [x] T092 [P] Constitution ratified with the principles this feature is checked against in `.specify/memory/constitution.md`
 - [x] T093 [P] Ran `/speckit-analyze` (read-only) over `spec.md`, `plan.md`, `tasks.md` on 2026-10-02 and reconciled what it found — see this feature's `checklists/requirements.md` *Validation iterations* for the findings, the corrections made, and the items deliberately left for a decision (requirement-id traceability tags; `promtool check rules` in CI)
-- [ ] T094 Run `specs/001-core-rag-agent-turn/quickstart.md` Tier 2 and Tier 3 on a machine with Docker and a native Ollama (Tier 1 was run on 2026-10-02: 324 passed) and record the result in the PR that closes the open follow-ups
+- [ ] T094 Run `specs/001-core-rag-agent-turn/quickstart.md` Tier 2 and Tier 3 on a machine with Docker and a native Ollama (Tier 1: 324 passed on 2026-10-02, 335 on 2026-10-03 after #62–#69) and record the result in the PR that closes the open follow-ups
 - [ ] T095 Standing reminder: before **any** `langgraph-checkpoint-postgres` bump, re-check the `Semaphore` lock workaround in `app/agent/runtime.py::_open_checkpointer` (it pokes a private attribute of `AsyncPostgresSaver`) and remove it once langchain-ai/langgraph#7269 ships (research G1)
 
 ---
@@ -302,12 +303,12 @@ Each follow-up is its own PR (CLAUDE.md: one logical change per PR, ≤ ~400 han
 
 | PR | Tasks | Touches | Depends on |
 |----|-------|---------|------------|
-| 1 | T055–T057 (B1) | `graph.py`, `test_safety_budgets.py`, docs | — |
-| 2 | T079–T080 (A2, catch-all) | `agent_worker.py`, `test_agent_worker.py` | — |
+| 1 | T055–T057 (B1) | **done — #62** | — |
+| 2 | T079–T080 (A2, catch-all) | **done — #64** | — |
 | 3 | T081–T083 (A2 remainder) | `queue.py`, `runtime_stream.py`, `graph_hitl.py`, `errors.py` | PR 2 (shares the envelope decision) |
 | 4 | T039–T041 (D1) | `graph.py`, routing tests, docs | — |
 | 5 | T042 (A1) | `alerts.yml` | — |
-| 6 | T087 (A3) | new integration test | — (Docker) |
+| 6 | T087 (A3) | **done — #68, #69** | — |
 | 7 | T088–T089 (G3) | `graph_cache.py`, tests, docs | PR 6 recommended first |
 
 PRs 1, 2, 4, 5 are mutually independent and can proceed in parallel.
@@ -346,9 +347,8 @@ were added reactively, each behind a real incident; `research.md` names them.
 
 ### Closing the open follow-ups (what to do next)
 
-1. **PR 2 first** (T079–T080): it is the only open item that can show a caller internal exception
-   text, and its fix is small.
-2. **PR 1** (B1): verified bug, small fix, test-first.
+1. ~~PR 2 (T079–T080, the catch-all)~~ — done in #64.
+2. ~~PR 1 (B1)~~ — done in #62.
 3. **PR 4 / PR 5** (D1, A1): bring the code in line with the constitution's literal wording.
 4. **PRs 3, 6, 7**: contract cleanup and the cache.
 5. Re-run `quickstart.md`, then delete each resolved row from `plan.md` *Complexity Tracking*.
@@ -362,8 +362,8 @@ input-screening principles, so the practical MVP is **US1 + US2 + US3**.
 ## Notes
 
 - `[P]` = different files, no dependency on an incomplete task.
-- `[x]` here means "present", not "re-verified today" — only Tier 1 (T094) was re-run on
-  2026-10-02. Tier 2/3 results are not claimed.
+- `[x]` here means "present", not "re-verified today" — only Tier 1 (T094) was re-run — on
+  2026-10-02 and again on 2026-10-03 after #62–#69. Tier 2/3 results are not claimed.
 - Features 002 (isolation, memory) and 003 (approval, exactly-once) own several behaviors this
   feature merely routes through; tasks that touch them say so and do not restate them.
 - Do not run `make clean`, `clear-*` or `restart-all` while working these tasks.

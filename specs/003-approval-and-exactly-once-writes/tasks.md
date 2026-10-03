@@ -21,13 +21,11 @@ open test tasks below are the most valuable work in this file.
   needs doing.
 - **`[ ]`** = a **disclosed gap that is not built**. Where it fixes a defect the **failing test is written
   first** (CLAUDE.md working rules): write it, watch it fail on current code, then fix.
-- Open ids (see plan.md *Complexity Tracking* / research.md *Deferred*): **B3** stale `cancelled` flag ·
-  **B4** stranded unattended conversation · **A7** no contract test over write tools · **A8** no alert for
-  stranded conversations · **A9** dedup sweep is manual · **A10** approvals unattributed · **A11** docs
-  describe a removed function · **A12** a post-approval turn cannot be cancelled · **A13** the `XAUTOCLAIM` reclaim path has no real-Redis test · **E2** dedup lookup not
-  tenant-scoped · **R1** notification duplicate window.
-- **Both defects fail closed: no unreviewed write occurs.** They are liveness/consistency defects, not
-  safety holes — but B4 is a literal deviation from Principle II.
+- Open ids (see plan.md *Complexity Tracking* / research.md *Deferred*): **A8** no alert for a rising
+  unattended-pause rate (unblocked) · **A9** dedup sweep is manual · **A10** approvals unattributed · **A13** the `XAUTOCLAIM` reclaim path has no real-Redis test · **E2** dedup lookup not
+  tenant-scoped · **R1** notification duplicate window. **Closed since this file was written:** B3 (#62), B4 (#63), A12 (#65), A11 (#66), A7 (#68).
+- **Both defects (B3, B4, now fixed) failed closed: no unreviewed write occurred.** They were liveness/consistency defects, not
+  safety holes — but B4 was a literal deviation from Principle II.
 - Tasks needing Docker say `integration`. Paths are repo-relative.
 
 ## Format: `[ID] [P?] [Story] Description`
@@ -43,7 +41,7 @@ open test tasks below are the most valuable work in this file.
 - [x] T002 [P] Target-level keys — nullable `tool_call_id TEXT UNIQUE` on `support_tickets`, `ops_incidents`, `crm_followups` — in `postgres-init/14-tool-call-id-columns.sql`
 - [x] T003 [P] Appends as rows — `support_ticket_comments` and `crm_lead_notes` each with `tenant`, parent FK, `tool_call_id TEXT UNIQUE`, `created_at`; parent `notes` columns dropped — in `postgres-init/15-append-notes-as-rows.sql`
 - [x] T004 [P] Alert rules `ToolCallDedupDegraded` (`increase(agent_tool_dedup_degraded_total[15m]) > 0`, `for: 15m`) and `TeamChannelNotifyFailing` in `observability/prometheus/alerts.yml`
-- [x] T005 [P] Queue/reclaim tunables in `app/core/config.py` with `.env.example` entries: `chat_submit_dedup_ttl_seconds` (10), `chat_first_response_deadline_seconds` (30), `agent_worker_max_concurrency` (10), `agent_worker_reclaim_idle_seconds` (240), `worker_reclaim_interval_seconds` (60), `max_auto_reclaim_retries` (1)
+- [x] T005 [P] Queue/reclaim tunables in `app/core/config.py`: `chat_submit_dedup_ttl_seconds` (10), `chat_first_response_deadline_seconds` (30), `agent_worker_max_concurrency` (10), `agent_worker_reclaim_idle_seconds` (240), `worker_reclaim_interval_seconds` (60), `max_auto_reclaim_retries` (1) — **none of the six has an `.env.example` entry** (this task originally said they did; checked 2026-10-03 — feature 004 A3 tracks it; only `UNATTENDED_MAX_DECLINE_ROUNDS`, added in #63, has one)
 - [x] T006 [P] The side-effect-tool checklist in `.claude/rules/side-effect-tools.md` (loaded when `tools.py`/`store.py`/`postgres-init/` change)
 
 ---
@@ -144,16 +142,16 @@ open test tasks below are the most valuable work in this file.
 
 ### Open follow-ups for User Story 3 (not built)
 
-- [ ] T044 [US3] **B3 — write the failing test first**: in `tests/agent/test_graph_integration.py::TestHumanApprovalPath` add `test_an_approval_on_a_later_turn_still_runs_after_an_earlier_cancel_on_the_same_thread`: with a fake model that returns tool-call, tool-call, final answer, on **one** `thread_id` (a) turn 1 `require_approval=True` → pause → `Command(resume=CANCEL_SENTINEL)`; (b) turn 2 `require_approval=True` → pause → `Command(resume=True)`; assert the `ToolMessage` for turn 2's call exists, the final message is the model's answer, and `(await g.aget_state(cfg)).values["cancelled"]` is `False`. Fails today (the run ends with a dangling tool request and `cancelled` still `True`). Also extend `tests/agent/test_safety_budgets.py::TestPerTurnReset` to assert `validate_input` returns `cancelled: False`
-- [ ] T045 [US3] **B3 — fix**: add `"cancelled": False` (and `"approved": False`) to the per-turn reset dict in `app/agent/graph.py::validate_input`. It must **not** reset on a resume — `validate_input` is not re-run on resume (resume re-enters inside `human_approval`), which `tests/agent/test_graph_integration.py::TestHumanApprovalPath` already relies on. No `STATE_SCHEMA_VERSION` bump (no field added or removed). Docs: add the failure mode (a cancel on one turn silently dropped a later approval) and root cause (a persisted `State` field no node cleared) to the commit body; correct `GRAPH_PATTERNS.md` pattern 36; delete spec *Known gaps* B3 and the "Currently not met" mark on SC-010; delete plan row **B3**
-- [ ] T046 [US3] **A12 — write the failing test first**: in `tests/agent/test_cancellation.py` add a test that `astream_events_resume(thread_id, True, ctx, cancel_check=<async fn returning True>)` ends with `error{code:"cancelled"}` before running the approved tool. Fails today: the function has no `cancel_check` parameter
-- [ ] T047 [US3] **A12 — fix**: add `cancel_check=None` to `astream_events_resume` in `app/agent/runtime_stream.py` and pass it to `_run_graph_stream`; in `app/job_queue/agent_worker.py::_process_resume` wire it to `is_cancelled(client, thread_id)` like `_process_turn` does (decide in the PR whether `_process_resume` should also clear a stale flag first — a resume that follows a recent cancel of the *streaming* phase must not be cancelled by it); update `tests/job_queue/test_agent_worker.py::TestProcessRequestResume`; delete spec gap A12, the "As built" notes in FR-011/SC-005, and plan row **A12**
+- [x] T044 [US3] **B3 — regression test** (written first, confirmed failing; #62): `tests/agent/test_graph_integration.py::TestHumanApprovalPath::test_an_approval_on_a_later_turn_still_runs_after_an_earlier_cancel_on_the_same_thread` — cancel on turn 1, approve on turn 2 of the same thread, assert the approved call's `ToolMessage` exists and the run does not end at once; plus the per-turn-reset graph tests in `tests/agent/test_safety_budgets.py`
+- [x] T045 [US3] **B3 — fix** (#62): `validate_input` in `app/agent/graph.py` resets `cancelled` and `approved` every new turn; a resume re-enters inside `human_approval` and skips it, so a pause's own decision is never cleared; `STATE_SCHEMA_VERSION` not bumped (no field added or removed)
+- [x] T046 [US3] **A12 — failing tests first** (#65): `tests/agent/test_cancellation.py::TestAstreamEventsResumeCancellation` — a cancel after approval stops the turn before the approved tool runs; a cancel check that never fires still runs the approved tool once; no cancel check resumes exactly as before; `_process_resume` passes a working check bound to the thread id and clears a stale flag first (the last two in `tests/job_queue/test_agent_worker.py`)
+- [x] T047 [US3] **A12 — fix** (#65): `cancel_check=None` on `astream_events_resume` in `app/agent/runtime_stream.py`, forwarded to `_run_graph_stream`; `_process_resume` in `app/job_queue/agent_worker.py` clears any stale flag left by the streaming phase and wires `is_cancelled`; `app/api/main.py` and `app/job_queue/queue.py` adjusted accordingly
 - [ ] T048 [P] [US3] **A10 — decide**: an approvals audit record (`thread_id`, tenant, **principal who decided**, decision, the pending tool names plus a hash of their args, `decided_at`). Decide retention and whether args may be stored (PII), and whether it lives in `appdata` (new `postgres-init/16-approvals-audit.sql`). Record the decision in research R26
 - [ ] T049 [US3] **A10 — failing test, then implement** (after T048): a test in `tests/agent/test_durable_checkpoint.py` (or a new hermetic `tests/agent/test_approval_audit.py`) that resolving an approval writes exactly one audit row carrying the resumer's principal; then write it from `astream_events_resume` / `cancel_run` (they already hold `ctx`; the node does not) in `app/agent/runtime_stream.py`, best-effort and fail-open like `usage_ledger.py`, with a counter and no message content in logs
 
 - [ ] T050 [US3] **FR-010 / FR-009 / FR-012 — write the missing tests (found by `/speckit-analyze`; hermetic, none exist today)**: in a new `tests/agent/test_pending_approval.py`, using an in-memory graph returned by a patched `runtime.init_graph_async` (as `tests/agent/test_streaming_terminal_events.py` does) and a scripted model that requests the mutating `add_note` tool: (a) after a pause, `astream_events_turn("anything", same_thread, ctx)` yields exactly one `error` with `code == "pending_approval"` whose `details["tool_calls"]` names `add_note`, and the pending action is **still pending** afterwards (`paused_approval_async(...)` is not `None`) — never auto-cancelled; (b) with `STATE_SCHEMA_VERSION` monkeypatched to a different value so the pause is not resumable, the same call yields a `system_note` and then proceeds; (c) `astream_events_continue_turn(same_thread, ctx)` on a paused thread yields `pending_approval` and runs nothing; (d) `paused_approval_async` returns `None` for a completed or unknown thread and `{"tool_calls": [...], "resumable": True}` for a paused one; (e) `astream_events_resume` after a pause runs the tool under the **resumer's** ctx (assert the ctx the tool received is the one passed to the resume call, not the original's). These pin FR-010, FR-012 and FR-009 and complete T053's untested half
 
-**Checkpoint**: US3 meets FR-004/FR-011 and SC-005/SC-010 only after T044–T047, and FR-010 is *verified* only after T050.
+**Checkpoint**: US3 meets FR-004/FR-011 and SC-005/SC-010 (T044–T047 landed in #62 and #65); FR-010 is *verified* only after T050 (its API-level read, FR-012, was covered in #68 by `tests/api/test_pending_approval_endpoint.py`).
 
 ---
 
@@ -206,12 +204,12 @@ open test tasks below are the most valuable work in this file.
 
 > Candidate designs: research R10. Safety is unaffected either way (no write occurs).
 
-- [ ] T065 [US5] **B4 — write the failing tests first** (hermetic). (a) In `tests/agent/test_agent_pause_handling.py` add `TestUnattendedSecondPause`: drive the **real** `astream_events_turn_unattended` against an in-memory graph (patch `runtime.init_graph_async`, `_tenant_over_daily_budget`, `_reserve_turn_budget`, `_release_turn_budget`, `_upsert_session` and `stream_module._open_trace`, as `tests/agent/test_streaming_terminal_events.py` does) with a scripted `BaseChatModel` whose first two replies each request the mutating `add_note` tool and whose third is a plain answer (the existing `GenericFakeChatModel` cannot stream an empty-content tool call); assert that after the stream the thread is **not** paused (`paused_approval_async(...) is None`) and the stream ended `done` or an explicit error — never a trailing `approval_required`. (b) In `tests/channels/test_telegram_channel.py` assert `_run_turn(...)` returns a **non-empty** reply that says the action was not approved. Both fail today (observed: reply `''`, thread paused at `add_note`, next message refused with "pending approval")
-- [ ] T066 [US5] **B4 — fix** in `app/agent/runtime_stream.py::astream_events_turn_unattended`: after the auto-decline resume, if the stream ends on another `approval_required`, repeat the decline up to a small round cap (a new `Settings` field, e.g. `unattended_max_decline_rounds`, default 3, with an `.env.example` entry); if the cap is hit, **cancel** the paused run via `cancel_run` so the thread is never left paused, and yield an explicit assistant-visible message ("That action needs a person's approval, which this channel can't provide — so it wasn't done.") before `done`. Count each extra decline in `agent_unattended_pause_total`. Update `app/channels/telegram.py::_run_turn` so an empty reply is never sent silently
-- [ ] T067 [US5] **B4 — docs**: correct the `astream_events_turn_unattended` docstring ("a second pause on the same turn is left to the model's own next response" is false today), the "HITL" paragraph at the top of `app/channels/telegram.py`, `GRAPH_PATTERNS.md` patterns 8 and 43; remove spec *Known gaps* B4 and the "Currently not met" mark on SC-011; delete plan row **B4**
+- [x] T065 [US5] **B4 — failing tests first** (#63): `tests/agent/test_agent_pause_handling.py::TestUnattendedSecondPause` (`…a_second_pause_is_declined_too_and_the_turn_ends_normally`, `…a_model_that_keeps_requesting_the_write_is_cancelled_with_an_explicit_message`) driving the real `astream_events_turn_unattended`, and `tests/channels/test_telegram_channel.py` for the chat channel's reply
+- [x] T066 [US5] **B4 — fix** (#63): the decline in `app/agent/runtime_stream.py::astream_events_turn_unattended` is a loop bounded by `UNATTENDED_MAX_DECLINE_ROUNDS` (new `Settings` field in `app/core/config.py`, default 3, in `.env.example`; each round counts `agent_unattended_pause_total` in `app/core/metrics.py`); at the ceiling the run is cancelled via `cancel_run` and one explicit message is emitted — exactly one terminal event; the Telegram channel's handling updated in `app/channels/telegram.py`
+- [x] T067 [US5] **B4 — docs** (#63): the `astream_events_turn_unattended` docstring, the channel's header paragraph and `GRAPH_PATTERNS.md` corrected; spec *Known gaps* B4 moved to *Resolved since this spec was written*
 - [ ] T068 [P] [US5] **A8 — alerts (after T066)**: add `UnattendedPauseRate` (sustained `rate(agent_unattended_pause_total[15m])`) to `observability/prometheus/alerts.yml`, same annotation style as `RetrievalDegraded`; validate once by hand with `promtool check rules` (the repo has no automated check) and say so in the PR
 
-**Checkpoint**: US5 meets Principle II's "unattended callers MUST auto-decline a pause" after T065–T067.
+**Checkpoint**: US5 meets Principle II's "unattended callers MUST auto-decline a pause" (T065–T067 landed in #63); T068 (an alert on the pause rate) is now unblocked.
 
 ---
 
@@ -231,20 +229,20 @@ open test tasks below are the most valuable work in this file.
 
 ### Open follow-ups for User Story 6 (not built)
 
-- [ ] T071 [US6] **A7 — write the contract test** in a new `tests/domains/test_write_tools_contract.py` (hermetic). Iterate `app.domains.registry.DOMAINS`; for every tool of each plugin whose `tool_capabilities()` entry is not `read_only` (and every tool a plugin leaves out of the mapping, which is treated as `outward`): (a) invoke the tool with a `config` carrying **no** `ctx` and assert it returns the `_NO_CTX_REFUSAL` text and **never** reaches a store or `idempotent`; (b) with a valid ctx and `idempotent` replaced by a spy that records `tool_call_id`/`tool_name` and returns a canned string, assert it is called exactly once with the injected call id and the tool's own name. Parametrize over tool names so a failure names the offending tool. It must **fail** if someone removes `idempotent()` or the ctx check from any one tool (verify by temporarily deleting one in a scratch branch)
-- [ ] T072 [P] [US6] **Capability coverage for domain sets**: extend `tests/domains/test_write_tools_contract.py` with a test that every tool in every plugin's `tools()` appears in that plugin's `tool_capabilities()` or is deliberately absent and listed in an explicit allowlist in the test (so a *new* undeclared tool fails CI instead of being silently treated as `outward`)
+- [x] T071 [US6] **A7 — the contract test** (#68): `tests/domains/test_write_tools_contract.py` — enumerates every non-`read_only` tool of every plugin in `app/domains/registry.py::DOMAINS` (56 parametrized cases) and asserts each refuses without a valid identity and does nothing, and routes its real work through `idempotent()` with the injected `tool_call_id` and its own name (`test_the_inventory_found_the_write_tools`, `test_every_write_tool_has_sample_arguments`, `test_a_write_tool_refuses_without_a_valid_context_and_does_nothing`, `test_a_write_tool_runs_its_work_through_idempotent_with_its_call_id_and_name`); mutation-checked
+- [x] T072 [P] [US6] **Capability coverage for domain sets** (#68): `tests/domains/test_write_tools_contract.py::_write_tools` counts a tool a plugin leaves out of its capability mapping as `outward` (the default `should_continue` applies), so an unmapped tool is in scope; a new write tool without sample arguments fails with a pointer to `.claude/rules/side-effect-tools.md`
 
-**Checkpoint**: after T071–T072, Principle II/IV's tool-layer obligations are enforced, not just audited.
+**Checkpoint**: Principle II/IV's tool-layer obligations are enforced, not just audited (T071–T072 landed in #68).
 
 ---
 
 ## Phase 9: Polish & Cross-Cutting Concerns
 
 - [x] T073 [P] Pattern entries with their motivating bugs — patterns 8, 10, 15, 16, 36, 43, 46, 47 and the "Extending Further" duplicate-side-effect rounds — in `GRAPH_PATTERNS.md`; queue/worker design in `WORKER_CONCURRENCY.md`
-- [ ] T074 [P] **A11 — correct the docs (docs-only, do first)**: `GRAPH_PATTERNS.md` "Extending Further" (around lines 504, 505, 509) still says a retried `"turn"` is safe only if `_is_safe_to_retry_turn` finds no completed mutating/outward call; `_is_safe_to_retry_turn` no longer exists and such a turn is now **continued** via `_classify_reclaimed_turn` / `astream_events_continue_turn`. Rewrite those three entries to match the code; fix the two comments that still name it — the `agent_worker_job_reclaimed_total` description in `app/core/metrics.py` (around line 360) and `max_auto_reclaim_retries` in `app/core/config.py` (around line 287). Constitution Governance: a conflicting document MUST be corrected
-- [ ] T075 [P] **Disclose every open gap in the project docs now (docs-only)** — Principle VIII requires known limitations in README *Roadmap* or *Extending Further*; add one entry each for **B3**, **B4**, **A7**, **A10**, **A12**, **E2** and the notification window **R1** to `GRAPH_PATTERNS.md` *Extending Further* and a short list to the README *Roadmap*, each stating how it was established (reproduced vs. read) and that no unreviewed write results from any of them. Land this before any fix
+- [x] T074 [P] **A11 — corrected the docs** (#66): `GRAPH_PATTERNS.md` "Extending Further" and the two comments (`app/core/metrics.py`, `app/core/config.py`) now describe `_classify_reclaimed_turn` / `astream_events_continue_turn` instead of the removed `_is_safe_to_retry_turn`; other drift fixed in the same change (the recursion limit, the node count, the ingest-reclaim policy, moved file paths)
+- [x] T075 [P] **Open gaps disclosed in the project docs** (#66): thirteen verified gaps listed in `GRAPH_PATTERNS.md` "Extending Further" and a short list in the README, each stating how it was established; entries for fixed gaps are deleted by the fixing PR
 - [x] T076 [P] Ran `/speckit-analyze` (read-only) over `spec.md`, `plan.md`, `tasks.md` on 2026-10-02 and reconciled what it found — see this feature's `checklists/requirements.md` *Validation iterations* for the findings, the corrections made, and the items deliberately left for a decision (requirement-id traceability tags; `promtool check rules` in CI)
-- [ ] T077 Run `specs/003-approval-and-exactly-once-writes/quickstart.md` Tier 2 and Tier 3 (incl. *Replay safety* and *Crash recovery*) on a machine with Docker and a native Ollama, and record the result in the PR that closes the open follow-ups (Tier 1 was run on 2026-10-02: 400 passed; Scenarios B3 and B4 reproduced the defects)
+- [ ] T077 Run `specs/003-approval-and-exactly-once-writes/quickstart.md` Tier 2 and Tier 3 (incl. *Replay safety* and *Crash recovery*) on a machine with Docker and a native Ollama, and record the result in the PR that closes the open follow-ups (Tier 1: 400 passed on 2026-10-02, 465 on 2026-10-03 after #62–#69; Scenarios B3 and B4 reproduced the defects)
 
 ---
 
@@ -257,7 +255,7 @@ open test tasks below are the most valuable work in this file.
 - **US4** (P2) needs US2's wrapper (a replayed `resume` is safe *because* of it) and US3's checkpointing.
 - **US5** (P2) needs US1 (the gate) and US3 (`cancel_run`); T066's auto-cancel reuses it.
 - **US6** (P3) is independent of the others at the code level.
-- **Polish** last — except **T074** and **T075**, which land first.
+- **Polish** last — except **T074** and **T075**, which landed first (#66).
 
 ### Open follow-ups — independence and PR boundaries
 
@@ -265,16 +263,16 @@ CLAUDE.md: one logical change per PR, ≤ ~400 hand-written lines.
 
 | PR | Tasks | Touches | Notes |
 |----|-------|---------|-------|
-| 1 | T074, T075 | `GRAPH_PATTERNS.md`, README, two comments | docs-only; do first |
-| 2 | T044–T045 (B3), T050 (FR-010 tests) | `app/agent/graph.py`, two test files | test-first; one-line fix |
-| 3 | T065–T067 (B4) | `runtime_stream.py`, `telegram.py`, `config.py`, `.env.example`, tests | needs the round-cap decision |
-| 4 | T046–T047 (A12) | `runtime_stream.py`, `agent_worker.py`, tests | independent of B3/B4 |
-| 5 | T071–T072 (A7) | new `tests/domains/test_write_tools_contract.py` | tests only; independent |
+| 1 | T074, T075 | **done — #66** | — |
+| 2 | T044–T045 (B3) | **done — #62**; T050 (FR-010 tests) remains | — |
+| 3 | T065–T067 (B4) | **done — #63** | — |
+| 4 | T046–T047 (A12) | **done — #65** | — |
+| 5 | T071–T072 (A7) | **done — #68** | — |
 | 6 | T031 | new integration test | Docker; independent |
 | 6b | T058 (A13) | new `tests/integration/test_queue_reclaim_real_redis.py` | Docker; independent; the primitive crash recovery rests on |
 | 7 | T032–T033 (E2) | `tool_idempotency.py`, SQL header comment, tests | after T031 recommended |
 | 8 | T048–T049 (A10) | `runtime_stream.py`, new migration, tests | needs a retention decision |
-| 9 | T068 (A8) | `alerts.yml` | after PR 3 |
+| 9 | T068 (A8) | `alerts.yml` | unblocked — PR 3 landed |
 | — | T034 (R1), T035 (A9) | decision / small | bundle opportunistically |
 
 PRs 1, 2, 4, 5, 6 are mutually independent; run them in parallel.
@@ -309,27 +307,22 @@ by a later approval, and a second unattended pause — which only a two-step sce
 
 ### Closing the open follow-ups (what to do next)
 
-1. **PR 1 (docs)** now — A11 makes the docs *wrong* about crash recovery, and the disclosures make the open gaps
-   visible while they remain.
-2. **PR 2 (B3)** — smallest fix, clearest user impact (an approver's decision silently ignored).
-3. **PR 3 (B4)** — brings Principle II's wording back into line for unattended callers.
-4. **PRs 5–6** — turn the A7 audit and the real-constraint behavior into tests, so the NON-NEGOTIABLE principles
-   stop depending on review alone.
-5. **PRs 4, 7, 8, 9** — cancel coverage, tenant scoping of layer 1, auditability, alerting.
+1. ~~PR 1 (docs)~~ — done in #66.
+2. ~~PR 2 (B3)~~ — done in #62.
+3. ~~PR 3 (B4)~~ — done in #63.
+4. ~~PR 5 (A7)~~ — done in #68; **PR 6** (the real-constraint integration test, T031) and PR 6b (the real-Redis reclaim test, T058) remain, so the NON-NEGOTIABLE principles stop depending on review alone.
+5. ~~PR 4 (A12)~~ — done in #65; **PRs 7, 8, 9** remain — tenant scoping of layer 1, auditability, alerting.
 6. Re-run quickstart, then delete each resolved row from plan.md *Complexity Tracking*.
 
 ### MVP scope
 
 US1 + US2 (T001–T030) is the minimum that satisfies Principles II and IV at the tool layer; **US3** makes the gate
-durable and cancellable. Neither B3 nor B4 weakens the safety property, so the system is *safe* to run as it stands
-— but not **fully correct**: B3 silently drops an approver's decision after a prior cancel, and B4 can strand a
-chat-app conversation.
+durable and cancellable. Neither B3 nor B4 weakened the safety property, and both are now fixed (#62, #63): an approver's decision after a prior cancel is honored, and an unattended conversation is never left paused.
 
 ## Notes
 
-- `[x]` means "present", not "re-verified today" — only Tier 1 (400 passed) was re-run on 2026-10-02, plus the two
-  reproduction scenarios.
+- `[x]` means "present", not "re-verified today" — only Tier 1 was re-run — 400 passed on 2026-10-02 and 465 passed on 2026-10-03 after #62–#69.
 - Tier 2/3 and the real-constraint claims are **not** verified by this batch.
 - Features 001 (pipeline) and 002 (identity, ownership) own behavior this feature relies on; **B2** in feature 002
-  interacts with the approval authority (who may resume) and is tracked there.
+  interacted with the approval authority (who may resume) and was fixed in #67.
 - Do not run `make clean`, `clear-*` or `restart-all` while working these tasks.
