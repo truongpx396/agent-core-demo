@@ -147,37 +147,37 @@ class TestReserveAndReleaseTurnBudget:
     TestEntryPointsRefuseBeforeTouchingTheGraph below for the entry-point
     wiring itself)."""
 
-    async def test_reserve_returns_the_per_turn_ceiling_on_success(self, monkeypatch):
+    async def test_reserve_holds_the_per_turn_ceiling_and_returns_the_hold_id(self, monkeypatch):
         from app.agent import usage_ledger
 
         async def fake_reserve_budget(ctx, amount):
             assert amount == agent.MAX_COST_USD_PER_TURN
-            return True
+            return "hold-1"
 
         monkeypatch.setattr(usage_ledger, "reserve_budget", fake_reserve_budget)
-        assert await agent._reserve_turn_budget(TEST_CTX) == agent.MAX_COST_USD_PER_TURN
+        assert await agent._reserve_turn_budget(TEST_CTX) == "hold-1"
 
-    async def test_reserve_returns_zero_when_the_reservation_itself_fails(self, monkeypatch):
+    async def test_reserve_returns_none_when_the_reservation_itself_fails(self, monkeypatch):
         from app.agent import usage_ledger
 
         async def fake_reserve_budget(ctx, amount):
-            return False
+            return None
 
         monkeypatch.setattr(usage_ledger, "reserve_budget", fake_reserve_budget)
-        assert await agent._reserve_turn_budget(TEST_CTX) == 0.0
+        assert await agent._reserve_turn_budget(TEST_CTX) is None
 
-    async def test_release_forwards_to_usage_ledger_with_the_same_amount(self, monkeypatch):
+    async def test_release_forwards_to_usage_ledger_with_the_same_hold_id(self, monkeypatch):
         from app.agent import usage_ledger
 
         captured = {}
 
-        async def fake_release(ctx, amount):
-            captured.update(ctx=ctx, amount=amount)
+        async def fake_release(ctx, hold_id):
+            captured.update(ctx=ctx, hold_id=hold_id)
 
         monkeypatch.setattr(usage_ledger, "release_budget_reservation", fake_release)
-        await agent._release_turn_budget(TEST_CTX, 0.5)
+        await agent._release_turn_budget(TEST_CTX, "hold-1")
 
-        assert captured == {"ctx": TEST_CTX, "amount": 0.5}
+        assert captured == {"ctx": TEST_CTX, "hold_id": "hold-1"}
 
 
 class _GraphTouchedError(AssertionError):

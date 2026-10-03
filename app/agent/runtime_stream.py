@@ -508,7 +508,7 @@ async def astream_events_turn(
     # the same tenant starting moments later would see the exact same
     # `spent` this turn's own check just read, since usage_ledger only
     # gets this turn's real cost once it's done.
-    reserved_budget = await runtime_module._reserve_turn_budget(ctx)
+    budget_hold = await runtime_module._reserve_turn_budget(ctx)
     try:
         graph = await runtime_module.init_graph_async()
         pending = await paused_approval_async(graph, {"configurable": {"thread_id": thread_id}})
@@ -580,10 +580,10 @@ async def astream_events_turn(
         # internally (never raises in practice), and a reservation that
         # takes a few extra milliseconds to clear is harmless — it's not
         # on any correctness-critical path, only in_flight_reservation's
-        # own read, which also tolerates staleness up to
+        # own read, which also ignores a hold older than
         # RESERVATION_STALE_AFTER_MINUTES.
         release_task = asyncio.create_task(
-            runtime_module._release_turn_budget(ctx, reserved_budget)
+            runtime_module._release_turn_budget(ctx, budget_hold)
         )
         release_task.add_done_callback(_log_if_release_task_failed)
 

@@ -155,6 +155,10 @@ A fresh Postgres volume picks up their tables automatically
 (`postgres-init/07-support-tickets.sql`, `08-crm.sql`, `09-support-ticket-notes.sql`,
 `10-ops-incidents.sql`); against an existing volume, apply them by hand once.
 
+`16-tenant-budget-holds.sql` (the per-turn in-flight budget holds) is the same story for an existing volume, but if it is
+not applied the only effect is that the per-tenant daily cap stops counting turns that are still running — the
+reserve fails open and logs `tenant_budget_reservation_failed`.
+
 **Skills and subagents are domain-scoped, not just Ecorp-level.** Both
 catalogs support an optional `domains: [...]` frontmatter field
 (`app/agent/skills.py::SkillRecord`, `app/agent/subagents.py::SubagentRecord`)
@@ -1027,7 +1031,7 @@ from the library/service code in `app/`.
 | `.github/workflows/ci.yml` | Runs `ruff`/`mypy`/`pytest` (no live services needed) and a Docker build check on every push/PR against `main` |
 | `requirements-lock.txt`| Fully pinned freeze of `requirements.txt`'s runtime deps — what the `Dockerfile`/CI actually install from, so a build today and next year resolve identically |
 | `litellm-config.yaml`  | Model routing, retries, fallbacks, Langfuse callback, LiteLLM's own built-in Prometheus metrics callback |
-| `postgres-init/`       | SQL run automatically on a fresh postgres volume — `01-*.sql` (litellm/langfuse), `02-appdata.sql` (the `employees` table `query_employees` reads), `03-meter.sql` (the `usage_ledger` table `app/agent/usage_ledger.py` reads/writes) |
+| `postgres-init/`       | SQL run automatically on a fresh postgres volume — `01-*.sql` (litellm/langfuse), `02-appdata.sql` (the `employees` table `query_employees` reads), `03-meter.sql` (the `usage_ledger` table `app/agent/usage_ledger.py` reads/writes), `16-tenant-budget-holds.sql` (the in-flight budget holds the same module reserves against) |
 | **`app/core/`** — cross-cutting, depended on by every other subpackage | |
 | `app/core/config.py`        | Typed settings (Pydantic `BaseSettings`) |
 | `app/core/security.py`      | `SecurityCtx` + `Policy` — tenant/owner isolation, enforced as a Qdrant pre-filter (GRAPH_PATTERNS.md pattern 17) |
