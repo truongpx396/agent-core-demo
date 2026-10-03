@@ -413,7 +413,7 @@ async def _raw_sandbox_tools_or_raise() -> dict:
 
 async def _run_command_in_sandbox_impl(command: str, thread_id: str, ctx: SecurityCtx) -> str:
     return await sandbox_session.run_command_in_sandbox_impl(
-        command, thread_id, await _raw_sandbox_tools_or_raise()
+        command, thread_id, await _raw_sandbox_tools_or_raise(), tenant=ctx["tenant"]
     )
 
 
@@ -475,7 +475,7 @@ class RunPythonInSandboxArgs(BaseModel):
 
 async def _run_python_in_sandbox_impl(script: str, thread_id: str, ctx: SecurityCtx) -> str:
     return await sandbox_session.run_python_in_sandbox_impl(
-        script, thread_id, await _raw_sandbox_tools_or_raise()
+        script, thread_id, await _raw_sandbox_tools_or_raise(), tenant=ctx["tenant"]
     )
 
 
@@ -534,7 +534,7 @@ class ReadSandboxFileArgs(BaseModel):
 
 async def _read_sandbox_file_impl(path: str, thread_id: str, ctx: SecurityCtx) -> str:
     return await sandbox_session.read_sandbox_file_impl(
-        path, thread_id, await _raw_sandbox_tools_or_raise()
+        path, thread_id, await _raw_sandbox_tools_or_raise(), tenant=ctx["tenant"]
     )
 
 
@@ -577,7 +577,7 @@ class WriteSandboxFileArgs(BaseModel):
 
 async def _write_sandbox_file_impl(path: str, content: str, thread_id: str, ctx: SecurityCtx) -> str:
     return await sandbox_session.write_sandbox_file_impl(
-        path, content, thread_id, await _raw_sandbox_tools_or_raise()
+        path, content, thread_id, await _raw_sandbox_tools_or_raise(), tenant=ctx["tenant"]
     )
 
 

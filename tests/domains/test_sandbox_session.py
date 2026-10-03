@@ -47,13 +47,13 @@ class TestGetOrCreateSandboxId:
 
         raw = _raw(sandbox_list=fake_sandbox_list, sandbox_create=fake_sandbox_create)
 
-        sandbox_id = await sandbox_session.get_or_create_sandbox_id(raw, "thread-1")
+        sandbox_id = await sandbox_session.get_or_create_sandbox_id(raw, "thread-1", tenant="ecorp")
 
         assert sandbox_id == "sbx_existing"
-        assert captured_filter["metadata"] == {sandbox_session.SANDBOX_METADATA_KEY: "thread-1"}
+        assert captured_filter["metadata"] == sandbox_session._owner_tags("ecorp", "thread-1")
         assert captured_filter["states"] == ["RUNNING"]
 
-    async def test_creates_a_fresh_sandbox_tagged_with_the_thread_id_when_none_found(self):
+    async def test_creates_a_fresh_sandbox_tagged_for_the_tenant_and_thread_when_none_found(self):
         captured_create_kwargs = {}
 
         def fake_sandbox_list(filter):
@@ -65,10 +65,10 @@ class TestGetOrCreateSandboxId:
 
         raw = _raw(sandbox_list=fake_sandbox_list, sandbox_create=fake_sandbox_create)
 
-        sandbox_id = await sandbox_session.get_or_create_sandbox_id(raw, "thread-2")
+        sandbox_id = await sandbox_session.get_or_create_sandbox_id(raw, "thread-2", tenant="ecorp")
 
         assert sandbox_id == "sbx_new"
-        assert captured_create_kwargs["metadata"] == {sandbox_session.SANDBOX_METADATA_KEY: "thread-2"}
+        assert captured_create_kwargs["metadata"] == sandbox_session._owner_tags("ecorp", "thread-2")
         assert captured_create_kwargs["image"]  # a real image was passed, not left empty
 
     async def test_falls_through_to_create_when_the_list_call_itself_fails(self):
@@ -80,7 +80,7 @@ class TestGetOrCreateSandboxId:
 
         raw = _raw(sandbox_list=fake_sandbox_list, sandbox_create=fake_sandbox_create)
 
-        sandbox_id = await sandbox_session.get_or_create_sandbox_id(raw, "thread-3")
+        sandbox_id = await sandbox_session.get_or_create_sandbox_id(raw, "thread-3", tenant="ecorp")
 
         assert sandbox_id == "sbx_new"
 
@@ -94,7 +94,7 @@ class TestGetOrCreateSandboxId:
         raw = _raw(sandbox_list=fake_sandbox_list, sandbox_create=fake_sandbox_create)
 
         with pytest.raises(sandbox_session.SandboxCallFailed):
-            await sandbox_session.get_or_create_sandbox_id(raw, "thread-4")
+            await sandbox_session.get_or_create_sandbox_id(raw, "thread-4", tenant="ecorp")
 
     async def test_raises_when_create_succeeds_but_omits_a_sandbox_id(self):
         def fake_sandbox_list(filter):
@@ -106,7 +106,7 @@ class TestGetOrCreateSandboxId:
         raw = _raw(sandbox_list=fake_sandbox_list, sandbox_create=fake_sandbox_create)
 
         with pytest.raises(sandbox_session.SandboxCallFailed):
-            await sandbox_session.get_or_create_sandbox_id(raw, "thread-5")
+            await sandbox_session.get_or_create_sandbox_id(raw, "thread-5", tenant="ecorp")
 
 
 class TestRunCommandInSandboxImpl:
@@ -116,7 +116,7 @@ class TestRunCommandInSandboxImpl:
         def fake_sandbox_list(filter):
             if create_calls:
                 return json.dumps(
-                    {"sandbox_infos": [{"id": create_calls[-1], "status": {"state": "RUNNING"}}], "pagination": {}}
+                    {"sandbox_infos": [{"id": create_calls[-1], "status": {"state": "RUNNING"}, "metadata": filter["metadata"]}], "pagination": {}}
                 )
             return json.dumps({"sandbox_infos": [], "pagination": {}})
 
@@ -135,8 +135,8 @@ class TestRunCommandInSandboxImpl:
 
         raw = _raw(sandbox_list=fake_sandbox_list, sandbox_create=fake_sandbox_create, command_run=fake_command_run)
 
-        first = await sandbox_session.run_command_in_sandbox_impl("echo hi", "same-thread", raw)
-        second = await sandbox_session.run_command_in_sandbox_impl("echo bye", "same-thread", raw)
+        first = await sandbox_session.run_command_in_sandbox_impl("echo hi", "same-thread", raw, tenant="ecorp")
+        second = await sandbox_session.run_command_in_sandbox_impl("echo bye", "same-thread", raw, tenant="ecorp")
 
         assert len(create_calls) == 1  # only ONE sandbox created for both calls
         assert captured_run_kwargs[0]["sandbox_id"] == captured_run_kwargs[1]["sandbox_id"] == create_calls[0]
@@ -153,7 +153,7 @@ class TestRunCommandInSandboxImpl:
             ),
         )
 
-        result = await sandbox_session.run_command_in_sandbox_impl("ls", "t", raw)
+        result = await sandbox_session.run_command_in_sandbox_impl("ls", "t", raw, tenant="ecorp")
 
         assert "exit code: 0" in result
         assert "line1" in result
@@ -169,7 +169,7 @@ class TestRunCommandInSandboxImpl:
             ),
         )
 
-        result = await sandbox_session.run_command_in_sandbox_impl("false", "t", raw)
+        result = await sandbox_session.run_command_in_sandbox_impl("false", "t", raw, tenant="ecorp")
 
         assert "exit code: 1" in result
         assert "stdout: (empty)" in result
@@ -183,7 +183,7 @@ class TestRunCommandInSandboxImpl:
         )
 
         with pytest.raises(sandbox_session.SandboxCallFailed):
-            await sandbox_session.run_command_in_sandbox_impl("ls", "t", raw)
+            await sandbox_session.run_command_in_sandbox_impl("ls", "t", raw, tenant="ecorp")
 
 
 class TestRunPythonInSandboxImpl:
@@ -214,7 +214,7 @@ class TestRunPythonInSandboxImpl:
         )
 
         script = "print('it worked even with a \\'quote\\' inside')"
-        result = await sandbox_session.run_python_in_sandbox_impl(script, "t", raw)
+        result = await sandbox_session.run_python_in_sandbox_impl(script, "t", raw, tenant="ecorp")
 
         assert captured_write_kwargs["content"] == script  # passed through untouched, no shell escaping
         assert captured_write_kwargs["path"] == captured_run_kwargs["command"].split()[-1]
@@ -240,7 +240,7 @@ class TestRunPythonInSandboxImpl:
         )
 
         script = "text = \"db_timeout at 09:12, retry ok\"\nprint(text.count('db_timeout'))\n"
-        await sandbox_session.run_python_in_sandbox_impl(script, "t", raw)
+        await sandbox_session.run_python_in_sandbox_impl(script, "t", raw, tenant="ecorp")
 
         assert captured["content"] == script
 
@@ -252,7 +252,7 @@ class TestRunPythonInSandboxImpl:
         def fake_sandbox_list(filter):
             if create_calls:
                 return json.dumps(
-                    {"sandbox_infos": [{"id": create_calls[-1], "status": {"state": "RUNNING"}}], "pagination": {}}
+                    {"sandbox_infos": [{"id": create_calls[-1], "status": {"state": "RUNNING"}, "metadata": filter["metadata"]}], "pagination": {}}
                 )
             return json.dumps({"sandbox_infos": [], "pagination": {}})
 
@@ -268,8 +268,8 @@ class TestRunPythonInSandboxImpl:
             command_run=lambda **kw: json.dumps({"exit_code": 0, "logs": {"stdout": [], "stderr": []}}),
         )
 
-        await sandbox_session.run_command_in_sandbox_impl("echo hi", "same-thread", raw)
-        await sandbox_session.run_python_in_sandbox_impl("print(1)", "same-thread", raw)
+        await sandbox_session.run_command_in_sandbox_impl("echo hi", "same-thread", raw, tenant="ecorp")
+        await sandbox_session.run_python_in_sandbox_impl("print(1)", "same-thread", raw, tenant="ecorp")
 
         assert len(create_calls) == 1  # only ONE sandbox for both tools, same thread
 
@@ -281,7 +281,7 @@ class TestRunPythonInSandboxImpl:
         )
 
         with pytest.raises(sandbox_session.SandboxCallFailed):
-            await sandbox_session.run_python_in_sandbox_impl("print(1)", "t", raw)
+            await sandbox_session.run_python_in_sandbox_impl("print(1)", "t", raw, tenant="ecorp")
 
     async def test_strips_a_markdown_code_fence_the_model_wrapped_the_script_in(self):
         """Real bug, found live immediately after this tool shipped: the
@@ -303,7 +303,7 @@ class TestRunPythonInSandboxImpl:
         )
 
         fenced = "```python\nprint('hi')\n```"
-        await sandbox_session.run_python_in_sandbox_impl(fenced, "t", raw)
+        await sandbox_session.run_python_in_sandbox_impl(fenced, "t", raw, tenant="ecorp")
 
         assert captured["content"] == "print('hi')"
 
@@ -326,7 +326,7 @@ class TestRunPythonInSandboxImpl:
         )
 
         glued = "```python\nprint('hi')```"
-        await sandbox_session.run_python_in_sandbox_impl(glued, "t", raw)
+        await sandbox_session.run_python_in_sandbox_impl(glued, "t", raw, tenant="ecorp")
 
         assert captured["content"] == "print('hi')"
 
@@ -345,7 +345,7 @@ class TestRunPythonInSandboxImpl:
         )
 
         plain = "print('hi')"
-        await sandbox_session.run_python_in_sandbox_impl(plain, "t", raw)
+        await sandbox_session.run_python_in_sandbox_impl(plain, "t", raw, tenant="ecorp")
 
         assert captured["content"] == plain
 
@@ -368,7 +368,7 @@ class TestRunPythonInSandboxImpl:
         )
 
         script = "text = 'a fenced block looks like ```'\nprint(text)"
-        await sandbox_session.run_python_in_sandbox_impl(script, "t", raw)
+        await sandbox_session.run_python_in_sandbox_impl(script, "t", raw, tenant="ecorp")
 
         assert captured["content"] == script
 
@@ -377,12 +377,12 @@ class TestReadWriteSandboxFileImpl:
     async def test_read_returns_the_file_content(self):
         raw = _raw(
             sandbox_list=lambda filter: json.dumps(
-                {"sandbox_infos": [{"id": "sbx_1", "status": {"state": "RUNNING"}}], "pagination": {}}
+                {"sandbox_infos": [{"id": "sbx_1", "status": {"state": "RUNNING"}, "metadata": filter["metadata"]}], "pagination": {}}
             ),
             file_read=lambda **kw: json.dumps({"path": kw["path"], "content": "hello world"}),
         )
 
-        result = await sandbox_session.read_sandbox_file_impl("/tmp/out.txt", "t", raw)
+        result = await sandbox_session.read_sandbox_file_impl("/tmp/out.txt", "t", raw, tenant="ecorp")
 
         assert result == "hello world"
 
@@ -399,7 +399,7 @@ class TestReadWriteSandboxFileImpl:
             file_write=fake_file_write,
         )
 
-        result = await sandbox_session.write_sandbox_file_impl("/tmp/script.py", "print(1)", "t", raw)
+        result = await sandbox_session.write_sandbox_file_impl("/tmp/script.py", "print(1)", "t", raw, tenant="ecorp")
 
         assert "/tmp/script.py" in result
         assert captured["content"] == "print(1)"
@@ -411,7 +411,7 @@ class TestReadWriteSandboxFileImpl:
         def fake_sandbox_list(filter):
             if create_calls:
                 return json.dumps(
-                    {"sandbox_infos": [{"id": create_calls[-1], "status": {"state": "RUNNING"}}], "pagination": {}}
+                    {"sandbox_infos": [{"id": create_calls[-1], "status": {"state": "RUNNING"}, "metadata": filter["metadata"]}], "pagination": {}}
                 )
             return json.dumps({"sandbox_infos": [], "pagination": {}})
 
@@ -427,8 +427,8 @@ class TestReadWriteSandboxFileImpl:
             file_read=lambda **kw: json.dumps({"path": kw["path"], "content": "data"}),
         )
 
-        await sandbox_session.write_sandbox_file_impl("/tmp/a.txt", "x", "same-thread", raw)
-        await sandbox_session.read_sandbox_file_impl("/tmp/a.txt", "same-thread", raw)
+        await sandbox_session.write_sandbox_file_impl("/tmp/a.txt", "x", "same-thread", raw, tenant="ecorp")
+        await sandbox_session.read_sandbox_file_impl("/tmp/a.txt", "same-thread", raw, tenant="ecorp")
 
         assert len(create_calls) == 1
 

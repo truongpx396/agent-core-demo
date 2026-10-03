@@ -222,7 +222,7 @@ async def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved
 
     monkeypatch.setattr(ops_tools.sandbox_session, "load_raw_sandbox_tools", fake_load_raw_sandbox_tools)
 
-    async def fake_run_command_in_sandbox_impl(command, thread_id, raw):
+    async def fake_run_command_in_sandbox_impl(command, thread_id, raw, *, tenant):
         return "exit code: 0\nstdout:\n42.75\n"
 
     monkeypatch.setattr(
@@ -259,7 +259,7 @@ async def test_run_python_in_sandbox_pauses_for_approval_and_runs_once_approved(
 
     monkeypatch.setattr(ops_tools.sandbox_session, "load_raw_sandbox_tools", fake_load_raw_sandbox_tools)
 
-    async def fake_run_python_in_sandbox_impl(script, thread_id, raw):
+    async def fake_run_python_in_sandbox_impl(script, thread_id, raw, *, tenant):
         return "exit code: 0\nstdout:\n42.75\n"
 
     monkeypatch.setattr(

@@ -18,12 +18,26 @@ fields; this module gives sandbox access the same shape — one flat string
 arg per tool, full create/reuse/connect lifecycle handled here in code.
 The model never sees a sandbox_id or calls sandbox_create/sandbox_connect.
 
-## Per-thread reuse, server-side
-Each thread gets ONE sandbox, tagged `{SANDBOX_METADATA_KEY: thread_id}`
-at creation and found again via sandbox_list's metadata filter — a
-server-side lookup, not a process-local dict, so it stays correct across
-this app's horizontally-scaled workers (pattern 43): a resume picked up by
-a different worker than the one that created the sandbox still finds it.
+## Per-conversation reuse, server-side
+Each (tenant, conversation) pair gets ONE sandbox, tagged with
+`{SANDBOX_TENANT_KEY: sha(tenant), SANDBOX_THREAD_KEY: sha(thread_id)}` at
+creation and found again via sandbox_list's metadata filter — a server-side
+lookup, not a process-local dict, so it stays correct across this app's
+horizontally-scaled workers (pattern 43): a resume picked up by a different
+worker than the one that created the sandbox still finds it.
+
+The tags are hashes of the RAW values, never a rewrite of them. This used to
+tag the conversation id after squeezing it into OpenSandbox's metadata-value
+rules (every disallowed character became `-`, cut to 63), which made
+`telegram:12345` and `telegram-12345` — and any two ids sharing their first 63
+characters — resolve to ONE sandbox, and never looked at the tenant at all, so
+the same id under two tenants shared one too (spec 009 B24; Principle I). A
+hash always satisfies the value rules (hex), keeps a chat id out of the sandbox
+service in the clear, and differs whenever the input does. The tenant and the
+conversation are separate tags rather than one concatenation so no pair of
+values can be read as another. After the filtered lookup the tags on what came
+back are compared again, so a service that ignored the filter still can't hand
+one conversation another's files; an entry with no readable tags is not reused.
 
 `connect_if_missing=True` is passed on every command_run/file_read/
 file_write call unconditionally: `load_remote_tools` spawns a fresh
@@ -41,9 +55,9 @@ sandbox-up`):
 - file_write -> `{"status": "written"}`
 Tested against these shapes in tests/domains/test_sandbox_session.py.
 """
+import hashlib
 import json
 import logging
-import re
 
 from langchain_core.tools import BaseTool
 
@@ -52,7 +66,11 @@ from app.domains.sandbox_tools import load_sandbox_tools
 
 logger = logging.getLogger(__name__)
 
-SANDBOX_METADATA_KEY = "agent_core_thread"
+SANDBOX_TENANT_KEY = "agent_core_tenant_sha"
+SANDBOX_THREAD_KEY = "agent_core_thread_sha"
+# 40 hex chars = 160 bits: collision-free in practice, and under OpenSandbox's
+# 63-character metadata-value limit with the alphanumeric start/end it requires.
+_TAG_HEX_CHARS = 40
 SANDBOX_CALL_TIMEOUT_SECONDS = 60  # own budget vs TOOL_TIMEOUT_SECONDS:
 # command_run can legitimately run longer than a plain HTTP round trip.
 # Was briefly bumped to 150s after prod timeouts traced to
@@ -120,57 +138,58 @@ async def _call_raw_tool(raw: dict[str, BaseTool], name: str, **kwargs) -> dict:
     return parsed
 
 
-_INVALID_METADATA_CHARS = re.compile(r"[^A-Za-z0-9_.-]")
+def _tag_value(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:_TAG_HEX_CHARS]
 
 
-def _sanitize_thread_id_for_metadata(thread_id: str) -> str:
-    """OpenSandbox's metadata VALUE rules: <=63 chars, start/end
-    alphanumeric, only alphanumeric/-/_/. in between. Real thread_ids don't
-    satisfy this — telegram.py's `_thread_id_for_chat` returns
-    `f"telegram:{chat_id}"`, and that colon alone failed every
-    sandbox_create/sandbox_list call with SANDBOX::INVALID_METADATA_LABEL.
-    Sanitized here rather than changing thread_id's format at the source,
-    since thread_id is also the checkpointer key and Langfuse metadata —
-    this constraint is OpenSandbox's alone. Sanitized-value collisions are
-    theoretical at this app's scale."""
-    sanitized = _INVALID_METADATA_CHARS.sub("-", thread_id)[:63].strip("_-.")
-    return sanitized or "thread"
+def _owner_tags(tenant: str, thread_id: str) -> dict[str, str]:
+    """The metadata that identifies one (tenant, conversation) sandbox.
+    Refuses a blank tenant or conversation id: every blank value would hash to
+    the same tag and quietly become one shared bucket — the cross-tenant
+    sharing this exists to prevent. Upstream `valid_ctx` already guarantees a
+    non-empty tenant; this keeps the module safe if a caller ever skips it."""
+    if not tenant.strip() or not thread_id.strip():
+        raise SandboxCallFailed("refusing to find or create a sandbox without a tenant and a conversation id")
+    return {SANDBOX_TENANT_KEY: _tag_value(tenant), SANDBOX_THREAD_KEY: _tag_value(thread_id)}
 
 
-async def _find_existing_sandbox_id(raw: dict[str, BaseTool], sandbox_metadata_value: str) -> str | None:
-    """Looks up a RUNNING sandbox already tagged for this thread (see
-    module docstring). Returns None on not-found or lookup failure rather
-    than raising, so a failed lookup falls through to creating a fresh
-    sandbox instead of aborting the call."""
+async def _find_existing_sandbox_id(raw: dict[str, BaseTool], tags: dict[str, str]) -> str | None:
+    """Looks up a RUNNING sandbox already tagged for this (tenant,
+    conversation) (see module docstring). Returns None on not-found or lookup
+    failure rather than raising, so a failed lookup falls through to creating a
+    fresh sandbox instead of aborting the call.
+
+    Re-checks the tags of every entry returned instead of trusting the
+    server-side filter: an entry whose metadata is missing or differs is
+    skipped, so the worst a misbehaving service can cause is an extra sandbox,
+    never a shared one."""
     try:
-        result = await _call_raw_tool(
-            raw,
-            "sandbox_list",
-            filter={"metadata": {SANDBOX_METADATA_KEY: sandbox_metadata_value}, "states": ["RUNNING"]},
-        )
+        result = await _call_raw_tool(raw, "sandbox_list", filter={"metadata": tags, "states": ["RUNNING"]})
     except SandboxCallFailed as exc:
         logger.warning("sandbox_list_failed", extra={"error": str(exc)[:300]})
         return None
-    infos = result.get("sandbox_infos") or []
-    if not infos:
-        return None
-    return infos[0].get("id")
+    for info in result.get("sandbox_infos") or []:
+        found = info.get("metadata") or {}
+        if all(found.get(key) == value for key, value in tags.items()):
+            return info.get("id")
+    return None
 
 
-async def get_or_create_sandbox_id(raw: dict[str, BaseTool], thread_id: str) -> str:
-    """Reuse this thread's existing sandbox if sandbox_list finds one,
-    else create a fresh one tagged for it. Raises SandboxCallFailed if
-    creation fails (e.g. opensandbox-server unreachable, pattern 50) —
-    nothing to fall back to."""
-    sandbox_metadata_value = _sanitize_thread_id_for_metadata(thread_id)
-    existing = await _find_existing_sandbox_id(raw, sandbox_metadata_value)
+async def get_or_create_sandbox_id(raw: dict[str, BaseTool], thread_id: str, *, tenant: str) -> str:
+    """Reuse this (tenant, conversation)'s existing sandbox if sandbox_list
+    finds one, else create a fresh one tagged for it. Raises SandboxCallFailed
+    if creation fails (e.g. opensandbox-server unreachable, pattern 50) —
+    nothing to fall back to. `tenant` is keyword-only and has no default on
+    purpose: a caller that forgets it must fail loudly, not share a bucket."""
+    tags = _owner_tags(tenant, thread_id)
+    existing = await _find_existing_sandbox_id(raw, tags)
     if existing:
         return existing
     created = await _call_raw_tool(
         raw,
         "sandbox_create",
         image=SANDBOX_IMAGE,
-        metadata={SANDBOX_METADATA_KEY: sandbox_metadata_value},
+        metadata=tags,
         timeout_seconds=SANDBOX_TTL_SECONDS,
     )
     sandbox_id = created.get("sandbox_id")
@@ -194,8 +213,8 @@ def _format_execution(execution: dict) -> str:
     return "\n".join(lines)
 
 
-async def run_command_in_sandbox_impl(command: str, thread_id: str, raw: dict[str, BaseTool]) -> str:
-    sandbox_id = await get_or_create_sandbox_id(raw, thread_id)
+async def run_command_in_sandbox_impl(command: str, thread_id: str, raw: dict[str, BaseTool], *, tenant: str) -> str:
+    sandbox_id = await get_or_create_sandbox_id(raw, thread_id, tenant=tenant)
     execution = await _call_raw_tool(
         raw, "command_run", sandbox_id=sandbox_id, command=command, connect_if_missing=True
     )
@@ -227,7 +246,7 @@ def _strip_markdown_fence(script: str) -> str:
     return body
 
 
-async def run_python_in_sandbox_impl(script: str, thread_id: str, raw: dict[str, BaseTool]) -> str:
+async def run_python_in_sandbox_impl(script: str, thread_id: str, raw: dict[str, BaseTool], *, tenant: str) -> str:
     """Writes `script` to a file in this thread's sandbox, then runs it
     with `python3 <path>`. Exists as a separate tool from
     run_command_in_sandbox because `script` reaches `file_write` as a
@@ -235,7 +254,7 @@ async def run_python_in_sandbox_impl(script: str, thread_id: str, raw: dict[str,
     failures (`python -c '...'` colliding with its own quotes) that were
     the most common run_command_in_sandbox failure mode in practice."""
     script = _strip_markdown_fence(script)
-    sandbox_id = await get_or_create_sandbox_id(raw, thread_id)
+    sandbox_id = await get_or_create_sandbox_id(raw, thread_id, tenant=tenant)
     await _call_raw_tool(
         raw,
         "file_write",
@@ -254,7 +273,7 @@ async def run_python_in_sandbox_impl(script: str, thread_id: str, raw: dict[str,
     return _format_execution(execution)
 
 
-async def read_sandbox_file_impl(path: str, thread_id: str, raw: dict[str, BaseTool]) -> str:
+async def read_sandbox_file_impl(path: str, thread_id: str, raw: dict[str, BaseTool], *, tenant: str) -> str:
     # Known third-party bug: `file_read` (opensandbox-mcp==0.1.1 /
     # opensandbox-server==0.2.3) reliably 404s on a file this same process
     # just wrote via write_sandbox_file, even though it's genuinely on disk
@@ -262,13 +281,15 @@ async def read_sandbox_file_impl(path: str, thread_id: str, raw: dict[str, BaseT
     # command_run are unaffected. Workaround: each domain's
     # run_command_in_sandbox docstring tells the model to use `cat <path>`
     # instead of this tool.
-    sandbox_id = await get_or_create_sandbox_id(raw, thread_id)
+    sandbox_id = await get_or_create_sandbox_id(raw, thread_id, tenant=tenant)
     result = await _call_raw_tool(raw, "file_read", sandbox_id=sandbox_id, path=path, connect_if_missing=True)
     return result.get("content", "")
 
 
-async def write_sandbox_file_impl(path: str, content: str, thread_id: str, raw: dict[str, BaseTool]) -> str:
-    sandbox_id = await get_or_create_sandbox_id(raw, thread_id)
+async def write_sandbox_file_impl(
+    path: str, content: str, thread_id: str, raw: dict[str, BaseTool], *, tenant: str
+) -> str:
+    sandbox_id = await get_or_create_sandbox_id(raw, thread_id, tenant=tenant)
     await _call_raw_tool(
         raw, "file_write", sandbox_id=sandbox_id, path=path, content=content, connect_if_missing=True
     )
