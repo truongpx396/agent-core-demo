@@ -12,12 +12,14 @@ async code from a plain `def test_...`. `embed_sparse_batch` stays a plain
 sync mock — that leg is genuinely local ONNX compute, unchanged.
 """
 
+import socket
+
 import httpx
 import pytest
 
 from app.ingestion import ingestor
 from app.retrieval import qdrant_store
-from tests.conftest import TEST_CTX
+from tests.conftest import TEST_CTX, metric_value
 
 
 def _mock_embeddings(monkeypatch):
@@ -231,59 +233,82 @@ class TestIngestFile:
 
 
 class TestAssertSafeUrl:
-    def test_rejects_non_https_scheme(self):
-        with pytest.raises(ingestor.IngestRefused):
-            ingestor._assert_safe_url("http://example.com")
+    """`ingestor._assert_safe_url` is the async wrapper around
+    `url_safety.assert_safe_url_async` that turns a refusal into
+    `IngestRefused` + the refusal metric. The address classification itself is
+    exhaustively covered in tests/core/test_url_safety.py; this class covers the
+    translation and that the wrapper is wired to a resolver that does not block
+    the event loop."""
 
-    def test_rejects_a_url_resolving_to_a_private_address(self, monkeypatch):
+    async def test_rejects_non_https_scheme(self):
+        with pytest.raises(ingestor.IngestRefused):
+            await ingestor._assert_safe_url("http://example.com")
+
+    async def test_rejects_a_url_resolving_to_a_private_address(self, monkeypatch):
         monkeypatch.setattr(
-            ingestor.socket,
+            socket,
             "getaddrinfo",
-            lambda host, port: [(2, 1, 6, "", ("10.0.0.5", 0))],
+            lambda host, port, *args, **kwargs: [(2, 1, 6, "", ("10.0.0.5", 0))],
         )
         with pytest.raises(ingestor.IngestRefused):
-            ingestor._assert_safe_url("https://internal.example.com")
+            await ingestor._assert_safe_url("https://internal.example.com")
 
-    def test_rejects_a_url_resolving_to_loopback(self, monkeypatch):
+    async def test_rejects_a_url_resolving_to_loopback(self, monkeypatch):
         monkeypatch.setattr(
-            ingestor.socket,
+            socket,
             "getaddrinfo",
-            lambda host, port: [(2, 1, 6, "", ("127.0.0.1", 0))],
+            lambda host, port, *args, **kwargs: [(2, 1, 6, "", ("127.0.0.1", 0))],
         )
         with pytest.raises(ingestor.IngestRefused):
-            ingestor._assert_safe_url("https://localhost.example.com")
+            await ingestor._assert_safe_url("https://localhost.example.com")
 
-    def test_rejects_if_any_resolved_address_is_private_even_if_others_are_public(
+    async def test_rejects_if_any_resolved_address_is_private_even_if_others_are_public(
         self, monkeypatch
     ):
         monkeypatch.setattr(
-            ingestor.socket,
+            socket,
             "getaddrinfo",
-            lambda host, port: [
+            lambda host, port, *args, **kwargs: [
                 (2, 1, 6, "", ("93.184.216.34", 0)),  # public
                 (2, 1, 6, "", ("192.168.1.1", 0)),  # private
             ],
         )
         with pytest.raises(ingestor.IngestRefused):
-            ingestor._assert_safe_url("https://mixed.example.com")
+            await ingestor._assert_safe_url("https://mixed.example.com")
 
-    def test_allows_a_url_resolving_only_to_public_addresses(self, monkeypatch):
+    async def test_allows_a_url_resolving_only_to_public_addresses(self, monkeypatch):
         monkeypatch.setattr(
-            ingestor.socket,
+            socket,
             "getaddrinfo",
-            lambda host, port: [(2, 1, 6, "", ("93.184.216.34", 0))],
+            lambda host, port, *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 0))],
         )
-        ingestor._assert_safe_url("https://example.com")  # must not raise
+        await ingestor._assert_safe_url("https://example.com")  # must not raise
 
-    def test_rejects_unresolvable_host(self, monkeypatch):
-        import socket as socket_module
+    async def test_rejects_unresolvable_host(self, monkeypatch):
+        def raise_gaierror(host, port, *args, **kwargs):
+            raise socket.gaierror("nodename nor servname provided")
 
-        def raise_gaierror(host, port):
-            raise socket_module.gaierror("nodename nor servname provided")
-
-        monkeypatch.setattr(ingestor.socket, "getaddrinfo", raise_gaierror)
+        monkeypatch.setattr(socket, "getaddrinfo", raise_gaierror)
         with pytest.raises(ingestor.IngestRefused):
-            ingestor._assert_safe_url("https://nonexistent.invalid")
+            await ingestor._assert_safe_url("https://nonexistent.invalid")
+
+    async def test_a_refusal_is_counted_as_ssrf_blocked(self, monkeypatch):
+        monkeypatch.setattr(
+            socket,
+            "getaddrinfo",
+            lambda host, port, *args, **kwargs: [(2, 1, 6, "", ("100.100.100.200", 0))],
+        )
+        before = metric_value(ingestor.metrics.agent_ingest_refused_total, reason="ssrf_blocked")
+
+        with pytest.raises(ingestor.IngestRefused):
+            await ingestor._assert_safe_url("https://metadata.example.com")
+
+        after = metric_value(ingestor.metrics.agent_ingest_refused_total, reason="ssrf_blocked")
+        assert after == before + 1
+
+
+async def _allow_any_url(url):
+    return None
 
 
 class _FakeResponse:
@@ -313,7 +338,7 @@ class _FakeClient:
 
 class TestIngestUrl:
     async def test_refuses_before_any_fetch_when_url_is_unsafe(self, monkeypatch):
-        def always_unsafe(url):
+        async def always_unsafe(url):
             raise ingestor.IngestRefused("blocked")
 
         monkeypatch.setattr(ingestor, "_assert_safe_url", always_unsafe)
@@ -321,7 +346,7 @@ class TestIngestUrl:
             await ingestor.ingest_url("https://blocked.example.com", ctx=TEST_CTX)
 
     async def test_strips_html_before_ingesting(self, monkeypatch):
-        monkeypatch.setattr(ingestor, "_assert_safe_url", lambda url: None)
+        monkeypatch.setattr(ingestor, "_assert_safe_url", _allow_any_url)
         html = "<html><body><script>evil()</script><p>Real content here.</p></body></html>"
         fake_response = _FakeResponse(
             status_code=200,
@@ -349,7 +374,7 @@ class TestIngestUrl:
         assert captured["source"] == "url:https://example.com/page"
 
     async def test_refuses_when_response_exceeds_size_limit(self, monkeypatch):
-        monkeypatch.setattr(ingestor, "_assert_safe_url", lambda url: None)
+        monkeypatch.setattr(ingestor, "_assert_safe_url", _allow_any_url)
         big = b"x" * (ingestor._MAX_URL_BYTES + 1)
         fake_response = _FakeResponse(status_code=200, content=big, text="x", headers={})
         monkeypatch.setattr(
@@ -360,7 +385,7 @@ class TestIngestUrl:
             await ingestor.ingest_url("https://example.com/huge", ctx=TEST_CTX)
 
     async def test_refuses_on_http_error_status(self, monkeypatch):
-        monkeypatch.setattr(ingestor, "_assert_safe_url", lambda url: None)
+        monkeypatch.setattr(ingestor, "_assert_safe_url", _allow_any_url)
         fake_response = _FakeResponse(status_code=404, content=b"", text="", headers={})
         monkeypatch.setattr(
             ingestor.httpx, "AsyncClient", lambda **kw: _FakeClient(fake_response)
@@ -370,7 +395,7 @@ class TestIngestUrl:
             await ingestor.ingest_url("https://example.com/missing", ctx=TEST_CTX)
 
     async def test_refuses_on_transport_error(self, monkeypatch):
-        monkeypatch.setattr(ingestor, "_assert_safe_url", lambda url: None)
+        monkeypatch.setattr(ingestor, "_assert_safe_url", _allow_any_url)
         monkeypatch.setattr(
             ingestor.httpx,
             "AsyncClient",
@@ -383,7 +408,7 @@ class TestIngestUrl:
     async def test_does_not_follow_redirects(self, monkeypatch):
         """SSRF-relevant: a validated URL redirecting to an unvalidated one
         must not be silently followed — see _assert_safe_url's docstring."""
-        monkeypatch.setattr(ingestor, "_assert_safe_url", lambda url: None)
+        monkeypatch.setattr(ingestor, "_assert_safe_url", _allow_any_url)
         captured_kwargs = {}
 
         def fake_client(**kwargs):

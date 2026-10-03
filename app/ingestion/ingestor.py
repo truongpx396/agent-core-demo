@@ -13,15 +13,10 @@ Every item is stamped with `tenant`/`principal` from a `SecurityCtx` and
 refused without one — ownerless content is never ingested as tenant-less/
 public (mirrors `app/core/security.py`'s fail-closed discipline).
 """
-# socket is unused directly below but kept imported: tests monkeypatch
-# ingestor.socket.getaddrinfo, and since `socket` is a shared module in
-# sys.modules, that mutation is visible to url_safety.py too (where the
-# actual lookup now runs).
 import asyncio
 import hashlib
 import html.parser
 import logging
-import socket  # noqa: F401
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
@@ -31,7 +26,7 @@ import httpx
 from app.core import metrics
 from app.core.security import SecurityCtx, valid_ctx
 from app.core.url_safety import UnsafeURLError
-from app.core.url_safety import assert_safe_url as _assert_safe_url_impl
+from app.core.url_safety import assert_safe_url_async as _assert_safe_url_impl
 from app.ingestion.chunking import chunk_text
 from app.retrieval import qdrant_store
 from app.retrieval.embeddings import EMBED_BATCH_SIZE, embed_sparse_batch, embed_texts
@@ -232,14 +227,15 @@ class _TextExtractor(html.parser.HTMLParser):
         return "\n\n".join(self._chunks)
 
 
-def _assert_safe_url(url: str) -> None:
+async def _assert_safe_url(url: str) -> None:
     """SSRF guard — the actual check lives in `app/core/url_safety.py`,
     shared with `app/ingestion/web_crawler.py`'s render path. This wrapper
     just translates `UnsafeURLError` into this module's `IngestRefused` and
     records the refusal metric; see `url_safety.py` for the disclosed
-    DNS-rebinding gap."""
+    DNS-rebinding gap. Async because the name lookup must not block the event
+    loop this runs on."""
     try:
-        _assert_safe_url_impl(url)
+        await _assert_safe_url_impl(url)
     except UnsafeURLError as exc:
         metrics.agent_ingest_refused_total.labels(reason="ssrf_blocked").inc()
         raise IngestRefused(str(exc)) from exc
@@ -250,7 +246,7 @@ async def ingest_url(url: str, ctx: SecurityCtx | None, topic: str | None = None
     present, and ingest the result. `follow_redirects=False`: a validated
     URL that redirects to an unvalidated one would otherwise reintroduce
     the exact SSRF surface the guard exists to close."""
-    _assert_safe_url(url)
+    await _assert_safe_url(url)
     try:
         async with httpx.AsyncClient(follow_redirects=False, timeout=_URL_TIMEOUT_SECONDS) as client:
             response = await client.get(

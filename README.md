@@ -393,8 +393,9 @@ ingest_url("https://example.com/article", ctx)        # SSRF-guarded fetch
 ingest_text("some pasted text", title="My Notes", ctx=ctx)
 ```
 
-`ingest_url` is SSRF-guarded (https-only, rejects any URL resolving to a
-private/loopback/link-local address, no redirect following) — see its
+`ingest_url` is SSRF-guarded (https-only, accepts only a URL whose every resolved
+address is globally routable — so private, loopback, link-local and carrier-grade-NAT
+ranges are all refused — no redirect following) — see its
 docstring for the one disclosed limitation (a DNS-rebinding race between
 validation and fetch).
 
