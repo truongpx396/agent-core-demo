@@ -582,6 +582,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t agent-core-demo:ci .
+      # Building proves the Dockerfile parses and the dependencies install; it
+      # says nothing about whether the image can DO anything. This image once
+      # built green for weeks while containing no skills, no subagents and no
+      # sandbox bridge — all three degrade to "empty" instead of failing, so the
+      # API and workers booted healthy and simply lacked the features. Running
+      # the image is the only check that sees what actually landed (a text test
+      # of the Dockerfile, tests/core/test_dockerfile_runtime_files.py, only
+      # catches the cause earlier and without Docker). Run as the image's own
+      # interpreter and working directory, exactly as a container would.
+      - name: The image contains what the app reads at runtime
+        run: |
+          docker run --rm -i --entrypoint python agent-core-demo:ci - <<'PY'
+          import os
+          import sys
+
+          from app.agent import skills, subagents
+          from app.domains import sandbox_tools
+
+          problems = []
+          if not skills.load_skills():
+              problems.append("the skill catalog is empty (skills/ is missing from the image)")
+          if not subagents.load_subagents():
+              problems.append("the subagent catalog is empty (subagents/ is missing from the image)")
+          if not os.path.isfile(sandbox_tools._BRIDGE_SCRIPT):
+              problems.append(f"the sandbox MCP bridge is missing: {sandbox_tools._BRIDGE_SCRIPT}")
+          try:
+              import scripts.index_skills  # noqa: F401
+          except ImportError as exc:
+              problems.append(f"the scripts package is missing or broken: {exc}")
+
+          for problem in problems:
+              print(f"::error::{problem}")
+          sys.exit(1 if problems else 0)
+          PY
 
   trivy:
     # See this file's own header comment for the hard-gate-CRITICAL-only,
