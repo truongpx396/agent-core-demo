@@ -1,0 +1,43 @@
+# Who must look at a change before it merges. GitHub applies the LAST matching pattern, so the
+# catch-all goes first and the narrower, riskier paths below override it.
+#
+# Today there is one maintainer, so every line names the same account and this file does two
+# things only: it auto-requests that review on every PR, and it lists which paths carry the
+# constitution's non-negotiables (.specify/memory/constitution.md) so a second maintainer or a
+# team can be dropped in per path without anyone re-deriving the map. It does NOT block a merge
+# by itself — that needs the "Require review from Code Owners" branch-protection rule on `main`,
+# which is deliberately not enabled while a sole maintainer could never approve their own PR.
+# Turn that rule on the day a second code owner exists; nothing in this file needs to change.
+
+*                                   @truongpx396
+
+# The constitution itself — amended only through /speckit-constitution and a PR (CLAUDE.md).
+/.specify/memory/constitution.md    @truongpx396
+
+# Principle I (tenant isolation), VI (untrusted content is data): the identity context and the
+# code that fences untrusted text.
+/app/core/security.py               @truongpx396
+/app/core/untrusted.py              @truongpx396
+
+# Principles II and IV (approval gate, exactly-once side effects): capability tiers, the HITL
+# gate, idempotency, and the one place tenant-scoped SQL connections are pooled.
+/app/agent/tools.py                 @truongpx396
+/app/agent/tool_idempotency.py      @truongpx396
+/app/agent/graph_hitl.py            @truongpx396
+/app/agent/sql_store.py             @truongpx396
+
+# Every domain's write tools and the SQL behind them (side-effect-tools checklist applies).
+/app/domains/*/tools.py             @truongpx396
+/app/domains/*/store.py             @truongpx396
+
+# Schema: auto-runs on a fresh volume only, so a mistake here is not a normal revert.
+/postgres-init/                     @truongpx396
+
+# What runs with secrets or ships to production, and what shapes Claude's own guardrails.
+/.github/                           @truongpx396
+/.claude/settings.json              @truongpx396
+/.claude/hooks/                     @truongpx396
+/infra/                             @truongpx396
+/Dockerfile                         @truongpx396
+/requirements.txt                   @truongpx396
+/requirements-lock.txt              @truongpx396

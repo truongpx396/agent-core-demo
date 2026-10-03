@@ -1,0 +1,23 @@
+# Keeps the commit-SHA pins in .github/workflows/*.yml from rotting. A pinned `uses:` line is
+# immutable, which is the point (a moved or force-pushed tag can no longer change what CI runs
+# with our secrets), but it also never updates itself: without this file the pins freeze at
+# today's versions and quietly miss security fixes in the actions themselves.
+#
+# Deliberately github-actions ONLY. The pip ecosystem is left out on purpose:
+# requirements-lock.txt is machine-generated from requirements.txt (regenerate, don't hand-edit —
+# CLAUDE.md), and a Dependabot PR would hand-edit exactly that file. Revisit if/when the lock is
+# produced by a tool Dependabot understands.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # One PR for the whole batch rather than eleven: they are reviewed the same way (diff the
+    # action's release notes, let CI run) and a single PR keeps the weekly noise to one CI cycle.
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      # Matches the repo's commit prefixes (fix:/feat:/test:/docs:/infra:/chore:).
+      prefix: infra

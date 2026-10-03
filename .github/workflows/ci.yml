@@ -97,8 +97,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13"
       - run: pip install ruff==0.16.4
@@ -107,8 +107,8 @@ jobs:
   typecheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13"
       - run: pip install -r requirements-lock.txt mypy==2.3.1
@@ -117,8 +117,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13"
       - run: pip install -r requirements-lock.txt pytest-xdist==3.8.0
@@ -130,8 +130,8 @@ jobs:
     # have Docker running, no extra setup step needed.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13"
       - run: >
@@ -162,8 +162,8 @@ jobs:
     # bind-mounted into a fresh container each run).
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13"
       - run: >
@@ -176,7 +176,7 @@ jobs:
       # testcontainers, see above), but this job still needs a real browser
       # itself.
       - run: playwright install --with-deps chromium
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/agent-core-demo-ollama-models
           key: ollama-models-${{ runner.os }}-${{ env.TEST_LLM_MODEL }}
@@ -246,14 +246,14 @@ jobs:
     # ran. A plain step-ordered `docker run` avoids that entirely.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/agent-core-demo-ollama-models
           key: ollama-models-${{ runner.os }}-${{ env.PROMPTFOO_MODEL }}
@@ -403,8 +403,8 @@ jobs:
     # `shell: bash` there is the fix, verified against GitHub's own docs.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13"
       - run: pip install -r requirements-lock.txt "testcontainers[postgres,redis,ollama]==4.9.0" ollama==0.6.2
@@ -454,7 +454,7 @@ jobs:
       # with no downgrade needed).
       - run: pip install --no-deps google-genai==2.24.0
       - run: pip install google-auth==2.58.0
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/agent-core-demo-ollama-models
           key: ollama-models-${{ runner.os }}-${{ env.DEEPEVAL_MODEL }}
@@ -570,7 +570,7 @@ jobs:
           PLUGSKY_API_KEY: ${{ secrets.PLUGSKY_API_KEY }}
       - name: Upload deepeval results (score/reason fields, read by hand — same posture as redteam.yml's own artifact)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: deepeval-results-${{ github.run_id }}
           path: deepeval-results.log
@@ -580,7 +580,7 @@ jobs:
   docker-build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: docker build -t agent-core-demo:ci .
       # Building proves the Dockerfile parses and the dependencies install; it
       # says nothing about whether the image can DO anything. This image once
@@ -646,7 +646,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # infra/terraform excluded below: Checkov (the `checkov` job,
       # .checkov.yaml) owns IaC misconfig scanning for that directory —
@@ -659,7 +659,7 @@ jobs:
       # (confirmed empirically: a real checkov run against this exact
       # firewall resource passes clean).
       - name: Trivy fs — hard gate (fixable CRITICAL vulns + secrets + IaC misconfig)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         env:
           TRIVY_FILE_PATTERNS: 'pip:requirements-lock\.txt$'
         with:
@@ -673,7 +673,7 @@ jobs:
 
       - name: Trivy fs — full report (HIGH+CRITICAL, incl. unfixed) → SARIF
         if: always()
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         env:
           TRIVY_FILE_PATTERNS: 'pip:requirements-lock\.txt$'
         with:
@@ -689,7 +689,7 @@ jobs:
 
       - name: Upload fs report to the Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           sarif_file: trivy-fs-results.sarif
           category: trivy-fs
@@ -709,7 +709,7 @@ jobs:
 
       - name: Trivy image — hard gate (fixable CRITICAL vulns)
         if: always()
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: agent-core-demo:trivy
           severity: CRITICAL
@@ -719,7 +719,7 @@ jobs:
 
       - name: Trivy image — full report (HIGH+CRITICAL, incl. unfixed) → SARIF
         if: always()
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: agent-core-demo:trivy
           severity: HIGH,CRITICAL
@@ -730,7 +730,7 @@ jobs:
 
       - name: Upload image report to the Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           sarif_file: trivy-image-results.sarif
           category: trivy-image
@@ -751,8 +751,8 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13"
       - run: pip install semgrep==1.177.0
@@ -773,7 +773,7 @@ jobs:
 
       - name: Upload report to the Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           sarif_file: semgrep-results.sarif
           category: semgrep
@@ -792,8 +792,8 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.13"
       - run: pip install checkov==3.3.17
@@ -807,7 +807,7 @@ jobs:
 
       - name: Upload report to the Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           sarif_file: results_sarif.sarif
           category: checkov
@@ -837,7 +837,7 @@ jobs:
     # no-op) — no extra polling script or third-party Action needed.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0 # the SCM Publisher sensor wants real git blame history, not a shallow clone
 
