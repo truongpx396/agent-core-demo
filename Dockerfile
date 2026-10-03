@@ -51,6 +51,26 @@ ENV HOME=/home/appuser
 
 COPY app/ ./app/
 
+# Everything the app opens at runtime that is NOT under app/. Each of these
+# degrades QUIETLY when absent, so an image built without them boots healthy and
+# is simply missing the feature — which is how this image shipped for a while,
+# with no skills, no subagents (so no `run_subagent`) and no sandbox tools:
+#   skills/, subagents/ — the catalogs `load_skills()` / `load_subagents()` scan
+#       (`SKILLS_DIR` / `SUBAGENTS_DIR`, relative to WORKDIR); an absent
+#       directory is `{}`, not an error.
+#   scripts/ — `opensandbox_mcp_bridge.py`, which `load_sandbox_tools()` spawns
+#       with this interpreter (no bridge: zero sandbox tools, with only a
+#       logged warning), plus `python -m scripts.index_skills` / `seed` and the
+#       cron jobs (`ops_digest`, `followup_sweep`, `tool_call_dedup_sweep`) that
+#       an operator runs inside the container. The whole package ships rather
+#       than a hand-picked list that would drift the next time one is added.
+# tests/test_dockerfile_runtime_files.py fails if one of these stops being copied
+# (or is dropped by .dockerignore); CI's `docker-build` job runs the built image
+# to prove they actually landed.
+COPY skills/ ./skills/
+COPY subagents/ ./subagents/
+COPY scripts/ ./scripts/
+
 # Both caches above were written as root (HOME already pointed at
 # /home/appuser, but the process creating them still ran as root) —
 # appuser needs a writable HOME, and needs to actually OWN what's already
