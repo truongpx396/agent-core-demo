@@ -21,6 +21,7 @@ since only the EVENT SHAPE is under test here.
 """
 import json
 import uuid
+from types import SimpleNamespace
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
@@ -652,8 +653,11 @@ class _RaisingStreamGraph:
         raise self._exc
         yield  # pragma: no cover - makes this an async generator
 
-    async def aget_state(self, cfg):  # pragma: no cover - never reached on the error path
-        raise AssertionError("aget_state must not be called after a failure")
+    async def aget_state(self, cfg):
+        # Read after a failure so the tokens the turn had already spent can be
+        # recorded (spec 008, B17; tests/agent/test_unfinished_turn_usage.py).
+        # An empty checkpoint here: nothing was spent, nothing to record.
+        return SimpleNamespace(values={}, next=(), tasks=[])
 
 
 async def _stream_raising(exc):
