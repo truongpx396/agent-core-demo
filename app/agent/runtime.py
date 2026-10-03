@@ -158,24 +158,21 @@ def _tenant_budget_envelope() -> ErrorEnvelope:
     )
 
 
-async def _reserve_turn_budget(ctx: SecurityCtx | None) -> float:
+async def _reserve_turn_budget(ctx: SecurityCtx | None) -> str | None:
     """Called once a turn has passed `_tenant_over_daily_budget` and is
-    about to actually run — reserves MAX_COST_USD_PER_TURN (the hard cap
+    about to actually run — holds MAX_COST_USD_PER_TURN (the hard cap
     graph_routing.py::should_continue already enforces per turn, so it's
     always a safe upper bound on what this turn could cost) against this
-    tenant's in-flight total. Returns the amount actually reserved (0.0 if
-    `ctx` is invalid or the reservation write itself failed) — callers pass
-    this straight to `_release_turn_budget` in a `finally`, so a failed
-    reservation and a real one both round-trip correctly (releasing 0.0 is
-    a no-op)."""
+    tenant's in-flight total. Returns the hold's id, or None if `ctx` is
+    invalid or the write itself failed — callers pass this straight to
+    `_release_turn_budget` in a `finally`, so a failed reservation and a real
+    one both round-trip correctly (releasing None is a no-op)."""
     from app.agent import usage_ledger
 
-    if await usage_ledger.reserve_budget(ctx, MAX_COST_USD_PER_TURN):
-        return MAX_COST_USD_PER_TURN
-    return 0.0
+    return await usage_ledger.reserve_budget(ctx, MAX_COST_USD_PER_TURN)
 
 
-async def _release_turn_budget(ctx: SecurityCtx | None, amount: float) -> None:
+async def _release_turn_budget(ctx: SecurityCtx | None, hold_id: str | None) -> None:
     """Reverses `_reserve_turn_budget` — called unconditionally once a
     turn ends (success, failure, or timeout), never only on success: the
     reservation's whole job is to cover the WINDOW while this turn is
@@ -184,7 +181,7 @@ async def _release_turn_budget(ctx: SecurityCtx | None, amount: float) -> None:
     completed turn)."""
     from app.agent import usage_ledger
 
-    await usage_ledger.release_budget_reservation(ctx, amount)
+    await usage_ledger.release_budget_reservation(ctx, hold_id)
 
 
 async def _upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> None:
