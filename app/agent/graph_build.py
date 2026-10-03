@@ -138,7 +138,8 @@ def build_graph(
         deps.cache_get or graph_module._default_cache_get
     )
     write_semantic_cache = make_write_semantic_cache_node(
-        deps.cache_set or graph_module._default_cache_set
+        deps.cache_set or graph_module._default_cache_set,
+        parts.tool_capabilities,
     )
 
     builder = StateGraph(State)

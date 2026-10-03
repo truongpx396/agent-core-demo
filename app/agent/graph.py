@@ -44,7 +44,7 @@ import logging
 import os
 import subprocess
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict
 
@@ -646,6 +646,7 @@ class _SharedGraphParts:
     deps: GraphDeps
     manifest: "AgentManifest"
     domain_tools: list
+    tool_capabilities: Mapping[str, str]
     llm_client: Any
     agent: Callable
     retrieve_context: Callable
@@ -718,6 +719,7 @@ def _assemble_shared_graph_parts(
         deps=deps,
         manifest=manifest,
         domain_tools=domain_tools,
+        tool_capabilities=domain_tool_capabilities,
         llm_client=llm_client,
         agent=agent,
         retrieve_context=retrieve_context,
