@@ -720,6 +720,48 @@ promptfoo/garak/`scripts/eval.py` are complementary rather than redundant):
    model, and a maintainer's own judgment call before a release — not a
    per-PR gate).
 
+## AI review (advisory)
+
+`.github/workflows/ai-review.yml` has an LLM read each PR's diff and leave **one comment, edited in
+place**, checked against the constitution's non-negotiables (`.github/ai-review-rules.md`). It is
+a first pass for the human reviewer: it never fails a check, isn't a required status, and doesn't
+approve anything. It is also **off until you configure it**, so merging the workflow sends no code
+anywhere.
+
+**Any OpenAI-compatible provider.** `scripts/ai_review.py` (stdlib only) calls
+`POST {AI_REVIEW_BASE_URL}/chat/completions` with just `model` + `messages`. In Settings → Secrets
+and variables → Actions set the variables `AI_REVIEW_BASE_URL` (e.g. `https://api.openai.com/v1`,
+Groq, OpenRouter, a Gemini OpenAI-compat URL, or your own vLLM/LiteLLM the runner can reach) and
+`AI_REVIEW_MODEL`, the secret `AI_REVIEW_API_KEY` (optional for keyless endpoints), and create a
+label named `ai-review`. Switching provider is changing those two variables. Try one from a laptop
+without posting anything:
+
+```bash
+AI_REVIEW_DRY_RUN=1 PR_NUMBER=<n> GITHUB_REPOSITORY=<owner>/<repo> GITHUB_TOKEN=$(gh auth token) \
+  AI_REVIEW_BASE_URL=https://api.openai.com/v1 AI_REVIEW_MODEL=<model> AI_REVIEW_API_KEY=<key> \
+  python3 scripts/ai_review.py
+```
+
+**When it runs:** on a PR opened non-draft or marked ready, and on demand when the `ai-review`
+label is added (remove and re-add it to re-run, drafts included). Deliberately not on every push:
+automatically triggered AI comments get acted on far less than requested ones, and each push would
+be another paid call.
+
+**Safety shape.** `pull_request` (never `pull_request_target`), same-repo PRs only, Dependabot
+skipped, `permissions: {}` plus `contents: read` / `pull-requests: write` for the one job, and the
+script and rules come from the **base** commit while the diff is fetched as data through the API.
+The model gets no tools and the diff sits inside a per-run random boundary. Logs of this public
+repo carry counts and HTTP statuses only, never diff text or model output.
+
+**Known gaps, disclosed.** (1) The diff is sent to whatever endpoint you configure. (2) Prompt
+injection is mitigated, not solved: a hostile diff can still skew one comment's wording. (3) A
+same-repo writer can edit the workflow in their own PR and read `AI_REVIEW_API_KEY`; fine for a
+sole maintainer, so move the secret to an environment with required reviewers once there are more.
+(4) LLM review is noisy; published measurements of AI review Actions found roughly 6–19% of inline
+comments acted on versus ~60% for human ones, so treat it as a prompt to look, not a verdict.
+(5) Only the diff is visible to the model, not the surrounding repo, so cross-file invariants are
+judged from what the rules file says.
+
 ## Security scanning & load testing
 
 Eight more tools, each answering a question the six testing tiers above
@@ -1030,6 +1072,7 @@ from the library/service code in `app/`.
 | `observability/`       | Config for the stack above — `prometheus/prometheus.yml` (scrape config) + `prometheus/alerts.yml` (alert rules), `alertmanager/`, `loki/`, `promtail/`, `otel-collector/config.yaml`, and `grafana/` (provisioned datasources + the two dashboards) |
 | `Dockerfile`           | The deployable image (one image, three roles via `command:` override) — non-root user, `HEALTHCHECK` against `/health/ready`, installs from `requirements-lock.txt`; ships `app/` plus the three directories the app reads at runtime — `skills/`, `subagents/` and `scripts/` (the sandbox bridge, `index_skills`, the cron jobs) — each of which degrades quietly to "empty" when missing, so CI's `docker-build` job runs the image to check they landed; no bundled browser — crawl4ai now runs in its own container |
 | `.github/workflows/ci.yml` | Runs `ruff`/`mypy`/`pytest` (no live services needed) and a Docker build check on every push/PR against `main` |
+| `.github/workflows/ai-review.yml`, `.github/ai-review-rules.md`, `scripts/ai_review.py` | Opt-in advisory AI review of each PR through any OpenAI-compatible endpoint — see [AI review](#ai-review-advisory) |
 | `requirements-lock.txt`| Fully pinned freeze of `requirements.txt`'s runtime deps — what the `Dockerfile`/CI actually install from, so a build today and next year resolve identically |
 | `litellm-config.yaml`  | Model routing, retries, fallbacks, Langfuse callback, LiteLLM's own built-in Prometheus metrics callback |
 | `postgres-init/`       | SQL run automatically on a fresh postgres volume — `01-*.sql` (litellm/langfuse), `02-appdata.sql` (the `employees` table `query_employees` reads), `03-meter.sql` (the `usage_ledger` table `app/agent/usage_ledger.py` reads/writes), `16-tenant-budget-holds.sql` (the in-flight budget holds the same module reserves against) |
