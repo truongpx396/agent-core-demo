@@ -60,28 +60,78 @@ except Exception:  # noqa: BLE001 - Langfuse optional if keys unset
     CallbackHandler = None
 
 
+# How long an unfinished turn waits for its last checkpoint before giving up on
+# accounting for it. A turn ends on this path BECAUSE something was slow or
+# broken, so the read is bounded: better an unrecorded turn than a terminal event
+# held up behind the same outage.
+UNFINISHED_TURN_STATE_READ_TIMEOUT_SECONDS = 2.0
+
+
 async def _record_turn_metrics(
     elapsed: float,
     outcome: str,
     state: dict | None = None,
     ctx: SecurityCtx | None = None,
     thread_id: str | None = None,
+    *,
+    observe_iterations: bool = True,
 ) -> None:
     metrics.agent_requests_total.labels(outcome=outcome).inc()
     metrics.agent_latency_seconds.observe(elapsed)
     if state is not None:
-        metrics.agent_iterations.observe(state.get("iterations", 0))
+        # `agent_iterations` means "how many round trips a TURN takes" (the
+        # overview dashboard), so an unfinished turn leaves it alone.
+        if observe_iterations:
+            metrics.agent_iterations.observe(state.get("iterations", 0))
         total_tokens = state.get("total_tokens", 0)
         if total_tokens:
             metrics.agent_tokens_total.inc(total_tokens)
             # Usage ledger (pattern 26) — only recorded where ctx/thread_id
-            # are actually available (a completed turn); early-return
-            # timeout/error branches have total_tokens == 0 anyway.
+            # are actually available.
             # record_usage degrades to a no-op on its own failure.
             if ctx is not None and thread_id is not None:
                 from app.agent import usage_ledger
 
                 await usage_ledger.record_usage(ctx, thread_id, CHAT_MODEL, total_tokens)
+
+
+async def _record_unfinished_turn(graph, cfg, start: float, outcome: str) -> None:
+    """Records a turn that ended by timeout, error or cancellation: the outcome
+    and latency always, and the tokens it had already spent when its last
+    checkpoint holds any.
+
+    These branches used to pass no state at all, on the stated reasoning that
+    they "have total_tokens == 0 anyway". They don't: steps the model had already
+    completed are in the checkpoint, and the turns that run until the timeout are
+    the ones most likely to have spent a lot — so they were the ones missing from
+    the ledger the tenant's daily budget is checked against (spec 008, B17).
+    Tokens of a model call cut off mid-flight never reached a checkpoint and are
+    not counted. A turn paused for approval and never resumed also records
+    nothing (disclosed in GRAPH_PATTERNS.md pattern 26).
+
+    Never raises and never waits long: this runs while a turn is already failing,
+    and accounting for it must not make that worse or hold up its terminal event.
+    """
+    values = None
+    try:
+        snapshot = await asyncio.wait_for(
+            graph.aget_state(cfg), timeout=UNFINISHED_TURN_STATE_READ_TIMEOUT_SECONDS
+        )
+        values = dict(snapshot.values) if snapshot is not None and snapshot.values else None
+    except Exception as exc:  # noqa: BLE001 - accounting must not worsen a turn that is already failing
+        logger.warning("unfinished_turn_state_read_failed", extra={"error_class": type(exc).__name__})
+    configurable = cfg.get("configurable") or {}
+    try:
+        await _record_turn_metrics(
+            time.monotonic() - start,
+            outcome,
+            values,
+            ctx=configurable.get("ctx"),
+            thread_id=configurable.get("thread_id"),
+            observe_iterations=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - same: the turn's terminal event comes first
+        logger.warning("unfinished_turn_record_failed", extra={"error_class": type(exc).__name__})
 
 
 def _text_content(content) -> str:
@@ -346,7 +396,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
             trace.update(
                 output="".join(final_answer) + " [cancelled by user]", level="WARNING"
             )
-        await _record_turn_metrics(time.monotonic() - start, "cancelled")
+        await _record_unfinished_turn(graph, cfg, start, "cancelled")
         metrics.agent_streaming_cancellation_total.inc()
         envelope = ErrorEnvelope(code=ErrorCode.CANCELLED, message="Cancelled by user.")
         terminal_event = {"type": "error", "content": envelope.message, **envelope.to_dict()}
@@ -366,14 +416,14 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 output="".join(final_answer) + " [cancelled: task cancelled]",
                 level="WARNING",
             )
-        await _record_turn_metrics(time.monotonic() - start, "cancelled")
+        await _record_unfinished_turn(graph, cfg, start, "cancelled")
         metrics.agent_streaming_cancellation_total.inc()
         raise
     except Exception as exc:  # noqa: BLE001
         if trace:
             trace.update(output=f"error: {exc}", level="ERROR")
         outcome = "timeout" if isinstance(exc, TimeoutError) else "error"
-        await _record_turn_metrics(time.monotonic() - start, outcome)
+        await _record_unfinished_turn(graph, cfg, start, outcome)
         # The caller never sees `str(exc)`: an unexpected exception's text
         # can name an internal host, a SQL fragment or a DSN, and this event
         # crosses the trust boundary (Principle V, pattern 30). The full
