@@ -265,9 +265,13 @@ def real_stack() -> Iterator[str]:
     # retrieve_context's own try/except degrades a failure there to empty
     # context rather than failing the turn (app/agent/tools.py::
     # gather_context's own docstring) — so this was never load-bearing for
-    # this fixture's own calculator/remember prompts, which don't need
-    # retrieval to pass, and skipping it keeps those two tests as cheap as
-    # they've always been. Tried making it real here once before for full-
+    # this fixture's own calculator prompts, which don't need retrieval to
+    # pass, and skipping it keeps those tests as cheap as they've always been.
+    # NOT true of a tool that EMBEDS WHAT IT WRITES: `remember` calls
+    # embed_text itself (not inside any try/except that degrades), so it fails
+    # here with the embedding model's 404. That was once assumed to be fine for
+    # the approve-button test; it is not — see that test, which now uses
+    # real_stack_with_retrieval. Tried making it real here once before for full-
     # path coverage; reverted after a real CI run timed out — turned out
     # NOT to be the (sole) cause (see REQUEST_TIMEOUT_SECONDS in
     # _build_app_env), but it was still needless added latency for what

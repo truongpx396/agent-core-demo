@@ -21,12 +21,15 @@ misleading "element never appeared" instead of the real app-level
 turn — verified directly: a real CI run measured a single real
 `qwen2.5:1.5b` tool-calling turn taking 67.7s end to end.
 
-The agentic-feature tests below (citations, a skill, a subagent) use
-`real_stack_with_retrieval` instead of `real_stack` — the one difference
-is a REAL embedding model + seeded Qdrant (see that fixture's own
-docstring), needed because `search_docs`/`skill_search` are both
+The agentic-feature tests below (the approved `remember` write, citations, a
+skill, a subagent) use `real_stack_with_retrieval` instead of `real_stack` —
+the one difference is a REAL embedding model + seeded Qdrant (see that
+fixture's own docstring), needed because `search_docs`/`skill_search` are both
 Qdrant-backed and return nothing real against `real_stack`'s deliberately
-unembedded setup. Each names its tool/skill/subagent explicitly in the
+unembedded setup, and because `remember` embeds what it stores: against
+`real_stack` it fails with a 404 for the embedding model, the model asks for it
+again, and the second approval pause leaves the Approve button on screen (see
+the `remember` test below). Each names its tool/skill/subagent explicitly in the
 prompt, same low-risk posture as the calculator/remember tests above —
 this suite is about proving the real integration works end to end, not
 about testing whether a 1.5B model can infer intent on its own.
@@ -82,7 +85,9 @@ def test_sending_a_message_streams_a_real_answer_via_the_calculator_tool(page: P
     expect(answer).to_contain_text("42", timeout=RESPONSE_TIMEOUT_MS)
 
 
-def test_a_mutating_tool_call_pauses_for_approval_and_resumes_on_approve(page: Page, real_stack: str):
+def test_a_mutating_tool_call_pauses_for_approval_and_resumes_on_approve(
+    page: Page, real_stack_with_retrieval: str
+):
     """Drives the REAL approve/reject round trip
     (`renderApprovalButtons`/`resume()` → `POST /chat/resume`) — the flow
     README.md's own "Built-in web UI" section still (incorrectly, as of
@@ -91,8 +96,19 @@ def test_a_mutating_tool_call_pauses_for_approval_and_resumes_on_approve(page: P
     (GRAPH_PATTERNS.md pattern 15), but `remember` needs no `topic` value
     the small model might get wrong, keeping this test's real, imperfect
     tool-argument generation as low-risk as this scenario allows.
+
+    Needs `real_stack_with_retrieval`, not `real_stack`: `remember` embeds the
+    text it stores (`app/agent/tools.py::_remember_impl`), and `real_stack`
+    runs with no real embedding model. Reproduced locally and read off the CI
+    logs: the approved `remember` call failed immediately with the embedding
+    model's 404, the 3B model reacted by asking for `remember` again, that
+    second call paused for approval again, and the test then waited the full
+    timeout for an Approve button that never went away — passing only on the
+    runs where the model happened not to retry. With a real embedder the
+    approved write succeeds and the turn ends after the one pause this test is
+    about.
     """
-    page.goto(real_stack)
+    page.goto(real_stack_with_retrieval)
 
     _send(page, "Remember that I prefer dark roast coffee. Use the remember tool.")
 
