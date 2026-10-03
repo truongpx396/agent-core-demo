@@ -29,7 +29,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.agent.graph_build import build_graph
 from app.core.config import DEFAULT_TENANT
-from app.core.logging_config import configure_logging
+from app.core.job_runtime import scheduled_job
 from app.core.security import SecurityCtx
 from app.domains.ops.domain import OPS_DOMAIN_PLUGIN, OPS_MANIFEST
 
@@ -71,7 +71,11 @@ async def investigate(question: str) -> str:
     return final_ai.content if isinstance(final_ai.content, str) else str(final_ai.content)
 
 
+def main() -> None:
+    with scheduled_job("agent-core-ops-investigate"):
+        question = " ".join(sys.argv[1:]) or "Is anything unusual right now?"
+        print(asyncio.run(investigate(question)))
+
+
 if __name__ == "__main__":
-    configure_logging()
-    question = " ".join(sys.argv[1:]) or "Is anything unusual right now?"
-    print(asyncio.run(investigate(question)))
+    main()

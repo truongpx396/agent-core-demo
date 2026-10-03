@@ -21,7 +21,7 @@ import asyncio
 import logging
 
 from app.agent.tool_idempotency import sweep_stale_rows
-from app.core.logging_config import configure_logging
+from app.core.job_runtime import scheduled_job
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,11 @@ async def run_sweep(older_than_hours: int = DEFAULT_RETENTION_HOURS) -> int:
     return deleted
 
 
+def main() -> None:
+    with scheduled_job("agent-core-tool-call-dedup-sweep"):
+        count = asyncio.run(run_sweep())
+        print(f"Deleted {count} stale tool_call_dedup row(s)." if count else "Nothing to sweep.")
+
+
 if __name__ == "__main__":
-    configure_logging()
-    count = asyncio.run(run_sweep())
-    print(f"Deleted {count} stale tool_call_dedup row(s)." if count else "Nothing to sweep.")
+    main()
