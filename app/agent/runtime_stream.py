@@ -38,7 +38,7 @@ from app.agent.graph_hitl import (
     paused_approval_async,
     resumability_error_async,
 )
-from app.core import metrics
+from app.core import metrics, tracing
 from app.core.config import (
     CHAT_MODEL,
     REQUEST_TIMEOUT_SECONDS,
@@ -219,16 +219,18 @@ def _open_trace(name: str, session_id: str, input_text: str):
     trace = None
     if CallbackHandler is not None:
         try:
-            from langfuse import Langfuse
-            lf = Langfuse()
-            trace = lf.trace(name=name, session_id=session_id, input=input_text)
-            # stateful_client (not trace_id) is CallbackHandler's actual
-            # parameter for this in langfuse==2.60.10 — passing trace_id
-            # raises TypeError, which used to be silently swallowed here,
-            # leaving every graph node span unreported.
-            callbacks.append(
-                CallbackHandler(stateful_client=trace, session_id=session_id)
-            )
+            # The process-wide client (app/core/tracing.py), not a new one per
+            # turn: each construction starts three threads nothing stops.
+            lf = tracing.get_langfuse()
+            if lf is not None:
+                trace = lf.trace(name=name, session_id=session_id, input=input_text)
+                # stateful_client (not trace_id) is CallbackHandler's actual
+                # parameter for this in langfuse==2.60.10 — passing trace_id
+                # raises TypeError, which used to be silently swallowed here,
+                # leaving every graph node span unreported.
+                callbacks.append(
+                    CallbackHandler(stateful_client=trace, session_id=session_id)
+                )
         except Exception:  # noqa: BLE001, S110 - Langfuse optional
             pass
     return trace, callbacks
@@ -497,15 +499,11 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 thread_id=(cfg.get("configurable") or {}).get("thread_id"),
             )
             terminal_event = {"type": "done"}
-    finally:
-        # Flush so the trace is sent even if the caller exits immediately;
-        # runs for all three terminal outcomes above.
-        if trace:
-            try:
-                from langfuse import Langfuse
-                Langfuse().flush()
-            except Exception:  # noqa: BLE001, S110 - best-effort flush on the way out
-                pass
+    # No per-turn flush: the shared client's own background consumer sends
+    # events as they arrive and app/core/tracing.py flushes it at process exit.
+    # The flush that used to live in a `finally` here built a NEW client, whose
+    # queue was empty, so it neither flushed this trace nor was free — and a
+    # real flush blocks until the queue drains, which would stall the event loop.
 
     if used_citations or ungrounded_claims_count:
         yield {
