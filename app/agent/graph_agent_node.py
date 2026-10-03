@@ -15,6 +15,7 @@ from app.agent import graph as graph_module
 from app.agent.graph import State
 from app.agent.graph_skills import _pending_skill_required_tool
 from app.agent.graph_tools import _current_turn_messages
+from app.core.untrusted import frame_untrusted
 
 
 # --- Node: agent ---
@@ -69,11 +70,9 @@ def make_agent_node(llm):
             # Untrusted content framing: retrieved text is data, never
             # instructions (the textbook prompt-injection defense) — the
             # delimiters plus the SYSTEM_PROMPT rule make this structural.
-            prefix_inserts.append(
-                SystemMessage(
-                    content=f"<retrieved_document>\n{context}\n</retrieved_document>"
-                )
-            )
+            # `frame_untrusted` is also what every tool that returns outside
+            # text uses, and it stops the text closing its own frame.
+            prefix_inserts.append(SystemMessage(content=frame_untrusted(context)))
         if prefix_inserts:
             if isinstance(anchor, int) and 0 <= anchor < len(messages):
                 messages[anchor:anchor] = prefix_inserts

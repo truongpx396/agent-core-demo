@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.agent.tool_idempotency import idempotent
 from app.agent.tools import _arun_with_timeout
 from app.core.security import SecurityCtx, valid_ctx
+from app.core.untrusted import frame_untrusted
 from app.domains import notify, sandbox_session
 from app.domains.policy import ActionAllowlistPolicy
 from app.domains.support import store
@@ -268,7 +269,8 @@ class FetchExternalReferenceArgs(BaseModel):
 
 
 async def _fetch_external_reference_impl(url: str) -> str:
-    return await render_url_to_markdown(url)
+    # Page text is untrusted data (SYSTEM_PROMPT's promise about tool results).
+    return frame_untrusted(await render_url_to_markdown(url))
 
 
 @tool(args_schema=FetchExternalReferenceArgs)
