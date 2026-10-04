@@ -50,6 +50,17 @@ from http.client import HTTPMessage
 from pathlib import Path
 from typing import IO
 
+from scripts.ai_review_findings import (
+    CITATION,
+    Anchor,
+    Placement,
+    addressable_lines,
+    marker,
+    marker_key,
+    parse_findings,
+    place_findings,
+)
+
 MARKER = "<!-- ai-review:advisory -->"
 # GITHUB_TOKEN comments are authored by this login. Matching on it as well as the marker means a
 # comment someone else planted with our marker is never PATCHed (it would 403 anyway) and a real
@@ -128,6 +139,8 @@ class Config:
     rules_path: str
     context_config_path: str
     server_url: str  # the web host links point at; github.com, or a GitHub Enterprise Server
+    inline: bool  # post findings as inline review comments where they can attach to the diff
+    bot_login: str  # who our own comments are authored by, to find them again on a re-run
     dry_run: bool
 
     @classmethod
@@ -157,6 +170,8 @@ class Config:
             github_token=need("GITHUB_TOKEN"),
             api_url=env.get("GITHUB_API_URL", "https://api.github.com").rstrip("/"),
             server_url=env.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/"),
+            inline=(env.get("AI_REVIEW_INLINE") or "1").strip().lower() not in ("0", "false", "no", "off"),
+            bot_login=env.get("AI_REVIEW_BOT_LOGIN") or BOT_LOGIN,
             repo=need("GITHUB_REPOSITORY"),
             pr_number=pr_number,
             max_diff_chars=max_chars,
@@ -520,14 +535,6 @@ def chat_completion(http: Http, cfg: Config, messages: list[dict[str, str]], sle
     return answer
 
 
-# A citation as the prompt asks the model to write it: `path:line`, or `path:start-end`, in code
-# formatting. The path alphabet is deliberately narrow (no spaces, brackets or parentheses), so
-# nothing the model writes can break out of the markdown link built around it. The lookarounds
-# skip a citation the model already wrapped in a link, so we never nest one link in another. The
-# digit count is capped because Python refuses `int()` of more than 4,300 digits: a degenerate
-# model answer with a huge number must leave that citation as plain text, not raise and cost the
-# whole review. (7 digits is far beyond any real file's line count.)
-_CITATION = re.compile(r"(?<!\[)`([A-Za-z0-9_./@+-]+):L?(\d{1,7})(?:-L?(\d{1,7}))?`(?!\]\()")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
@@ -574,7 +581,7 @@ def linkify(text: str, target: LinkTarget | None) -> str:
 
     parts = re.split(r"(```.*?```)", text, flags=re.DOTALL)
     for i in range(0, len(parts), 2):
-        parts[i] = _CITATION.sub(link, parts[i])
+        parts[i] = CITATION.sub(link, parts[i])
     return "".join(parts)
 
 
@@ -615,7 +622,7 @@ class GitHub:
     http: Http
     cfg: Config
 
-    def _call(self, method: str, path: str, accept: str, body: dict[str, str] | None = None) -> bytes:
+    def _call(self, method: str, path: str, accept: str, body: Mapping[str, object] | None = None) -> bytes:
         headers = {
             "Authorization": f"Bearer {self.cfg.github_token}",
             "Accept": accept,
@@ -650,19 +657,141 @@ class GitHub:
             batch = json.loads(self._call("GET", f"/issues/{number}/comments?per_page=100&page={page}", "application/vnd.github+json"))
             for comment in batch:
                 # `user` is null for a deleted account.
-                if (comment.get("user") or {}).get("login") == BOT_LOGIN and (comment.get("body") or "").startswith(MARKER):
+                if (comment.get("user") or {}).get("login") == self.cfg.bot_login and (comment.get("body") or "").startswith(MARKER):
                     self._call("PATCH", f"/issues/comments/{comment['id']}", "application/vnd.github+json", {"body": body})
                     return
             if len(batch) < 100:
                 break
         self._call("POST", f"/issues/{number}/comments", "application/vnd.github+json", {"body": body})
 
+    def inline_threads(self) -> dict[str, str]:
+        """Location key -> thread URL for each inline comment this reviewer has already posted here.
+
+        GitHub does not deduplicate, so what is already on the PR is the only record. Read from the
+        repo-wide list endpoint, because the per-review one carries no `line`. A comment counts only
+        if our own login wrote it AND it carries our marker, so a stranger pasting the marker cannot
+        suppress a finding.
+        """
+        found: dict[str, str] = {}
+        for page in range(1, MAX_COMMENT_PAGES + 1):
+            path = f"/pulls/{self.cfg.pr_number}/comments?per_page=100&page={page}"
+            batch = json.loads(self._call("GET", path, "application/vnd.github+json"))
+            for comment in batch:
+                if (comment.get("user") or {}).get("login") != self.cfg.bot_login:
+                    continue
+                key = marker_key(comment.get("body") or "")
+                if key:
+                    found.setdefault(key, str(comment.get("html_url", "")))
+            if len(batch) < 100:
+                break
+        return found
+
+    def create_review(self, commit: str, comments: Sequence[Mapping[str, object]]) -> None:
+        """All the comments as ONE review: a single request and a single notification. `COMMENT`, so
+        it never approves or requests changes. Atomic: if GitHub cannot place any one comment it
+        rejects them all with a 422 that does not say which, hence `publish_inline`'s fallback."""
+        body = {"commit_id": commit, "event": "COMMENT", "comments": list(comments)}
+        self._call("POST", f"/pulls/{self.cfg.pr_number}/reviews", "application/vnd.github+json", body)
+
+    def create_review_comment(self, commit: str, comment: Mapping[str, object]) -> None:
+        """One standalone comment: the fallback that isolates a comment GitHub cannot place."""
+        self._call("POST", f"/pulls/{self.cfg.pr_number}/comments", "application/vnd.github+json", {"commit_id": commit, **comment})
+
+
+_INLINE_CHARS = 20_000  # a finding is a few paragraphs; GitHub's own limit is 65,536
+
+
+def inline_body(finding_text: str, anchor: Anchor, links: LinkTarget | None) -> str:
+    """What goes in the inline comment: the finding as written (with its citation linked), a
+    footer, and the hidden marker that identifies the location on a re-run."""
+    text = finding_text.replace("<!--", "&lt;!--")  # our marker is the only one that may exist in a body
+    body = linkify(defang_mentions(text), links)[:_INLINE_CHARS]
+    return f"{body}\n\n<sub>AI review (advisory)</sub>\n{marker(anchor)}"
+
+
+def publish_inline(
+    github: GitHub, commit: str, placements: Sequence[Placement], body_for: Callable[[Placement, Anchor], str]
+) -> dict[str, str]:
+    """Posts the findings that have a place on the diff; returns {location key: thread URL} for each
+    that is on the PR afterwards, whether new or left by an earlier run.
+
+    - A location already commented on is not posted again (GitHub would happily duplicate it).
+    - The new ones go in one batch review. The batch is atomic, so if GitHub rejects it (a diff
+      that moved under us, say) each comment is posted on its own, and one it cannot place costs
+      only itself: that finding stays in the summary, nothing is lost.
+    """
+    wanted = [(p.anchor, p) for p in placements if p.anchor is not None]
+    if not wanted:
+        return {}
+    threads = github.inline_threads()
+    fresh = [(anchor, p) for anchor, p in wanted if anchor.key not in threads]
+    if fresh:
+        payloads = []
+        for anchor, p in fresh:
+            payload: dict[str, object] = {"path": anchor.path, "line": anchor.line, "side": "RIGHT", "body": body_for(p, anchor)}
+            if anchor.start_line is not None:
+                payload |= {"start_line": anchor.start_line, "start_side": "RIGHT"}
+            payloads.append(payload)
+        try:
+            github.create_review(commit, payloads)
+        except ReviewError:
+            for payload in payloads:
+                try:
+                    github.create_review_comment(commit, payload)
+                except ReviewError:
+                    continue
+        threads = github.inline_threads()  # also gives the URL of everything just posted
+    return {anchor.key: threads[anchor.key] for anchor, _ in wanted if anchor.key in threads}
+
+
+def render_findings(preamble: str, placements: Sequence[Placement], threads: Mapping[str, str]) -> str | None:
+    """The summary comment's body when some findings are inline: an index of those, each linked to
+    its thread, then the rest in full. None when nothing is inline, so the answer is posted as the
+    model wrote it."""
+    inline = [(p, p.anchor) for p in placements if p.anchor is not None and p.anchor.key in threads]
+    if not inline:
+        return None
+    on_diff = {id(p) for p, _ in inline}
+    rest = [p for p in placements if id(p) not in on_diff]
+    parts = [preamble.strip()] if preamble.strip() else []
+    index = [f"**{len(inline)} on the diff**, where you can reply and resolve:"]
+    for p, anchor in inline:
+        gist = p.finding.headline or "see the thread"
+        index.append(f"- **[{p.finding.severity}]** [`{anchor.path}:{anchor.line}`]({threads[anchor.key]}) - {gist}")
+    parts.append("\n".join(index))
+    if rest:
+        parts.append(f"**{len(rest)} not posted inline:**\n\n" + "\n\n".join(p.finding.text for p in rest))
+    return "\n\n".join(parts)
+
+
+def post_inline_review(github: GitHub, cfg: Config, answer: str, diff: str, links: LinkTarget) -> tuple[str | None, int]:
+    """The inline stage. Returns (summary body to post instead of the raw answer, how many are inline).
+
+    (None, 0) means "post the answer as it is": nothing could be placed, it is a dry run, or ANY
+    failure here. This is an enhancement on top of the review, so it must never cost the review.
+    """
+    try:
+        preamble, findings = parse_findings(answer)
+        placements = place_findings(findings, addressable_lines(diff))
+        if cfg.dry_run:
+            for p in placements:
+                a = p.anchor
+                where = "summary only" if a is None else a.key if a.start_line is None else f"{a.key} (from line {a.start_line})"
+                print(f"[dry-run] {where} [{p.finding.severity}] {p.finding.headline}")
+            return None, 0
+        threads = publish_inline(github, links.commit, placements, lambda p, anchor: inline_body(p.finding.text, anchor, links))
+        return render_findings(preamble, placements, threads), len(threads)
+    except Exception as exc:  # noqa: BLE001 - an enhancement must never cost the review. A ReviewError message is ours and safe to print; anything else prints only its class (public logs).
+        print(f"::warning::AI review: could not post inline comments ({exc if isinstance(exc, ReviewError) else type(exc).__name__})")
+        return None, 0
+
 
 def run(env: Mapping[str, str], http: Http = urllib_http, sleep: Callable[[float], None] = time.sleep) -> int:
     try:
         cfg = Config.from_env(env)
         github = GitHub(http, cfg)
-        selection = select_files(github.diff(), cfg.max_diff_chars)
+        diff = github.diff()
+        selection = select_files(diff, cfg.max_diff_chars)
         if not selection.included:
             print("::notice::AI review: nothing reviewable in this diff")
             return 0
@@ -686,14 +815,15 @@ def run(env: Mapping[str, str], http: Http = urllib_http, sleep: Callable[[float
             blob_url = f"{cfg.server_url}/{cfg.repo}/blob/{head_sha}"
             line_counts = {block.label: _line_count(block.text) for block in files}
             links = LinkTarget(head_sha, blob_url, frozenset(selection.linkable_paths), line_counts)
-        comment = format_comment(answer, cfg, selection, full_files=len(files), references=len(references), links=links)
+        rendered, inline_count = post_inline_review(github, cfg, answer, diff, links) if cfg.inline and links else (None, 0)
+        comment = format_comment(rendered or answer, cfg, selection, full_files=len(files), references=len(references), links=links)
         if cfg.dry_run:
             print(comment)
         else:
             github.upsert_comment(comment)
             print(
                 f"::notice::AI review posted ({len(selection.included)} file(s) reviewed, "
-                f"{len(files)} in full, {len(references)} reference snippet(s))"
+                f"{len(files)} in full, {len(references)} reference snippet(s), {inline_count} inline)"
             )
     except ReviewError as exc:
         print(f"::warning::AI review skipped: {exc}")
