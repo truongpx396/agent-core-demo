@@ -38,8 +38,10 @@ only — see `deepeval_conversation_judge` below for why
 `test_conversation_simulator_deepeval.py` can't use it.
 
 Both judge fixtures below wrap their primary in `_JudgeWithBackup`, an
-optional free fallback (https://plugsky.com, OpenAI-compatible,
-`PLUGSKY_API_KEY`) that engages ONLY once the primary's own retry policy
+optional free fallback CHAIN (https://plugsky.com, OpenAI-compatible,
+`PLUGSKY_API_KEY`; `plugsky-micro` first, then `plugsky-lite` — the two
+models Plugsky's free plan grants, `DEEPEVAL_BACKUP_MODEL` overrides the
+list) that engages ONLY once the primary's own retry policy
 (deepeval.models.retry_policy — a few attempts with backoff) has already
 given up on a rate limit OR a transient server overload (see
 `_is_transient_provider_error`'s own docstring — widened 2026-09-19
@@ -48,8 +50,15 @@ missed) — added proactively, not from an observed rate-limit incident,
 since both GOOGLE_API_KEY's free tier (30 req/min) and GROQ_API_KEY's
 (1,000 RPD) are real, finite ceilings a busy `make deepeval` run could
 plausibly hit (see this module's own comments above for where those
-numbers came from). Absent PLUGSKY_API_KEY, both fixtures behave exactly
-as before — this is additive, never a new hard requirement.
+numbers came from). Each link in the chain is tried only after the one
+before it failed with that same transient signature, so a backup that is
+itself rate-limited or overloaded hands off to the next model instead of
+failing the test — see `_call_with_fallbacks` for the exact rule, and for
+what is NOT fixed (Plugsky's free-plan 30 req/min is documented per plan,
+not per model, so `plugsky-lite` only rescues a limit that is actually
+per-model, or an outage specific to `plugsky-micro`'s upstream). Absent
+PLUGSKY_API_KEY, both fixtures behave exactly as before — this is
+additive, never a new hard requirement.
 
 `deepeval_conversation_judge` — a THIRD knob, Groq's `openai/gpt-oss-120b`
 again (`DEEPEVAL_CONVERSATION_JUDGE_MODEL`), added 2026-09-18 after a real
@@ -86,9 +95,24 @@ DEEPEVAL_JUDGE_MODEL = os.environ.get("DEEPEVAL_JUDGE_MODEL", "gemini-3.1-flash-
 DEEPEVAL_CONVERSATION_JUDGE_MODEL = os.environ.get(
     "DEEPEVAL_CONVERSATION_JUDGE_MODEL", "openai/gpt-oss-120b"
 )
-# Optional free backup judge for both fixtures below — see this module's
-# own docstring for why (a transient-error-only fallback, never a replacement).
-DEEPEVAL_BACKUP_MODEL = os.environ.get("DEEPEVAL_BACKUP_MODEL", "plugsky-micro")
+DEFAULT_BACKUP_MODELS = "plugsky-micro,plugsky-lite"
+
+
+def _parse_backup_models(raw: str | None) -> tuple[str, ...]:
+    """`DEEPEVAL_BACKUP_MODEL`, comma-separated, in try-order; a single name
+    still works, which is all this knob was before it became a chain. A
+    blank or whitespace-only value (an empty `DEEPEVAL_BACKUP_MODEL=` line
+    in `.env`) falls back to the default chain instead of silently
+    disabling every backup — a function rather than inline at module level
+    so the default suite can test that without reloading this module."""
+    names = tuple(name.strip() for name in (raw or "").split(",") if name.strip())
+    return names or _parse_backup_models(DEFAULT_BACKUP_MODELS)
+
+
+# Optional free backup judges for both fixtures below, tried in the order
+# listed — see this module's own docstring for why (a transient-error-only
+# fallback, never a replacement).
+DEEPEVAL_BACKUP_MODELS = _parse_backup_models(os.environ.get("DEEPEVAL_BACKUP_MODEL"))
 PLUGSKY_BASE_URL = "https://api.plugsky.com/v1"
 
 
@@ -122,42 +146,91 @@ def _is_transient_provider_error(exc: Exception) -> bool:
     return getattr(exc, "code", None) in (429, 500, 502, 503, 504)
 
 
-def _plugsky_backup():
-    """The optional free backup judge (https://plugsky.com, 100%
-    OpenAI-compatible, `plugsky-micro` = NVIDIA Nemotron 3 Super 120B on
-    the free tier) — `None` if PLUGSKY_API_KEY isn't set, so callers can
-    treat "no backup configured" and "primary never rate-limited" the
-    same way (just use the primary). Uses deepeval's own `LocalModel`
-    (a generic OpenAI-SDK client), the same class `deepeval_conversation_judge`
-    already uses for Groq — Plugsky needs no dedicated model class, only a
-    different `base_url`."""
+def _call_with_fallbacks(models, call):
+    """Runs `call(model)` against each of `models` in order and returns the
+    first result, moving to the next model ONLY when the current one fails
+    with a known-transient error (`_is_transient_provider_error`). Any other
+    error is re-raised at once, from whichever link raised it — a bad
+    `plugsky-lite` model name (404/400) or a revoked key must stay loud, not
+    be papered over by a link further down the chain that can't fix it. The
+    LAST model's error is never caught: once the chain is exhausted the
+    final transient error propagates unchanged, which is what
+    `.github/workflows/ci.yml`'s `--only-rerun` regex needs to see to rerun
+    the whole test. Pure on purpose (no deepeval import, `models` only need
+    `get_model_name()`) so the default hermetic suite can pin this rule
+    without deepeval installed — `_JudgeWithBackup` below is a thin shell
+    around it. Needs a non-empty `models`."""
+    for position, model in enumerate(models[:-1]):
+        try:
+            return call(model)
+        except Exception as exc:  # noqa: BLE001 - classified right below; anything non-transient is re-raised untouched
+            if not _is_transient_provider_error(exc):
+                raise
+            print(
+                f"[deepeval] {model.get_model_name()} hit a transient "
+                f"error, falling back to {models[position + 1].get_model_name()}: {exc}"
+            )
+    return call(models[-1])
+
+
+async def _acall_with_fallbacks(models, call):
+    """`_call_with_fallbacks` for an `async` `call` — same rule, same
+    reason it is a separate function rather than a shared one: the `try`
+    has to `await` inside itself for the exception to be caught here, and
+    a sync loop returning an un-awaited coroutine would never raise."""
+    for position, model in enumerate(models[:-1]):
+        try:
+            return await call(model)
+        except Exception as exc:  # noqa: BLE001 - classified right below; anything non-transient is re-raised untouched
+            if not _is_transient_provider_error(exc):
+                raise
+            print(
+                f"[deepeval] {model.get_model_name()} hit a transient "
+                f"error, falling back to {models[position + 1].get_model_name()}: {exc}"
+            )
+    return await call(models[-1])
+
+
+def _plugsky_backups():
+    """The optional free backup judges, in fallback order (https://plugsky.com,
+    100%-OpenAI-compatible; `DEEPEVAL_BACKUP_MODELS`, by default
+    `plugsky-micro` = NVIDIA Nemotron 3 Super 120B then `plugsky-lite`,
+    the two models Plugsky's free plan grants) — `[]` if PLUGSKY_API_KEY
+    isn't set, so callers can treat "no backup configured" and "primary
+    never rate-limited" the same way (just use the primary). Uses
+    deepeval's own `LocalModel` (a generic OpenAI-SDK client), the same
+    class `deepeval_conversation_judge` already uses for Groq — Plugsky
+    needs no dedicated model class, only a different `base_url`."""
     from deepeval.models import LocalModel
 
     api_key = os.environ.get("PLUGSKY_API_KEY")
     if not api_key:
-        return None
-    return LocalModel(
-        model=DEEPEVAL_BACKUP_MODEL,
-        api_key=api_key,
-        base_url=PLUGSKY_BASE_URL,
-        temperature=0,
-    )
+        return []
+    return [
+        LocalModel(
+            model=name,
+            api_key=api_key,
+            base_url=PLUGSKY_BASE_URL,
+            temperature=0,
+        )
+        for name in DEEPEVAL_BACKUP_MODELS
+    ]
 
 
 def _with_optional_backup(primary):
-    """Wraps `primary` in a fallback that only engages on a known-transient
-    failure (`_is_transient_provider_error` above), or returns `primary`
-    unchanged if PLUGSKY_API_KEY isn't set (`_plugsky_backup` returns
-    `None`) — see this module's own docstring. `DeepEvalBaseLLM` is
-    imported, and the wrapper class defined, INSIDE this function rather
-    than at module level — this file's own docstring already establishes
-    that importing `deepeval` at collection time has to stay optional
-    (the fast `test` job's pytest run collects this whole file without
-    `deepeval` installed at all), and a module-level `class
+    """Wraps `primary` in a fallback chain that only engages on a
+    known-transient failure (`_is_transient_provider_error` above), or
+    returns `primary` unchanged if PLUGSKY_API_KEY isn't set
+    (`_plugsky_backups` returns `[]`) — see this module's own docstring.
+    `DeepEvalBaseLLM` is imported, and the wrapper class defined, INSIDE
+    this function rather than at module level — this file's own docstring
+    already establishes that importing `deepeval` at collection time has
+    to stay optional (the fast `test` job's pytest run collects this whole
+    file without `deepeval` installed at all), and a module-level `class
     X(DeepEvalBaseLLM)` would import it unconditionally just by being
     defined."""
-    backup = _plugsky_backup()
-    if backup is None:
+    backups = _plugsky_backups()
+    if not backups:
         return primary
 
     from deepeval.models import DeepEvalBaseLLM
@@ -174,7 +247,7 @@ def _with_optional_backup(primary):
 
         `generate`/`a_generate` return just the content (a `str` or, if
         `schema` was given, a validated schema instance) — NOT the
-        `(content, cost)` tuple `self._primary`/`self._backup`
+        `(content, cost)` tuple `self._primary`/each of `self._backups`
         (deepeval's own native `GeminiModel`/`LocalModel`) actually
         return. Real bug, caught live in CI (PR #44,
         test_conversation_simulator_deepeval.py): deepeval's own
@@ -192,9 +265,11 @@ def _with_optional_backup(primary):
         'simulated_input'` the first time this class's fallback actually
         engaged against a real key."""
 
-        def __init__(self, primary, backup):
+        def __init__(self, primary, backups):
             self._primary = primary
-            self._backup = backup
+            # The full try-order `_call_with_fallbacks` walks: the primary
+            # first, then each backup in `DEEPEVAL_BACKUP_MODELS` order.
+            self._models = [primary, *backups]
             super().__init__(primary.get_model_name())
 
         def load_model(self):
@@ -208,32 +283,16 @@ def _with_optional_backup(primary):
             return result[0] if isinstance(result, tuple) else result
 
         def generate(self, prompt: str, schema=None):
-            try:
-                result = self._primary.generate(prompt, schema=schema)
-            except Exception as exc:
-                if not _is_transient_provider_error(exc):
-                    raise
-                print(
-                    f"[deepeval] {self._primary.get_model_name()} hit a transient "
-                    f"error, falling back to {self._backup.get_model_name()}: {exc}"
-                )
-                result = self._backup.generate(prompt, schema=schema)
-            return self._content(result)
+            return self._content(
+                _call_with_fallbacks(self._models, lambda model: model.generate(prompt, schema=schema))
+            )
 
         async def a_generate(self, prompt: str, schema=None):
-            try:
-                result = await self._primary.a_generate(prompt, schema=schema)
-            except Exception as exc:
-                if not _is_transient_provider_error(exc):
-                    raise
-                print(
-                    f"[deepeval] {self._primary.get_model_name()} hit a transient "
-                    f"error, falling back to {self._backup.get_model_name()}: {exc}"
-                )
-                result = await self._backup.a_generate(prompt, schema=schema)
-            return self._content(result)
+            return self._content(
+                await _acall_with_fallbacks(self._models, lambda model: model.a_generate(prompt, schema=schema))
+            )
 
-    return _JudgeWithBackup(primary, backup)
+    return _JudgeWithBackup(primary, backups)
 
 
 @pytest.fixture(scope="session")
