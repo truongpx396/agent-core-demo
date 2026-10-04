@@ -1189,7 +1189,7 @@ def _mcfg(**overrides) -> ai_review.Config:
 
 
 def _chain_env(**extra) -> dict[str, str]:
-    return _run_env(AI_REVIEW_FALLBACK1_MODEL="m2", **extra)
+    return _run_env(AI_REVIEW_FALLBACK_MODELS="m2", **extra)
 
 
 def _posted(http) -> str:
@@ -1230,7 +1230,7 @@ def test_a_primary_that_answers_never_touches_the_fallback(tmp_path, monkeypatch
 def test_the_chain_walks_every_provider_in_order_until_one_answers(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     http = Routed({"m": [429] * ATTEMPTS, "m2": [503] * ATTEMPTS, "m3": ["ok"]})
-    env = _chain_env(AI_REVIEW_FALLBACK2_MODEL="m3", AI_REVIEW_FALLBACK2_BASE_URL=OTHER, AI_REVIEW_FALLBACK2_API_KEY="KEY-B")
+    env = _chain_env(AI_REVIEW_FALLBACK_PROVIDER1_MODELS="m3", AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL=OTHER, AI_REVIEW_FALLBACK_PROVIDER1_API_KEY="KEY-B")
     assert ai_review.run(env, http, _no_sleep) == 0
     assert http.models() == ["m"] * ATTEMPTS + ["m2"] * ATTEMPTS + ["m3"]
     assert "`m3` (fallback for `m`, which was unavailable)" in _posted(http)
@@ -1262,7 +1262,7 @@ def test_one_providers_key_is_never_sent_to_another_providers_host(tmp_path, mon
     http = Routed({"m": [503] * ATTEMPTS, "m2": [503] * ATTEMPTS, "m3": [503] * ATTEMPTS, "m4": ["ok"]})
     env = _chain_env(
         AI_REVIEW_API_KEY="KEY-A",
-        AI_REVIEW_FALLBACK2_MODEL="m3", AI_REVIEW_FALLBACK2_BASE_URL=OTHER,  # another host, NO key of its own
+        AI_REVIEW_FALLBACK_PROVIDER1_MODELS="m3", AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL=OTHER,  # another host, NO key of its own
     )
     ai_review.run(env, http, _no_sleep)
     auth = {model: headers.get("Authorization") for _, headers, model, _ in http.model_calls}
@@ -1277,7 +1277,10 @@ def test_one_providers_key_is_never_sent_to_another_providers_host(tmp_path, mon
 def test_a_fallback_on_another_host_uses_its_own_key(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     http = Routed({"m": [503] * ATTEMPTS, "m2": ["ok"]})
-    env = _chain_env(AI_REVIEW_API_KEY="KEY-A", AI_REVIEW_FALLBACK1_BASE_URL=OTHER, AI_REVIEW_FALLBACK1_API_KEY="KEY-B")
+    env = _run_env(
+        AI_REVIEW_API_KEY="KEY-A",
+        AI_REVIEW_FALLBACK_PROVIDER1_MODELS="m2", AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL=OTHER, AI_REVIEW_FALLBACK_PROVIDER1_API_KEY="KEY-B",
+    )
     assert ai_review.run(env, http, _no_sleep) == 0
     sent = {model: (url, headers.get("Authorization")) for url, headers, model, _ in http.model_calls}
     assert sent["m"] == (f"{BASE}/chat/completions", "Bearer KEY-A")
@@ -1307,7 +1310,7 @@ def test_the_whole_chain_shares_one_deadline_and_each_request_is_clamped_to_what
             raise TimeoutError("slow")
         return _ok_body(model)
 
-    answer, served = ai_review.complete_with_fallbacks(http, _mcfg(AI_REVIEW_FALLBACK1_MODEL="m2"), [], _no_sleep, clock)
+    answer, served = ai_review.complete_with_fallbacks(http, _mcfg(AI_REVIEW_FALLBACK_MODELS="m2"), [], _no_sleep, clock)
     assert served.name == "fallback 1" and "answer-from-m2" in answer
     assert seen == [("m", 180.0), ("m2", 80.0)]  # 480s deadline minus the 400 spent, not another full 180s
 
@@ -1320,7 +1323,7 @@ def test_a_provider_is_not_started_when_too_little_time_is_left():
         raise TimeoutError("slow")
 
     with pytest.raises(ai_review.ReviewError) as exc:
-        ai_review.complete_with_fallbacks(http, _mcfg(AI_REVIEW_FALLBACK1_MODEL="m2"), [], _no_sleep, clock)
+        ai_review.complete_with_fallbacks(http, _mcfg(AI_REVIEW_FALLBACK_MODELS="m2"), [], _no_sleep, clock)
     assert str(exc.value) == "every provider failed: primary (m): the model endpoint timed out; fallback 1 (m2): not tried, out of time"
 
 
@@ -1333,7 +1336,7 @@ def test_a_retry_wait_that_would_overrun_the_deadline_ends_that_provider_instead
         return 503, b"{}"
 
     with pytest.raises(ai_review.ReviewError) as exc:
-        ai_review.complete_with_fallbacks(http, _mcfg(AI_REVIEW_FALLBACK1_MODEL="m2"), [], slept.append, clock)
+        ai_review.complete_with_fallbacks(http, _mcfg(AI_REVIEW_FALLBACK_MODELS="m2"), [], slept.append, clock)
     assert slept == [] and "primary (m): out of time for this review" in str(exc.value)
 
 
@@ -1347,11 +1350,11 @@ def test_a_dry_run_names_the_chain_by_model_only_and_posts_nothing(tmp_path, mon
 
 
 def test_config_reads_the_fallbacks_and_names_the_variable_when_one_is_malformed():
-    cfg = _cfg(AI_REVIEW_FALLBACK1_MODEL="m2", AI_REVIEW_FALLBACK2_MODEL="m3", AI_REVIEW_FALLBACK2_BASE_URL=OTHER)
+    cfg = _cfg(AI_REVIEW_FALLBACK_MODELS="m2", AI_REVIEW_FALLBACK_PROVIDER1_MODELS="m3", AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL=OTHER)
     assert [(f.name, f.model, f.base_url) for f in cfg.fallbacks] == [("fallback 1", "m2", BASE), ("fallback 2", "m3", OTHER)]
     assert _cfg().fallbacks == ()
-    with pytest.raises(ai_review.ReviewError, match="AI_REVIEW_FALLBACK1_BASE_URL must be an http"):
-        _cfg(AI_REVIEW_FALLBACK1_MODEL="m2", AI_REVIEW_FALLBACK1_BASE_URL="file:///etc/passwd")
+    with pytest.raises(ai_review.ReviewError, match="AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL must be an http"):
+        _cfg(AI_REVIEW_FALLBACK_PROVIDER1_MODELS="m2", AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL="file:///etc/passwd")
 
 
 def test_the_header_names_the_model_that_answered_and_is_unchanged_without_a_fallback():

@@ -808,31 +808,35 @@ again; a dry run prints the placement plan and posts nothing.
 
 **Fallback providers.** A free tier's quota is per *model* and per *provider*, so when one is spent another may be
 untouched, and an advisory reviewer that goes dark for the day is worse than one that quietly uses its second
-choice. Up to two fallbacks are numbered slots, tried **in order** when the one before has failed for good (after its
-own retries: quota spent, overloaded, down, or a bad answer). Everything is optional, and with none set the reviewer
-behaves exactly as before.
+choice. Fallbacks are tried **in order** when the one before has failed for good (after its own retries: quota spent,
+overloaded, down, or a bad answer). Everything is optional, and with none set the reviewer behaves exactly as before.
 
-A **slot** (`FALLBACK1`, `FALLBACK2`) is one complete alternative: a model, and optionally a different provider. The
-name says "fallback N", not "model" or "provider", because *which variables you fill in* decides which it is:
+They are named by **provider**, because that is the only thing that differs: a model is just a name, a provider is a
+host plus a key. So there is one list for "other models on my provider", and one numbered group per *other* provider:
 
-| Variable / secret | What it means |
+| Variable / secret | What it is |
 |---|---|
-| `AI_REVIEW_FALLBACKn_MODEL` | **The on/off switch.** Setting it turns slot *n* on; it is the model name to ask for. |
-| `AI_REVIEW_FALLBACKn_BASE_URL` | Only for a **different provider**. Unset means the primary's provider. |
-| `AI_REVIEW_FALLBACKn_API_KEY` (secret) | Only for a **different provider or account**. Unset means reuse the primary's key, and only if the base URL is the same. A key you set always wins. |
+| `AI_REVIEW_FALLBACK_MODELS` | Comma list of **other models on the primary's provider** (same host, same key). |
+| `AI_REVIEW_FALLBACK_PROVIDER1_MODELS` | Comma list of models on **another provider**. **The on/off switch:** empty switches the group off, whatever else is set. |
+| `AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL` | That provider's host. Unset means the primary's host (so, with a key of its own, *another account*). |
+| `AI_REVIEW_FALLBACK_PROVIDER1_API_KEY` (secret) | That provider's key. Unset means reuse the primary's key, and only if the host is the same. A key you set always wins. |
+| `AI_REVIEW_FALLBACK_PROVIDER2_*` | The same three, for a second other provider. |
 
-The three ways to fill a slot (*n* is 1 or 2):
+The chain is the primary, then `FALLBACK_MODELS` in the order written, then `PROVIDER1`'s models, then `PROVIDER2`'s. In
+the log and the comment header each is "fallback *N*" by its place in that chain. Examples, with a primary of
+`gemini-3.5-flash` on Google:
 
 | You want | Set | What the reviewer does |
 |---|---|---|
-| **Another model, same provider** (this repo's setup today) | `FALLBACK1_MODEL=gemini-3.5-flash-lite` | same host, same key, a different model with its own quota |
-| **A different provider** | `FALLBACK2_MODEL=openai/gpt-oss-120b`, `FALLBACK2_BASE_URL=https://api.groq.com/openai/v1`, secret `FALLBACK2_API_KEY` | that host with *its own* key; the primary's key is never sent there |
-| **Same provider, different account** | `FALLBACK2_MODEL=...` and secret `FALLBACK2_API_KEY` (leave `BASE_URL` unset) | same host, but the new account's key and quota |
+| **Other models, same provider** (this repo's setup) | `FALLBACK_MODELS=gemini-3.5-flash-lite,gemini-3.1-flash-lite` | same host, same key, each model with its own quota |
+| **Another provider, several models** | `PROVIDER1_MODELS=openai/gpt-oss-120b,openai/gpt-oss-20b`, `PROVIDER1_BASE_URL=https://api.groq.com/openai/v1`, secret `PROVIDER1_API_KEY` | that host with *its own* key; the primary's key is never sent there |
+| **Same provider, different account** | `PROVIDER1_MODELS=gemini-3.5-flash` and secret `PROVIDER1_API_KEY` (leave `BASE_URL` unset) | same host, but the other account's key and quota |
 
-Leaving `FALLBACKn_MODEL` empty switches the slot off whatever else is set. Slot 1 is tried before slot 2.
+At most 6 fallback models in all; more is an error naming the variable, not a silent truncation (the diff goes to every
+one tried). The `PROVIDER1`/`PROVIDER2` numbers only separate groups; they carry no priority beyond order.
 
-- **A sensible chain for Google AI Studio's free tier:** `gemini-3.5-flash` (primary) -> `gemini-3.5-flash-lite` (slot 1) ->
-  `gemini-3.1-flash-lite` (slot 2). Each has its **own per-model daily quota** (the 429 names
+- **A sensible chain for Google AI Studio's free tier:** `gemini-3.5-flash` (primary) -> `gemini-3.5-flash-lite` ->
+  `gemini-3.1-flash-lite` (both in `FALLBACK_MODELS`). Each has its **own per-model daily quota** (the 429 names
   `GenerateRequestsPerDayPerProjectPerModel`), the two lite models are cheap and stable, and the newest Flash generation
   (3.6 to 3.8) has had capacity trouble (503s), so it makes a poor fallback. Note `gemini-3.1-flash-lite` is also the judge model
   this repo's `deepeval` and redteam CI use. Here the reviewer's key and CI's `GOOGLE_API_KEY` are **separate Google accounts**,

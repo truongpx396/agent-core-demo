@@ -5,13 +5,18 @@ thing it cannot know: how to ask a single provider. Stdlib only, no network, no 
 `walk_chain` takes that step (and the exception type that means "this provider failed") as
 parameters, which is also what lets this module sit below `ai_review.py` without importing it.
 
-The primary is `AI_REVIEW_BASE_URL` / `AI_REVIEW_MODEL` / `AI_REVIEW_API_KEY`. Up to `MAX_FALLBACKS`
-fallbacks are numbered slots, tried in order when the one before has failed:
+The primary is `AI_REVIEW_BASE_URL` / `AI_REVIEW_MODEL` / `AI_REVIEW_API_KEY`. The fallbacks are grouped
+by provider, because that is the only distinction that matters (a model is just a name; a provider
+brings a host and a key), and are tried in this order:
 
-    AI_REVIEW_FALLBACK1_MODEL      required: a slot with no model is off
-    AI_REVIEW_FALLBACK1_BASE_URL   optional: defaults to the primary's, i.e. "another model, same provider"
-    AI_REVIEW_FALLBACK1_API_KEY    optional: see the key rule below
-    AI_REVIEW_FALLBACK2_*          the same, for a third provider
+    AI_REVIEW_FALLBACK_MODELS              comma list: other models on the PRIMARY's provider (same host, same key)
+    AI_REVIEW_FALLBACK_PROVIDER1_MODELS    comma list: models on ANOTHER provider; empty switches the group off
+    AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL  that provider's host (unset = the primary's, i.e. another account)
+    AI_REVIEW_FALLBACK_PROVIDER1_API_KEY   that provider's key: see the key rule below
+    AI_REVIEW_FALLBACK_PROVIDER2_*         the same, for a third provider
+
+The chain is the primary, then FALLBACK_MODELS in order, then PROVIDER1's models, then PROVIDER2's. In logs
+and in the comment header each is "fallback N" by its place in that chain.
 
 Two-line reason this exists: a free tier's quota is per MODEL (and per provider), so when one is spent
 the next may be untouched, and an advisory reviewer that goes dark for the day is worse than one that
@@ -19,14 +24,15 @@ quietly uses its second choice.
 
 THE KEY RULE. One provider's API key is never sent to another provider's host. A fallback uses its own
 key if it has one; otherwise it inherits the primary's key ONLY when it points at the same base URL
-(the "another model, same provider" case). A fallback on a different host with no key of its own sends
+(the FALLBACK_MODELS case). A fallback on a different host with no key of its own sends
 none, which is right for a keyless endpoint and fails loudly with a 401 for one that needs a key.
 """
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
-MAX_FALLBACKS = 2
+MAX_PROVIDERS = 2  # the numbered provider groups, besides the primary's own FALLBACK_MODELS
+MAX_FALLBACKS = 6  # in all. The diff goes to every one tried, so a typo'd list must not fan out
 DEADLINE_S = 480.0  # for the whole chain; the job's own limit is 600s (ai-review.yml)
 MIN_ATTEMPT_S = 20.0  # not worth starting another provider with less than this left
 
@@ -47,29 +53,50 @@ def _clean_url(value: str) -> str:
     return value.strip().rstrip("/")
 
 
-def build_fallbacks(env: Mapping[str, str], primary: Provider) -> tuple[Provider, ...]:
-    """The configured fallbacks, in order. A slot without a model is skipped; so is one that repeats a
-    provider already in the chain (same base URL and model), since trying it again cannot help.
+def model_list(value: str | None) -> list[str]:
+    """A comma-separated list of model names: stripped, blanks and repeats dropped, order kept."""
+    names: list[str] = []
+    for part in (value or "").split(","):
+        name = part.strip()
+        if name and name not in names:
+            names.append(name)
+    return names
 
-    Raises ValueError for a slot whose base URL is not http(s): the same check the primary gets (urllib
-    would otherwise also open file:// and ftp:// URLs).
+
+def build_fallbacks(env: Mapping[str, str], primary: Provider) -> tuple[Provider, ...]:
+    """The configured fallbacks, in the order they are tried (see the module docstring).
+
+    A group without models is off, whatever else it sets. A model that repeats one already in the chain
+    (same base URL and model) is dropped, since trying it again cannot help.
+
+    Raises ValueError, naming the variable, for a base URL that is not http(s) (the check the primary
+    gets; urllib would otherwise also open file:// and ftp:// URLs) and for more than MAX_FALLBACKS
+    models in all: the diff goes to each one tried, so a mistake there should be loud, not silent.
     """
     chain = [primary]
-    for slot in range(1, MAX_FALLBACKS + 1):
-        prefix = f"AI_REVIEW_FALLBACK{slot}_"
-        model = (env.get(prefix + "MODEL") or "").strip()
-        if not model:
+
+    def add(models: list[str], base_url: str, key: str) -> None:
+        for model in models:
+            candidate = Provider(f"fallback {len(chain)}", base_url, model, key)
+            if not any((p.base_url, p.model) == (candidate.base_url, candidate.model) for p in chain):
+                chain.append(candidate)
+
+    # The primary's own provider: same host, so the same credential is the right one (see THE KEY RULE).
+    add(model_list(env.get("AI_REVIEW_FALLBACK_MODELS")), primary.base_url, primary.api_key)
+    for number in range(1, MAX_PROVIDERS + 1):
+        prefix = f"AI_REVIEW_FALLBACK_PROVIDER{number}_"
+        models = model_list(env.get(prefix + "MODELS"))
+        if not models:
             continue
         base_url = _clean_url(env.get(prefix + "BASE_URL") or "") or primary.base_url
         if not base_url.startswith(("https://", "http://")):
             raise ValueError(f"{prefix}BASE_URL must be an http(s) URL")
         key = (env.get(prefix + "API_KEY") or "").strip()
         if not key and base_url == primary.base_url:
-            key = primary.api_key  # same host, so the same credential is the right one; see THE KEY RULE
-        candidate = Provider(f"fallback {slot}", base_url, model, key)
-        if any((p.base_url, p.model) == (candidate.base_url, candidate.model) for p in chain):
-            continue
-        chain.append(candidate)
+            key = primary.api_key
+        add(models, base_url, key)
+    if len(chain) - 1 > MAX_FALLBACKS:
+        raise ValueError(f"AI_REVIEW_FALLBACK_* name {len(chain) - 1} fallback models; at most {MAX_FALLBACKS} are used")
     return tuple(chain[1:])
 
 
