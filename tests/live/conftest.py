@@ -361,6 +361,29 @@ def real_stack_with_retrieval() -> Iterator[str]:
         yield from _start_app_processes(env)
 
 
+@pytest.fixture(autouse=True)
+def _a_test_leaves_no_memories_behind(request: pytest.FixtureRequest) -> Iterator[None]:
+    """After every test that uses the retrieval stack, remove the memories it wrote.
+
+    The stack is session-scoped, so what one test `remember`s is still in Qdrant, and still pre-fetched into
+    the prompt, when the next test runs. See tests/live/memories.py for the failure this caused. Autouse and
+    keyed on the stack rather than on one test, so a test added later that also calls `remember` cannot
+    quietly poison the ones after it. Tests that do not use the stack pay nothing.
+    """
+    if "real_stack_with_retrieval" not in request.fixturenames:
+        yield
+        return
+    from qdrant_client import QdrantClient
+
+    from app.core.config import COLLECTION
+    from tests.live.memories import forget_memories_not_in, memory_ids
+
+    client = QdrantClient(url=ensure_qdrant()["qdrant_url"])
+    before = memory_ids(client, COLLECTION)
+    yield
+    forget_memories_not_in(client, COLLECTION, before)
+
+
 def _wait_until_ready(base_url: str, api_proc: subprocess.Popen, timeout: float = 120.0) -> None:
     """Polls `GET /health/ready` (app/api/health.py) — the same real
     dependency check a deployment's own orchestrator would use — rather
