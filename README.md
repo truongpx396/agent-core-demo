@@ -747,6 +747,19 @@ label is added (remove and re-add it to re-run, drafts included). Deliberately n
 automatically triggered AI comments get acted on far less than requested ones, and each push would
 be another paid call.
 
+**What the model sees beyond the diff.** A reviewer given only hunks can't notice that a new write
+tool skipped `idempotent()`: the missing call isn't in the diff. So the prompt also carries (1) the
+**full text of each changed file** at the PR head, fetched through the API (never checked out), and
+(2) **reference snippets** chosen deterministically by `.github/ai-review-context.toml`: "if a
+domain `tools.py` changed, attach `create_ticket`, `idempotent()` and `TOOL_CAPABILITIES`", the
+same exemplars `.claude/rules/side-effect-tools.md` names, plus CLAUDE.md's "Where things live" as
+a repo map. The config is read from the base commit, extraction is plain `ast`/Markdown parsing
+with no model involved, and a test fails if a listed reference stops resolving. Files the diff
+already shows whole (new, deleted, renamed) aren't re-sent. This is the "diff plus pruned context"
+tier; it deliberately stops short of a repo index or an agent that explores with tools, which
+would need tool-calling support from the provider (breaking "any OpenAI-compatible API") and
+a larger prompt-injection surface. `AI_REVIEW_MAX_CONTEXT_CHARS=0` sends the diff only.
+
 **Safety shape.** `pull_request` (never `pull_request_target`), same-repo PRs only, Dependabot
 skipped, `permissions: {}` plus `contents: read` / `pull-requests: write` for the one job, and the
 script and rules come from the **base** commit while the diff is fetched as data through the API.
@@ -759,8 +772,12 @@ same-repo writer can edit the workflow in their own PR and read `AI_REVIEW_API_K
 sole maintainer, so move the secret to an environment with required reviewers once there are more.
 (4) LLM review is noisy; published measurements of AI review Actions found roughly 6–19% of inline
 comments acted on versus ~60% for human ones, so treat it as a prompt to look, not a verdict.
-(5) Only the diff is visible to the model, not the surrounding repo, so cross-file invariants are
-judged from what the rules file says.
+(5) Context is bounded, not complete: the model sees changed files and the configured exemplars,
+not the callers elsewhere in the repo, so an invariant that lives in a file the PR didn't touch
+is judged from the rules file and the exemplars. Enforce those with tests, not this review. The
+full-file budget is spent in diff order, so on a big PR some changed files get no full text (the
+prompt says which). Full-file context makes a prompt several times larger (about 22k tokens on a
+nine-file PR I measured); lower `AI_REVIEW_MAX_CONTEXT_CHARS` to cut cost.
 
 ## Security scanning & load testing
 
@@ -1072,7 +1089,7 @@ from the library/service code in `app/`.
 | `observability/`       | Config for the stack above — `prometheus/prometheus.yml` (scrape config) + `prometheus/alerts.yml` (alert rules), `alertmanager/`, `loki/`, `promtail/`, `otel-collector/config.yaml`, and `grafana/` (provisioned datasources + the two dashboards) |
 | `Dockerfile`           | The deployable image (one image, three roles via `command:` override) — non-root user, `HEALTHCHECK` against `/health/ready`, installs from `requirements-lock.txt`; ships `app/` plus the three directories the app reads at runtime — `skills/`, `subagents/` and `scripts/` (the sandbox bridge, `index_skills`, the cron jobs) — each of which degrades quietly to "empty" when missing, so CI's `docker-build` job runs the image to check they landed; no bundled browser — crawl4ai now runs in its own container |
 | `.github/workflows/ci.yml` | Runs `ruff`/`mypy`/`pytest` (no live services needed) and a Docker build check on every push/PR against `main` |
-| `.github/workflows/ai-review.yml`, `.github/ai-review-rules.md`, `scripts/ai_review.py` | Opt-in advisory AI review of each PR through any OpenAI-compatible endpoint — see [AI review](#ai-review-advisory) |
+| `.github/workflows/ai-review.yml`, `.github/ai-review-rules.md`, `.github/ai-review-context.toml`, `scripts/ai_review.py` | Opt-in advisory AI review of each PR through any OpenAI-compatible endpoint — see [AI review](#ai-review-advisory) |
 | `.github/dependabot.yml` | Weekly grouped PR that bumps the commit-SHA pins on every `uses:` line in `.github/workflows/` (a tag like `@v4` can be moved under you and CI runs with this repo's secrets, so each action is pinned to an immutable SHA with a `# vX.Y.Z` comment; `tests/core/test_workflow_action_pins.py` fails on an unpinned one). github-actions only — `requirements-lock.txt` is machine-generated, so pip is left out |
 | `requirements-lock.txt`| Fully pinned freeze of `requirements.txt`'s runtime deps — what the `Dockerfile`/CI actually install from, so a build today and next year resolve identically |
 | `litellm-config.yaml`  | Model routing, retries, fallbacks, Langfuse callback, LiteLLM's own built-in Prometheus metrics callback |

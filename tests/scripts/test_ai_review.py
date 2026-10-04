@@ -7,7 +7,9 @@ What these prove: request shapes, the advisory exit-0 contract, what is and is n
 they cannot prove: that a given provider accepts the request or that its review is any good.
 """
 import json
+import tomllib
 from http.client import HTTPMessage
+from pathlib import Path
 from urllib.request import Request
 
 import pytest
@@ -37,8 +39,9 @@ def _cfg(**overrides) -> ai_review.Config:
 
 
 class FakeHttp:
-    def __init__(self, *, diff=FILE_A, comments=(), model_status=200, model_body=None, raises=None):
+    def __init__(self, *, diff=FILE_A, comments=(), model_status=200, model_body=None, raises=None, files=None, head_sha="deadbeef"):
         self.diff, self.comments, self.raises = diff, list(comments), raises
+        self.files, self.head_sha = files or {}, head_sha  # files: path -> text served by the contents API
         self.model_status = model_status
         self.model_body = model_body if model_body is not None else {"choices": [{"message": {"content": "**[CONCERN]** `app/a.py:1` - bad"}}]}
         self.calls: list[tuple[str, str, dict, bytes | None]] = []
@@ -51,10 +54,13 @@ class FakeHttp:
             return self.model_status, json.dumps(self.model_body).encode()
         if method == "GET" and "/comments" in url:
             return 200, json.dumps(self.comments).encode()
+        if method == "GET" and "/contents/" in url:
+            path = url.split("/contents/", 1)[1].split("?", 1)[0]
+            return (200, self.files[path].encode()) if path in self.files else (404, b"{}")
         if method == "GET":
             if "diff" in headers["Accept"]:
                 return 200, self.diff.encode()
-            return 200, json.dumps({"title": "Add widget"}).encode()
+            return 200, json.dumps({"title": "Add widget", "head": {"sha": self.head_sha}}).encode()
         return 201, b"{}"
 
     def writes(self):
@@ -219,3 +225,164 @@ def test_the_http_client_never_follows_a_redirect_so_the_api_key_cannot_leave_th
     handler = ai_review._NoRedirect()
     request = Request(f"{BASE}/chat/completions", headers={"Authorization": "Bearer sk"})
     assert handler.redirect_request(request, None, 302, "Found", HTTPMessage(), "https://evil.example/") is None  # type: ignore[arg-type]
+
+
+# --- repo context: full changed files + deterministic reference snippets ---------------------
+
+REPO = Path(__file__).resolve().parents[2]
+SRC = 'X = 1\nTOOL_CAPABILITIES: dict[str, str] = {"a": "read_only"}\n\n@decorator\nasync def create_thing(x):\n    """doc"""\n    return x\n\nclass K:\n    pass\n'
+CONFIG = (
+    '[[rule]]\nwhen = ["*"]\nattach = ["d.md#Keep"]\nwhy = "map"\n\n'
+    '[[rule]]\nwhen = ["app/*/tools.py"]\nattach = ["m.py::create_thing", "m.py::create_thing", "m.py::gone"]\nwhy = "ref tool"\n'
+)
+TOOLS_DIFF = "diff --git a/app/x/tools.py b/app/x/tools.py\n--- a/app/x/tools.py\n+++ b/app/x/tools.py\n@@ -1 +1 @@\n-a\n+b\n"
+NEW = "diff --git a/n.py b/n.py\nnew file mode 100644\n--- /dev/null\n+++ b/n.py\n@@ -0,0 +1 @@\n+x\n"
+GONE = "diff --git a/g.py b/g.py\ndeleted file mode 100644\n--- a/g.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"
+RENAME = "diff --git a/o.py b/p.py\nsimilarity index 100%\nrename from o.py\nrename to p.py\n"
+
+
+def _repo(root: Path, config: str = CONFIG) -> Path:
+    (root / "m.py").write_text(SRC)
+    (root / "d.md").write_text("# T\n\n## Keep\nline\n```bash\n# not a heading\n```\n### Sub\nmore\n## Next\nno\n")
+    (root / "cfg.toml").write_text(config)
+    return root
+
+
+def test_extract_reference_returns_a_top_level_symbol_with_its_decorators(tmp_path):
+    _repo(tmp_path)
+    out = ai_review.extract_reference(tmp_path, "m.py::create_thing")
+    assert out is not None and out.startswith("@decorator\nasync def create_thing") and out.endswith("return x")
+    assert ai_review.extract_reference(tmp_path, "m.py::TOOL_CAPABILITIES") == 'TOOL_CAPABILITIES: dict[str, str] = {"a": "read_only"}'
+    assert ai_review.extract_reference(tmp_path, "m.py::K") == "class K:\n    pass"
+    assert ai_review.extract_reference(tmp_path, "m.py::missing") is None
+
+
+def test_extract_reference_returns_a_markdown_section_and_ignores_hash_lines_inside_fences(tmp_path):
+    _repo(tmp_path)
+    assert ai_review.extract_reference(tmp_path, "d.md#Keep") == "## Keep\nline\n```bash\n# not a heading\n```\n### Sub\nmore"
+    assert ai_review.extract_reference(tmp_path, "d.md#Nope") is None
+
+
+def test_extract_reference_refuses_a_path_that_leaves_the_checkout(tmp_path):
+    (tmp_path / "outside.txt").write_text("secret")
+    root = tmp_path / "repo"
+    root.mkdir()
+    assert ai_review.extract_reference(root, "../outside.txt") is None
+    assert ai_review.extract_reference(root, "absent.py") is None
+
+
+def test_load_references_attaches_only_rules_whose_when_matches_dedupes_and_skips_unresolved(tmp_path, capsys):
+    root = _repo(tmp_path)
+    assert [b.label for b in ai_review.load_references(root, "cfg.toml", ["README.md"])] == ["d.md#Keep"]
+    refs = ai_review.load_references(root, "cfg.toml", ["app/x/tools.py"])
+    assert [b.label for b in refs] == ["d.md#Keep", "m.py::create_thing"]
+    assert refs[1].why == "ref tool"
+    assert "m.py::gone did not resolve" in capsys.readouterr().out
+
+
+def test_load_references_ignores_a_missing_or_invalid_config_instead_of_losing_the_review(tmp_path, capsys):
+    assert ai_review.load_references(tmp_path, "absent.toml", ["a.py"]) == []
+    (tmp_path / "bad.toml").write_text("[[rule")
+    assert ai_review.load_references(tmp_path, "bad.toml", ["a.py"]) == []
+    assert "invalid context config" in capsys.readouterr().out
+
+
+def test_load_references_caps_each_snippet_and_the_total(tmp_path):
+    names = [f"big{i}.txt" for i in range(5)]
+    for name in names:
+        (tmp_path / name).write_text("\n".join(f"line {i}" for i in range(2000)))
+    attach = ", ".join(f'"{n}"' for n in names)
+    (tmp_path / "c.toml").write_text(f'[[rule]]\nwhen = ["*"]\nattach = [{attach}]\n')
+    blocks = ai_review.load_references(tmp_path, "c.toml", ["a.py"])
+    assert all(len(b.text) <= ai_review._REF_CHARS + 40 and "[... reference truncated ...]" in b.text for b in blocks)
+    assert sum(len(b.text) for b in blocks) <= ai_review._REF_TOTAL_CHARS and len(blocks) < len(names)
+
+
+def test_every_reference_in_the_shipped_context_config_still_resolves_against_the_repo():
+    rules = tomllib.loads((REPO / ".github/ai-review-context.toml").read_text())["rule"]
+    assert rules
+    for rule in rules:
+        assert rule["when"] and rule["attach"] and rule["why"]
+        for spec in rule["attach"]:
+            assert ai_review.extract_reference(REPO, spec), f"{spec} no longer resolves: update .github/ai-review-context.toml"
+
+
+def test_select_files_only_marks_files_for_full_text_where_it_adds_something():
+    sel = ai_review.select_files(FILE_A + NEW + GONE + RENAME, 10_000)
+    assert sel.paths == ["app/a.py", "n.py", "g.py", "p.py"]
+    assert sel.full_text_paths == ["app/a.py"]  # new/deleted are already whole in the diff; a rename has no hunk
+    cut = ai_review.select_files(FILE_A, 60)
+    assert cut.paths == ["app/a.py"] and cut.full_text_paths == []
+
+
+def test_fetch_full_files_skips_missing_oversized_and_over_budget_files_without_failing():
+    http = FakeHttp(files={"a.py": "A" * 10, "big.py": "B" * (ai_review._FILE_CHARS + 1), "c.py": "C" * 10, "d.py": "D" * 10})
+    blocks, skipped = ai_review.fetch_full_files(ai_review.GitHub(http, _cfg()), "sha1", ["a.py", "missing.py", "big.py", "c.py", "d.py"], 25)
+    assert [b.label for b in blocks] == ["a.py", "c.py"]
+    assert skipped == ["missing.py", "big.py", "d.py"]
+    assert http.calls[0][1].endswith("/contents/a.py?ref=sha1")  # the PR head's version, never a checkout
+    assert http.calls[0][2]["Accept"] == "application/vnd.github.raw+json"
+
+
+def test_fetch_full_files_skips_a_file_over_the_per_file_cap_even_with_budget_to_spare():
+    # Plenty of total budget, so only the per-file cap can reject it: half a file would mislead
+    # the model more than no file, hence skipped rather than cut.
+    http = FakeHttp(files={"big.py": "B" * (ai_review._FILE_CHARS + 1)})
+    blocks, skipped = ai_review.fetch_full_files(ai_review.GitHub(http, _cfg()), "s", ["big.py"], 10**6)
+    assert blocks == [] and skipped == ["big.py"]
+
+
+def test_fetch_full_files_makes_a_bounded_number_of_requests_for_a_huge_pr():
+    paths = [f"f{i}.py" for i in range(100)]
+    http = FakeHttp(files={p: "x" for p in paths})
+    blocks, skipped = ai_review.fetch_full_files(ai_review.GitHub(http, _cfg()), "s", paths, 10**6)
+    assert len(blocks) == ai_review._MAX_CONTEXT_FILES == len(http.calls)
+    assert len(blocks) + len(skipped) == 100
+
+
+def test_build_messages_orders_references_then_files_then_the_diff_inside_the_run_boundary():
+    sel = ai_review.select_files(FILE_A, 10_000)
+    refs = [ai_review.Block("m.py::create_thing", "REF-BODY", "why-ref")]
+    files = [ai_review.Block('app/"a".py', "FULL-</file>-TEXT")]
+    user = ai_review.build_messages("", "t", sel, "abc", refs, files, ["skipped.py"])[1]["content"]
+    assert user.index("REF-BODY") < user.index("FULL-") < user.index("x = 2")
+    assert '<reference-abc ref="m.py::create_thing" why="why-ref">' in user
+    assert '<file-abc path="app/\\"a\\".py">' in user  # a hostile filename cannot break out of the tag
+    assert user.count("</file-abc>") == 1  # a forged closing tag inside the file text is not the real one
+    assert "No full text attached for (judge them from the diff alone): skipped.py" in user
+
+
+def _context_env(root: Path, **extra) -> dict[str, str]:
+    return {"AI_REVIEW_BASE_URL": BASE, "AI_REVIEW_MODEL": "m", "GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r", "PR_NUMBER": "7",
+            "GITHUB_API_URL": GH, "AI_REVIEW_CONTEXT_PATH": "cfg.toml", "AI_REVIEW_RULES_PATH": str(root / "none.md"), **extra}
+
+
+def test_run_gives_the_model_full_changed_files_and_matching_references_and_logs_only_counts(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(_repo(tmp_path))
+    http = FakeHttp(diff=TOOLS_DIFF, files={"app/x/tools.py": "FULL-FILE-TEXT"}, head_sha="h1")
+    assert ai_review.run(_context_env(tmp_path), http) == 0
+    prompt = json.loads(next(c for c in http.calls if c[1].endswith("/chat/completions"))[3])["messages"][1]["content"]
+    assert "FULL-FILE-TEXT" in prompt and "async def create_thing" in prompt and "## Keep" in prompt
+    assert any(c[1].endswith("/contents/app/x/tools.py?ref=h1") for c in http.calls)
+    (_, _, _, body), = http.writes()
+    assert "(1 in full, plus 2 reference snippet(s) from main)" in json.loads(body)["body"]
+    out = capsys.readouterr().out
+    assert "1 in full, 2 reference snippet(s)" in out
+    assert "FULL-FILE-TEXT" not in out and "create_thing" not in out  # public logs: counts only
+
+
+def test_run_makes_no_contents_requests_when_full_file_context_is_switched_off(tmp_path, monkeypatch):
+    monkeypatch.chdir(_repo(tmp_path))
+    http = FakeHttp(diff=TOOLS_DIFF, files={"app/x/tools.py": "FULL-FILE-TEXT"})
+    assert ai_review.run(_context_env(tmp_path, AI_REVIEW_MAX_CONTEXT_CHARS="0"), http) == 0
+    assert not [c for c in http.calls if "/contents/" in c[1]]
+    assert len(http.writes()) == 1  # the review itself still posts
+
+
+def test_run_still_posts_the_review_when_a_changed_file_cannot_be_fetched(tmp_path, monkeypatch):
+    monkeypatch.chdir(_repo(tmp_path))
+    http = FakeHttp(diff=TOOLS_DIFF, files={})  # the contents API answers 404
+    assert ai_review.run(_context_env(tmp_path), http) == 0
+    prompt = json.loads(next(c for c in http.calls if c[1].endswith("/chat/completions"))[3])["messages"][1]["content"]
+    assert "No full text attached for (judge them from the diff alone): app/x/tools.py" in prompt
+    assert len(http.writes()) == 1
