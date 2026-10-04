@@ -37,19 +37,23 @@ Used by `test_rag_quality_deepeval.py`/`test_tool_correctness_deepeval.py`
 only — see `deepeval_conversation_judge` below for why
 `test_conversation_simulator_deepeval.py` can't use it.
 
-Both judge fixtures below wrap their primary in `_JudgeWithBackup`, an
-optional free fallback (https://plugsky.com, OpenAI-compatible,
-`PLUGSKY_API_KEY`) that engages ONLY once the primary's own retry policy
-(deepeval.models.retry_policy — a few attempts with backoff) has already
-given up on a rate limit OR a transient server overload (see
-`_is_transient_provider_error`'s own docstring — widened 2026-09-19
-after a real CI run, PR #44, hit exactly the 503 case a 429-only check
-missed) — added proactively, not from an observed rate-limit incident,
-since both GOOGLE_API_KEY's free tier (30 req/min) and GROQ_API_KEY's
-(1,000 RPD) are real, finite ceilings a busy `make deepeval` run could
-plausibly hit (see this module's own comments above for where those
-numbers came from). Absent PLUGSKY_API_KEY, both fixtures behave exactly
-as before — this is additive, never a new hard requirement.
+Both judge fixtures below answer through a FAILOVER CHAIN (tests/deepeval/
+fallback.py; `_with_fallbacks` here): the primary, then other models on the
+same provider (`DEFAULT_*_FALLBACKS`, each with its own free-tier quota), then
+the optional free Plugsky backup (https://plugsky.com, OpenAI-compatible,
+`PLUGSKY_API_KEY`). A hand-over happens ONLY once the primary's own retry
+policy (deepeval.models.retry_policy — a few attempts with backoff) has given
+up on a rate limit OR a transient overload, and only for those. Absent
+PLUGSKY_API_KEY and with `none` fallbacks, a fixture behaves exactly as it
+always did — additive, never a new hard requirement.
+
+The first version of this (a single Plugsky backup, widened for 503s after PR
+#44) could not engage on the very case it existed for: deepeval's tenacity
+policy has `reraise=False`, so when its attempts run out the exception that
+reaches here is `tenacity.RetryError` with the real `RateLimitError` inside,
+which the old classifier did not look into. A real CI run (PR #101) hit Groq's
+per-day token limit with `PLUGSKY_API_KEY` set and the backup never engaged.
+fallback.py looks inside, and has the tests the old code never had.
 
 `deepeval_conversation_judge` — a THIRD knob, Groq's `openai/gpt-oss-120b`
 again (`DEEPEVAL_CONVERSATION_JUDGE_MODEL`), added 2026-09-18 after a real
@@ -75,6 +79,7 @@ import os
 import pytest
 
 from tests.containers import ensure_crawl4ai, ensure_ollama
+from tests.deepeval.fallback import build_chain, make_judge, model_list
 
 # Separate from tests/live/conftest.py's TEST_LLM_MODEL, deliberately: these
 # `deepeval`-marked tests are manual-only, unlike that file's CI-speed 1.5b.
@@ -90,36 +95,21 @@ DEEPEVAL_CONVERSATION_JUDGE_MODEL = os.environ.get(
 # own docstring for why (a transient-error-only fallback, never a replacement).
 DEEPEVAL_BACKUP_MODEL = os.environ.get("DEEPEVAL_BACKUP_MODEL", "plugsky-micro")
 PLUGSKY_BASE_URL = "https://api.plugsky.com/v1"
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+# Other models on the SAME provider (same key), tried in order before the Plugsky backup when a judge is rate
+# limited or overloaded: each model has its own free-tier quota (a Groq 429 names the model; a Gemini one says
+# `PerProjectPerModel`), so one being spent says nothing about the next. Comma-separated; `none` turns them off;
+# unset means these defaults, so CI needs no new secret or variable. See tests/deepeval/fallback.py.
+#  - Gemini judge: gemini-3.5-flash-lite is stable and free-tier.
+#  - Conversation judge: both need Groq's STRICT structured outputs (KnowledgeRetentionMetric requests a schema),
+#    which per Groq's docs only gpt-oss-120b, gpt-oss-20b and qwen3.8-27b support; each has its own 200K tokens/day.
+DEFAULT_JUDGE_FALLBACKS = ("gemini-3.5-flash-lite",)
+DEFAULT_CONVERSATION_JUDGE_FALLBACKS = ("openai/gpt-oss-20b", "qwen/qwen3.8-27b")
 
 
 @pytest.fixture(scope="session")
 def deepeval_ollama() -> dict[str, str]:
     return ensure_ollama(DEEPEVAL_MODEL)
-
-
-def _is_transient_provider_error(exc: Exception) -> bool:
-    """True for the same known-transient signatures
-    `.github/workflows/ci.yml`'s own `--only-rerun` regex already treats
-    as worth retrying (rate limit OR temporary overload) from either
-    provider the judge fixtures below use — Gemini's google-genai raises
-    `APIError`/`ServerError` with `.code` set to the HTTP status (429
-    RESOURCE_EXHAUSTED, or a 5xx "high demand" `ServerError` — deepeval's
-    own retry_policy treats `ServerError` as transient/network-like, same
-    reasoning here), Groq's/Plugsky's OpenAI-SDK client raises
-    `RateLimitError`/`APITimeoutError`/`APIConnectionError`/
-    `InternalServerError` directly. Deliberately still narrow: any OTHER
-    failure (auth, bad request, a real bad-argument bug) must still
-    surface immediately rather than get silently masked by a fallback
-    that can't fix it. Verified against a real CI run (PR #44) that hit
-    exactly the 503 case this widening now catches — `getattr(exc,
-    'code', None) == 429` alone missed it."""
-    import openai
-
-    if isinstance(
-        exc, (openai.RateLimitError, openai.APITimeoutError, openai.APIConnectionError, openai.InternalServerError)
-    ):
-        return True
-    return getattr(exc, "code", None) in (429, 500, 502, 503, 504)
 
 
 def _plugsky_backup():
@@ -131,11 +121,11 @@ def _plugsky_backup():
     (a generic OpenAI-SDK client), the same class `deepeval_conversation_judge`
     already uses for Groq — Plugsky needs no dedicated model class, only a
     different `base_url`."""
-    from deepeval.models import LocalModel
-
     api_key = os.environ.get("PLUGSKY_API_KEY")
     if not api_key:
-        return None
+        return None  # checked BEFORE the import below, so "no backup" needs no deepeval (the fast `test` job has none)
+    from deepeval.models import LocalModel
+
     return LocalModel(
         model=DEEPEVAL_BACKUP_MODEL,
         api_key=api_key,
@@ -144,96 +134,18 @@ def _plugsky_backup():
     )
 
 
-def _with_optional_backup(primary):
-    """Wraps `primary` in a fallback that only engages on a known-transient
-    failure (`_is_transient_provider_error` above), or returns `primary`
-    unchanged if PLUGSKY_API_KEY isn't set (`_plugsky_backup` returns
-    `None`) — see this module's own docstring. `DeepEvalBaseLLM` is
-    imported, and the wrapper class defined, INSIDE this function rather
-    than at module level — this file's own docstring already establishes
-    that importing `deepeval` at collection time has to stay optional
-    (the fast `test` job's pytest run collects this whole file without
-    `deepeval` installed at all), and a module-level `class
-    X(DeepEvalBaseLLM)` would import it unconditionally just by being
-    defined."""
+def _with_fallbacks(primary, fallbacks):
+    """`primary` answered through the failover chain (tests/deepeval/fallback.py): then `fallbacks` (other models
+    on the same provider), then the optional Plugsky backup. Returns `primary` unchanged when there is nothing
+    to fall back to, so a bare checkout behaves exactly as it always did.
+
+    Engages only on a TRANSIENT failure (rate limit, overload, timeout), judged by looking inside deepeval's own
+    tenacity `RetryError` wrapper: see fallback.py for the bug that made the previous version miss exactly that.
+    """
     backup = _plugsky_backup()
-    if backup is None:
+    if not fallbacks and backup is None:
         return primary
-
-    from deepeval.models import DeepEvalBaseLLM
-
-    class _JudgeWithBackup(DeepEvalBaseLLM):
-        """MUST subclass DeepEvalBaseLLM, not just duck-type `generate`/
-        `a_generate`/`get_model_name` — deepeval's own
-        `metrics/utils.py::initialize_model` does `isinstance(model,
-        DeepEvalBaseLLM)` before trusting a passed-in model object at
-        all; a plain wrapper object fails that check and falls through
-        to deepeval's env-based auto-detection instead of raising,
-        silently grading with the wrong model rather than this
-        fixture's chosen one.
-
-        `generate`/`a_generate` return just the content (a `str` or, if
-        `schema` was given, a validated schema instance) — NOT the
-        `(content, cost)` tuple `self._primary`/`self._backup`
-        (deepeval's own native `GeminiModel`/`LocalModel`) actually
-        return. Real bug, caught live in CI (PR #44,
-        test_conversation_simulator_deepeval.py): deepeval's own
-        `metrics/utils.py::initialize_model` marks any CUSTOM
-        `DeepEvalBaseLLM` subclass (this one included — it isn't one of
-        deepeval's own native provider classes) as `using_native_model =
-        False`, and callers like
-        `deepeval.simulator.conversation_simulator.py::generate_schema`
-        branch on that flag: the native-model branch unpacks a 2-tuple,
-        but the non-native branch (this class's branch) takes the
-        return value AS THE CONTENT DIRECTLY, matching
-        `DeepEvalBaseLLM.generate`'s own documented contract ("Returns: A
-        string.") — passing the raw tuple through crashed with
-        `AttributeError: 'tuple' object has no attribute
-        'simulated_input'` the first time this class's fallback actually
-        engaged against a real key."""
-
-        def __init__(self, primary, backup):
-            self._primary = primary
-            self._backup = backup
-            super().__init__(primary.get_model_name())
-
-        def load_model(self):
-            return self._primary
-
-        def get_model_name(self) -> str:
-            return self._primary.get_model_name()
-
-        @staticmethod
-        def _content(result):
-            return result[0] if isinstance(result, tuple) else result
-
-        def generate(self, prompt: str, schema=None):
-            try:
-                result = self._primary.generate(prompt, schema=schema)
-            except Exception as exc:
-                if not _is_transient_provider_error(exc):
-                    raise
-                print(
-                    f"[deepeval] {self._primary.get_model_name()} hit a transient "
-                    f"error, falling back to {self._backup.get_model_name()}: {exc}"
-                )
-                result = self._backup.generate(prompt, schema=schema)
-            return self._content(result)
-
-        async def a_generate(self, prompt: str, schema=None):
-            try:
-                result = await self._primary.a_generate(prompt, schema=schema)
-            except Exception as exc:
-                if not _is_transient_provider_error(exc):
-                    raise
-                print(
-                    f"[deepeval] {self._primary.get_model_name()} hit a transient "
-                    f"error, falling back to {self._backup.get_model_name()}: {exc}"
-                )
-                result = await self._backup.a_generate(prompt, schema=schema)
-            return self._content(result)
-
-    return _JudgeWithBackup(primary, backup)
+    return make_judge(build_chain(primary, fallbacks, backup))
 
 
 @pytest.fixture(scope="session")
@@ -259,12 +171,9 @@ def deepeval_judge():
             "(DEEPEVAL_JUDGE_MODEL, see tests/deepeval/conftest.py). Get one "
             "at https://aistudio.google.com/app/apikey and set it in .env."
         )
-    primary = GeminiModel(
-        model=DEEPEVAL_JUDGE_MODEL,
-        api_key=api_key,
-        temperature=0,
-    )
-    return _with_optional_backup(primary)
+    primary = GeminiModel(model=DEEPEVAL_JUDGE_MODEL, api_key=api_key, temperature=0)
+    names = model_list(os.environ.get("DEEPEVAL_JUDGE_FALLBACK_MODELS"), DEFAULT_JUDGE_FALLBACKS, exclude=[DEEPEVAL_JUDGE_MODEL])
+    return _with_fallbacks(primary, [GeminiModel(model=name, api_key=api_key, temperature=0) for name in names])
 
 
 @pytest.fixture(scope="session")
@@ -292,13 +201,14 @@ def deepeval_conversation_judge():
             "tests/deepeval/conftest.py). Get one at "
             "https://console.groq.com/keys and set it in .env."
         )
-    primary = LocalModel(
-        model=DEEPEVAL_CONVERSATION_JUDGE_MODEL,
-        api_key=api_key,
-        base_url="https://api.groq.com/openai/v1",
-        temperature=0,
+    primary = LocalModel(model=DEEPEVAL_CONVERSATION_JUDGE_MODEL, api_key=api_key, base_url=GROQ_BASE_URL, temperature=0)
+    names = model_list(
+        os.environ.get("DEEPEVAL_CONVERSATION_JUDGE_FALLBACK_MODELS"),
+        DEFAULT_CONVERSATION_JUDGE_FALLBACKS,
+        exclude=[DEEPEVAL_CONVERSATION_JUDGE_MODEL],
     )
-    return _with_optional_backup(primary)
+    fallbacks = [LocalModel(model=name, api_key=api_key, base_url=GROQ_BASE_URL, temperature=0) for name in names]
+    return _with_fallbacks(primary, fallbacks)
 
 
 @pytest.fixture(scope="session")

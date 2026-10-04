@@ -589,11 +589,17 @@ jobs:
           DEEPEVAL_TELEMETRY_OPT_OUT: "1"
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          # Optional — see tests/deepeval/conftest.py's `_with_optional_backup`
+          # Optional — see tests/deepeval/conftest.py's `_with_fallbacks`
           # and .env.example's own PLUGSKY_API_KEY comment. Empty/unset here
-          # (no repo secret configured) is a no-op: both judge fixtures fall
-          # back to their pre-existing GOOGLE_API_KEY/GROQ_API_KEY-only behavior.
+          # (no repo secret configured) is a no-op: the plugsky backup is
+          # simply not part of the chain.
           PLUGSKY_API_KEY: ${{ secrets.PLUGSKY_API_KEY }}
+          # Optional overrides of the other-models-on-the-same-provider chain
+          # each judge fails over to (tests/deepeval/fallback.py; comma-
+          # separated, `none` turns it off). Unset means the defaults in
+          # tests/deepeval/conftest.py, so no new variable or secret is needed.
+          DEEPEVAL_JUDGE_FALLBACK_MODELS: ${{ vars.DEEPEVAL_JUDGE_FALLBACK_MODELS }}
+          DEEPEVAL_CONVERSATION_JUDGE_FALLBACK_MODELS: ${{ vars.DEEPEVAL_CONVERSATION_JUDGE_FALLBACK_MODELS }}
       # Not actions/cache's own post-job save: that one cannot read the root-owned files the Ollama
       # container wrote (tar exit 2, so it has never saved) and is skipped when the job is red. See the action.
       - if: ${{ !cancelled() }}
