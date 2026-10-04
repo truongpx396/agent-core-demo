@@ -1,7 +1,9 @@
 # agent-core-demo — Local Core AI Stack Demo
 
 A tiny, **fully offline** project that lets you grab the core, frequently-used
-features of four popular AI-infra tools in one place:
+features of four popular AI-infra tools in one place:  <!-- probe change -->
+PROBE LINE ONE
+PROBE LINE TWO
 
 | Tool          | What this demo shows |
 |---------------|----------------------|
@@ -896,6 +898,8 @@ way):
 - **Disclosed finding, not hypothetical**: running this against the repo's
   current `requirements-lock.txt` surfaces 5 real HIGH-severity, fixable
   CVEs — including an RCE in `langgraph-checkpoint`'s JSON deserialization
+PROBE LINE THREE
+PROBE LINE FOUR
   mode (CVE-2025-64439) — plus 2 more (in `msgpack`/`setuptools`) visible
   only from the built image's installed-package metadata, not the lock file
   itself. None reach CRITICAL, so CI's hard gate doesn't fail on them today,
