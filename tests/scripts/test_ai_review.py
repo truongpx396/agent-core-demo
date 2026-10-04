@@ -600,3 +600,44 @@ def test_run_adds_no_links_when_the_pr_head_is_not_a_real_commit_sha(tmp_path, m
     (_, _, _, body), = http.writes()
     comment = json.loads(body)["body"]
     assert "`app/a.py:1`" in comment and "](" not in comment and " at `" not in comment
+
+
+# --- robustness of the linking step (found by the AI reviewer's own review of this change) ----
+
+
+def test_linkify_leaves_an_absurdly_long_line_number_as_plain_text_instead_of_raising():
+    # Python refuses int() of more than 4,300 digits; before the digit cap this raised ValueError
+    # and the whole review was lost to one degenerate citation.
+    t = _target()
+    huge = "`app/a.py:" + "9" * 5000 + "`"
+    assert ai_review.linkify(huge, t) == huge
+    assert ai_review.linkify("`app/a.py:12345678`", t) == "`app/a.py:12345678`"  # 8 digits: past any real file
+    assert "#L1234567)" in ai_review.linkify("`app/a.py:1234567`", t)  # 7 digits still links
+
+
+def test_a_failure_while_linking_never_costs_the_review(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+
+    def boom(text, target):
+        raise RuntimeError("secret detail that must not reach a public log")
+
+    monkeypatch.setattr(ai_review, "linkify", boom)
+    http = FakeHttp(head_sha=SHA)
+    assert ai_review.run(_run_env(), http, _no_sleep) == 0
+    (_, _, _, body), = http.writes()
+    assert "`app/a.py:1` - bad" in json.loads(body)["body"]  # the review is still posted, just unlinked
+    out = capsys.readouterr().out
+    assert "could not link citations (RuntimeError)" in out and "secret detail" not in out
+
+
+def test_line_counts_follow_githubs_newline_only_numbering(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    # Two lines by GitHub's count; str.splitlines() would call it three (it splits on form feed).
+    assert ai_review._line_count("a\x0cb\nc\n") == 2
+    assert [ai_review._line_count(t) for t in ("", "x", "x\n", "x\ny", "x\ny\n", "\n")] == [0, 1, 1, 2, 2, 1]
+    answer = "**[NIT]** `app/a.py:2` - last line\n**[NIT]** `app/a.py:3` - past the end"
+    http = FakeHttp(model_body={"choices": [{"message": {"content": answer}}]}, head_sha=SHA, files={"app/a.py": "a\x0cb\nc\n"})
+    assert ai_review.run(_run_env(), http, _no_sleep) == 0
+    (_, _, _, body), = http.writes()
+    comment = json.loads(body)["body"]
+    assert "app/a.py#L2)" in comment and "app/a.py:3`](" not in comment

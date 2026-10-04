@@ -501,8 +501,11 @@ def chat_completion(http: Http, cfg: Config, messages: list[dict[str, str]], sle
 # A citation as the prompt asks the model to write it: `path:line`, or `path:start-end`, in code
 # formatting. The path alphabet is deliberately narrow (no spaces, brackets or parentheses), so
 # nothing the model writes can break out of the markdown link built around it. The lookarounds
-# skip a citation the model already wrapped in a link, so we never nest one link in another.
-_CITATION = re.compile(r"(?<!\[)`([A-Za-z0-9_./@+-]+):L?(\d+)(?:-L?(\d+))?`(?!\]\()")
+# skip a citation the model already wrapped in a link, so we never nest one link in another. The
+# digit count is capped because Python refuses `int()` of more than 4,300 digits: a degenerate
+# model answer with a huge number must leave that citation as plain text, not raise and cost the
+# whole review. (7 digits is far beyond any real file's line count.)
+_CITATION = re.compile(r"(?<!\[)`([A-Za-z0-9_./@+-]+):L?(\d{1,7})(?:-L?(\d{1,7}))?`(?!\]\()")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
@@ -514,6 +517,12 @@ class LinkTarget:
     blob_url: str  # {server}/{owner}/{repo}/blob/{commit}
     paths: frozenset[str]  # changed files that exist at that commit
     line_counts: Mapping[str, int] = field(default_factory=dict)  # known only for files fetched in full
+
+
+def _line_count(text: str) -> int:
+    """Lines as GitHub numbers them: by newline only. `str.splitlines()` would also split on form
+    feed, U+2028 and friends, over-count, and let a link through to a line past the real end."""
+    return text.count("\n") + (0 if not text or text.endswith("\n") else 1)
 
 
 def linkify(text: str, target: LinkTarget | None) -> str:
@@ -568,7 +577,11 @@ def format_comment(
     tail = ""
     if selection.omitted:
         tail = "\n\n<sub>Not reviewed: " + "; ".join(selection.omitted) + "</sub>"
-    answer = linkify(defang_mentions(answer), links)
+    answer = defang_mentions(answer)
+    try:
+        answer = linkify(answer, links)
+    except Exception as exc:  # noqa: BLE001 - links are a nicety: whatever goes wrong while adding them must not cost the review itself. Only the class name is printed (public logs).
+        print(f"::warning::AI review: could not link citations ({type(exc).__name__})")
     room = COMMENT_LIMIT - len(head) - len(tail)
     if len(answer) > room:
         answer = answer[:room].rsplit("\n", 1)[0] + "\n\n_[review truncated]_"
@@ -649,7 +662,7 @@ def run(env: Mapping[str, str], http: Http = urllib_http, sleep: Callable[[float
         links = None
         if _COMMIT.fullmatch(head_sha):
             blob_url = f"{cfg.server_url}/{cfg.repo}/blob/{head_sha}"
-            line_counts = {block.label: len(block.text.splitlines()) for block in files}
+            line_counts = {block.label: _line_count(block.text) for block in files}
             links = LinkTarget(head_sha, blob_url, frozenset(selection.linkable_paths), line_counts)
         comment = format_comment(answer, cfg, selection, full_files=len(files), references=len(references), links=links)
         if cfg.dry_run:
