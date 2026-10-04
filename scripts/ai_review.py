@@ -527,12 +527,18 @@ def chat_completion(http: Http, cfg: Config, messages: list[dict[str, str]], sle
             note = "; ".join(part for part in ("a daily quota" if daily else "", tried) if part)
             raise ReviewError(f"the model endpoint returned {problem}{f' ({note})' if note else ''}")
         hint = retry_hint(reply_headers, raw)
+        limit = DAILY_QUOTA_ATTEMPTS if daily else ATTEMPTS
+        if daily and hint is not None and hint > MAX_WAIT_S:
+            # For a daily quota the hint is the quota's RESET TIME ("retry in 11.5 hours"), not a wait; on the
+            # real key requests got through meanwhile, so try once on our own short backoff instead.
+            said, hint = f", ignoring its {hint:.0f}s hint, which is a daily reset", None
+        else:
+            said = f", the provider asks for {hint:.0f}s" if hint is not None else ""
         wait = wait_before_retry(attempt, status, hint, waited)
         if wait is None:
             reason = f"the provider asks for {hint:.0f}s, more than the {MAX_WAIT_S:.0f}s we wait" if hint is not None and hint > MAX_WAIT_S else "out of wait budget"
             raise ReviewError(f"the model endpoint returned {problem} ({'; '.join(part for part in (reason, tried) if part)})")
-        said = f", the provider asks for {hint:.0f}s" if hint is not None else ""
-        print(f"::notice::AI review: {problem}; retry {attempt} of {ATTEMPTS - 1} in {wait:.0f}s{said}")
+        print(f"::notice::AI review: {problem}; retry {attempt} of {limit - 1} in {wait:.0f}s{said}")
         sleep(wait)
         waited += wait
     try:

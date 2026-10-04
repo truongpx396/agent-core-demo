@@ -13,7 +13,9 @@ inspect_ai), not from Google's own docs, and have not been captured from this re
   once. THAT WAS WRONG for this repo's real key: in a real run, errors naming a daily quota were
   followed, under a minute later, by successes (it behaves like a rolling window). So a daily-quota
   429 gets exactly ONE retry (`DAILY_QUOTA_ATTEMPTS`): a truly exhausted quota then costs one extra
-  attempt, not a thrown-away review.
+  attempt, not a thrown-away review. Its `retryDelay` is the quota's RESET TIME, hours away (a real
+  run read 41,609s, counting down with the clock), while requests were still getting through, so the
+  caller ignores an over-long hint on a daily quota and uses the short backoff for that one retry.
 - Google's SDK guidance for 429 and 503: exponential backoff from about a second with jitter, a
   maximum single delay of 60 seconds, and up to four attempts.
 

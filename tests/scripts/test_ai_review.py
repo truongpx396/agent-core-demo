@@ -812,3 +812,32 @@ def test_run_recovers_from_a_hinted_429_and_posts_the_review(tmp_path, monkeypat
     assert calls["model"] == 2 and len(waits) == 1 and 12.0 <= waits[0] < 13.0
     out = capsys.readouterr().out
     assert "::warning::" not in out and "retry 1 of 3" in out
+
+
+def test_a_daily_quota_429_with_an_hours_long_hint_is_retried_once_on_our_own_short_backoff(top_jitter, capsys):
+    # The real shape: a 429 naming a per-day quota, retryDelay = hours (the reset time, counting down
+    # with the clock), while requests were still getting through. Waiting 11 hours is impossible and
+    # giving up threw reviews away, so: ignore the hint, try once after the short backoff.
+    daily = (429, _gemini_429("41609s", quota_id="GenerateRequestsPerDayPerProjectPerModel-FreeTier"), {})
+    http, waits = Scripted(daily, 200), []
+    assert ai_review.chat_completion(http, _cfg(), [], waits.append) == "an answer"
+    assert waits == [20.0] and http.calls == 2  # the unhinted 429 backoff (10s plus up to 10s of jitter), not 41,609s
+    out = capsys.readouterr().out
+    assert "retry 1 of 1 in 20s, ignoring its 41609s hint, which is a daily reset" in out
+
+
+def test_a_daily_quota_that_is_still_exhausted_after_the_one_retry_says_so_instead_of_blaming_the_hint(top_jitter):
+    daily = (429, _gemini_429("41609s", quota_id="GenerateRequestsPerDayPerProjectPerModel-FreeTier"), {})
+    http, waits = Scripted(daily, daily), []
+    with pytest.raises(ai_review.ReviewError) as exc:
+        ai_review.chat_completion(http, _cfg(), [], waits.append)
+    assert str(exc.value).endswith("HTTP 429 RESOURCE_EXHAUSTED (a daily quota; after 2 attempts)")
+    assert http.calls == 2 and waits == [20.0] and "asks for" not in str(exc.value)
+
+
+def test_a_non_daily_429_with_an_hours_long_hint_still_gives_up_at_once():
+    per_minute = (429, _gemini_429("41609s", quota_id="GenerateRequestsPerMinutePerProjectPerModel-FreeTier"), {})
+    http, waits = Scripted(per_minute), []
+    with pytest.raises(ai_review.ReviewError, match=r"the provider asks for 41609s, more than the 60s we wait"):
+        ai_review.chat_completion(http, _cfg(), [], waits.append)
+    assert http.calls == 1 and waits == []  # only a DAILY quota's hint is treated as a reset time
