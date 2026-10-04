@@ -15,12 +15,14 @@ name: AI review (advisory)
 #              AI_REVIEW_INLINE   (optional, default on; 0 = one summary comment, no inline threads)
 #              AI_REVIEW_MAX_FILE_CHARS    (optional, default 40000; the most one file may add to that budget)
 #   Secret:    AI_REVIEW_API_KEY   optional if the endpoint needs no key
-#   Fallbacks (all optional; tried in order if the provider before has failed for good):
-#   Variables: AI_REVIEW_FALLBACK1_MODEL     required to turn slot 1 on (e.g. another model on the same provider)
-#              AI_REVIEW_FALLBACK1_BASE_URL  default: the primary's. Set it to use a different provider
-#   Secret:    AI_REVIEW_FALLBACK1_API_KEY   its own key. Inherited from the primary ONLY if the base URL is the
-#                                            same; one provider's key is never sent to another host
-#   ...and the same three with FALLBACK2 for a third provider. The diff goes to every provider tried.
+#   Fallbacks (all optional): up to two numbered slots, tried in order when the one before has failed for good.
+#   A slot is one complete alternative; WHICH variables you fill in decides whether it is "another model" or
+#   "another provider" (README, "Fallback providers", has the three cases):
+#   Variable:  AI_REVIEW_FALLBACK1_MODEL     the on/off switch: set it to turn slot 1 on
+#   Variable:  AI_REVIEW_FALLBACK1_BASE_URL  only for a DIFFERENT provider; unset = the primary's
+#   Secret:    AI_REVIEW_FALLBACK1_API_KEY   only for a different provider/account; unset = the primary's key, and
+#                                            only if the base URL is the same (a key is never sent to another host)
+#   ...and the same three with FALLBACK2. The diff goes to every provider tried.
 # and create a label named `ai-review`. Switching provider is changing those two variables.
 # The PR diff IS sent to whatever endpoint you configure.
 #

@@ -812,19 +812,31 @@ choice. Up to two fallbacks are numbered slots, tried **in order** when the one 
 own retries: quota spent, overloaded, down, or a bad answer). Everything is optional, and with none set the reviewer
 behaves exactly as before.
 
-| Variable / secret | |
+A **slot** (`FALLBACK1`, `FALLBACK2`) is one complete alternative: a model, and optionally a different provider. The
+name says "fallback N", not "model" or "provider", because *which variables you fill in* decides which it is:
+
+| Variable / secret | What it means |
 |---|---|
-| `AI_REVIEW_FALLBACK1_MODEL` | **required** to turn slot 1 on, e.g. `gemini-3.5-flash-lite` |
-| `AI_REVIEW_FALLBACK1_BASE_URL` | optional; defaults to the primary's, i.e. "another model on the same provider" |
-| `AI_REVIEW_FALLBACK1_API_KEY` (secret) | optional; see the key rule below |
-| `AI_REVIEW_FALLBACK2_*` | the same three, for a third provider |
+| `AI_REVIEW_FALLBACKn_MODEL` | **The on/off switch.** Setting it turns slot *n* on; it is the model name to ask for. |
+| `AI_REVIEW_FALLBACKn_BASE_URL` | Only for a **different provider**. Unset means the primary's provider. |
+| `AI_REVIEW_FALLBACKn_API_KEY` (secret) | Only for a **different provider or account**. Unset means reuse the primary's key, and only if the base URL is the same. A key you set always wins. |
+
+The three ways to fill a slot (*n* is 1 or 2):
+
+| You want | Set | What the reviewer does |
+|---|---|---|
+| **Another model, same provider** (this repo's setup today) | `FALLBACK1_MODEL=gemini-3.5-flash-lite` | same host, same key, a different model with its own quota |
+| **A different provider** | `FALLBACK2_MODEL=openai/gpt-oss-120b`, `FALLBACK2_BASE_URL=https://api.groq.com/openai/v1`, secret `FALLBACK2_API_KEY` | that host with *its own* key; the primary's key is never sent there |
+| **Same provider, different account** | `FALLBACK2_MODEL=...` and secret `FALLBACK2_API_KEY` (leave `BASE_URL` unset) | same host, but the new account's key and quota |
+
+Leaving `FALLBACKn_MODEL` empty switches the slot off whatever else is set. Slot 1 is tried before slot 2.
 
 - **A sensible chain for Google AI Studio's free tier:** `gemini-3.5-flash` (primary) -> `gemini-3.5-flash-lite` (slot 1) ->
   `gemini-3.1-flash-lite` (slot 2). Each has its **own per-model daily quota** (the 429 names
   `GenerateRequestsPerDayPerProjectPerModel`), the two lite models are cheap and stable, and the newest Flash generation
   (3.6 to 3.8) has had capacity trouble (503s), so it makes a poor fallback. Note `gemini-3.1-flash-lite` is also the judge model
-  this repo's `deepeval` and redteam CI use: if the reviewer's key is in the same Google project as `GOOGLE_API_KEY`, the two share
-  that model's quota. Slot 2 is only reached after two failures, so the reviewer won't starve CI, but CI can have spent it first.
+  this repo's `deepeval` and redteam CI use. Here the reviewer's key and CI's `GOOGLE_API_KEY` are **separate Google accounts**,
+  so they never share a quota; if you ever reuse one key for both, they would.
   Same-provider fallbacks cannot help with a project-wide problem (a revoked key, billing, an outage): only another provider can.
 - **A provider's key is never sent to another provider's host.** A fallback uses its own key if it has one; otherwise
   it inherits the primary's key *only if its base URL is the same*. A fallback on a different host with no key of its
