@@ -216,13 +216,24 @@ def test_anchor_for_ignores_a_finding_with_no_location():
 # --- place_findings / marker -------------------------------------------------------------------
 
 
-def test_place_findings_keeps_order_and_leaves_the_later_of_two_findings_on_one_spot_summary_only():
+def test_place_findings_keeps_order_and_gives_each_finding_on_one_line_its_own_comment_slot():
     placed = f.place_findings([_finding("probe_new.py", 2), _finding("README.md", 500), _finding("probe_new.py", 2)], ADDR)
-    assert [p.anchor for p in placed] == [f.Anchor("probe_new.py", 2), None, None]
+    assert [p.anchor for p in placed] == [f.Anchor("probe_new.py", 2), None, f.Anchor("probe_new.py", 2, ordinal=2)]
+    assert [p.anchor.key for p in placed if p.anchor] == ["probe_new.py:2", "probe_new.py:2~2"]  # distinct, stable keys for re-runs
+
+
+def test_place_findings_stops_at_the_cap_and_a_range_ending_on_the_same_line_shares_its_slots():
+    findings = [_finding("probe_new.py", 2)] * (f.MAX_PER_LINE + 2)
+    anchors = [p.anchor for p in f.place_findings(findings, ADDR)]
+    assert [a.ordinal for a in anchors[: f.MAX_PER_LINE] if a] == list(range(1, f.MAX_PER_LINE + 1))
+    assert anchors[f.MAX_PER_LINE:] == [None, None]  # past the cap a line is a pile-up: the rest stay in the summary
+    mixed = f.place_findings([_finding("probe_new.py", 3), _finding("probe_new.py", 1, 3)], ADDR)
+    assert [p.anchor.key for p in mixed if p.anchor] == ["probe_new.py:3", "probe_new.py:3~2"]  # same END line, so same line
 
 
 def test_marker_round_trips_and_ignores_text_that_is_not_ours():
     anchor = f.Anchor("app/a.py", 12, 10)
     assert f.marker_key(f"body\n\n{f.marker(anchor)}") == "app/a.py:12"
+    assert f.marker_key(f.marker(f.Anchor("app/a.py", 12, ordinal=2))) == "app/a.py:12~2"
     assert f.marker_key("no marker here") is None
     assert f.marker_key("<!-- ai-review:inline not-a-key -->") is None

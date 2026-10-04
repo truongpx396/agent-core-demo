@@ -17,7 +17,7 @@ Every rule here comes from probing GitHub's real review-comment API on a throwaw
 """
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # A citation as the prompt asks the model to write it: `path:line`, or `path:start-end`, in code
 # formatting. The path alphabet is deliberately narrow (no spaces, brackets or parentheses), so
@@ -35,8 +35,15 @@ MAX_RANGE = 15
 # cite `file:1-9999999`, and scanning that is a pointless amount of work.
 _SCAN = 200
 
+# One line can be wrong in several ways at once (a query that is both injectable and unscoped), and
+# a real model then cites the same line for each finding. They get separate threads, so each can be
+# replied to and resolved on its own, up to this many; past it a line is a pile-up and the rest
+# stay in the summary. Found by running the real model: the first version allowed one per line and
+# mislabelled the second finding as "not on a changed line".
+MAX_PER_LINE = 3
+
 _SEVERITY = r"\*\*\[(BLOCKER|CONCERN|NIT)\]\*\*"
-_MARKER = re.compile(r"<!-- ai-review:inline (\S+:\d+) -->")
+_MARKER = re.compile(r"<!-- ai-review:inline (\S+:\d+(?:~\d+)?) -->")
 
 
 @dataclass(frozen=True)
@@ -67,11 +74,14 @@ class Anchor:
     path: str
     line: int
     start_line: int | None = None
+    ordinal: int = 1  # which of the findings sharing this line it is
 
     @property
     def key(self) -> str:
-        """Stable identity of a location, for deduplicating across re-runs."""
-        return f"{self.path}:{self.line}"
+        """Stable identity of a comment slot, for deduplicating across re-runs: the first finding on
+        a line is `path:line`, the second `path:line~2`."""
+        base = f"{self.path}:{self.line}"
+        return base if self.ordinal == 1 else f"{base}~{self.ordinal}"
 
 
 @dataclass(frozen=True)
@@ -162,15 +172,20 @@ def anchor_for(finding: Finding, addressable: Mapping[str, frozenset[int]]) -> A
 
 
 def place_findings(findings: list[Finding], addressable: Mapping[str, frozenset[int]]) -> list[Placement]:
-    """Anchors each finding; when two land on the same spot the later one stays summary-only."""
-    taken: set[str] = set()
+    """Anchors each finding. Findings that land on the same line each get their own comment (the
+    n-th gets ordinal n), up to `MAX_PER_LINE`; later ones stay summary-only."""
+    on_line: dict[tuple[str, int], int] = {}
     placements = []
     for finding in findings:
         anchor = anchor_for(finding, addressable)
-        if anchor is not None and anchor.key in taken:
-            anchor = None
         if anchor is not None:
-            taken.add(anchor.key)
+            spot = (anchor.path, anchor.line)
+            count = on_line.get(spot, 0) + 1
+            if count > MAX_PER_LINE:
+                anchor = None
+            else:
+                on_line[spot] = count
+                anchor = replace(anchor, ordinal=count)
         placements.append(Placement(finding, anchor))
     return placements
 

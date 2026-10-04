@@ -760,7 +760,7 @@ def render_findings(preamble: str, placements: Sequence[Placement], threads: Map
         index.append(f"- **[{p.finding.severity}]** [`{anchor.path}:{anchor.line}`]({threads[anchor.key]}) - {gist}")
     parts.append("\n".join(index))
     if rest:
-        parts.append(f"**{len(rest)} not on a changed line:**\n\n" + "\n\n".join(p.finding.text for p in rest))
+        parts.append(f"**{len(rest)} not posted inline:**\n\n" + "\n\n".join(p.finding.text for p in rest))
     return "\n\n".join(parts)
 
 

@@ -761,7 +761,40 @@ def test_run_posts_the_placeable_findings_as_one_review_and_indexes_them_in_the_
     summary = _summary(http)
     assert "**2 on the diff**" in summary and "discussion_r1000" in summary and "discussion_r1001" in summary
     assert "unique-blocker-sentence" not in summary and "unique-concern-sentence" not in summary  # not repeated in the summary
-    assert "**1 not on a changed line:**" in summary and "unique-nit-sentence" in summary  # this one has nowhere to attach
+    assert "**1 not posted inline:**" in summary and "unique-nit-sentence" in summary  # this one has nowhere to attach
+
+
+SAME_LINE = (
+    "**[BLOCKER]** `app/a.py:2` - **Unscoped.** unique-first.\n\n"
+    "**[BLOCKER]** `app/a.py:2` - **Injectable.** unique-second."
+)
+
+
+def test_two_findings_on_one_line_each_get_their_own_thread_and_are_not_mislabelled(tmp_path, monkeypatch):
+    # The real model does this constantly (a query both unscoped and injectable). The first version
+    # kept one per line and told the reader the second was "not on a changed line", which was false.
+    monkeypatch.chdir(tmp_path)
+    http = _inline_http(answer=SAME_LINE)
+    assert ai_review.run(_inline_env(), http, _no_sleep) == 0
+    (review,) = http.review_calls
+    assert [(c["path"], c["line"]) for c in review["comments"]] == [("app/a.py", 2), ("app/a.py", 2)]
+    assert "<!-- ai-review:inline app/a.py:2 -->" in review["comments"][0]["body"]
+    assert "<!-- ai-review:inline app/a.py:2~2 -->" in review["comments"][1]["body"]
+    summary = _summary(http)
+    assert "**2 on the diff**" in summary and "not posted inline" not in summary and "unique-second" not in summary
+
+
+def test_a_rerun_posts_only_the_slot_that_is_missing_on_a_shared_line(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    first_only = {"id": 7, "user": {"login": "github-actions[bot]"}, "body": "x\n<!-- ai-review:inline app/a.py:2 -->", "html_url": "u7"}
+    http = _inline_http(answer=SAME_LINE, inline=[first_only])
+    assert ai_review.run(_inline_env(), http, _no_sleep) == 0
+    (review,) = http.review_calls
+    assert len(review["comments"]) == 1 and "app/a.py:2~2" in review["comments"][0]["body"]  # only the second slot is new
+    both = [first_only, {**first_only, "id": 8, "body": "y\n<!-- ai-review:inline app/a.py:2~2 -->", "html_url": "u8"}]
+    http = _inline_http(answer=SAME_LINE, inline=both)
+    assert ai_review.run(_inline_env(), http, _no_sleep) == 0
+    assert http.review_calls == []  # both slots already filled: nothing duplicated
 
 
 def test_a_rerun_does_not_duplicate_a_location_that_already_has_our_comment(tmp_path, monkeypatch):
