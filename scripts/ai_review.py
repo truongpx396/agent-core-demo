@@ -50,7 +50,14 @@ from http.client import HTTPMessage
 from pathlib import Path
 from typing import IO
 
-from scripts.ai_review_providers import Provider, build_fallbacks
+from scripts.ai_review_providers import Http as ProviderHttp
+from scripts.ai_review_providers import (
+    Provider,
+    build_fallbacks,
+    describe_chain,
+    fallback_note,
+    walk_chain,
+)
 
 MARKER = "<!-- ai-review:advisory -->"
 # GITHUB_TOKEN comments are authored by this login. Matching on it as well as the marker means a
@@ -539,10 +546,6 @@ def chat_completion(http: Http, cfg: Config, messages: list[dict[str, str]], sle
 # whole review. (7 digits is far beyond any real file's line count.)
 _CITATION = re.compile(r"(?<!\[)`([A-Za-z0-9_./@+-]+):L?(\d{1,7})(?:-L?(\d{1,7}))?`(?!\]\()")
 
-_DEADLINE_S = 480.0  # for the whole provider chain; the job's own limit is 600s (ai-review.yml)
-_MIN_ATTEMPT_S = 20.0  # not worth starting another provider with less than this left
-
-
 def complete_with_fallbacks(
     http: Http,
     cfg: Config,
@@ -551,46 +554,15 @@ def complete_with_fallbacks(
     clock: Callable[[], float] = time.monotonic,
 ) -> tuple[str, Provider]:
     """One review from the first provider that answers; returns (answer, the provider that gave it).
+    Which providers, in what order, and how a failure moves on to the next: `ai_review_providers`."""
 
-    Each provider gets `chat_completion` with its own retries. When one has failed for good (quota
-    spent, overloaded, down, a bad answer) the next is tried. A failure that is not a `ReviewError` is
-    a bug and is not papered over by moving on. The whole chain shares one deadline, enforced on every
-    request's timeout and every retry wait, so a slow first choice can never push the step past the
-    job's own limit and turn an advisory check red.
-
-    With no fallback configured this is exactly `chat_completion`, error messages included.
-    """
-    primary = Provider("primary", cfg.base_url, cfg.model, cfg.api_key)
-    if not cfg.fallbacks:
-        return chat_completion(http, cfg, messages, sleep), primary
-    chain = (primary, *cfg.fallbacks)
-    started = clock()
-
-    def left() -> float:
-        return _DEADLINE_S - (clock() - started)
-
-    def bounded_http(method: str, url: str, headers: Mapping[str, str], body: bytes | None, timeout: float) -> tuple[int, bytes]:
-        return http(method, url, headers, body, max(1.0, min(timeout, left())))
-
-    def bounded_sleep(seconds: float) -> None:
-        if seconds > left():
-            raise ReviewError("out of time for this review")
-        sleep(seconds)
-
-    failures: list[str] = []
-    for index, provider in enumerate(chain):
-        if left() < _MIN_ATTEMPT_S:
-            failures.append(f"{provider.name} ({provider.model}): not tried, out of time")
-            break
+    def ask(provider: Provider, bounded_http: ProviderHttp, bounded_sleep: Callable[[float], None]) -> str:
         view = replace(cfg, base_url=provider.base_url, model=provider.model, api_key=provider.api_key)
-        try:
-            return chat_completion(bounded_http, view, messages, bounded_sleep), provider
-        except ReviewError as exc:
-            failures.append(f"{provider.name} ({provider.model}): {exc}")
-            if index + 1 < len(chain):
-                following = chain[index + 1]
-                print(f"::notice::AI review: {provider.name} ({provider.model}) failed ({exc}); trying {following.name} ({following.model})")
-    raise ReviewError("every provider failed: " + "; ".join(failures))
+        return chat_completion(bounded_http, view, messages, bounded_sleep)
+
+    chain = (Provider("primary", cfg.base_url, cfg.model, cfg.api_key), *cfg.fallbacks)
+    return walk_chain(chain, ask, http=http, sleep=sleep, clock=clock, failure=ReviewError)
+
 
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 
@@ -657,7 +629,7 @@ def format_comment(
     if full_files or references:
         context = f" ({full_files} in full, plus {references} reference snippet(s) from main)"
     commit = f" at `{links.commit[:7]}`" if links else ""  # what the links below point at
-    via = f" (fallback for `{fallback_for}`, which was unavailable)" if fallback_for else ""
+    via = fallback_note(fallback_for)
     head = (
         f"{MARKER}\n### AI review (advisory)\n"
         f"> `{model or cfg.model}`{via} read {len(selection.included)} file(s){commit}{context}. It can be wrong or miss things; this never "
@@ -748,7 +720,7 @@ def run(env: Mapping[str, str], http: Http = urllib_http, sleep: Callable[[float
             files, files_skipped = fetch_full_files(github, head_sha, selection.full_text_paths, cfg.max_context_chars)
         messages = build_messages(rules, str(pull.get("title", "")), selection, None, references, files, files_skipped)
         if cfg.dry_run and cfg.fallbacks:
-            print("[dry-run] providers, in order: " + ", ".join(f"{p.name} {p.model}" for p in (Provider("primary", cfg.base_url, cfg.model, cfg.api_key), *cfg.fallbacks)))
+            print("[dry-run] providers, in order: " + describe_chain((Provider("primary", cfg.base_url, cfg.model, cfg.api_key), *cfg.fallbacks)))
         answer, served_by = complete_with_fallbacks(http, cfg, messages, sleep)
         fallback_for = cfg.model if served_by.name != "primary" else None
         links = None

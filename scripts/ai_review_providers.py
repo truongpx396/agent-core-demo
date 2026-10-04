@@ -1,4 +1,9 @@
-"""Which providers the AI reviewer may try, in order. Pure functions, stdlib only.
+"""Which providers the AI reviewer may try, in order, and how it moves from one to the next.
+
+Everything about fallback providers lives here, so `scripts/ai_review.py` only has to hand it the one
+thing it cannot know: how to ask a single provider. Stdlib only, no network, no GitHub types.
+`walk_chain` takes that step (and the exception type that means "this provider failed") as
+parameters, which is also what lets this module sit below `ai_review.py` without importing it.
 
 The primary is `AI_REVIEW_BASE_URL` / `AI_REVIEW_MODEL` / `AI_REVIEW_API_KEY`. Up to `MAX_FALLBACKS`
 fallbacks are numbered slots, tried in order when the one before has failed:
@@ -17,10 +22,17 @@ key if it has one; otherwise it inherits the primary's key ONLY when it points a
 (the "another model, same provider" case). A fallback on a different host with no key of its own sends
 none, which is right for a keyless endpoint and fails loudly with a 401 for one that needs a key.
 """
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any, TypeVar
 
 MAX_FALLBACKS = 2
+DEADLINE_S = 480.0  # for the whole chain; the job's own limit is 600s (ai-review.yml)
+MIN_ATTEMPT_S = 20.0  # not worth starting another provider with less than this left
+
+T = TypeVar("T")
+Http = Callable[[str, str, Mapping[str, str], bytes | None, float], Any]
+Sleep = Callable[[float], None]
 
 
 @dataclass(frozen=True)
@@ -59,3 +71,71 @@ def build_fallbacks(env: Mapping[str, str], primary: Provider) -> tuple[Provider
             continue
         chain.append(candidate)
     return tuple(chain[1:])
+
+
+def describe_chain(chain: Sequence[Provider]) -> str:
+    """The chain by name and model only (never a URL or a key), e.g. for a dry run."""
+    return ", ".join(f"{provider.name} {provider.model}" for provider in chain)
+
+
+def fallback_note(primary_model: str | None) -> str:
+    """The comment header's note that a fallback answered; empty when the primary did."""
+    return f" (fallback for `{primary_model}`, which was unavailable)" if primary_model else ""
+
+
+def handover_notice(failed: Provider, reason: str, following: Provider) -> str:
+    """The log line for moving on. Names and an error code only: never a URL, a key or message text."""
+    return f"::notice::AI review: {failed.name} ({failed.model}) failed ({reason}); trying {following.name} ({following.model})"
+
+
+def walk_chain(
+    chain: Sequence[Provider],
+    attempt: Callable[[Provider, Http, Sleep], T],
+    *,
+    http: Http,
+    sleep: Sleep,
+    clock: Callable[[], float],
+    failure: type[Exception],
+    notify: Callable[[str], None] = print,
+) -> tuple[T, Provider]:
+    """The result of the first provider that answers, and which one it was.
+
+    `attempt(provider, http, sleep)` asks one provider (with its own retries) and raises `failure` if
+    it has failed for good; the next provider is then tried. Any other exception is a bug and
+    propagates: moving on to a second provider must not hide it.
+
+    The whole chain shares one deadline of `DEADLINE_S`. The `http` and `sleep` handed to `attempt`
+    are wrapped to enforce it: a request's timeout is clamped to the time left, and a retry wait that
+    would overrun it raises `failure` instead of sleeping. So a slow first choice cannot push the step
+    past the job's own limit and turn an advisory check red.
+
+    With a single provider this is just `attempt` on the original `http` and `sleep`, so a deployment
+    without fallbacks behaves, and fails with the same messages, as it did before they existed.
+    """
+    if len(chain) == 1:
+        return attempt(chain[0], http, sleep), chain[0]
+    started = clock()
+
+    def left() -> float:
+        return DEADLINE_S - (clock() - started)
+
+    def bounded_http(method: str, url: str, headers: Mapping[str, str], body: bytes | None, timeout: float) -> Any:
+        return http(method, url, headers, body, max(1.0, min(timeout, left())))
+
+    def bounded_sleep(seconds: float) -> None:
+        if seconds > left():
+            raise failure("out of time for this review")
+        sleep(seconds)
+
+    failures: list[str] = []
+    for index, provider in enumerate(chain):
+        if left() < MIN_ATTEMPT_S:
+            failures.append(f"{provider.name} ({provider.model}): not tried, out of time")
+            break
+        try:
+            return attempt(provider, bounded_http, bounded_sleep), provider
+        except failure as exc:
+            failures.append(f"{provider.name} ({provider.model}): {exc}")
+            if index + 1 < len(chain):
+                notify(handover_notice(provider, str(exc), chain[index + 1]))
+    raise failure("every provider failed: " + "; ".join(failures))
