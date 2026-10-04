@@ -10,7 +10,12 @@
 version: 2
 updates:
   - package-ecosystem: github-actions
-    directory: /
+    # Plural on purpose: a composite action keeps its own `uses:` pins in its action.yml, which
+    # Dependabot only reads when that directory is named. Without the second entry, the pin of
+    # actions/cache/save inside .github/actions/save-ollama-cache would be the one that rots.
+    directories:
+      - /
+      - /.github/actions/save-ollama-cache
     schedule:
       interval: weekly
     # One PR for the whole batch rather than eleven: they are reviewed the same way (diff the

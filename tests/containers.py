@@ -612,8 +612,9 @@ def ensure_ollama(model: str, embed_model: str = "nomic-embed-text") -> dict[str
     own source: `with_volume_mapping(self.ollama_home, "/root/.ollama",
     "rw")`) — a fresh container still gets both models instantly if a PRIOR
     run (this session's, an earlier local run, or — see .github/workflows/
-    ci.yml's `test-live`/`promptfoo`/`garak` jobs, each restoring this same
-    path via `actions/cache` keyed on the model tag — an earlier CI run)
+    ci.yml's `test-live`/`promptfoo`/`deepeval` jobs and redteam.yml, each
+    restoring this same path via `actions/cache/restore` keyed on the model tag(s), and saving it
+    with .github/actions/save-ollama-cache — an earlier CI run)
     already pulled them into this same directory. Purely a speed
     optimization, not a correctness dependency: an empty/missing directory
     just means `pull_model` downloads fresh, exactly as it did before this
