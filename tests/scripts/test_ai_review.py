@@ -15,7 +15,7 @@ from urllib.request import Request
 
 import pytest
 
-from scripts import ai_review, ai_review_providers
+from scripts import ai_review, ai_review_findings, ai_review_providers
 
 BASE = "https://llm.example/v1"
 GH = "https://gh.example"
@@ -40,13 +40,21 @@ def _cfg(**overrides) -> ai_review.Config:
 
 
 def _run_env(**overrides) -> dict[str, str]:
+    # Inline comments are off here: the tests using this helper cover other features in isolation.
+    # The inline tests turn them on explicitly with AI_REVIEW_INLINE="1".
     return {"AI_REVIEW_BASE_URL": BASE, "AI_REVIEW_MODEL": "m", "GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r",
-            "PR_NUMBER": "7", "GITHUB_API_URL": GH, **overrides}
+            "PR_NUMBER": "7", "GITHUB_API_URL": GH, "AI_REVIEW_INLINE": "0", **overrides}
 
 
 class FakeHttp:
-    def __init__(self, *, diff=FILE_A, comments=(), model_status=200, model_body=None, raises=None, files=None, head_sha="deadbeef", model_statuses=()):
+    def __init__(self, *, diff=FILE_A, comments=(), model_status=200, model_body=None, raises=None, files=None, head_sha="deadbeef", model_statuses=(), placeable=None, inline=(), bot="github-actions[bot]"):
         self.diff, self.comments, self.raises = diff, list(comments), raises
+        # Inline review comments, modelled on what probing GitHub's real API showed: `placeable` is the
+        # set of (path, line) it can attach to (None = anywhere); a review is ATOMIC (one unplaceable
+        # comment is a 422 and none are created); and nothing is deduplicated.
+        self.placeable, self.bot, self.inline = placeable, bot, list(inline)
+        self.review_calls: list[dict] = []  # every POST /pulls/N/reviews, accepted or not
+        self.single_calls: list[dict] = []  # every POST /pulls/N/comments, accepted or not
         self.files, self.head_sha = files or {}, head_sha  # files: path -> text served by the contents API
         self.model_status = model_status
         self.model_statuses = list(model_statuses)  # consumed one per model call before falling back to model_status
@@ -60,6 +68,23 @@ class FakeHttp:
         if url.endswith("/chat/completions"):
             status = self.model_statuses.pop(0) if self.model_statuses else self.model_status
             return status, json.dumps(self.model_body).encode()
+        if method == "GET" and "/pulls/" in url and "/comments" in url:
+            return 200, json.dumps(self.inline).encode()
+        if method == "POST" and url.endswith("/pulls/7/reviews"):
+            payload = json.loads(body)
+            self.review_calls.append(payload)
+            if not all(self._can_place(c) for c in payload["comments"]):
+                return 422, b'{"message": "Unprocessable Entity", "errors": ["Line could not be resolved"]}'
+            for c in payload["comments"]:
+                self._store(c)
+            return 200, b"{}"
+        if method == "POST" and url.endswith("/pulls/7/comments"):
+            payload = json.loads(body)
+            self.single_calls.append(payload)
+            if not self._can_place(payload):
+                return 422, b'{"message": "Validation Failed"}'
+            self._store(payload)
+            return 201, b"{}"
         if method == "GET" and "/comments" in url:
             return 200, json.dumps(self.comments).encode()
         if method == "GET" and "/contents/" in url:
@@ -71,8 +96,20 @@ class FakeHttp:
             return 200, json.dumps({"title": "Add widget", "head": {"sha": self.head_sha}}).encode()
         return 201, b"{}"
 
+    def _can_place(self, comment):
+        if self.placeable is None:
+            return True
+        ends = [comment["line"], comment.get("start_line", comment["line"])]
+        return all((comment["path"], n) in self.placeable for n in ends)
+
+    def _store(self, comment):
+        number = 1000 + len(self.inline)
+        self.inline.append({"id": number, "user": {"login": self.bot}, "path": comment["path"], "line": comment["line"],
+                            "body": comment["body"], "html_url": f"https://github.com/o/r/pull/7#discussion_r{number}"})
+
     def writes(self):
-        return [c for c in self.calls if c[0] in ("POST", "PATCH") and "/chat/completions" not in c[1]]
+        """Writes of the sticky summary comment. Inline review calls are in review_calls/single_calls."""
+        return [c for c in self.calls if c[0] in ("POST", "PATCH") and "/chat/completions" not in c[1] and "/pulls/" not in c[1]]
 
 
 def test_select_files_omits_lockfiles_and_binaries_and_says_so():
@@ -682,6 +719,232 @@ def test_run_sends_numbered_changed_files_to_the_model(tmp_path, monkeypatch):
     assert "1 | l1\n2 | l2\n3 | l3" in prompt
 
 
+# --- inline review comments (verified against GitHub's real API on a throwaway PR) -------------
+
+INLINE_DIFF = "\n".join(
+    [
+        "diff --git a/app/a.py b/app/a.py", "--- a/app/a.py", "+++ b/app/a.py", "@@ -1,3 +1,4 @@", " l1", "+l2", " l3", " l4",
+        "diff --git a/app/b.py b/app/b.py", "new file mode 100644", "--- /dev/null", "+++ b/app/b.py", "@@ -0,0 +1,3 @@", "+b1", "+b2", "+b3", "",
+    ]
+)
+ANSWER = (
+    "**[BLOCKER]** `app/a.py:2` - **Tenant is trusted.** unique-blocker-sentence explains why.\n\n"
+    "**[CONCERN]** `app/b.py:1-3` - Whole new file is risky. unique-concern-sentence.\n\n"
+    "**[NIT]** `app/a.py:99` - Past the diff. unique-nit-sentence."
+)
+
+
+def _inline_http(answer=ANSWER, **kw):
+    kw.setdefault("files", {"app/a.py": "l1\nl2\nl3\nl4\n"})
+    return FakeHttp(diff=INLINE_DIFF, head_sha=SHA, model_body={"choices": [{"message": {"content": answer}}]}, **kw)
+
+
+def _inline_env(**extra) -> dict[str, str]:
+    return {**_run_env(), "AI_REVIEW_INLINE": "1", **extra}
+
+
+def _summary(http) -> str:
+    (_, _, _, body), = http.writes()
+    return json.loads(body)["body"]
+
+
+def test_run_posts_the_placeable_findings_as_one_review_and_indexes_them_in_the_summary(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    http = _inline_http()
+    assert ai_review.run(_inline_env(), http, _no_sleep) == 0
+    (review,) = http.review_calls
+    assert review["commit_id"] == SHA and review["event"] == "COMMENT" and "body" not in review  # never approves; the summary carries the words
+    first, second = review["comments"]
+    assert (first["path"], first["line"], first["side"]) == ("app/a.py", 2, "RIGHT") and "start_line" not in first
+    assert (second["path"], second["line"], second["start_line"], second["start_side"]) == ("app/b.py", 3, 1, "RIGHT")  # a whole-file range
+    assert "unique-blocker-sentence" in first["body"] and "<!-- ai-review:inline app/a.py:2 -->" in first["body"]
+    summary = _summary(http)
+    assert "**2 on the diff**" in summary and "discussion_r1000" in summary and "discussion_r1001" in summary
+    assert "unique-blocker-sentence" not in summary and "unique-concern-sentence" not in summary  # not repeated in the summary
+    assert "**1 not posted inline:**" in summary and "unique-nit-sentence" in summary  # this one has nowhere to attach
+
+
+SAME_LINE = (
+    "**[BLOCKER]** `app/a.py:2` - **Unscoped.** unique-first.\n\n"
+    "**[BLOCKER]** `app/a.py:2` - **Injectable.** unique-second."
+)
+
+
+def test_two_findings_on_one_line_each_get_their_own_thread_and_are_not_mislabelled(tmp_path, monkeypatch):
+    # The real model does this constantly (a query both unscoped and injectable). The first version
+    # kept one per line and told the reader the second was "not on a changed line", which was false.
+    monkeypatch.chdir(tmp_path)
+    http = _inline_http(answer=SAME_LINE)
+    assert ai_review.run(_inline_env(), http, _no_sleep) == 0
+    (review,) = http.review_calls
+    assert [(c["path"], c["line"]) for c in review["comments"]] == [("app/a.py", 2), ("app/a.py", 2)]
+    assert "<!-- ai-review:inline app/a.py:2 -->" in review["comments"][0]["body"]
+    assert "<!-- ai-review:inline app/a.py:2~2 -->" in review["comments"][1]["body"]
+    summary = _summary(http)
+    assert "**2 on the diff**" in summary and "not posted inline" not in summary and "unique-second" not in summary
+
+
+def test_a_rerun_posts_only_the_slot_that_is_missing_on_a_shared_line(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    first_only = {"id": 7, "user": {"login": "github-actions[bot]"}, "body": "x\n<!-- ai-review:inline app/a.py:2 -->", "html_url": "u7"}
+    http = _inline_http(answer=SAME_LINE, inline=[first_only])
+    assert ai_review.run(_inline_env(), http, _no_sleep) == 0
+    (review,) = http.review_calls
+    assert len(review["comments"]) == 1 and "app/a.py:2~2" in review["comments"][0]["body"]  # only the second slot is new
+    both = [first_only, {**first_only, "id": 8, "body": "y\n<!-- ai-review:inline app/a.py:2~2 -->", "html_url": "u8"}]
+    http = _inline_http(answer=SAME_LINE, inline=both)
+    assert ai_review.run(_inline_env(), http, _no_sleep) == 0
+    assert http.review_calls == []  # both slots already filled: nothing duplicated
+
+
+def test_a_rerun_does_not_duplicate_a_location_that_already_has_our_comment(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    ours = {"id": 7, "user": {"login": "github-actions[bot]"}, "body": "old text\n<!-- ai-review:inline app/a.py:2 -->",
+            "html_url": "https://github.com/o/r/pull/7#discussion_r7"}
+    http = _inline_http(inline=[ours])
+    assert ai_review.run(_inline_env(), http, _no_sleep) == 0
+    (review,) = http.review_calls
+    assert [c["path"] for c in review["comments"]] == ["app/b.py"]  # a.py:2 is already there: GitHub would not have deduplicated it
+    assert "discussion_r7" in _summary(http)  # ...and the summary links the EXISTING thread
+
+
+def test_a_marker_pasted_by_someone_else_does_not_suppress_a_finding(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    forged = {"id": 7, "user": {"login": "mallory"}, "body": "<!-- ai-review:inline app/a.py:2 -->", "html_url": "x"}
+    http = _inline_http(inline=[forged])
+    assert ai_review.run(_inline_env(), http, _no_sleep) == 0
+    (review,) = http.review_calls
+    assert [c["path"] for c in review["comments"]] == ["app/a.py", "app/b.py"]
+
+
+def test_the_bot_login_is_configurable_for_a_different_identity(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    mine = {"id": 7, "user": {"login": "my-app[bot]"}, "body": "<!-- ai-review:inline app/a.py:2 -->", "html_url": "u7"}
+    http = _inline_http(inline=[mine], bot="my-app[bot]")
+    assert ai_review.run(_inline_env(AI_REVIEW_BOT_LOGIN="my-app[bot]"), http, _no_sleep) == 0
+    assert [c["path"] for c in http.review_calls[0]["comments"]] == ["app/b.py"]
+
+
+def test_a_rejected_batch_falls_back_to_one_comment_each_and_only_the_unplaceable_one_stays_in_the_summary(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    # GitHub can place app/a.py:2 but not the range in app/b.py (say the diff moved under us).
+    http = _inline_http(placeable={("app/a.py", 2)})
+    assert ai_review.run(_inline_env(), http, _no_sleep) == 0
+    assert len(http.review_calls) == 1 and len(http.single_calls) == 2  # the atomic batch failed, so each was tried alone
+    summary = _summary(http)
+    assert "**1 on the diff**" in summary and "unique-blocker-sentence" not in summary
+    assert "unique-concern-sentence" in summary and "unique-nit-sentence" in summary  # nothing was lost
+
+
+def test_an_unplaceable_comment_costs_only_itself_even_when_it_comes_first(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    # app/a.py:2 (first in the batch) is the one GitHub cannot place; app/b.py comes after it and can be.
+    http = _inline_http(placeable={("app/b.py", 1), ("app/b.py", 3)})
+    assert ai_review.run(_inline_env(), http, _no_sleep) == 0
+    assert len(http.single_calls) == 2  # a failure on the first did not stop the second from being tried
+    assert [c["path"] for c in http.inline] == ["app/b.py"]
+    summary = _summary(http)
+    assert "**1 on the diff**" in summary and "unique-concern-sentence" not in summary
+    assert "unique-blocker-sentence" in summary  # the one that could not be placed is still in the summary, in full
+
+
+def test_when_nothing_can_be_posted_the_summary_still_carries_the_whole_review(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    http = _inline_http(placeable=set())
+    assert ai_review.run(_inline_env(), http, _no_sleep) == 0
+    summary = _summary(http)
+    assert all(word in summary for word in ("unique-blocker-sentence", "unique-concern-sentence", "unique-nit-sentence"))
+    assert "on the diff" not in summary  # exactly the answer as before inline existed
+
+
+def test_inline_comments_can_be_switched_off(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    http = _inline_http()
+    assert ai_review.run(_inline_env(AI_REVIEW_INLINE="0"), http, _no_sleep) == 0
+    assert http.review_calls == [] and http.single_calls == []
+    assert "unique-blocker-sentence" in _summary(http)
+
+
+def test_inline_comments_are_on_by_default(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    env = _inline_env()
+    del env["AI_REVIEW_INLINE"]  # as when the repo variable is unset
+    http = _inline_http()
+    assert ai_review.run(env, http, _no_sleep) == 0
+    assert len(http.review_calls) == 1
+    assert ai_review.Config.from_env({**env, "AI_REVIEW_INLINE": ""}).inline is True  # the workflow passes an unset variable as ""
+
+
+def test_a_dry_run_prints_the_plan_and_posts_nothing(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    http = _inline_http()
+    assert ai_review.run(_inline_env(AI_REVIEW_DRY_RUN="1"), http, _no_sleep) == 0
+    out = capsys.readouterr().out
+    assert "[dry-run] app/a.py:2 [BLOCKER] Tenant is trusted." in out
+    assert "[dry-run] app/b.py:3 (from line 1) [CONCERN]" in out and "[dry-run] summary only [NIT]" in out
+    assert http.review_calls == [] and http.single_calls == [] and http.writes() == []
+
+
+def test_an_answer_with_no_findings_is_posted_as_it_is_with_no_inline_calls(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    http = _inline_http(answer="No issues found in the diff.")
+    assert ai_review.run(_inline_env(), http, _no_sleep) == 0
+    assert http.review_calls == [] and "No issues found in the diff." in _summary(http)
+
+
+def test_there_are_no_inline_comments_without_a_real_head_commit_to_anchor_them(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    http = FakeHttp(diff=INLINE_DIFF, model_body={"choices": [{"message": {"content": ANSWER}}]})  # head_sha "deadbeef"
+    assert ai_review.run(_inline_env(), http, _no_sleep) == 0
+    assert http.review_calls == [] and "unique-blocker-sentence" in _summary(http)
+
+
+def test_a_failure_in_the_inline_stage_never_costs_the_review(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("secret detail that must not reach a public log")
+
+    monkeypatch.setattr(ai_review, "publish_inline", boom)
+    http = _inline_http()
+    assert ai_review.run(_inline_env(), http, _no_sleep) == 0
+    assert "unique-blocker-sentence" in _summary(http)  # the whole review is still posted
+    out = capsys.readouterr().out
+    assert "could not post inline comments (RuntimeError)" in out and "secret detail" not in out
+
+
+def test_an_inline_body_cannot_forge_a_marker_or_ping_anyone():
+    anchor = ai_review.Anchor("app/a.py", 2)
+    text = "**[NIT]** `app/a.py:2` - hi @alice <!-- ai-review:inline app/zzz.py:1 --> there"
+    body = ai_review.inline_body(text, anchor, None)
+    assert "@​alice" in body and "&lt;!--" in body
+    assert ai_review.marker_key(body) == "app/a.py:2"  # the only marker that counts is ours, at the end
+
+
+def test_inline_threads_reads_a_bounded_number_of_pages():
+    others = [{"id": i, "user": {"login": "someone"}, "body": "x"} for i in range(100)]
+    http = FakeHttp(inline=others)  # a full page every time
+    ai_review.GitHub(http, _cfg()).inline_threads()
+    assert len([c for c in http.calls if "/pulls/7/comments" in c[1]]) == ai_review.MAX_COMMENT_PAGES
+
+
+def test_publish_inline_makes_no_api_call_when_nothing_is_placeable():
+    http = FakeHttp()
+    placements = [ai_review.Placement(ai_review_findings.Finding("NIT", "t"), None)]
+    assert ai_review.publish_inline(ai_review.GitHub(http, _cfg()), SHA, placements, lambda p, a: "x") == {}
+    assert http.calls == []
+
+
+def test_render_findings_returns_none_when_nothing_is_inline_and_keeps_the_preamble_otherwise():
+    finding = ai_review_findings.Finding("NIT", "**[NIT]** `a.py:1` - Gist here.", "a.py", 1, 1)
+    anchor = ai_review.Anchor("a.py", 1)
+    assert ai_review.render_findings("pre", [ai_review.Placement(finding, anchor)], {}) is None  # no thread URL: not inline
+    out = ai_review.render_findings("Here is the review.", [ai_review.Placement(finding, anchor)], {"a.py:1": "https://t"})
+    assert out.startswith("Here is the review.") and "[`a.py:1`](https://t) - Gist here." in out
+    bare = ai_review_findings.Finding("NIT", "**[NIT]** `a.py:1`", "a.py", 1, 1)
+    assert "- see the thread" in ai_review.render_findings("", [ai_review.Placement(bare, anchor)], {"a.py:1": "https://t"})
+
+
 # --- fallback providers -------------------------------------------------------------------------
 
 OTHER = "https://other.example/v1"
@@ -892,3 +1155,15 @@ def test_the_header_names_the_model_that_answered_and_is_unchanged_without_a_fal
     assert plain.startswith(f"{ai_review.MARKER}\n### AI review (advisory)\n> `m` read 1 file(s).")
     used = ai_review.format_comment("x", _mcfg(), sel, model="m2", fallback_for="m")
     assert "> `m2` (fallback for `m`, which was unavailable) read 1 file(s)." in used
+
+
+def test_a_fallbacks_answer_is_still_posted_as_inline_threads_and_the_summary_names_the_fallback(tmp_path, monkeypatch):
+    # The two features compose: the review that comes from a fallback goes through the same inline stage.
+    monkeypatch.chdir(tmp_path)
+    http = Routed({"m": [503, 503, 503], "m2": ["ok"]}, diff=INLINE_DIFF, files={"app/a.py": "l1\nl2\nl3\nl4\n"})
+    assert ai_review.run(_chain_env(AI_REVIEW_INLINE="1"), http, _no_sleep) == 0
+    assert http.models() == ["m", "m", "m", "m2"]
+    (review,) = http.fake.review_calls  # one batch review, from the FALLBACK's answer
+    assert [(c["path"], c["line"]) for c in review["comments"]] == [("app/a.py", 1)] and "answer-from-m2" in review["comments"][0]["body"]
+    summary = _posted(http)
+    assert "`m2` (fallback for `m`, which was unavailable)" in summary and "**1 on the diff**" in summary
