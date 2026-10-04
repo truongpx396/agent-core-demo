@@ -728,7 +728,7 @@ a first pass for the human reviewer: it never fails a check, isn't a required st
 approve anything. It is also **off until you configure it**, so merging the workflow sends no code
 anywhere.
 
-**Any OpenAI-compatible provider.** `scripts/ai_review.py` (stdlib only) calls
+**Any OpenAI-compatible provider.** `scripts/ai_review.py` (stdlib only, with its pure parsing in `scripts/ai_review_findings.py`) calls
 `POST {AI_REVIEW_BASE_URL}/chat/completions` with just `model` + `messages`. In Settings → Secrets
 and variables → Actions set the variables `AI_REVIEW_BASE_URL` (e.g. `https://api.openai.com/v1`,
 Groq, OpenRouter, a Gemini OpenAI-compat URL, or your own vLLM/LiteLLM the runner can reach) and
@@ -739,7 +739,7 @@ without posting anything:
 ```bash
 AI_REVIEW_DRY_RUN=1 PR_NUMBER=<n> GITHUB_REPOSITORY=<owner>/<repo> GITHUB_TOKEN=$(gh auth token) \
   AI_REVIEW_BASE_URL=https://api.openai.com/v1 AI_REVIEW_MODEL=<model> AI_REVIEW_API_KEY=<key> \
-  python3 scripts/ai_review.py
+  python3 -m scripts.ai_review
 ```
 
 **When it runs:** on a PR opened non-draft or marked ready, and on demand when the `ai-review`
@@ -768,6 +768,34 @@ plain text instead of becoming a link that 404s. Fenced code is never rewritten.
 writes plain `path:line`, so this works with any provider. To make the number right, each changed
 file sent in full has its lines numbered (`  284 | code`) and the prompt says to cite those numbers
 and never copy the prefix into suggested code, so the model copies a line number instead of counting.
+
+**Inline comments.** A finding whose cited line is in the PR's diff is posted as a **thread on that line**
+in "Files changed", where it can be replied to and resolved, as one review (event `COMMENT`, empty body:
+it never approves and adds no notification beyond that one). The summary comment stays as the **index**
+(each inline finding linked to its thread) and as the home of the findings that have nowhere on the diff
+to attach, such as an undeclared tool or a missing test. The summary names them as "not posted inline" and
+still links their line. Placement rules, each **verified against GitHub's real API on a throwaway PR**
+because the docs are silent on them:
+
+- A comment can attach only to an added or context line inside a hunk. A line outside every hunk, or a path
+  the PR didn't change, is a 422. So placement is decided up front from the diff, never by trial and error.
+- A batch review is **atomic**: one unplaceable comment fails all of them, and the error doesn't say which.
+  If GitHub rejects the batch (the diff moved under us, say) each comment is posted alone, so one that can't
+  be placed costs only itself and its finding stays in the summary in full.
+- GitHub **doesn't deduplicate**. Each comment carries a hidden marker (`path:line`), and a slot that already
+  has one **from our own login** is not posted again, so a re-run adds nothing for locations already
+  covered and a marker pasted by someone else can't suppress a finding.
+- A range becomes a multi-line comment only if every line of it is in the diff and it is at most 15 lines;
+  otherwise the comment goes on the first line of the range that is. (Stricter than GitHub, which accepts a
+  range across hunks and would highlight lines the PR never touched.)
+- Several findings can share a line (a query that is both injectable and unscoped): each gets its own thread
+  so it can be resolved separately, up to 3 per line. The first version allowed one and mislabelled the
+  second as "not on a changed line"; running the real model found that.
+
+Any failure in this stage falls back to the previous behaviour (the whole review in the summary) with a
+class-name-only warning, because an enhancement must never cost the review. `AI_REVIEW_INLINE=0` switches it
+off; `AI_REVIEW_BOT_LOGIN` names a different identity (a GitHub App or a PAT) for finding our own comments
+again; a dry run prints the placement plan and posts nothing.
 
 **When the provider hiccups.** A model call that fails with 408/429/500/502/503/504 or a dropped connection is
 retried up to four attempts in all (Google's own SDK guidance), with the wait chosen like this:
@@ -819,9 +847,12 @@ three runs cited broad ranges (`265-290`) instead, which overlap the defect but 
 `gemini-3.8-flash` already cited ranges before the change. That is three runs on one planted PR, so it is
 evidence, not a guarantee. The cost is about 15% more text per full file (about 1.2k tokens on that PR).
 A file with no full-text block (new, or over the budget) still relies on the model counting from the
-diff's hunk headers. This is a single comment edited in place, not inline review comments on the diff;
-inline comments can only attach to lines inside the diff, so a finding about something *missing* (an
-undeclared tool, no test) has nowhere to anchor.
+diff's hunk headers. (7) Inline threads only ever **accumulate**. A re-run's summary lists that run's findings, but threads from
+earlier runs stay where they are, and a real model's findings vary from run to run: three real re-runs of one
+planted PR left 9 threads for about 5 distinct problems, with no duplicate slot. They are not resolved or
+collapsed automatically (that needs GitHub's GraphQL API, a larger change), so resolve or ignore stale ones.
+(8) A finding with a cited path but no line in the diff could be a *file-level* comment (GitHub supports
+those through the single-comment endpoint, not in a batch); it is not built, so those stay in the summary.
 
 ## Security scanning & load testing
 
@@ -1133,7 +1164,7 @@ from the library/service code in `app/`.
 | `observability/`       | Config for the stack above — `prometheus/prometheus.yml` (scrape config) + `prometheus/alerts.yml` (alert rules), `alertmanager/`, `loki/`, `promtail/`, `otel-collector/config.yaml`, and `grafana/` (provisioned datasources + the two dashboards) |
 | `Dockerfile`           | The deployable image (one image, three roles via `command:` override) — non-root user, `HEALTHCHECK` against `/health/ready`, installs from `requirements-lock.txt`; ships `app/` plus the three directories the app reads at runtime — `skills/`, `subagents/` and `scripts/` (the sandbox bridge, `index_skills`, the cron jobs) — each of which degrades quietly to "empty" when missing, so CI's `docker-build` job runs the image to check they landed; no bundled browser — crawl4ai now runs in its own container |
 | `.github/workflows/ci.yml` | Runs `ruff`/`mypy`/`pytest` (no live services needed) and a Docker build check on every push/PR against `main` |
-| `.github/workflows/ai-review.yml`, `.github/ai-review-rules.md`, `.github/ai-review-context.toml`, `scripts/ai_review.py` | Opt-in advisory AI review of each PR through any OpenAI-compatible endpoint — see [AI review](#ai-review-advisory) |
+| `.github/workflows/ai-review.yml`, `.github/ai-review-rules.md`, `.github/ai-review-context.toml`, `scripts/ai_review.py`, `scripts/ai_review_findings.py` | Opt-in advisory AI review of each PR through any OpenAI-compatible endpoint — see [AI review](#ai-review-advisory) |
 | `.github/dependabot.yml` | Weekly grouped PR that bumps the commit-SHA pins on every `uses:` line in `.github/workflows/` (a tag like `@v4` can be moved under you and CI runs with this repo's secrets, so each action is pinned to an immutable SHA with a `# vX.Y.Z` comment; `tests/core/test_workflow_action_pins.py` fails on an unpinned one). github-actions only — `requirements-lock.txt` is machine-generated, so pip is left out |
 | `requirements-lock.txt`| Fully pinned freeze of `requirements.txt`'s runtime deps — what the `Dockerfile`/CI actually install from, so a build today and next year resolve identically |
 | `litellm-config.yaml`  | Model routing, retries, fallbacks, Langfuse callback, LiteLLM's own built-in Prometheus metrics callback |
