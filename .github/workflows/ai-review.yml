@@ -78,7 +78,8 @@ jobs:
           AI_REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL }}
           AI_REVIEW_MAX_DIFF_CHARS: ${{ vars.AI_REVIEW_MAX_DIFF_CHARS }}
           AI_REVIEW_MAX_CONTEXT_CHARS: ${{ vars.AI_REVIEW_MAX_CONTEXT_CHARS }}
+          AI_REVIEW_INLINE: ${{ vars.AI_REVIEW_INLINE }}
           AI_REVIEW_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: python3 scripts/ai_review.py
+        run: python3 -m scripts.ai_review
