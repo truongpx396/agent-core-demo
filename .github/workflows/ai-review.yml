@@ -44,7 +44,7 @@ name: AI review (advisory)
 on:
   pull_request:
     types: [opened, ready_for_review, labeled]
-    branches: [main]
+    branches: [main, 'scratch/**']
 
 # One review per PR at a time. An unrelated label (`bug`, ...) gets its own throwaway group: the
 # concurrency group is evaluated before the job's `if`, so without this an unrelated label would
