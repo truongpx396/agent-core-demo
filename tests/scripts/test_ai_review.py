@@ -947,6 +947,48 @@ def test_render_findings_returns_none_when_nothing_is_inline_and_keeps_the_pream
     assert "- see the thread" in ai_review.render_findings("", [ai_review.Placement(bare, anchor)], {"a.py:1": "https://t"})
 
 
+# --- the per-file cap for full-file context is a variable, not a constant -----------------------
+
+
+def test_the_per_file_cap_defaults_to_the_old_constant_and_is_set_by_a_variable():
+    assert _cfg().max_file_chars == ai_review._FILE_CHARS == 40_000
+    assert _cfg(AI_REVIEW_MAX_FILE_CHARS="80000").max_file_chars == 80_000
+    assert _cfg(AI_REVIEW_MAX_FILE_CHARS="").max_file_chars == 40_000  # the workflow passes an unset variable as ""
+    with pytest.raises(ai_review.ReviewError, match="must be numbers"):
+        _cfg(AI_REVIEW_MAX_FILE_CHARS="eighty thousand")
+
+
+def test_fetch_full_files_includes_a_file_between_the_old_cap_and_a_raised_one():
+    http = FakeHttp(files={"big.py": "B" * 70_000})
+    gh = ai_review.GitHub(http, _cfg())
+    assert ai_review.fetch_full_files(gh, "s", ["big.py"], 10**6)[0] == []  # default cap: skipped
+    blocks, skipped = ai_review.fetch_full_files(gh, "s", ["big.py"], 10**6, max_file_chars=80_000)
+    assert [b.label for b in blocks] == ["big.py"] and skipped == []
+
+
+def test_the_total_budget_still_bounds_the_files_when_each_may_be_larger():
+    files = {f"f{i}.py": "x" * 70_000 for i in range(5)}
+    gh = ai_review.GitHub(FakeHttp(files=files), _cfg())
+    blocks, skipped = ai_review.fetch_full_files(gh, "s", list(files), 320_000, max_file_chars=80_000)
+    assert len(blocks) == 4 and skipped == ["f4.py"]  # 4 x 70k = 280k fits in 320k; a fifth would make 350k
+    assert ai_review.fetch_full_files(gh, "s", ["f0.py"], 60_000, max_file_chars=80_000)[0] == []  # a file bigger than the total never fits
+
+
+def test_run_sends_a_file_over_the_default_cap_only_when_the_variable_raises_it(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    big = "x\n" * 30_000  # 60,000 chars: over the default 40k cap, under 80k
+
+    def prompt(**env):
+        http = FakeHttp(head_sha=SHA, files={"app/a.py": big})
+        assert ai_review.run(_run_env(**env), http, _no_sleep) == 0
+        return json.loads(next(c for c in http.calls if c[1].endswith("/chat/completions"))[3])["messages"][1]["content"]
+
+    default = prompt(AI_REVIEW_MAX_CONTEXT_CHARS="320000")
+    assert "30000 | x" not in default and "No full text attached for (judge them from the diff alone): app/a.py" in default
+    raised = prompt(AI_REVIEW_MAX_CONTEXT_CHARS="320000", AI_REVIEW_MAX_FILE_CHARS="80000")
+    assert "30000 | x" in raised and "No full text attached" not in raised  # all 30,000 numbered lines were sent
+
+
 # --- retry backoff: wait as the provider asks, never retry a daily quota, stay inside the budget --
 
 

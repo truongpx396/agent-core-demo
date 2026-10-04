@@ -760,6 +760,15 @@ tier; it deliberately stops short of a repo index or an agent that explores with
 would need tool-calling support from the provider (breaking "any OpenAI-compatible API") and
 a larger prompt-injection surface. `AI_REVIEW_MAX_CONTEXT_CHARS=0` sends the diff only.
 
+How much goes in is bounded by three variables (all optional): `AI_REVIEW_MAX_DIFF_CHARS` (default 60000) caps
+the diff itself, and a file that doesn't fit is named under "Not reviewed"; `AI_REVIEW_MAX_CONTEXT_CHARS`
+(default 60000) is the **total** of full-file text; and `AI_REVIEW_MAX_FILE_CHARS` (default 40000) is the most
+**one** file may add to it (a bigger file is skipped, never cut, because half a file misleads). The prompt's
+worst case is roughly the sum of the three plus about 30k characters of reference snippets, rules and
+instructions, so raising them multiplies tokens per review and, on a free tier, the chance of a 429 (see
+"When the provider hiccups"). Defaults stay conservative so a small-context provider still gets a partial
+review with a visible "Not reviewed" list rather than a rejected request; tune them per repo with variables.
+
 **Clickable citations.** Each `path:line` (or `path:start-end`) a finding cites is turned into a link to
 that line at the exact commit the reviewer read, shown in the comment header (`at 456099e`), so a
 later push or merge doesn't move it. A citation is linked only if the path is a file the PR changed
