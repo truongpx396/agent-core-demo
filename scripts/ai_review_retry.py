@@ -7,9 +7,13 @@ inspect_ai), not from Google's own docs, and have not been captured from this re
 - Gemini puts the wait in the JSON BODY of a 429, as `google.rpc.RetryInfo.retryDelay` (`"34.4s"`),
   and sends NO `Retry-After` header. Many other OpenAI-compatible providers do send the header
   (seconds, or an HTTP date), so both are read.
-- A per-DAY quota 429 still carries a short `retryDelay`, but retrying cannot help until the quota
-  resets. The `quotaId` of its `google.rpc.QuotaFailure` names the window (`...PerDay...` vs
-  `...PerMinute...`), so a daily one is not retried at all.
+- A 429 can name a per-DAY quota in the `quotaId` of its `google.rpc.QuotaFailure` (`...PerDay...` vs
+  `...PerMinute...`) while still carrying a short `retryDelay`. Public issue trackers say retrying such
+  an error is futile until the quota resets, so the first version of this policy gave up on it at
+  once. THAT WAS WRONG for this repo's real key: in a real run, errors naming a daily quota were
+  followed, under a minute later, by successes (it behaves like a rolling window). So a daily-quota
+  429 gets exactly ONE retry (`DAILY_QUOTA_ATTEMPTS`): a truly exhausted quota then costs one extra
+  attempt, not a thrown-away review.
 - Google's SDK guidance for 429 and 503: exponential backoff from about a second with jitter, a
   maximum single delay of 60 seconds, and up to four attempts.
 
@@ -25,6 +29,7 @@ from collections.abc import Mapping
 
 RETRY_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 ATTEMPTS = 4  # Google's own SDK retries transient errors up to four times
+DAILY_QUOTA_ATTEMPTS = 2  # one retry for a 429 that names a daily quota; see the module docstring
 BACKOFF_S = 2.0  # first wait for a 5xx or a dropped connection; it doubles, plus up to this much jitter
 RATE_LIMIT_BACKOFF_S = 10.0  # for a 429 with no hint: quota windows are minutes, not seconds
 MAX_WAIT_S = 60.0  # the longest single wait (Google's SDK example caps a delay at 60s)
@@ -96,7 +101,8 @@ def retry_hint(headers: Mapping[str, str] | None, raw: bytes, now: float | None 
 
 
 def is_daily_quota(raw: bytes) -> bool:
-    """True for a 429 whose quota window is a day (`...PerDay...`): no wait this job can afford helps."""
+    """True for a 429 that names a daily quota window (`...PerDay...`). Such an error is retried once, not
+    given up on: see the module docstring for why."""
     details = _body(raw).get("details")
     for detail in details if isinstance(details, list) else []:
         violations = detail.get("violations") if isinstance(detail, dict) else None

@@ -51,6 +51,7 @@ from typing import IO
 
 from scripts.ai_review_retry import (
     ATTEMPTS,
+    DAILY_QUOTA_ATTEMPTS,
     MAX_WAIT_S,
     RETRY_STATUSES,
     is_daily_quota,
@@ -495,7 +496,7 @@ def _is_timeout(exc: OSError) -> bool:
 def chat_completion(http: Http, cfg: Config, messages: list[dict[str, str]], sleep: Callable[[float], None] = time.sleep) -> str:
     """One review from the model, retrying transient failures (policy in `ai_review_retry`).
 
-    A provider's own wait hint beats our guess, a 429 on a DAILY quota is not retried at all, and
+    A provider's own wait hint beats our guess, a 429 on a DAILY quota is retried once, and
     the waits are capped (one at 60s, all together at 120s) so a step never outlasts the job.
     A TIMEOUT is not retried: a model that took `cfg.timeout` seconds will be slow again, and
     several of those would outlast the job's own `timeout-minutes` and turn an advisory step red.
@@ -517,16 +518,19 @@ def chat_completion(http: Http, cfg: Config, messages: list[dict[str, str]], sle
             status, raw, problem = 0, b"", f"a connection error ({type(exc).__name__})"  # 0 = never got an answer
         if status == 200:
             break
-        tried = f", after {attempt} attempts" if attempt > 1 else ""
-        if status == 429 and is_daily_quota(raw):
-            raise ReviewError(f"the model endpoint returned {problem} (a daily quota, which waiting cannot clear{tried})")
-        if attempt == ATTEMPTS or (status and status not in RETRY_STATUSES):
-            raise ReviewError(f"the model endpoint returned {problem}{' (' + tried[2:] + ')' if tried else ''}")
+        tried = f"after {attempt} attempts" if attempt > 1 else ""
+        # A 429 that names a DAILY quota gets one retry, not the full set: if it really is exhausted for
+        # the day more attempts only waste the step, but on this repo's real key such errors cleared
+        # within a minute (a rolling window), so giving up at once would have thrown reviews away.
+        daily = status == 429 and is_daily_quota(raw)
+        if attempt >= (DAILY_QUOTA_ATTEMPTS if daily else ATTEMPTS) or (status and status not in RETRY_STATUSES):
+            note = "; ".join(part for part in ("a daily quota" if daily else "", tried) if part)
+            raise ReviewError(f"the model endpoint returned {problem}{f' ({note})' if note else ''}")
         hint = retry_hint(reply_headers, raw)
         wait = wait_before_retry(attempt, status, hint, waited)
         if wait is None:
             reason = f"the provider asks for {hint:.0f}s, more than the {MAX_WAIT_S:.0f}s we wait" if hint is not None and hint > MAX_WAIT_S else "out of wait budget"
-            raise ReviewError(f"the model endpoint returned {problem} ({reason}{tried})")
+            raise ReviewError(f"the model endpoint returned {problem} ({'; '.join(part for part in (reason, tried) if part)})")
         said = f", the provider asks for {hint:.0f}s" if hint is not None else ""
         print(f"::notice::AI review: {problem}; retry {attempt} of {ATTEMPTS - 1} in {wait:.0f}s{said}")
         sleep(wait)

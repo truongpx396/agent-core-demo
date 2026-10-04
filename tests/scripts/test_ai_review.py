@@ -721,11 +721,17 @@ def test_a_429_with_no_hint_backs_off_from_ten_seconds_not_two(top_jitter):
     assert waits == [20.0, 30.0, 50.0]  # 10*2^(n-1) plus jitter: a quota window is a minute, so 2s and 4s could only fail
 
 
-def test_a_daily_quota_429_is_not_retried_even_though_it_carries_a_short_retry_delay():
-    http, waits = Scripted((429, _gemini_429("34s", quota_id="GenerateRequestsPerDayPerProjectPerModel-FreeTier"), {})), []
-    with pytest.raises(ai_review.ReviewError, match=r"HTTP 429 RESOURCE_EXHAUSTED \(a daily quota, which waiting cannot clear\)") as exc:
+def test_a_daily_quota_429_gets_exactly_one_retry_because_on_the_real_key_it_cleared_within_a_minute(top_jitter):
+    # Public issue trackers say a per-day 429 is futile to retry; a real run on this repo's key had them
+    # followed by successes under a minute later. So: one retry (not none, not four).
+    daily = (429, _gemini_429("34s", quota_id="GenerateRequestsPerDayPerProjectPerModel-FreeTier"), {})
+    http, waits = Scripted(daily, 200), []
+    assert ai_review.chat_completion(http, _cfg(), [], waits.append) == "an answer"  # it cleared, as it did for real
+    assert http.calls == 2 and waits == [35.0]
+    http, waits = Scripted(daily, daily), []  # genuinely exhausted: only one more attempt is wasted, then it stops
+    with pytest.raises(ai_review.ReviewError, match=r"HTTP 429 RESOURCE_EXHAUSTED \(a daily quota; after 2 attempts\)") as exc:
         ai_review.chat_completion(http, _cfg(), [], waits.append)
-    assert http.calls == 1 and waits == []  # retrying would burn attempts on a limit that clears tomorrow
+    assert http.calls == 2 and waits == [35.0]
     assert "SECRET-ECHO" not in str(exc.value)
 
 
@@ -739,7 +745,7 @@ def test_a_hint_longer_than_we_can_wait_gives_up_at_once_and_says_why():
 def test_the_total_wait_budget_stops_a_provider_that_keeps_asking_for_long_waits(top_jitter):
     hinted = (429, _gemini_429("50s"), {})
     http, waits = Scripted(hinted, hinted, hinted, 200), []
-    with pytest.raises(ai_review.ReviewError, match=r"out of wait budget, after 3 attempts"):
+    with pytest.raises(ai_review.ReviewError, match=r"out of wait budget; after 3 attempts"):
         ai_review.chat_completion(http, _cfg(), [], waits.append)
     assert waits == [51.0, 51.0] and http.calls == 3  # a third 51s wait would make 153s, past the 120s budget
 
