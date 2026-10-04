@@ -12,6 +12,7 @@ name: AI review (advisory)
 #              AI_REVIEW_MODEL     the model name that endpoint expects
 #              AI_REVIEW_MAX_DIFF_CHARS (optional, default 60000)
 #              AI_REVIEW_MAX_CONTEXT_CHARS (optional, default 60000; 0 = send the diff only)
+#              AI_REVIEW_INLINE   (optional, default on; 0 = one summary comment, no inline threads)
 #              AI_REVIEW_MAX_FILE_CHARS    (optional, default 40000; the most one file may add to that budget)
 #   Secret:    AI_REVIEW_API_KEY   optional if the endpoint needs no key
 # and create a label named `ai-review`. Switching provider is changing those two variables.
@@ -79,8 +80,9 @@ jobs:
           AI_REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL }}
           AI_REVIEW_MAX_DIFF_CHARS: ${{ vars.AI_REVIEW_MAX_DIFF_CHARS }}
           AI_REVIEW_MAX_CONTEXT_CHARS: ${{ vars.AI_REVIEW_MAX_CONTEXT_CHARS }}
+          AI_REVIEW_INLINE: ${{ vars.AI_REVIEW_INLINE }}
           AI_REVIEW_MAX_FILE_CHARS: ${{ vars.AI_REVIEW_MAX_FILE_CHARS }}
           AI_REVIEW_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: python3 scripts/ai_review.py
+        run: python3 -m scripts.ai_review
