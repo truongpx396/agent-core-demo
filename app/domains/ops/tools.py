@@ -554,3 +554,5 @@ TOOL_CAPABILITIES = {
     "check_vendor_status_page": "outward",
     **{t.name: "outward" for t in _SANDBOX_TOOLS},
 }
+
+# scratch: touch so this file is sent in full
