@@ -1,0 +1,82 @@
+name: AI review (advisory)
+
+# An LLM reads the PR diff and leaves ONE comment (edited in place on re-runs). It is advice for the
+# human reviewer: it never fails a check, is not a required status, and does not replace review.
+# Why advisory-only, why a script in this repo instead of a marketplace Action, and what the
+# script does about prompt injection: see scripts/ai_review.py and README ("AI review").
+#
+# INERT BY DEFAULT. The job is skipped until the repository VARIABLE `AI_REVIEW_BASE_URL` is set,
+# so merging this file changes nothing and sends no code anywhere. To turn it on, in Settings ->
+# Secrets and variables -> Actions:
+#   Variables: AI_REVIEW_BASE_URL  any OpenAI-compatible base, e.g. https://api.openai.com/v1
+#              AI_REVIEW_MODEL     the model name that endpoint expects
+#              AI_REVIEW_MAX_DIFF_CHARS (optional, default 60000)
+#   Secret:    AI_REVIEW_API_KEY   optional if the endpoint needs no key
+# and create a label named `ai-review`. Switching provider is changing those two variables.
+# The PR diff IS sent to whatever endpoint you configure.
+#
+# Triggers are deliberate. It runs when a PR is opened (non-draft) or marked ready, and on demand
+# when the `ai-review` label is added (also how to re-run: remove and re-add it, which works on a
+# draft too). Not on every push: a study of AI review Actions found automatically triggered
+# comments were acted on far less often than ones a developer asked for, and every push would
+# be another paid model call (https://arxiv.org/html/2508.18771v2).
+#
+# Security shape, each point on purpose:
+# - `pull_request`, never `pull_request_target`. GitHub is disabling the latter by default for
+#   public repos on 2026-11-02 precisely because an LLM bot that reads attacker-written text with
+#   secrets in scope is a prompt-injection target.
+# - Same-repo PRs only. A fork PR gets no secrets and a read-only token on this trigger anyway;
+#   the explicit check just makes it a clean skip instead of a failed run. Dependabot PRs get a
+#   separate secret store, so they are skipped too.
+# - Checks out the BASE commit, not the PR's code: the script and rules that run are the ones
+#   already on main, and the PR's diff is fetched as data through the API. (A same-repo writer
+#   can still edit THIS file in their PR, which is why only collaborators can use the secret —
+#   fine for a sole-maintainer repo, revisit with branch protection and an environment secret.)
+# - `permissions: {}` at the top; the job asks for read on contents and write on PRs, nothing else.
+# - Nothing from the PR (title, branch name, body) is interpolated into a shell command.
+on:
+  pull_request:
+    types: [opened, ready_for_review, labeled]
+    branches: [main]
+
+# One review per PR at a time. An unrelated label (`bug`, ...) gets its own throwaway group: the
+# concurrency group is evaluated before the job's `if`, so without this an unrelated label would
+# cancel an in-flight review and then skip itself, leaving no review at all.
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}-${{ (github.event.action == 'labeled' && github.event.label.name != 'ai-review') && github.run_id || 'review' }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  review:
+    if: >-
+      vars.AI_REVIEW_BASE_URL != ''
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'dependabot[bot]'
+      && (
+        (github.event.action == 'labeled' && github.event.label.name == 'ai-review')
+        || (github.event.action != 'labeled' && !github.event.pull_request.draft)
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      # The PR that first adds the script has a base without it; skip instead of failing it.
+      - name: Review the diff
+        if: hashFiles('scripts/ai_review.py') != ''
+        env:
+          AI_REVIEW_BASE_URL: ${{ vars.AI_REVIEW_BASE_URL }}
+          AI_REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL }}
+          AI_REVIEW_MAX_DIFF_CHARS: ${{ vars.AI_REVIEW_MAX_DIFF_CHARS }}
+          AI_REVIEW_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python3 scripts/ai_review.py
