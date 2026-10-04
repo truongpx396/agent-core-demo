@@ -739,7 +739,7 @@ without posting anything:
 ```bash
 AI_REVIEW_DRY_RUN=1 PR_NUMBER=<n> GITHUB_REPOSITORY=<owner>/<repo> GITHUB_TOKEN=$(gh auth token) \
   AI_REVIEW_BASE_URL=https://api.openai.com/v1 AI_REVIEW_MODEL=<model> AI_REVIEW_API_KEY=<key> \
-  python3 scripts/ai_review.py
+  python3 -m scripts.ai_review
 ```
 
 **When it runs:** on a PR opened non-draft or marked ready, and on demand when the `ai-review`
@@ -768,6 +768,36 @@ plain text instead of becoming a link that 404s. Fenced code is never rewritten.
 writes plain `path:line`, so this works with any provider. To make the number right, each changed
 file sent in full has its lines numbered (`  284 | code`) and the prompt says to cite those numbers
 and never copy the prefix into suggested code, so the model copies a line number instead of counting.
+
+**Fallback providers.** A free tier's quota is per *model* and per *provider*, so when one is spent another may be
+untouched, and an advisory reviewer that goes dark for the day is worse than one that quietly uses its second
+choice. Up to two fallbacks are numbered slots, tried **in order** when the one before has failed for good (after its
+own retries: quota spent, overloaded, down, or a bad answer). Everything is optional, and with none set the reviewer
+behaves exactly as before.
+
+| Variable / secret | |
+|---|---|
+| `AI_REVIEW_FALLBACK1_MODEL` | **required** to turn slot 1 on, e.g. `gemini-3.5-flash-lite` |
+| `AI_REVIEW_FALLBACK1_BASE_URL` | optional; defaults to the primary's, i.e. "another model on the same provider" |
+| `AI_REVIEW_FALLBACK1_API_KEY` (secret) | optional; see the key rule below |
+| `AI_REVIEW_FALLBACK2_*` | the same three, for a third provider |
+
+- **A provider's key is never sent to another provider's host.** A fallback uses its own key if it has one; otherwise
+  it inherits the primary's key *only if its base URL is the same*. A fallback on a different host with no key of its
+  own sends none (right for a keyless endpoint; a 401 otherwise, which the log shows).
+- **The diff goes to every provider tried**, but only when the ones before failed. A fallback is a second recipient of
+  your code, so choose one you'd be happy to send it to.
+- **One deadline for the whole chain** (480s, under the job's 600s), enforced on every request's timeout and every
+  retry wait, so a slow first choice can't turn the check red. A bug (anything other than a provider failure) is not
+  hidden behind a second provider.
+- The comment header names the model that actually answered (``fallback for `m`, which was unavailable``), the log has
+  a notice for each hand-over (model names and error codes only, never URLs, keys or message text), and a dry run
+  prints the chain.
+- **A fallback's own limits may be smaller.** This repo's CI logs show Groq's free tier for `gpt-oss-120b` at **8,000
+  tokens per minute** and 200,000 per day, far below a typical review prompt, so Groq would refuse most reviews.
+  The cheapest good first fallback is another model on the same provider (its own per-model quota).
+- **Not built:** failing over faster (the primary uses its full retry budget first), a per-provider size budget, and
+  spreading load across providers.
 
 **When the provider hiccups.** A model call that fails with 408/429/500/502/503/504 or a dropped
 connection is retried up to twice, with exponential backoff and jitter (Google's guidance for the

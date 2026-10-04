@@ -13,6 +13,12 @@ name: AI review (advisory)
 #              AI_REVIEW_MAX_DIFF_CHARS (optional, default 60000)
 #              AI_REVIEW_MAX_CONTEXT_CHARS (optional, default 60000; 0 = send the diff only)
 #   Secret:    AI_REVIEW_API_KEY   optional if the endpoint needs no key
+#   Fallbacks (all optional; tried in order if the provider before has failed for good):
+#   Variables: AI_REVIEW_FALLBACK1_MODEL     required to turn slot 1 on (e.g. another model on the same provider)
+#              AI_REVIEW_FALLBACK1_BASE_URL  default: the primary's. Set it to use a different provider
+#   Secret:    AI_REVIEW_FALLBACK1_API_KEY   its own key. Inherited from the primary ONLY if the base URL is the
+#                                            same; one provider's key is never sent to another host
+#   ...and the same three with FALLBACK2 for a third provider. The diff goes to every provider tried.
 # and create a label named `ai-review`. Switching provider is changing those two variables.
 # The PR diff IS sent to whatever endpoint you configure.
 #
@@ -79,6 +85,12 @@ jobs:
           AI_REVIEW_MAX_DIFF_CHARS: ${{ vars.AI_REVIEW_MAX_DIFF_CHARS }}
           AI_REVIEW_MAX_CONTEXT_CHARS: ${{ vars.AI_REVIEW_MAX_CONTEXT_CHARS }}
           AI_REVIEW_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}
+          AI_REVIEW_FALLBACK1_BASE_URL: ${{ vars.AI_REVIEW_FALLBACK1_BASE_URL }}
+          AI_REVIEW_FALLBACK1_MODEL: ${{ vars.AI_REVIEW_FALLBACK1_MODEL }}
+          AI_REVIEW_FALLBACK1_API_KEY: ${{ secrets.AI_REVIEW_FALLBACK1_API_KEY }}
+          AI_REVIEW_FALLBACK2_BASE_URL: ${{ vars.AI_REVIEW_FALLBACK2_BASE_URL }}
+          AI_REVIEW_FALLBACK2_MODEL: ${{ vars.AI_REVIEW_FALLBACK2_MODEL }}
+          AI_REVIEW_FALLBACK2_API_KEY: ${{ secrets.AI_REVIEW_FALLBACK2_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: python3 scripts/ai_review.py
+        run: python3 -m scripts.ai_review

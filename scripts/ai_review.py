@@ -45,10 +45,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http.client import HTTPMessage
 from pathlib import Path
 from typing import IO
+
+from scripts.ai_review_providers import Provider, build_fallbacks
 
 MARKER = "<!-- ai-review:advisory -->"
 # GITHUB_TOKEN comments are authored by this login. Matching on it as well as the marker means a
@@ -129,6 +131,7 @@ class Config:
     context_config_path: str
     server_url: str  # the web host links point at; github.com, or a GitHub Enterprise Server
     dry_run: bool
+    fallbacks: tuple[Provider, ...] = ()  # tried in order when the primary (the fields above) fails
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "Config":
@@ -149,11 +152,18 @@ class Config:
             timeout = float(env.get("AI_REVIEW_TIMEOUT_S") or 180)
         except ValueError as exc:
             raise ReviewError("PR_NUMBER and the AI_REVIEW_MAX_*_CHARS / AI_REVIEW_TIMEOUT_S values must be numbers") from exc
+        model = need("AI_REVIEW_MODEL")
+        # Optional: a self-hosted endpoint may need no key at all.
+        api_key = env.get("AI_REVIEW_API_KEY", "").strip()
+        try:
+            fallbacks = build_fallbacks(env, Provider("primary", base_url, model, api_key))
+        except ValueError as exc:
+            raise ReviewError(str(exc)) from exc
         return cls(
             base_url=base_url,
-            model=need("AI_REVIEW_MODEL"),
-            # Optional: a self-hosted endpoint may need no key at all.
-            api_key=env.get("AI_REVIEW_API_KEY", "").strip(),
+            model=model,
+            api_key=api_key,
+            fallbacks=fallbacks,
             github_token=need("GITHUB_TOKEN"),
             api_url=env.get("GITHUB_API_URL", "https://api.github.com").rstrip("/"),
             server_url=env.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/"),
@@ -528,6 +538,60 @@ def chat_completion(http: Http, cfg: Config, messages: list[dict[str, str]], sle
 # model answer with a huge number must leave that citation as plain text, not raise and cost the
 # whole review. (7 digits is far beyond any real file's line count.)
 _CITATION = re.compile(r"(?<!\[)`([A-Za-z0-9_./@+-]+):L?(\d{1,7})(?:-L?(\d{1,7}))?`(?!\]\()")
+
+_DEADLINE_S = 480.0  # for the whole provider chain; the job's own limit is 600s (ai-review.yml)
+_MIN_ATTEMPT_S = 20.0  # not worth starting another provider with less than this left
+
+
+def complete_with_fallbacks(
+    http: Http,
+    cfg: Config,
+    messages: list[dict[str, str]],
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> tuple[str, Provider]:
+    """One review from the first provider that answers; returns (answer, the provider that gave it).
+
+    Each provider gets `chat_completion` with its own retries. When one has failed for good (quota
+    spent, overloaded, down, a bad answer) the next is tried. A failure that is not a `ReviewError` is
+    a bug and is not papered over by moving on. The whole chain shares one deadline, enforced on every
+    request's timeout and every retry wait, so a slow first choice can never push the step past the
+    job's own limit and turn an advisory check red.
+
+    With no fallback configured this is exactly `chat_completion`, error messages included.
+    """
+    primary = Provider("primary", cfg.base_url, cfg.model, cfg.api_key)
+    if not cfg.fallbacks:
+        return chat_completion(http, cfg, messages, sleep), primary
+    chain = (primary, *cfg.fallbacks)
+    started = clock()
+
+    def left() -> float:
+        return _DEADLINE_S - (clock() - started)
+
+    def bounded_http(method: str, url: str, headers: Mapping[str, str], body: bytes | None, timeout: float) -> tuple[int, bytes]:
+        return http(method, url, headers, body, max(1.0, min(timeout, left())))
+
+    def bounded_sleep(seconds: float) -> None:
+        if seconds > left():
+            raise ReviewError("out of time for this review")
+        sleep(seconds)
+
+    failures: list[str] = []
+    for index, provider in enumerate(chain):
+        if left() < _MIN_ATTEMPT_S:
+            failures.append(f"{provider.name} ({provider.model}): not tried, out of time")
+            break
+        view = replace(cfg, base_url=provider.base_url, model=provider.model, api_key=provider.api_key)
+        try:
+            return chat_completion(bounded_http, view, messages, bounded_sleep), provider
+        except ReviewError as exc:
+            failures.append(f"{provider.name} ({provider.model}): {exc}")
+            if index + 1 < len(chain):
+                following = chain[index + 1]
+                print(f"::notice::AI review: {provider.name} ({provider.model}) failed ({exc}); trying {following.name} ({following.model})")
+    raise ReviewError("every provider failed: " + "; ".join(failures))
+
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
@@ -586,14 +650,17 @@ def format_comment(
     full_files: int = 0,
     references: int = 0,
     links: LinkTarget | None = None,
+    model: str | None = None,
+    fallback_for: str | None = None,
 ) -> str:
     context = ""
     if full_files or references:
         context = f" ({full_files} in full, plus {references} reference snippet(s) from main)"
     commit = f" at `{links.commit[:7]}`" if links else ""  # what the links below point at
+    via = f" (fallback for `{fallback_for}`, which was unavailable)" if fallback_for else ""
     head = (
         f"{MARKER}\n### AI review (advisory)\n"
-        f"> `{cfg.model}` read {len(selection.included)} file(s){commit}{context}. It can be wrong or miss things; this never "
+        f"> `{model or cfg.model}`{via} read {len(selection.included)} file(s){commit}{context}. It can be wrong or miss things; this never "
         "blocks the merge and does not replace a human review. To re-run, remove and re-add the `ai-review` label.\n\n"
     )
     tail = ""
@@ -680,20 +747,27 @@ def run(env: Mapping[str, str], http: Http = urllib_http, sleep: Callable[[float
         if cfg.max_context_chars > 0 and head_sha:
             files, files_skipped = fetch_full_files(github, head_sha, selection.full_text_paths, cfg.max_context_chars)
         messages = build_messages(rules, str(pull.get("title", "")), selection, None, references, files, files_skipped)
-        answer = chat_completion(http, cfg, messages, sleep)
+        if cfg.dry_run and cfg.fallbacks:
+            print("[dry-run] providers, in order: " + ", ".join(f"{p.name} {p.model}" for p in (Provider("primary", cfg.base_url, cfg.model, cfg.api_key), *cfg.fallbacks)))
+        answer, served_by = complete_with_fallbacks(http, cfg, messages, sleep)
+        fallback_for = cfg.model if served_by.name != "primary" else None
         links = None
         if _COMMIT.fullmatch(head_sha):
             blob_url = f"{cfg.server_url}/{cfg.repo}/blob/{head_sha}"
             line_counts = {block.label: _line_count(block.text) for block in files}
             links = LinkTarget(head_sha, blob_url, frozenset(selection.linkable_paths), line_counts)
-        comment = format_comment(answer, cfg, selection, full_files=len(files), references=len(references), links=links)
+        comment = format_comment(
+            answer, cfg, selection, full_files=len(files), references=len(references), links=links,
+            model=served_by.model, fallback_for=fallback_for,
+        )
         if cfg.dry_run:
             print(comment)
         else:
             github.upsert_comment(comment)
             print(
                 f"::notice::AI review posted ({len(selection.included)} file(s) reviewed, "
-                f"{len(files)} in full, {len(references)} reference snippet(s))"
+                f"{len(files)} in full, {len(references)} reference snippet(s)"
+                f"{'' if fallback_for is None else f', via {served_by.name}'})"
             )
     except ReviewError as exc:
         print(f"::warning::AI review skipped: {exc}")
