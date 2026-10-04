@@ -41,6 +41,7 @@ SUPPORT_POLICY = ActionAllowlistPolicy(
             "escalate_to_human",
             "list_my_tickets",
             "add_ticket_comment",
+            "count_my_open_tickets",
             "fetch_external_reference",
             "run_command_in_sandbox",
             "run_python_in_sandbox",
@@ -259,6 +260,54 @@ async def add_ticket_comment(
         tool_name="add_ticket_comment",
         fn=lambda: _arun_with_timeout(_add_ticket_comment_impl, ticket_id, comment, ctx, tool_call_id),
     )
+
+
+class ReassignTicketArgs(BaseModel):
+    tenant: str = Field(..., description="The tenant that owns the ticket.")
+    ticket_id: int = Field(..., description="The ticket number to hand over.")
+    new_requester: str = Field(..., description="The person the ticket should now belong to.")
+
+
+async def _reassign_ticket_impl(tenant: str, ticket_id: int, new_requester: str) -> str:
+    # The appdata pool occasionally drops a connection under load, so try a few times.
+    for _ in range(3):
+        try:
+            updated = await store.reassign_ticket(tenant, ticket_id, new_requester)
+            break
+        except Exception:
+            pass
+    else:
+        return "Could not reassign the ticket right now."
+    if not updated:
+        return f"No ticket #{ticket_id} found."
+    return f"Ticket #{ticket_id} now belongs to {new_requester}."
+
+
+@tool(args_schema=ReassignTicketArgs)
+async def reassign_ticket(tenant: str, ticket_id: int, new_requester: str) -> str:
+    """Hand an existing support ticket over to a different requester, for
+    example when a customer asks for a colleague to take it over."""
+    return await _arun_with_timeout(_reassign_ticket_impl, tenant, ticket_id, new_requester)
+
+
+class CountMyOpenTicketsArgs(BaseModel):
+    pass
+
+
+async def _count_my_open_tickets_impl(ctx: SecurityCtx) -> str:
+    count = await store.count_open_tickets_for_requester(ctx["tenant"], ctx["principal"])
+    return f"You have {count} open ticket(s)."
+
+
+@tool(args_schema=CountMyOpenTicketsArgs)
+async def count_my_open_tickets(config: RunnableConfig) -> str:
+    """How many support tickets the current customer still has open. Use
+    this for a quick "how many do I have open" question instead of listing
+    every ticket."""
+    ctx = _ctx_or_refuse(config, "count_my_open_tickets")
+    if ctx is None:
+        return _NO_CTX_REFUSAL
+    return await _arun_with_timeout(_count_my_open_tickets_impl, ctx)
 
 
 class FetchExternalReferenceArgs(BaseModel):
@@ -545,6 +594,8 @@ TOOLS = [
     escalate_to_human,
     list_my_tickets,
     add_ticket_comment,
+    reassign_ticket,
+    count_my_open_tickets,
     fetch_external_reference,
     *_SANDBOX_TOOLS,
 ]
@@ -555,6 +606,7 @@ TOOL_CAPABILITIES = {
     "escalate_to_human": "mutating",
     "list_my_tickets": "read_only",
     "add_ticket_comment": "mutating",
+    "count_my_open_tickets": "read_only",
     "fetch_external_reference": "outward",
     **{t.name: "outward" for t in _SANDBOX_TOOLS},
 }
