@@ -769,13 +769,29 @@ writes plain `path:line`, so this works with any provider. To make the number ri
 file sent in full has its lines numbered (`  284 | code`) and the prompt says to cite those numbers
 and never copy the prefix into suggested code, so the model copies a line number instead of counting.
 
-**When the provider hiccups.** A model call that fails with 408/429/500/502/503/504 or a dropped
-connection is retried up to twice, with exponential backoff and jitter (Google's guidance for the
-Gemini API, where the first real run hit a `503 UNAVAILABLE`). A timeout and any 4xx are not
-retried: a slow model will be slow again, and a wrong key or model name would only fail again.
-When the review is still skipped, the warning names the provider's short error code
-(`HTTP 503 UNAVAILABLE`, `HTTP 404 model_not_found`) but never its message text. A skipped review
-is only a warning; re-add the `ai-review` label to try again.
+**When the provider hiccups.** A model call that fails with 408/429/500/502/503/504 or a dropped connection is
+retried up to four attempts in all (Google's own SDK guidance), with the wait chosen like this:
+
+- **As the provider asks.** A `Retry-After` header (seconds or an HTTP date) or `retry-after-ms`; or, for Gemini,
+  `RetryInfo.retryDelay` in the body of the 429 (Gemini sends **no** `Retry-After` header); or, last, the
+  "retry in 34s" in its message. That wait plus up to a second of jitter, so clients released together don't stampede.
+- **Otherwise exponential backoff with jitter**, starting at 2s for a 5xx or a dropped connection and **10s for a 429**
+  (a free tier's quota window is a minute, so the old 2s and 4s could only fail).
+- **Capped:** at most 60s for one wait and 120s for all of them, so a step never outlasts the job; a hint longer
+  than 60s gives up at once and says what the provider asked for. A timeout and any 4xx are not retried.
+- **A 429 naming a *daily* quota** (`...PerDay...` in its `quotaId`) gets **one** retry, on our own 10-20s backoff,
+  *ignoring* its hint. That hint is the quota's reset time (a real run read 41,609s, hours, counting down with the
+  clock), and public issue trackers say such errors are futile to retry, so my first version gave up on them at once.
+  The real key contradicted that: in one window, requests got through while Google said "retry in 11.5 hours", so
+  giving up would have thrown reviews away; in a later one, after heavy testing, every retry failed too. One retry is
+  the compromise: a really exhausted quota costs one extra attempt, not a lost review.
+
+Each retry is logged as a notice (`HTTP 429 RESOURCE_EXHAUSTED; retry 1 of 1 in 14s, ignoring its 41048s hint...`),
+never the provider's message text. When the review is still skipped, the warning names the provider's short error
+code (`HTTP 503 UNAVAILABLE`, `HTTP 429 RESOURCE_EXHAUSTED (a daily quota; after 2 attempts)`) but never its message
+text. A skipped review is only a warning; re-add the `ai-review` label to try again. **A free tier's requests-per-day
+limit is per project and per model**, so heavy experimenting can exhaust it for the day; another model has its own
+allowance.
 
 **Safety shape.** `pull_request` (never `pull_request_target`), same-repo PRs only, Dependabot
 skipped, `permissions: {}` plus `contents: read` / `pull-requests: write` for the one job, and the

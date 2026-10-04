@@ -15,7 +15,7 @@ from urllib.request import Request
 
 import pytest
 
-from scripts import ai_review
+from scripts import ai_review, ai_review_retry
 
 BASE = "https://llm.example/v1"
 GH = "https://gh.example"
@@ -166,6 +166,8 @@ class Scripted:
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, BaseException):
             raise outcome
+        if isinstance(outcome, tuple):  # (status, body bytes, headers): an error the way a provider really sends one
+            return outcome
         return outcome, json.dumps(self.body if outcome == 200 else {}).encode()
 
 
@@ -178,10 +180,10 @@ def test_chat_completion_retries_a_transient_503_with_growing_jittered_waits_the
 
 def test_chat_completion_adds_jitter_so_simultaneous_runs_do_not_retry_in_lockstep(monkeypatch):
     draws = []
-    monkeypatch.setattr(ai_review.random, "uniform", lambda low, high: draws.append((low, high)) or high)
+    monkeypatch.setattr(ai_review_retry.random, "uniform", lambda low, high: draws.append((low, high)) or high)
     waits = []
     ai_review.chat_completion(Scripted(503, 503, 200), _cfg(), [], waits.append)
-    assert draws == [(0, ai_review._BACKOFF_S)] * 2
+    assert draws == [(0, ai_review_retry.BACKOFF_S)] * 2
     assert waits == [2.0 + 2.0, 4.0 + 2.0]  # base * 2^n, plus the (maximal) jitter draw
 
 
@@ -192,11 +194,11 @@ def test_chat_completion_retries_every_transient_status(status):
     assert http.calls == 2
 
 
-def test_chat_completion_gives_up_after_three_attempts_and_says_so():
-    http, waits = Scripted(503, 503, 503), []
-    with pytest.raises(ai_review.ReviewError, match=r"HTTP 503 \(after 3 attempts\)"):
+def test_chat_completion_gives_up_after_four_attempts_and_says_so():
+    http, waits = Scripted(503, 503, 503, 503), []
+    with pytest.raises(ai_review.ReviewError, match=r"HTTP 503 \(after 4 attempts\)"):
         ai_review.chat_completion(http, _cfg(), [], waits.append)
-    assert http.calls == 3 and len(waits) == 2  # no pointless wait after the last attempt
+    assert http.calls == 4 and len(waits) == 3  # no pointless wait after the last attempt
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404])
@@ -210,7 +212,7 @@ def test_chat_completion_never_retries_a_client_error(status):
 def test_chat_completion_retries_a_dropped_connection_without_logging_its_message():
     http = Scripted(ConnectionResetError("https://secret.example/?k=1"), 200)
     assert ai_review.chat_completion(http, _cfg(), [], _no_sleep) == "an answer"
-    persistent = Scripted(*[ConnectionResetError("https://secret.example/?k=1")] * 3)
+    persistent = Scripted(*[ConnectionResetError("https://secret.example/?k=1")] * 4)
     with pytest.raises(ai_review.ReviewError) as exc:
         ai_review.chat_completion(persistent, _cfg(), [], _no_sleep)
     assert "ConnectionResetError" in str(exc.value) and "secret.example" not in str(exc.value)
@@ -229,7 +231,7 @@ def test_a_skipped_review_names_the_providers_error_code_but_never_its_message(c
     http = FakeHttp(model_status=503, model_body=gemini_503)
     assert ai_review.run(_run_env(), http, _no_sleep) == 0
     out = capsys.readouterr().out
-    assert "returned HTTP 503 UNAVAILABLE (after 3 attempts)" in out and "SECRET-ECHO" not in out
+    assert "returned HTTP 503 UNAVAILABLE (after 4 attempts)" in out and "SECRET-ECHO" not in out
 
 
 @pytest.mark.parametrize(
@@ -680,3 +682,162 @@ def test_run_sends_numbered_changed_files_to_the_model(tmp_path, monkeypatch):
     assert ai_review.run(_run_env(), http, _no_sleep) == 0
     prompt = json.loads(next(c for c in http.calls if c[1].endswith("/chat/completions"))[3])["messages"][1]["content"]
     assert "1 | l1\n2 | l2\n3 | l3" in prompt
+
+
+# --- retry backoff: wait as the provider asks, never retry a daily quota, stay inside the budget --
+
+
+def _gemini_429(delay="34s", quota_id="GenerateRequestsPerMinutePerProjectPerModel-FreeTier", wrap=True):
+    error = {"error": {"code": 429, "message": "SECRET-ECHO quota", "status": "RESOURCE_EXHAUSTED", "details": [
+        {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{"quotaId": quota_id}]},
+        {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": delay},
+    ]}}
+    return json.dumps([error] if wrap else error).encode()
+
+
+@pytest.fixture
+def top_jitter(monkeypatch):
+    monkeypatch.setattr(ai_review_retry.random, "uniform", lambda low, high: high)
+
+
+def test_a_429_is_retried_after_the_wait_the_provider_asks_for(top_jitter, capsys):
+    http, waits = Scripted((429, _gemini_429("34s"), {}), 200), []
+    assert ai_review.chat_completion(http, _cfg(), [], waits.append) == "an answer"
+    assert waits == [35.0]  # the provider's 34s plus a second of jitter, not our own 2-4s guess
+    out = capsys.readouterr().out
+    assert "::notice::AI review: HTTP 429 RESOURCE_EXHAUSTED; retry 1 of 3 in 35s, the provider asks for 34s" in out
+    assert "SECRET-ECHO" not in out and "::warning::" not in out  # a retry is a notice, and the message is never logged
+
+
+def test_a_retry_after_header_is_honoured_too(top_jitter):
+    http, waits = Scripted((429, b"{}", {"Retry-After": "7"}), 200), []
+    assert ai_review.chat_completion(http, _cfg(), [], waits.append) == "an answer"
+    assert waits == [8.0]
+
+
+def test_a_429_with_no_hint_backs_off_from_ten_seconds_not_two(top_jitter):
+    http, waits = Scripted((429, b"{}", {}), (429, b"{}", {}), (429, b"{}", {}), 200), []
+    assert ai_review.chat_completion(http, _cfg(), [], waits.append) == "an answer"
+    assert waits == [20.0, 30.0, 50.0]  # 10*2^(n-1) plus jitter: a quota window is a minute, so 2s and 4s could only fail
+
+
+def test_a_daily_quota_429_gets_exactly_one_retry_because_on_the_real_key_it_cleared_within_a_minute(top_jitter):
+    # Public issue trackers say a per-day 429 is futile to retry; a real run on this repo's key had them
+    # followed by successes under a minute later. So: one retry (not none, not four).
+    daily = (429, _gemini_429("34s", quota_id="GenerateRequestsPerDayPerProjectPerModel-FreeTier"), {})
+    http, waits = Scripted(daily, 200), []
+    assert ai_review.chat_completion(http, _cfg(), [], waits.append) == "an answer"  # it cleared, as it did for real
+    assert http.calls == 2 and waits == [35.0]
+    http, waits = Scripted(daily, daily), []  # genuinely exhausted: only one more attempt is wasted, then it stops
+    with pytest.raises(ai_review.ReviewError, match=r"HTTP 429 RESOURCE_EXHAUSTED \(a daily quota; after 2 attempts\)") as exc:
+        ai_review.chat_completion(http, _cfg(), [], waits.append)
+    assert http.calls == 2 and waits == [35.0]
+    assert "SECRET-ECHO" not in str(exc.value)
+
+
+def test_a_hint_longer_than_we_can_wait_gives_up_at_once_and_says_why():
+    http, waits = Scripted((429, _gemini_429("540s"), {})), []
+    with pytest.raises(ai_review.ReviewError, match=r"the provider asks for 540s, more than the 60s we wait"):
+        ai_review.chat_completion(http, _cfg(), [], waits.append)
+    assert http.calls == 1 and waits == []
+
+
+def test_the_total_wait_budget_stops_a_provider_that_keeps_asking_for_long_waits(top_jitter):
+    hinted = (429, _gemini_429("50s"), {})
+    http, waits = Scripted(hinted, hinted, hinted, 200), []
+    with pytest.raises(ai_review.ReviewError, match=r"out of wait budget; after 3 attempts"):
+        ai_review.chat_completion(http, _cfg(), [], waits.append)
+    assert waits == [51.0, 51.0] and http.calls == 3  # a third 51s wait would make 153s, past the 120s budget
+
+
+def test_a_server_error_still_uses_the_short_backoff_not_the_rate_limit_one(top_jitter):
+    http, waits = Scripted(503, 503, 200), []
+    assert ai_review.chat_completion(http, _cfg(), [], waits.append) == "an answer"
+    assert waits == [4.0, 6.0]  # 2*2^(n-1) plus jitter
+
+
+def test_urllib_http_returns_the_response_headers_on_success_and_on_an_error(monkeypatch):
+    class Response:
+        status = 200
+        headers = HTTPMessage()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b"ok"
+
+    Response.headers["X-Thing"] = "1"
+    monkeypatch.setattr(ai_review._OPENER, "open", lambda request, timeout: Response())
+    assert ai_review.urllib_http("GET", "http://x", {}, None, 1.0) == (200, b"ok", {"X-Thing": "1"})
+
+    import io
+    from urllib.error import HTTPError
+
+    hdrs = HTTPMessage()
+    hdrs["Retry-After"] = "3"
+
+    def refuse(request, timeout):
+        raise HTTPError("http://x", 429, "Too Many", hdrs, io.BytesIO(b"slow down"))
+
+    monkeypatch.setattr(ai_review._OPENER, "open", refuse)
+    assert ai_review.urllib_http("GET", "http://x", {}, None, 1.0) == (429, b"slow down", {"Retry-After": "3"})
+
+
+def test_a_reply_may_omit_headers_so_a_plain_two_tuple_still_works():
+    assert ai_review._unpack((200, b"x")) == (200, b"x", {})
+    assert ai_review._unpack((429, b"x", {"Retry-After": "1"})) == (429, b"x", {"Retry-After": "1"})
+
+
+def test_run_recovers_from_a_hinted_429_and_posts_the_review(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    http = FakeHttp()
+    original = http.__call__
+
+    # the first model call is a hinted 429; every later call behaves normally
+    calls = {"model": 0}
+
+    def with_one_429(method, url, headers, body, timeout):
+        if url.endswith("/chat/completions"):
+            calls["model"] += 1
+            if calls["model"] == 1:
+                return 429, _gemini_429("12s"), {}
+        return original(method, url, headers, body, timeout)
+
+    waits = []
+    assert ai_review.run(_run_env(), with_one_429, waits.append) == 0
+    assert calls["model"] == 2 and len(waits) == 1 and 12.0 <= waits[0] < 13.0
+    out = capsys.readouterr().out
+    assert "::warning::" not in out and "retry 1 of 3" in out
+
+
+def test_a_daily_quota_429_with_an_hours_long_hint_is_retried_once_on_our_own_short_backoff(top_jitter, capsys):
+    # The real shape: a 429 naming a per-day quota, retryDelay = hours (the reset time, counting down
+    # with the clock), while requests were still getting through. Waiting 11 hours is impossible and
+    # giving up threw reviews away, so: ignore the hint, try once after the short backoff.
+    daily = (429, _gemini_429("41609s", quota_id="GenerateRequestsPerDayPerProjectPerModel-FreeTier"), {})
+    http, waits = Scripted(daily, 200), []
+    assert ai_review.chat_completion(http, _cfg(), [], waits.append) == "an answer"
+    assert waits == [20.0] and http.calls == 2  # the unhinted 429 backoff (10s plus up to 10s of jitter), not 41,609s
+    out = capsys.readouterr().out
+    assert "retry 1 of 1 in 20s, ignoring its 41609s hint, which is a daily reset" in out
+
+
+def test_a_daily_quota_that_is_still_exhausted_after_the_one_retry_says_so_instead_of_blaming_the_hint(top_jitter):
+    daily = (429, _gemini_429("41609s", quota_id="GenerateRequestsPerDayPerProjectPerModel-FreeTier"), {})
+    http, waits = Scripted(daily, daily), []
+    with pytest.raises(ai_review.ReviewError) as exc:
+        ai_review.chat_completion(http, _cfg(), [], waits.append)
+    assert str(exc.value).endswith("HTTP 429 RESOURCE_EXHAUSTED (a daily quota; after 2 attempts)")
+    assert http.calls == 2 and waits == [20.0] and "asks for" not in str(exc.value)
+
+
+def test_a_non_daily_429_with_an_hours_long_hint_still_gives_up_at_once():
+    per_minute = (429, _gemini_429("41609s", quota_id="GenerateRequestsPerMinutePerProjectPerModel-FreeTier"), {})
+    http, waits = Scripted(per_minute), []
+    with pytest.raises(ai_review.ReviewError, match=r"the provider asks for 41609s, more than the 60s we wait"):
+        ai_review.chat_completion(http, _cfg(), [], waits.append)
+    assert http.calls == 1 and waits == []  # only a DAILY quota's hint is treated as a reset time

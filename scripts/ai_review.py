@@ -35,7 +35,6 @@ import ast
 import fnmatch
 import json
 import os
-import random
 import re
 import secrets
 import sys
@@ -50,6 +49,16 @@ from http.client import HTTPMessage
 from pathlib import Path
 from typing import IO
 
+from scripts.ai_review_retry import (
+    ATTEMPTS,
+    DAILY_QUOTA_ATTEMPTS,
+    MAX_WAIT_S,
+    RETRY_STATUSES,
+    is_daily_quota,
+    retry_hint,
+    wait_before_retry,
+)
+
 MARKER = "<!-- ai-review:advisory -->"
 # GITHUB_TOKEN comments are authored by this login. Matching on it as well as the marker means a
 # comment someone else planted with our marker is never PATCHed (it would 403 anyway) and a real
@@ -61,7 +70,15 @@ MAX_COMMENT_PAGES = 10
 USER_AGENT = "agent-core-demo-ai-review"
 
 # (method, url, headers, body, timeout seconds) -> (status, response body)
-Http = Callable[[str, str, Mapping[str, str], bytes | None, float], tuple[int, bytes]]
+# A reply is (status, body) or (status, body, headers): headers are optional so a plain two-tuple still
+# works, but a Retry-After is a header and the retry policy needs it.
+HttpReply = tuple[int, bytes] | tuple[int, bytes, Mapping[str, str]]
+Http = Callable[[str, str, Mapping[str, str], bytes | None, float], HttpReply]
+
+
+def _unpack(reply: HttpReply) -> tuple[int, bytes, Mapping[str, str]]:
+    status, raw, *rest = reply
+    return status, raw, (rest[0] if rest else {})
 
 # Extra context is the expensive, noisy part of a prompt (more context also means more for the
 # model to be distracted by), so every kind is capped small and the caps are not knobs.
@@ -69,15 +86,6 @@ _REF_CHARS = 6_000  # one reference snippet
 _REF_TOTAL_CHARS = 24_000  # all reference snippets together
 _FILE_CHARS = 40_000  # one full file; a bigger one is skipped, never cut (half a file misleads)
 _MAX_CONTEXT_FILES = 12
-
-# Model-call retries. Only statuses that mean "try again later" are retried: rate limiting and
-# transient server trouble. A 400/401/403/404 means the request, the key or the model name is
-# wrong, and sending it again would only repeat the mistake (Google's own guidance for the Gemini
-# API, which is where the first real run hit a 503). A review call changes nothing on the other
-# side, so retrying it cannot duplicate a side effect; the comment POST below is never retried.
-_RETRY_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
-_ATTEMPTS = 3
-_BACKOFF_S = 2.0  # first wait; it doubles each retry, plus up to this much jitter
 
 # A lockfile diff is thousands of tokens of nothing a reviewer can act on.
 _SKIP_NAMES = ("requirements-lock.txt", "package-lock.json")
@@ -179,14 +187,14 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
-def urllib_http(method: str, url: str, headers: Mapping[str, str], body: bytes | None, timeout: float) -> tuple[int, bytes]:
+def urllib_http(method: str, url: str, headers: Mapping[str, str], body: bytes | None, timeout: float) -> HttpReply:
     request = urllib.request.Request(url, data=body, method=method, headers={"User-Agent": USER_AGENT, **headers})
     try:
         with _OPENER.open(request, timeout=timeout) as response:
-            return response.status, response.read()
+            return response.status, response.read(), dict(response.headers.items())
     except urllib.error.HTTPError as exc:
         # A non-2xx is data for the caller to judge, not an exception.
-        return exc.code, exc.read()
+        return exc.code, exc.read(), dict(exc.headers.items())
 
 
 @dataclass(frozen=True)
@@ -486,19 +494,23 @@ def _is_timeout(exc: OSError) -> bool:
 
 
 def chat_completion(http: Http, cfg: Config, messages: list[dict[str, str]], sleep: Callable[[float], None] = time.sleep) -> str:
-    """One review from the model, retrying transient failures with exponential backoff and jitter.
+    """One review from the model, retrying transient failures (policy in `ai_review_retry`).
 
-    A TIMEOUT is not retried: a model that took `cfg.timeout` seconds will be slow again, and three
-    of those would outlast the job's own `timeout-minutes` and turn an advisory step red.
+    A provider's own wait hint beats our guess, a 429 on a DAILY quota is retried once, and
+    the waits are capped (one at 60s, all together at 120s) so a step never outlasts the job.
+    A TIMEOUT is not retried: a model that took `cfg.timeout` seconds will be slow again, and
+    several of those would outlast the job's own `timeout-minutes` and turn an advisory step red.
     """
     url = cfg.base_url if cfg.base_url.endswith("/chat/completions") else cfg.base_url + "/chat/completions"
     headers = {"Content-Type": "application/json"}
     if cfg.api_key:
         headers["Authorization"] = f"Bearer {cfg.api_key}"
     body = json.dumps({"model": cfg.model, "messages": messages}).encode()
-    for attempt in range(1, _ATTEMPTS + 1):
+    waited = 0.0
+    for attempt in range(1, ATTEMPTS + 1):
+        reply_headers: Mapping[str, str] = {}
         try:
-            status, raw = http("POST", url, headers, body, cfg.timeout)
+            status, raw, reply_headers = _unpack(http("POST", url, headers, body, cfg.timeout))
             problem = f"HTTP {status} {_error_status(raw)}".strip()
         except OSError as exc:
             if _is_timeout(exc):
@@ -506,10 +518,29 @@ def chat_completion(http: Http, cfg: Config, messages: list[dict[str, str]], sle
             status, raw, problem = 0, b"", f"a connection error ({type(exc).__name__})"  # 0 = never got an answer
         if status == 200:
             break
-        if attempt == _ATTEMPTS or (status and status not in _RETRY_STATUSES):
-            tried = f" (after {attempt} attempts)" if attempt > 1 else ""
-            raise ReviewError(f"the model endpoint returned {problem}{tried}")
-        sleep(_BACKOFF_S * 2 ** (attempt - 1) + random.uniform(0, _BACKOFF_S))
+        tried = f"after {attempt} attempts" if attempt > 1 else ""
+        # A 429 that names a DAILY quota gets one retry, not the full set: if it really is exhausted for
+        # the day more attempts only waste the step, but on this repo's real key such errors cleared
+        # within a minute (a rolling window), so giving up at once would have thrown reviews away.
+        daily = status == 429 and is_daily_quota(raw)
+        if attempt >= (DAILY_QUOTA_ATTEMPTS if daily else ATTEMPTS) or (status and status not in RETRY_STATUSES):
+            note = "; ".join(part for part in ("a daily quota" if daily else "", tried) if part)
+            raise ReviewError(f"the model endpoint returned {problem}{f' ({note})' if note else ''}")
+        hint = retry_hint(reply_headers, raw)
+        limit = DAILY_QUOTA_ATTEMPTS if daily else ATTEMPTS
+        if daily and hint is not None and hint > MAX_WAIT_S:
+            # For a daily quota the hint is the quota's RESET TIME ("retry in 11.5 hours"), not a wait; on the
+            # real key requests got through meanwhile, so try once on our own short backoff instead.
+            said, hint = f", ignoring its {hint:.0f}s hint, which is a daily reset", None
+        else:
+            said = f", the provider asks for {hint:.0f}s" if hint is not None else ""
+        wait = wait_before_retry(attempt, status, hint, waited)
+        if wait is None:
+            reason = f"the provider asks for {hint:.0f}s, more than the {MAX_WAIT_S:.0f}s we wait" if hint is not None and hint > MAX_WAIT_S else "out of wait budget"
+            raise ReviewError(f"the model endpoint returned {problem} ({'; '.join(part for part in (reason, tried) if part)})")
+        print(f"::notice::AI review: {problem}; retry {attempt} of {limit - 1} in {wait:.0f}s{said}")
+        sleep(wait)
+        waited += wait
     try:
         content = json.loads(raw)["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError, ValueError) as exc:
@@ -625,7 +656,7 @@ class GitHub:
         if body is not None:
             headers["Content-Type"] = "application/json"
             payload = json.dumps(body).encode()
-        status, raw = self.http(method, f"{self.cfg.api_url}/repos/{self.cfg.repo}{path}", headers, payload, 60.0)
+        status, raw, _ = _unpack(self.http(method, f"{self.cfg.api_url}/repos/{self.cfg.repo}{path}", headers, payload, 60.0))
         if not 200 <= status < 300:
             raise ReviewError(f"GitHub {method} {path.split('?')[0]} returned HTTP {status}")
         return raw
