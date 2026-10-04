@@ -40,6 +40,7 @@ NESTED subagent turn -> the parent's synthesis of that result), not just
 the one/two RESPONSE_TIMEOUT_MS already budgets for.
 """
 import re
+import time
 
 import pytest
 
@@ -70,9 +71,37 @@ RESPONSE_TIMEOUT_MS = 210_000
 MULTI_STEP_RESPONSE_TIMEOUT_MS = 600_000
 
 
+# How long the page may take, once the turn has ended, to put the final text on screen. The turn's own
+# length is what RESPONSE_TIMEOUT_MS / MULTI_STEP_RESPONSE_TIMEOUT_MS budget; this is only the render lag.
+SETTLE_MS = 10_000
+
+# The page's own two ways of saying "this turn is over": `finishTurn()` re-enables Send (done or error), and a
+# pause for approval renders the Approve/Reject box (app/api/static/index.html: `send()` disables Send
+# synchronously, so right after a click "enabled" really means "finished", not "not started yet").
+_TURN_IS_OVER = "() => !document.getElementById('send').disabled || document.querySelector('.approval') !== null"
+
+
 def _send(page: Page, text: str) -> None:
     page.fill("#input", text)
     page.click("#send")
+
+
+def _answer_of_the_finished_turn(page: Page, timeout_ms: int = RESPONSE_TIMEOUT_MS):
+    """The assistant's answer locator, returned the moment the turn has ENDED, not after a fixed wait.
+
+    Asserting `to_contain_text(..., timeout=<the whole turn budget>)` on a live locator keeps polling for
+    that whole budget even after the agent has stopped for good, so a turn that goes wrong costs the full
+    timeout and says nothing about why. Real instance (a CI run of this suite, 2026-10-04): the model hit
+    `human_approval` and paused at 13:41:40, nobody could answer, and `test_a_skill_is_found_and_followed`
+    went on waiting for "17" until its 600 s limit expired at 13:52:49 (~11 minutes, about half of the
+    whole `test-live` job). Waiting for the turn to END first makes that fail in the time the turn took,
+    and a pause is reported as what it is, with the tool the agent was waiting to run.
+    """
+    page.wait_for_function(_TURN_IS_OVER, timeout=timeout_ms, polling=500)
+    paused = page.locator(".approval .approval-question")
+    if paused.count():
+        pytest.fail(f"the turn paused for approval instead of answering: {paused.first.inner_text()}")
+    return page.locator(".msg.assistant .answer-text").last
 
 
 def test_sending_a_message_streams_a_real_answer_via_the_calculator_tool(page: Page, real_stack: str):
@@ -81,8 +110,8 @@ def test_sending_a_message_streams_a_real_answer_via_the_calculator_tool(page: P
 
     _send(page, "what is 21 * 2? Use the calculator tool.")
 
-    answer = page.locator(".msg.assistant .answer-text").last
-    expect(answer).to_contain_text("42", timeout=RESPONSE_TIMEOUT_MS)
+    answer = _answer_of_the_finished_turn(page)
+    expect(answer).to_contain_text("42", timeout=SETTLE_MS)
 
 
 def test_a_mutating_tool_call_pauses_for_approval_and_resumes_on_approve(
@@ -112,8 +141,12 @@ def test_a_mutating_tool_call_pauses_for_approval_and_resumes_on_approve(
 
     _send(page, "Remember that I prefer dark roast coffee. Use the remember tool.")
 
+    # The turn is over once it has paused (the Approve box is up) or ended without ever pausing. Only the
+    # second is a failure, and waiting RESPONSE_TIMEOUT_MS for a button that can no longer appear is the
+    # dead wait `_answer_of_the_finished_turn` exists to avoid.
+    page.wait_for_function(_TURN_IS_OVER, timeout=RESPONSE_TIMEOUT_MS, polling=500)
     approve_button = page.get_by_role("button", name="Approve")
-    expect(approve_button).to_be_visible(timeout=RESPONSE_TIMEOUT_MS)
+    expect(approve_button).to_be_visible(timeout=SETTLE_MS)
     approve_button.click()
 
     answer = page.locator(".msg.assistant .answer-text").last
@@ -142,8 +175,8 @@ def test_a_read_only_tool_call_returns_real_data(page: Page, real_stack: str):
 
     _send(page, "Who is Ecorp's Support Lead? Use the query_employees tool.")
 
-    answer = page.locator(".msg.assistant .answer-text").last
-    expect(answer).to_contain_text("Dana Whitfield", timeout=RESPONSE_TIMEOUT_MS)
+    answer = _answer_of_the_finished_turn(page)
+    expect(answer).to_contain_text("Dana Whitfield", timeout=SETTLE_MS)
 
 
 def test_a_grounded_answer_shows_a_real_citation(page: Page, real_stack_with_retrieval: str):
@@ -159,12 +192,12 @@ def test_a_grounded_answer_shows_a_real_citation(page: Page, real_stack_with_ret
 
     _send(page, "What are Ecorp's support hours? Use the search_docs tool.")
 
-    answer = page.locator(".msg.assistant .answer-text").last
+    answer = _answer_of_the_finished_turn(page)
     # A regex, not a literal "9am": real bug, caught live — the model's
     # OWN phrasing genuinely varies run to run ("9am" vs "9 AM" vs
     # "9:00 AM"), all equally correct answers a literal, case-sensitive
     # substring check would wrongly fail.
-    expect(answer).to_contain_text(re.compile(r"9\s*am", re.IGNORECASE), timeout=RESPONSE_TIMEOUT_MS)
+    expect(answer).to_contain_text(re.compile(r"9\s*am", re.IGNORECASE), timeout=SETTLE_MS)
     citation = page.locator(".citations .citation-item").first
     expect(citation).to_be_visible()
     expect(citation).to_contain_text("Support Hours")
@@ -189,8 +222,8 @@ def test_a_skill_is_found_and_followed(page: Page, real_stack_with_retrieval: st
         "expenses, then follow it.",
     )
 
-    answer = page.locator(".msg.assistant .answer-text").last
-    expect(answer).to_contain_text("17", timeout=MULTI_STEP_RESPONSE_TIMEOUT_MS)
+    answer = _answer_of_the_finished_turn(page, MULTI_STEP_RESPONSE_TIMEOUT_MS)
+    expect(answer).to_contain_text("17", timeout=SETTLE_MS)
 
 
 def test_a_subagent_delegates_and_returns_a_real_answer(page: Page, real_stack_with_retrieval: str):
@@ -222,5 +255,53 @@ def test_a_subagent_delegates_and_returns_a_real_answer(page: Page, real_stack_w
         "the query_employees tool and filter by the Support department.",
     )
 
-    answer = page.locator(".msg.assistant .answer-text").last
-    expect(answer).to_contain_text("Dana Whitfield", timeout=MULTI_STEP_RESPONSE_TIMEOUT_MS)
+    answer = _answer_of_the_finished_turn(page, MULTI_STEP_RESPONSE_TIMEOUT_MS)
+    expect(answer).to_contain_text("Dana Whitfield", timeout=SETTLE_MS)
+
+
+# --- the waiting helper itself: a browser, but no stack and no model --------------------------------
+# Each test builds the three states the real page can be in with `set_content`, so the helper's
+# polarity and its failure message are checked directly. Without these, a helper that returned
+# immediately (or never) would only show up as a mysteriously fast or slow live test.
+
+# Two assistant bubbles, as on a real page that has already had one turn: the answer to this turn is the LAST.
+_PAGE = """
+<button id="send" disabled>Send</button>
+<div class="msg assistant"><span class="answer-text">the previous turn's answer</span></div>
+<div class="msg assistant"><span class="answer-text">the answer</span></div>
+"""
+_SOON_MS = 300  # the simulated turn ends this long after the helper starts waiting
+
+
+def test_the_helper_returns_as_soon_as_the_page_re_enables_send(page: Page):
+    page.set_content(_PAGE)
+    page.evaluate(f"setTimeout(() => document.getElementById('send').disabled = false, {_SOON_MS})")
+
+    started = time.monotonic()
+    answer = _answer_of_the_finished_turn(page, timeout_ms=30_000)
+
+    assert time.monotonic() - started < 5  # it did not sit out the 30 s budget
+    expect(answer).to_have_text("the answer")
+
+
+def test_the_helper_reports_a_pause_for_approval_by_tool_name_instead_of_waiting_for_text(page: Page):
+    page.set_content(_PAGE)  # Send stays disabled: a paused turn never re-enables it
+    page.evaluate(
+        f"""setTimeout(() => {{
+            const box = document.createElement('div');
+            box.className = 'approval';
+            box.innerHTML = '<div class="approval-question">⏸ Approve this action? remember({{"text": "dark roast"}})</div>';
+            document.body.appendChild(box);
+        }}, {_SOON_MS})"""
+    )
+
+    started = time.monotonic()
+    with pytest.raises(pytest.fail.Exception, match=r"paused for approval instead of answering: .*remember\("):
+        _answer_of_the_finished_turn(page, timeout_ms=30_000)
+    assert time.monotonic() - started < 5
+
+
+def test_the_helper_keeps_waiting_while_the_turn_is_still_running(page: Page):
+    page.set_content(_PAGE)  # Send disabled and no approval box: the turn is mid-flight
+    with pytest.raises(playwright_sync_api.TimeoutError, match="Timeout 1500ms exceeded"):  # the budget it was GIVEN
+        _answer_of_the_finished_turn(page, timeout_ms=1_500)
