@@ -810,6 +810,13 @@ behaves exactly as before.
 | `AI_REVIEW_FALLBACK1_API_KEY` (secret) | optional; see the key rule below |
 | `AI_REVIEW_FALLBACK2_*` | the same three, for a third provider |
 
+- **A sensible chain for Google AI Studio's free tier:** `gemini-3.5-flash` (primary) -> `gemini-3.5-flash-lite` (slot 1) ->
+  `gemini-3.1-flash-lite` (slot 2). Each has its **own per-model daily quota** (the 429 names
+  `GenerateRequestsPerDayPerProjectPerModel`), the two lite models are cheap and stable, and the newest Flash generation
+  (3.6 to 3.8) has had capacity trouble (503s), so it makes a poor fallback. Note `gemini-3.1-flash-lite` is also the judge model
+  this repo's `deepeval` and redteam CI use: if the reviewer's key is in the same Google project as `GOOGLE_API_KEY`, the two share
+  that model's quota. Slot 2 is only reached after two failures, so the reviewer won't starve CI, but CI can have spent it first.
+  Same-provider fallbacks cannot help with a project-wide problem (a revoked key, billing, an outage): only another provider can.
 - **A provider's key is never sent to another provider's host.** A fallback uses its own key if it has one; otherwise
   it inherits the primary's key *only if its base URL is the same*. A fallback on a different host with no key of its
   own sends none (right for a keyless endpoint; a 401 otherwise, which the log shows).
