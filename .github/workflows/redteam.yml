@@ -61,7 +61,9 @@ jobs:
       # job (a `docker run` step, not GH Actions' `services:` block — see
       # that job's own comment for why: service containers start before
       # any step runs, which would make the cache restore below powerless).
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # restore only: the save is a later step (see .github/actions/save-ollama-cache).
+      - id: ollama-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/agent-core-demo-ollama-models
           key: ollama-models-${{ runner.os }}-${{ env.PROMPTFOO_MODEL }}
@@ -82,6 +84,13 @@ jobs:
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           PROMPTFOO_MODEL: qwen2.5:3b
+      # Not actions/cache's own post-job save: that one cannot read the root-owned files the Ollama
+      # container wrote (tar exit 2, so it has never saved) and is skipped when the job is red. See the action.
+      - if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-ollama-cache
+        with:
+          key: ${{ steps.ollama-cache.outputs.cache-primary-key }}
+          cache-hit: ${{ steps.ollama-cache.outputs.cache-hit }}
       - name: Upload redteam results (generated+graded test suites, read by hand)
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

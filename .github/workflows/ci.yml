@@ -176,10 +176,15 @@ jobs:
       # testcontainers, see above), but this job still needs a real browser
       # itself.
       - run: playwright install --with-deps chromium
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # restore only: the save is the last step of this job (see .github/actions/save-ollama-cache).
+      # The key names BOTH models `ensure_ollama` pulls (the chat model, and nomic-embed-text, its
+      # default `embed_model`), because test-live and deepeval share one cache and must not be
+      # handed a directory that has only one of them. Change the key if that default changes.
+      - id: ollama-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/agent-core-demo-ollama-models
-          key: ollama-models-${{ runner.os }}-${{ env.TEST_LLM_MODEL }}
+          key: ollama-models-${{ runner.os }}-${{ env.TEST_LLM_MODEL }}-nomic-embed-text
         env:
           TEST_LLM_MODEL: qwen2.5:3b
       # TWO separate pytest invocations, not one combined
@@ -229,6 +234,13 @@ jobs:
       - run: pytest -m e2e -q
         env:
           TEST_LLM_MODEL: qwen2.5:3b
+      # Not actions/cache's own post-job save: that one cannot read the root-owned files the Ollama
+      # container wrote (tar exit 2, so it has never saved) and is skipped when the job is red. See the action.
+      - if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-ollama-cache
+        with:
+          key: ${{ steps.ollama-cache.outputs.cache-primary-key }}
+          cache-hit: ${{ steps.ollama-cache.outputs.cache-hit }}
 
   promptfoo:
     # Black-box prompt regression against the real domain system prompts —
@@ -253,7 +265,9 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # restore only: the save is the last step of this job (see .github/actions/save-ollama-cache).
+      - id: ollama-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/agent-core-demo-ollama-models
           key: ollama-models-${{ runner.os }}-${{ env.PROMPTFOO_MODEL }}
@@ -311,6 +325,13 @@ jobs:
           done
         env:
           PROMPTFOO_MODEL: qwen2.5:1.5b
+      # Not actions/cache's own post-job save: that one cannot read the root-owned files the Ollama
+      # container wrote (tar exit 2, so it has never saved) and is skipped when the job is red. See the action.
+      - if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-ollama-cache
+        with:
+          key: ${{ steps.ollama-cache.outputs.cache-primary-key }}
+          cache-hit: ${{ steps.ollama-cache.outputs.cache-hit }}
 
   deepeval:
     # LLM-judged RAG quality + multi-turn conversation simulation + tool-
@@ -454,10 +475,15 @@ jobs:
       # with no downgrade needed).
       - run: pip install --no-deps google-genai==2.24.0
       - run: pip install google-auth==2.58.0
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # restore only: the save is the last step of this job (see .github/actions/save-ollama-cache).
+      # The key names BOTH models `ensure_ollama` pulls (the chat model, and nomic-embed-text, its
+      # default `embed_model`), because test-live and deepeval share one cache and must not be
+      # handed a directory that has only one of them. Change the key if that default changes.
+      - id: ollama-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/agent-core-demo-ollama-models
-          key: ollama-models-${{ runner.os }}-${{ env.DEEPEVAL_MODEL }}
+          key: ollama-models-${{ runner.os }}-${{ env.DEEPEVAL_MODEL }}-nomic-embed-text
         env:
           DEEPEVAL_MODEL: qwen2.5:3b
       # test_tool_correctness_deepeval.py::test_fetch_external_reference_tool_call_is_correct_and_well_argued
@@ -568,6 +594,13 @@ jobs:
           # (no repo secret configured) is a no-op: both judge fixtures fall
           # back to their pre-existing GOOGLE_API_KEY/GROQ_API_KEY-only behavior.
           PLUGSKY_API_KEY: ${{ secrets.PLUGSKY_API_KEY }}
+      # Not actions/cache's own post-job save: that one cannot read the root-owned files the Ollama
+      # container wrote (tar exit 2, so it has never saved) and is skipped when the job is red. See the action.
+      - if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-ollama-cache
+        with:
+          key: ${{ steps.ollama-cache.outputs.cache-primary-key }}
+          cache-hit: ${{ steps.ollama-cache.outputs.cache-hit }}
       - name: Upload deepeval results (score/reason fields, read by hand — same posture as redteam.yml's own artifact)
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

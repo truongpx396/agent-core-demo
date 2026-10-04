@@ -1,0 +1,61 @@
+name: Save the Ollama model cache
+description: >
+  Saves ~/.cache/agent-core-demo-ollama-models, the directory the CI jobs bind-mount into their
+  Ollama container, so the next run restores the models instead of downloading them again.
+
+# Why this exists instead of actions/cache's own post-job save. Two real failures, both read out
+# of CI logs, both meaning the model cache had NEVER been saved by any run of any job:
+#
+#   1. The Ollama container runs as root, so everything it writes into the bind mount is root-owned
+#      (id_ed25519 is 0600, the model metadata and model-recommendations.json too). The save runs
+#      as the `runner` user, and tar exits 2 with "Cannot open: Permission denied":
+#          ##[warning]Failed to save: "/usr/bin/tar" failed with error: ... exit code 2
+#      Every green run logged that warning, then re-downloaded about 2 GB the next time.
+#   2. actions/cache saves in a post step that is skipped when the job failed, and test-live has
+#      been failing for days. So even with (1) fixed, a red job would still never fill the cache.
+#
+# So the jobs restore with actions/cache/restore and call this action as a last step with
+# `if: ${{ !cancelled() }}`. The models are fully downloaded as soon as the first test starts (the
+# fixture pulls them before yielding), so a job whose tests failed still has a good cache to save.
+#
+# Used with the same `key` the matching restore step resolved, via its `cache-primary-key` output.
+
+inputs:
+  key:
+    description: The key the restore step resolved (its `cache-primary-key` output).
+    required: true
+  cache-hit:
+    description: >
+      The restore step's `cache-hit` output. An exact hit means this key is already saved (keys are
+      immutable), so there is nothing to do.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - id: ready
+      if: inputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        dir="$HOME/.cache/agent-core-demo-ollama-models"
+        if [ ! -d "$dir/models/manifests" ]; then
+          echo "::notice::No Ollama model was pulled (the job stopped before it), so there is nothing to cache"
+          echo "save=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        # An interrupted pull leaves *-partial* blobs. Saving that would pin a broken cache under
+        # this key for as long as it is used (a cache key is immutable), so skip it and let the
+        # next run try again.
+        if find "$dir" -name '*-partial*' | grep -q .; then
+          echo "::notice::An Ollama download was interrupted; not caching a partial model"
+          echo "save=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        # The container wrote these as root; tar runs as us and must be able to read them.
+        sudo chown -R "$(id -u):$(id -g)" "$dir"
+        echo "save=true" >> "$GITHUB_OUTPUT"
+    - if: steps.ready.outputs.save == 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/agent-core-demo-ollama-models
+        key: ${{ inputs.key }}
