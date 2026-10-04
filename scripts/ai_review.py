@@ -18,7 +18,9 @@ Stdlib only also means the job installs nothing, not even this repo's requiremen
 Design points that are NOT obvious from the code:
 - ADVISORY, always. Every failure path prints a `::warning::` and exits 0. A flaky provider must
   never turn a PR red, and a review that can block a merge would need a quality bar an LLM
-  reviewer doesn't have (README, "AI review").
+  reviewer doesn't have (README, "AI review"). Transient model errors (429/5xx, a dropped
+  connection) are retried twice with exponential backoff; a timeout or a 4xx is not, and a
+  skipped review names the provider's short error code (never its message) in the log.
 - The diff is untrusted DATA. It is fetched from the API (the PR's code is never checked out or
   executed), wrapped in a per-run random boundary the author cannot predict (a fixed
   `</diff>` could be forged inside the diff), and the model is given no tools. The worst a
@@ -31,9 +33,11 @@ Design points that are NOT obvious from the code:
 """
 import json
 import os
+import random
 import re
 import secrets
 import sys
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -53,6 +57,15 @@ USER_AGENT = "agent-core-demo-ai-review"
 
 # (method, url, headers, body, timeout seconds) -> (status, response body)
 Http = Callable[[str, str, Mapping[str, str], bytes | None, float], tuple[int, bytes]]
+
+# Model-call retries. Only statuses that mean "try again later" are retried: rate limiting and
+# transient server trouble. A 400/401/403/404 means the request, the key or the model name is
+# wrong, and sending it again would only repeat the mistake (Google's own guidance for the Gemini
+# API, which is where the first real run hit a 503). A review call changes nothing on the other
+# side, so retrying it cannot duplicate a side effect; the comment POST below is never retried.
+_RETRY_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+_ATTEMPTS = 3
+_BACKOFF_S = 2.0  # first wait; it doubles each retry, plus up to this much jitter
 
 # A lockfile diff is thousands of tokens of nothing a reviewer can act on.
 _SKIP_NAMES = ("requirements-lock.txt", "package-lock.json")
@@ -225,15 +238,59 @@ def defang_mentions(text: str) -> str:
     return "".join(parts)
 
 
-def chat_completion(http: Http, cfg: Config, messages: list[dict[str, str]]) -> str:
+def _error_status(raw: bytes) -> str:
+    """The provider's short error code ("UNAVAILABLE", "model_not_found"), or "".
+
+    Without it a skipped review says only "HTTP 503", which cannot tell an overloaded model from a
+    wrong model name. The error MESSAGE is never logged (this repo's Actions logs are public and a
+    provider may echo request text back in it), and the code is only let through if it is a short
+    run of letters, digits and `_-.`: that excludes newlines and colons, so a hostile or broken
+    endpoint cannot smuggle a `::error::` workflow command into the log.
+    """
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return ""
+    if isinstance(data, list) and data:  # Google wraps some errors in a one-element list
+        data = data[0]
+    error = data.get("error") if isinstance(data, dict) else None
+    if isinstance(error, dict):
+        for key in ("status", "code", "type"):
+            value = error.get(key)
+            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", value):
+                return value
+    return ""
+
+
+def _is_timeout(exc: OSError) -> bool:
+    return isinstance(exc, TimeoutError) or (isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError))
+
+
+def chat_completion(http: Http, cfg: Config, messages: list[dict[str, str]], sleep: Callable[[float], None] = time.sleep) -> str:
+    """One review from the model, retrying transient failures with exponential backoff and jitter.
+
+    A TIMEOUT is not retried: a model that took `cfg.timeout` seconds will be slow again, and three
+    of those would outlast the job's own `timeout-minutes` and turn an advisory step red.
+    """
     url = cfg.base_url if cfg.base_url.endswith("/chat/completions") else cfg.base_url + "/chat/completions"
     headers = {"Content-Type": "application/json"}
     if cfg.api_key:
         headers["Authorization"] = f"Bearer {cfg.api_key}"
     body = json.dumps({"model": cfg.model, "messages": messages}).encode()
-    status, raw = http("POST", url, headers, body, cfg.timeout)
-    if status != 200:
-        raise ReviewError(f"the model endpoint returned HTTP {status}")
+    for attempt in range(1, _ATTEMPTS + 1):
+        try:
+            status, raw = http("POST", url, headers, body, cfg.timeout)
+            problem = f"HTTP {status} {_error_status(raw)}".strip()
+        except OSError as exc:
+            if _is_timeout(exc):
+                raise ReviewError("the model endpoint timed out") from exc
+            status, raw, problem = 0, b"", f"a connection error ({type(exc).__name__})"  # 0 = never got an answer
+        if status == 200:
+            break
+        if attempt == _ATTEMPTS or (status and status not in _RETRY_STATUSES):
+            tried = f" (after {attempt} attempts)" if attempt > 1 else ""
+            raise ReviewError(f"the model endpoint returned {problem}{tried}")
+        sleep(_BACKOFF_S * 2 ** (attempt - 1) + random.uniform(0, _BACKOFF_S))
     try:
         content = json.loads(raw)["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError, ValueError) as exc:
@@ -301,7 +358,7 @@ class GitHub:
         self._call("POST", f"/issues/{number}/comments", "application/vnd.github+json", {"body": body})
 
 
-def run(env: Mapping[str, str], http: Http = urllib_http) -> int:
+def run(env: Mapping[str, str], http: Http = urllib_http, sleep: Callable[[float], None] = time.sleep) -> int:
     try:
         cfg = Config.from_env(env)
         github = GitHub(http, cfg)
@@ -314,7 +371,7 @@ def run(env: Mapping[str, str], http: Http = urllib_http) -> int:
                 rules = fh.read()
         except OSError:
             rules = ""  # Reviewing without repo rules still beats not reviewing.
-        answer = chat_completion(http, cfg, build_messages(rules, github.title(), selection))
+        answer = chat_completion(http, cfg, build_messages(rules, github.title(), selection), sleep)
         comment = format_comment(answer, cfg, selection)
         if cfg.dry_run:
             print(comment)

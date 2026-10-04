@@ -8,6 +8,7 @@ they cannot prove: that a given provider accepts the request or that its review 
 """
 import json
 from http.client import HTTPMessage
+from urllib.error import URLError
 from urllib.request import Request
 
 import pytest
@@ -36,10 +37,16 @@ def _cfg(**overrides) -> ai_review.Config:
     return ai_review.Config.from_env(env)
 
 
+def _run_env(**overrides) -> dict[str, str]:
+    return {"AI_REVIEW_BASE_URL": BASE, "AI_REVIEW_MODEL": "m", "GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r",
+            "PR_NUMBER": "7", "GITHUB_API_URL": GH, **overrides}
+
+
 class FakeHttp:
-    def __init__(self, *, diff=FILE_A, comments=(), model_status=200, model_body=None, raises=None):
+    def __init__(self, *, diff=FILE_A, comments=(), model_status=200, model_body=None, raises=None, model_statuses=()):
         self.diff, self.comments, self.raises = diff, list(comments), raises
         self.model_status = model_status
+        self.model_statuses = list(model_statuses)  # consumed one per model call before falling back to model_status
         self.model_body = model_body if model_body is not None else {"choices": [{"message": {"content": "**[CONCERN]** `app/a.py:1` - bad"}}]}
         self.calls: list[tuple[str, str, dict, bytes | None]] = []
 
@@ -48,7 +55,8 @@ class FakeHttp:
         if self.raises:
             raise self.raises
         if url.endswith("/chat/completions"):
-            return self.model_status, json.dumps(self.model_body).encode()
+            status = self.model_statuses.pop(0) if self.model_statuses else self.model_status
+            return status, json.dumps(self.model_body).encode()
         if method == "GET" and "/comments" in url:
             return 200, json.dumps(self.comments).encode()
         if method == "GET":
@@ -132,7 +140,112 @@ def test_chat_completion_sends_a_bearer_key_and_does_not_double_the_path():
 )
 def test_chat_completion_raises_instead_of_posting_junk(status, body):
     with pytest.raises(ai_review.ReviewError):
-        ai_review.chat_completion(FakeHttp(model_status=status, model_body=body), _cfg(), [])
+        ai_review.chat_completion(FakeHttp(model_status=status, model_body=body), _cfg(), [], _no_sleep)
+
+
+def _no_sleep(seconds):
+    pass
+
+
+class Scripted:
+    """Answers the model endpoint from a fixed list: an int is a status, an exception is raised."""
+
+    def __init__(self, *outcomes, body=None):
+        self.outcomes, self.calls, self.bodies = list(outcomes), 0, []
+        self.body = body if body is not None else {"choices": [{"message": {"content": "an answer"}}]}
+
+    def __call__(self, method, url, headers, body, timeout):
+        self.calls += 1
+        self.bodies.append(body)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome, json.dumps(self.body if outcome == 200 else {}).encode()
+
+
+def test_chat_completion_retries_a_transient_503_with_growing_jittered_waits_then_succeeds():
+    http, waits = Scripted(503, 503, 200), []
+    assert ai_review.chat_completion(http, _cfg(), [], waits.append) == "an answer"
+    assert http.calls == 3 and len(set(http.bodies)) == 1  # the same request each time
+    assert 2.0 <= waits[0] < 4.0 and 4.0 <= waits[1] < 6.0  # base*2^n plus up to one base of jitter
+
+
+def test_chat_completion_adds_jitter_so_simultaneous_runs_do_not_retry_in_lockstep(monkeypatch):
+    draws = []
+    monkeypatch.setattr(ai_review.random, "uniform", lambda low, high: draws.append((low, high)) or high)
+    waits = []
+    ai_review.chat_completion(Scripted(503, 503, 200), _cfg(), [], waits.append)
+    assert draws == [(0, ai_review._BACKOFF_S)] * 2
+    assert waits == [2.0 + 2.0, 4.0 + 2.0]  # base * 2^n, plus the (maximal) jitter draw
+
+
+@pytest.mark.parametrize("status", [408, 429, 500, 502, 503, 504])
+def test_chat_completion_retries_every_transient_status(status):
+    http = Scripted(status, 200)
+    assert ai_review.chat_completion(http, _cfg(), [], _no_sleep) == "an answer"
+    assert http.calls == 2
+
+
+def test_chat_completion_gives_up_after_three_attempts_and_says_so():
+    http, waits = Scripted(503, 503, 503), []
+    with pytest.raises(ai_review.ReviewError, match=r"HTTP 503 \(after 3 attempts\)"):
+        ai_review.chat_completion(http, _cfg(), [], waits.append)
+    assert http.calls == 3 and len(waits) == 2  # no pointless wait after the last attempt
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404])
+def test_chat_completion_never_retries_a_client_error(status):
+    http, waits = Scripted(status), []
+    with pytest.raises(ai_review.ReviewError, match=f"HTTP {status}$"):
+        ai_review.chat_completion(http, _cfg(), [], waits.append)
+    assert http.calls == 1 and waits == []  # a wrong key or model name would only fail again
+
+
+def test_chat_completion_retries_a_dropped_connection_without_logging_its_message():
+    http = Scripted(ConnectionResetError("https://secret.example/?k=1"), 200)
+    assert ai_review.chat_completion(http, _cfg(), [], _no_sleep) == "an answer"
+    persistent = Scripted(*[ConnectionResetError("https://secret.example/?k=1")] * 3)
+    with pytest.raises(ai_review.ReviewError) as exc:
+        ai_review.chat_completion(persistent, _cfg(), [], _no_sleep)
+    assert "ConnectionResetError" in str(exc.value) and "secret.example" not in str(exc.value)
+
+
+@pytest.mark.parametrize("timeout", [TimeoutError("slow"), URLError(TimeoutError("slow"))])
+def test_chat_completion_does_not_retry_a_timeout_because_three_would_outlast_the_job(timeout):
+    http = Scripted(timeout, 200)
+    with pytest.raises(ai_review.ReviewError, match="timed out"):
+        ai_review.chat_completion(http, _cfg(), [], _no_sleep)
+    assert http.calls == 1
+
+
+def test_a_skipped_review_names_the_providers_error_code_but_never_its_message(capsys):
+    gemini_503 = [{"error": {"code": 503, "message": "SECRET-ECHO overloaded", "status": "UNAVAILABLE"}}]
+    http = FakeHttp(model_status=503, model_body=gemini_503)
+    assert ai_review.run(_run_env(), http, _no_sleep) == 0
+    out = capsys.readouterr().out
+    assert "returned HTTP 503 UNAVAILABLE (after 3 attempts)" in out and "SECRET-ECHO" not in out
+
+
+@pytest.mark.parametrize(
+    "body, expected",
+    [
+        ({"error": {"code": "model_not_found", "type": "invalid_request_error", "message": "x"}}, "model_not_found"),
+        ({"error": {"type": "rate_limit_error"}}, "rate_limit_error"),
+        ({"error": {"status": "UNAVAILABLE\n::error::boom"}}, ""),  # a newline or `::` could inject a workflow command
+        ({"error": {"status": "A" * 41}}, ""),
+        ({"error": "plain string"}, ""),
+        ([], ""),
+    ],
+)
+def test_error_status_lets_only_a_short_safe_token_through(body, expected):
+    assert ai_review._error_status(json.dumps(body).encode()) == expected
+    assert ai_review._error_status(b"<html>502 Bad Gateway</html>") == ""
+
+
+def test_run_posts_the_review_when_the_model_recovers_after_a_503(capsys):
+    http = FakeHttp(model_statuses=[503, 200])
+    assert ai_review.run(_run_env(), http, _no_sleep) == 0
+    assert len(http.writes()) == 1 and "::warning::" not in capsys.readouterr().out
 
 
 def test_format_comment_truncates_under_githubs_limit_and_lists_what_was_not_reviewed():
@@ -180,7 +293,7 @@ def test_run_exits_zero_and_posts_nothing_when_the_model_fails_without_logging_s
     http = FakeHttp(model_status=503)
     env = {"AI_REVIEW_BASE_URL": BASE, "AI_REVIEW_MODEL": "m", "AI_REVIEW_API_KEY": "sk-LEAK-ME", "GITHUB_TOKEN": "gh-LEAK-ME",
            "GITHUB_REPOSITORY": "o/r", "PR_NUMBER": "7", "GITHUB_API_URL": GH}
-    assert ai_review.run(env, http) == 0
+    assert ai_review.run(env, http, _no_sleep) == 0
     out = capsys.readouterr().out
     assert "::warning::AI review skipped: the model endpoint returned HTTP 503" in out
     assert "LEAK-ME" not in out and "x = 2" not in out
