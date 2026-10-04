@@ -15,6 +15,15 @@ name: AI review (advisory)
 #              AI_REVIEW_INLINE   (optional, default on; 0 = one summary comment, no inline threads)
 #              AI_REVIEW_MAX_FILE_CHARS    (optional, default 40000; the most one file may add to that budget)
 #   Secret:    AI_REVIEW_API_KEY   optional if the endpoint needs no key
+#   Fallbacks (all optional), tried in this order when the one before has failed for good. They are grouped by
+#   PROVIDER, since that is what differs: a model is a name, a provider is a host plus a key. See the README,
+#   "Fallback providers", for worked examples.
+#   Variable:  AI_REVIEW_FALLBACK_MODELS             comma list: other models on the PRIMARY's provider (same host and key)
+#   Variable:  AI_REVIEW_FALLBACK_PROVIDER1_MODELS   comma list: models on ANOTHER provider; empty = the group is off
+#   Variable:  AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL that provider's host; unset = the primary's (another account)
+#   Secret:    AI_REVIEW_FALLBACK_PROVIDER1_API_KEY  that provider's key; unset = the primary's key, and only if the
+#                                                    host is the same (a key is never sent to another host)
+#   ...and the same three with PROVIDER2. At most 6 fallback models in all. The diff goes to every one tried.
 # and create a label named `ai-review`. Switching provider is changing those two variables.
 # The PR diff IS sent to whatever endpoint you configure.
 #
@@ -83,6 +92,13 @@ jobs:
           AI_REVIEW_INLINE: ${{ vars.AI_REVIEW_INLINE }}
           AI_REVIEW_MAX_FILE_CHARS: ${{ vars.AI_REVIEW_MAX_FILE_CHARS }}
           AI_REVIEW_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}
+          AI_REVIEW_FALLBACK_MODELS: ${{ vars.AI_REVIEW_FALLBACK_MODELS }}
+          AI_REVIEW_FALLBACK_PROVIDER1_MODELS: ${{ vars.AI_REVIEW_FALLBACK_PROVIDER1_MODELS }}
+          AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL: ${{ vars.AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL }}
+          AI_REVIEW_FALLBACK_PROVIDER1_API_KEY: ${{ secrets.AI_REVIEW_FALLBACK_PROVIDER1_API_KEY }}
+          AI_REVIEW_FALLBACK_PROVIDER2_MODELS: ${{ vars.AI_REVIEW_FALLBACK_PROVIDER2_MODELS }}
+          AI_REVIEW_FALLBACK_PROVIDER2_BASE_URL: ${{ vars.AI_REVIEW_FALLBACK_PROVIDER2_BASE_URL }}
+          AI_REVIEW_FALLBACK_PROVIDER2_API_KEY: ${{ secrets.AI_REVIEW_FALLBACK_PROVIDER2_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: python3 -m scripts.ai_review

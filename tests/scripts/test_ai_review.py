@@ -15,7 +15,7 @@ from urllib.request import Request
 
 import pytest
 
-from scripts import ai_review, ai_review_findings, ai_review_retry
+from scripts import ai_review, ai_review_findings, ai_review_providers, ai_review_retry
 
 BASE = "https://llm.example/v1"
 GH = "https://gh.example"
@@ -1146,3 +1146,232 @@ def test_a_non_daily_429_with_an_hours_long_hint_still_gives_up_at_once():
     with pytest.raises(ai_review.ReviewError, match=r"the provider asks for 41609s, more than the 60s we wait"):
         ai_review.chat_completion(http, _cfg(), [], waits.append)
     assert http.calls == 1 and waits == []  # only a DAILY quota's hint is treated as a reset time
+
+
+# --- fallback providers -------------------------------------------------------------------------
+
+OTHER = "https://other.example/v1"
+# A provider that is down for good: every attempt the retry policy allows fails.
+ATTEMPTS = ai_review_retry.ATTEMPTS
+
+
+class Routed:
+    """GitHub traffic goes to a FakeHttp; model traffic is scripted PER MODEL, so a chain is testable."""
+
+    def __init__(self, plans, **fake_kw):
+        self.fake = FakeHttp(head_sha=SHA, **fake_kw)
+        self.plans = {model: list(outcomes) for model, outcomes in plans.items()}
+        self.model_calls = []  # (url, headers, model, timeout) for every model request
+
+    def __call__(self, method, url, headers, body, timeout):
+        if not url.endswith("/chat/completions"):
+            return self.fake(method, url, headers, body, timeout)
+        model = json.loads(body)["model"]
+        self.model_calls.append((url, dict(headers), model, timeout))
+        outcome = self.plans[model].pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        if outcome == "ok":
+            answer = f"**[CONCERN]** `app/a.py:1` - answer-from-{model}"
+            return 200, json.dumps({"choices": [{"message": {"content": answer}}]}).encode()
+        return outcome, b"{}"
+
+    def models(self):
+        return [call[2] for call in self.model_calls]
+
+    def writes(self):
+        return self.fake.writes()
+
+
+def _mcfg(**overrides) -> ai_review.Config:
+    """A Config whose primary model is "m", the one the scripted plans below use."""
+    return _cfg(AI_REVIEW_MODEL="m", **overrides)
+
+
+def _chain_env(**extra) -> dict[str, str]:
+    return _run_env(AI_REVIEW_FALLBACK_MODELS="m2", **extra)
+
+
+def _posted(http) -> str:
+    (_, _, _, body), = http.writes()
+    return json.loads(body)["body"]
+
+
+def test_without_a_fallback_the_chain_is_exactly_the_old_single_call():
+    http = Routed({"m": [503] * ATTEMPTS})
+    with pytest.raises(ai_review.ReviewError) as exc:
+        ai_review.complete_with_fallbacks(http, _mcfg(), [], _no_sleep)
+    assert str(exc.value) == f"the model endpoint returned HTTP 503 (after {ATTEMPTS} attempts)"  # not wrapped, not renamed
+    ok = Routed({"m": ["ok"]})
+    answer, served = ai_review.complete_with_fallbacks(ok, _mcfg(), [], _no_sleep)
+    assert served == ai_review_providers.Provider("primary", BASE, "m", "") and "answer-from-m" in answer
+
+
+def test_a_primary_that_has_failed_for_good_falls_back_and_the_comment_says_who_answered(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    http = Routed({"m": [503] * ATTEMPTS, "m2": ["ok"]})
+    assert ai_review.run(_chain_env(), http, _no_sleep) == 0
+    assert http.models() == ["m"] * ATTEMPTS + ["m2"]  # the primary got its own retries first
+    comment = _posted(http)
+    assert "`m2` (fallback for `m`, which was unavailable)" in comment and "answer-from-m2" in comment
+    out = capsys.readouterr().out
+    assert f"primary (m) failed (the model endpoint returned HTTP 503 (after {ATTEMPTS} attempts)); trying fallback 1 (m2)" in out
+    assert "via fallback 1" in out and "::warning::" not in out
+
+
+def test_a_primary_that_answers_never_touches_the_fallback(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    http = Routed({"m": ["ok"], "m2": ["ok"]})
+    assert ai_review.run(_chain_env(), http, _no_sleep) == 0
+    assert http.models() == ["m"]  # the diff went to one provider only
+    assert "fallback for" not in _posted(http) and "`m` read" in _posted(http)
+
+
+def test_the_chain_walks_every_provider_in_order_until_one_answers(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    http = Routed({"m": [429] * ATTEMPTS, "m2": [503] * ATTEMPTS, "m3": ["ok"]})
+    env = _chain_env(AI_REVIEW_FALLBACK_PROVIDER1_MODELS="m3", AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL=OTHER, AI_REVIEW_FALLBACK_PROVIDER1_API_KEY="KEY-B")
+    assert ai_review.run(env, http, _no_sleep) == 0
+    assert http.models() == ["m"] * ATTEMPTS + ["m2"] * ATTEMPTS + ["m3"]
+    assert "`m3` (fallback for `m`, which was unavailable)" in _posted(http)
+    out = capsys.readouterr().out
+    assert "trying fallback 1 (m2)" in out and "trying fallback 2 (m3)" in out and "via fallback 2" in out
+
+
+def test_when_every_provider_fails_nothing_is_posted_and_the_warning_names_each_without_leaking(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    http = Routed({"m": [429] * ATTEMPTS, "m2": [503] * ATTEMPTS})
+    env = _chain_env(AI_REVIEW_API_KEY="KEY-SECRET")
+    assert ai_review.run(env, http, _no_sleep) == 0  # advisory: never a failing exit code
+    assert http.writes() == []
+    out = capsys.readouterr().out
+    assert f"::warning::AI review skipped: every provider failed: primary (m): the model endpoint returned HTTP 429 (after {ATTEMPTS} attempts); fallback 1 (m2): the model endpoint returned HTTP 503 (after {ATTEMPTS} attempts)" in out
+    assert "KEY-SECRET" not in out and "llm.example" not in out  # models and codes only: no key, no URL
+
+
+def test_a_bug_in_one_provider_is_not_papered_over_by_moving_on(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    http = Routed({"m": [RuntimeError("a real bug, not a provider failure")], "m2": ["ok"]})
+    assert ai_review.run(_chain_env(), http, _no_sleep) == 0
+    assert http.models() == ["m"]  # the fallback was NOT tried: a bug must surface, not hide behind a second provider
+    assert "::warning::AI review skipped: RuntimeError" in capsys.readouterr().out
+
+
+def test_one_providers_key_is_never_sent_to_another_providers_host(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    http = Routed({"m": [503] * ATTEMPTS, "m2": [503] * ATTEMPTS, "m3": [503] * ATTEMPTS, "m4": ["ok"]})
+    env = _chain_env(
+        AI_REVIEW_API_KEY="KEY-A",
+        AI_REVIEW_FALLBACK_PROVIDER1_MODELS="m3", AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL=OTHER,  # another host, NO key of its own
+    )
+    ai_review.run(env, http, _no_sleep)
+    auth = {model: headers.get("Authorization") for _, headers, model, _ in http.model_calls}
+    assert auth["m"] == "Bearer KEY-A" and auth["m2"] == "Bearer KEY-A"  # same host: the same credential
+    assert auth["m3"] is None  # a different host with no key of its own gets none, never KEY-A
+    assert all(url.startswith(OTHER) for url, _, model, _ in http.model_calls if model == "m3")
+    for url, headers, _model, _ in http.model_calls:
+        if url.startswith(OTHER):
+            assert "KEY-A" not in json.dumps(headers)
+
+
+def test_a_fallback_on_another_host_uses_its_own_key(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    http = Routed({"m": [503] * ATTEMPTS, "m2": ["ok"]})
+    env = _run_env(
+        AI_REVIEW_API_KEY="KEY-A",
+        AI_REVIEW_FALLBACK_PROVIDER1_MODELS="m2", AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL=OTHER, AI_REVIEW_FALLBACK_PROVIDER1_API_KEY="KEY-B",
+    )
+    assert ai_review.run(env, http, _no_sleep) == 0
+    sent = {model: (url, headers.get("Authorization")) for url, headers, model, _ in http.model_calls}
+    assert sent["m"] == (f"{BASE}/chat/completions", "Bearer KEY-A")
+    assert sent["m2"] == (f"{OTHER}/chat/completions", "Bearer KEY-B")
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+def _ok_body(model):
+    return 200, json.dumps({"choices": [{"message": {"content": f"answer-from-{model}"}}]}).encode()
+
+
+def test_the_whole_chain_shares_one_deadline_and_each_request_is_clamped_to_what_is_left():
+    clock, seen = _Clock(), []
+
+    def http(method, url, headers, body, timeout):
+        model = json.loads(body)["model"]
+        seen.append((model, timeout))
+        if model == "m":
+            clock.now += 400.0  # the first choice hangs for 400s, then times out
+            raise TimeoutError("slow")
+        return _ok_body(model)
+
+    answer, served = ai_review.complete_with_fallbacks(http, _mcfg(AI_REVIEW_FALLBACK_MODELS="m2"), [], _no_sleep, clock)
+    assert served.name == "fallback 1" and "answer-from-m2" in answer
+    assert seen == [("m", 180.0), ("m2", 80.0)]  # 480s deadline minus the 400 spent, not another full 180s
+
+
+def test_a_provider_is_not_started_when_too_little_time_is_left():
+    clock = _Clock()
+
+    def http(method, url, headers, body, timeout):
+        clock.now += 470.0
+        raise TimeoutError("slow")
+
+    with pytest.raises(ai_review.ReviewError) as exc:
+        ai_review.complete_with_fallbacks(http, _mcfg(AI_REVIEW_FALLBACK_MODELS="m2"), [], _no_sleep, clock)
+    assert str(exc.value) == "every provider failed: primary (m): the model endpoint timed out; fallback 1 (m2): not tried, out of time"
+
+
+def test_a_retry_wait_that_would_overrun_the_deadline_ends_that_provider_instead_of_sleeping(monkeypatch):
+    monkeypatch.setattr(ai_review_retry.random, "uniform", lambda low, high: high)  # the first wait is 2 + 2 = 4s
+    clock, slept = _Clock(), []
+
+    def http(method, url, headers, body, timeout):
+        clock.now += 478.0  # leaves 2s: less than the 4s retry wait
+        return 503, b"{}"
+
+    with pytest.raises(ai_review.ReviewError) as exc:
+        ai_review.complete_with_fallbacks(http, _mcfg(AI_REVIEW_FALLBACK_MODELS="m2"), [], slept.append, clock)
+    assert slept == [] and "primary (m): out of time for this review" in str(exc.value)
+
+
+def test_a_dry_run_names_the_chain_by_model_only_and_posts_nothing(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    http = Routed({"m": ["ok"]})
+    assert ai_review.run(_chain_env(AI_REVIEW_DRY_RUN="1", AI_REVIEW_API_KEY="KEY-SECRET"), http, _no_sleep) == 0
+    out = capsys.readouterr().out
+    assert "[dry-run] providers, in order: primary m, fallback 1 m2" in out
+    assert "KEY-SECRET" not in out and "llm.example" not in out and http.writes() == []
+
+
+def test_config_reads_the_fallbacks_and_names_the_variable_when_one_is_malformed():
+    cfg = _cfg(AI_REVIEW_FALLBACK_MODELS="m2", AI_REVIEW_FALLBACK_PROVIDER1_MODELS="m3", AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL=OTHER)
+    assert [(f.name, f.model, f.base_url) for f in cfg.fallbacks] == [("fallback 1", "m2", BASE), ("fallback 2", "m3", OTHER)]
+    assert _cfg().fallbacks == ()
+    with pytest.raises(ai_review.ReviewError, match="AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL must be an http"):
+        _cfg(AI_REVIEW_FALLBACK_PROVIDER1_MODELS="m2", AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL="file:///etc/passwd")
+
+
+def test_the_header_names_the_model_that_answered_and_is_unchanged_without_a_fallback():
+    sel = ai_review.select_files(FILE_A, 10_000)
+    plain = ai_review.format_comment("x", _mcfg(), sel)
+    assert plain.startswith(f"{ai_review.MARKER}\n### AI review (advisory)\n> `m` read 1 file(s).")
+    used = ai_review.format_comment("x", _mcfg(), sel, model="m2", fallback_for="m")
+    assert "> `m2` (fallback for `m`, which was unavailable) read 1 file(s)." in used
+
+
+def test_a_fallbacks_answer_is_still_posted_as_inline_threads_and_the_summary_names_the_fallback(tmp_path, monkeypatch):
+    # The two features compose: the review that comes from a fallback goes through the same inline stage.
+    monkeypatch.chdir(tmp_path)
+    http = Routed({"m": [503] * ATTEMPTS, "m2": ["ok"]}, diff=INLINE_DIFF, files={"app/a.py": "l1\nl2\nl3\nl4\n"})
+    assert ai_review.run(_chain_env(AI_REVIEW_INLINE="1"), http, _no_sleep) == 0
+    assert http.models() == ["m"] * ATTEMPTS + ["m2"]
+    (review,) = http.fake.review_calls  # one batch review, from the FALLBACK's answer
+    assert [(c["path"], c["line"]) for c in review["comments"]] == [("app/a.py", 1)] and "answer-from-m2" in review["comments"][0]["body"]
+    summary = _posted(http)
+    assert "`m2` (fallback for `m`, which was unavailable)" in summary and "**1 on the diff**" in summary

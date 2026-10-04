@@ -806,6 +806,59 @@ class-name-only warning, because an enhancement must never cost the review. `AI_
 off; `AI_REVIEW_BOT_LOGIN` names a different identity (a GitHub App or a PAT) for finding our own comments
 again; a dry run prints the placement plan and posts nothing.
 
+**Fallback providers.** A free tier's quota is per *model* and per *provider*, so when one is spent another may be
+untouched, and an advisory reviewer that goes dark for the day is worse than one that quietly uses its second
+choice. Fallbacks are tried **in order** when the one before has failed for good (after its own retries: quota spent,
+overloaded, down, or a bad answer). Everything is optional, and with none set the reviewer behaves exactly as before.
+
+They are named by **provider**, because that is the only thing that differs: a model is just a name, a provider is a
+host plus a key. So there is one list for "other models on my provider", and one numbered group per *other* provider:
+
+| Variable / secret | What it is |
+|---|---|
+| `AI_REVIEW_FALLBACK_MODELS` | Comma list of **other models on the primary's provider** (same host, same key). |
+| `AI_REVIEW_FALLBACK_PROVIDER1_MODELS` | Comma list of models on **another provider**. **The on/off switch:** empty switches the group off, whatever else is set. |
+| `AI_REVIEW_FALLBACK_PROVIDER1_BASE_URL` | That provider's host. Unset means the primary's host (so, with a key of its own, *another account*). |
+| `AI_REVIEW_FALLBACK_PROVIDER1_API_KEY` (secret) | That provider's key. Unset means reuse the primary's key, and only if the host is the same. A key you set always wins. |
+| `AI_REVIEW_FALLBACK_PROVIDER2_*` | The same three, for a second other provider. |
+
+The chain is the primary, then `FALLBACK_MODELS` in the order written, then `PROVIDER1`'s models, then `PROVIDER2`'s. In
+the log and the comment header each is "fallback *N*" by its place in that chain. Examples, with a primary of
+`gemini-3.5-flash` on Google:
+
+| You want | Set | What the reviewer does |
+|---|---|---|
+| **Other models, same provider** (this repo's setup) | `FALLBACK_MODELS=gemini-3.5-flash-lite,gemini-3.1-flash-lite` | same host, same key, each model with its own quota |
+| **Another provider, several models** | `PROVIDER1_MODELS=openai/gpt-oss-120b,openai/gpt-oss-20b`, `PROVIDER1_BASE_URL=https://api.groq.com/openai/v1`, secret `PROVIDER1_API_KEY` | that host with *its own* key; the primary's key is never sent there |
+| **Same provider, different account** | `PROVIDER1_MODELS=gemini-3.5-flash` and secret `PROVIDER1_API_KEY` (leave `BASE_URL` unset) | same host, but the other account's key and quota |
+
+At most 6 fallback models in all; more is an error naming the variable, not a silent truncation (the diff goes to every
+one tried). The `PROVIDER1`/`PROVIDER2` numbers only separate groups; they carry no priority beyond order.
+
+- **A sensible chain for Google AI Studio's free tier:** `gemini-3.5-flash` (primary) -> `gemini-3.5-flash-lite` ->
+  `gemini-3.1-flash-lite` (both in `FALLBACK_MODELS`). Each has its **own per-model daily quota** (the 429 names
+  `GenerateRequestsPerDayPerProjectPerModel`), the two lite models are cheap and stable, and the newest Flash generation
+  (3.6 to 3.8) has had capacity trouble (503s), so it makes a poor fallback. Note `gemini-3.1-flash-lite` is also the judge model
+  this repo's `deepeval` and redteam CI use. Here the reviewer's key and CI's `GOOGLE_API_KEY` are **separate Google accounts**,
+  so they never share a quota; if you ever reuse one key for both, they would.
+  Same-provider fallbacks cannot help with a project-wide problem (a revoked key, billing, an outage): only another provider can.
+- **A provider's key is never sent to another provider's host.** A fallback uses its own key if it has one; otherwise
+  it inherits the primary's key *only if its base URL is the same*. A fallback on a different host with no key of its
+  own sends none (right for a keyless endpoint; a 401 otherwise, which the log shows).
+- **The diff goes to every provider tried**, but only when the ones before failed. A fallback is a second recipient of
+  your code, so choose one you'd be happy to send it to.
+- **One deadline for the whole chain** (480s, under the job's 600s), enforced on every request's timeout and every
+  retry wait, so a slow first choice can't turn the check red. A bug (anything other than a provider failure) is not
+  hidden behind a second provider.
+- The comment header names the model that actually answered (``fallback for `m`, which was unavailable``), the log has
+  a notice for each hand-over (model names and error codes only, never URLs, keys or message text), and a dry run
+  prints the chain.
+- **A fallback's own limits may be smaller.** This repo's CI logs show Groq's free tier for `gpt-oss-120b` at **8,000
+  tokens per minute** and 200,000 per day, far below a typical review prompt, so Groq would refuse most reviews.
+  The cheapest good first fallback is another model on the same provider (its own per-model quota).
+- **Not built:** failing over faster (the primary uses its full retry budget first), a per-provider size budget, and
+  spreading load across providers.
+
 **When the provider hiccups.** A model call that fails with 408/429/500/502/503/504 or a dropped connection is
 retried up to four attempts in all (Google's own SDK guidance), with the wait chosen like this:
 
@@ -1173,7 +1226,7 @@ from the library/service code in `app/`.
 | `observability/`       | Config for the stack above — `prometheus/prometheus.yml` (scrape config) + `prometheus/alerts.yml` (alert rules), `alertmanager/`, `loki/`, `promtail/`, `otel-collector/config.yaml`, and `grafana/` (provisioned datasources + the two dashboards) |
 | `Dockerfile`           | The deployable image (one image, three roles via `command:` override) — non-root user, `HEALTHCHECK` against `/health/ready`, installs from `requirements-lock.txt`; ships `app/` plus the three directories the app reads at runtime — `skills/`, `subagents/` and `scripts/` (the sandbox bridge, `index_skills`, the cron jobs) — each of which degrades quietly to "empty" when missing, so CI's `docker-build` job runs the image to check they landed; no bundled browser — crawl4ai now runs in its own container |
 | `.github/workflows/ci.yml` | Runs `ruff`/`mypy`/`pytest` (no live services needed) and a Docker build check on every push/PR against `main` |
-| `.github/workflows/ai-review.yml`, `.github/ai-review-rules.md`, `.github/ai-review-context.toml`, `scripts/ai_review.py`, `scripts/ai_review_findings.py` | Opt-in advisory AI review of each PR through any OpenAI-compatible endpoint — see [AI review](#ai-review-advisory) |
+| `.github/workflows/ai-review.yml`, `.github/ai-review-rules.md`, `.github/ai-review-context.toml`, `scripts/ai_review.py`, `scripts/ai_review_findings.py`, `scripts/ai_review_providers.py` | Opt-in advisory AI review of each PR through any OpenAI-compatible endpoint, as inline comments plus a summary, with fallback providers (parsing and anchoring in `ai_review_findings.py`; provider and fallback logic in `ai_review_providers.py`) — see [AI review](#ai-review-advisory) |
 | `.github/dependabot.yml` | Weekly grouped PR that bumps the commit-SHA pins on every `uses:` line in `.github/workflows/` (a tag like `@v4` can be moved under you and CI runs with this repo's secrets, so each action is pinned to an immutable SHA with a `# vX.Y.Z` comment; `tests/core/test_workflow_action_pins.py` fails on an unpinned one). github-actions only — `requirements-lock.txt` is machine-generated, so pip is left out |
 | `requirements-lock.txt`| Fully pinned freeze of `requirements.txt`'s runtime deps — what the `Dockerfile`/CI actually install from, so a build today and next year resolve identically |
 | `litellm-config.yaml`  | Model routing, retries, fallbacks, Langfuse callback, LiteLLM's own built-in Prometheus metrics callback |

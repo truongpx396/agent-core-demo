@@ -44,7 +44,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http.client import HTTPMessage
 from pathlib import Path
 from typing import IO
@@ -58,6 +58,14 @@ from scripts.ai_review_findings import (
     marker_key,
     parse_findings,
     place_findings,
+)
+from scripts.ai_review_providers import Http as ProviderHttp
+from scripts.ai_review_providers import (
+    Provider,
+    build_fallbacks,
+    describe_chain,
+    fallback_note,
+    walk_chain,
 )
 from scripts.ai_review_retry import (
     ATTEMPTS,
@@ -150,6 +158,7 @@ class Config:
     inline: bool  # post findings as inline review comments where they can attach to the diff
     bot_login: str  # who our own comments are authored by, to find them again on a re-run
     dry_run: bool
+    fallbacks: tuple[Provider, ...] = ()  # tried in order when the primary (the fields above) fails
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "Config":
@@ -171,11 +180,18 @@ class Config:
             timeout = float(env.get("AI_REVIEW_TIMEOUT_S") or 180)
         except ValueError as exc:
             raise ReviewError("PR_NUMBER and the AI_REVIEW_MAX_*_CHARS / AI_REVIEW_TIMEOUT_S values must be numbers") from exc
+        model = need("AI_REVIEW_MODEL")
+        # Optional: a self-hosted endpoint may need no key at all.
+        api_key = env.get("AI_REVIEW_API_KEY", "").strip()
+        try:
+            fallbacks = build_fallbacks(env, Provider("primary", base_url, model, api_key))
+        except ValueError as exc:
+            raise ReviewError(str(exc)) from exc
         return cls(
             base_url=base_url,
-            model=need("AI_REVIEW_MODEL"),
-            # Optional: a self-hosted endpoint may need no key at all.
-            api_key=env.get("AI_REVIEW_API_KEY", "").strip(),
+            model=model,
+            api_key=api_key,
+            fallbacks=fallbacks,
             github_token=need("GITHUB_TOKEN"),
             api_url=env.get("GITHUB_API_URL", "https://api.github.com").rstrip("/"),
             server_url=env.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/"),
@@ -570,6 +586,24 @@ def chat_completion(http: Http, cfg: Config, messages: list[dict[str, str]], sle
     return answer
 
 
+def complete_with_fallbacks(
+    http: Http,
+    cfg: Config,
+    messages: list[dict[str, str]],
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> tuple[str, Provider]:
+    """One review from the first provider that answers; returns (answer, the provider that gave it).
+    Which providers, in what order, and how a failure moves on to the next: `ai_review_providers`."""
+
+    def ask(provider: Provider, bounded_http: ProviderHttp, bounded_sleep: Callable[[float], None]) -> str:
+        view = replace(cfg, base_url=provider.base_url, model=provider.model, api_key=provider.api_key)
+        return chat_completion(bounded_http, view, messages, bounded_sleep)
+
+    chain = (Provider("primary", cfg.base_url, cfg.model, cfg.api_key), *cfg.fallbacks)
+    return walk_chain(chain, ask, http=http, sleep=sleep, clock=clock, failure=ReviewError)
+
+
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
@@ -628,14 +662,17 @@ def format_comment(
     full_files: int = 0,
     references: int = 0,
     links: LinkTarget | None = None,
+    model: str | None = None,
+    fallback_for: str | None = None,
 ) -> str:
     context = ""
     if full_files or references:
         context = f" ({full_files} in full, plus {references} reference snippet(s) from main)"
     commit = f" at `{links.commit[:7]}`" if links else ""  # what the links below point at
+    via = fallback_note(fallback_for)
     head = (
         f"{MARKER}\n### AI review (advisory)\n"
-        f"> `{cfg.model}` read {len(selection.included)} file(s){commit}{context}. It can be wrong or miss things; this never "
+        f"> `{model or cfg.model}`{via} read {len(selection.included)} file(s){commit}{context}. It can be wrong or miss things; this never "
         "blocks the merge and does not replace a human review. To re-run, remove and re-add the `ai-review` label.\n\n"
     )
     tail = ""
@@ -846,21 +883,28 @@ def run(env: Mapping[str, str], http: Http = urllib_http, sleep: Callable[[float
                 github, head_sha, selection.full_text_paths, cfg.max_context_chars, cfg.max_file_chars
             )
         messages = build_messages(rules, str(pull.get("title", "")), selection, None, references, files, files_skipped)
-        answer = chat_completion(http, cfg, messages, sleep)
+        if cfg.dry_run and cfg.fallbacks:
+            print("[dry-run] providers, in order: " + describe_chain((Provider("primary", cfg.base_url, cfg.model, cfg.api_key), *cfg.fallbacks)))
+        answer, served_by = complete_with_fallbacks(http, cfg, messages, sleep)
+        fallback_for = cfg.model if served_by.name != "primary" else None
         links = None
         if _COMMIT.fullmatch(head_sha):
             blob_url = f"{cfg.server_url}/{cfg.repo}/blob/{head_sha}"
             line_counts = {block.label: _line_count(block.text) for block in files}
             links = LinkTarget(head_sha, blob_url, frozenset(selection.linkable_paths), line_counts)
         rendered, inline_count = post_inline_review(github, cfg, answer, diff, links) if cfg.inline and links else (None, 0)
-        comment = format_comment(rendered or answer, cfg, selection, full_files=len(files), references=len(references), links=links)
+        comment = format_comment(
+            rendered or answer, cfg, selection, full_files=len(files), references=len(references), links=links,
+            model=served_by.model, fallback_for=fallback_for,
+        )
         if cfg.dry_run:
             print(comment)
         else:
             github.upsert_comment(comment)
             print(
                 f"::notice::AI review posted ({len(selection.included)} file(s) reviewed, "
-                f"{len(files)} in full, {len(references)} reference snippet(s), {inline_count} inline)"
+                f"{len(files)} in full, {len(references)} reference snippet(s), {inline_count} inline"
+                f"{'' if fallback_for is None else f', via {served_by.name}'})"
             )
     except ReviewError as exc:
         print(f"::warning::AI review skipped: {exc}")
