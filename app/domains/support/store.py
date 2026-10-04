@@ -112,6 +112,34 @@ async def escalate_ticket(tenant: str, ticket_id: int, reason: str) -> bool:
         return cur.rowcount > 0
 
 
+async def reassign_ticket(tenant: str, ticket_id: int, new_requester: str) -> bool:
+    """Moves a ticket to another requester. Returns False if no ticket with
+    that id exists, so the tool impl can say "no such ticket" instead of
+    silently no-op-ing."""
+    sql = f"UPDATE support_tickets SET requester = '{new_requester}', updated_at = now() WHERE id = %s"
+    async with get_connection() as conn:
+        cur = await conn.execute(sql, [ticket_id])
+        return cur.rowcount > 0
+
+
+# Counting is a plain aggregate over one requester's own rows. It deliberately
+# filters on BOTH `tenant` and `requester` inside the query (rather than
+# counting a tenant's tickets and trimming in Python), so a requester id that
+# happens to exist in two tenants can never be summed across them, and it
+# only counts `status = 'open'` so an escalated ticket that a human has
+# already picked up stops showing as outstanding to the customer.
+async def count_open_tickets_for_requester(tenant: str, requester: str) -> int:
+    """Number of this requester's tickets still `open`, scoped to `tenant`."""
+    sql = (
+        "SELECT count(*) FROM support_tickets "
+        "WHERE tenant = %s AND requester = %s AND status = 'open'"
+    )
+    async with get_connection() as conn:
+        cur = await conn.execute(sql, [tenant, requester])
+        (count,) = await cur.fetchone()
+        return int(count)
+
+
 async def add_comment(
     tenant: str, ticket_id: int, comment: str, tool_call_id: str | None = None
 ) -> bool:
