@@ -122,6 +122,7 @@ class Config:
     timeout: float
     rules_path: str
     context_config_path: str
+    server_url: str  # the web host links point at; github.com, or a GitHub Enterprise Server
     dry_run: bool
 
     @classmethod
@@ -150,6 +151,7 @@ class Config:
             api_key=env.get("AI_REVIEW_API_KEY", "").strip(),
             github_token=need("GITHUB_TOKEN"),
             api_url=env.get("GITHUB_API_URL", "https://api.github.com").rstrip("/"),
+            server_url=env.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/"),
             repo=need("GITHUB_REPOSITORY"),
             pr_number=pr_number,
             max_diff_chars=max_chars,
@@ -191,6 +193,9 @@ class Selection:
     # already shows whole (new, deleted, rename-only) or had to cut gains nothing from it.
     paths: list[str] = field(default_factory=list)
     full_text_paths: list[str] = field(default_factory=list)
+    # Included files that still exist at the PR head, i.e. that a link can point at. A deleted
+    # file is in `paths` (its diff was reviewed) but a link to it would be a 404.
+    linkable_paths: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -226,6 +231,7 @@ def select_files(diff: str, max_chars: int) -> Selection:
     omitted: list[str] = []
     paths: list[str] = []
     full_text_paths: list[str] = []
+    linkable_paths: list[str] = []
     used = 0
     for path, chunk in _split_diff(diff):
         if path.endswith(_SKIP_SUFFIXES) or path.rsplit("/", 1)[-1] in _SKIP_NAMES:
@@ -239,15 +245,19 @@ def select_files(diff: str, max_chars: int) -> Selection:
             used += len(chunk)
             if "\n@@ " in chunk and not re.search(r"(?m)^(new|deleted) file mode", chunk):
                 full_text_paths.append(path)
+            if not re.search(r"(?m)^deleted file mode", chunk):
+                linkable_paths.append(path)
         elif not included:
             cut = chunk[:max_chars].rsplit("\n", 1)[0]
             parts.append(cut + "\n[... file truncated ...]\n")
             included.append(f"{path} (truncated)")
             paths.append(path)
+            if not re.search(r"(?m)^deleted file mode", chunk):
+                linkable_paths.append(path)
             used = max_chars
         else:
             omitted.append(f"{path} (over the {max_chars}-character budget)")
-    return Selection("".join(parts), included, omitted, paths, full_text_paths)
+    return Selection("".join(parts), included, omitted, paths, full_text_paths, linkable_paths)
 
 
 def _python_symbol(source: str, name: str) -> str | None:
@@ -488,19 +498,77 @@ def chat_completion(http: Http, cfg: Config, messages: list[dict[str, str]], sle
     return answer
 
 
-def format_comment(answer: str, cfg: Config, selection: Selection, *, full_files: int = 0, references: int = 0) -> str:
+# A citation as the prompt asks the model to write it: `path:line`, or `path:start-end`, in code
+# formatting. The path alphabet is deliberately narrow (no spaces, brackets or parentheses), so
+# nothing the model writes can break out of the markdown link built around it. The lookarounds
+# skip a citation the model already wrapped in a link, so we never nest one link in another.
+_CITATION = re.compile(r"(?<!\[)`([A-Za-z0-9_./@+-]+):L?(\d+)(?:-L?(\d+))?`(?!\]\()")
+_COMMIT = re.compile(r"[0-9a-f]{40}")
+
+
+@dataclass(frozen=True)
+class LinkTarget:
+    """What a citation may link to: files of one commit, addressed by permalink."""
+
+    commit: str  # the 40-hex SHA of the PR head the reviewer actually read
+    blob_url: str  # {server}/{owner}/{repo}/blob/{commit}
+    paths: frozenset[str]  # changed files that exist at that commit
+    line_counts: Mapping[str, int] = field(default_factory=dict)  # known only for files fetched in full
+
+
+def linkify(text: str, target: LinkTarget | None) -> str:
+    """Turns each `path:line` the model cites into a link to that line at the reviewed commit.
+
+    A citation is linked only if its path is a file this PR changed and, where the file's length is
+    known, the line exists. A made-up path or an out-of-range line stays plain text rather than
+    becoming a link that goes nowhere. The commit is a SHA, not the branch, so the link keeps
+    pointing at the code the reviewer saw after the PR gets more pushes or merges. Fenced code
+    is left alone.
+    """
+    if target is None:
+        return text
+
+    def link(match: re.Match[str]) -> str:
+        path = match.group(1)
+        first = int(match.group(2))
+        last = int(match.group(3) or first)
+        start, end = min(first, last), max(first, last)  # `20-12` is plainly meant as lines 12 to 20
+        count = target.line_counts.get(path)
+        if path not in target.paths or start < 1 or (count is not None and start > count):
+            return match.group(0)
+        if count is not None:
+            end = min(end, count)
+        anchor = f"#L{start}" + (f"-L{end}" if end > start else "")
+        return f"[{match.group(0)}]({target.blob_url}/{urllib.parse.quote(path, safe='/')}{anchor})"
+
+    parts = re.split(r"(```.*?```)", text, flags=re.DOTALL)
+    for i in range(0, len(parts), 2):
+        parts[i] = _CITATION.sub(link, parts[i])
+    return "".join(parts)
+
+
+def format_comment(
+    answer: str,
+    cfg: Config,
+    selection: Selection,
+    *,
+    full_files: int = 0,
+    references: int = 0,
+    links: LinkTarget | None = None,
+) -> str:
     context = ""
     if full_files or references:
         context = f" ({full_files} in full, plus {references} reference snippet(s) from main)"
+    commit = f" at `{links.commit[:7]}`" if links else ""  # what the links below point at
     head = (
         f"{MARKER}\n### AI review (advisory)\n"
-        f"> `{cfg.model}` read {len(selection.included)} file(s){context}. It can be wrong or miss things; this never "
+        f"> `{cfg.model}` read {len(selection.included)} file(s){commit}{context}. It can be wrong or miss things; this never "
         "blocks the merge and does not replace a human review. To re-run, remove and re-add the `ai-review` label.\n\n"
     )
     tail = ""
     if selection.omitted:
         tail = "\n\n<sub>Not reviewed: " + "; ".join(selection.omitted) + "</sub>"
-    answer = defang_mentions(answer)
+    answer = linkify(defang_mentions(answer), links)
     room = COMMENT_LIMIT - len(head) - len(tail)
     if len(answer) > room:
         answer = answer[:room].rsplit("\n", 1)[0] + "\n\n_[review truncated]_"
@@ -578,7 +646,12 @@ def run(env: Mapping[str, str], http: Http = urllib_http, sleep: Callable[[float
             files, files_skipped = fetch_full_files(github, head_sha, selection.full_text_paths, cfg.max_context_chars)
         messages = build_messages(rules, str(pull.get("title", "")), selection, None, references, files, files_skipped)
         answer = chat_completion(http, cfg, messages, sleep)
-        comment = format_comment(answer, cfg, selection, full_files=len(files), references=len(references))
+        links = None
+        if _COMMIT.fullmatch(head_sha):
+            blob_url = f"{cfg.server_url}/{cfg.repo}/blob/{head_sha}"
+            line_counts = {block.label: len(block.text.splitlines()) for block in files}
+            links = LinkTarget(head_sha, blob_url, frozenset(selection.linkable_paths), line_counts)
+        comment = format_comment(answer, cfg, selection, full_files=len(files), references=len(references), links=links)
         if cfg.dry_run:
             print(comment)
         else:
