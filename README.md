@@ -760,6 +760,14 @@ tier; it deliberately stops short of a repo index or an agent that explores with
 would need tool-calling support from the provider (breaking "any OpenAI-compatible API") and
 a larger prompt-injection surface. `AI_REVIEW_MAX_CONTEXT_CHARS=0` sends the diff only.
 
+**When the provider hiccups.** A model call that fails with 408/429/500/502/503/504 or a dropped
+connection is retried up to twice, with exponential backoff and jitter (Google's guidance for the
+Gemini API, where the first real run hit a `503 UNAVAILABLE`). A timeout and any 4xx are not
+retried: a slow model will be slow again, and a wrong key or model name would only fail again.
+When the review is still skipped, the warning names the provider's short error code
+(`HTTP 503 UNAVAILABLE`, `HTTP 404 model_not_found`) but never its message text. A skipped review
+is only a warning; re-add the `ai-review` label to try again.
+
 **Safety shape.** `pull_request` (never `pull_request_target`), same-repo PRs only, Dependabot
 skipped, `permissions: {}` plus `contents: read` / `pull-requests: write` for the one job, and the
 script and rules come from the **base** commit while the diff is fetched as data through the API.
