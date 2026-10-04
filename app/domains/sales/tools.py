@@ -659,3 +659,5 @@ TOOL_CAPABILITIES = {
     "enrich_lead_from_website": "outward",
     **{t.name: "outward" for t in _SANDBOX_TOOLS},
 }
+
+# scratch: touch so this file is sent in full

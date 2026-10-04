@@ -558,3 +558,5 @@ TOOL_CAPABILITIES = {
     "fetch_external_reference": "outward",
     **{t.name: "outward" for t in _SANDBOX_TOOLS},
 }
+
+# scratch: touch so this file is sent in full
