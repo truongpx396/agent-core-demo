@@ -1201,7 +1201,7 @@ def test_without_a_fallback_the_chain_is_exactly_the_old_single_call():
     http = Routed({"m": [503] * ATTEMPTS})
     with pytest.raises(ai_review.ReviewError) as exc:
         ai_review.complete_with_fallbacks(http, _mcfg(), [], _no_sleep)
-    assert str(exc.value) == f"the model endpoint returned HTTP 503 (after {ATTEMPTS} attempts)"  # not wrapped, not renamed
+    assert str(exc.value) == "the model endpoint returned HTTP 503 (after {ATTEMPTS} attempts)"  # not wrapped, not renamed
     ok = Routed({"m": ["ok"]})
     answer, served = ai_review.complete_with_fallbacks(ok, _mcfg(), [], _no_sleep)
     assert served == ai_review_providers.Provider("primary", BASE, "m", "") and "answer-from-m" in answer
@@ -1211,11 +1211,11 @@ def test_a_primary_that_has_failed_for_good_falls_back_and_the_comment_says_who_
     monkeypatch.chdir(tmp_path)
     http = Routed({"m": [503] * ATTEMPTS, "m2": ["ok"]})
     assert ai_review.run(_chain_env(), http, _no_sleep) == 0
-    assert http.models() == ["m"] * ATTEMPTS + ["m2"]  # the primary got its own retries first
+    assert http.models() == ["m", "m", "m", "m2"]  # the primary got its own retries first
     comment = _posted(http)
     assert "`m2` (fallback for `m`, which was unavailable)" in comment and "answer-from-m2" in comment
     out = capsys.readouterr().out
-    assert f"primary (m) failed (the model endpoint returned HTTP 503 (after {ATTEMPTS} attempts)); trying fallback 1 (m2)" in out
+    assert "primary (m) failed (the model endpoint returned HTTP 503 (after {ATTEMPTS} attempts)); trying fallback 1 (m2)" in out
     assert "via fallback 1" in out and "::warning::" not in out
 
 
@@ -1232,7 +1232,7 @@ def test_the_chain_walks_every_provider_in_order_until_one_answers(tmp_path, mon
     http = Routed({"m": [429] * ATTEMPTS, "m2": [503] * ATTEMPTS, "m3": ["ok"]})
     env = _chain_env(AI_REVIEW_FALLBACK2_MODEL="m3", AI_REVIEW_FALLBACK2_BASE_URL=OTHER, AI_REVIEW_FALLBACK2_API_KEY="KEY-B")
     assert ai_review.run(env, http, _no_sleep) == 0
-    assert http.models() == ["m"] * ATTEMPTS + ["m2"] * ATTEMPTS + ["m3"]
+    assert http.models() == ["m", "m", "m", "m2", "m2", "m2", "m3"]
     assert "`m3` (fallback for `m`, which was unavailable)" in _posted(http)
     out = capsys.readouterr().out
     assert "trying fallback 1 (m2)" in out and "trying fallback 2 (m3)" in out and "via fallback 2" in out
@@ -1245,7 +1245,7 @@ def test_when_every_provider_fails_nothing_is_posted_and_the_warning_names_each_
     assert ai_review.run(env, http, _no_sleep) == 0  # advisory: never a failing exit code
     assert http.writes() == []
     out = capsys.readouterr().out
-    assert f"::warning::AI review skipped: every provider failed: primary (m): the model endpoint returned HTTP 429 (after {ATTEMPTS} attempts); fallback 1 (m2): the model endpoint returned HTTP 503 (after {ATTEMPTS} attempts)" in out
+    assert "::warning::AI review skipped: every provider failed: primary (m): the model endpoint returned HTTP 429 (after {ATTEMPTS} attempts); fallback 1 (m2): the model endpoint returned HTTP 503 (after {ATTEMPTS} attempts)" in out
     assert "KEY-SECRET" not in out and "llm.example" not in out  # models and codes only: no key, no URL
 
 
@@ -1367,7 +1367,7 @@ def test_a_fallbacks_answer_is_still_posted_as_inline_threads_and_the_summary_na
     monkeypatch.chdir(tmp_path)
     http = Routed({"m": [503] * ATTEMPTS, "m2": ["ok"]}, diff=INLINE_DIFF, files={"app/a.py": "l1\nl2\nl3\nl4\n"})
     assert ai_review.run(_chain_env(AI_REVIEW_INLINE="1"), http, _no_sleep) == 0
-    assert http.models() == ["m"] * ATTEMPTS + ["m2"]
+    assert http.models() == ["m", "m", "m", "m2"]
     (review,) = http.fake.review_calls  # one batch review, from the FALLBACK's answer
     assert [(c["path"], c["line"]) for c in review["comments"]] == [("app/a.py", 1)] and "answer-from-m2" in review["comments"][0]["body"]
     summary = _posted(http)
