@@ -760,6 +760,15 @@ tier; it deliberately stops short of a repo index or an agent that explores with
 would need tool-calling support from the provider (breaking "any OpenAI-compatible API") and
 a larger prompt-injection surface. `AI_REVIEW_MAX_CONTEXT_CHARS=0` sends the diff only.
 
+**Clickable citations.** Each `path:line` (or `path:start-end`) a finding cites is turned into a link to
+that line at the exact commit the reviewer read, shown in the comment header (`at 456099e`), so a
+later push or merge doesn't move it. A citation is linked only if the path is a file the PR changed
+and, when the file's length is known, the line exists; a made-up path or an out-of-range line stays
+plain text instead of becoming a link that 404s. Fenced code is never rewritten. The model still
+writes plain `path:line`, so this works with any provider. To make the number right, each changed
+file sent in full has its lines numbered (`  284 | code`) and the prompt says to cite those numbers
+and never copy the prefix into suggested code, so the model copies a line number instead of counting.
+
 **When the provider hiccups.** A model call that fails with 408/429/500/502/503/504 or a dropped
 connection is retried up to twice, with exponential backoff and jitter (Google's guidance for the
 Gemini API, where the first real run hit a `503 UNAVAILABLE`). A timeout and any 4xx are not
@@ -785,7 +794,18 @@ not the callers elsewhere in the repo, so an invariant that lives in a file the 
 is judged from the rules file and the exemplars. Enforce those with tests, not this review. The
 full-file budget is spent in diff order, so on a big PR some changed files get no full text (the
 prompt says which). Full-file context makes a prompt several times larger (about 22k tokens on a
-nine-file PR I measured); lower `AI_REVIEW_MAX_CONTEXT_CHARS` to cut cost.
+nine-file PR I measured); lower `AI_REVIEW_MAX_CONTEXT_CHARS` to cut cost. (6) Citations are the model's, and only mostly exact. Before the full-file context was numbered, a
+planted-violation test (3 runs of `gemini-3.5-flash`) had just 4 of 12 single-line citations land on the
+defect; the rest were 1-2 lines off (a `def` line, the docstring above an SQL string). With numbered
+lines it was 7 of 7 single-line citations on the defect, with recall unchanged (7/7 planted violations,
+the correct decoy never flagged) and no model copying the number column into suggested code. One of those
+three runs cited broad ranges (`265-290`) instead, which overlap the defect but are less precise, and
+`gemini-3.8-flash` already cited ranges before the change. That is three runs on one planted PR, so it is
+evidence, not a guarantee. The cost is about 15% more text per full file (about 1.2k tokens on that PR).
+A file with no full-text block (new, or over the budget) still relies on the model counting from the
+diff's hunk headers. This is a single comment edited in place, not inline review comments on the diff;
+inline comments can only attach to lines inside the diff, so a finding about something *missing* (an
+undeclared tool, no test) has nowhere to anchor.
 
 ## Security scanning & load testing
 

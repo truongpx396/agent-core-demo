@@ -499,3 +499,184 @@ def test_run_still_posts_the_review_when_a_changed_file_cannot_be_fetched(tmp_pa
     prompt = json.loads(next(c for c in http.calls if c[1].endswith("/chat/completions"))[3])["messages"][1]["content"]
     assert "No full text attached for (judge them from the diff alone): app/x/tools.py" in prompt
     assert len(http.writes()) == 1
+
+
+# --- clickable citations: `path:line` -> permalink to that line at the reviewed commit --------
+
+SHA = "a" * 40
+BLOB = f"https://github.com/o/r/blob/{SHA}"
+
+
+def _target(paths=("app/a.py",), counts=None) -> ai_review.LinkTarget:
+    return ai_review.LinkTarget(SHA, BLOB, frozenset(paths), counts or {})
+
+
+def test_linkify_turns_a_cited_changed_file_line_into_a_permalink_at_the_reviewed_commit():
+    out = ai_review.linkify("**[BLOCKER]** `app/a.py:12` - bad", _target())
+    assert out == f"**[BLOCKER]** [`app/a.py:12`]({BLOB}/app/a.py#L12) - bad"
+
+
+def test_linkify_links_a_range_normalizes_a_reversed_one_and_collapses_a_single_line_range():
+    t = _target()
+    assert f"{BLOB}/app/a.py#L12-L20)" in ai_review.linkify("`app/a.py:12-20`", t)
+    assert f"{BLOB}/app/a.py#L12-L20)" in ai_review.linkify("`app/a.py:20-12`", t)  # reversed: still lines 12 to 20
+    assert f"{BLOB}/app/a.py#L12)" in ai_review.linkify("`app/a.py:12-12`", t)
+    assert f"{BLOB}/app/a.py#L7)" in ai_review.linkify("`app/a.py:L7`", t)  # a leading L is tolerated
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "`other/file.py:3`",  # a file this PR did not change, or one the model made up
+        "`app/a.py:0`",  # lines start at 1
+        "`app/a.py`",  # nothing to link to
+        "plain app/a.py:3 outside code formatting",
+        "`app/a b.py:3`",  # a space is outside the path alphabet
+    ],
+)
+def test_linkify_leaves_anything_that_is_not_a_valid_citation_as_plain_text(text):
+    assert ai_review.linkify(text, _target(paths=("app/a.py", "app/a b.py"))) == text
+
+
+def test_linkify_does_not_link_a_line_past_the_end_of_a_file_whose_length_is_known():
+    t = _target(counts={"app/a.py": 3})
+    assert "](" in ai_review.linkify("`app/a.py:3`", t)
+    assert ai_review.linkify("`app/a.py:4`", t) == "`app/a.py:4`"  # a link to nowhere is worse than none
+    assert f"{BLOB}/app/a.py#L2-L3)" in ai_review.linkify("`app/a.py:2-99`", t)  # a range is clamped
+
+
+def test_linkify_leaves_fenced_code_and_an_already_linked_citation_alone():
+    fenced = "```\n`app/a.py:3`\n```"
+    assert ai_review.linkify(fenced, _target()) == fenced
+    already = f"[`app/a.py:3`]({BLOB}/app/a.py#L3)"
+    assert ai_review.linkify(already, _target()) == already  # no link nested inside a link
+
+
+def test_linkify_percent_encodes_the_path_so_it_cannot_break_the_url():
+    out = ai_review.linkify("`src/@types/x.d.ts:3`", _target(paths=("src/@types/x.d.ts",)))
+    assert f"{BLOB}/src/%40types/x.d.ts#L3" in out
+
+
+def test_linkify_does_nothing_without_a_target():
+    assert ai_review.linkify("`app/a.py:3`", None) == "`app/a.py:3`"
+
+
+def test_select_files_only_marks_files_that_exist_at_the_head_as_linkable():
+    sel = ai_review.select_files(FILE_A + NEW + GONE + RENAME, 10_000)
+    assert "g.py" in sel.paths and "g.py" not in sel.linkable_paths  # a link to a deleted file is a 404
+    assert sel.linkable_paths == ["app/a.py", "n.py", "p.py"]
+    assert ai_review.select_files(FILE_A, 60).linkable_paths == ["app/a.py"]  # a cut file still exists
+
+
+def _links_env(**extra) -> dict[str, str]:
+    return _run_env(**extra)
+
+
+def test_run_links_each_citation_to_the_reviewed_commit_and_names_that_commit_in_the_header(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # no rules file, no context config
+    answer = "**[BLOCKER]** `app/a.py:2` - bad\n**[CONCERN]** `app/a.py:9` - past the end\n**[NIT]** `nope.py:1` - made up"
+    http = FakeHttp(model_body={"choices": [{"message": {"content": answer}}]}, head_sha=SHA, files={"app/a.py": "l1\nl2\nl3"})
+    assert ai_review.run(_links_env(), http, _no_sleep) == 0
+    (_, _, _, body), = http.writes()
+    comment = json.loads(body)["body"]
+    assert f"[`app/a.py:2`]({BLOB}/app/a.py#L2)" in comment
+    assert "`app/a.py:9`" in comment and "app/a.py:9`](" not in comment  # line 9 does not exist in a 3-line file
+    assert "`nope.py:1`" in comment and "nope.py:1`](" not in comment
+    assert "read 1 file(s) at `aaaaaaa`" in comment
+
+
+def test_run_points_links_at_the_configured_server_for_github_enterprise(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    http = FakeHttp(head_sha=SHA, files={"app/a.py": "l1\nl2"})
+    assert ai_review.run(_links_env(GITHUB_SERVER_URL="https://ghe.example.com/"), http, _no_sleep) == 0
+    (_, _, _, body), = http.writes()
+    assert f"](https://ghe.example.com/o/r/blob/{SHA}/app/a.py#L1)" in json.loads(body)["body"]
+
+
+def test_run_adds_no_links_when_the_pr_head_is_not_a_real_commit_sha(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    http = FakeHttp()  # head_sha defaults to "deadbeef", which is not 40 hex
+    assert ai_review.run(_links_env(), http, _no_sleep) == 0
+    (_, _, _, body), = http.writes()
+    comment = json.loads(body)["body"]
+    assert "`app/a.py:1`" in comment and "](" not in comment and " at `" not in comment
+
+
+# --- robustness of the linking step (found by the AI reviewer's own review of this change) ----
+
+
+def test_linkify_leaves_an_absurdly_long_line_number_as_plain_text_instead_of_raising():
+    # Python refuses int() of more than 4,300 digits; before the digit cap this raised ValueError
+    # and the whole review was lost to one degenerate citation.
+    t = _target()
+    huge = "`app/a.py:" + "9" * 5000 + "`"
+    assert ai_review.linkify(huge, t) == huge
+    assert ai_review.linkify("`app/a.py:12345678`", t) == "`app/a.py:12345678`"  # 8 digits: past any real file
+    assert "#L1234567)" in ai_review.linkify("`app/a.py:1234567`", t)  # 7 digits still links
+
+
+def test_a_failure_while_linking_never_costs_the_review(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+
+    def boom(text, target):
+        raise RuntimeError("secret detail that must not reach a public log")
+
+    monkeypatch.setattr(ai_review, "linkify", boom)
+    http = FakeHttp(head_sha=SHA)
+    assert ai_review.run(_run_env(), http, _no_sleep) == 0
+    (_, _, _, body), = http.writes()
+    assert "`app/a.py:1` - bad" in json.loads(body)["body"]  # the review is still posted, just unlinked
+    out = capsys.readouterr().out
+    assert "could not link citations (RuntimeError)" in out and "secret detail" not in out
+
+
+def test_line_counts_follow_githubs_newline_only_numbering(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    # Two lines by GitHub's count; str.splitlines() would call it three (it splits on form feed).
+    assert ai_review._line_count("a\x0cb\nc\n") == 2
+    assert [ai_review._line_count(t) for t in ("", "x", "x\n", "x\ny", "x\ny\n", "\n")] == [0, 1, 1, 2, 2, 1]
+    answer = "**[NIT]** `app/a.py:2` - last line\n**[NIT]** `app/a.py:3` - past the end"
+    http = FakeHttp(model_body={"choices": [{"message": {"content": answer}}]}, head_sha=SHA, files={"app/a.py": "a\x0cb\nc\n"})
+    assert ai_review.run(_run_env(), http, _no_sleep) == 0
+    (_, _, _, body), = http.writes()
+    comment = json.loads(body)["body"]
+    assert "app/a.py#L2)" in comment and "app/a.py:3`](" not in comment
+
+
+# --- line numbers on full-file context, so a model copies a citation instead of counting ------
+
+
+def test_number_lines_prefixes_each_line_with_its_right_aligned_number():
+    assert ai_review._number_lines("a\nb\n") == "1 | a\n2 | b"
+    assert ai_review._number_lines("a\nb") == "1 | a\n2 | b"  # no trailing newline
+    assert ai_review._number_lines("a\n\nb") == "1 | a\n2 | \n3 | b"  # blank lines are lines
+    ten = "\n".join(f"l{i}" for i in range(1, 11))
+    numbered = ai_review._number_lines(ten).split("\n")
+    assert numbered[0] == " 1 | l1" and numbered[9] == "10 | l10"  # the pipes line up
+
+
+def test_number_lines_agrees_with_the_line_count_used_to_validate_links():
+    for text in ["", "x", "x\n", "x\ny", "x\ny\n", "\n", "a\x0cb\nc\n", "a b\nc"]:
+        numbered = ai_review._number_lines(text)
+        last = int(numbered.rsplit("\n", 1)[-1].split("|")[0]) if numbered else 0
+        assert last == ai_review._line_count(text), repr(text)  # a cited number and a link's line are the same line
+
+
+def test_number_lines_leaves_a_line_that_already_looks_numbered_intact():
+    assert ai_review._number_lines("12 | x = a | b") == "1 | 12 | x = a | b"
+
+
+def test_build_messages_numbers_the_file_blocks_but_not_the_diff_and_explains_the_prefix():
+    sel = ai_review.select_files(FILE_A, 10_000)
+    system, user = ai_review.build_messages("", "t", sel, "abc", (), [ai_review.Block("app/a.py", "l1\nl2\nl3")], ())
+    assert "1 | l1\n2 | l2\n3 | l3" in user["content"]
+    assert "+x = 2" in user["content"] and "1 | +x = 2" not in user["content"]  # the diff stays a plain diff
+    assert "starts with its line number" in system["content"] and "never put the prefix in code you suggest" in system["content"]
+
+
+def test_run_sends_numbered_changed_files_to_the_model(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    http = FakeHttp(head_sha=SHA, files={"app/a.py": "l1\nl2\nl3\n"})
+    assert ai_review.run(_run_env(), http, _no_sleep) == 0
+    prompt = json.loads(next(c for c in http.calls if c[1].endswith("/chat/completions"))[3])["messages"][1]["content"]
+    assert "1 | l1\n2 | l2\n3 | l3" in prompt
