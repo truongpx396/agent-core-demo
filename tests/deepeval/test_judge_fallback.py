@@ -1,26 +1,30 @@
-"""Hermetic tests for `tests/deepeval/conftest.py`'s backup-judge fallback
-chain (`_call_with_fallbacks` / `_acall_with_fallbacks`) — deliberately NOT
-marked `deepeval`: they call no model and need no key, only deepeval's
-fallback RULE, so they run in the default `make test` tier on every PR
-(the `deepeval`-marked files beside this one are manual/advisory, and a
+"""Hermetic tests for `tests/deepeval/judge_fallback.py` — the deepeval
+judges' backup chain: the hand-off rule (`call_with_fallbacks` /
+`acall_with_fallbacks`) and which providers/models make up the chain
+(`backup_chain_spec`). Deliberately NOT marked `deepeval`: they call no
+model and need no key, so they run in the default `make test` tier on every
+PR (the `deepeval`-marked files beside this one are manual/advisory, and a
 rule that decides whether a rate-limited judge hands off or fails the run
 shouldn't only be exercised by a run that has already hit the limit).
 
 The chain exists because the original single `plugsky-micro` backup left a
 gap: once the primary (Gemini/Groq) rate-limited AND `plugsky-micro` did
 too, the second error propagated and failed the test even though
-`plugsky-lite` — the other model Plugsky's free plan grants — was never
-tried. Nothing here proves Plugsky's real limits are per-model (its
-published 30 req/min is per plan); it proves the hand-off rule itself.
+`plugsky-lite` was never tried. Nothing here proves a provider's real limits
+(Plugsky's 30 req/min is per plan; OpenRouter's free 20 req/min + 50/day is
+account-wide, not per model); it proves the hand-off rule and the ordering.
 """
 import httpx
 import openai
 import pytest
 
-from tests.deepeval.conftest import (
-    _acall_with_fallbacks,
-    _call_with_fallbacks,
-    _parse_backup_models,
+from tests.deepeval.judge_fallback import (
+    OPENROUTER,
+    PLUGSKY,
+    acall_with_fallbacks,
+    backup_chain_spec,
+    call_with_fallbacks,
+    parse_model_list,
 )
 
 
@@ -65,11 +69,11 @@ class _FakeModel:
 
 
 def _sync(models):
-    return _call_with_fallbacks(models, lambda model: model.run())
+    return call_with_fallbacks(models, lambda model: model.run())
 
 
 async def _async(models):
-    return await _acall_with_fallbacks(models, lambda model: model.arun())
+    return await acall_with_fallbacks(models, lambda model: model.arun())
 
 
 def test_a_healthy_primary_never_touches_the_backups():
@@ -177,15 +181,78 @@ async def test_async_a_non_transient_error_is_not_swallowed():
 
 
 @pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        (None, ("plugsky-micro", "plugsky-lite")),
-        ("", ("plugsky-micro", "plugsky-lite")),
-        ("   ", ("plugsky-micro", "plugsky-lite")),
-        (",,", ("plugsky-micro", "plugsky-lite")),
-        ("plugsky-micro", ("plugsky-micro",)),
-        ("plugsky-lite , plugsky-micro", ("plugsky-lite", "plugsky-micro")),
-    ],
+    "raw",
+    [None, "", "   ", ",,"],
 )
-def test_backup_model_env_is_an_ordered_list_and_blank_means_the_default_chain(raw, expected):
-    assert _parse_backup_models(raw) == expected
+def test_a_blank_models_env_means_the_providers_default_not_no_backup(raw):
+    assert parse_model_list(raw, ("a", "b")) == ("a", "b")
+
+
+def test_a_models_env_is_an_ordered_list_and_a_single_name_still_works():
+    assert parse_model_list("plugsky-lite , plugsky-micro", ("x",)) == ("plugsky-lite", "plugsky-micro")
+    assert parse_model_list("plugsky-micro", ("x",)) == ("plugsky-micro",)
+
+
+def _names(spec):
+    return [(provider.name, model) for provider, model in spec]
+
+
+def test_no_api_key_means_no_backup_chain_at_all():
+    assert backup_chain_spec({}) == []
+    # An empty secret (CI passes `${{ secrets.X }}` through even when unset) is "not set".
+    assert backup_chain_spec({"PLUGSKY_API_KEY": "", "OPENROUTER_API_KEY": ""}) == []
+
+
+def test_models_env_without_a_key_does_not_enable_a_provider():
+    assert backup_chain_spec({"DEEPEVAL_BACKUP_MODEL": "plugsky-micro"}) == []
+
+
+def test_the_default_chain_is_plugsky_micro_then_lite_then_openrouter_so_the_thinnest_quota_is_last():
+    spec = backup_chain_spec({"PLUGSKY_API_KEY": "k1", "OPENROUTER_API_KEY": "k2"})
+
+    assert _names(spec) == [
+        ("plugsky", "plugsky-micro"),
+        ("plugsky", "plugsky-lite"),
+        ("openrouter", "nvidia/nemotron-3-super-120b-a12b:free"),
+        ("openrouter", "qwen/qwen3.8-27b:free"),
+    ]
+
+
+def test_each_provider_is_enabled_by_its_own_key_alone():
+    only_plugsky = backup_chain_spec({"PLUGSKY_API_KEY": "k"})
+    only_openrouter = backup_chain_spec({"OPENROUTER_API_KEY": "k"})
+
+    assert {provider for provider, _ in only_plugsky} == {PLUGSKY}
+    assert {provider for provider, _ in only_openrouter} == {OPENROUTER}
+
+
+def test_each_providers_models_env_overrides_only_that_provider():
+    spec = backup_chain_spec(
+        {
+            "PLUGSKY_API_KEY": "k1",
+            "OPENROUTER_API_KEY": "k2",
+            "DEEPEVAL_OPENROUTER_MODEL": "qwen/qwen3.8-27b:free, google/gemma-4-31b-it:free",
+        }
+    )
+
+    assert _names(spec) == [
+        ("plugsky", "plugsky-micro"),
+        ("plugsky", "plugsky-lite"),
+        ("openrouter", "qwen/qwen3.8-27b:free"),
+        ("openrouter", "google/gemma-4-31b-it:free"),
+    ]
+
+
+def test_the_original_single_backup_knob_still_selects_plugsky_models():
+    """`DEEPEVAL_BACKUP_MODEL` predates the chain; an existing `.env` that
+    sets one name must keep meaning "that Plugsky model", not be ignored."""
+    spec = backup_chain_spec({"PLUGSKY_API_KEY": "k", "DEEPEVAL_BACKUP_MODEL": "plugsky-lite"})
+
+    assert _names(spec) == [("plugsky", "plugsky-lite")]
+
+
+def test_every_default_openrouter_model_is_a_free_variant():
+    """A paid id here would bill the account on a fallback nobody is
+    watching; `:free` is the contract this provider is picked on."""
+    assert OPENROUTER.default_models
+    assert all(model.endswith(":free") for model in OPENROUTER.default_models)
