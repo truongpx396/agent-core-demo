@@ -90,14 +90,13 @@ def cooldown_for(exc: BaseException) -> float:
 
 
 def model_list(value: str | None, default: Sequence[str], exclude: Sequence[str] = ()) -> list[str]:
-    """Model names from a comma-separated variable: `default` when unset or blank, none at all for the
-    word `none`; blanks, repeats and anything in `exclude` (the primary) are dropped, order kept."""
-    if value is None or not value.strip():
-        names = list(default)
-    elif value.strip().lower() == "none":
-        names = []
+    """Model names from a comma-separated variable: `default` when unset, blank or holding no name at all (a
+    stray `,,` must not silently switch a provider off), none at all for the word `none`; blanks, repeats and
+    anything in `exclude` (the primary) are dropped, order kept."""
+    if value is not None and value.strip().lower() == "none":
+        names: list[str] = []
     else:
-        names = value.split(",")
+        names = [name for name in (value or "").split(",") if name.strip()] or list(default)
     unique: list[str] = []
     for raw in names:
         name = raw.strip()
@@ -178,10 +177,10 @@ class FailoverChain:
         raise AssertionError("unreachable: the loop returns or raises")  # pragma: no cover
 
 
-def build_chain(primary: Any, fallbacks: Sequence[Any] = (), backup: Any = None, **kwargs: Any) -> FailoverChain:
-    """primary, then the same-provider fallbacks in order, then the optional backup; each named by its model."""
-    models = [primary, *fallbacks, *([backup] if backup is not None else [])]
-    return FailoverChain([Link(model.get_model_name(), model) for model in models], **kwargs)
+def build_chain(primary: Any, fallbacks: Sequence[Any] = (), backups: Sequence[Any] = (), **kwargs: Any) -> FailoverChain:
+    """primary, then the same-provider fallbacks in order, then the backup providers' models in order
+    (tests/deepeval/backup_providers.py); each link is named by its model."""
+    return FailoverChain([Link(model.get_model_name(), model) for model in (primary, *fallbacks, *backups)], **kwargs)
 
 
 def make_judge(chain: FailoverChain) -> Any:
