@@ -40,12 +40,12 @@ only — see `deepeval_conversation_judge` below for why
 Both judge fixtures below answer through a FAILOVER CHAIN (tests/deepeval/
 fallback.py; `_with_fallbacks` here): the primary, then other models on the
 same provider (`DEFAULT_*_FALLBACKS`, each with its own free-tier quota), then
-the optional free Plugsky backup (https://plugsky.com, OpenAI-compatible,
-`PLUGSKY_API_KEY`). A hand-over happens ONLY once the primary's own retry
-policy (deepeval.models.retry_policy — a few attempts with backoff) has given
-up on a rate limit OR a transient overload, and only for those. Absent
-PLUGSKY_API_KEY and with `none` fallbacks, a fixture behaves exactly as it
-always did — additive, never a new hard requirement.
+the optional free backup providers (tests/deepeval/backup_providers.py: Plugsky,
+then OpenRouter, each enabled by its own key). A hand-over happens ONLY once the
+primary's own retry policy (deepeval.models.retry_policy — a few attempts with
+backoff) has given up on a rate limit OR a transient overload, and only for
+those. With no backup key set and `none` fallbacks, a fixture behaves exactly as
+it always did — additive, never a new hard requirement.
 
 The first version of this (a single Plugsky backup, widened for 503s after PR
 #44) could not engage on the very case it existed for: deepeval's tenacity
@@ -79,6 +79,7 @@ import os
 import pytest
 
 from tests.containers import ensure_crawl4ai, ensure_ollama
+from tests.deepeval.backup_providers import build_backup_models
 from tests.deepeval.fallback import build_chain, make_judge, model_list
 
 # Separate from tests/live/conftest.py's TEST_LLM_MODEL, deliberately: these
@@ -91,12 +92,8 @@ DEEPEVAL_JUDGE_MODEL = os.environ.get("DEEPEVAL_JUDGE_MODEL", "gemini-3.1-flash-
 DEEPEVAL_CONVERSATION_JUDGE_MODEL = os.environ.get(
     "DEEPEVAL_CONVERSATION_JUDGE_MODEL", "openai/gpt-oss-120b"
 )
-# Optional free backup judge for both fixtures below — see this module's
-# own docstring for why (a transient-error-only fallback, never a replacement).
-DEEPEVAL_BACKUP_MODEL = os.environ.get("DEEPEVAL_BACKUP_MODEL", "plugsky-micro")
-PLUGSKY_BASE_URL = "https://api.plugsky.com/v1"
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-# Other models on the SAME provider (same key), tried in order before the Plugsky backup when a judge is rate
+# Other models on the SAME provider (same key), tried in order before the backup providers when a judge is rate
 # limited or overloaded: each model has its own free-tier quota (a Groq 429 names the model; a Gemini one says
 # `PerProjectPerModel`), so one being spent says nothing about the next. Comma-separated; `none` turns them off;
 # unset means these defaults, so CI needs no new secret or variable. See tests/deepeval/fallback.py.
@@ -112,40 +109,19 @@ def deepeval_ollama() -> dict[str, str]:
     return ensure_ollama(DEEPEVAL_MODEL)
 
 
-def _plugsky_backup():
-    """The optional free backup judge (https://plugsky.com, 100%
-    OpenAI-compatible, `plugsky-micro` = NVIDIA Nemotron 3 Super 120B on
-    the free tier) — `None` if PLUGSKY_API_KEY isn't set, so callers can
-    treat "no backup configured" and "primary never rate-limited" the
-    same way (just use the primary). Uses deepeval's own `LocalModel`
-    (a generic OpenAI-SDK client), the same class `deepeval_conversation_judge`
-    already uses for Groq — Plugsky needs no dedicated model class, only a
-    different `base_url`."""
-    api_key = os.environ.get("PLUGSKY_API_KEY")
-    if not api_key:
-        return None  # checked BEFORE the import below, so "no backup" needs no deepeval (the fast `test` job has none)
-    from deepeval.models import LocalModel
-
-    return LocalModel(
-        model=DEEPEVAL_BACKUP_MODEL,
-        api_key=api_key,
-        base_url=PLUGSKY_BASE_URL,
-        temperature=0,
-    )
-
-
 def _with_fallbacks(primary, fallbacks):
     """`primary` answered through the failover chain (tests/deepeval/fallback.py): then `fallbacks` (other models
-    on the same provider), then the optional Plugsky backup. Returns `primary` unchanged when there is nothing
+    on the same provider), then the optional backup providers' models (tests/deepeval/backup_providers.py:
+    Plugsky, then OpenRouter, each only if its key is set). Returns `primary` unchanged when there is nothing
     to fall back to, so a bare checkout behaves exactly as it always did.
 
     Engages only on a TRANSIENT failure (rate limit, overload, timeout), judged by looking inside deepeval's own
     tenacity `RetryError` wrapper: see fallback.py for the bug that made the previous version miss exactly that.
     """
-    backup = _plugsky_backup()
-    if not fallbacks and backup is None:
+    backups = build_backup_models()  # [] (and no deepeval import) when no backup key is set
+    if not fallbacks and not backups:
         return primary
-    return make_judge(build_chain(primary, fallbacks, backup))
+    return make_judge(build_chain(primary, fallbacks, backups))
 
 
 @pytest.fixture(scope="session")
@@ -159,8 +135,8 @@ def deepeval_judge():
     isn't OpenAI-compatible, so the real Google GenAI SDK is required
     (`pip install google-genai`). Fails fast with a clear message if
     GOOGLE_API_KEY isn't set, rather than an opaque 401 mid-test. Wrapped
-    in `_with_optional_backup` — see this module's own docstring for the
-    optional Plugsky fallback on a transient error.
+    through `_with_fallbacks` — see this module's own docstring for the
+    failover chain.
     """
     from deepeval.models import GeminiModel
 
@@ -186,9 +162,9 @@ def deepeval_conversation_judge():
     for Groq before it moved to Gemini (`deepeval.models.LocalModel` is a
     plain OpenAI-SDK client under a generic name — any OpenAI-compatible
     `base_url` works). Fails fast with a clear message if GROQ_API_KEY
-    isn't set, rather than an opaque 401 mid-test. Wrapped in
-    `_with_optional_backup` — see this module's own docstring for the
-    optional Plugsky fallback on a transient error.
+    isn't set, rather than an opaque 401 mid-test. Answers through
+    `_with_fallbacks` — see this module's own docstring for the failover
+    chain.
     """
     from deepeval.models import LocalModel
 

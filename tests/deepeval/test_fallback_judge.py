@@ -171,6 +171,9 @@ def test_a_per_day_limit_cools_a_model_for_an_hour_and_anything_else_for_five_mi
         (None, ("a", "b"), (), ["a", "b"]),
         ("", ("a", "b"), (), ["a", "b"]),
         ("   ", ("a",), (), ["a"]),  # blank means unset: the workflow passes an unset variable as ""
+        (",,", ("a", "b"), (), ["a", "b"]),  # no name in it at all: a typo must not silently switch the list off
+        (" , ,", ("a",), (), ["a"]),
+        ("primary", ("a",), ("primary",), []),  # but naming only the excluded primary really is an empty list
         ("x, y ,z", ("a",), (), ["x", "y", "z"]),
         ("x,,x, y", ("a",), (), ["x", "y"]),  # blanks and repeats dropped, order kept
         ("x,primary,y", ("a",), ("primary",), ["x", "y"]),  # the primary is never its own fallback
@@ -216,11 +219,11 @@ class Clock:
         return self.now
 
 
-def chain(*models, clock=None, notices=None, backup=None):
+def chain(*models, clock=None, notices=None, backups=()):
     kwargs = {"notify": (notices if notices is not None else []).append}
     if clock is not None:
         kwargs["clock"] = clock
-    return f.build_chain(models[0], list(models[1:]), backup, **kwargs)
+    return f.build_chain(models[0], list(models[1:]), backups, **kwargs)
 
 
 def test_the_primary_answers_alone_and_the_content_not_the_cost_tuple_is_returned():
@@ -256,7 +259,7 @@ def test_when_every_model_is_transiently_down_the_last_error_is_raised_and_the_l
 
 def test_the_chain_walks_in_order_primary_then_same_provider_models_then_the_backup():
     models = [FakeModel("p", ServerError()), FakeModel("m1", ServerError()), FakeModel("m2", ServerError()), FakeModel("backup")]
-    assert chain(models[0], models[1], models[2], backup=models[3]).generate("hi") == "answer-from-backup"
+    assert chain(models[0], models[1], models[2], backups=[models[3]]).generate("hi") == "answer-from-backup"
     assert [len(m.calls) for m in models] == [1, 1, 1, 1]
 
 
@@ -300,10 +303,12 @@ def test_an_empty_chain_is_refused():
         f.FailoverChain([])
 
 
-def test_build_chain_names_each_link_by_its_model_and_omits_a_missing_backup():
-    built = f.build_chain(FakeModel("p"), [FakeModel("m1")], None)
+def test_build_chain_names_each_link_by_its_model_and_appends_every_backup_in_order():
+    built = f.build_chain(FakeModel("p"), [FakeModel("m1")], [])
     assert [link.name for link in built._links] == ["p", "m1"]
-    assert [link.name for link in f.build_chain(FakeModel("p"), [], FakeModel("backup"))._links] == ["p", "backup"]
+    several = f.build_chain(FakeModel("p"), [FakeModel("m1")], [FakeModel("b1"), FakeModel("b2")])
+    assert [link.name for link in several._links] == ["p", "m1", "b1", "b2"]  # same-provider models first, backups after
+    assert [link.name for link in f.build_chain(FakeModel("p"))._links] == ["p"]  # both lists are optional
 
 
 async def test_the_async_path_behaves_the_same_including_the_wrapped_rate_limit_and_the_content_unwrapping():
@@ -339,6 +344,7 @@ def test_make_judge_is_a_real_deepeval_model_named_for_the_primary_and_returns_c
 
 def test_conftest_returns_the_primary_unchanged_when_there_is_nothing_to_fall_back_to(monkeypatch):
     monkeypatch.delenv("PLUGSKY_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     from tests.deepeval import conftest
 
     primary = FakeModel("p")
@@ -352,6 +358,7 @@ def test_conftest_wraps_the_primary_when_fallbacks_or_a_backup_exist(monkeypatch
     from tests.deepeval import conftest
 
     monkeypatch.delenv("PLUGSKY_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     wrapped = conftest._with_fallbacks(FakeModel("p"), [FakeModel("s")])
     assert isinstance(wrapped, DeepEvalBaseLLM) and wrapped.get_model_name() == "p"
 
