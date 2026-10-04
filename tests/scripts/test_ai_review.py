@@ -641,3 +641,42 @@ def test_line_counts_follow_githubs_newline_only_numbering(tmp_path, monkeypatch
     (_, _, _, body), = http.writes()
     comment = json.loads(body)["body"]
     assert "app/a.py#L2)" in comment and "app/a.py:3`](" not in comment
+
+
+# --- line numbers on full-file context, so a model copies a citation instead of counting ------
+
+
+def test_number_lines_prefixes_each_line_with_its_right_aligned_number():
+    assert ai_review._number_lines("a\nb\n") == "1 | a\n2 | b"
+    assert ai_review._number_lines("a\nb") == "1 | a\n2 | b"  # no trailing newline
+    assert ai_review._number_lines("a\n\nb") == "1 | a\n2 | \n3 | b"  # blank lines are lines
+    ten = "\n".join(f"l{i}" for i in range(1, 11))
+    numbered = ai_review._number_lines(ten).split("\n")
+    assert numbered[0] == " 1 | l1" and numbered[9] == "10 | l10"  # the pipes line up
+
+
+def test_number_lines_agrees_with_the_line_count_used_to_validate_links():
+    for text in ["", "x", "x\n", "x\ny", "x\ny\n", "\n", "a\x0cb\nc\n", "a b\nc"]:
+        numbered = ai_review._number_lines(text)
+        last = int(numbered.rsplit("\n", 1)[-1].split("|")[0]) if numbered else 0
+        assert last == ai_review._line_count(text), repr(text)  # a cited number and a link's line are the same line
+
+
+def test_number_lines_leaves_a_line_that_already_looks_numbered_intact():
+    assert ai_review._number_lines("12 | x = a | b") == "1 | 12 | x = a | b"
+
+
+def test_build_messages_numbers_the_file_blocks_but_not_the_diff_and_explains_the_prefix():
+    sel = ai_review.select_files(FILE_A, 10_000)
+    system, user = ai_review.build_messages("", "t", sel, "abc", (), [ai_review.Block("app/a.py", "l1\nl2\nl3")], ())
+    assert "1 | l1\n2 | l2\n3 | l3" in user["content"]
+    assert "+x = 2" in user["content"] and "1 | +x = 2" not in user["content"]  # the diff stays a plain diff
+    assert "starts with its line number" in system["content"] and "never put the prefix in code you suggest" in system["content"]
+
+
+def test_run_sends_numbered_changed_files_to_the_model(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    http = FakeHttp(head_sha=SHA, files={"app/a.py": "l1\nl2\nl3\n"})
+    assert ai_review.run(_run_env(), http, _no_sleep) == 0
+    prompt = json.loads(next(c for c in http.calls if c[1].endswith("/chat/completions"))[3])["messages"][1]["content"]
+    assert "1 | l1\n2 | l2\n3 | l3" in prompt

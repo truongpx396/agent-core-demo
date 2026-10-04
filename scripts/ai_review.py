@@ -100,6 +100,11 @@ Besides the diff you may get two kinds of context blocks. <reference-...> blocks
 main branch that shows how this repo does something: compare the change against them. <file-...> \
 blocks are the full text of a changed file at the PR head, for the code around the diff. Context \
 is for understanding only: report problems only on lines the diff adds or changes.
+
+Every line in a <file-...> block starts with its line number and ` | `. That prefix is not part of \
+the code: cite those numbers in `path:line` (or `path:start-end` for a span), and never put the \
+prefix in code you suggest. For a file with no <file-...> block, take the line from the `+start` of \
+the diff's `@@` hunk header and count down.
 """
 
 
@@ -385,6 +390,23 @@ def fetch_full_files(github: "GitHub", head_sha: str, paths: Sequence[str], budg
     return blocks, skipped + list(paths[_MAX_CONTEXT_FILES * 2 :])
 
 
+def _number_lines(text: str) -> str:
+    """Prefixes every line with its number, right-aligned: `  284 | code`.
+
+    Models count lines badly: in a planted-violation test the cited line was often a line or two
+    off. A citation becomes a link to exactly that line, so the model is handed the numbers to
+    copy instead of being asked to count. Numbering follows GitHub's (newline-only, see
+    `_line_count`), so a cited number and the line a link lands on are the same line.
+    """
+    if not text:
+        return ""  # an empty file has no lines, not one blank line
+    lines = text.split("\n")
+    if text.endswith("\n"):
+        lines.pop()  # the empty string after the final newline is not a line
+    width = len(str(len(lines)))
+    return "\n".join(f"{number:>{width}} | {line}" for number, line in enumerate(lines, start=1))
+
+
 def build_messages(
     rules: str,
     title: str,
@@ -412,7 +434,7 @@ def build_messages(
     for block in references:
         user += f"\n<reference-{boundary} ref={json.dumps(block.label)} why={json.dumps(block.why)}>\n{block.text}\n</reference-{boundary}>\n"
     for block in files:
-        user += f"\n<file-{boundary} path={json.dumps(block.label)}>\n{block.text}\n</file-{boundary}>\n"
+        user += f"\n<file-{boundary} path={json.dumps(block.label)}>\n{_number_lines(block.text)}\n</file-{boundary}>\n"
     user += f"\n<diff-{boundary}>\n{selection.text}\n</diff-{boundary}>\n"
     if files_skipped:
         user += "\nNo full text attached for (judge them from the diff alone): " + "; ".join(files_skipped) + "\n"
