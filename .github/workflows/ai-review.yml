@@ -13,6 +13,7 @@ name: AI review (advisory)
 #              AI_REVIEW_MAX_DIFF_CHARS (optional, default 60000)
 #              AI_REVIEW_MAX_CONTEXT_CHARS (optional, default 60000; 0 = send the diff only)
 #              AI_REVIEW_INLINE   (optional, default on; 0 = one summary comment, no inline threads)
+#              AI_REVIEW_MAX_FILE_CHARS    (optional, default 40000; the most one file may add to that budget)
 #   Secret:    AI_REVIEW_API_KEY   optional if the endpoint needs no key
 #   Fallbacks (all optional; tried in order if the provider before has failed for good):
 #   Variables: AI_REVIEW_FALLBACK1_MODEL     required to turn slot 1 on (e.g. another model on the same provider)
@@ -86,6 +87,7 @@ jobs:
           AI_REVIEW_MAX_DIFF_CHARS: ${{ vars.AI_REVIEW_MAX_DIFF_CHARS }}
           AI_REVIEW_MAX_CONTEXT_CHARS: ${{ vars.AI_REVIEW_MAX_CONTEXT_CHARS }}
           AI_REVIEW_INLINE: ${{ vars.AI_REVIEW_INLINE }}
+          AI_REVIEW_MAX_FILE_CHARS: ${{ vars.AI_REVIEW_MAX_FILE_CHARS }}
           AI_REVIEW_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}
           AI_REVIEW_FALLBACK1_BASE_URL: ${{ vars.AI_REVIEW_FALLBACK1_BASE_URL }}
           AI_REVIEW_FALLBACK1_MODEL: ${{ vars.AI_REVIEW_FALLBACK1_MODEL }}

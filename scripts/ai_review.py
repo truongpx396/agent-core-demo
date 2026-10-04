@@ -86,7 +86,7 @@ Http = Callable[[str, str, Mapping[str, str], bytes | None, float], tuple[int, b
 # model to be distracted by), so every kind is capped small and the caps are not knobs.
 _REF_CHARS = 6_000  # one reference snippet
 _REF_TOTAL_CHARS = 24_000  # all reference snippets together
-_FILE_CHARS = 40_000  # one full file; a bigger one is skipped, never cut (half a file misleads)
+_FILE_CHARS = 40_000  # default cap for one full file (AI_REVIEW_MAX_FILE_CHARS); a bigger file is skipped, never cut (half a file misleads)
 _MAX_CONTEXT_FILES = 12
 
 # Model-call retries. Only statuses that mean "try again later" are retried: rate limiting and
@@ -143,6 +143,7 @@ class Config:
     pr_number: int
     max_diff_chars: int
     max_context_chars: int  # full-file budget; 0 turns full-file context off
+    max_file_chars: int  # the most one file may contribute to it; a bigger file is skipped, not cut
     timeout: float
     rules_path: str
     context_config_path: str
@@ -168,6 +169,7 @@ class Config:
             pr_number = int(need("PR_NUMBER"))
             max_chars = int(env.get("AI_REVIEW_MAX_DIFF_CHARS") or 60_000)
             max_context = int(env.get("AI_REVIEW_MAX_CONTEXT_CHARS") or 60_000)
+            max_file = int(env.get("AI_REVIEW_MAX_FILE_CHARS") or _FILE_CHARS)
             timeout = float(env.get("AI_REVIEW_TIMEOUT_S") or 180)
         except ValueError as exc:
             raise ReviewError("PR_NUMBER and the AI_REVIEW_MAX_*_CHARS / AI_REVIEW_TIMEOUT_S values must be numbers") from exc
@@ -192,6 +194,7 @@ class Config:
             pr_number=pr_number,
             max_diff_chars=max_chars,
             max_context_chars=max_context,
+            max_file_chars=max_file,
             timeout=timeout,
             rules_path=env.get("AI_REVIEW_RULES_PATH", ".github/ai-review-rules.md"),
             context_config_path=env.get("AI_REVIEW_CONTEXT_PATH", ".github/ai-review-context.toml"),
@@ -396,7 +399,9 @@ def load_references(root: Path, config_path: str, changed: Sequence[str]) -> lis
     return blocks
 
 
-def fetch_full_files(github: "GitHub", head_sha: str, paths: Sequence[str], budget: int) -> tuple[list[Block], list[str]]:
+def fetch_full_files(
+    github: "GitHub", head_sha: str, paths: Sequence[str], budget: int, max_file_chars: int = _FILE_CHARS
+) -> tuple[list[Block], list[str]]:
     """Full text, at the PR head, of the changed files that fit. Returns (blocks, paths skipped).
 
     A file that is missing, too big or over budget is skipped, never cut and never fatal: its diff
@@ -413,7 +418,7 @@ def fetch_full_files(github: "GitHub", head_sha: str, paths: Sequence[str], budg
                 text = github.file_at(path, head_sha)
             except ReviewError:
                 text = None
-        if text is None or len(text) > _FILE_CHARS or used + len(text) > budget:
+        if text is None or len(text) > max_file_chars or used + len(text) > budget:
             skipped.append(path)
             continue
         blocks.append(Block(path, text))
@@ -844,7 +849,9 @@ def run(env: Mapping[str, str], http: Http = urllib_http, sleep: Callable[[float
         files: list[Block] = []
         files_skipped: list[str] = []
         if cfg.max_context_chars > 0 and head_sha:
-            files, files_skipped = fetch_full_files(github, head_sha, selection.full_text_paths, cfg.max_context_chars)
+            files, files_skipped = fetch_full_files(
+                github, head_sha, selection.full_text_paths, cfg.max_context_chars, cfg.max_file_chars
+            )
         messages = build_messages(rules, str(pull.get("title", "")), selection, None, references, files, files_skipped)
         if cfg.dry_run and cfg.fallbacks:
             print("[dry-run] providers, in order: " + describe_chain((Provider("primary", cfg.base_url, cfg.model, cfg.api_key), *cfg.fallbacks)))
