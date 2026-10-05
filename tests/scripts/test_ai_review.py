@@ -15,7 +15,10 @@ from urllib.request import Request
 
 import pytest
 
-from scripts import ai_review, ai_review_findings, ai_review_providers, ai_review_retry
+from scripts.ai_review import findings as ai_review_findings
+from scripts.ai_review import providers as ai_review_providers
+from scripts.ai_review import retry as ai_review_retry
+from scripts.ai_review import review as ai_review
 
 BASE = "https://llm.example/v1"
 GH = "https://gh.example"

@@ -3,7 +3,7 @@ name: AI review (advisory)
 # An LLM reads the PR diff and leaves ONE comment (edited in place on re-runs). It is advice for the
 # human reviewer: it never fails a check, is not a required status, and does not replace review.
 # Why advisory-only, why a script in this repo instead of a marketplace Action, and what the
-# script does about prompt injection: see scripts/ai_review.py and README ("AI review").
+# script does about prompt injection: see scripts/ai_review/ and README ("AI review").
 #
 # INERT BY DEFAULT. The job is skipped until the repository VARIABLE `AI_REVIEW_BASE_URL` is set,
 # so merging this file changes nothing and sends no code anywhere. To turn it on, in Settings ->
@@ -81,9 +81,13 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
-      # The PR that first adds the script has a base without it; skip instead of failing it.
+      # The PR that first adds the script has a base without it; skip instead of failing it. Both
+      # layouts are accepted: this job runs the BASE commit's script, so a PR opened before
+      # scripts/ai_review.py became the scripts/ai_review/ package still has the single-file one.
+      # `python3 -m scripts.ai_review` below resolves either way. Drop the old path once no open PR
+      # has a base that predates the package.
       - name: Review the diff
-        if: hashFiles('scripts/ai_review.py') != ''
+        if: hashFiles('scripts/ai_review/__main__.py', 'scripts/ai_review.py') != ''
         env:
           AI_REVIEW_BASE_URL: ${{ vars.AI_REVIEW_BASE_URL }}
           AI_REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL }}

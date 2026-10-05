@@ -8,7 +8,7 @@ hunk is a 422, and a batch is atomic), so a regression here is a 422 that costs 
 """
 import pytest
 
-from scripts import ai_review_findings as f
+from scripts.ai_review import findings as f
 
 DIFF = "\n".join(
     [

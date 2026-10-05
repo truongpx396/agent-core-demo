@@ -34,10 +34,8 @@ Design points that are NOT obvious from the code:
 import ast
 import fnmatch
 import json
-import os
 import re
 import secrets
-import sys
 import time
 import tomllib
 import urllib.error
@@ -49,7 +47,7 @@ from http.client import HTTPMessage
 from pathlib import Path
 from typing import IO
 
-from scripts.ai_review_findings import (
+from scripts.ai_review.findings import (
     CITATION,
     Anchor,
     Placement,
@@ -59,15 +57,15 @@ from scripts.ai_review_findings import (
     parse_findings,
     place_findings,
 )
-from scripts.ai_review_providers import Http as ProviderHttp
-from scripts.ai_review_providers import (
+from scripts.ai_review.providers import Http as ProviderHttp
+from scripts.ai_review.providers import (
     Provider,
     build_fallbacks,
     describe_chain,
     fallback_note,
     walk_chain,
 )
-from scripts.ai_review_retry import (
+from scripts.ai_review.retry import (
     ATTEMPTS,
     DAILY_QUOTA_ATTEMPTS,
     MAX_WAIT_S,
@@ -529,7 +527,7 @@ def _is_timeout(exc: OSError) -> bool:
 
 
 def chat_completion(http: Http, cfg: Config, messages: list[dict[str, str]], sleep: Callable[[float], None] = time.sleep) -> str:
-    """One review from the model, retrying transient failures (policy in `ai_review_retry`).
+    """One review from the model, retrying transient failures (policy in `retry.py`).
 
     A provider's own wait hint beats our guess, a 429 on a DAILY quota is retried once, and
     the waits are capped (one at 60s, all together at 120s) so a step never outlasts the job.
@@ -594,7 +592,7 @@ def complete_with_fallbacks(
     clock: Callable[[], float] = time.monotonic,
 ) -> tuple[str, Provider]:
     """One review from the first provider that answers; returns (answer, the provider that gave it).
-    Which providers, in what order, and how a failure moves on to the next: `ai_review_providers`."""
+    Which providers, in what order, and how a failure moves on to the next: `providers.py`."""
 
     def ask(provider: Provider, bounded_http: ProviderHttp, bounded_sleep: Callable[[float], None]) -> str:
         view = replace(cfg, base_url=provider.base_url, model=provider.model, api_key=provider.api_key)
@@ -912,6 +910,3 @@ def run(env: Mapping[str, str], http: Http = urllib_http, sleep: Callable[[float
         print(f"::warning::AI review skipped: {type(exc).__name__}")
     return 0
 
-
-if __name__ == "__main__":
-    sys.exit(run(os.environ))

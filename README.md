@@ -426,7 +426,7 @@ app/
   job_queue/   Redis Streams queue, agent worker, reclaim
   mcp/         server, ops_server, client
   retrieval/   embeddings, Qdrant store, semantic cache
-scripts/       seed, eval, cron jobs, ops_investigate, defectdojo import, AI review
+scripts/       seed, eval, cron jobs, ops_investigate, defectdojo import; ai_review/ is the PR-review tool (a package)
 skills/ subagents/        the agent's own catalogs
 docker/ Dockerfile        ml-service, OpenSandbox, sandbox image; the app image (stays at the root: it is the build context)
 deploy/compose/           docker-compose*.yml — dev, prod, observability (dev and prod), load test

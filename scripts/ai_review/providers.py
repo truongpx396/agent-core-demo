@@ -1,9 +1,9 @@
 """Which providers the AI reviewer may try, in order, and how it moves from one to the next.
 
-Everything about fallback providers lives here, so `scripts/ai_review.py` only has to hand it the one
+Everything about fallback providers lives here, so `review.py` only has to hand it the one
 thing it cannot know: how to ask a single provider. Stdlib only, no network, no GitHub types.
 `walk_chain` takes that step (and the exception type that means "this provider failed") as
-parameters, which is also what lets this module sit below `ai_review.py` without importing it.
+parameters, which is also what lets this module sit below `review.py` without importing it.
 
 The primary is `AI_REVIEW_BASE_URL` / `AI_REVIEW_MODEL` / `AI_REVIEW_API_KEY`. The fallbacks are grouped
 by provider, because that is the only distinction that matters (a model is just a name; a provider
