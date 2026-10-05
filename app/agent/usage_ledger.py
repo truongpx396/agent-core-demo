@@ -7,11 +7,12 @@ Persisted in the same `appdata` Postgres database as sql_store.py
 (`usage_ledger` table, postgres-init/03-meter.sql). Every row is
 tenant+principal scoped.
 
-Cost comes from a small, explicit per-model price table
-(`PRICE_PER_1K_TOKENS_USD`) — $0 for any unlisted alias, true for every
-Ollama model this demo runs locally. Tokens are recorded unconditionally
-regardless of price, so pointing at a real paid provider and adding its
-alias is the only change needed for real cost tracking.
+Cost is NOT computed here. The agent node prices every LLM call as it happens
+(app/agent/pricing.py: LiteLLM's per-model input/output/cached rates) and keeps a
+running `total_cost_usd`; the caller hands that figure to `record_usage`. One
+number therefore feeds the in-run ceiling, the ledger and the tenant allowance,
+and they cannot disagree. An unpriced model records $0 here — loudly: see
+pricing.py and `agent_unpriced_usage_total` — never as a quiet default.
 """
 import logging
 import uuid
@@ -34,28 +35,25 @@ logger = logging.getLogger(__name__)
 # direction this module takes everywhere.
 RESERVATION_STALE_AFTER_MINUTES = 5
 
-# Approximate, illustrative USD/1000-token pricing — update to match your
-# provider's rates. An alias absent from this table costs $0 (true for
-# every model this app runs locally via Ollama/LiteLLM).
-PRICE_PER_1K_TOKENS_USD: dict[str, float] = {
-    "gpt-4o": 0.005,
-    "gpt-4o-mini": 0.00015,
-}
-
 
 async def record_usage(
-    ctx: SecurityCtx | None, thread_id: str, model_alias: str, total_tokens: int
+    ctx: SecurityCtx | None,
+    thread_id: str,
+    model_alias: str,
+    total_tokens: int,
+    cost_usd: float,
 ) -> None:
     """Best-effort write-through after a turn completes
     (`runtime.py::_record_turn_metrics`). A failing write must not fail
     the turn it's recording — same degrade-don't-crash posture as
     `semantic_cache.py::set()`. No-ops without a valid ctx or with zero
-    tokens (unattributable / nothing to meter).
+    tokens (unattributable / nothing to meter). `cost_usd` is the turn's
+    running total from the agent node (see the module docstring); a negative
+    figure is clamped to 0 so a bad price can never credit a tenant.
     """
     if not valid_ctx(ctx) or total_tokens <= 0:
         return
-    price_per_1k = PRICE_PER_1K_TOKENS_USD.get(model_alias, 0.0)
-    cost_usd = (total_tokens / 1000) * price_per_1k
+    cost_usd = max(cost_usd, 0.0)
     # The resolved CONCRETE model behind `model_alias` (GRAPH_PATTERNS.md
     # pattern 38) — None if resolution itself degrades (LiteLLM
     # unreachable, alias unknown); never blocks the write.

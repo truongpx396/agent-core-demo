@@ -42,10 +42,12 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from app.agent import pricing
 from app.agent.graph import MAX_ITERATIONS
 from app.agent.graph_build import build_graph
 from app.core import metrics
 from app.core.config import (
+    CHAT_MODEL,
     CHECKPOINTER_DATABASE_URL,
     CHECKPOINTER_POOL_MAX_SIZE,
     MAX_COST_USD_PER_TENANT_PER_DAY,
@@ -155,6 +157,25 @@ def _tenant_budget_envelope() -> ErrorEnvelope:
     return ErrorEnvelope(
         code=ErrorCode.TENANT_BUDGET_EXCEEDED,
         message="This tenant's daily usage budget has been reached. Please try again later.",
+    )
+
+
+async def _chat_model_refused_as_unpriced() -> bool:
+    """True if a turn must be refused because the chat model has no known price
+    and `UNPRICED_MODEL_POLICY` is "block". Checked before any model work, and
+    before the tenant allowance: every dollar ceiling multiplies tokens by a
+    price, so with none they all read $0 and "within budget" means nothing. The
+    price is cached (pricing.get_price), so this costs no round trip per turn."""
+    return await pricing.refuse_unpriced(CHAT_MODEL)
+
+
+def _model_unpriced_envelope() -> ErrorEnvelope:
+    return ErrorEnvelope(
+        code=ErrorCode.MODEL_UNPRICED,
+        message=(
+            "This deployment cannot meter the configured model's cost, so it is not "
+            "serving requests. This is a configuration problem on our side."
+        ),
     )
 
 

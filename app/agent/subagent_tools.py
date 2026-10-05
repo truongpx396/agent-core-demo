@@ -333,7 +333,10 @@ async def _run_subagent_impl(
         nested_domain = _SubagentDomainPlugin(nested_tools)
 
         nested_graph = build_subagent_graph(
-            deps=GraphDeps(llm=nested_llm),
+            # model_alias: price this run's calls by the specialist's own model
+            # (spec 008 A2) — the in-run ceiling used to price every step by
+            # the parent's alias while the ledger row used the specialist's.
+            deps=GraphDeps(llm=nested_llm, model_alias=record.model or CHAT_MODEL),
             manifest=nested_manifest,
             domain=nested_domain,
             max_iterations=MAX_SUBAGENT_ITERATIONS,
@@ -432,7 +435,9 @@ async def _run_subagent_impl(
         )
         outcome = "budget_exceeded"
 
-    await record_usage(ctx, nested_thread_id, record.model or CHAT_MODEL, total_tokens)
+    await record_usage(
+        ctx, nested_thread_id, record.model or CHAT_MODEL, total_tokens, total_cost_usd
+    )
 
     metrics.agent_subagent_run_total.labels(subagent=record.name, outcome=outcome).inc()
     metrics.agent_subagent_duration_seconds.labels(subagent=record.name).observe(duration)

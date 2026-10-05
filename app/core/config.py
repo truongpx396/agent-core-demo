@@ -4,6 +4,8 @@ Values are read from the environment / .env. A single `Settings` instance is
 created and its fields are also re-exported as module constants so existing
 imports (`from app.core.config import QDRANT_URL`) keep working.
 """
+from typing import Literal
+
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -129,6 +131,22 @@ class Settings(BaseSettings):
     # distinct from MAX_COST_USD_PER_TURN, which only sees one turn at a
     # time. Same "$0 on local Ollama" note applies.
     max_cost_usd_per_tenant_per_day: float = 20.0
+
+    # Model prices come from LiteLLM's `GET /model/info` (app/agent/pricing.py),
+    # which merges its cost map with any `model_info` a deployment sets in the
+    # LiteLLM config. A price is trusted for this long before it is read again,
+    # so a change in the proxy's pricing is picked up without a restart.
+    # Operational, like request_timeout_seconds: not a spend ceiling.
+    pricing_refresh_seconds: int = 3600
+
+    # What a turn does when the chat model has NO known price. Every dollar
+    # ceiling above multiplies tokens by a price, so an unpriced model makes
+    # them all read $0 — the failure is silent by construction. "allow" keeps
+    # serving and surfaces it (agent_unpriced_usage_total + an alert); "block"
+    # refuses the turn up front (ErrorCode.MODEL_UNPRICED), which is the right
+    # production setting once spend is real. A model that is genuinely free
+    # (Ollama) is NOT unpriced — LiteLLM reports it as a known $0.
+    unpriced_model_policy: Literal["allow", "block"] = "allow"
 
     # Outermost per-turn wall-clock bound (app/agent/runtime.py) — catches a
     # turn stuck inside one slow LLM/tool call, which MAX_ITERATIONS/
@@ -447,6 +465,8 @@ MEMORY_RETENTION_DAYS = settings.memory_retention_days
 MAX_COST_USD_PER_TURN = settings.max_cost_usd_per_turn
 MAX_SUBAGENT_COST_USD_PER_RUN = settings.max_subagent_cost_usd_per_run
 MAX_COST_USD_PER_TENANT_PER_DAY = settings.max_cost_usd_per_tenant_per_day
+PRICING_REFRESH_SECONDS = settings.pricing_refresh_seconds
+UNPRICED_MODEL_POLICY = settings.unpriced_model_policy
 REQUEST_TIMEOUT_SECONDS = settings.request_timeout_seconds
 SUBAGENT_TIMEOUT_SECONDS = settings.subagent_timeout_seconds
 TELEGRAM_BOT_TOKEN = settings.telegram_bot_token

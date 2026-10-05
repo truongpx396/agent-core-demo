@@ -107,7 +107,7 @@ class TestResolveModel:
 
     def test_admin_base_url_strips_the_v1_suffix(self, monkeypatch):
         monkeypatch.setattr(model_resolver, "OPENAI_API_BASE", "http://localhost:4000/v1")
-        assert model_resolver._admin_base_url() == "http://localhost:4000"
+        assert model_resolver.admin_base_url() == "http://localhost:4000"
 
 
 class TestAFailedLookupIsNotRepeatedOnEveryCall:

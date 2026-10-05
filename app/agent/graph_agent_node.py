@@ -12,6 +12,7 @@ graph_utils.py's `_make_llm`.
 from langchain_core.messages import SystemMessage
 
 from app.agent import graph as graph_module
+from app.agent import pricing
 from app.agent.graph import State
 from app.agent.graph_skills import _pending_skill_required_tool
 from app.agent.graph_tools import _current_turn_messages
@@ -19,11 +20,15 @@ from app.core.untrusted import frame_untrusted
 
 
 # --- Node: agent ---
-def make_agent_node(llm):
+def make_agent_node(llm, model_alias: str | None = None):
     """Factory, not a plain function, because `agent` needs an LLM client.
     Tests build it with a fake (e.g. GenericFakeChatModel) via
     `make_agent_node(fake_llm)(state)` (see test_agent_node.py) to cover
     message-assembly logic without a network call.
+
+    `model_alias` is the LiteLLM alias `llm` is bound to, used only to price its
+    calls; None means the global chat alias (read at call time, see the module
+    docstring).
     """
 
     async def agent(state: State) -> dict:
@@ -152,14 +157,14 @@ def make_agent_node(llm):
         turn_tokens = usage.get("total_tokens", 0)
         total_tokens = state.get("total_tokens", 0) + turn_tokens
 
-        # Cost ceiling bookkeeping (pattern 35) — same price table
-        # usage_ledger.py's post-hoc ledger uses, applied HERE
-        # incrementally so should_continue can stop the run before the
-        # NEXT call.
-        from app.agent.usage_ledger import PRICE_PER_1K_TOKENS_USD
-
-        price_per_1k = PRICE_PER_1K_TOKENS_USD.get(graph_module.CHAT_MODEL, 0.0)
-        turn_cost = (turn_tokens / 1000) * price_per_1k
+        # Cost ceiling bookkeeping (pattern 35), applied HERE incrementally so
+        # should_continue can stop the run before the NEXT call. Priced from the
+        # call's own input/output/cached split by the model this node's client
+        # actually talks to — `model_alias` for a delegated run whose specialist
+        # declares its own model, else the global chat alias. The ledger row is
+        # written from this same running total, so the ceiling and the bill
+        # can never disagree about what a turn cost.
+        turn_cost = await pricing.price_usage(model_alias or graph_module.CHAT_MODEL, usage)
         total_cost_usd = state.get("total_cost_usd", 0.0) + turn_cost
 
         return {

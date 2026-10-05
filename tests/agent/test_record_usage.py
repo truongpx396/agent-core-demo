@@ -41,7 +41,7 @@ async def test_writes_the_resolved_model_alongside_the_tokens_and_cost(monkeypat
 
     monkeypatch.setattr(usage_ledger, "resolve_model", resolve)
 
-    await usage_ledger.record_usage(TEST_CTX, "thread-1", "gpt-4o", 2000)
+    await usage_ledger.record_usage(TEST_CTX, "thread-1", "gpt-4o", 2000, 0.0125)
 
     sql, params = fake.calls[0]
     assert "INSERT INTO usage_ledger" in sql
@@ -51,7 +51,7 @@ async def test_writes_the_resolved_model_alongside_the_tokens_and_cost(monkeypat
         "thread-1",
         "gpt-4o",
         2000,
-        pytest.approx(0.01),  # 2 x $0.005 per 1k tokens
+        pytest.approx(0.0125),  # the caller's figure, stored as given — never re-derived here
         "openai/gpt-4o-2024-08-06",
     ]
 
@@ -65,7 +65,7 @@ async def test_an_unresolvable_model_is_recorded_as_null_not_skipped(monkeypatch
 
     monkeypatch.setattr(usage_ledger, "resolve_model", resolve)
 
-    await usage_ledger.record_usage(TEST_CTX, "thread-1", "chat", 500)
+    await usage_ledger.record_usage(TEST_CTX, "thread-1", "chat", 500, 0.0)
 
     params = fake.calls[0][1]
     assert params[4] == 500 and params[-1] is None
@@ -79,7 +79,7 @@ async def test_nothing_is_written_or_resolved_for_an_invalid_ctx_or_no_tokens(mo
     monkeypatch.setattr(usage_ledger, "resolve_model", _fail_if_called)
     monkeypatch.setattr(usage_ledger, "get_connection", _fail_if_called)
 
-    await usage_ledger.record_usage(ctx, "thread-1", "chat", tokens)  # must not raise
+    await usage_ledger.record_usage(ctx, "thread-1", "chat", tokens, 0.5)  # must not raise
 
 
 async def test_a_failing_write_never_fails_the_turn_it_records(monkeypatch):
@@ -88,4 +88,13 @@ async def test_a_failing_write_never_fails_the_turn_it_records(monkeypatch):
 
     monkeypatch.setattr(usage_ledger, "get_connection", _broken)
 
-    await usage_ledger.record_usage(TEST_CTX, "thread-1", "chat", 500)  # must not raise
+    await usage_ledger.record_usage(TEST_CTX, "thread-1", "chat", 500, 0.0)  # must not raise
+
+
+async def test_a_negative_cost_is_clamped_to_zero_so_a_bad_price_cannot_credit_a_tenant(monkeypatch):
+    fake = _FakeConnection()
+    monkeypatch.setattr(usage_ledger, "get_connection", _fake_get_connection(fake))
+
+    await usage_ledger.record_usage(TEST_CTX, "thread-1", "chat", 500, -3.0)
+
+    assert fake.calls[0][1][5] == 0.0

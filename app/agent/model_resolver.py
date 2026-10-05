@@ -41,7 +41,7 @@ FAILED_LOOKUP_RETRY_SECONDS = 60.0
 _failed_at: dict[str, float] = {}
 
 
-def _admin_base_url() -> str:
+def admin_base_url() -> str:
     """LiteLLM's admin endpoints (GET /model/info) live at the proxy
     root, not under the OpenAI-compatible /v1 prefix `OPENAI_API_BASE`
     already points at."""
@@ -62,7 +62,7 @@ async def resolve_model(alias: str) -> str | None:
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             response = await client.get(
-                f"{_admin_base_url()}/model/info",
+                f"{admin_base_url()}/model/info",
                 headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
             )
         response.raise_for_status()

@@ -25,6 +25,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
+from app.agent import pricing
 from app.agent.usage_ledger import record_usage
 from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_API_KEY
 from app.core.job_runtime import scheduled_job
@@ -84,7 +85,10 @@ async def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm=None) -> list[str
         usage = getattr(response, "usage_metadata", None) or {}
         total_tokens = usage.get("total_tokens", 0)
         if total_tokens:
-            await record_usage(_CRON_CTX, f"followup-sweep:{item['id']}", CHAT_MODEL, total_tokens)
+            cost_usd = await pricing.price_usage(CHAT_MODEL, usage)
+            await record_usage(
+                _CRON_CTX, f"followup-sweep:{item['id']}", CHAT_MODEL, total_tokens, cost_usd
+            )
 
         await notify.post_to_team_channel(
             "sales-followups",

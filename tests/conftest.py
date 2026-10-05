@@ -217,6 +217,35 @@ def mock_model_resolver(monkeypatch):
     monkeypatch.setattr(usage_ledger, "resolve_model", _no_model_resolution)
 
 
+@pytest.fixture(autouse=True)
+def mock_model_pricing(monkeypatch):
+    """`pricing.get_price` reads every model's price from LiteLLM's
+    `GET /model/info` on the agent node's hot path, so the same leak
+    `mock_model_resolver` closes applies: a test's cost must not depend on
+    whether a proxy answers on the configured address. The default world is the
+    one this app ships with — a local, free model (LiteLLM reports Ollama as a
+    KNOWN $0, not an unknown price) — so an ordinary turn costs nothing and
+    never counts as unpriced. A test that needs a price patches
+    `pricing._fetch_model_info` itself; tests/agent/test_pricing.py restores the
+    real fetch to exercise it over a MockTransport. The module's price cache is
+    process-wide, so it is cleared on both sides of every test."""
+    from app.agent import pricing
+    from app.core.config import CHAT_MODEL
+
+    async def _free_local_model():
+        return [
+            {
+                "model_name": CHAT_MODEL,
+                "model_info": {"input_cost_per_token": 0.0, "output_cost_per_token": 0.0},
+            }
+        ]
+
+    pricing.reset_pricing_state()
+    monkeypatch.setattr(pricing, "_fetch_model_info", _free_local_model)
+    yield
+    pricing.reset_pricing_state()
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Tears down every Docker container `tests/containers.py::ensure_*()`
     started this run (Postgres/Redis/Qdrant/Ollama, for

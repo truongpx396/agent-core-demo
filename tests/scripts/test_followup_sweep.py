@@ -10,6 +10,8 @@ through `asyncio.run(...)`.
 """
 import asyncio
 
+import pytest
+
 from scripts import followup_sweep
 
 
@@ -105,8 +107,9 @@ def test_run_followup_sweep_records_usage_when_tokens_are_reported(monkeypatch):
 
     recorded = {}
 
-    async def fake_record_usage(ctx, thread_id, model_alias, total_tokens):
+    async def fake_record_usage(ctx, thread_id, model_alias, total_tokens, cost_usd):
         recorded["total_tokens"] = total_tokens
+        recorded["cost_usd"] = cost_usd
 
     monkeypatch.setattr(followup_sweep, "record_usage", fake_record_usage)
 
@@ -114,3 +117,44 @@ def test_run_followup_sweep_records_usage_when_tokens_are_reported(monkeypatch):
     asyncio.run(followup_sweep.run_followup_sweep(llm=fake_chat))
 
     assert recorded["total_tokens"] == 17
+
+
+def test_run_followup_sweep_records_the_priced_cost_of_each_draft(monkeypatch):
+    """Spec 008 A2: same as the digest — the job prices its own model call."""
+    from app.agent import pricing
+    from app.core.config import CHAT_MODEL
+
+    async def priced_fetch():
+        return [
+            {
+                "model_name": CHAT_MODEL,
+                "model_info": {"input_cost_per_token": 2.5e-06, "output_cost_per_token": 1e-05},
+            }
+        ]
+
+    due_items = [{"id": 1, "due_at": "2099-01-01", "note": "n", "contact": "a@example.com", "lead_name": "A"}]
+
+    async def fake_due_followups(tenant, as_of):
+        return due_items
+
+    async def fake_mark_followup_done(tenant, followup_id):
+        return None
+
+    async def fake_post_to_team_channel(channel, message):
+        return None
+
+    monkeypatch.setattr(pricing, "_fetch_model_info", priced_fetch)
+    monkeypatch.setattr(followup_sweep.store, "due_followups", fake_due_followups)
+    monkeypatch.setattr(followup_sweep.store, "mark_followup_done", fake_mark_followup_done)
+    monkeypatch.setattr(followup_sweep.notify, "post_to_team_channel", fake_post_to_team_channel)
+    recorded = {}
+
+    async def fake_record_usage(ctx, thread_id, model_alias, total_tokens, cost_usd):
+        recorded["cost_usd"] = cost_usd
+
+    monkeypatch.setattr(followup_sweep, "record_usage", fake_record_usage)
+    usage = {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500}
+
+    asyncio.run(followup_sweep.run_followup_sweep(llm=_FakeChat([_FakeResponse("draft", usage_metadata=usage)])))
+
+    assert recorded["cost_usd"] == pytest.approx(0.0075)

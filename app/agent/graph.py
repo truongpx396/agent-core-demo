@@ -304,9 +304,10 @@ class State(TypedDict):
     context: str  # Enriched context from search (set by retrieve_context).
     iterations: int  # Track how many agent loops we've done *this turn*.
     total_tokens: int  # Cumulative token usage *this turn* (see agent()).
-    total_cost_usd: float  # Cumulative $ cost *this turn*, computed from
-    # app/agent/usage_ledger.py's PRICE_PER_1K_TOKENS_USD — should_continue enforces
-    # MAX_COST_USD_PER_TURN against this (GRAPH_PATTERNS.md pattern 35).
+    total_cost_usd: float  # Cumulative $ cost *this turn*, priced per call from
+    # the model's LiteLLM prices (app/agent/pricing.py) — should_continue enforces
+    # MAX_COST_USD_PER_TURN against this, and the ledger row is written from it
+    # (GRAPH_PATTERNS.md patterns 26 and 35).
     subagent_spend: Annotated[list[tuple[int, float]], _concat_or_reset]  # One
     # (tokens, cost_usd) entry per completed run_subagent call this turn,
     # appended via Command(update=...) from tools.py's run_subagent. The
@@ -627,6 +628,11 @@ class GraphDeps:
     """
 
     llm: Any = None
+    # The LiteLLM alias `llm` is bound to, used only to price its calls
+    # (app/agent/pricing.py). None = the global chat alias; a delegated run whose
+    # specialist declares its own model sets it so its calls are priced by that
+    # model, not by the parent's.
+    model_alias: str | None = None
     search_docs: (
         Callable[[str, "SecurityCtx | None"], Awaitable[tuple[str, list[dict]]]] | None
     ) = None
@@ -695,7 +701,7 @@ def _assemble_shared_graph_parts(
     domain_valid_tool_names = frozenset(t.name for t in domain_tools)
 
     llm_client = deps.llm or _make_llm(domain_tools)
-    agent = make_agent_node(llm_client)
+    agent = make_agent_node(llm_client, model_alias=deps.model_alias)
     retrieve_context = make_retrieve_context_node(deps.search_docs or _default_search)
     # A plain module-level function (not a factory) bound to this domain's
     # capability mapping via functools.partial — see should_continue's own
