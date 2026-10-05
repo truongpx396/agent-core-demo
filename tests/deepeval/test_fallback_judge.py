@@ -298,6 +298,102 @@ def test_when_every_model_is_cooling_they_are_all_tried_rather_than_none():
     assert c.generate("two") == "answer-from-a"  # both cooling, so the order is the original one and `a` is tried first
 
 
+# --- unusable answers (CI run 37320398499: both conversation tests red on `main`, #121) ----------
+#
+# A judge that ANSWERS but not in the shape asked for is neither transient nor a bug a retry elsewhere would
+# hide: it is that one model's quality. deepeval 4.2.0's LocalModel sends no `response_format`, so the model is
+# only asked for JSON in the prompt, then `trim_and_load_json` + `schema.model_validate` run on whatever came
+# back. The two real failures were (a) `{"verdicts": {...}}` where a list was wanted (pydantic ValidationError)
+# and (b) an EMPTY completion, which deepeval re-raises as DeepEvalError("...invalid JSON") from inside its
+# `except JSONDecodeError`, so the JSONDecodeError is only the `__context__`.
+
+PRIVATE = "SECRET-CUSTOMER-TEXT"
+
+
+def wrong_shape_answer():
+    """The real pydantic error from a judge answer whose `verdicts` is one object, not a list."""
+    from pydantic import BaseModel, ValidationError
+
+    class Verdicts(BaseModel):  # stands in for deepeval's OutOfCharacterResponseVerdicts
+        verdicts: list[dict]
+
+    try:
+        Verdicts.model_validate({"verdicts": {"index": 1, "reason": PRIVATE}})
+    except ValidationError as exc:
+        return exc
+    raise AssertionError("pydantic accepted a dict as a list")  # pragma: no cover
+
+
+def empty_answer():
+    """What deepeval raises for an empty completion, built the way it builds it (raised inside the except)."""
+    import json
+
+    try:
+        try:
+            json.loads("")
+        except json.JSONDecodeError:
+            # Deliberately no `from`: deepeval's trim_and_load_json raises like this, so the JSONDecodeError is only __context__.
+            raise RuntimeError("Evaluation LLM outputted an invalid JSON. Please use a better evaluation model.")  # noqa: B904 - mirrors deepeval, see above
+    except RuntimeError as exc:
+        return exc
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def test_a_real_wrong_shape_answer_and_a_real_empty_answer_are_unusable_output_not_transient():
+    for exc in (wrong_shape_answer(), empty_answer()):
+        assert f.is_unusable_output(exc) is True
+        assert f.is_transient(exc) is False  # no cooldown applies: nothing about the model's availability failed
+
+
+def test_the_real_deepeval_error_for_an_empty_completion_is_unusable_output():
+    pytest.importorskip("deepeval")
+    from deepeval.errors import DeepEvalError
+    from deepeval.models.llms.utils import trim_and_load_json
+
+    with pytest.raises(DeepEvalError) as exc:
+        trim_and_load_json("")  # the very call that failed in CI, on the very input
+    assert f.is_unusable_output(exc.value) is True
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [ValueError("a real bug"), KeyError("x"), WithCode(400), WithCode(401), ServerError(), retry_error(rate_limit())],
+)
+def test_bugs_bad_requests_and_transient_failures_are_not_unusable_output(exc):
+    assert f.is_unusable_output(exc) is False  # a bad schema (400) must still surface, and a 429 is the cooldown path
+
+
+def test_describe_names_the_class_of_an_unusable_answer_never_its_content():
+    assert f.describe(wrong_shape_answer()) == "ValidationError"
+    assert f.describe(empty_answer()) == "JSONDecodeError"  # found through __context__, not the wrapper's own class
+    assert PRIVATE not in f.describe(wrong_shape_answer())
+
+
+def test_an_unusable_answer_hands_over_to_the_next_model_without_benching_the_one_that_gave_it():
+    notices = []
+    primary, second = FakeModel("gpt-oss-20b", wrong_shape_answer()), FakeModel("qwen3.8-27b")
+    c = chain(primary, second, notices=notices)
+    assert c.generate("hi") == "answer-from-qwen3.8-27b"
+    assert notices == ["[deepeval] gpt-oss-20b returned an unusable answer (ValidationError); falling back to qwen3.8-27b"]
+    assert PRIVATE not in notices[0]  # the log is public: a model's answer can echo the conversation it was shown
+    assert c.generate("again") == "answer-from-gpt-oss-20b"  # next prompt, back to the primary: one bad answer is not an outage
+    assert len(primary.calls) == 2
+
+
+def test_when_every_model_gives_an_unusable_answer_the_last_one_is_raised_not_hidden():
+    notices = []
+    last = empty_answer()
+    models = [FakeModel("a", wrong_shape_answer()), FakeModel("b", last)]
+    with pytest.raises(RuntimeError) as exc:
+        chain(*models, notices=notices).generate("hi")
+    assert exc.value is last and "no model left to fall back to" in notices[1]  # the job still goes red when nothing can answer
+
+
+async def test_the_async_path_also_hands_over_an_unusable_answer():
+    primary, second = FakeModel("p", empty_answer()), FakeModel("s")
+    assert await chain(primary, second).a_generate("hi") == "answer-from-s"  # the simulator and the metrics both call a_generate
+
+
 def test_an_empty_chain_is_refused():
     with pytest.raises(ValueError):
         f.FailoverChain([])
@@ -368,5 +464,5 @@ def test_the_default_fallbacks_are_models_with_their_own_quota_and_never_the_pri
 
     assert conftest.DEFAULT_JUDGE_FALLBACKS and conftest.DEEPEVAL_JUDGE_MODEL not in conftest.DEFAULT_JUDGE_FALLBACKS
     assert conftest.DEEPEVAL_CONVERSATION_JUDGE_MODEL not in conftest.DEFAULT_CONVERSATION_JUDGE_FALLBACKS
-    # the conversation judge needs Groq's STRICT structured outputs, which per Groq's docs only these support:
+    # chosen because per Groq's docs only these support strict structured outputs (not enforced today: see conftest.py):
     assert set(conftest.DEFAULT_CONVERSATION_JUDGE_FALLBACKS) <= {"openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b"}

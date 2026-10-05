@@ -98,8 +98,11 @@ GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 # `PerProjectPerModel`), so one being spent says nothing about the next. Comma-separated; `none` turns them off;
 # unset means these defaults, so CI needs no new secret or variable. See tests/deepeval/fallback.py.
 #  - Gemini judge: gemini-3.5-flash-lite is stable and free-tier.
-#  - Conversation judge: both need Groq's STRICT structured outputs (KnowledgeRetentionMetric requests a schema),
-#    which per Groq's docs only gpt-oss-120b, gpt-oss-20b and qwen3.8-27b support; each has its own 200K tokens/day.
+#  - Conversation judge: each has its own 200K tokens/day. These three were picked because per Groq's docs they are the
+#    ones with strict structured outputs, but deepeval 4.2.0's `LocalModel` sends no `response_format` (checked in its
+#    source), so nothing here is enforced: the model is only asked for JSON in the prompt. A fallback can therefore answer
+#    in the wrong shape or not at all; the chain treats that as a reason to try the next model (fallback.py, UNUSABLE
+#    ANSWERS). Not verified against live Groq: whether passing a `response_format` through `generation_kwargs` would help.
 DEFAULT_JUDGE_FALLBACKS = ("gemini-3.5-flash-lite",)
 DEFAULT_CONVERSATION_JUDGE_FALLBACKS = ("openai/gpt-oss-20b", "qwen/qwen3.8-27b")
 
