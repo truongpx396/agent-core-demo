@@ -199,7 +199,7 @@ Two things that bite on a first deploy:
 | `POST /chat/stream/queued` | Start a turn; SSE stream. Needs a running `agent-worker` |
 | `POST /chat/resume` · `POST /chat/cancel` | Approve/reject a paused tool call · stop a run |
 | `GET /chat/sessions` · `…/{id}/messages` · `…/{id}/pending_approval` | Conversation history and any pending approval |
-| `GET /usage` | The caller's tenant cost, including the rolling-24h figure checked against `MAX_COST_USD_PER_TENANT_PER_DAY` |
+| `GET /usage` | The caller's tenant cost, including the rolling-24h figure checked against `MAX_COST_USD_PER_TENANT_PER_DAY`, plus `budgets`: every spend limit that applies to the caller (tenant and their own, overrides included) with spent, remaining and, for a month, `resets_at` |
 | `POST /ingest/upload` · `GET /ingest/stream/{job_id}` | Upload PDF/DOCX/text to the ingest worker · follow its progress |
 
 Interactive docs at `/docs`. Every request needs `X-Tenant-Id` and `X-Principal-Id` (422 without them),

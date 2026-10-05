@@ -347,6 +347,40 @@ async def check(
     return replace(allowance, degraded=True) if degraded and not allowance.refused else allowance
 
 
+@dataclass(frozen=True)
+class LimitStatus:
+    """One enforced limit as `GET /usage` shows it to the caller."""
+
+    scope: Scope
+    window: Window
+    limit_usd: float
+    spent_usd: float
+    reserved_usd: float
+    resets_at: datetime | None
+
+    @property
+    def remaining_usd(self) -> float:
+        return max(self.limit_usd - self.spent_usd - self.reserved_usd, 0.0)
+
+
+async def usage_status(
+    ctx: SecurityCtx, *, defaults: Defaults, now: datetime | None = None
+) -> list[LimitStatus]:
+    """Every limit that applies to `ctx` (overrides included) with its spend, so a caller can see
+    how close they are before being refused. Spend includes in-flight holds for tenant limits,
+    exactly as the check counts it. Unlike the check this does not fail open: a status endpoint
+    that cannot read the ledger should say so, not report a calm zero."""
+    now = now or datetime.now(UTC)
+    overrides = await budget_policies.overrides_for(ctx["tenant"], ctx["principal"])
+    statuses = []
+    for limit in resolve_limits(defaults, overrides, ctx["principal"]):
+        spent, reserved = await _spend(limit, ctx, now)
+        statuses.append(
+            LimitStatus(limit.scope, limit.window, limit.limit_usd, spent, reserved, window_resets_at(limit.window, now))
+        )
+    return statuses
+
+
 def refusal_envelope(allowance: Allowance) -> ErrorEnvelope:
     """The caller-facing error for a refused `allowance`. Never call it for an "ok" one.
 
