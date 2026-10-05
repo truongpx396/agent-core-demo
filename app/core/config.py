@@ -133,7 +133,7 @@ class Settings(BaseSettings):
     max_subagent_cost_usd_per_run: float = 0.15
 
     # Per-tenant ceiling across MANY turns (runtime.py's
-    # _tenant_over_daily_budget), rolling 24h window against usage_ledger —
+    # budgets.check_tenant_daily), rolling 24h window against usage_ledger —
     # distinct from MAX_COST_USD_PER_TURN, which only sees one turn at a
     # time. Same "$0 on local Ollama" note applies.
     max_cost_usd_per_tenant_per_day: float = 20.0
@@ -144,6 +144,15 @@ class Settings(BaseSettings):
     # so a change in the proxy's pricing is picked up without a restart.
     # Operational, like request_timeout_seconds: not a spend ceiling.
     pricing_refresh_seconds: int = 3600
+
+    # What the tenant allowance does when it cannot READ the ledger (app/agent/budgets.py).
+    # "open" serves the turn — a ledger outage must not also take every turn down — and
+    # counts the failure (alert TenantAllowanceUnenforced), but it means every turn that hits
+    # the failure ran with no daily cap. "closed" refuses the turn instead
+    # (ErrorCode.BUDGET_CHECK_UNAVAILABLE), for deployments that would rather be unavailable
+    # than unmetered. A decision a deployment should make on purpose; the default keeps
+    # today's behaviour.
+    budget_check_failure_policy: Literal["open", "closed"] = "open"
 
     # How long usage_ledger rows are kept by scripts/usage_ledger_sweep.py (spec
     # 008 A3: nothing trimmed the table, and the allowance reads it before every
@@ -481,6 +490,7 @@ MAX_COST_USD_PER_TENANT_PER_DAY = settings.max_cost_usd_per_tenant_per_day
 PRICING_REFRESH_SECONDS = settings.pricing_refresh_seconds
 UNPRICED_MODEL_POLICY = settings.unpriced_model_policy
 USAGE_LEDGER_RETENTION_DAYS = settings.usage_ledger_retention_days
+BUDGET_CHECK_FAILURE_POLICY = settings.budget_check_failure_policy
 REQUEST_TIMEOUT_SECONDS = settings.request_timeout_seconds
 SUBAGENT_TIMEOUT_SECONDS = settings.subagent_timeout_seconds
 TELEGRAM_BOT_TOKEN = settings.telegram_bot_token

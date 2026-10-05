@@ -22,8 +22,8 @@ thread or a different loop.
 This file owns the checkpointer/graph singleton lifecycle
 (`init_graph_async`/`close_checkpointer_pool`/`_open_checkpointer`/
 `_resolve_domain_name`), per-thread prompt seeding (`_ensure_seeded_async`),
-session-directory upsert (`_upsert_session`), and the tenant daily-budget
-check (`_tenant_over_daily_budget`/`_tenant_budget_envelope`) — kept together
+session-directory upsert (`_upsert_session`), and the bindings of the tenant daily-budget
+check (`_check_allowance`/`_allowance_refusal`; the rule itself is `budgets.py`) — kept together
 because each reads/reassigns a module global (`_graph`/`_domain_name`/
 `_seeded`, or config names several tests monkeypatch directly on this
 module) that only works correctly with consumer and binding in one file.
@@ -34,7 +34,6 @@ import, for the same monkeypatch reason.
 """
 import asyncio
 import logging
-from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from langchain_core.messages import SystemMessage
@@ -42,11 +41,11 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from app.agent import pricing
+from app.agent import budgets, pricing
 from app.agent.graph import MAX_ITERATIONS
 from app.agent.graph_build import build_graph
-from app.core import metrics
 from app.core.config import (
+    BUDGET_CHECK_FAILURE_POLICY,
     CHAT_MODEL,
     CHECKPOINTER_DATABASE_URL,
     CHECKPOINTER_POOL_MAX_SIZE,
@@ -54,7 +53,7 @@ from app.core.config import (
     MAX_COST_USD_PER_TURN,
 )
 from app.core.errors import ErrorCode, ErrorEnvelope
-from app.core.security import SecurityCtx, valid_ctx
+from app.core.security import SecurityCtx
 
 if TYPE_CHECKING:
     from app.agent.manifest import AgentManifest, DomainPlugin
@@ -96,71 +95,24 @@ RECURSION_LIMIT = MAX_ITERATIONS * 2 + 15
 _TENANT_BUDGET_WARNING_FRACTION = 0.8  # log/count once a tenant crosses 80% of its daily cap
 
 
-async def _tenant_over_daily_budget(ctx: SecurityCtx | None) -> bool:
-    """True if `ctx`'s tenant has spent >= MAX_COST_USD_PER_TENANT_PER_DAY over
-    the trailing 24h (usage_ledger), checked before a turn starts so an
-    over-budget tenant is refused before reaching the LLM/tool loop. Distinct
-    from MAX_COST_USD_PER_TURN (graph_routing.py::should_continue), which only
-    tracks one turn's own total — this is the cross-turn accumulator.
-
-    `spent` (usage_ledger's own persisted sum) only reflects turns that have
-    already COMPLETED and recorded their cost — a sibling turn for the same
-    tenant that's already running hasn't landed its row yet, so without
-    counting it too, N concurrent turns could all read the same stale
-    `spent`, all pass, and all proceed (a check-then-act race, not just a
-    theoretical one: astream_events_turn reserves MAX_COST_USD_PER_TURN via
-    `_reserve_turn_budget` for the duration of every turn it actually runs,
-    specifically so this function can add that in-flight total here and
-    catch a burst of concurrent turns the ledger alone would miss).
-
-    Fails OPEN if the ledger read fails, so a ledger outage doesn't also take
-    down every turn (same posture as usage_ledger.record_usage and the
-    semantic_cache/moderation read paths). `in_flight_reservation` has its
-    own independent fail-open (returns 0.0), so a reservation-table hiccup
-    degrades this back to the pre-reservation, ledger-only check rather than
-    also failing the whole function.
-    """
-    if not valid_ctx(ctx):
-        return False
-    from app.agent import usage_ledger
-
-    try:
-        since = datetime.now(UTC) - timedelta(hours=24)
-        spent = (await usage_ledger.usage_summary(ctx["tenant"], since=since))["total_cost_usd"]
-    except Exception as exc:  # noqa: BLE001 - a ledger read failing must not also block every turn; counted and alerted instead
-        # While this is firing the allowance is UNENFORCED for every turn that
-        # hits it (alert TenantAllowanceUnenforced, spec 008 A1).
-        metrics.agent_cost_governance_degraded_total.labels(path="ledger_read").inc()
-        logger.warning(
-            "tenant_budget_check_failed", extra={"error_class": type(exc).__name__}
-        )
-        return False
-
-    reserved = await usage_ledger.in_flight_reservation(ctx["tenant"])
-    projected = spent + reserved
-
-    if projected >= MAX_COST_USD_PER_TENANT_PER_DAY:
-        metrics.agent_tenant_budget_exceeded_total.inc()
-        return True
-    if projected >= _TENANT_BUDGET_WARNING_FRACTION * MAX_COST_USD_PER_TENANT_PER_DAY:
-        metrics.agent_tenant_budget_warning_total.inc()
-        logger.warning(
-            "tenant_approaching_daily_budget",
-            extra={
-                "tenant": ctx["tenant"],
-                "spent_usd": spent,
-                "reserved_usd": reserved,
-                "limit_usd": MAX_COST_USD_PER_TENANT_PER_DAY,
-            },
-        )
-    return False
-
-
-def _tenant_budget_envelope() -> ErrorEnvelope:
-    return ErrorEnvelope(
-        code=ErrorCode.TENANT_BUDGET_EXCEEDED,
-        message="This tenant's daily usage budget has been reached. Please try again later.",
+async def _check_allowance(ctx: SecurityCtx | None) -> budgets.Allowance:
+    """May this tenant start another turn? The rule lives in `budgets.py`; this binds the
+    configured limits at CALL time (not import time), so the module globals below stay the
+    single place a test or a deployment re-points them."""
+    return await budgets.check_tenant_daily(
+        ctx,
+        limit_usd=MAX_COST_USD_PER_TENANT_PER_DAY,
+        warning_fraction=_TENANT_BUDGET_WARNING_FRACTION,
+        fail_policy=BUDGET_CHECK_FAILURE_POLICY,
     )
+
+
+async def _allowance_refusal(ctx: SecurityCtx | None) -> ErrorEnvelope | None:
+    """The error to emit INSTEAD of starting a turn, or None if it may start. Every entry
+    point that begins model work asks this one question (a new turn, and a resume), so the
+    caller never has to tell "over budget" from "could not be checked" itself."""
+    allowance = await _check_allowance(ctx)
+    return budgets.refusal_envelope(allowance) if allowance.refused else None
 
 
 async def _chat_model_refused_as_unpriced() -> bool:
@@ -183,7 +135,7 @@ def _model_unpriced_envelope() -> ErrorEnvelope:
 
 
 async def _reserve_turn_budget(ctx: SecurityCtx | None) -> str | None:
-    """Called once a turn has passed `_tenant_over_daily_budget` and is
+    """Called once a turn has passed `_allowance_refusal` and is
     about to actually run — holds MAX_COST_USD_PER_TURN (the hard cap
     graph_routing.py::should_continue already enforces per turn, so it's
     always a safe upper bound on what this turn could cost) against this

@@ -97,7 +97,7 @@ class TestHealthReady:
 class TestUsage:
     """GET /usage — a thin pass-through to app/agent/usage_ledger.py::usage_summary,
     called once all-time and once scoped to the rolling 24h window
-    app/agent/runtime.py::_tenant_over_daily_budget itself checks."""
+    app/agent/budgets.py::check_tenant_daily itself checks."""
 
     async def test_reports_all_time_and_rolling_24h_figures(self, monkeypatch):
         calls = []

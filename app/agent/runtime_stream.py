@@ -10,7 +10,7 @@ docstring); `runtime_legacy_stream.py` holds the sibling
 `@asynccontextmanager` variant.
 
 Reads `init_graph_async`/`_ensure_seeded_async`/`_upsert_session`/
-`_tenant_over_daily_budget`/`_tenant_budget_envelope`/`RECURSION_LIMIT` via
+`_allowance_refusal`/`RECURSION_LIMIT` via
 `runtime_module.X` rather than bare imports: tests
 `monkeypatch.setattr` these onto the live `app.agent.runtime` module
 object, and a bare imported name would bind to the original function at
@@ -552,10 +552,10 @@ async def astream_events_turn(
         envelope = runtime_module._model_unpriced_envelope()
         yield {"type": "error", "content": envelope.message, **envelope.to_dict()}
         return
-    if await runtime_module._tenant_over_daily_budget(ctx):
+    refusal = await runtime_module._allowance_refusal(ctx)
+    if refusal is not None:
         metrics.agent_requests_total.labels(outcome="rejected").inc()
-        envelope = runtime_module._tenant_budget_envelope()
-        yield {"type": "error", "content": envelope.message, **envelope.to_dict()}
+        yield {"type": "error", "content": refusal.message, **refusal.to_dict()}
         return
     # Reserves this turn's worst-case cost against the tenant's in-flight
     # total for the rest of this generator's life (released in `finally`
@@ -775,10 +775,10 @@ async def astream_events_resume(
     already passed it — `astream_events_turn_unattended`'s decline loop. Refusing
     there would strand the conversation at its pause.
     """
-    if not admitted and await runtime_module._tenant_over_daily_budget(ctx):
+    refusal = None if admitted else await runtime_module._allowance_refusal(ctx)
+    if refusal is not None:
         metrics.agent_requests_total.labels(outcome="rejected").inc()
-        envelope = runtime_module._tenant_budget_envelope()
-        yield {"type": "error", "content": envelope.message, **envelope.to_dict()}
+        yield {"type": "error", "content": refusal.message, **refusal.to_dict()}
         return
     budget_hold = await runtime_module._reserve_turn_budget(ctx)
     try:

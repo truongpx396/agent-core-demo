@@ -92,7 +92,7 @@ async def usage_summary(
 ) -> dict:
     """Total tokens and cost for `tenant`, optionally narrowed to one
     `principal` and/or to usage on/after `since`. `since` is what
-    `_tenant_over_daily_budget` (runtime.py) uses for a ROLLING 24h window
+    `budgets.check_tenant_daily` uses for a ROLLING 24h window
     (`now - 24h`, not calendar-day boundaries, so a tenant's near-limit
     status never resets mid-day). `since=None` (all-time) is the right
     default for `GET /usage`'s "total ever spent" question instead."""
@@ -118,7 +118,7 @@ async def usage_summary(
 async def reserve_budget(ctx: SecurityCtx | None, amount_usd: float) -> str | None:
     """Records a hold of `amount_usd` against `ctx`'s tenant — one row for this
     turn, with its own timestamp — called right before a turn that passed
-    `_tenant_over_daily_budget`'s check actually starts spending. Closes the gap
+    `budgets.check_tenant_daily`'s check actually starts spending. Closes the gap
     between "checked" and "recorded": this turn's own cost isn't in
     usage_ledger yet (record_usage only runs after it completes), so without a
     hold a sibling turn racing the same tenant would see the SAME stale "spent

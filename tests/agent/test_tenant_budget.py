@@ -1,26 +1,27 @@
-"""Tests for app/agent/runtime.py's per-tenant daily cost ceiling
-(_tenant_over_daily_budget) — distinct from app/agent/graph.py's own
-MAX_COST_USD_PER_TURN, which only ever sees one turn at a time.
+"""Tests for the per-tenant daily cost ceiling as runtime.py wires it
+(`_check_allowance` / `_allowance_refusal`, over app/agent/budgets.py) — distinct from
+app/agent/graph.py's own MAX_COST_USD_PER_TURN, which only ever sees one turn at a time.
 
-`_tenant_over_daily_budget` itself is tested directly against a
-monkeypatched app.agent.usage_ledger.usage_summary (no live Postgres). The entry
-point (astream_events_turn) is tested by stubbing `_tenant_over_daily_budget`
-itself to True/False and asserting it never even calls init_graph_async()
-when over budget — proving the short-circuit happens BEFORE any real graph
+`_check_allowance` itself is tested directly against a monkeypatched
+app.agent.usage_ledger.usage_summary (no live Postgres); the rule's own cases, with explicit
+arguments, are in tests/agent/test_budgets.py. The entry point (astream_events_turn) is tested
+by stubbing `_allowance_refusal` to an envelope/None and asserting it never even calls
+init_graph_async() when refused — proving the short-circuit happens BEFORE any real graph
 work, not just that it returns the right shape.
 
-Both `_tenant_over_daily_budget` and `usage_ledger.usage_summary` are `async def`
+Both `_check_allowance` and `usage_ledger.usage_summary` are `async def`
 now (a real `AsyncConnectionPool`, see app/agent/sql_store.py's own
 docstring).
 """
 
+from app.agent import budgets
 from app.agent import runtime as agent
 from app.agent import runtime_stream as stream_module
 from app.core import errors, metrics
 from tests.conftest import TEST_CTX, metric_value
 
 
-class TestTenantOverDailyBudget:
+class TestCheckAllowance:
     async def test_false_when_under_the_limit(self, monkeypatch):
         from app.agent import usage_ledger
 
@@ -29,7 +30,7 @@ class TestTenantOverDailyBudget:
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
         monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
-        assert await agent._tenant_over_daily_budget(TEST_CTX) is False
+        assert (await agent._check_allowance(TEST_CTX)).refused is False
 
     async def test_true_when_spend_meets_the_limit(self, monkeypatch):
         from app.agent import usage_ledger
@@ -39,7 +40,7 @@ class TestTenantOverDailyBudget:
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
         monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
-        assert await agent._tenant_over_daily_budget(TEST_CTX) is True
+        assert (await agent._check_allowance(TEST_CTX)).refused is True
 
     async def test_true_when_spend_exceeds_the_limit(self, monkeypatch):
         from app.agent import usage_ledger
@@ -49,7 +50,7 @@ class TestTenantOverDailyBudget:
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
         monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
-        assert await agent._tenant_over_daily_budget(TEST_CTX) is True
+        assert (await agent._check_allowance(TEST_CTX)).refused is True
 
     async def test_false_for_an_invalid_ctx_without_even_querying_the_ledger(self, monkeypatch):
         from app.agent import usage_ledger
@@ -58,8 +59,8 @@ class TestTenantOverDailyBudget:
             raise AssertionError("usage_summary should not be queried for an invalid ctx")
 
         monkeypatch.setattr(usage_ledger, "usage_summary", _fail_if_called)
-        assert await agent._tenant_over_daily_budget(None) is False
-        assert await agent._tenant_over_daily_budget({"tenant": "", "principal": "", "claims": {}}) is False
+        assert (await agent._check_allowance(None)).refused is False
+        assert (await agent._check_allowance({"tenant": "", "principal": "", "claims": {}})).refused is False
 
     async def test_fails_open_when_the_ledger_read_itself_raises(self, monkeypatch):
         """A usage-ledger outage must not ALSO take down every turn on top
@@ -71,7 +72,7 @@ class TestTenantOverDailyBudget:
             raise ConnectionError("appdata postgres unreachable")
 
         monkeypatch.setattr(usage_ledger, "usage_summary", _broken)
-        assert await agent._tenant_over_daily_budget(TEST_CTX) is False
+        assert (await agent._check_allowance(TEST_CTX)).refused is False
 
     async def test_warning_metric_fires_past_80_percent_but_stays_under_the_limit(self, monkeypatch):
         from app.agent import usage_ledger
@@ -83,7 +84,7 @@ class TestTenantOverDailyBudget:
         monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
         before = metric_value(metrics.agent_tenant_budget_warning_total)
 
-        assert await agent._tenant_over_daily_budget(TEST_CTX) is False
+        assert (await agent._check_allowance(TEST_CTX)).refused is False
 
         assert metric_value(metrics.agent_tenant_budget_warning_total) == before + 1
 
@@ -98,7 +99,7 @@ class TestTenantOverDailyBudget:
             return {"total_cost_usd": 0.0, "total_tokens": 0}
 
         monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
-        await agent._tenant_over_daily_budget(TEST_CTX)
+        await agent._check_allowance(TEST_CTX)
 
         assert captured["tenant"] == TEST_CTX["tenant"]
         assert captured["since"] is not None
@@ -122,7 +123,7 @@ class TestTenantOverDailyBudget:
         monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
         monkeypatch.setattr(usage_ledger, "in_flight_reservation", fake_in_flight_reservation)
 
-        assert await agent._tenant_over_daily_budget(TEST_CTX) is True
+        assert (await agent._check_allowance(TEST_CTX)).refused is True
 
     async def test_false_when_ledger_spend_plus_reservations_both_stay_under_the_limit(
         self, monkeypatch
@@ -139,7 +140,7 @@ class TestTenantOverDailyBudget:
         monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
         monkeypatch.setattr(usage_ledger, "in_flight_reservation", fake_in_flight_reservation)
 
-        assert await agent._tenant_over_daily_budget(TEST_CTX) is False
+        assert (await agent._check_allowance(TEST_CTX)).refused is False
 
 class TestReserveAndReleaseTurnBudget:
     """runtime.py's thin wrappers around usage_ledger's reservation
@@ -196,10 +197,10 @@ def _forbid_graph_access(monkeypatch):
 
 class TestEntryPointsRefuseBeforeTouchingTheGraph:
     async def test_astream_events_turn_short_circuits(self, monkeypatch):
-        async def fake_over_budget(ctx):
-            return True
+        async def fake_refusal(ctx):
+            return budgets.refusal_envelope(budgets.Allowance("exceeded"))
 
-        monkeypatch.setattr(agent, "_tenant_over_daily_budget", fake_over_budget)
+        monkeypatch.setattr(agent, "_allowance_refusal", fake_refusal)
         _forbid_graph_access(monkeypatch)
 
         async def _collect():
@@ -215,10 +216,10 @@ class TestEntryPointsRefuseBeforeTouchingTheGraph:
         """The False path must actually reach graph work — proving the
         check isn't accidentally unconditional."""
 
-        async def fake_over_budget(ctx):
-            return False
+        async def fake_refusal(ctx):
+            return None
 
-        monkeypatch.setattr(agent, "_tenant_over_daily_budget", fake_over_budget)
+        monkeypatch.setattr(agent, "_allowance_refusal", fake_refusal)
         _forbid_graph_access(monkeypatch)
 
         async def _collect():

@@ -34,7 +34,7 @@ exceptions.
 `mock_appdata_postgres` is the equivalent guarantee for the third live
 service (`appdata` Postgres, app/agent/sql_store.py) — a gap this suite
 had until it was found the hard way: `app/agent/runtime_stream.py::astream_events_turn`
-calls `_tenant_over_daily_budget`/`_upsert_session` UNCONDITIONALLY
+calls `_check_allowance`/`_upsert_session` UNCONDITIONALLY
 on every turn (`usage_ledger.usage_summary`/`sessions.upsert_session` underneath),
 and `_record_turn_metrics` calls `usage_ledger.record_usage` on every COMPLETED
 one — all three already degrade gracefully on a connection FAILURE (each
@@ -57,7 +57,7 @@ Patched at `usage_ledger.get_connection`/`sessions.get_connection`/
 `sql_store.get_connection` itself (a `from X import Y` binding is a
 separate reference; patching the origin module wouldn't reach it) — and
 specifically NOT the higher-level functions themselves
-(`_tenant_over_daily_budget`, `usage_summary`, `upsert_session`,
+(`_check_allowance`, `usage_summary`, `upsert_session`,
 `record_usage`, `idempotent`), because tests/agent/test_tenant_budget.py,
 tests/agent/test_sessions.py, and tests/agent/test_tool_idempotency.py test
 several of those AS the function under test, monkeypatching `get_connection`
