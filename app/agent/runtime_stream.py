@@ -862,7 +862,7 @@ async def cancel_run(thread_id: str, ctx: SecurityCtx) -> bool:
 
 async def get_session_messages(thread_id: str) -> list[dict]:
     """Session-switcher transcript replay
-    (`GET /chat/sessions/{thread_id}/messages`, app/api/main.py) — reads
+    (`GET /chat/sessions/{thread_id}/messages`, app/api/routers/chat.py) — reads
     the same Postgres checkpointer every resume/cancel path uses
     (sessions.py's `chat_sessions` table only has title/timestamps, not
     content).
@@ -900,7 +900,7 @@ async def get_session_messages(thread_id: str) -> list[dict]:
 
 async def get_pending_approval(thread_id: str) -> dict | None:
     """Session-switcher pause check
-    (`GET /chat/sessions/{thread_id}/pending_approval`, app/api/main.py) —
+    (`GET /chat/sessions/{thread_id}/pending_approval`, app/api/routers/chat.py) —
     lets the web UI re-show the approve/reject banner when the user
     returns to a thread that's still paused at human_approval, instead of
     looking idle (its own `activeTurn` is in-memory JS state a page

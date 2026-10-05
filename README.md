@@ -418,7 +418,7 @@ The compose files live in `deploy/compose/` but resolve their paths and `.env` f
 ```
 app/
   agent/       graph, nodes, routing, approval gate, runtime, tools, idempotency, skills, subagents, SQL store, usage ledger
-  api/         FastAPI app, schemas, health, rate limiting, built-in web UI (static/index.html)
+  api/         FastAPI app (main.py mounts routers/: chat, ingest, usage, system), deps.py (identity headers), schemas, health, rate limiting, built-in web UI (static/index.html)
   channels/    CLI (chat.py) and Telegram gateway
   core/        config (Settings), security (SecurityCtx/Policy), metrics, telemetry, errors, scrubbing, url_safety, untrusted
   domains/     support/, ops/, sales/ (store + tools + domain each), registry, shared sandbox tools

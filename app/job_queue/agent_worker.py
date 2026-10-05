@@ -49,7 +49,7 @@ module's OWN reclaim path below:
   result) — a flag left from the earlier streaming phase is cleared first.
 - `"cancel"` — cancels a turn paused at human_approval via `cancel_run`;
   a no-op if the turn was actively streaming instead (that's the
-  cancel-flag mechanism, see `POST /chat/cancel` in app/api/main.py).
+  cancel-flag mechanism, see `POST /chat/cancel` in app/api/routers/chat.py).
 - `"turn_continue"` — a crashed `"turn"` reclaimed mid-flight, via
   `astream_events_continue_turn` (`graph.astream_events(None, ...)`
   instead of a fresh `{"messages": [...]}`) — see below and that

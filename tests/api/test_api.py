@@ -15,7 +15,7 @@ from fastapi import HTTPException, Response
 
 from app.agent import sessions
 from app.api import deps
-from app.api import main as api
+from app.api.routers import chat as chat_router
 from app.api.routers import ingest as ingest_router
 from app.api.routers import system as system_router
 from app.api.routers import usage as usage_router
@@ -198,7 +198,7 @@ class TestChatStreamQueued:
 
         async def _run():
             req = ChatRequest(message="hello", thread_id="t1")
-            response = await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+            response = await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
 
             # The request was published immediately (before the response's
             # own generator has even started) — StreamingResponse's async
@@ -238,7 +238,7 @@ class TestChatStreamQueued:
 
         async def _run():
             req = ChatRequest(message="hi", thread_id="t2")
-            response = await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+            response = await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
             request_id = json.loads(client.streams[queue.requests_stream_key("ecorp")][0][1]["payload"])[
                 "request_id"
             ]
@@ -261,7 +261,7 @@ class TestChatStreamQueued:
             req = ChatRequest(
                 message="what is this?", thread_id="t3", images=["https://example.com/cat.png"]
             )
-            response = await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+            response = await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
             payload = json.loads(client.streams[queue.requests_stream_key("ecorp")][0][1]["payload"])
             request_id = payload["request_id"]
             await queue.publish_result(client, request_id, {"type": "done"})
@@ -282,7 +282,7 @@ class TestChatStreamQueued:
 
         async def _run():
             req = ChatRequest(message="where is my order?", thread_id="t4")
-            await api.chat_stream_queued(req, ctx=TEST_CTX, domain="support")
+            await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="support")
 
         await _run()
         assert queue.requests_stream_key("ecorp") not in client.streams
@@ -302,8 +302,8 @@ class TestChatStreamQueuedSubmissionDedup:
         monkeypatch.setattr(queue, "get_client", lambda: client)
 
         req = ChatRequest(message="hello", thread_id="t1")
-        await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
-        await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+        await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+        await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
 
         published = client.streams[queue.requests_stream_key("ecorp")]
         assert len(published) == 1  # the second call never published a second job
@@ -312,10 +312,10 @@ class TestChatStreamQueuedSubmissionDedup:
         client = FakeRedis()
         monkeypatch.setattr(queue, "get_client", lambda: client)
 
-        await api.chat_stream_queued(
+        await chat_router.chat_stream_queued(
             ChatRequest(message="hello", thread_id="t1"), ctx=TEST_CTX, domain="ecorp"
         )
-        await api.chat_stream_queued(
+        await chat_router.chat_stream_queued(
             ChatRequest(message="goodbye", thread_id="t1"), ctx=TEST_CTX, domain="ecorp"
         )
 
@@ -326,10 +326,10 @@ class TestChatStreamQueuedSubmissionDedup:
         client = FakeRedis()
         monkeypatch.setattr(queue, "get_client", lambda: client)
 
-        await api.chat_stream_queued(
+        await chat_router.chat_stream_queued(
             ChatRequest(message="hello", thread_id="t1"), ctx=TEST_CTX, domain="ecorp"
         )
-        await api.chat_stream_queued(
+        await chat_router.chat_stream_queued(
             ChatRequest(message="hello", thread_id="t2"), ctx=TEST_CTX, domain="ecorp"
         )
 
@@ -340,10 +340,10 @@ class TestChatStreamQueuedSubmissionDedup:
         client = FakeRedis()
         monkeypatch.setattr(queue, "get_client", lambda: client)
 
-        await api.chat_stream_queued(
+        await chat_router.chat_stream_queued(
             ChatRequest(message="what is this?", thread_id="t1"), ctx=TEST_CTX, domain="ecorp"
         )
-        await api.chat_stream_queued(
+        await chat_router.chat_stream_queued(
             ChatRequest(message="what is this?", thread_id="t1", images=["https://example.com/cat.png"]),
             ctx=TEST_CTX,
             domain="ecorp",
@@ -360,8 +360,8 @@ class TestChatStreamQueuedSubmissionDedup:
         monkeypatch.setattr(queue, "get_client", lambda: client)
 
         req = ChatRequest(message="hello", thread_id="t1")
-        first_response = await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
-        second_response = await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+        first_response = await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+        second_response = await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
 
         request_id = json.loads(client.streams[queue.requests_stream_key("ecorp")][0][1]["payload"])[
             "request_id"
@@ -379,16 +379,16 @@ class TestChatStreamQueuedSubmissionDedup:
     async def test_after_the_dedup_window_a_resubmission_is_treated_as_fresh(self, monkeypatch):
         client = FakeRedis()
         monkeypatch.setattr(queue, "get_client", lambda: client)
-        monkeypatch.setattr(api, "CHAT_SUBMIT_DEDUP_TTL_SECONDS", 10)
+        monkeypatch.setattr(chat_router, "CHAT_SUBMIT_DEDUP_TTL_SECONDS", 10)
 
         req = ChatRequest(message="hello", thread_id="t1")
-        await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+        await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
 
         # Simulate the dedup key's own TTL having already expired.
-        digest = api.hashlib.sha256(json.dumps(["hello", []]).encode()).hexdigest()
+        digest = chat_router.hashlib.sha256(json.dumps(["hello", []]).encode()).hexdigest()
         del client.kv[queue._submission_dedup_key("t1", digest)]
 
-        await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+        await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
 
         published = client.streams[queue.requests_stream_key("ecorp")]
         assert len(published) == 2
@@ -411,9 +411,9 @@ class TestChatStreamQueuedPublishFailure:
 
         req = ChatRequest(message="hello", thread_id="t1")
         with pytest.raises(ConnectionError):
-            await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+            await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
 
-        digest = api.hashlib.sha256(json.dumps(["hello", []]).encode()).hexdigest()
+        digest = chat_router.hashlib.sha256(json.dumps(["hello", []]).encode()).hexdigest()
         assert queue._submission_dedup_key("t1", digest) not in client.kv
 
     async def test_a_retry_after_the_failure_is_treated_as_a_fresh_submission(self, monkeypatch):
@@ -433,12 +433,12 @@ class TestChatStreamQueuedPublishFailure:
 
         req = ChatRequest(message="hello", thread_id="t1")
         with pytest.raises(ConnectionError):
-            await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+            await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
 
         # The retry must publish a real job under a fresh claim, not reuse
         # the poisoned request_id from the failed attempt (which no job
         # was ever published under).
-        await api.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
+        await chat_router.chat_stream_queued(req, ctx=TEST_CTX, domain="ecorp")
 
         published = client.streams[queue.requests_stream_key("ecorp")]
         assert len(published) == 1
@@ -457,7 +457,7 @@ class TestChatResume:
 
         async def _run():
             req = ResumeRequest(thread_id="t1", approved=True)
-            response = await api.chat_resume(req, ctx=TEST_CTX, domain="ecorp")
+            response = await chat_router.chat_resume(req, ctx=TEST_CTX, domain="ecorp")
 
             published = client.streams[queue.requests_stream_key("ecorp")]
             assert len(published) == 1
@@ -481,7 +481,7 @@ class TestChatResume:
 
         async def _run():
             req = ResumeRequest(thread_id="t2", approved=False)
-            await api.chat_resume(req, ctx=TEST_CTX, domain="ecorp")
+            await chat_router.chat_resume(req, ctx=TEST_CTX, domain="ecorp")
             return json.loads(client.streams[queue.requests_stream_key("ecorp")][0][1]["payload"])
 
         payload = await _run()
@@ -490,7 +490,7 @@ class TestChatResume:
 
 class TestChatCancel:
     """POST /chat/cancel — two independent mechanisms fired unconditionally
-    (app/api/main.py's own docstring): a Redis cancel-flag AND a `"cancel"` job
+    (app/api/routers/chat.py's `chat_cancel` docstring): a Redis cancel-flag AND a `"cancel"` job
     published onto the same queue."""
 
     async def test_sets_the_cancel_flag_and_publishes_a_cancel_job(self, monkeypatch, ownership):
@@ -500,7 +500,7 @@ class TestChatCancel:
 
         async def _run():
             req = CancelRequest(thread_id="t1")
-            response = await api.chat_cancel(req, ctx=TEST_CTX, domain="ecorp")
+            response = await chat_router.chat_cancel(req, ctx=TEST_CTX, domain="ecorp")
 
             assert await queue.is_cancelled(client, "t1") is True
 
@@ -546,8 +546,8 @@ class TestConversationOwnership:
     async def test_a_new_thread_id_is_claimed_by_its_first_sender_who_can_keep_using_it(
         self, redis, ownership
     ):
-        await api.chat_stream_queued(ChatRequest(message="hello", thread_id="fresh"), ctx=TEST_CTX, domain="ecorp")
-        await api.chat_stream_queued(ChatRequest(message="and again", thread_id="fresh"), ctx=TEST_CTX, domain="ecorp")
+        await chat_router.chat_stream_queued(ChatRequest(message="hello", thread_id="fresh"), ctx=TEST_CTX, domain="ecorp")
+        await chat_router.chat_stream_queued(ChatRequest(message="and again", thread_id="fresh"), ctx=TEST_CTX, domain="ecorp")
 
         assert ownership.rows["fresh"] == (TEST_CTX["tenant"], TEST_CTX["principal"], "ecorp")
         assert len(redis.streams[queue.requests_stream_key("ecorp")]) == 2
@@ -559,7 +559,7 @@ class TestConversationOwnership:
         await ownership.claim(TEST_CTX, "owned")
 
         with pytest.raises(HTTPException) as exc:
-            await api.chat_stream_queued(ChatRequest(message="hi", thread_id="owned"), ctx=intruder, domain="ecorp")
+            await chat_router.chat_stream_queued(ChatRequest(message="hi", thread_id="owned"), ctx=intruder, domain="ecorp")
 
         assert exc.value.status_code == 404
         assert self._nothing_was_published(redis)
@@ -576,13 +576,13 @@ class TestConversationOwnership:
         it, so an identical (thread, message) from another caller used to
         come back with the OWNER's request_id — and read the owner's reply
         off their results stream. The check must come before that claim."""
-        owner_response = await api.chat_stream_queued(
+        owner_response = await chat_router.chat_stream_queued(
             ChatRequest(message="what is my salary?", thread_id="owned"), ctx=TEST_CTX, domain="ecorp"
         )
         assert owner_response is not None
 
         with pytest.raises(HTTPException) as exc:
-            await api.chat_stream_queued(
+            await chat_router.chat_stream_queued(
                 ChatRequest(message="what is my salary?", thread_id="owned"), ctx=OTHER_PRINCIPAL, domain="ecorp"
             )
 
@@ -593,7 +593,7 @@ class TestConversationOwnership:
         await ownership.claim(TEST_CTX, "owned", domain="support")
 
         with pytest.raises(HTTPException) as exc:
-            await api.chat_stream_queued(ChatRequest(message="hi", thread_id="owned"), ctx=TEST_CTX, domain="sales")
+            await chat_router.chat_stream_queued(ChatRequest(message="hi", thread_id="owned"), ctx=TEST_CTX, domain="sales")
 
         assert exc.value.status_code == 404
 
@@ -601,14 +601,14 @@ class TestConversationOwnership:
         await ownership.claim(TEST_CTX, "owned")
 
         with pytest.raises(HTTPException) as exc:
-            await api.chat_resume(ResumeRequest(thread_id="owned", approved=True), ctx=OTHER_PRINCIPAL, domain="ecorp")
+            await chat_router.chat_resume(ResumeRequest(thread_id="owned", approved=True), ctx=OTHER_PRINCIPAL, domain="ecorp")
 
         assert exc.value.status_code == 404
         assert self._nothing_was_published(redis)
 
     async def test_resuming_a_thread_nobody_owns_is_refused_not_run(self, redis):
         with pytest.raises(HTTPException) as exc:
-            await api.chat_resume(ResumeRequest(thread_id="never-seen", approved=True), ctx=TEST_CTX, domain="ecorp")
+            await chat_router.chat_resume(ResumeRequest(thread_id="never-seen", approved=True), ctx=TEST_CTX, domain="ecorp")
 
         assert exc.value.status_code == 404
         assert self._nothing_was_published(redis)
@@ -621,7 +621,7 @@ class TestConversationOwnership:
         await ownership.claim(TEST_CTX, "owned")
 
         with pytest.raises(HTTPException) as exc:
-            await api.chat_cancel(CancelRequest(thread_id="owned"), ctx=OTHER_PRINCIPAL, domain="ecorp")
+            await chat_router.chat_cancel(CancelRequest(thread_id="owned"), ctx=OTHER_PRINCIPAL, domain="ecorp")
 
         assert exc.value.status_code == 404
         assert await queue.is_cancelled(redis, "owned") is False
@@ -630,7 +630,7 @@ class TestConversationOwnership:
     async def test_the_owner_can_still_cancel(self, redis, ownership):
         await ownership.claim(TEST_CTX, "owned")
 
-        await api.chat_cancel(CancelRequest(thread_id="owned"), ctx=TEST_CTX, domain="ecorp")
+        await chat_router.chat_cancel(CancelRequest(thread_id="owned"), ctx=TEST_CTX, domain="ecorp")
 
         assert await queue.is_cancelled(redis, "owned") is True
 
@@ -640,7 +640,7 @@ class TestConversationOwnership:
         chat user's later messages would continue the squatter's history
         (the Telegram path has no ownership step of its own)."""
         with pytest.raises(HTTPException) as exc:
-            await api.chat_stream_queued(
+            await chat_router.chat_stream_queued(
                 ChatRequest(message="hi", thread_id="telegram:123456"), ctx=OTHER_PRINCIPAL, domain="ecorp"
             )
 
@@ -652,7 +652,7 @@ class TestConversationOwnership:
         telegram_ctx = {"tenant": "ecorp", "principal": "telegram:42", "claims": {}}
         await ownership.claim(telegram_ctx, "telegram:123456")
 
-        await api.chat_stream_queued(
+        await chat_router.chat_stream_queued(
             ChatRequest(message="hi", thread_id="telegram:123456"), ctx=telegram_ctx, domain="ecorp"
         )
 
@@ -682,7 +682,7 @@ class TestChatSessions:
 
         monkeypatch.setattr(sessions, "list_sessions", fake_list_sessions)
 
-        result = await api.chat_sessions(ctx=TEST_CTX, domain="ecorp")
+        result = await chat_router.chat_sessions(ctx=TEST_CTX, domain="ecorp")
 
         # Calling the handler directly (this file's established
         # convention) bypasses FastAPI's response_model coercion — that
@@ -702,7 +702,7 @@ class TestChatSessions:
 
         monkeypatch.setattr(sessions, "list_sessions", fake_list_sessions)
 
-        await api.chat_sessions(ctx=TEST_CTX, domain="support")
+        await chat_router.chat_sessions(ctx=TEST_CTX, domain="support")
 
         assert captured["domain"] == "support"
 
@@ -722,9 +722,9 @@ class TestChatSessionMessages:
             assert thread_id == "t1"
             return [{"role": "user", "text": "hi"}, {"role": "assistant", "text": "hello"}]
 
-        monkeypatch.setattr(api, "get_session_messages", fake_get_session_messages)
+        monkeypatch.setattr(chat_router, "get_session_messages", fake_get_session_messages)
 
-        result = await api.chat_session_messages("t1", ctx=TEST_CTX, domain="ecorp")
+        result = await chat_router.chat_session_messages("t1", ctx=TEST_CTX, domain="ecorp")
 
         # Same note as TestChatSessions above — raw dicts, not
         # response_model-coerced Pydantic objects, when called directly.
@@ -743,10 +743,10 @@ class TestChatSessionMessages:
         async def fail_if_called(thread_id):
             raise AssertionError("get_session_messages should not be called")
 
-        monkeypatch.setattr(api, "get_session_messages", fail_if_called)
+        monkeypatch.setattr(chat_router, "get_session_messages", fail_if_called)
 
         with pytest.raises(HTTPException) as exc_info:
-            await api.chat_session_messages("someone-elses-thread", ctx=TEST_CTX, domain="ecorp")
+            await chat_router.chat_session_messages("someone-elses-thread", ctx=TEST_CTX, domain="ecorp")
 
         assert exc_info.value.status_code == 404
 
@@ -768,10 +768,10 @@ class TestChatSessionMessages:
         async def fail_if_called(thread_id):
             raise AssertionError("get_session_messages should not be called")
 
-        monkeypatch.setattr(api, "get_session_messages", fail_if_called)
+        monkeypatch.setattr(chat_router, "get_session_messages", fail_if_called)
 
         with pytest.raises(HTTPException) as exc_info:
-            await api.chat_session_messages("t1", ctx=TEST_CTX, domain="sales")
+            await chat_router.chat_session_messages("t1", ctx=TEST_CTX, domain="sales")
 
         assert exc_info.value.status_code == 404
         assert captured["domain"] == "sales"
