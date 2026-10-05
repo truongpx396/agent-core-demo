@@ -6,6 +6,8 @@ paths:
   - "app/ingestion/ingest_queue.py"
   - "app/ingestion/ingest_worker.py"
   - "app/api/main.py"
+  - "app/api/deps.py"
+  - "app/api/routers/**/*.py"
   - "app/core/metrics.py"
   - "app/core/resilience.py"
   - "deploy/litellm/patches/**"

@@ -1,4 +1,4 @@
-"""Tests for app/api/main.py's plain, dependency-free route handlers.
+"""Tests for the plain, dependency-free route handlers behind app/api/main.py (app/api/routers/, app/api/deps.py).
 
 Deliberately NOT using FastAPI's TestClient here: exercising the app
 through it would trigger the real `lifespan` (a real durable checkpointer
@@ -14,8 +14,12 @@ import pytest
 from fastapi import HTTPException, Response
 
 from app.agent import sessions
+from app.api import deps
 from app.api import main as api
-from app.api.main import ui
+from app.api.routers import ingest as ingest_router
+from app.api.routers import system as system_router
+from app.api.routers import usage as usage_router
+from app.api.routers.system import ui
 from app.api.schemas import CancelRequest, ChatRequest, ResumeRequest
 from app.core import metrics
 from app.ingestion import ingest_queue
@@ -67,10 +71,10 @@ class TestHealthReady:
         async def fake_check_dependencies():
             return {"qdrant": True, "appdata_postgres": True, "checkpointer_postgres": True, "redis": True}
 
-        monkeypatch.setattr(api.health_checks, "check_dependencies", fake_check_dependencies)
+        monkeypatch.setattr(system_router.health_checks, "check_dependencies", fake_check_dependencies)
         response = Response()
 
-        result = await api.health_ready(response)
+        result = await system_router.health_ready(response)
 
         assert response.status_code == 200
         assert result.status == "ready"
@@ -80,10 +84,10 @@ class TestHealthReady:
         async def fake_check_dependencies():
             return {"qdrant": False, "appdata_postgres": True, "checkpointer_postgres": True, "redis": True}
 
-        monkeypatch.setattr(api.health_checks, "check_dependencies", fake_check_dependencies)
+        monkeypatch.setattr(system_router.health_checks, "check_dependencies", fake_check_dependencies)
         response = Response()
 
-        result = await api.health_ready(response)
+        result = await system_router.health_ready(response)
 
         assert response.status_code == 503
         assert result.status == "degraded"
@@ -104,10 +108,10 @@ class TestUsage:
                 return {"total_tokens": 5000, "total_cost_usd": 3.5}
             return {"total_tokens": 200, "total_cost_usd": 0.1}
 
-        monkeypatch.setattr(api.usage_ledger, "usage_summary", fake_usage_summary)
-        monkeypatch.setattr(api, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
+        monkeypatch.setattr(usage_router.usage_ledger, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
 
-        result = await api.usage(ctx=TEST_CTX)
+        result = await usage_router.usage(ctx=TEST_CTX)
 
         assert result.total_tokens == 5000
         assert result.total_cost_usd == 3.5
@@ -132,14 +136,14 @@ class TestUi:
     def test_sends_the_trusted_identity_headers(self):
         """The UI must send X-Tenant-Id/X-Principal-Id itself — POST
         /chat/stream/queued fails closed (422) without both (see
-        app/api/main.py's get_ctx)."""
+        app/api/deps.py's get_ctx)."""
         html = ui()
         assert "X-Tenant-Id" in html
         assert "X-Principal-Id" in html
 
     def test_sends_a_domain_selector_for_the_queued_endpoints(self):
         """The page must send X-Domain on the queued path — see
-        app/api/main.py's get_domain, which the three queued endpoints
+        app/api/deps.py's get_domain, which the three queued endpoints
         (chat_stream_queued/chat_resume/chat_cancel) depend on."""
         html = ui()
         assert "X-Domain" in html
@@ -158,7 +162,7 @@ class TestUi:
 
 
 class TestGetDomain:
-    """app/api/main.py::get_domain's own runtime branch: an unknown domain
+    """app/api/deps.py::get_domain's own runtime branch: an unknown domain
     name must fail loud, the same discipline
     app/domains/registry.py::resolve_domain already applies at process
     start, just surfaced as a 422 here since this is a per-request value
@@ -169,11 +173,11 @@ class TestGetDomain:
     docstring)."""
 
     async def test_passes_through_a_known_domain(self):
-        assert await api.get_domain(x_domain="support") == "support"
+        assert await deps.get_domain(x_domain="support") == "support"
 
     async def test_rejects_an_unknown_domain_with_422(self):
         with pytest.raises(HTTPException) as exc_info:
-            await api.get_domain(x_domain="not-a-real-domain")
+            await deps.get_domain(x_domain="not-a-real-domain")
         assert exc_info.value.status_code == 422
         assert "not-a-real-domain" in exc_info.value.detail
 
@@ -794,7 +798,7 @@ class TestIngestUpload:
         published = []
 
         monkeypatch.setattr(
-            api.object_store,
+            ingest_router.object_store,
             "upload_bytes",
             lambda key, data, content_type: uploaded.append((key, data, content_type)),
         )
@@ -811,13 +815,13 @@ class TestIngestUpload:
                 }
             )
 
-        monkeypatch.setattr(api.ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(ingest_router.ingest_queue, "publish_ingest_request", fake_publish)
         client = FakeRedis()
         monkeypatch.setattr(queue, "get_client", lambda: client)
 
         files = [_upload_file("report.pdf", b"pdf-bytes", "application/pdf")]
 
-        result = await api.ingest_upload(files=files, topic="company", ctx=TEST_CTX)
+        result = await ingest_router.ingest_upload(files=files, topic="company", ctx=TEST_CTX)
 
         assert len(uploaded) == 1
         key, data, content_type = uploaded[0]
@@ -837,12 +841,12 @@ class TestIngestUpload:
         assert result[0].job_id == published[0]["job_id"]
 
     async def test_multiple_files_each_get_their_own_job(self, monkeypatch):
-        monkeypatch.setattr(api.object_store, "upload_bytes", lambda *a, **kw: None)
+        monkeypatch.setattr(ingest_router.object_store, "upload_bytes", lambda *a, **kw: None)
 
         async def fake_publish(client, **kw):
             pass
 
-        monkeypatch.setattr(api.ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(ingest_router.ingest_queue, "publish_ingest_request", fake_publish)
         monkeypatch.setattr(queue, "get_client", lambda: FakeRedis())
 
         files = [
@@ -854,7 +858,7 @@ class TestIngestUpload:
             ),
         ]
 
-        result = await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+        result = await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
 
         assert [r.filename for r in result] == ["report.pdf", "notes.docx"]
         assert result[0].job_id != result[1].job_id
@@ -865,11 +869,11 @@ class TestIngestUpload:
         one file's problem must not discard another file's already-queued
         job in the SAME request."""
         uploaded = []
-        monkeypatch.setattr(api.object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
+        monkeypatch.setattr(ingest_router.object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
 
         files = [_upload_file("spreadsheet.xlsx", b"data", "application/vnd.ms-excel")]
 
-        result = await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+        result = await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
 
         assert uploaded == []  # never reached MinIO
         assert len(result) == 1
@@ -879,12 +883,12 @@ class TestIngestUpload:
 
     async def test_a_bad_file_alongside_a_good_one_still_queues_the_good_one(self, monkeypatch):
         uploaded = []
-        monkeypatch.setattr(api.object_store, "upload_bytes", lambda key, *a, **kw: uploaded.append(key))
+        monkeypatch.setattr(ingest_router.object_store, "upload_bytes", lambda key, *a, **kw: uploaded.append(key))
 
         async def fake_publish(client, **kw):
             pass
 
-        monkeypatch.setattr(api.ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(ingest_router.ingest_queue, "publish_ingest_request", fake_publish)
         monkeypatch.setattr(queue, "get_client", lambda: FakeRedis())
 
         files = [
@@ -892,7 +896,7 @@ class TestIngestUpload:
             _upload_file("report.pdf", b"pdf-bytes", "application/pdf"),
         ]
 
-        result = await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+        result = await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
 
         assert len(uploaded) == 1  # only the good file ever reached MinIO
         assert [r.filename for r in result] == ["spreadsheet.xlsx", "report.pdf"]
@@ -906,19 +910,19 @@ class TestIngestUpload:
         but never got a job published is an orphaned blob nothing will
         ever ingest or remove."""
         deleted = []
-        monkeypatch.setattr(api.object_store, "upload_bytes", lambda *a, **kw: None)
-        monkeypatch.setattr(api.object_store, "delete_object", lambda key: deleted.append(key))
+        monkeypatch.setattr(ingest_router.object_store, "upload_bytes", lambda *a, **kw: None)
+        monkeypatch.setattr(ingest_router.object_store, "delete_object", lambda key: deleted.append(key))
 
         async def failing_publish(client, **kw):
             raise ConnectionError("redis unreachable")
 
-        monkeypatch.setattr(api.ingest_queue, "publish_ingest_request", failing_publish)
+        monkeypatch.setattr(ingest_router.ingest_queue, "publish_ingest_request", failing_publish)
         monkeypatch.setattr(queue, "get_client", lambda: FakeRedis())
 
         before = _count(metrics.agent_upload_failed_total, reason="storage_error")
 
         files = [_upload_file("report.pdf", b"pdf-bytes", "application/pdf")]
-        result = await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+        result = await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
 
         assert len(deleted) == 1
         assert deleted[0].endswith("-report.pdf")
@@ -934,16 +938,16 @@ class TestIngestUpload:
         filesystem paths (no real traversal risk), just for a sane,
         predictable key shape."""
         uploaded = []
-        monkeypatch.setattr(api.object_store, "upload_bytes", lambda key, *a, **kw: uploaded.append(key))
+        monkeypatch.setattr(ingest_router.object_store, "upload_bytes", lambda key, *a, **kw: uploaded.append(key))
 
         async def fake_publish(client, **kw):
             pass
 
-        monkeypatch.setattr(api.ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(ingest_router.ingest_queue, "publish_ingest_request", fake_publish)
         monkeypatch.setattr(queue, "get_client", lambda: FakeRedis())
 
         files = [_upload_file("../../etc/passwd.pdf", b"x", "application/pdf")]
-        await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+        await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
 
         assert "../" not in uploaded[0]
         assert uploaded[0].endswith("-passwd.pdf")
@@ -955,9 +959,9 @@ class TestIngestUpload:
         jobs ONE submission may create, checked before any file in the
         batch is touched, so a 6th file never reaches MinIO just because
         the first 5 would have been fine."""
-        monkeypatch.setattr(api, "MAX_UPLOAD_FILES_PER_REQUEST", 2)
+        monkeypatch.setattr(ingest_router, "MAX_UPLOAD_FILES_PER_REQUEST", 2)
         uploaded = []
-        monkeypatch.setattr(api.object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
+        monkeypatch.setattr(ingest_router.object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
 
         files = [
             _upload_file("a.pdf", b"x", "application/pdf"),
@@ -966,26 +970,26 @@ class TestIngestUpload:
         ]
 
         with pytest.raises(HTTPException) as exc_info:
-            await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+            await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
 
         assert exc_info.value.status_code == 400
         assert uploaded == []  # never reached MinIO, not even the first two
 
     async def test_a_file_over_the_size_cap_is_reported_per_file_not_raised(self, monkeypatch):
-        """_read_bounded (app/api/main.py) checks the running total WHILE
+        """_read_bounded (app/api/routers/ingest.py) checks the running total WHILE
         reading, not after — this only has to prove the outcome (never
         reaches MinIO, reported as this file's own error), not the
         memory-bounding mechanism itself. Same changed-behavior reasoning
         as the bad-extension test above: a per-file problem, not a
         whole-request abort."""
-        monkeypatch.setattr(api, "_MAX_UPLOAD_BYTES", 10)  # tiny, so the test payload need not be huge
-        monkeypatch.setattr(api, "_UPLOAD_READ_CHUNK_BYTES", 4)
+        monkeypatch.setattr(ingest_router, "_MAX_UPLOAD_BYTES", 10)  # tiny, so the test payload need not be huge
+        monkeypatch.setattr(ingest_router, "_UPLOAD_READ_CHUNK_BYTES", 4)
         uploaded = []
-        monkeypatch.setattr(api.object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
+        monkeypatch.setattr(ingest_router.object_store, "upload_bytes", lambda *a, **kw: uploaded.append(a))
 
         files = [_upload_file("report.pdf", b"x" * 100, "application/pdf")]
 
-        result = await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+        result = await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
 
         assert uploaded == []  # never reached MinIO
         assert len(result) == 1
@@ -993,20 +997,20 @@ class TestIngestUpload:
         assert result[0].error
 
     async def test_a_file_within_the_size_cap_still_uploads(self, monkeypatch):
-        monkeypatch.setattr(api, "_MAX_UPLOAD_BYTES", 1000)
+        monkeypatch.setattr(ingest_router, "_MAX_UPLOAD_BYTES", 1000)
         uploaded = []
         monkeypatch.setattr(
-            api.object_store, "upload_bytes", lambda key, data, ct: uploaded.append(data)
+            ingest_router.object_store, "upload_bytes", lambda key, data, ct: uploaded.append(data)
         )
 
         async def fake_publish(client, **kw):
             pass
 
-        monkeypatch.setattr(api.ingest_queue, "publish_ingest_request", fake_publish)
+        monkeypatch.setattr(ingest_router.ingest_queue, "publish_ingest_request", fake_publish)
         monkeypatch.setattr(queue, "get_client", lambda: FakeRedis())
 
         files = [_upload_file("report.pdf", b"x" * 100, "application/pdf")]
-        await api.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
+        await ingest_router.ingest_upload(files=files, topic=None, ctx=TEST_CTX)
 
         assert uploaded == [b"x" * 100]
 
@@ -1017,7 +1021,7 @@ class TestIngestStream:
         monkeypatch.setattr(ingest_queue, "get_client", lambda: client)
 
         async def _run():
-            response = await api.ingest_stream("j1")
+            response = await ingest_router.ingest_stream("j1")
             await ingest_queue.publish_result(client, "j1", {"type": "started"})
             await ingest_queue.publish_result(client, "j1", {"type": "done", "chunks": 4})
             return [chunk async for chunk in response.body_iterator]
@@ -1031,7 +1035,7 @@ class TestIngestStream:
         monkeypatch.setattr(ingest_queue, "get_client", lambda: client)
 
         async def _run():
-            response = await api.ingest_stream("j2")
+            response = await ingest_router.ingest_stream("j2")
             await ingest_queue.publish_result(client, "j2", {"type": "error", "content": "bad file"})
             async for _ in response.body_iterator:
                 pass

@@ -47,7 +47,7 @@ place — no `asyncio.run_coroutine_threadsafe` bridge needed.
 
 Run with: `python -m app.ingestion.ingest_worker` (Makefile's `ingest-worker`
 target). Needs `make up`'s Redis + MinIO; not started by `make up` itself —
-opt-in alongside `POST /ingest/upload` (app/api/main.py), which only
+opt-in alongside `POST /ingest/upload` (app/api/routers/ingest.py), which only
 publishes the job.
 """
 import asyncio

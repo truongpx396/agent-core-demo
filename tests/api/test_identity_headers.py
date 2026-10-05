@@ -2,7 +2,7 @@
 a request that does not carry BOTH identity headers must never reach a
 handler. FastAPI turns a missing required header into a 422 before the handler
 runs, so "fail closed" lives in the *shape* of `get_ctx`'s signature
-(app/api/main.py).
+(app/api/deps.py).
 
 This is the first test that actually sends a request without them. The
 neighbouring `test_sends_the_trusted_identity_headers` only checks that the
@@ -16,6 +16,7 @@ validation alone and no handler body executes.
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api import deps
 from app.api import main as api
 from app.core.security import valid_ctx
 
@@ -59,7 +60,7 @@ async def test_an_empty_identity_value_passes_the_header_check_but_is_not_a_vali
     lookups. A stricter boundary (reject empty with a 422) would be a
     behavior change the load test's invalid-identity scenario relies on being
     absent, so it is recorded here rather than silently assumed."""
-    ctx = await api.get_ctx(x_tenant_id="", x_principal_id="")
+    ctx = await deps.get_ctx(x_tenant_id="", x_principal_id="")
 
     assert ctx == {"tenant": "", "principal": "", "claims": {}}
     assert valid_ctx(ctx) is False

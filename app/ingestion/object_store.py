@@ -66,7 +66,7 @@ def upload_bytes(key: str, data: bytes, content_type: str = "application/octet-s
 
 def delete_object(key: str) -> None:
     """Best-effort compensating delete for a key this process itself just
-    wrote via `upload_bytes` — the caller (`app/api/main.py::ingest_upload`)
+    wrote via `upload_bytes` — the caller (`app/api/routers/ingest.py::ingest_upload`)
     uses this when the job publish AFTER a successful upload then fails,
     so the blob doesn't outlive the job that was supposed to consume it.
     Never raises: a failed cleanup here must not turn an already-reported

@@ -9,7 +9,7 @@ record, not a description of a graph node or tool.
 
 ## The starting question
 
-`POST /ingest/upload` (`app/api/main.py`) is fire-and-forget: it uploads to
+`POST /ingest/upload` (`app/api/routers/ingest.py`) is fire-and-forget: it uploads to
 MinIO and publishes a job onto `ingest:requests`
 (`app/ingestion/ingest_queue.py`), then returns immediately. The actual
 parsing/embedding happens in `app/ingestion/ingest_worker.py`, a separate

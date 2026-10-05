@@ -11,7 +11,7 @@ rewrite (ModuleNotFoundError on 2.0.0), so this stays on the last stable
 
 Every other tool (`app/agent/tools.py`) reads `SecurityCtx` from
 `RunnableConfig["configurable"]["ctx"]`, sourced from a trusted HTTP header
-(`app/api/main.py::get_ctx`). MCP has no equivalent channel — nothing
+(`app/api/deps.py::get_ctx`). MCP has no equivalent channel — nothing
 upstream stamps a tenant/principal for it. This demo's simplification:
 `tenant`/`principal` are explicit tool arguments, checked against the same
 `DEFAULT_POLICY.permit(...)` fail-closed gate, then passed straight through

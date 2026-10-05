@@ -95,7 +95,7 @@ class TestPerTurnReset:
 
     def test_validate_input_stamps_ctx_from_config(self):
         """ctx comes from config["configurable"]["ctx"] — the trusted
-        boundary (app/api/main.py's header extraction, or a local dev ctx) —
+        boundary (app/api/deps.py's header extraction, or a local dev ctx) —
         never derived from state/message content. See State's docstring
         for why this is the only node allowed to write it."""
         state = {"messages": [HumanMessage(content="hi")]}
