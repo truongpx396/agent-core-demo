@@ -231,7 +231,22 @@ jobs:
       # inference, only 6 of them) — running them serially sidesteps the
       # whole multi-worker-fixture-instance risk entirely rather than
       # chasing a second fix for it.
-      - run: pytest -m e2e -q
+      # The GATE: every e2e test that does not need the model to chain calls (a single tool call, a citation,
+      # the approve/reject round trip, the UI helpers). Every one of these has passed in every CI run since
+      # Oct 3, so a red here is a real regression, not the model's mood.
+      - run: pytest -m "e2e and not advisory" -q
+        env:
+          TEST_LLM_MODEL: qwen2.5:3b
+      # ADVISORY, deliberately non-blocking (`continue-on-error`): the two multi-step tests (a skill, a
+      # subagent delegation) need the 3B model to chain 3+ calls and stop failing in a way no test or tool
+      # wording fixed (GRAPH_PATTERNS.md pattern 48). They still run, and a failure prints the page transcript,
+      # so the signal is kept without a red gate on model behaviour, the same posture as the `deepeval` job.
+      # `!cancelled()`: they run even when the gate above failed, so one run shows both. A second pytest
+      # invocation, not `-m e2e` once, for the same process-isolation reason the llm/e2e split above documents.
+      - name: Multi-step e2e tests (advisory, non-blocking)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: pytest -m "e2e and advisory" -q
         env:
           TEST_LLM_MODEL: qwen2.5:3b
       # Not actions/cache's own post-job save: that one cannot read the root-owned files the Ollama

@@ -674,7 +674,11 @@ promptfoo/garak/`scripts/eval.py` are complementary rather than redundant):
    built-in web UI (`test-live`). Each starts its own ephemeral containers
    via testcontainers — Docker required, `make up` is NOT — and skips
    cleanly (not fails) when Docker isn't reachable. Both run on every push
-   in CI.
+   in CI. In CI, `test-live`'s browser step is split: the gate is
+   `-m "e2e and not advisory"`, and the two tests that need the small model
+   to chain several tool calls (a skill, a subagent delegation) are marked
+   `advisory` and run in their own non-blocking step, so a model that stops
+   halfway shows up in that step's log instead of failing the job (pattern 48).
 3. **`make promptfoo`** — black-box checks against the raw domain system
    prompts: does the support/ops/sales prompt still refuse to fabricate a
    refund/account change/sent message? Runs on every push in CI, a fast
