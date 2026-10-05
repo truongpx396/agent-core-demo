@@ -44,6 +44,8 @@ import time
 
 import pytest
 
+from tests.live.transcript import page_transcript
+
 # `pytest.importorskip`, not a plain top-level import: `playwright` is only
 # installed for `test-live`'s own CI job/`make test-live` (see
 # requirements-dev.txt) — the fast `test` job never installs it, correctly,
@@ -317,3 +319,48 @@ def test_the_helper_keeps_waiting_while_the_turn_is_still_running(page: Page):
     page.set_content(_PAGE)  # Send disabled and no approval box: the turn is mid-flight
     with pytest.raises(playwright_sync_api.TimeoutError, match="Timeout 1500ms exceeded"):  # the budget it was GIVEN
         _answer_of_the_finished_turn(page, timeout_ms=1_500)
+
+
+# --- the failure transcript (tests/live/transcript.py): a browser, but no stack and no model --------
+
+
+def test_the_transcript_lists_each_message_with_its_tool_calls_and_any_approval_box(page: Page):
+    page.set_content(
+        """<div id="messages">
+        <div class="msg user">Who is the Support Lead?</div>
+        <div class="msg assistant">
+          <div class="status"></div>
+          <div class="tool-activity">
+            <div class="tool-activity-line">✓ run_subagent({"task": "look up the lead"})</div>
+            <div class="tool-activity-line">🔧 query_employees({})</div>
+          </div>
+          <span class="answer-text draft-text"></span>
+          <span class="answer-text">No Support Lead found.</span>
+          <div class="approval"><div class="approval-question">⏸ Approve this action? remember({"content": "x"})</div></div>
+        </div>
+        <div class="msg system">a housekeeping note</div>
+        </div>"""
+    )
+
+    assert page_transcript(page) == (
+        "user: Who is the Support Lead?\n"
+        "assistant: No Support Lead found.\n"
+        '  ✓ run_subagent({"task": "look up the lead"})\n'
+        "  🔧 query_employees({})\n"
+        '  ⏸ Approve this action? remember({"content": "x"})\n'
+        "system: a housekeeping note"
+    )
+
+
+def test_the_transcript_says_so_when_an_assistant_message_has_no_text_yet_and_what_its_status_was(page: Page):
+    page.set_content(
+        """<div id="messages"><div class="msg assistant">
+        <div class="status">Using calculator</div><div class="tool-activity"></div>
+        <span class="answer-text draft-text"></span><span class="answer-text"></span></div></div>"""
+    )
+    assert page_transcript(page) == "assistant: (no answer text) [status: Using calculator]"
+
+
+def test_the_transcript_of_an_empty_page_is_a_sentence_not_an_empty_string(page: Page):
+    page.set_content('<div id="messages"></div>')
+    assert page_transcript(page) == "(no messages on the page)"
