@@ -203,6 +203,12 @@ def test_a_grounded_answer_shows_a_real_citation(page: Page, real_stack_with_ret
     expect(citation).to_contain_text("Support Hours")
 
 
+# `advisory`: this test needs the 3B model to CHAIN several calls (skill_search -> use_skill -> calculator, or a
+# delegation whose nested run must query correctly), and it does not reliably do that, however the test or the
+# tool is worded (see GRAPH_PATTERNS.md pattern 48: a prompt change and a tool change each fixed one case and broke
+# another; the CI record since the memory fix is 1 green run in 5). CI runs it in its own non-blocking step, so a
+# model that stops halfway is a visible signal instead of a red gate, like deepeval.
+@pytest.mark.advisory
 def test_a_skill_is_found_and_followed(page: Page, real_stack_with_retrieval: str):
     """skill_search -> use_skill -> the skill's own instructed tool calls
     (GRAPH_PATTERNS.md pattern 45) — `expense-summary` (skills/expense-
@@ -226,6 +232,12 @@ def test_a_skill_is_found_and_followed(page: Page, real_stack_with_retrieval: st
     expect(answer).to_contain_text("17", timeout=SETTLE_MS)
 
 
+# `advisory`: this test needs the 3B model to CHAIN several calls (skill_search -> use_skill -> calculator, or a
+# delegation whose nested run must query correctly), and it does not reliably do that, however the test or the
+# tool is worded (see GRAPH_PATTERNS.md pattern 48: a prompt change and a tool change each fixed one case and broke
+# another; the CI record since the memory fix is 1 green run in 5). CI runs it in its own non-blocking step, so a
+# model that stops halfway is a visible signal instead of a red gate, like deepeval.
+@pytest.mark.advisory
 def test_a_subagent_delegates_and_returns_a_real_answer(page: Page, real_stack_with_retrieval: str):
     """run_subagent (GRAPH_PATTERNS.md pattern 46) — delegates to the
     bundled `researcher` subagent (subagents/researcher/AGENT.md, visible

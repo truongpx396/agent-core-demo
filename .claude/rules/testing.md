@@ -48,3 +48,7 @@ Constitution Principle VII applies. The default suite must stay hermetic and fas
   `integration` test when real constraint, broker or checkpointer behavior is what's at stake.
 - deepeval, garak and promptfoo-redteam are advisory signals (small local judge models are
   unreliable graders). Don't turn them into a hard gate.
+- The same goes for an e2e test that needs the small local model to CHAIN several tool calls
+  (a skill, a subagent delegation): mark it `@pytest.mark.advisory` and CI runs it in the
+  non-blocking `e2e and advisory` step instead of the gate. Don't mark a single-hop test
+  advisory to silence a failure; `tests/core/test_live_e2e_gate_split.py` lists the tests that are.
