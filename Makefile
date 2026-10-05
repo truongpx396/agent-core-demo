@@ -13,18 +13,35 @@
 DEFECTDOJO_VERSION := 3.3.100
 DEFECTDOJO_DIR := $(HOME)/.cache/agent-core-demo-defectdojo
 
+# Every compose file lives under deploy/compose/, but they were written with
+# repo-root-relative paths (`./observability/...`, `./postgres-init`,
+# `build: .`, `docker/*.Dockerfile`) and read `.env` from the repo root.
+# Compose resolves all of those against the PROJECT DIRECTORY, which
+# defaults to the directory of the first `-f` file — so without
+# `--project-directory .` the paths would resolve under deploy/compose/, the
+# root `.env` would be ignored, and the dev stack's project name (it sets no
+# `name:`, so it comes from the directory) would silently become `compose`,
+# orphaning every existing volume and breaking `sonar-scan`'s hard-coded
+# `agent-core-demo_default` network. Pinning it here (rather than editing
+# every path to `../../`) is also what lets deploy.yml mirror this layout on
+# the droplets unchanged. Consequence: a bare `docker compose up` from the
+# repo root no longer finds a compose file — use `make up`, or pass the same
+# two flags by hand.
+COMPOSE     := docker compose --project-directory . -f deploy/compose/docker-compose.yml
+COMPOSE_OBS := docker compose --project-directory . -f deploy/compose/docker-compose.observability.yml
+
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
 up:  ## Start all services (litellm, qdrant, langfuse, postgres, minio; talks to a native macOS Ollama on the host, see litellm-config.yaml)
-	docker compose up -d
+	$(COMPOSE) up -d
 
 up-app:  ## Start infra + the containerized app itself (api, agent-worker, ingest-worker; see Dockerfile)
-	docker compose --profile app up -d --build
+	$(COMPOSE) --profile app up -d --build
 
 sandbox-up: sandbox-build  ## Start the containerized, authenticated OpenSandbox server (docker/opensandbox-server.{Dockerfile,toml}) that the ops/support/sales domains' sandbox tools execute against — opt-in `sandbox` profile like `up-app`'s `app` profile, not part of plain `make up`, since it bind-mounts the host Docker socket to create sibling sandbox containers. Needs OPENSANDBOX_API_KEY set in .env first (see .env.example) — the server refuses to start without one.
-	docker compose --profile sandbox up -d --build
+	$(COMPOSE) --profile sandbox up -d --build
 
 sandbox-build:  ## Build the shared sandbox base image (docker/sandbox.Dockerfile — python:3.12-slim + numpy + pandas, non-root, no network egress) that SANDBOX_IMAGE (app/core/config.py) references. Shared by every domain's sandbox tools, not ops-specific. A plain `docker build`, not a docker-compose service — opensandbox-server pulls it by tag from the same host Docker daemon it already has via its bind-mounted socket. Run again after editing that Dockerfile.
 	docker build -t agent-core-demo-sandbox:latest -f docker/sandbox.Dockerfile .
@@ -262,10 +279,10 @@ checkov:  ## Scan infra/terraform for IaC misconfigurations — same config/gate
 	checkov --config-file .checkov.yaml
 
 sonar-up:  ## Start a PERSISTENT self-hosted SonarQube (Community Edition) at http://localhost:9002 — opt-in `quality` profile (see docker-compose.yml's own comment on why 9002, not 9000/9001, and why this is separate from CI's ephemeral `sonarqube` job). First login: admin/admin, then change the password before running `make sonar-scan` for real (a throwaway local instance can skip that, same as CI's own ephemeral one).
-	docker compose --profile quality up -d sonarqube-db sonarqube
+	$(COMPOSE) --profile quality up -d sonarqube-db sonarqube
 
 sonar-down:  ## Stop the persistent SonarQube server (keeps its volumes — history/trends survive)
-	docker compose --profile quality stop sonarqube sonarqube-db
+	$(COMPOSE) --profile quality stop sonarqube sonarqube-db
 
 sonar-scan:  ## Run a scan against the persistent `make sonar-up` server (needs SONAR_TOKEN — generate one under My Account -> Security in the UI first). The very first baseline scan of this repo found ~90 pre-existing issues (2 BLOCKER, 10 CRITICAL) that the default "clean new code" quality gate does NOT block on — see the dashboard to triage them; that gate only fails a scan when NEW code introduces a new issue.
 	@test -n "$$SONAR_TOKEN" || (echo "SONAR_TOKEN is required — generate one in the SonarQube UI (My Account -> Security)" && exit 1)
@@ -343,7 +360,7 @@ loadtest-down:  ## Counterpart to `make loadtest-up` — stops the backgrounded 
 	$(MAKE) up-app
 
 loadtest-app-up:  ## Point the ALREADY-RUNNING containerized api/agent-worker*/ingest-worker (`make up-app`) at loadtest/fake_llm_server.py instead of real litellm, via docker-compose.loadtest.yml's OPENAI_API_BASE-only override — every other container (Postgres, Redis, Grafana, cadvisor, ...) is untouched, so the Docker/cAdvisor dashboards keep reflecting the real load-testing containers too. Called by `loadtest-up` above, which also starts fake-llm itself — use this directly only if fake-llm is already running some other way.
-	docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up -d \
+	$(COMPOSE) -f deploy/compose/docker-compose.loadtest.yml up -d \
 		api agent-worker agent-worker-support agent-worker-ops agent-worker-sales ingest-worker
 
 loadtest-queued:  ## Interactive Locust UI against the queued path (loadtest/locustfile_queued.py, the only HTTP chat path this app serves) — needs `make loadtest-up` first (or the host-native equivalent from that file's own docstring); measures app/job_queue/agent_worker.py's own concurrency, not native Ollama's
@@ -365,39 +382,39 @@ strix-view:  ## Open the local dashboard (findings, repro steps, agent graph) fo
 	strix view
 
 logs:  ## Tail logs from all services
-	docker compose logs -f
+	$(COMPOSE) logs -f
 
 down:  ## Stop all services (keep volumes)
-	docker compose down
+	$(COMPOSE) down
 
 clear-cache:  ## Flush the semantic cache (Redis) only — leaves the agent-worker queue and other volumes intact
-	docker compose exec redis sh -c "redis-cli --scan --pattern 'cache:*' | xargs -r redis-cli del"
+	$(COMPOSE) exec redis sh -c "redis-cli --scan --pattern 'cache:*' | xargs -r redis-cli del"
 
 clear-streams:  ## Delete every Redis Stream (agent:requests:*, agent:results:*, ingest:requests, ingest:results:*) — drops queued/in-flight turns and ingest jobs; leaves the semantic cache and other keys intact
-	docker compose exec redis sh -c "redis-cli --scan --pattern '*' | while read -r k; do [ \"\$$(redis-cli type \"\$$k\")\" = stream ] && redis-cli del \"\$$k\"; done"
+	$(COMPOSE) exec redis sh -c "redis-cli --scan --pattern '*' | while read -r k; do [ \"\$$(redis-cli type \"\$$k\")\" = stream ] && redis-cli del \"\$$k\"; done"
 
 clear-checkpoints:  ## Truncate the LangGraph checkpointer's tables (checkpoints/checkpoint_blobs/checkpoint_writes) in its dedicated `checkpointer` Postgres DB — drops all saved conversation state; leaves appdata/langfuse/litellm DBs and the migrations tracking table intact
-	docker compose exec postgres psql -U langfuse -d checkpointer -c "TRUNCATE checkpoints, checkpoint_blobs, checkpoint_writes;"
+	$(COMPOSE) exec postgres psql -U langfuse -d checkpointer -c "TRUNCATE checkpoints, checkpoint_blobs, checkpoint_writes;"
 
 clear-langfuse:  ## Truncate Langfuse's own telemetry tables (traces, observations incl. generations, scores, trace_sessions, events, comments, media) in the `langfuse` Postgres DB, CASCADE (also clears dependent job_executions rows) — leaves projects/api_keys/users/models/pricing config intact so LANGFUSE_PUBLIC_KEY/SECRET_KEY keep working
-	docker compose exec postgres psql -U langfuse -d langfuse -c "TRUNCATE traces, observations, scores, trace_sessions, events, comments, media, trace_media, observation_media CASCADE;"
+	$(COMPOSE) exec postgres psql -U langfuse -d langfuse -c "TRUNCATE traces, observations, scores, trace_sessions, events, comments, media, trace_media, observation_media CASCADE;"
 
 clear-litellm:  ## Truncate LiteLLM's own usage/spend logs (SpendLogs + its tool/guardrail indexes, ErrorLogs, AuditLog, every Daily*Spend/Metrics table) in the `litellm` Postgres DB, CASCADE — leaves users/teams/keys/model config intact so the proxy and its admin UI (`make up` → http://localhost:4000/ui) keep working
-	docker compose exec postgres psql -U langfuse -d litellm -c "TRUNCATE \"LiteLLM_SpendLogs\", \"LiteLLM_SpendLogToolIndex\", \"LiteLLM_SpendLogGuardrailIndex\", \"LiteLLM_ErrorLogs\", \"LiteLLM_AuditLog\", \"LiteLLM_DailyUserSpend\", \"LiteLLM_DailyTeamSpend\", \"LiteLLM_DailyTagSpend\", \"LiteLLM_DailyEndUserSpend\", \"LiteLLM_DailyOrganizationSpend\", \"LiteLLM_DailyAgentSpend\", \"LiteLLM_DailyToolSpend\", \"LiteLLM_DailyGuardrailMetrics\", \"LiteLLM_DailyPolicyMetrics\" CASCADE;"
+	$(COMPOSE) exec postgres psql -U langfuse -d litellm -c "TRUNCATE \"LiteLLM_SpendLogs\", \"LiteLLM_SpendLogToolIndex\", \"LiteLLM_SpendLogGuardrailIndex\", \"LiteLLM_ErrorLogs\", \"LiteLLM_AuditLog\", \"LiteLLM_DailyUserSpend\", \"LiteLLM_DailyTeamSpend\", \"LiteLLM_DailyTagSpend\", \"LiteLLM_DailyEndUserSpend\", \"LiteLLM_DailyOrganizationSpend\", \"LiteLLM_DailyAgentSpend\", \"LiteLLM_DailyToolSpend\", \"LiteLLM_DailyGuardrailMetrics\", \"LiteLLM_DailyPolicyMetrics\" CASCADE;"
 
 clear-all: clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm  ## Run every clear-* target above in one shot — semantic cache, Redis Streams, checkpointer state, Langfuse telemetry, LiteLLM usage/spend logs. Same per-target scope/exclusions as running each individually (see each target's own description); does NOT touch appdata (employees/tickets/leads/incidents/usage_ledger) or delete any volume — for that, `make clean`
 
 clean:  ## Stop services and delete volumes (models, vectors, traces)
-	docker compose down -v
+	$(COMPOSE) down -v
 
 obs-up:  ## Start the observability stack (Grafana :3300, Prometheus :9090, Loki, Alertmanager, otel-collector) — independent of `make up`
-	docker compose -f docker-compose.observability.yml up -d
+	$(COMPOSE_OBS) up -d
 
 obs-down:  ## Stop the observability stack (keep its volumes)
-	docker compose -f docker-compose.observability.yml down
+	$(COMPOSE_OBS) down
 
 obs-logs:  ## Tail logs from the observability stack
-	docker compose -f docker-compose.observability.yml logs -f
+	$(COMPOSE_OBS) logs -f
 
 obs-clean:  ## Stop the observability stack and delete its volumes (Prometheus/Loki/Grafana data)
-	docker compose -f docker-compose.observability.yml down -v
+	$(COMPOSE_OBS) down -v

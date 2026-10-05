@@ -25,8 +25,8 @@
 		# `dynamic a` re-resolves the `api` service name on every
 		# `refresh` interval and treats every A record Docker Compose's
 		# embedded DNS returns as a live upstream — the actual mechanism
-		# that makes `docker compose -f docker-compose.prod.yml up -d
-		# --scale api=N` load-balance at all (a single static
+		# that makes `docker compose up -d --scale api=N` (prod
+		# compose file) load-balance at all (a single static
 		# `reverse_proxy api:8000` — what this used to be — only ever
 		# reaches ONE of the N replicas). Safe at the current default of
 		# one replica too: one A record behaves identically to a static

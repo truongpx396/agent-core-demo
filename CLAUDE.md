@@ -42,6 +42,10 @@ they delete volumes or kill running processes.
   (`AgentManifest`/`DomainPlugin`).
 - `app/domains/{support,ops,sales}/` — each is `store.py` + `tools.py` + `domain.py`. A new use
   case follows that shape; it never forks `build_graph()`.
+- `deploy/` — `compose/` (every `docker-compose*.yml`), `caddy/`, `litellm/` (configs + `patches/`).
+  Compose resolves paths and `.env` from the repo root, so run it via the Makefile's `COMPOSE` or
+  with `--project-directory .`; a bare `docker compose up` finds no file. `Dockerfile` stays at the
+  root (build context), `docker/` holds the auxiliary image builds.
 - `app/job_queue/` — Redis Streams queue and workers. `app/ingestion/` — chunking, crawl, upload.
 - `app/core/` — config, security (`SecurityCtx`), metrics, errors, scrubbing, resilience.
 - `postgres-init/NN-*.sql` — numbered schema; auto-runs on a fresh volume only.

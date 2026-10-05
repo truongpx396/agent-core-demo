@@ -419,7 +419,7 @@ Two kinds of duplicate: a **replay** sees the same `tool_call_id` twice; a **re-
 From reviewing the as-built system against the constitution; each notes how it was established, and a fix PR
 deletes it from this list.
 
-- **The shipped proxy does not authenticate** (*read from `Caddyfile`*). It neither sets nor strips `X-Tenant-Id`/`X-Principal-Id`, so a caller can name any tenant. Isolation then guards against bugs, not against a caller who sets another tenant's header. Put an authenticating gateway in front.
+- **The shipped proxy does not authenticate** (*read from `deploy/caddy/Caddyfile`*). It neither sets nor strips `X-Tenant-Id`/`X-Principal-Id`, so a caller can name any tenant. Isolation then guards against bugs, not against a caller who sets another tenant's header. Put an authenticating gateway in front.
 - **The ops domain is global** (*read from code*). `ops_incidents` has no tenant dimension by design, any caller can name the domain, and nothing authorizes which tenants may use it. Principle I has no carve-out for it.
 - **Approvals are unattributed** (*read from code*). Decisions are counted by outcome only (no approver, time or action), so the gate is enforced but not auditable, and the principal is whatever header the caller set.
 - **The `tool_call_dedup` lookup isn't tenant-scoped** (*read from code*). It assumes provider ids are globally unique. Adding a tenant predicate changes what a collision means (a miss ⇒ a second write), so it needs a decision.

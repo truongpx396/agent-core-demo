@@ -38,6 +38,7 @@
 /.claude/settings.json              @truongpx396
 /.claude/hooks/                     @truongpx396
 /infra/                             @truongpx396
+/deploy/                            @truongpx396
 /Dockerfile                         @truongpx396
 /requirements.txt                   @truongpx396
 /requirements-lock.txt              @truongpx396

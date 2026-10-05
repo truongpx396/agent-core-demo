@@ -96,7 +96,7 @@ services:
     environment:
       OBS_SITE_ADDRESS: ${OBS_DOMAIN_NAME:-:80}
     volumes:
-      - ./Caddyfile.observability:/etc/caddy/Caddyfile:ro
+      - ./deploy/caddy/Caddyfile.observability:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
