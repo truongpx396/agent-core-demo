@@ -1,4 +1,4 @@
-"""Per-tenant HTTP rate limiting for app/api/main.py's turn-creating endpoints —
+"""Per-tenant HTTP rate limiting for app/api/routers/chat.py's turn-creating endpoints —
 a single client (or one compromised tenant) must not flood the shared
 Redis Streams queue (app/job_queue/queue.py) or starve other tenants' turns.
 

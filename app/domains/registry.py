@@ -2,8 +2,9 @@
 - Per-process: telegram.py/agent_worker.py read AGENT_DOMAIN once at
   startup and resolve it here — that process/worker pool serves exactly
   one domain for its life.
-- Per-request: app/api/main.py's queued endpoints validate the caller's
-  `X-Domain` header against this registry's keys and route onto that
+- Per-request: app/api/deps.py's `get_domain` validates the caller's
+  `X-Domain` header against this registry's keys, and the queued chat
+  endpoints (app/api/routers/chat.py) route onto that
   domain's own Redis Stream — which domain a MESSAGE is for, letting one
   API process serve every domain a worker pool is running.
 

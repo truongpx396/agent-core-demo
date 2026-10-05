@@ -230,7 +230,7 @@ class Settings(BaseSettings):
     # worker is genuinely still working on this" from "nobody is
     # listening at all" (no agent-worker process running for this
     # domain, or a submission-dedup claim left pointing at a request_id
-    # whose publish then failed — see app/api/main.py's own compensating
+    # whose publish then failed — see app/api/routers/chat.py's own compensating
     # delete for that case); `if not response: continue` loops forever
     # in either. Once ANY real event has arrived the job is known alive,
     # and this bound stops applying — a legitimately slow turn is still

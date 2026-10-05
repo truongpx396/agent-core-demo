@@ -454,7 +454,7 @@ class CheckpointErrorUser(HttpUser):
     to EXIST and be this caller's first: POST /chat/resume answers a thread the
     caller doesn't own — including one that doesn't exist — with a 404 before
     the request ever reaches a worker (conversation ownership,
-    app/api/main.py::_require_conversation_owner), so a bare random id no
+    app/api/routers/chat.py::_require_conversation_owner), so a bare random id no
     longer gets as far as the checkpoint."""
 
     weight = 1

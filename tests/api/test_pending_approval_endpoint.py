@@ -14,7 +14,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.agent import sessions
-from app.api import main as api
+from app.api.routers import chat as chat_router
 from tests.conftest import TEST_CTX
 
 
@@ -39,12 +39,12 @@ def pending(monkeypatch):
         calls.append(thread_id)
         return {"tool_calls": [{"name": "add_note", "args": {"title": "T"}, "id": "c1"}], "resumable": True}
 
-    monkeypatch.setattr(api, "get_pending_approval", get_pending_approval)
+    monkeypatch.setattr(chat_router, "get_pending_approval", get_pending_approval)
     return calls
 
 
 async def test_the_owner_gets_the_pending_tool_calls_and_whether_they_can_be_resumed(owner, pending):
-    result = await api.chat_session_pending_approval("paused-1", ctx=TEST_CTX, domain="support")
+    result = await chat_router.chat_session_pending_approval("paused-1", ctx=TEST_CTX, domain="support")
 
     assert result["resumable"] is True
     assert result["tool_calls"][0]["name"] == "add_note"
@@ -55,9 +55,9 @@ async def test_a_thread_that_is_not_paused_reports_none(owner, monkeypatch):
     async def not_paused(thread_id):
         return None
 
-    monkeypatch.setattr(api, "get_pending_approval", not_paused)
+    monkeypatch.setattr(chat_router, "get_pending_approval", not_paused)
 
-    assert await api.chat_session_pending_approval("paused-1", ctx=TEST_CTX, domain="support") is None
+    assert await chat_router.chat_session_pending_approval("paused-1", ctx=TEST_CTX, domain="support") is None
 
 
 @pytest.mark.parametrize(
@@ -72,7 +72,7 @@ async def test_a_thread_that_is_not_paused_reports_none(owner, monkeypatch):
 )
 async def test_everyone_else_gets_the_same_404_and_the_pause_is_never_read(owner, pending, ctx, thread, domain):
     with pytest.raises(HTTPException) as exc_info:
-        await api.chat_session_pending_approval(thread, ctx=ctx, domain=domain)
+        await chat_router.chat_session_pending_approval(thread, ctx=ctx, domain=domain)
 
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail == "session not found"
