@@ -54,8 +54,8 @@ Two Postgres tables, one metric catalog, two log shapes, a trace, and the config
 | `agent_streaming_cancellation_total` | Counter | — | — | yes |
 | `agent_context_window_exceeded_total` | Counter | — | — | yes |
 | `agent_rate_limit_exceeded_total` | Counter | — | RateLimitRejectionSpike | yes |
-| `agent_tenant_budget_exceeded_total` | Counter | — | TenantDailyCostBudgetExceeded | yes |
-| `agent_tenant_budget_warning_total` | Counter | — | — | yes |
+| `agent_budget_exceeded_total` | Counter | `scope`, `window` | TenantBudgetExceeded (scope=tenant) | yes |
+| `agent_budget_threshold_total` | Counter | `scope`, `window`, `threshold` (70/85/95) | TenantBudgetNearLimit (scope=tenant, 95) | yes |
 | `agent_upload_rejected_total` | Counter | `reason` | — | yes |
 | `agent_upload_failed_total` | Counter | `reason` | IngestUploadFailing | — |
 | `agent_subagent_run_total` | Counter | `subagent`, `outcome` | — | — |
@@ -126,8 +126,9 @@ invalid ctx                    → not over (no query)
 spent    = usage_summary(tenant, since = now − 24 h).total_cost_usd      (read fails → NOT over, logged; unenforced for this turn)
 reserved = in_flight_reservation(tenant)                                 (read fails → 0.0, logged)
 projected = spent + reserved
-projected ≥ MAX_COST_USD_PER_TENANT_PER_DAY (20.0)        → over: agent_tenant_budget_exceeded_total++ ; refuse
-projected ≥ 0.8 × that ceiling                            → proceed: agent_tenant_budget_warning_total++ ; log tenant, spent, reserved, limit
+projected ≥ a limit (tenant/day 20.0 always; tenant/month, principal/day, principal/month when > 0)
+                                                          → over: agent_budget_exceeded_total{scope,window}++ ; refuse (first exceeded wins, tenant before person)
+projected ≥ 70 / 85 / 95 % of a limit                     → proceed: agent_budget_threshold_total{scope,window,threshold}++ (highest crossed) ; log once per day/month with tenant, principal, spent, reserved, limit
 else                                                      → proceed
 ```
 
@@ -168,7 +169,8 @@ Tool results arrive credential-scrubbed; the user's text and the answer do not. 
 | `HighTurnErrorRate` | `error` outcomes ÷ all outcomes `> 0.05` over 5 m | 5 m | critical |
 | `HighTurnLatencyP95` | `histogram_quantile(0.95, …agent_latency_seconds_bucket…) > 30` | 10 m | warning |
 | `HighToolErrorRate` | tool errors ÷ tool calls `> 0.1` | 10 m | warning |
-| `TenantDailyCostBudgetExceeded` | `increase(agent_tenant_budget_exceeded_total[1h]) > 0` | — | warning |
+| `TenantBudgetExceeded` | `increase(agent_budget_exceeded_total{scope="tenant"}[1h]) > 0` | — | warning |
+| `TenantBudgetNearLimit` | `increase(agent_budget_threshold_total{scope="tenant", threshold="95"}[30m]) > 0` | — | warning |
 | `ModerationBlockSpike` | blocked moderation outcomes `> 0.5/s` | 5 m | warning |
 | `RateLimitRejectionSpike` | rate-limit rejections `> 1/s` | 5 m | warning |
 | `RetrievalDegraded` | `rate(agent_retrieval_degraded_total[15m]) > 0` | 15 m | warning |

@@ -49,7 +49,10 @@ from app.core.config import (
     CHAT_MODEL,
     CHECKPOINTER_DATABASE_URL,
     CHECKPOINTER_POOL_MAX_SIZE,
+    MAX_COST_USD_PER_PRINCIPAL_PER_DAY,
+    MAX_COST_USD_PER_PRINCIPAL_PER_MONTH,
     MAX_COST_USD_PER_TENANT_PER_DAY,
+    MAX_COST_USD_PER_TENANT_PER_MONTH,
     MAX_COST_USD_PER_TURN,
 )
 from app.core.errors import ErrorCode, ErrorEnvelope
@@ -92,17 +95,18 @@ _seeded: set[str] = set()
 RECURSION_LIMIT = MAX_ITERATIONS * 2 + 15
 
 
-_TENANT_BUDGET_WARNING_FRACTION = 0.8  # log/count once a tenant crosses 80% of its daily cap
-
-
 async def _check_allowance(ctx: SecurityCtx | None) -> budgets.Allowance:
-    """May this tenant start another turn? The rule lives in `budgets.py`; this binds the
+    """May this caller start another turn? The rule lives in `budgets.py`; this binds the
     configured limits at CALL time (not import time), so the module globals below stay the
     single place a test or a deployment re-points them."""
-    return await budgets.check_tenant_daily(
+    return await budgets.check_allowance(
         ctx,
-        limit_usd=MAX_COST_USD_PER_TENANT_PER_DAY,
-        warning_fraction=_TENANT_BUDGET_WARNING_FRACTION,
+        limits=budgets.configured_limits(
+            tenant_day=MAX_COST_USD_PER_TENANT_PER_DAY,
+            tenant_month=MAX_COST_USD_PER_TENANT_PER_MONTH,
+            principal_day=MAX_COST_USD_PER_PRINCIPAL_PER_DAY,
+            principal_month=MAX_COST_USD_PER_PRINCIPAL_PER_MONTH,
+        ),
         fail_policy=BUDGET_CHECK_FAILURE_POLICY,
     )
 

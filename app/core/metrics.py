@@ -436,17 +436,21 @@ agent_rate_limit_exceeded_total = Counter(
     "HTTP requests rejected by app/api/main.py's per-tenant rate limiter (RATE_LIMIT_PER_MINUTE)",
 )
 
-agent_tenant_budget_exceeded_total = Counter(
-    "agent_tenant_budget_exceeded_total",
-    "Turns refused before starting because this tenant's rolling 24h spend already "
-    "reached MAX_COST_USD_PER_TENANT_PER_DAY (app/agent/budgets.py::check_tenant_daily)",
-)
+agent_budget_exceeded_total = Counter(
+    "agent_budget_exceeded_total",
+    "Turns refused before starting because a spend limit was already used up "
+    "(app/agent/budgets.py::check_allowance); only the limit that refused is counted. "
+    "Replaces agent_tenant_budget_exceeded_total, which could not say whose limit it was.",
+    ["scope", "window"],
+)  # scope: tenant | principal ; window: day | month
 
-agent_tenant_budget_warning_total = Counter(
-    "agent_tenant_budget_warning_total",
-    "Turns that proceeded but crossed 80% of MAX_COST_USD_PER_TENANT_PER_DAY — "
-    "an early signal before agent_tenant_budget_exceeded_total starts firing",
-)
+agent_budget_threshold_total = Counter(
+    "agent_budget_threshold_total",
+    "Turns that were still allowed but had crossed a warning threshold of a spend limit — "
+    "only the highest crossed (70, 85 or 95 percent) is counted. An early signal before "
+    "agent_budget_exceeded_total starts firing. Replaces agent_tenant_budget_warning_total.",
+    ["scope", "window", "threshold"],
+)  # threshold: "70" | "85" | "95"
 
 agent_unpriced_usage_total = Counter(
     "agent_unpriced_usage_total",
