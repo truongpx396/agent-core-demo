@@ -11,7 +11,7 @@ Reuses `app/job_queue/queue.py`'s `get_client()` (same Redis server/settings)
 rather than a second connection pool — only the stream/group names and
 payload shapes here are actually separate.
 
-Producer: `app/api/main.py` (`POST /ingest/upload`). Consumer:
+Producer: `app/api/routers/ingest.py` (`POST /ingest/upload`). Consumer:
 `app/ingestion/ingest_worker.py`, the only place that downloads from MinIO
 and runs extraction/ingestion.
 """

@@ -25,7 +25,7 @@ from app.core.config import DEFAULT_TENANT
 from app.core.security import SecurityCtx
 
 # Local dev ctx: this process IS the trusted boundary (no network hop, no
-# untrusted client to spoof it), unlike app/api/main.py's header extraction.
+# untrusted client to spoof it), unlike app/api/deps.py's header extraction.
 # `tenant` matches DEFAULT_TENANT so the CLI sees what `make ingest` seeded;
 # `principal` is the OS user, so multiple people on one machine get separate
 # memories (app/agent/tools.py's remember/recall_memories).

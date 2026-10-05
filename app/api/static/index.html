@@ -378,7 +378,7 @@
   <div class="sidebar-field">
     <label for="domainSelect">Domain</label>
     <!-- Only the queued endpoints (POST /chat/stream/queued, /chat/resume,
-         /chat/cancel) read X-Domain — see app/api/main.py's get_domain. A
+         /chat/cancel) read X-Domain — see app/api/deps.py's get_domain. A
          new domain registered in app/domains/registry.py needs one more
          <option> here (and an `AGENT_DOMAIN=<name> make agent-worker`
          process actually running) before it's reachable from this page. -->
@@ -409,9 +409,9 @@
          makes "type a tenant nobody's used on this browser yet" a
          discoverable action rather than something only apparent by
          guessing you can overwrite the field. See get_ctx's own docstring
-         (app/api/main.py) — this is a demo convenience standing in for a
+         (app/api/deps.py) — this is a demo convenience standing in for a
          real deployment's auth gateway, never real authentication. -->
-    <select id="tenant" title="Trusted-layer tenant id (X-Tenant-Id) — see app/api/main.py's get_ctx. A real deployment sets this from an auth gateway, never a client-editable field like this demo does."></select>
+    <select id="tenant" title="Trusted-layer tenant id (X-Tenant-Id) — see app/api/deps.py's get_ctx. A real deployment sets this from an auth gateway, never a client-editable field like this demo does."></select>
   </div>
   <div class="identity-field">
     <label for="principal">Principal</label>
@@ -470,7 +470,7 @@
 // which the CSS custom-property blocks in <style> key off of (see their
 // own comment). Persisted per-BROWSER via localStorage, not per-account —
 // there's no server-side identity this page trusts enough to store a
-// preference against (see app/api/main.py's own docstring on X-Tenant-Id/
+// preference against (see app/api/deps.py's own docstring on X-Tenant-Id/
 // X-Principal-Id being trusted-header, not real auth). Wrapped in
 // try/catch the same defensive way randomId() below guards
 // crypto.randomUUID() — a locked-down browser context (private
@@ -580,7 +580,7 @@ function headers() {
     "Content-Type": "application/json",
     // Both trusted-header values are now caller-editable fields (the
     // sidebar's Tenant/Principal inputs) rather than one hardcoded
-    // constant — exactly what app/api/main.py's own module docstring
+    // constant — exactly what app/api/deps.py's own module docstring
     // already calls out as this endpoint's real security boundary: NOT
     // authentication, just the correct SHAPE at the boundary. A real
     // deployment's auth gateway sets these itself and strips any
@@ -590,7 +590,7 @@ function headers() {
     "X-Tenant-Id": tenantEl.value || "ecorp",
     "X-Principal-Id": principalEl.value || "web-user",
     // Only /chat/stream/queued, /chat/resume, and /chat/cancel actually
-    // read this (app/api/main.py's get_domain) — every other endpoint
+    // read this (app/api/deps.py's get_domain) — every other endpoint
     // this page calls just ignores the extra header.
     "X-Domain": domainSelect.value,
   };

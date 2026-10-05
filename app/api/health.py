@@ -1,4 +1,4 @@
-"""Real dependency checks for `GET /health/ready` (app/api/main.py) — distinct
+"""Real dependency checks for `GET /health/ready` (app/api/routers/system.py) — distinct
 from `GET /health`'s unconditional liveness probe.
 
 A liveness probe answers "is this process alive"; readiness answers "can

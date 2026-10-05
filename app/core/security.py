@@ -3,7 +3,7 @@ GRAPH_PATTERNS.md's "Multi-Tenant Isolation" pattern).
 
 Scope: this is *authorization/isolation* — enforced as a store-level
 pre-filter — not *authentication*. Nothing here verifies a password, JWT,
-or session; `app/api/main.py` reads tenant/principal from trusted headers
+or session; `app/api/deps.py` reads tenant/principal from trusted headers
 as the seam a real auth middleware replaces later, so that swap is a
 gateway config change, not a rewrite.
 
@@ -29,7 +29,7 @@ from app.core.config import MEMORY_RETENTION_DAYS
 
 
 class SecurityCtx(TypedDict):
-    """Stamped ONCE at the trusted boundary (app/api/main.py's header
+    """Stamped ONCE at the trusted boundary (app/api/deps.py's header
     extraction, or a local entry point like app/channels/chat.py) — never by
     a graph node, never derived from message content or tool output. A ctx a
     caller could influence via the request body or conversation would be a

@@ -174,8 +174,8 @@ class TestDownloadBytes:
 
 
 class TestDeleteObject:
-    """delete_object — the compensating-delete side of app/api/main.py::
-    ingest_upload: a file that reached MinIO but never got a job published
+    """delete_object — the compensating-delete side of app/api/routers/
+    ingest.py::ingest_upload: a file that reached MinIO but never got a job published
     must not linger as an orphaned blob."""
 
     def test_removes_the_given_key(self, monkeypatch):

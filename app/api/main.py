@@ -40,115 +40,52 @@ Langfuse tracing work identically here.
 
 Run with: `make serve` (then open http://localhost:8000/docs)
 
-## Identity: trusted headers, NOT authentication (app/core/security.py)
+## Identity: trusted headers, NOT authentication
 
-`get_ctx` reads `X-Tenant-Id`/`X-Principal-Id` and stamps a `SecurityCtx`.
-This is the seam a real auth middleware plugs into, not authentication
-itself — nothing verifies a password/JWT/session, and nothing stops a
-client sending any header value. That's fine only because production sits
-behind a gateway that authenticates the caller and sets these headers
-itself, stripping client-supplied copies first (like `X-Forwarded-*`).
-What this app owes is the correct shape at the boundary: required headers,
-fail closed (422) if absent, never a client-settable body field, never a
-default identity — so real auth later is a gateway config change, not a
-rewrite here.
+See app/api/deps.py (`get_ctx`): the seam a real auth middleware plugs into, not
+authentication itself.
 """
-import asyncio
 import hashlib
 import json
-import logging
 import uuid
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 from fastapi import (
     Depends,
     FastAPI,
-    File,
-    Form,
-    Header,
     HTTPException,
-    Response,
-    UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 
-from app.agent import sessions, sql_store, usage_ledger
+from app.agent import sessions, sql_store
 from app.agent.runtime import close_checkpointer_pool, init_graph_async
 from app.agent.runtime_stream import get_pending_approval, get_session_messages
-from app.api import (
-    health as health_checks,  # `health` is also this module's own liveness endpoint name below
-)
+from app.api.deps import get_ctx, get_domain
 from app.api.rate_limit import TenantRateLimitMiddleware
+from app.api.routers import ingest, system, usage
 from app.api.schemas import (
     CancelRequest,
     ChatRequest,
-    HealthResponse,
-    IngestUploadResult,
     PendingApproval,
-    ReadinessResponse,
     ResumeRequest,
     SessionMessage,
     SessionSummary,
-    UsageResponse,
 )
-from app.core import metrics
 from app.core.config import (
     CHAT_FIRST_RESPONSE_DEADLINE_SECONDS,
     CHAT_SUBMIT_DEDUP_TTL_SECONDS,
     CORS_ALLOWED_ORIGINS,
-    INGEST_FIRST_RESPONSE_DEADLINE_SECONDS,
-    MAX_COST_USD_PER_TENANT_PER_DAY,
-    MAX_UPLOAD_FILES_PER_REQUEST,
-    MAX_UPLOAD_SIZE_MB,
 )
 from app.core.logging_config import configure_logging
 from app.core.security import SecurityCtx
 from app.core.telemetry import configure_telemetry
-from app.domains.registry import DOMAINS
-from app.ingestion import ingest_queue, object_store
-from app.ingestion.extractors import EXTRACTORS_BY_SUFFIX
 from app.job_queue import queue
 
 # Called at import time, before uvicorn logs anything — without this, the
 # service had no logging handler at all, so every `logger.info(...)` call
 # was silently discarded under `make serve` (see logging_config.py).
 configure_logging()
-logger = logging.getLogger(__name__)
-
-
-async def get_ctx(
-    x_tenant_id: str = Header(..., description="Trusted-layer tenant id."),
-    x_principal_id: str = Header(..., description="Trusted-layer principal id."),
-) -> SecurityCtx:
-    """Required headers, so a request missing either never reaches an
-    endpoint (FastAPI returns 422 before the handler runs) — fail-closed
-    lives in the *shape* of the dependency, not a runtime check here."""
-    return {"tenant": x_tenant_id, "principal": x_principal_id, "claims": {}}
-
-
-async def get_domain(
-    x_domain: str = Header(
-        "ecorp",
-        description=(
-            "Which domain (app/domains/registry.py) this turn runs against. "
-            "Read by every chat endpoint below (all of them queued)."
-        ),
-    ),
-) -> str:
-    """Unlike `get_ctx`'s headers, this one defaults rather than fails
-    closed — an absent `X-Domain` is the normal case (every caller before
-    this existed), so it behaves as before: Ecorp. An UNKNOWN domain is
-    still fail-loud (422 here, vs. resolve_domain's startup crash) —
-    without this check a typo'd domain would publish onto a requests stream
-    no worker pool reads, hanging silently until the caller gives up."""
-    if x_domain not in DOMAINS:
-        raise HTTPException(
-            422, f"Unknown X-Domain {x_domain!r} — must be one of: {', '.join(sorted(DOMAINS))}"
-        )
-    return x_domain
 
 
 @asynccontextmanager
@@ -194,38 +131,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_UI_HTML_PATH = Path(__file__).parent / "static" / "index.html"
-
-
-@app.get("/", response_class=HTMLResponse)
-def ui() -> str:
-    """The built-in web UI (pattern 29) — a single self-contained page, no
-    build step, no CDN dependency. Talks only to `POST /chat/stream/queued`'s
-    SSE vocabulary, never a special-cased endpoint of its own. Read from
-    disk per request (not cached) so editing the file and refreshing is
-    enough during development — this isn't a hot path.
-    """
-    return _UI_HTML_PATH.read_text()
-
-
-@app.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
-    """Liveness only — always 200 if this process can respond at all. See
-    `GET /health/ready` for whether it can actually complete a turn (see
-    app/api/health.py on why these stay separate endpoints)."""
-    return HealthResponse()
-
-
-@app.get("/health/ready", response_model=ReadinessResponse)
-async def health_ready(response: Response) -> ReadinessResponse:
-    """Readiness — 200 only if every real dependency is reachable right now,
-    503 otherwise, with which one(s) failed in the body (see
-    app/api/health.py::check_dependencies)."""
-    checks = await health_checks.check_dependencies()
-    ready = all(checks.values())
-    response.status_code = 200 if ready else 503
-    return ReadinessResponse(status="ready" if ready else "degraded", checks=checks)
-
+app.include_router(system.router)
+app.include_router(usage.router)
+app.include_router(ingest.router)
 
 def _queued_sse_response(
     client, request_id: str, *, first_event_deadline_seconds: float = CHAT_FIRST_RESPONSE_DEADLINE_SECONDS
@@ -479,186 +387,3 @@ async def chat_session_pending_approval(
     if not await sessions.session_belongs_to(ctx, thread_id, domain):
         raise HTTPException(status_code=404, detail="session not found")
     return await get_pending_approval(thread_id)  # type: ignore[return-value]  # same response_model coercion note as chat_sessions above
-
-
-@app.get("/usage", response_model=UsageResponse)
-async def usage(ctx: SecurityCtx = Depends(get_ctx)) -> UsageResponse:
-    """This caller's own tenant usage — exposes the existing
-    `usage_summary` over HTTP, so a caller can see how close they are to
-    MAX_COST_USD_PER_TENANT_PER_DAY without getting refused first.
-    Tenant-scoped only; no way to query another tenant's spend."""
-    all_time = await usage_ledger.usage_summary(ctx["tenant"])
-    since = datetime.now(UTC) - timedelta(hours=24)
-    last_24h = await usage_ledger.usage_summary(ctx["tenant"], since=since)
-    return UsageResponse(
-        total_tokens=all_time["total_tokens"],
-        total_cost_usd=all_time["total_cost_usd"],
-        last_24h_cost_usd=last_24h["total_cost_usd"],
-        daily_budget_usd=MAX_COST_USD_PER_TENANT_PER_DAY,
-    )
-
-
-_UPLOAD_READ_CHUNK_BYTES = 1024 * 1024  # 1 MB per read() call
-_MAX_UPLOAD_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
-
-
-async def _read_bounded(upload: UploadFile, filename: str) -> bytes:
-    """Reads in chunks and rejects as soon as the running total crosses the
-    limit — never materializes much more than one chunk past
-    `_MAX_UPLOAD_BYTES`, unlike a bare `await upload.read()` which reads the
-    entire file first. An unbounded upload is a memory/storage exhaustion
-    vector, not just a slow request."""
-    chunks = []
-    total = 0
-    while True:
-        chunk = await upload.read(_UPLOAD_READ_CHUNK_BYTES)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > _MAX_UPLOAD_BYTES:
-            metrics.agent_upload_rejected_total.labels(reason="too_large").inc()
-            raise HTTPException(
-                status_code=413,
-                detail=f"{filename!r} exceeds the {MAX_UPLOAD_SIZE_MB}MB upload limit",
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
-
-
-@app.post("/ingest/upload", response_model=list[IngestUploadResult])
-async def ingest_upload(
-    files: list[UploadFile] = File(...),
-    topic: str | None = Form(None),
-    ctx: SecurityCtx = Depends(get_ctx),
-) -> list[IngestUploadResult]:
-    """Upload documents to build this tenant's corpus — PDF/DOCX only today
-    (app/ingestion/extractors.py); `.txt`/`.md` have their own path
-    (ingestor.py::ingest_file, the CLI/script-driven one).
-
-    Fire-and-forget per file: this handler only gets bytes into MinIO and a
-    job onto the queue — parsing/embedding happens in ingest_worker.py, on a
-    SEPARATE queue from chat turns (see ingest_queue.py). Each file's
-    outcome tracks independently via its own `job_id`
-    (`GET /ingest/stream/{job_id}`), so one slow/failing file never blocks
-    the others — including a FAILING one: every per-file problem (bad
-    extension, too-large, a MinIO/Redis error) is caught and reported back
-    as that file's own `IngestUploadResult.error`, rather than raising and
-    losing whatever earlier files in the SAME request already succeeded.
-
-    Only "too many files" is rejected synchronously, before touching any
-    file — a UX/abuse guard on this one call, distinct from
-    INGEST_WORKER_MAX_CONCURRENCY (it limits how many jobs one submission
-    creates, not how many a worker runs at once), and genuinely
-    request-wide rather than per-file.
-
-    A file that uploads to MinIO but then fails to publish its own job is
-    cleaned up (`object_store.delete_object`) rather than left as an
-    orphaned blob nothing will ever ingest or remove.
-    """
-    if len(files) > MAX_UPLOAD_FILES_PER_REQUEST:
-        metrics.agent_upload_rejected_total.labels(reason="too_many_files").inc()
-        raise HTTPException(
-            status_code=400,
-            detail=f"{len(files)} files exceeds the {MAX_UPLOAD_FILES_PER_REQUEST}-file "
-            "limit per upload — split into multiple submissions",
-        )
-    client = queue.get_client()  # ingest_queue reuses this same Redis client — see its module docstring
-    results = []
-    for upload in files:
-        filename = Path(upload.filename or "").name  # strip any path component a client might send
-        suffix = Path(filename).suffix.lower()
-        if suffix not in EXTRACTORS_BY_SUFFIX:
-            metrics.agent_upload_rejected_total.labels(reason="bad_file_type").inc()
-            results.append(
-                IngestUploadResult(
-                    filename=filename,
-                    job_id=None,
-                    error=f"unsupported file type {suffix!r} — only "
-                    f"{sorted(EXTRACTORS_BY_SUFFIX)} are supported",
-                )
-            )
-            continue
-
-        try:
-            data = await _read_bounded(upload, filename)
-        except HTTPException as exc:
-            # _read_bounded's own too-large rejection (already metriced
-            # there) — a per-file problem, not a reason to abort the rest
-            # of this batch.
-            results.append(IngestUploadResult(filename=filename, job_id=None, error=str(exc.detail)))
-            continue
-
-        job_id = uuid.uuid4().hex
-        object_key = f"{ctx['tenant']}/{job_id}-{filename}"
-        try:
-            # Blocking MinIO I/O off the event loop — this IS the shared
-            # SSE-serving process, so a large upload must not stall other requests.
-            await asyncio.to_thread(
-                object_store.upload_bytes,
-                object_key,
-                data,
-                upload.content_type or "application/octet-stream",
-            )
-            await ingest_queue.publish_ingest_request(
-                client,
-                job_id=job_id,
-                object_key=object_key,
-                filename=filename,
-                content_type=upload.content_type or "application/octet-stream",
-                ctx=ctx,
-                topic=topic,
-            )
-        except Exception as exc:  # noqa: BLE001 - one file's storage/queue failure must not sink the whole batch
-            # Best-effort cleanup: harmless even if upload_bytes itself is
-            # what failed (deleting an object that was never created is a
-            # no-op under MinIO/S3 delete semantics).
-            await asyncio.to_thread(object_store.delete_object, object_key)
-            metrics.agent_upload_failed_total.labels(reason="storage_error").inc()
-            logger.warning(
-                # "filename" is a reserved stdlib LogRecord attribute (the
-                # source file of THIS log call) — same collision
-                # app/domains/notify.py's own docstring already notes for
-                # "message"; "upload_filename" instead.
-                "ingest_upload_failed",
-                extra={"upload_filename": filename, "error_class": type(exc).__name__},
-            )
-            results.append(
-                IngestUploadResult(
-                    filename=filename, job_id=None, error=f"failed to queue {filename!r} for ingestion"
-                )
-            )
-            continue
-
-        results.append(IngestUploadResult(filename=filename, job_id=job_id, error=None))
-    return results
-
-
-@app.get("/ingest/stream/{job_id}")
-async def ingest_stream(job_id: str) -> StreamingResponse:
-    """SSE progress for one upload's job — `{"type": "started"}`, zero or
-    more `{"type": "progress", "done": N, "total": M}` while
-    ingest_worker.py's embedding loop runs, then one terminal event:
-    `{"type": "done", "chunks": N}` or `{"type": "error", ...}`.
-    Deliberately NOT ownership-checked against sessions.py-style records
-    (this pipeline keeps no job directory) — `job_id` is a `uuid4().hex`,
-    unguessable in practice, same posture as the chat results streams.
-    """
-    client = ingest_queue.get_client()
-
-    async def generate():
-        try:
-            async for event in ingest_queue.read_results(
-                client, job_id, first_event_deadline_seconds=INGEST_FIRST_RESPONSE_DEADLINE_SECONDS
-            ):
-                yield f"data: {json.dumps(event)}\n\n"
-        finally:
-            await ingest_queue.delete_results_stream(client, job_id)
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
