@@ -7,11 +7,17 @@ imports (`from app.core.config import QDRANT_URL`) keep working.
 from typing import Literal
 
 from dotenv import load_dotenv
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Also load .env into os.environ so third-party SDKs that read env vars
 # directly (e.g. the Langfuse client) pick up their keys.
 load_dotenv()
+
+
+# A budget window reads back up to a calendar month; retention below this would let a
+# sweep delete spend that is still inside one (app/agent/usage_ledger.py::sweep_old_rows).
+USAGE_LEDGER_MIN_RETENTION_DAYS = 35
 
 
 class Settings(BaseSettings):
@@ -138,6 +144,13 @@ class Settings(BaseSettings):
     # so a change in the proxy's pricing is picked up without a restart.
     # Operational, like request_timeout_seconds: not a spend ceiling.
     pricing_refresh_seconds: int = 3600
+
+    # How long usage_ledger rows are kept by scripts/usage_ledger_sweep.py (spec
+    # 008 A3: nothing trimmed the table, and the allowance reads it before every
+    # turn). The floor is not a style choice: a budget window reads back up to a
+    # calendar month (31 days), and a sweep that deleted inside a window would make
+    # the tenant look cheaper than it was. 400 days keeps a year-on-year view.
+    usage_ledger_retention_days: int = Field(default=400, ge=USAGE_LEDGER_MIN_RETENTION_DAYS)
 
     # What a turn does when the chat model has NO known price. Every dollar
     # ceiling above multiplies tokens by a price, so an unpriced model makes
@@ -467,6 +480,7 @@ MAX_SUBAGENT_COST_USD_PER_RUN = settings.max_subagent_cost_usd_per_run
 MAX_COST_USD_PER_TENANT_PER_DAY = settings.max_cost_usd_per_tenant_per_day
 PRICING_REFRESH_SECONDS = settings.pricing_refresh_seconds
 UNPRICED_MODEL_POLICY = settings.unpriced_model_policy
+USAGE_LEDGER_RETENTION_DAYS = settings.usage_ledger_retention_days
 REQUEST_TIMEOUT_SECONDS = settings.request_timeout_seconds
 SUBAGENT_TIMEOUT_SECONDS = settings.subagent_timeout_seconds
 TELEGRAM_BOT_TOKEN = settings.telegram_bot_token

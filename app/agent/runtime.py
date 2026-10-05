@@ -127,7 +127,10 @@ async def _tenant_over_daily_budget(ctx: SecurityCtx | None) -> bool:
     try:
         since = datetime.now(UTC) - timedelta(hours=24)
         spent = (await usage_ledger.usage_summary(ctx["tenant"], since=since))["total_cost_usd"]
-    except Exception as exc:  # noqa: BLE001 - a ledger read failing must not also block every turn
+    except Exception as exc:  # noqa: BLE001 - a ledger read failing must not also block every turn; counted and alerted instead
+        # While this is firing the allowance is UNENFORCED for every turn that
+        # hits it (alert TenantAllowanceUnenforced, spec 008 A1).
+        metrics.agent_cost_governance_degraded_total.labels(path="ledger_read").inc()
         logger.warning(
             "tenant_budget_check_failed", extra={"error_class": type(exc).__name__}
         )

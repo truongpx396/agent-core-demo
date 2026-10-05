@@ -68,6 +68,28 @@ groups:
             per-tenant dollar ceilings read $0 for that spend. Set input/output
             cost under that model's `model_info` in the LiteLLM config.
 
+      - alert: LedgerWriteFailing
+        expr: increase(agent_cost_governance_degraded_total{path="ledger_write"}[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Spend is being incurred and not recorded"
+          description: >-
+            A completed turn's usage_ledger write failed in the last 10m. The turn
+            succeeded, so nobody was told: the row is gone, and every tenant allowance
+            read from that ledger now undercounts. Check the appdata Postgres.
+
+      - alert: TenantAllowanceUnenforced
+        expr: increase(agent_cost_governance_degraded_total{path="ledger_read"}[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "The per-tenant daily allowance is not being enforced"
+          description: >-
+            The ledger read behind the tenant allowance failed in the last 10m. That
+            check fails open, so every turn it covered ran with NO daily cap. Check
+            the appdata Postgres.
+
       - alert: ModerationBlockSpike
         expr: sum(rate(agent_moderation_total{outcome=~"blocked_.*"}[5m])) > 0.5
         for: 5m
