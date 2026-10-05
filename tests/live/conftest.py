@@ -78,6 +78,7 @@ the prompt-injected fake litellm-config.yaml's own comment warns about for
 its `ollama/` (as opposed to `ollama_chat/`) provider — that distinction is
 a LiteLLM-side translation detail, not a property of Ollama's own API.
 """
+import contextlib
 import os
 import socket
 import subprocess
@@ -359,6 +360,24 @@ def real_stack_with_retrieval() -> Iterator[str]:
         env = _build_app_env(postgres, redis, qdrant, ollama, ml_service, embed_model=ollama["embed_model"])
         _seed_retrieval_data(env)
         yield from _start_app_processes(env)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> Iterator[None]:
+    """Attach what the page showed to the report of a failed browser test (see tests/live/transcript.py)."""
+    outcome = yield
+    report = outcome.get_result()
+    if report.when != "call" or not report.failed:
+        return
+    page = getattr(item, "funcargs", {}).get("page")
+    if page is None:
+        return
+    from tests.live.transcript import page_transcript
+
+    # Best-effort diagnostics: a page that already closed, or a broken evaluate(), must never replace the failure
+    # this is describing.
+    with contextlib.suppress(Exception):
+        report.sections.append(("what the page showed", page_transcript(page)))
 
 
 @pytest.fixture(autouse=True)
