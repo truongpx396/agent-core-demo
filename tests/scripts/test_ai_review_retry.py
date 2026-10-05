@@ -9,7 +9,7 @@ import random
 
 import pytest
 
-from scripts import ai_review_retry as r
+from scripts.ai_review import retry as r
 
 RETRY_INFO = "type.googleapis.com/google.rpc.RetryInfo"
 QUOTA_FAILURE = "type.googleapis.com/google.rpc.QuotaFailure"

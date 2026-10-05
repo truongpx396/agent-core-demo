@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts import ai_review_providers as p
+from scripts.ai_review import providers as p
 
 PRIMARY = p.Provider("primary", "https://llm.example/v1", "main-model", "KEY-PRIMARY")
 

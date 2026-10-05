@@ -1,4 +1,4 @@
-# Reference code the AI reviewer is shown next to a diff (scripts/ai_review.py, README "AI review").
+# Reference code the AI reviewer is shown next to a diff (scripts/ai_review/review.py, README "AI review").
 #
 # A reviewer that sees only a diff can't tell that a new write tool skipped `idempotent()`: the
 # missing call is not in the diff, only the call that should have been there is. So when a changed
@@ -10,7 +10,7 @@
 # Spec forms:  path                 the whole file
 #              path::name           a top-level def / class / assignment in a .py file
 #              path#Heading         a markdown section
-# Each snippet is capped (see scripts/ai_review.py), and a spec that stops resolving is skipped
+# Each snippet is capped (see scripts/ai_review/review.py), and a spec that stops resolving is skipped
 # with a warning. tests/scripts/test_ai_review.py fails if any spec here does not resolve, so a
 # rename can't quietly turn a rule into a no-op.
 #

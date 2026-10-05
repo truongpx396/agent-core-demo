@@ -1,6 +1,6 @@
 """Turns the AI reviewer's free-text answer into findings that can be anchored on a PR's diff.
 
-Pure functions: no network, no GitHub types, stdlib only. `scripts/ai_review.py` does the I/O.
+Pure functions: no network, no GitHub types, stdlib only. `scripts/ai_review/review.py` does the I/O.
 
 Every rule here comes from probing GitHub's real review-comment API on a throwaway PR (README,
 "AI review"), not from the docs, which are silent on most of it:
