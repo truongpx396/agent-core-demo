@@ -111,7 +111,7 @@ The same code runs in both; only configuration and the compose file differ.
 | **Services** | Full stack: Langfuse, MinIO, open-webui, crawl4ai, exporters, opt-in app/sandbox/quality profiles | `api`, `agent-worker`, `ingest-worker`, Postgres, Redis, Qdrant, LiteLLM, `ml-service`, behind Caddy (TLS) |
 | **Object storage** | MinIO container | DigitalOcean Spaces (any S3-compatible store) |
 | **Observability** | Optional `make obs-up` | Separate observability droplet, fed by sidecars over the private VPC |
-| **Config** | `.env` from `.env.example` | `/opt/agent-core-demo/.env` from `.env.prod.example`, created once by hand, never touched by CI |
+| **Config** | `.env` from `.env.example` | `/opt/agent-core-demo/.env` from `deploy/env/prod.env.example`, created once by hand, never touched by CI |
 | **Cost caps** | Local models cost $0 | `MAX_COST_USD_PER_TURN=0.50`, `MAX_COST_USD_PER_TENANT_PER_DAY=20.0` unless overridden |
 | **Provisioning** | `make up` | Terraform (human-run) + `deploy.yml` (automatic after CI passes on `main`) |
 
@@ -180,7 +180,7 @@ the private network. Creating or destroying droplets is always a human-run `terr
 
 1. `terraform apply` (needs a DO token, your SSH key fingerprint and admin IP, and a dedicated CI deploy key).
 2. Add the repo secrets `DROPLET_HOST`, `OBS_DROPLET_HOST`, `DEPLOY_SSH_KEY`.
-3. SSH in once and create each droplet's `.env` from `.env.prod.example` (`POSTGRES_PASSWORD`, `LITELLM_MASTER_KEY`, `LLM_*`, `MINIO_*`, `CORS_ALLOWED_ORIGINS`, ...).
+3. SSH in once and create each droplet's `.env` from `deploy/env/prod.env.example` (`POSTGRES_PASSWORD`, `LITELLM_MASTER_KEY`, `LLM_*`, `MINIO_*`, `CORS_ALLOWED_ORIGINS`, ...).
 4. Merge to `main`.
 
 Full runbook, scaling, backups, rollback and teardown: **[infra/README.md](infra/README.md)**.

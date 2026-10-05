@@ -91,7 +91,7 @@ own header). SSH into each once and create it yourself:
 ssh deploy@<reserved_ip>
 sudo mkdir -p /opt/agent-core-demo   # cloud-init already does this; harmless if it exists
 cd /opt/agent-core-demo
-# paste this repo's .env.prod.example content into .env and fill in real
+# paste this repo's deploy/env/prod.env.example content into .env and fill in real
 # values (POSTGRES_PASSWORD, LITELLM_MASTER_KEY, LLM_API_KEY, MINIO_*,
 # CORS_ALLOWED_ORIGINS, APP_IMAGE/ML_IMAGE, OBS_COLLECTOR_ENDPOINT/
 # LOKI_PUSH_HOST from `terraform output observability_private_ipv4`, ...)
@@ -104,7 +104,7 @@ chmod 600 .env
 ssh deploy@<observability_reserved_ip>
 sudo mkdir -p /opt/agent-core-observability
 cd /opt/agent-core-observability
-# paste this repo's .env.observability.prod.example content into .env and
+# paste this repo's deploy/env/observability.prod.env.example content into .env and
 # fill in GRAFANA_ADMIN_PASSWORD (and OBS_DOMAIN_NAME if you're pointing a
 # subdomain at it) — see that file's own comments.
 nano .env
