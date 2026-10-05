@@ -130,7 +130,7 @@ services:
     mem_limit: 512m
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     volumes:
-      - ./litellm-config.prod.yaml:/app/config.yaml:ro
+      - ./deploy/litellm/litellm-config.prod.yaml:/app/config.yaml:ro
     environment:
       LLM_API_BASE: ${LLM_API_BASE}
       LLM_API_KEY: ${LLM_API_KEY}
@@ -262,7 +262,7 @@ services:
       # (verified), so branching here instead sidesteps that quirk.
       CADDY_SITE_ADDRESS: ${DOMAIN_NAME:-:80}
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:

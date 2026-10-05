@@ -114,8 +114,13 @@ jobs:
       # /opt/agent-core-demo.
       - name: Sync compose/config files to the droplet
         run: |
-          rsync -az -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
-            docker-compose.prod.yml Caddyfile litellm-config.prod.yaml \
+          # -R keeps each file's repo path (deploy/compose/..., deploy/caddy/...),
+          # so the droplet mirrors the repo layout and the compose file's
+          # repo-root-relative mounts (./deploy/caddy/Caddyfile,
+          # ./postgres-init, ...) resolve identically there and in dev.
+          rsync -azR -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
+            deploy/compose/docker-compose.prod.yml deploy/caddy/Caddyfile \
+            deploy/litellm/litellm-config.prod.yaml \
             deploy@${{ secrets.DROPLET_HOST }}:/opt/agent-core-demo/
           rsync -az --delete -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
             postgres-init/ \
@@ -135,9 +140,18 @@ jobs:
           ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts \
             deploy@${{ secrets.DROPLET_HOST }} \
             "cd /opt/agent-core-demo && \
-             IMAGE_TAG=$IMAGE_TAG docker compose -f docker-compose.prod.yml pull && \
-             IMAGE_TAG=$IMAGE_TAG docker compose -f docker-compose.prod.yml up -d --remove-orphans && \
+             IMAGE_TAG=$IMAGE_TAG docker compose --project-directory . -f deploy/compose/docker-compose.prod.yml pull && \
+             IMAGE_TAG=$IMAGE_TAG docker compose --project-directory . -f deploy/compose/docker-compose.prod.yml up -d --remove-orphans && \
+             rm -f docker-compose.prod.yml Caddyfile litellm-config.prod.yaml && \
              docker image prune -f"
+          # The rm above is a one-time migration, safe to drop once both
+          # droplets have deployed from this layout: before deploy/ existed
+          # these three files were rsynced flat into /opt/agent-core-demo/.
+          # Left behind, a stale docker-compose.prod.yml there would still
+          # run (its ./Caddyfile mount resolves to the stale flat copy) and
+          # silently recreate containers from frozen config. It runs only
+          # after the new `up -d` succeeded, so a failed deploy never
+          # strips the previous files.
 
       - name: Wait for /health/ready
         run: |
@@ -173,8 +187,9 @@ jobs:
       # posture as the app droplet's own .env.
       - name: Sync compose/config files to the droplet
         run: |
-          rsync -az -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
-            docker-compose.observability.prod.yml Caddyfile.observability \
+          rsync -azR -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
+            deploy/compose/docker-compose.observability.prod.yml \
+            deploy/caddy/Caddyfile.observability \
             deploy@${{ secrets.OBS_DROPLET_HOST }}:/opt/agent-core-observability/
           rsync -az --delete -e "ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts" \
             observability/ \
@@ -185,6 +200,8 @@ jobs:
           ssh -i ~/.ssh/deploy_key -o UserKnownHostsFile=~/.ssh/known_hosts \
             deploy@${{ secrets.OBS_DROPLET_HOST }} \
             "cd /opt/agent-core-observability && \
-             docker compose -f docker-compose.observability.prod.yml pull && \
-             docker compose -f docker-compose.observability.prod.yml up -d --remove-orphans && \
+             docker compose --project-directory . -f deploy/compose/docker-compose.observability.prod.yml pull && \
+             docker compose --project-directory . -f deploy/compose/docker-compose.observability.prod.yml up -d --remove-orphans && \
+             rm -f docker-compose.observability.prod.yml Caddyfile.observability && \
              docker image prune -f"
+          # One-time migration rm, same reasoning as the app droplet's above.

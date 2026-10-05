@@ -317,7 +317,7 @@ volume, apply each file you lack by hand, in order (`psql -U langfuse -d appdata
 - **Traces:** Langfuse, grouped by `thread_id`.
 - **Cost:** a per-tenant/principal usage ledger that records the concrete model behind each alias (patterns 26, 38).
 
-`make obs-up` starts a separate stack, [`docker-compose.observability.yml`](docker-compose.observability.yml),
+`make obs-up` starts a separate stack, [`docker-compose.observability.yml`](deploy/compose/docker-compose.observability.yml),
 that nothing in the app depends on:
 
 | Piece | Role |
@@ -409,6 +409,10 @@ measurements put acted-on AI comments at roughly 6–19%, so treat it as a promp
 `make clean`, `make clear-*`, `make obs-clean` and `make restart-all` delete volumes or kill running
 processes; don't run them casually.
 
+The compose files live in `deploy/compose/` but resolve their paths and `.env` from the repo root, so a bare
+`docker compose up` finds nothing. Use the make targets, or pass what they pass:
+`docker compose --project-directory . -f deploy/compose/docker-compose.yml up -d`.
+
 ## Repo map
 
 ```
@@ -424,8 +428,10 @@ app/
   retrieval/   embeddings, Qdrant store, semantic cache
 scripts/       seed, eval, cron jobs, ops_investigate, defectdojo import, AI review
 skills/ subagents/        the agent's own catalogs
-docker/ Dockerfile        ml-service, OpenSandbox, sandbox image; the app image
-docker-compose*.yml       dev, prod, observability (dev and prod), load test
+docker/ Dockerfile        ml-service, OpenSandbox, sandbox image; the app image (stays at the root: it is the build context)
+deploy/compose/           docker-compose*.yml — dev, prod, observability (dev and prod), load test
+deploy/caddy/             Caddyfile (app droplet), Caddyfile.observability
+deploy/litellm/           litellm-config(.prod).yaml and patches/ (the Ollama tool-call fix)
 infra/terraform/          DigitalOcean droplets; infra/README.md is the runbook
 observability/            Prometheus (+ alerts.yml), Alertmanager, Loki, Promtail, otel-collector, Grafana
 postgres-init/            numbered SQL schema (fresh volumes only)
@@ -464,4 +470,4 @@ shipped proxy alone, the human deciding can be anyone who sets the right headers
 - **Turns are slow:** `qwen2.5:3b` is small; set a bigger model in `litellm-config.yaml`. A cold model can exceed `REQUEST_TIMEOUT_SECONDS` (60 s, `app/agent/runtime.py`) on the first call; retry.
 - **No Grafana data or a Prometheus target is down:** `make obs-up` and `make up` are independent; both must run. See http://localhost:9090/targets. A target that predates a LiteLLM config change needs `docker compose up -d litellm`.
 - **Readiness returns 503:** the body names the failing dependency, for example `ml-service` still downloading its models on first start.
-- **A prod dashboard is empty:** check the app droplet's relay first: `docker compose -f docker-compose.prod.yml logs otel-collector-agent promtail` ([infra/README.md](infra/README.md)).
+- **A prod dashboard is empty:** check the app droplet's relay first: `dc logs otel-collector-agent promtail` (the `dc` alias is defined there) ([infra/README.md](infra/README.md)).

@@ -1,4 +1,4 @@
-"""Regression test for litellm-patches/sitecustomize.py, the workaround for
+"""Regression test for deploy/litellm/patches/sitecustomize.py, the workaround for
 a live-verified litellm bug: OllamaChatCompletionResponseIterator.chunk_parser
 builds a fresh Delta per top-level Ollama stream chunk, and Delta's own
 auto-indexing (litellm/types/utils.py) restarts its counter at 0 for every
@@ -11,7 +11,7 @@ Langfuse trace 3c6ed3b0 (2026-09-09) for the corrupted result this produced.
 
 The first test below documents the bug against the STOCK, unpatched
 litellm import this project's own dependencies provide. The second proves
-litellm-patches/sitecustomize.py actually fixes it. If litellm's internals
+deploy/litellm/patches/sitecustomize.py actually fixes it. If litellm's internals
 shift under a future image pull and this stops importing cleanly, that's a
 signal to revisit the patch, not a reason to skip it.
 """
@@ -27,7 +27,7 @@ litellm_chat = pytest.importorskip(
 
 OllamaChatCompletionResponseIterator = litellm_chat.OllamaChatCompletionResponseIterator
 
-PATCH_PATH = Path(__file__).resolve().parents[2] / "litellm-patches" / "sitecustomize.py"
+PATCH_PATH = Path(__file__).resolve().parents[2] / "deploy" / "litellm" / "patches" / "sitecustomize.py"
 
 
 def _load_patch_module():

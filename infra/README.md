@@ -116,22 +116,32 @@ chmod 600 .env
 Merge to `main`. Once `CI` passes, `deploy.yml` fires automatically and
 runs two independent jobs:
 - `deploy`: builds the app + ml-service images, pushes them to GHCR,
-  rsyncs `docker-compose.prod.yml`/`Caddyfile`/`litellm-config.prod.yaml`/
-  `postgres-init/`/`observability/` to the app droplet, then `docker
-  compose pull && up -d`.
+  rsyncs `deploy/compose/docker-compose.prod.yml`, `deploy/caddy/Caddyfile`,
+  `deploy/litellm/litellm-config.prod.yaml`, `postgres-init/` and
+  `observability/` to the app droplet (keeping their repo paths, so the
+  droplet mirrors the repo layout), then `docker compose pull && up -d`.
 - `deploy-observability`: rsyncs
-  `docker-compose.observability.prod.yml`/`Caddyfile.observability`/
-  `observability/` to the observability droplet, then `docker compose pull
-  && up -d`.
+  `deploy/compose/docker-compose.observability.prod.yml`,
+  `deploy/caddy/Caddyfile.observability` and `observability/` to the
+  observability droplet, then `docker compose pull && up -d`.
 
-Watch both in the Actions tab, or SSH in and `docker compose -f
-docker-compose.prod.yml ps` / `logs -f api` (app droplet) or `docker
-compose -f docker-compose.observability.prod.yml ps` (observability
-droplet).
+Watch both in the Actions tab, or SSH in and use the `dc` alias from
+[Everyday operations](#everyday-operations) below.
+
+**First deploy from the `deploy/` layout**: both jobs also `rm -f` the
+pre-`deploy/` flat copies (`docker-compose.prod.yml`, `Caddyfile`,
+`litellm-config.prod.yaml`, and the observability pair) once the new `up -d`
+has succeeded — a stale flat compose file left in `/opt/...` would still run
+and recreate containers from frozen config. Expect exactly
+those services whose mount source moved to be recreated once — `caddy` and
+`litellm` on the app droplet, `caddy` on the observability droplet (checked
+by comparing `docker compose config --hash` before/after the move) — a few
+seconds of TLS/gateway blip. Nothing else changes, and the project names,
+so the volumes, are unchanged.
 
 **Upgrading an already-provisioned app droplet**: `api` no longer publishes
 a fixed host port 8000 (Caddy now load-balances across replicas via a
-`dynamic a` upstream instead — see `Caddyfile`). `terraform apply` closes
+`dynamic a` upstream instead — see `deploy/caddy/Caddyfile`). `terraform apply` closes
 port 8000 at the DO cloud firewall immediately either way (that's the first
 enforcement layer), but cloud-init's matching `ufw` rule only applies on
 first boot (see `cloud-init.tpl.yaml`'s own comment) — on a droplet
@@ -154,9 +164,14 @@ the no-domain HTTP-only fallback.
 ```
 ssh deploy@<reserved_ip>
 cd /opt/agent-core-demo
-docker compose -f docker-compose.prod.yml ps
-docker compose -f docker-compose.prod.yml logs -f api
-docker compose -f docker-compose.prod.yml up -d --scale agent-worker=3   # scale workers (GRAPH_PATTERNS.md pattern 43)
+# Compose files live under deploy/compose/ but resolve their paths and .env
+# from this directory, so every call needs --project-directory . (an env var
+# can't replace it — COMPOSE_FILE alone makes paths resolve under
+# deploy/compose/). The alias saves the typing.
+alias dc='docker compose --project-directory . -f deploy/compose/docker-compose.prod.yml'
+dc ps
+dc logs -f api
+dc up -d --scale agent-worker=3   # scale workers (GRAPH_PATTERNS.md pattern 43)
 ```
 
 Observability droplet, separately:
@@ -164,15 +179,15 @@ Observability droplet, separately:
 ```
 ssh deploy@<observability_reserved_ip>
 cd /opt/agent-core-observability
-docker compose -f docker-compose.observability.prod.yml ps
-docker compose -f docker-compose.observability.prod.yml logs -f grafana
+alias dc='docker compose --project-directory . -f deploy/compose/docker-compose.observability.prod.yml'
+dc ps
+dc logs -f grafana
 ```
 
 Grafana is at `https://<obs_domain>` (or `http://<observability_reserved_ip>`
 with no domain set) — log in with `admin` / `GRAFANA_ADMIN_PASSWORD`. If a
 dashboard shows no data, check the app droplet's relay first:
-`docker compose -f docker-compose.prod.yml logs otel-collector-agent
-promtail` — both should show successful pushes to the observability
+`dc logs otel-collector-agent promtail` on the app droplet — both should show successful pushes to the observability
 droplet, not connection errors.
 
 **Backups**: `enable_backups` (terraform.tfvars) turns on DO's own weekly
@@ -187,8 +202,7 @@ worth restoring.
 
 **Rollback**: re-run `deploy.yml` against an earlier commit
 (`workflow_dispatch` isn't wired up for this file today — re-push/revert the
-commit on `main`, or SSH in and `IMAGE_TAG=<older-sha> docker compose -f
-docker-compose.prod.yml up -d` directly using an older GHCR tag). The
+commit on `main`, or SSH in and `IMAGE_TAG=<older-sha> dc up -d` directly using an older GHCR tag). The
 observability stack has no image tags of its own to roll back — its images
 are always `:latest` off-the-shelf.
 

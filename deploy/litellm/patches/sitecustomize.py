@@ -82,7 +82,7 @@ try:
     _Iterator.chunk_parser = _patched_chunk_parser
     print(
         "[litellm-patches] applied ollama_chat multi-tool-call index fix "
-        "(see litellm-patches/sitecustomize.py for why)",
+        "(see deploy/litellm/patches/sitecustomize.py for why)",
         file=sys.stderr,
     )
 except Exception as exc:  # noqa: BLE001 - fail loud to stderr, never crash proxy startup
@@ -90,6 +90,6 @@ except Exception as exc:  # noqa: BLE001 - fail loud to stderr, never crash prox
         f"[litellm-patches] FAILED to apply ollama_chat tool_call index fix: {exc!r} "
         "-- a turn where the model calls more than one tool at once will silently "
         "corrupt both calls into one unusable tool_call again (see "
-        "litellm-patches/sitecustomize.py and app/agent/graph_utils.py's _make_llm comment)",
+        "deploy/litellm/patches/sitecustomize.py and app/agent/graph_utils.py's _make_llm comment)",
         file=sys.stderr,
     )

@@ -201,7 +201,7 @@ def _make_llm(tools: list = TOOLS):
     # chunk_parser restarts its tool-call index at 0 per chunk instead of
     # per response, so two calls in separate chunks both get index 0 and
     # get string-concatenated by any OpenAI-compatible client. Fixed at
-    # that layer (litellm-patches/sitecustomize.py, loaded via PYTHONPATH
+    # that layer (deploy/litellm/patches/sitecustomize.py, loaded via PYTHONPATH
     # in docker-compose.yml) to hand out a globally-increasing index.
     #
     # `parallel_tool_calls=False` was then removed rather than kept as
