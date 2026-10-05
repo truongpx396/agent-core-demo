@@ -24,12 +24,13 @@ Everything runs locally via **Ollama** — no cloud API keys needed.
 - **Hybrid RAG** — dense + BM25 sparse retrieval, RRF-fused, cross-encoder reranked, every claim traceable to a numbered citation
 - **General-purpose ingestion** — files, URLs, or pasted text through the same chunking/embedding pipeline, plus a production upload path (PDF/DOCX → MinIO → a dedicated worker pool)
 - **Memory** — per-thread conversation memory via the checkpointer, and write-gated cross-session personal memory, both tenant/owner isolated
-- **Semantic cache** — a repeated question skips retrieval and the LLM entirely, served from cache instead
+- **Semantic cache** — a repeated question skips retrieval and the LLM entirely, served from cache instead. A turn that called any non-read-only tool is never cached: a repeat would otherwise be answered "Ticket #123 created" with no approval pause and no write (pattern 22)
 - **Tools, including MCP** — calculator, hybrid search, a fixed (never text-to-SQL) structured Postgres query, clarification questions, follow-up suggestions — reachable over MCP too, as both a server and a client
 - **Skills with progressive disclosure** — a bundled `SKILL.md` catalog, searched by meaning (`skill_search`) and loaded in full only on match (`use_skill`), so the model's tool surface stays small no matter how many skills the catalog grows to
 - **Subagents** — `run_subagent` delegates a task to a fresh, isolated nested agent run (its own system prompt, its own scoped read_only tool subset, its own budget) instead of loading more instructions into the same context — inherits tenant/principal `SecurityCtx` but never the conversation history, and never needs human approval, since every subagent is restricted to read_only tools
 - **Human-in-the-loop** — mandatory approval for any mutating tool call, over HTTP or CLI, with a real cancel path for a paused run
-- **Multi-tenant by construction** — every retrieval and write scoped to tenant+principal at the store level, never a Python post-filter
+- **Multi-tenant by construction** — every retrieval and write scoped to tenant+principal at the store level, never a Python post-filter; a conversation id belongs to its first sender, and anyone else's send, resume or cancel on it is refused ([HTTP API](#http-api-fastapi--pydantic))
+- **Exactly-once side effects** — every mutating/outward tool call is keyed by its provider-assigned `tool_call_id`, so a crash-and-reclaim, a retry or a double-submit can't write, send or spend twice ([below](#exactly-once-side-effects))
 - **Real guardrails** — input moderation, credential/secret scrubbing, nine independent safety budgets, a golden-dataset eval gate before shipping a prompt/model change
 - **Multiple interfaces** — CLI, HTTP API, a built-in web UI, and a Telegram channel, all sharing one `astream_events_turn()` streaming core
 - **Full observability** — Langfuse tracing, OpenTelemetry metrics pushed to a shared collector, structlog JSON logs correlated by request id, a per-tenant/principal cost ledger, and an optional Grafana + Loki + Prometheus + Alertmanager stack with provisioned dashboards and alert rules (`make obs-up`)
@@ -121,20 +122,43 @@ diagram legible.
 
 This isn't a toy agent loop — it's built the way a real deployment needs to
 work. Every pattern below is documented in depth in
-[GRAPH_PATTERNS.md](GRAPH_PATTERNS.md) (47 patterns, numbered, each with the
+[GRAPH_PATTERNS.md](GRAPH_PATTERNS.md) (50 patterns, numbered, each with the
 actual bug or gotcha that motivated it), grouped here by concern:
 
 | Concern | Patterns | What it buys you |
 |---|---|---|
 | **Agent loop discipline** | 1, 4–7, 9, 10, 34, 35, 39 | Validated input, real conditional routing, an output retry path, parallel tool calls, nine independent safety budgets (iteration/token/cost/timeout caps), no-progress detection, a measurable ungrounded-claims signal |
 | **Human-in-the-loop & governance** | 8, 15, 36 | Every mutating tool call (writes, sends, spends) is gated by *mandatory* approval — not opt-in — with a real cancel path for a paused run |
-| **Multi-tenant security** | 12, 17, 25, 30, 32 | Every read/write scoped to tenant+owner via a store-level pre-filter (never a Python post-filter); real pattern-based input moderation; secrets scrubbed from tool output before they reach a prompt or trace; a canonical error envelope |
-| **Retrieval, memory & caching** | 2, 3, 13, 18–20, 22, 24, 33, 41 | Hybrid dense+BM25 search, RRF-fused, cross-encoder reranked, with inline citations; a tenant+principal-scoped semantic cache; write-gated cross-session memory with retention-at-recall; bounded history with LLM-summarized compaction; a prompt-cache-stable system prompt |
+| **Multi-tenant security** | 12, 17, 25, 30, 32 | Every read/write scoped to tenant+owner via a store-level pre-filter (never a Python post-filter), and every conversation id owned by its first sender; real pattern-based input moderation; text from outside (retrieved documents, crawled pages) framed as data, not instructions; secrets scrubbed from tool output before they reach a prompt or trace; a canonical error envelope that, on the chat path, never forwards an unexpected exception's text (the ingest worker's catch-all still does — see pattern 30) |
+| **Retrieval, memory & caching** | 2, 3, 13, 18–20, 22, 24, 33, 41 | Hybrid dense+BM25 search, RRF-fused, cross-encoder reranked, with inline citations; a tenant+principal-scoped semantic cache that never stores a turn that acted; write-gated cross-session memory with retention-at-recall; bounded history with LLM-summarized compaction; a prompt-cache-stable system prompt |
 | **Structured data & tools** | 21, 27, 28, 31, 45, 46 | A fixed, parameterized Postgres tool (never text-to-SQL), also reachable over MCP; clarification questions + follow-ups; consuming a remote MCP catalog with local capability overrides; a real DB connection pool; a searchable skill catalog loaded progressively (`skill_search`/`use_skill`); scoped, isolated subagent delegation (`run_subagent`) restricted to read_only tools so it needs no new approval gate |
-| **Reliability & scaling** | 16, 43 | A durable, version-stamped Postgres checkpointer (a paused approval survives a restart); a Redis Streams queue decoupling SSE-serving capacity from agent-executing capacity, scaled independently |
+| **Reliability & scaling** | 16, 43, plus [exactly-once](#exactly-once-side-effects) | A durable, version-stamped Postgres checkpointer (a paused approval survives a restart); a Redis Streams queue decoupling SSE-serving capacity from agent-executing capacity, scaled independently; crash recovery that *continues* an abandoned turn from its checkpoint, and `tool_call_id`-keyed idempotency so no side effect runs twice |
 | **Observability & cost** | 11, 14, 26, 37, 38 | OpenTelemetry metrics pushed via OTLP, structlog-based structured per-node/per-tool-call logs correlated by `run_id`, a real per-tenant/principal usage-cost ledger with the resolved concrete model recorded, and an optional Grafana/Loki/Prometheus/Alertmanager stack with provisioned dashboards and alert rules |
 | **Interfaces & extensibility** | 23, 29, 42, 44, 47 | CLI, HTTP API, built-in web UI, Telegram channel, and multimodal (image) input — all sharing one `astream_events_turn()` streaming core; a config-first multi-domain layer so a new use case is a manifest + plugin, never a fork — proved out by three real example domains (support/ops/sales) sharing that one graph |
 | **Quality gates** | 40 | A golden-dataset eval harness with N-repetition pass-rate and grounded-claims thresholds — a real regression gate against the actual model, not a vibe check |
+
+### Exactly-once side effects
+
+The constitution's Principle IV (non-negotiable): a write, a send or a spend happens once per
+decision, however many times the work is retried. A crashed worker, a reclaimed job, a soft
+timeout and a double-clicked send are all routine, so each gets its own defence. The bug behind
+every layer is written up in GRAPH_PATTERNS.md's
+["Extending Further"](GRAPH_PATTERNS.md#extending-further).
+
+| Failure | Defence |
+|---|---|
+| The same tool call runs twice (a reclaimed `resume` job, a crash-replay) | `app/agent/tool_idempotency.py::idempotent` wraps every `mutating`/`outward` tool — note and memory writes, every domain write tool, all four sandbox tools. It is keyed by the provider-assigned `tool_call_id` and persisted in `tool_call_dedup` (`postgres-init/13-tool-call-dedup.sql`): a second call under the same id returns the first's cached result instead of acting again. It fails open (`agent_tool_dedup_degraded_total`, the `ToolCallDedupDegraded` alert) — a dedup-store outage must not block a write outright |
+| The dedup claim races, or a tool's real write lands twice | A row-level backstop: tools that create a row carry `tool_call_id UNIQUE` + `ON CONFLICT DO NOTHING` (`14-`, `15-`) — which is why a ticket comment or a lead note is its own row rather than text appended to a column. Qdrant points for notes/memories are derived from `tool_call_id`, and ingested chunks from their content, so a replay overwrites instead of duplicating |
+| A worker dies mid-turn | `XAUTOCLAIM` reclaim (`queue.py::reclaim_stale_entries`) **continues** the checkpointed turn instead of restarting it — a restart would re-ask the LLM, which mints new `tool_call_id`s no dedup could recognize. A finished, approval-paused or unreadable turn is dead-lettered instead, as is any job past `MAX_AUTO_RECLAIM_RETRIES` |
+| A tool call times out but its write lands anyway | `MutatingToolTimedOut` steers the agent to verify with a read-only tool before retrying; "just try again" would be a fresh `tool_call_id`, which nothing keyed on the id can catch |
+| A client resubmits the same message | `POST /chat/stream/queued` dedups an identical `(thread_id, message, images)` inside `CHAT_SUBMIT_DEDUP_TTL_SECONDS` (default 10): the retry streams the first attempt's turn instead of starting a second |
+
+Deliberately not built: a business-key rule ("one open ticket per tenant + requester + subject")
+for two *different* ids the agent genuinely used for the same request — what counts as "the same
+ticket" is a product decision. The residual gaps (the team-channel message window, a dedup lookup
+that isn't tenant-scoped) are under [Known gaps](#known-gaps). `tests/domains/test_write_tools_contract.py`
+enumerates every domain's non-read-only tool from the registry, so a new write tool that skips
+`idempotent()` or its ctx check fails by name.
 
 ## Example domains: three real use cases, one graph
 
@@ -151,13 +175,23 @@ declarations, tenant scoping, tests) — not a prompt-only reskin:
 | **Internal ops bot** (`app/domains/ops/`) | Pulls this app's own operational metrics from the Prometheus this repo already ships (`make obs-up`), flags anything past an alert-matching threshold, and either posts a digest or answers an ad-hoc question — a real anomaly can be logged, listed, and resolved as a durable incident (`ops_incidents`, a new Postgres table) instead of only ever a channel post that scrolls away. Can also check a vendor's live public status page (`check_vendor_status_page`) and, for real computation `calculator` can't safely do, run a command, run a Python script directly, or read/write a file inside an isolated, auto-managed OpenSandbox sandbox (`run_command_in_sandbox`/`run_python_in_sandbox`/`read_sandbox_file`/`write_sandbox_file`, consumed over MCP but never exposing OpenSandbox's own raw ~19-tool lifecycle API to the model — pattern 50); the full crawl-then-compute-then-cross-reference investigation is packaged as `skills/vendor-incident-postmortem`, which delegates the "has this vendor come up before" step to a second, dedicated `vendor-history-researcher` subagent | `post_to_team_channel`/`check_vendor_status_page` and all four sandbox tools are `outward`; `log_incident`/`resolve_incident` are `mutating`, `list_recent_incidents` is `read_only`. Its own read-only metrics/incidents are also reachable from an external MCP client (`make mcp-serve-ops`) | `make ops-digest` (cron-callable) / `python -m scripts.ops_investigate "why is latency high?"` (ad hoc) |
 | **Sales/CRM concierge** (`app/domains/sales/`) | Logs inbound lead interactions, drafts replies in a configured voice, schedules follow-ups and lists the pending queue, packages a brief and hands a hot lead to a human rep, marks a dead lead lost (cancelling its pending follow-ups), researches a lead's company website LIVE before a rep calls them (`enrich_lead_from_website`, pattern 50), and computes real deal economics (`skills/deal-economics`) or extracts structured signals from an already-crawled lead page in an isolated sandbox (`run_command_in_sandbox`/`run_python_in_sandbox`/`read_sandbox_file`/`write_sandbox_file`, pattern 50 — always present as tools, each call fails gracefully if `opensandbox-mcp` isn't reachable right now; `run_python_in_sandbox` takes a script as a plain parameter, added specifically after `python -c '...'` one-liners kept failing live on the exact quote/apostrophe combinations deal math needs) (`crm_leads`/`crm_followups`, two new Postgres tables) | No tool ever sends anything to a lead — every reply is a draft; `handoff_to_human`/`schedule_followup`/`mark_lead_lost`/`enrich_lead_from_website`/the sandbox tools only ever run through the interactive agent loop, never from cron (see below) | `make telegram-sales` / `make followup-sweep` (cron-callable) |
 
-A fresh Postgres volume picks up their tables automatically
-(`postgres-init/07-support-tickets.sql`, `08-crm.sql`, `09-support-ticket-notes.sql`,
-`10-ops-incidents.sql`); against an existing volume, apply them by hand once.
+A fresh Postgres volume picks up every `postgres-init/*.sql` automatically — the domains' own
+tables are `07-support-tickets.sql`, `08-crm.sql`, `09-support-ticket-notes.sql` and
+`10-ops-incidents.sql`. **Those scripts never re-run on an existing volume**, so after pulling a
+newer version, apply each file you don't have yet by hand, in numeric order
+(`psql -U langfuse -d appdata -f postgres-init/NN-….sql`). What the later ones add, and what
+skipping each costs:
 
-`16-tenant-budget-holds.sql` (the per-turn in-flight budget holds) is the same story for an existing volume, but if it is
-not applied the only effect is that the per-tenant daily cap stops counting turns that are still running — the
-reserve fails open and logs `tenant_budget_reservation_failed`.
+| File | Adds | If it isn't applied |
+|---|---|---|
+| `11-chat-sessions-domain.sql` | `chat_sessions.domain`, so sessions are per-domain | Session listing filters on it and the send-time ownership claim inserts it; the claim fails closed, so sends return 500 |
+| `12-tenant-budget-reservations.sql` | The first per-tenant budget reservation table | Nothing — `16` replaced it and no code reads it any more; skip it |
+| `13-tool-call-dedup.sql` | `tool_call_dedup`, the idempotency store ([above](#exactly-once-side-effects)) | Idempotency stops working. It fails open: tools still run, undeduplicated, and `ToolCallDedupDegraded` fires |
+| `14-tool-call-id-columns.sql` | `tool_call_id UNIQUE` on `support_tickets`, `ops_incidents`, `crm_followups` | Those tools' `INSERT … ON CONFLICT (tool_call_id)` is rejected by Postgres, so creating a ticket, incident or follow-up fails |
+| `15-append-notes-as-rows.sql` | `support_ticket_comments` and `crm_lead_notes`, one row per note | Adding a ticket comment or a lead note fails. **It also drops `support_tickets.notes` and `crm_leads.notes` with no data carried forward** — copy anything you want to keep first |
+| `16-tenant-budget-holds.sql` | One row per in-flight turn's budget hold | The per-tenant daily cap stops counting turns that are still running — the reserve fails open and logs `tenant_budget_reservation_failed` |
+
+(The `14`/`15` rows are read from the stores' SQL, not reproduced against an un-migrated volume.)
 
 **Skills and subagents are domain-scoped, not just Ecorp-level.** Both
 catalogs support an optional `domains: [...]` frontmatter field
@@ -256,18 +290,25 @@ Defects and missing controls found by reviewing the as-built system against the
 GRAPH_PATTERNS.md's ["Extending Further"](GRAPH_PATTERNS.md#extending-further). The ones
 that touch the non-negotiable principles:
 
-- **Conversation ownership is checked on read, not on send, resume or cancel** — whoever supplies a `thread_id` continues that conversation, and can approve or cancel its pending action (reproduced at the graph level). Telegram ids are `telegram:<chat id>`.
 - **The shipped proxy does not authenticate** — see "Real authentication" above; it also neither sets nor strips the identity headers, so a deployment *must* put an authenticating gateway in front.
 - **Approvals are not attributed** — the gate is enforced but not auditable.
 - **The ops domain is global** and no control decides which tenants may use it; **the dedup lookup is not tenant-scoped**.
-- **A residual duplicate window for the team-channel notification** tools; no test that fails if a write tool drops `idempotent()`.
+- **A residual duplicate window for the team-channel notification** tools (see [Exactly-once side effects](#exactly-once-side-effects)).
 
-None of these lets a write run without a human decision; the first lets the *wrong* human make it.
+None of these lets a write run without a human decision. The first means that, behind the shipped
+proxy alone, the human who decides can be anyone who sets the right identity headers.
+
+Two gaps from the original review are closed, so they no longer appear above: conversation
+ownership is now enforced on send, resume and cancel, not only on read (#67 — see the
+[HTTP API](#http-api-fastapi--pydantic) section and pattern 17), and a test now fails if any domain's
+write tool drops `idempotent()` or its ctx check (#68). What the ownership fix does *not* cover is
+disclosed in pattern 17: the check lives at the API and the worker doesn't repeat it, and the
+Telegram channel still shares one thread across every user of a group chat.
 
 ## Prerequisites
 
 - Docker + Docker Compose
-- Python 3.11+
+- Python 3.13 — what the `Dockerfile` and CI run; other versions aren't exercised here
 - [Ollama](https://ollama.com) installed and running natively on the host
   (`ollama serve`) — this stack has no containerized Ollama; `litellm-config.yaml`
   and `open-webui` both reach it via `host.docker.internal:11434` for real
@@ -443,6 +484,23 @@ them, by design.
 Reuse the same `thread_id` across calls to keep conversation **memory**; each
 call is also traced in Langfuse under that id as the session.
 
+**A `thread_id` belongs to whoever sends on it first.** The first send under a new id claims it
+for that tenant + principal + domain; every later send, `/chat/resume` or `/chat/cancel` on it
+from anyone else gets the same 404 an unknown id gets (so an id can't be probed for existence),
+before anything is enqueued or written. What that means for a client:
+
+- Switching tenant or principal needs a fresh `thread_id` (the built-in web UI starts one itself).
+- `telegram:<chat id>` ids are reserved for the Telegram channel — HTTP can continue one it owns
+  but never claim a fresh one.
+- A conversation with no `chat_sessions` row (an older one whose best-effort write failed) can no
+  longer be resumed over HTTP.
+- The check lives at the API; the worker doesn't repeat it, so anything that can publish to Redis
+  directly is outside it (GRAPH_PATTERNS.md pattern 17).
+
+Resubmitting an identical `(thread_id, message, images)` within `CHAT_SUBMIT_DEDUP_TTL_SECONDS`
+(default 10) doesn't start a second turn: the retry streams the first attempt's results instead
+([Exactly-once side effects](#exactly-once-side-effects)).
+
 If the agent calls `add_note` (the one mutating tool, always gated — see
 GRAPH_PATTERNS.md pattern 15), this endpoint surfaces the pause as a real,
 actionable `approval_required` SSE event — `POST /chat/resume` accepts the
@@ -584,6 +642,16 @@ human approval):
   metrics anomaly against an upstream dependency's public status page
   before opening an incident.
 
+**Crawled text is untrusted.** A web page is attacker-controlled, so everything these tools return
+goes through `app/core/untrusted.py::frame_untrusted` — wrapped in `<retrieved_document>`
+delimiters that the system prompt says are data, not instructions, with a closing tag inside the
+page unable to end the frame early. The same wrapper covers the stored CRM notes that
+`package_lead_brief` replays, which are bounded in total size. Framing only marks where untrusted
+text starts and stops; it can't stop a model that chooses to follow it, and that is the approval
+gate's job (pattern 12 explains the split). Not covered: other model-visible text from outside that
+isn't routed through the wrapper — ticket comments a customer wrote, `check_ticket_status`'s
+notes — and a per-note cap on that replay.
+
 Needs the `crawl4ai` container reachable and `CRAWL4AI_API_TOKEN` set in
 `.env` (crawl4ai 0.9.0+ is secure-by-default — without a matching token
 the server binds loopback-only inside its own container). No local
@@ -707,15 +775,24 @@ promptfoo/garak/`scripts/eval.py` are complementary rather than redundant):
    `RoleAdherenceMetric`/`KnowledgeRetentionMetric`)? A semantic judgment
    call none of the tiers above make (promptfoo's assertions are keyword
    presence; `make eval`'s own grounded-claims check below is a structural
-   citation-marker count). Deliberately manual only, never CI — a real,
-   disclosed finding from actually running it (GRAPH_PATTERNS.md pattern
-   48) is that a small local judge model produces internally-inconsistent
-   scores (a verified-good answer scored a flat 0 with a reason that itself
-   says "no contradictions"), the same reliability wall `make
-   promptfoo-redteam` independently hit — so this needs a human reading the
-   printed reasons, not a pass/fail gate. The multi-turn run also surfaced a
-   real, disclosed target-model finding along the way: the assistant
-   affirmed a customer's fabricated schedule detail instead of correcting
+   citation-marker count). A third file, `test_tool_correctness_deepeval.py`,
+   judges the tool-call trajectory. Run it by hand with `make deepeval`; in CI it is
+   its own `deepeval` job, where every test case is `flaky=True` — a failed metric warns
+   instead of raising, so the job goes red only on a genuine crash (an unreachable
+   Ollama, a broken `build_graph()`), never on a bad score. A green run means "nothing
+   crashed", not "the judge approved". Scores aren't gated because LLM judges disagree
+   with themselves — a real, disclosed finding (GRAPH_PATTERNS.md pattern 48): a small
+   local judge model scored a verified-good answer a flat 0 with a reason that itself
+   says "no contradictions", the same reliability wall `make promptfoo-redteam`
+   independently hit. The *judge* is now a hosted model — Gemini (`GOOGLE_API_KEY`),
+   plus Groq (`GROQ_API_KEY`) for the conversation simulation, whose metric Gemini's
+   response schema can't grade — while the *target* stays the local model. Each judge
+   answers through a failover chain (other models on the same
+   provider, then optional Plugsky and OpenRouter backups) that engages only on a rate
+   limit, an overload or a timeout; see the "deepeval judge failover" block in
+   `.env.example`. Even so, read the printed reasons rather than trusting pass/fail. The
+   multi-turn run also surfaced a real, disclosed target-model finding along the way:
+   the assistant affirmed a customer's fabricated schedule detail instead of correcting
    it against its own retrieved context (pattern 48 again).
 6. **`make eval`** — the real-model, real-Qdrant, full-graph release gate
    (5 repetitions per case, a grounded-claims threshold over the whole
@@ -1086,8 +1163,8 @@ agent-worker` first, and ideally `make ingest` for real retrieval hits:
   users/spawn rate live, watch response-time/RPS charts).
 - `make loadtest-queued-headless` — a fixed 20-user, 2-minute run, CSV + HTML
   report under `loadtest/results-queued/` (gitignored) — a local smoke run,
-  not a CI job (needs the full live stack, the same reason `make eval`/`make
-  deepeval` above stay manual).
+  not a CI job (needs the full live stack, the same reason `make eval` above
+  stays manual).
 - One simulated-user class (`QueuedTurnUser`) mints its own synthetic tenant
   id per simulated user (past `app/api/rate_limit.py`'s per-`X-Tenant-Id`
   ceiling, `RATE_LIMIT_PER_MINUTE`, default 30/min) so it actually
@@ -1179,7 +1256,7 @@ shipped here — see that file's own closing section for how they line up.
 | `make test`       | Run the pytest suite in parallel (fake LLM, no live services needed) |
 | `make test-integration` | Real Postgres/Redis/Qdrant/crawl4ai via testcontainers, no LLM (needs Docker, not `make up`) |
 | `make test-live`  | Real small Ollama model + full app/agent-worker stack, incl. a Playwright browser E2E and a real crawl4ai render dispatched through the real ops/support graphs (needs Docker) |
-| `make test-sandbox` | Real `opensandbox-mcp` round trip (needs `make sandbox-up` running + `opensandbox-mcp` installed; self-skips otherwise) — manual only, like `make deepeval`/`garak` |
+| `make test-sandbox` | Real `opensandbox-mcp` round trip (needs `make sandbox-up` running + `opensandbox-mcp` installed; self-skips otherwise) — manual only, like `make garak` |
 | `make lint`       | `ruff check .` — see `pyproject.toml`'s `[tool.ruff]` |
 | `make typecheck`  | `mypy` over `app/` and `scripts/` — see `pyproject.toml`'s `[tool.mypy]` |
 | `make eval`       | Run the golden-dataset evaluation against the real stack |
@@ -1187,7 +1264,7 @@ shipped here — see that file's own closing section for how they line up.
 | `make promptfoo-redteam` | Adversarial variants of the same prompts, generated+graded locally by Ollama (manual — no cloud provider needed, but read the output by hand, see GRAPH_PATTERNS.md pattern 48) |
 | `make garak`      | Fast, curated jailbreak/injection probe subset against the real model — run from a SEPARATE Python env, never this repo's own `.venv` (see `garak/requirements-garak.txt`) |
 | `make garak-full` | The full, slow garak probe suite (manual, pre-release — like `make eval`); same separate-env requirement |
-| `make deepeval`   | LLM-judged RAG quality + a multi-turn conversation simulation against the real graph (manual — read the reasons by hand, see GRAPH_PATTERNS.md pattern 48) |
+| `make deepeval`   | LLM-judged RAG quality + a multi-turn conversation simulation + tool-call trajectory against the real graph — needs Docker, `GOOGLE_API_KEY` and `GROQ_API_KEY`. Also CI's `deepeval` job, which fails only on a crash, never on a score; read the reasons by hand, see GRAPH_PATTERNS.md pattern 48 |
 | `make trivy`      | Scan dependencies/Dockerfile+compose/secrets for known vulns (Docker, no local trivy install needed) |
 | `make trivy-image`| Build the app image and scan it for OS/library vulnerabilities |
 | `make semgrep`    | SAST over `app`/`scripts`/`docker`/`Dockerfile` (Docker, no local semgrep install needed) |
