@@ -619,29 +619,33 @@ async def astream_events_turn(
         async for event in _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=cancel_check):
             yield event
     finally:
-        # Fire-and-forget, NOT awaited: this generator's caller
-        # (agent_worker.py::_process_turn) only releases its own
-        # per-thread lock (queue.py::acquire_thread_lock) once THIS
-        # generator is fully exhausted — awaiting a real Postgres round
-        # trip here would sit between "terminal event already published
-        # to the results stream" and "thread lock released," a window a
-        # caller reacting immediately to that terminal event (e.g. POST
-        # /chat/resume fired the instant a client sees approval_required)
-        # can land in, getting spuriously rejected as THREAD_BUSY even
-        # though the turn it's resuming already finished from its own
-        # point of view. Reproduced directly:
-        # tests/integration/test_worker_scaling.py's real-subprocess HITL
-        # test started failing intermittently once this await was added.
-        # Safe to detach: _release_turn_budget already fails open
-        # internally (never raises in practice), and a reservation that
-        # takes a few extra milliseconds to clear is harmless — it's not
-        # on any correctness-critical path, only in_flight_reservation's
-        # own read, which also ignores a hold older than
-        # RESERVATION_STALE_AFTER_MINUTES.
-        release_task = asyncio.create_task(
-            runtime_module._release_turn_budget(ctx, budget_hold)
-        )
-        release_task.add_done_callback(_log_if_release_task_failed)
+        _release_turn_budget_in_background(ctx, budget_hold)
+
+
+def _release_turn_budget_in_background(ctx: SecurityCtx | None, budget_hold: str | None) -> None:
+    """Releases a turn's budget hold without awaiting it.
+
+    Fire-and-forget, NOT awaited: the generator's caller
+    (agent_worker.py::_process_turn) only releases its own per-thread lock
+    (queue.py::acquire_thread_lock) once THAT generator is fully exhausted —
+    awaiting a real Postgres round trip in its `finally` would sit between
+    "terminal event already published to the results stream" and "thread lock
+    released," a window a caller reacting immediately to that terminal event
+    (e.g. POST /chat/resume fired the instant a client sees approval_required)
+    can land in, getting spuriously rejected as THREAD_BUSY even though the turn
+    it's resuming already finished from its own point of view. Reproduced
+    directly: tests/integration/test_worker_scaling.py's real-subprocess HITL
+    test started failing intermittently once this await was added.
+
+    Safe to detach: _release_turn_budget already fails open internally (never
+    raises in practice), and a reservation that takes a few extra milliseconds to
+    clear is harmless — it's not on any correctness-critical path, only
+    in_flight_reservation's own read, which also ignores a hold older than
+    RESERVATION_STALE_AFTER_MINUTES. Shared by every entry point that reserves
+    (a new turn, a resume, a crash-continue) so they cannot drift apart.
+    """
+    release_task = asyncio.create_task(runtime_module._release_turn_budget(ctx, budget_hold))
+    release_task.add_done_callback(_log_if_release_task_failed)
 
 
 def _log_if_release_task_failed(task: asyncio.Task) -> None:
@@ -719,12 +723,15 @@ async def astream_events_turn_unattended(
             return
         declines += 1
         metrics.agent_unattended_pause_total.inc()
-        async for event in _drain(astream_events_resume(thread_id, False, ctx)):
+        # admitted=True: this decline is a step of the request that already passed the
+        # allowance at its start. Re-checking here could refuse it and leave the
+        # conversation paused — the stranded-pause bug this loop exists to prevent.
+        async for event in _drain(astream_events_resume(thread_id, False, ctx, admitted=True)):
             yield event
 
 
 async def astream_events_resume(
-    thread_id: str, approved: bool, ctx: SecurityCtx, cancel_check=None
+    thread_id: str, approved: bool, ctx: SecurityCtx, cancel_check=None, *, admitted: bool = False
 ):
     """Resume a turn paused by astream_events_turn(require_approval=True) —
     streaming counterpart to `graph.invoke(Command(resume=approved), config)`.
@@ -754,26 +761,48 @@ async def astream_events_resume(
     long — also why `resumability_error_async` is checked here: this is
     the entry point most likely to hit a stale/incompatible checkpoint in
     practice.
-    """
-    graph = await runtime_module.init_graph_async()
-    error = await resumability_error_async(graph, {"configurable": {"thread_id": thread_id}})
-    if error:
-        yield {"type": "error", "content": error}
-        yield {"type": "done"}
-        return
 
-    trace, callbacks = _open_trace(
-        "chat-turn-stream-resume", thread_id, f"resume(approved={approved})"
-    )
-    cfg = {
-        "configurable": {"thread_id": thread_id, "ctx": ctx},
-        "callbacks": callbacks,
-        "recursion_limit": runtime_module.RECURSION_LIMIT,
-    }
-    async for event in _run_graph_stream(
-        graph, Command(resume=approved), cfg, trace, cancel_check=cancel_check
-    ):
-        yield event
+    The allowance is checked here like a new turn's (spec 008 A6, FR-022): the
+    approval wait is unbounded, so by the time someone approves, the tenant may
+    be well past its ceiling — and a resume goes on to run the approved tool and
+    then call the model again. The hold the paused turn took was released when its
+    generator ended at the pause, so a resume also takes its own, and N paused
+    turns resuming at once are visible to each other. A refused resume leaves the
+    thread paused (the caller can cancel it: `cancel_run` is never gated, since it
+    gives the model no turn); it does not discard the pending action.
+
+    `admitted=True` skips the check for a resume that is a step of a request which
+    already passed it — `astream_events_turn_unattended`'s decline loop. Refusing
+    there would strand the conversation at its pause.
+    """
+    if not admitted and await runtime_module._tenant_over_daily_budget(ctx):
+        metrics.agent_requests_total.labels(outcome="rejected").inc()
+        envelope = runtime_module._tenant_budget_envelope()
+        yield {"type": "error", "content": envelope.message, **envelope.to_dict()}
+        return
+    budget_hold = await runtime_module._reserve_turn_budget(ctx)
+    try:
+        graph = await runtime_module.init_graph_async()
+        error = await resumability_error_async(graph, {"configurable": {"thread_id": thread_id}})
+        if error:
+            yield {"type": "error", "content": error}
+            yield {"type": "done"}
+            return
+
+        trace, callbacks = _open_trace(
+            "chat-turn-stream-resume", thread_id, f"resume(approved={approved})"
+        )
+        cfg = {
+            "configurable": {"thread_id": thread_id, "ctx": ctx},
+            "callbacks": callbacks,
+            "recursion_limit": runtime_module.RECURSION_LIMIT,
+        }
+        async for event in _run_graph_stream(
+            graph, Command(resume=approved), cfg, trace, cancel_check=cancel_check
+        ):
+            yield event
+    finally:
+        _release_turn_budget_in_background(ctx, budget_hold)
 
 
 async def astream_events_continue_turn(thread_id: str, ctx: SecurityCtx, cancel_check=None):
@@ -813,11 +842,28 @@ async def astream_events_continue_turn(thread_id: str, ctx: SecurityCtx, cancel_
     closes that gap structurally rather than by scanning for which tools
     are dangerous to repeat.
 
-    No budget re-check/re-reservation and no `_ensure_seeded_async`/
-    `_upsert_session` here, deliberately — same posture as
-    `astream_events_resume`: this thread is already mid-turn, not
-    starting a new one.
+    No `_ensure_seeded_async`/`_upsert_session` here, deliberately: this thread
+    is already mid-turn, not starting a new one.
+
+    The allowance is NOT re-checked here, unlike `astream_events_resume`
+    (spec 008 A6): this is a retry of work that was already admitted, and
+    refusing it could strand a turn that already ran a mutating tool — the
+    exact state this path exists to finish rather than abandon. The overshoot
+    that costs is bounded by that one turn's own `MAX_COST_USD_PER_TURN`. What
+    it does take is a hold: the crashed worker's was lost with it, so without
+    one this turn's remaining spend is invisible to its siblings' checks.
     """
+    budget_hold = await runtime_module._reserve_turn_budget(ctx)
+    try:
+        async for event in _continue_turn_events(thread_id, ctx, cancel_check):
+            yield event
+    finally:
+        _release_turn_budget_in_background(ctx, budget_hold)
+
+
+async def _continue_turn_events(thread_id: str, ctx: SecurityCtx, cancel_check):
+    """The body of `astream_events_continue_turn`, split out so the hold above
+    wraps every exit path of it with one try/finally."""
     graph = await runtime_module.init_graph_async()
     cfg_probe = {"configurable": {"thread_id": thread_id}}
     state = await graph.aget_state(cfg_probe)
@@ -852,7 +898,9 @@ async def cancel_run(thread_id: str, ctx: SecurityCtx) -> bool:
     `CANCEL_SENTINEL` — a third outcome distinct from True/False:
     `human_approval` treats it as an abort where the gated action never
     runs and the model never gets a turn to react (a caller-initiated
-    stop, not feedback for another attempt).
+    stop, not feedback for another attempt). Because it spends nothing it is
+    deliberately NOT subject to the tenant allowance: an over-budget tenant must
+    always be able to clear a paused conversation.
 
     Returns `True` if a paused run was cancelled, `False` if there was
     nothing to cancel (a stale/missing checkpoint per

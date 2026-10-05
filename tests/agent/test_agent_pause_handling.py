@@ -63,8 +63,11 @@ class TestAstreamEventsTurnUnattended:
             yield {"type": "token", "content": "hi"}
             yield {"type": "approval_required", "tool_calls": []}
 
-        async def fake_resume(thread_id, approved, ctx):
+        async def fake_resume(thread_id, approved, ctx, *, admitted=False):
             assert approved is False  # auto-DECLINE, never auto-approve
+            # A step of an already-admitted request: re-checking the allowance here could
+            # refuse the decline and leave the conversation paused (spec 008 A6).
+            assert admitted is True
             yield {"type": "done"}
 
         monkeypatch.setattr(stream_module, "astream_events_turn", fake_turn)
