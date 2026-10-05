@@ -349,7 +349,7 @@ class Settings(BaseSettings):
 
     # Comma-separated CORS allowed origins, or "*" (default — fine for a
     # local demo; the built-in web UI is same-origin and never needs CORS).
-    # A real multi-origin deployment narrows this (see .env.prod.example).
+    # A real multi-origin deployment narrows this (see deploy/env/prod.env.example).
     cors_allowed_origins: str = "*"
 
     # POST /ingest/upload's per-file cap, enforced before any MinIO write —

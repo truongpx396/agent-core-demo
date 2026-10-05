@@ -4,7 +4,7 @@
 # stack — no Ollama (litellm-config.prod.yaml points at a real hosted
 # OpenAI-compatible endpoint instead), no Langfuse/open-webui, no
 # self-hosted MinIO (object storage instead points at DigitalOcean Spaces,
-# S3-compatible — see MINIO_* in .env.prod.example; the `minio` Python
+# S3-compatible — see MINIO_* in deploy/env/prod.env.example; the `minio` Python
 # client this app already uses talks to any S3-compatible endpoint, not
 # just the literal MinIO server). Fronted by Caddy for TLS.
 #
@@ -24,7 +24,7 @@
 # never `build:`, so the droplet only ever pulls layers, it never compiles
 # onnxruntime's dependency chain itself. The droplet's own
 # /opt/agent-core-demo/.env is created once by hand (copy
-# .env.prod.example, fill in real secrets) and never touched by CI; see
+# deploy/env/prod.env.example, fill in real secrets) and never touched by CI; see
 # infra/README.md's first-time-setup section.
 name: agent-core-demo
 
@@ -162,7 +162,7 @@ services:
     # dependency chain on every deploy would be slow and compete with the
     # very services this box needs CPU for; ML_IMAGE/IMAGE_TAG are set in
     # .env (stable per-repo) and by the deploy workflow (per-deploy sha)
-    # respectively — see .env.prod.example.
+    # respectively — see deploy/env/prod.env.example.
     image: ${ML_IMAGE}:${IMAGE_TAG:-latest}
     restart: unless-stopped
     cpus: "3"
@@ -275,7 +275,7 @@ services:
   # everything below talks over this compose file's own internal network,
   # and only otel-collector-agent/promtail ever reach off-box (OTLP to
   # OBS_COLLECTOR_ENDPOINT, Loki push to LOKI_PUSH_HOST — both set in this
-  # droplet's own .env, see .env.prod.example), which is why the app
+  # droplet's own .env, see deploy/env/prod.env.example), which is why the app
   # droplet's firewall/cloud-init needed zero new inbound rules for any of
   # this.
   node-exporter:
