@@ -105,8 +105,9 @@ ssh deploy@<observability_reserved_ip>
 sudo mkdir -p /opt/agent-core-observability
 cd /opt/agent-core-observability
 # paste this repo's deploy/env/observability.prod.env.example content into .env and
-# fill in GRAFANA_ADMIN_PASSWORD (and OBS_DOMAIN_NAME if you're pointing a
-# subdomain at it) — see that file's own comments.
+# fill in GRAFANA_ADMIN_PASSWORD and ALERTMANAGER_SLACK_WEBHOOK_URL (REQUIRED: the stack
+# refuses to start without it, since without a receiver no alert is ever delivered), and
+# OBS_DOMAIN_NAME if you're pointing a subdomain at it — see that file's own comments.
 nano .env
 chmod 600 .env
 ```

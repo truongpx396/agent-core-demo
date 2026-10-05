@@ -324,7 +324,7 @@ that nothing in the app depends on:
 |---|---|
 | otel-collector | Receives every process's OTLP push; one Prometheus scrape target (`:8889`) |
 | Prometheus | Scrapes the collector, Qdrant, LiteLLM, and the Postgres/Redis exporters |
-| Alertmanager | Routes [`alerts.yml`](observability/prometheus/alerts.yml): error rate, p95 latency, tool errors, tenant budget, moderation and rate-limit spikes, degradation, checkpoint issues, unreachable workers. **No notification channel is wired**; add a receiver to page someone |
+| Alertmanager | Routes [`alerts.yml`](observability/prometheus/alerts.yml): error rate, p95 latency, tool errors, tenant budget, moderation and rate-limit spikes, degradation, checkpoint issues, unreachable workers. Locally **no notification channel is wired** (alerts show in the UI only). Production mounts `alertmanager.prod.yml` (Slack, severity-routed) and **refuses to start** without `ALERTMANAGER_SLACK_WEBHOOK_URL`, so a deployment can't be quietly alert-deaf; add a receiver there to page someone |
 | Loki + Promtail | Ship the app containers' JSON logs |
 | Grafana | Two provisioned dashboards, **Agent Core Overview** and **Agent Core Infra & Logs** |
 

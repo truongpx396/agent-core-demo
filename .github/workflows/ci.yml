@@ -104,6 +104,22 @@ jobs:
       - run: pip install ruff==0.16.4
       - run: ruff check .
 
+  # The production Alertmanager config is validated by Alertmanager itself, not just parsed:
+  # tests/core/test_alertmanager_config.py checks the structure (a receiver that actually
+  # notifies, a secret file the compose writes), but only `amtool` knows whether the config
+  # loads — and a config that fails to load is an Alertmanager that never starts (spec 008 A7).
+  alertmanager-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: amtool check-config on the production config
+        run: |
+          printf '%s' 'https://hooks.slack.com/services/T000/B000/XXXX' > "$RUNNER_TEMP/slack_webhook_url"
+          docker run --rm --entrypoint amtool \
+            -v "$PWD/observability/alertmanager/alertmanager.prod.yml:/etc/alertmanager/alertmanager.yml:ro" \
+            -v "$RUNNER_TEMP/slack_webhook_url:/tmp/slack_webhook_url:ro" \
+            prom/alertmanager:latest check-config /etc/alertmanager/alertmanager.yml
+
   typecheck:
     runs-on: ubuntu-latest
     steps:
