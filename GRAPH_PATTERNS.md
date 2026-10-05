@@ -1,562 +1,435 @@
-# Enhanced LangGraph Patterns
+# LangGraph patterns
 
-## Why This Matters vs. Basic "LLM + Tools"
+Fifty patterns the agent in `app/agent/` applies, each with the bug or gotcha that motivated it. Numbers
+are stable: code and tests cite them ("pattern 43"). **Bug** marks a real defect that was found and fixed;
+**Gap** marks something disclosed and left open.
 
-This graph shows **realistic patterns** you'll use in production LangGraph agents:
+| Concern | Patterns |
+|---|---|
+| Agent loop | 1–7, 9, 10, 34, 35, 39 |
+| Approval and governance | 8, 15, 36 |
+| Tenant security | 12, 17, 25, 30, 32 |
+| Retrieval, memory, caching | 2, 13, 18–20, 22, 24, 33, 41 |
+| Tools and data | 21, 27, 28, 31, 45, 46, 50 |
+| Reliability and scaling | 16, 43, 49, and [exactly-once](#extending-further) |
+| Observability and cost | 11, 14, 26, 37, 38 |
+| Interfaces and extensibility | 23, 29, 42, 44, 47 |
+| Quality gates | 40, 48 |
 
-### 1. **Input Validation with a Real Exit (`validate_input` + `route_after_validation` + `reject_input`)**
-Guard early and actually terminate the invalid path instead of falling through. Routing lives in a separate conditional-edge function (`route_after_validation`), which sends bad input to `reject_input` (a dedicated node returning an `AIMessage` — the *system* speaking, not the user) and ends at `END`; valid input proceeds to `retrieve_context`.
-- **Real-world**: empty strings, format checks, permissions, rate-limiting — with an actual short-circuit.
+## Patterns
 
-### 2. **Context Enrichment (Node: `retrieve_context`)**
-Pre-fetch and prepare context *before* the LLM reasons (RAG), reducing tool calls and improving accuracy. `agent` appends retrieved context as a `SystemMessage` right before invoking the LLM — the base `SYSTEM_PROMPT` is seeded once per thread (`app/agent/runtime.py::_ensure_seeded_async`), so `agent()` only adds per-turn context on top.
+### 1. Input validation with a real exit
+`validate_input` stamps state; the conditional edge `route_after_validation` sends bad input to `reject_input` (an `AIMessage`: the system speaking, not the user) and on to `END`. Valid input continues to `compact_history`.
+- **Use when:** always. It costs nothing and catches most bad cases.
 
-### 3. **State Tracking (State fields: `iterations`, `context`)**
-Flow control lives explicitly in state, enabling loop limits, retries, and conditional routing.
+### 2. Context enrichment
+`retrieve_context` pre-fetches before the LLM reasons. `agent` appends the result as a `SystemMessage` just before the call; the base `SYSTEM_PROMPT` is seeded once per thread (`runtime.py::_ensure_seeded_async`).
+- **Use when:** you have a knowledge base (Qdrant, a DB, an API).
 
-### 4. **Conditional Routing (Edge fn: `should_continue`)**
-An *edge function*, not a node — never appears in the graph's node list, just decides where execution goes after `agent`. Not every query needs tools, not every tool call succeeds.
+### 3. State tracking
+Flow control lives in explicit state (`iterations`, `context`, …), which is what makes loop limits, retries and conditional routing possible.
 
-### 5. **Output Quality Gate with a Real Retry (`check_output` + `route_after_check` + `retry_output`)**
-Validate the final answer and act on it, not just pass through to `END`. `route_after_check` inspects the last message; if suspiciously short, routes to `retry_output`, which appends a corrective `HumanMessage` and loops back to `agent`. `MAX_ITERATIONS` still bounds total retries.
+### 4. Conditional routing
+`should_continue` is an edge function, not a node: it decides where execution goes after `agent` (tools, approval, budget exit, or done).
 
-### 6. **Loop Control (via `MAX_ITERATIONS`)**
-Shared safety net for both the tool-calling loop and the output-retry loop.
+### 5. Output gate with a real retry
+`check_output` + `route_after_check` + `retry_output`. A suspiciously short answer routes to `retry_output`, which appends a corrective `HumanMessage` and loops to `agent`. `MAX_ITERATIONS` bounds the retries. Pattern 50 adds two retry reasons from live findings.
 
-### 7. **Error Recovery (`ToolNode(TOOLS, handle_tool_errors=_friendly_tool_error)`)**
-A tool exception becomes a `ToolMessage` the agent sees next turn, not an unhandled exception that kills the run. `handle_tool_errors` turns the exception into a short string so the agent can react instead of crashing the graph.
-- **Three failure modes, three different policies**: a mid-turn tool failure recovers via the mechanism above; `retrieve_context` failing *degrades* to no pre-fetched context (enrichment, not required — the LLM still has `search_docs`); the `agent` node's own LLM call gets an automatic *retry* (`AGENT_RETRY_POLICY`) since a failed LLM call has nothing to fall back to. LangGraph's default `retry_on` already excludes programming errors, so retry can't mask a real bug.
+### 6. Loop control
+`MAX_ITERATIONS` is the shared cap for both the tool loop and the output-retry loop.
 
-### 8. **Human-in-the-Loop (`human_approval` + `route_after_approval`, gated by `require_approval` — and, since `add_note`, also mandatory)**
-Pause the graph before running tool calls via LangGraph's `interrupt()`. `interrupt()` suspends `human_approval` and persists state via the checkpointer; a caller resumes with `graph.invoke(Command(resume=True/False), config)`. **Two independent routes reach it**: the opt-in `require_approval` flag, and — since pattern 15 — a **mandatory** route for any non-`read_only` tool call. See `app/channels/chat.py`'s `--hitl` mode (`make chat-hitl`) for a runnable example.
-- **Gotcha**: a rejected approval still needs a matching `ToolMessage` per pending `tool_call`, or the next LLM call fails — `human_approval` synthesizes rejection `ToolMessage`s before routing back to `agent`.
-- **Unattended callers**: not every caller can answer an approval prompt. `astream_events_turn_unattended` (pattern 43) auto-declines (`Command(resume=False)`) for callers with no human on the other end (`app/channels/telegram.py`, fire-and-forget queue jobs) — see `agent_unattended_pause_total`.
-  - **A decline loop, not one decline** (bug, fixed): after the first decline the model can re-request the same gated write, which pauses the conversation again. The first version declined once and forwarded the second `approval_required`, leaving the checkpoint paused — and an unattended channel can never resolve a pause, so the user got an empty reply to their message and every later message was refused with "pending approval". `astream_events_turn_unattended` now declines in a loop bounded by `UNATTENDED_MAX_DECLINE_ROUNDS` (default 3, each decline counted) and, if the model is still asking, **cancels** the run (`cancel_run`) and replies with one explicit message that the action needs a person's approval and wasn't done. Exactly one terminal event, never a dangling pause, never a write. The existing tests mocked `astream_events_turn`/`astream_events_resume`, so none drove a real graph through a second pause (`tests/agent/test_agent_pause_handling.py::TestUnattendedSecondPause` does).
-- **Real-world**: approval gates before sending email, writing to a DB, spending money, or any other side-effecting call.
+### 7. Error recovery
+`ToolNode(handle_tool_errors=_friendly_tool_error)` turns a tool exception into a `ToolMessage` the agent sees next turn instead of killing the run. Three failure modes, three policies:
+- A tool fails mid-turn: recover via that message.
+- `retrieve_context` fails: **degrade** to no pre-fetch (the LLM still has `search_docs`).
+- The `agent` node's LLM call fails: automatic **retry** (`AGENT_RETRY_POLICY`). LangGraph's default `retry_on` excludes programming errors, so retry can't mask a bug.
 
-### 9. **Parallel Tool Execution (built into `ToolNode`, no extra code)**
-When one LLM turn requests multiple tool calls, `ToolNode` already runs them concurrently — no separate fan-out/fan-in node needed for "multiple tool calls in one AI turn" (LangGraph's `Send` API is for the different case of fanning one node over dynamic *graph* branches).
+### 8. Human-in-the-loop
+`human_approval` calls `interrupt()`, which suspends the node and persists state through the checkpointer; a caller resumes with `Command(resume=True/False)`. Two routes reach it: the opt-in `require_approval` flag, and the mandatory route for any non-`read_only` call (15). `make chat-hitl` is a runnable example.
+- **Gotcha:** a rejection still needs a matching `ToolMessage` per pending `tool_call`, or the next LLM call fails. `human_approval` synthesizes them.
+- **Unattended callers** (`astream_events_turn_unattended`: Telegram, fire-and-forget jobs) auto-decline with `Command(resume=False)`.
+- **Bug:** it declined only once, so a model that re-requested the gated write left the checkpoint paused: an empty reply, then every later message refused as "pending approval". It now declines up to `UNATTENDED_MAX_DECLINE_ROUNDS` (3), then cancels the run and sends one explicit "needs a person's approval" message. Test: `test_agent_pause_handling.py::TestUnattendedSecondPause` (earlier tests mocked the stream and never drove a second pause).
+- **Use when:** an action sends, writes, spends or deletes.
 
-### 10. **Multi-Layer Safety Budgets**
-`MAX_ITERATIONS` alone isn't a safety net, it's one layer. Each budget catches a failure mode the others can't:
+### 9. Parallel tool execution
+`ToolNode` already runs several tool calls from one LLM turn concurrently. No fan-out node is needed (LangGraph's `Send` is for fanning one node over dynamic graph branches, a different case).
 
-| Layer | Where | Catches |
-|-------|-------|---------|
-| `MAX_ITERATIONS` | `should_continue` | Model stuck calling tools forever |
-| `MAX_TOOL_CALLS_PER_TURN` | `should_continue` → `too_many_tool_calls` | One turn fanning into dozens of tool calls at once |
-| `MAX_TOKENS_PER_TURN` | `should_continue`, tracked in `agent()` | A single turn burning unbounded spend even with few iterations |
-| `HISTORY_TOKEN_CEILING`/`FLOOR` (`_trim_history`/`compact_history`) | Every turn, before moderation/retrieval | A long thread's `messages` list growing unbounded (pattern 13, 41) |
-| `MAX_COST_USD_PER_TURN` | `should_continue`, `agent()` | Same token count, different $ across model tiers (pattern 35) |
-| `MAX_REPEATED_ACTIONS` | `should_continue` | Model stuck retrying the SAME call with the SAME args (pattern 34) |
-| `TOOL_TIMEOUT_SECONDS` | Worker-thread `.result(timeout=...)` per tool call | A hung Qdrant/embedding call, or a pathological input |
-| `REQUEST_TIMEOUT_SECONDS` | Wraps the whole turn | Several slow-but-not-hung steps adding up |
-| `RECURSION_LIMIT` = `MAX_ITERATIONS * 2 + 15` (`app/agent/runtime.py`) | LangGraph's own graph-step cap, derived from `MAX_ITERATIONS` so it can't sit below what a legitimate turn needs (pattern 46) | A routing bug causing a node cycle |
+### 10. Layered safety budgets
+`MAX_ITERATIONS` alone is one layer. Each budget below catches a failure the others can't.
 
-- **Why layered**: each bounds a different thing (loop count, fan-out width, spend, one call's latency, the whole turn's latency, graph structure) — one check can't cover all of them.
-- **Gotcha fixed**: `iterations`/`total_tokens` persist across the whole checkpointed thread unless reset — `validate_input` resets both to `0` every turn (but not on HITL resume).
-- **A reset only counts if the field's reducer lets it happen** (found the hard way): `validate_input` returning a reset value is not the same as the persisted state ending up reset. `subagent_spend` was declared with `operator.add`, so its "reset to `[]`" added nothing and earlier turns' delegated spend silently kept counting against later turns' token/cost ceilings; `cancelled`/`approved` were never in the reset at all (pattern 36). The unit test for the reset asserted `validate_input`'s *return value*, which cannot see a reducer — assert on the state read back from the compiled graph across two turns (`tests/agent/test_safety_budgets.py::TestPerTurnResetThroughTheGraph`).
-- **Tool-call budget mechanics**: rejecting an over-large batch reuses the same `ToolMessage`-per-pending-call shape `human_approval` needs (`_reject_tool_calls`), then loops back to `agent`.
+| Budget | Where | Catches |
+|---|---|---|
+| `MAX_ITERATIONS` | `should_continue` | Model stuck calling tools |
+| `MAX_TOOL_CALLS_PER_TURN` | `should_continue` | One turn fanning into dozens of calls |
+| `MAX_TOKENS_PER_TURN` | `should_continue`, `agent()` | Unbounded spend over few iterations |
+| `HISTORY_TOKEN_CEILING`/`FLOOR` | `compact_history` | History growing without bound (13, 41) |
+| `MAX_COST_USD_PER_TURN` | `should_continue`, `agent()` | Same tokens, different dollars by model tier (35) |
+| `MAX_REPEATED_ACTIONS` | `should_continue` | The same call with the same args, repeatedly (34) |
+| `TOOL_TIMEOUT_SECONDS` | Per tool call | A hung Qdrant or embedding call |
+| `REQUEST_TIMEOUT_SECONDS` | Whole turn | Many slow-but-not-hung steps |
+| `RECURSION_LIMIT` = `MAX_ITERATIONS * 2 + 15` | LangGraph step cap (`runtime.py`) | A routing bug causing a node cycle |
 
-### 11. **Custom Metrics (`app/core/metrics.py`, `app/core/telemetry.py`, pushed via OTLP)**
-OpenTelemetry counters/histograms for the aggregate view Langfuse's per-call tracing doesn't give ("how often, across everyone"). `app/core/metrics.py` wraps the real OTel API in a small prometheus_client-shaped surface (`.labels(...).inc()`), so no call site elsewhere had to change.
-- **Push, not pull**: `configure_telemetry()` (called at real process startup, never at import time — see its own docstring) pushes to a shared otel-collector, giving ONE aggregated scrape target across the API and every independently-scaled worker replica — a pull-based `/metrics` on the API alone could never see a worker's metrics.
-- **Two wiring mechanisms**: `MetricsCallbackHandler` (generic LangChain callback hooks) for tool-call counts/errors with zero node instrumentation; direct `.inc()` calls inside nodes that can fire more than once per turn or need to record a decision/degradation a generic callback can't distinguish.
-- **A scheduled job must flush before it exits** (bug, fixed): `scripts/ops_digest.py`, `followup_sweep.py`, `tool_call_dedup_sweep.py` and `ops_investigate.py` configured logging and nothing else, so every counter they incremented died with the process — and the exporter pushes on a 15 s timer, so a job that finishes sooner exports nothing even once telemetry is configured. This was not abstract: `ops_digest` posts to the team channel, `TeamChannelNotifyFailing` alerts on `agent_team_channel_notify_total{outcome="error"}`, and a failing digest post incremented that in a process that never exported it, so the alert could not fire for the one caller that runs unattended on a schedule. Each script now has a `main()` that runs inside `app/core/job_runtime.py::scheduled_job(service_name)` (logging, telemetry, then `shutdown_telemetry()` in a `finally`, so a failing job is flushed too), and `shutdown_telemetry` flushes then stops the provider, once, never raising — an unreachable collector must not turn a finished job into a failed one. Verified against a real OTLP exporter and a local endpoint: a short-lived provider sends nothing until it is flushed, and its counter arrives once it is. **Not covered**: the long-lived processes (API, workers, Telegram) still do not flush at graceful shutdown, so up to one export interval of their last metrics can be lost; and a job killed outright (SIGKILL, the OOM killer) exports nothing.
-- **Explicit histogram buckets** (`View`s on the `MeterProvider`), not OTel SDK defaults — verified the defaults (tuned for ms-scale web requests) put every real 1-90s turn in one bucket.
-- **One Langfuse client per process (`app/core/tracing.py`), not one per turn** (bug, fixed): `_open_trace` built `Langfuse()` for every turn and the stream's `finally` built another just to call `.flush()` on it. Every client starts three background threads that nothing stops, keys set or not (measured on the installed SDK, 2.60.10), so a worker gained six threads per turn and never gave one back — 20 trace opens added 60 threads. The flush was also wrong rather than merely wasteful: `Langfuse.flush()` joins *that instance's own* queue, so flushing a fresh client flushed an empty queue and never the trace's events, and a correct flush blocks until the queue drains, so it cannot run on the event loop either. Now there is one lazily-created shared client; the SDK's own background consumer sends events as they arrive, and the client is flushed and shut down once at process exit. Tracing stays optional: if the SDK or client is unavailable the turn runs untraced, and the failure is remembered rather than retried every turn. **Disclosed trade-off**: with no per-turn flush, a process killed without running `atexit` (SIGKILL, or SIGTERM with no handler) can lose the last fraction of a second of trace events; the old per-turn flush never prevented that, since it flushed the wrong client.
-- **Real-world**: `docker-compose.observability.yml` (`make obs-up`) — Prometheus, Grafana, Loki, Alertmanager, wired up, not hypothetical.
+- **Bug:** `iterations` and `total_tokens` persist across a thread, so `validate_input` resets them each turn (not on a resume).
+- **Bug:** a reset only works if the field's reducer allows it. `subagent_spend` used `operator.add`, so "reset to `[]`" did nothing and old spend counted against later turns; `cancelled`/`approved` weren't reset at all (36). The test asserted the return value, which can't see a reducer. Assert on state read back across two turns (`test_safety_budgets.py::TestPerTurnResetThroughTheGraph`).
+- **Use when:** any agent talking to a real model and tools. The pattern (several narrow budgets) matters more than the numbers.
 
-### 12. **Untrusted Content Framing (`<retrieved_document>` delimiters + a `SYSTEM_PROMPT` rule)**
-Retrieved context is wrapped in `<retrieved_document>` delimiters, and `SYSTEM_PROMPT` states once that delimited content is data, not instructions — a retrieved document is a textbook prompt-injection vector. The fix is structural: delimited text is never eligible to be read as an instruction in the first place, so the model doesn't have to notice an injection attempt.
-- **One function frames everything from outside (`app/core/untrusted.py::frame_untrusted`)**: the graph's pre-fetch, the three tools that return a crawled page (`fetch_external_reference`, `check_vendor_status_page`, `enrich_lead_from_website`'s summary) and `package_lead_brief`'s replay of stored CRM notes. **Two real gaps, both found late and fixed**: the `SYSTEM_PROMPT` rule says content "returned by a tool call" is wrapped, but only the pre-fetch wrapped anything — the page readers returned raw text, and `enrich_lead_from_website` persisted up to 20,000 characters of it as a CRM note that the read-only (so, un-approved) `package_lead_brief` replayed unframed and uncapped, 59,150 characters after three enrichments, the injected line verbatim each time; and the wrapper wrote text between the tags verbatim, so content containing `</retrieved_document>` closed the frame early. `frame_untrusted` neutralises any tag-shaped sequence inside the text (any case, spacing or attributes — the characters stay visible, they just stop being a tag), the brief's notes are framed as one block and bounded to the newest `BRIEF_NOTES_MAX_CHARS` with the cut stated. Notes are framed at replay, not when stored, so the framing cannot be cut off by a truncation and every note — web-derived or typed by a lead — gets it.
-- **What it does not do**: it marks where untrusted text starts and stops and makes the frame unforgeable from inside; it cannot stop a model that chooses to follow what is in it — that is the approval gate's job (Principle II). Not covered: other model-visible text from outside that is not routed through it (ticket comments a customer wrote, `check_ticket_status`'s notes), and a per-note cap on replay (only the aggregate is bounded).
-- **Real-world**: any RAG pipeline or tool whose output could contain adversarial text — assume it eventually will, and frame accordingly from day one.
+### 11. Custom metrics
+OpenTelemetry counters and histograms (`app/core/metrics.py`, `telemetry.py`) for the "how often, across everyone" view that Langfuse's per-call traces can't give.
+- **Push, not pull:** every process pushes OTLP to one otel-collector, so one scrape target covers the API and all workers. A `/metrics` on the API could never see a worker.
+- **Wiring:** `MetricsCallbackHandler` for tool calls with no node changes; direct `.inc()` where a node decides or degrades. Histogram buckets are explicit: OTel's defaults put every 1–90 s turn in one bucket.
+- **Bug: scheduled jobs exported nothing.** `ops_digest`, `followup_sweep`, `tool_call_dedup_sweep` and `ops_investigate` exited before the 15 s export timer, so counters died with the process, and a failing digest post could never fire `TeamChannelNotifyFailing`. Each now runs in `job_runtime.py::scheduled_job()`, which flushes in a `finally`.
+- **Bug: a Langfuse client per turn.** Each client starts three background threads nothing stops (six per turn), and the flush hit a fresh client's empty queue. Now one shared client per process (`app/core/tracing.py`), flushed once at exit.
+- **Gap:** long-lived processes don't flush on graceful shutdown (up to one export interval lost); a SIGKILL loses unflushed metrics and a fraction of a second of traces.
+- **Use when:** as soon as there is more than one user.
 
-### 13. **Bounded Conversation History (`HISTORY_TOKEN_CEILING`/`FLOOR` / `_trim_history` / `_messages_to_trim`)**
-`messages` is the only `State` field with no cap by construction. `compact_history` (right after `validate_input`) trims it via `RemoveMessage` using an estimated-token-count hysteresis check: no-op at/under `HISTORY_TOKEN_CEILING`; once exceeded, drops OLDEST whole turns until at/under the lower `HISTORY_TOKEN_FLOOR`.
-- **Why hysteresis, not "trim back to N every time"**: trimming to the SAME ceiling every time re-triggers `compact_history`'s own summarization call on nearly every turn once past the threshold, and shifts every token after the cut, invalidating the provider's prompt-prefix cache. A materially lower floor buys several turns of cache-friendly growth before re-triggering.
-- **Why a token estimate, not a turn count**: turns vary wildly in size; the token estimate (`tiktoken`, approximate — no bundled local tokenizer) tracks what actually matters, the model's context window.
-- **Turn-aware, not a raw slice**: a turn is `HumanMessage` through the next `HumanMessage`, so a `tool_call`/`ToolMessage` pair is never split (an orphaned `tool_call` fails the next LLM call, same as the HITL-rejection gotcha in pattern 8). The seeded system prompt and the most recent turn are never dropped.
-- **No longer just discarded**: dropped turns are folded into a cumulative summary — see pattern 41.
-- **Real-world**: any agent whose conversations can run long.
+### 12. Untrusted content framing
+Retrieved text is wrapped in `<retrieved_document>` delimiters, and `SYSTEM_PROMPT` says delimited content is data, not instructions. It's structural, so the model needn't spot an attack. One function does all framing, `app/core/untrusted.py::frame_untrusted`: the pre-fetch, the three page-reading tools, and `package_lead_brief`'s replay of stored CRM notes.
+- **Bug:** only the pre-fetch wrapped anything. Page readers returned raw text, and `enrich_lead_from_website` stored up to 20,000 characters as a CRM note that `package_lead_brief` (read-only, so un-approved) replayed unframed: 59,150 characters after three enrichments. Separately, a page containing `</retrieved_document>` closed the frame early.
+- **Fix:** tag-shaped sequences inside the text are neutralised (still visible, no longer a tag). Notes are framed at replay and bounded to the newest `BRIEF_NOTES_MAX_CHARS`.
+- **Limits:** it can't stop a model that follows what's inside; the approval gate does (Principle II). Not covered: ticket comments, `check_ticket_status` notes, a per-note replay cap.
+- **Use when:** content the model didn't type re-enters the prompt.
 
-### 14. **Node Telemetry (`_instrumented`, structured lifecycle logs)**
-Every node is wrapped, at graph-registration time in `build_graph` (never inside the node itself), by a decorator that logs `node_started` then `node_completed`/`node_failed`/`node_paused`, carrying the node name, a per-turn `run_id`, and (for terminal records) `duration_ms`.
-- **Why**: Langfuse answers "what happened in this run," OTel metrics (pattern 11) answer "how often across everyone" — neither gives a grep-able trail or tells you a node is hung right now. `human_approval`'s `interrupt()` (a `GraphInterrupt`) is a normal pause, not a failure — logged as `node_paused` and re-raised untouched.
-- **Never logged**: message content or the `state` dict — metadata only, so this can't become a second, unscrubbed copy of prompt/document text outside Langfuse.
-- **structlog under the hood**: `configure_logging` wires structlog onto the stdlib root logger — every existing `logger.info(...)` call is unchanged.
-- **Real-world**: Promtail ships every container's JSON logs to Loki (`make obs-up`), queryable in Grafana; `run_id` is the join key across a request's logs and metrics.
+### 13. Bounded conversation history
+`messages` is the one `State` field with no cap by construction. `compact_history` (right after `validate_input`) trims via `RemoveMessage` with an estimated-token hysteresis: no-op at or under `HISTORY_TOKEN_CEILING`; once exceeded, drop the oldest whole turns until at or under the lower `HISTORY_TOKEN_FLOOR`.
+- **Hysteresis, not "trim back to N":** trimming to the same ceiling re-triggers summarization on nearly every turn and shifts every later token, invalidating the provider's prefix cache.
+- **Tokens, not turns:** turns vary wildly; a `tiktoken` estimate (approximate) tracks the context window.
+- **Turn-aware:** a turn runs from a `HumanMessage` to the next, so a `tool_call`/`ToolMessage` pair is never split (an orphan fails the next LLM call). The system prompt and latest turn are never dropped. Dropped turns are folded into a summary (41).
 
-### 15. **Tool Capability Declarations (`app/agent/tools.py::TOOL_CAPABILITIES`) — a Mandatory Gate, Not Just an Opt-In One**
-Every tool declares `read_only`, `mutating`, or `outward` in `TOOL_CAPABILITIES`. `should_continue` checks it on every pending batch: any non-`read_only` call routes through `human_approval` **unconditionally**, regardless of `require_approval`. A tool missing from the mapping defaults to `outward` — fail closed.
-- **Why mandatory, not opt-in**: a RAG agent already carries untrusted-content exposure on nearly every turn (pattern 12); adding write capability on top is one gamble away from an untrusted document steering a real write. There is no flag that turns this off.
-- **`add_note` is the one `mutating` tool** and a worked example of a companion principle: a write tool is a fixed, typed, closed-vocabulary operation, never a query the model constructs — its point id is always a fresh UUID, never caller-supplied, so it can only append, never target/overwrite by guessing an id.
-- **Real-world**: any agent with a tool that sends, spends, deletes, or writes.
+### 14. Node telemetry
+`build_graph` wraps every node (never inside the node) in `_instrumented`, which logs `node_started` then `node_completed`/`node_failed`/`node_paused` with the node name, a per-turn `run_id` and `duration_ms`. `human_approval`'s `GraphInterrupt` is a normal pause, logged as `node_paused` and re-raised untouched.
+- **Never logged:** message content or the `state` dict, so this can't become an unscrubbed second copy of prompt text outside Langfuse.
+- `run_id` is the join key across a request's logs and metrics; Promtail ships the JSON to Loki.
 
-### 16. **Durable Checkpointing + Cross-Restart Compatibility (`init_graph_async`, `STATE_SCHEMA_VERSION`, `resumability_error_async`)**
-`build_graph()` defaults to `MemorySaver` for tests; the shared runtime singleton uses `AsyncPostgresSaver` (own database in the stack's Postgres) so a paused `human_approval` survives a restart/redeploy — and so several processes (API + worker replicas) can share the same checkpoint store, which a single SQLite file's writer-locking can't do safely.
-- **Why every graph caller is async**: `AsyncPostgresSaver`'s lock is bound to whichever event loop created it; `init_graph_async()` opens it on the calling loop, so every process must await it on that same loop.
-- **`STATE_SCHEMA_VERSION` + `graph_version`**: every turn stamps the schema version (bumped only on a breaking `State`/topology change) and a build id into state, so a checkpoint records which build wrote it.
-- **`resumability_error_async`**: called before every resume. `checkpoint_lost` (no paused run) vs. `checkpoint_incompatible` (schema mismatch) — a differing build SHA alone is NOT an error, since ordinary deploys change it constantly.
-- **Real-world**: any agent where a paused HITL gate needs to actually survive a deploy.
+### 15. Tool capability declarations: a mandatory gate
+Every tool declares `read_only`, `mutating` or `outward` in `TOOL_CAPABILITIES` (`app/agent/tools.py`). `should_continue` checks every pending batch: any non-`read_only` call routes through `human_approval` **unconditionally**. A tool missing from the mapping defaults to `outward` (fail closed). No flag turns this off.
+- **Why mandatory:** a RAG agent already carries untrusted content on nearly every turn (12); adding write capability is one gamble from a document steering a real write.
+- **`add_note` is the worked example** of the companion rule: a write tool is a fixed, typed, closed-vocabulary operation, and its point id is derived by code (a fresh UUID, later `tool_call_id`-derived, see Extending Further), never supplied by the model, so it can only append.
+- **Use when:** the moment a second tool exists. Retrofitting after several writers accumulate means auditing them all at once.
 
-### 17. **Multi-Tenant Isolation (`SecurityCtx` + `Policy`, enforced as a Qdrant pre-filter)**
-A `SecurityCtx` (`tenant`, `principal`, `claims`) is stamped once by `validate_input` from `config["configurable"]["ctx"]` — never from message content. `Policy.permit()` decides if an action may happen at all; `Policy.lower(ctx, target)` turns ctx into a Qdrant `Filter` applied **inside the query**, never as a Python post-filter.
-- **Why pre-filter, never post-filter**: a buggy post-filter and a correct one look identical until a cross-tenant leak shows up on an untested query. A store-native predicate fails loudly instead.
-- **Two isolation axes**: `documents` scopes to `tenant`; `memories` additionally scopes to `owner` — both share one collection, distinguished by a `kind` field that's itself part of the filter.
-- **Fail closed, checked first**: `route_after_validation` checks `valid_ctx` before the empty-input check; every ctx-aware tool repeats the check independently (defense in depth, since a tool call is a different code path).
-- **Not authentication**: `get_ctx` reads trusted headers (`X-Tenant-Id`/`X-Principal-Id`) — nothing verifies a password or JWT. A real auth gateway setting these headers is a deployment change, not a rewrite.
-- **A conversation is an isolation boundary too** (bug, fixed): a thread's state — checkpoint, cancel flag, thread lock, submission-dedup key — is keyed by the client-supplied `thread_id` alone, and only the two `GET` session endpoints checked who owned it. Send, resume and cancel did not, so whoever named an id continued that conversation: read its history through the model, approve or reject its pending action (which then ran under the *resumer's* identity), or stop it. The submission-dedup key had no caller in it either, so an identical (thread, message) from another caller came back with the owner's `request_id` and read the owner's reply off their stream. Now `app/api/main.py::_require_conversation_owner` runs first on all three: a send atomically claims a new id for its first sender (`sessions.claim_session`, `INSERT … ON CONFLICT DO NOTHING`, so two racers cannot both win) and verifies an existing one; resume and cancel verify without claiming; every refusal is the same 404 the reads give. It sits *before* anything is enqueued or written because `/chat/cancel` sets the Redis flag itself. Unlike `upsert_session` it fails closed — a store error is a 500, never a default-allow.
-- **What that does not cover**: the check is at the API; the worker does not repeat it, so anything that can publish to Redis directly is outside it. `telegram:<chat id>` ids are reserved (HTTP can continue one it owns, never claim a fresh one — otherwise a squatter's history becomes the real user's), but the Telegram channel itself still shares one thread across every user in a group chat. A conversation with no `chat_sessions` row (an old one whose best-effort write failed) can no longer be resumed over HTTP.
-- **Real-world**: any agent serving more than one customer/workspace against a shared store.
+### 16. Durable checkpointing and cross-restart compatibility
+`build_graph()` defaults to `MemorySaver` for tests; the runtime singleton uses `AsyncPostgresSaver` (its own database) so a paused approval survives a restart and several processes (API plus worker replicas) share one checkpoint store, which a SQLite file's writer lock can't do safely.
+- **Async everywhere:** the saver's lock binds to the event loop that created it, so every process awaits `init_graph_async()` on its own loop.
+- **`STATE_SCHEMA_VERSION` + `graph_version`:** each turn stamps a schema version (bumped only on a breaking `State`/topology change) and a build id. `resumability_error_async` runs before every resume and distinguishes `checkpoint_lost` (no paused run) from `checkpoint_incompatible` (schema mismatch). A differing build SHA alone is not an error: deploys change it constantly.
+- **Use when:** a HITL gate must survive a deploy.
 
-### 18. **Cross-Session Memory (`remember` + automatic recall, re-filtered every read)**
-`remember` is the only way a memory gets written — declared `mutating`, gated like `add_note`. Recall is automatic (folded into retrieval), on the model's initiative to *write* but never its initiative to *read*.
-- **Why writing is opt-in, reading isn't**: whatever writes memory decides what gets replayed into every future prompt — an autonomous write would be a privileged side channel. Nothing here extracts facts from turn text on its own.
-- **Re-filtered every call**: `recall_memories` applies `Policy.lower` fresh each time, scoped to current tenant AND owner — never cached.
-- **Framed like a retrieved document, but more so**: a poisoned document affects one answer; a poisoned memory replays on every later turn until removed.
-- **Deliberately not built**: an LLM-facing delete/forget tool — `delete_by_filter` is a support function for a real data-subject-request script, not a model-invokable tool.
-- **Real-world**: any agent that should remember a stated preference across sessions.
+### 17. Multi-tenant isolation
+A `SecurityCtx` (`tenant`, `principal`, `claims`) is stamped once by `validate_input` from `config["configurable"]["ctx"]`, never from message content. `Policy.lower(ctx, target)` becomes a Qdrant filter applied **inside the query**, never a Python post-filter: a buggy post-filter looks identical to a correct one until a cross-tenant leak.
+- `documents` scope to `tenant`; `memories` also to `owner`, in one collection told apart by a `kind` field that is part of the filter.
+- **Fail closed:** `route_after_validation` checks ctx first, and every ctx-aware tool re-checks it (a different code path).
+- **Not authentication:** `get_ctx` trusts `X-Tenant-Id`/`X-Principal-Id`; a real auth gateway sets them.
+- **Bug: conversations weren't isolated.** Thread state (checkpoint, cancel flag, lock, dedup key) is keyed by `thread_id` alone and only the `GET` endpoints checked ownership. Anyone naming an id could read it through the model, approve its pending action under their own identity, or cancel it. `_require_conversation_owner` now runs first on send, resume and cancel: a send atomically claims a new id (`claim_session`, `INSERT … ON CONFLICT DO NOTHING`) or verifies an existing one, and every refusal is the 404 an unknown id gets. It fails closed.
+- **Gap:** the check is at the API; anything publishing to Redis directly bypasses it. `telegram:<chat id>` ids are reserved, but Telegram still shares one thread across a group chat. A conversation with no `chat_sessions` row can't be resumed over HTTP.
+- **Use when:** more than one customer or workspace shares a deployment. Do this first.
 
-### 19. **Prompt-Cache Stability (`SYSTEM_PROMPT` stays ctx-free by construction)**
-`SYSTEM_PROMPT` is a plain constant — no principal, tenant, or timestamp ever interpolated in. `SecurityCtx` flows through `config`/`state["ctx"]` only, never into the message list sent to the LLM.
-- **Why this catches the classic cache-buster**: a prefix embedding `ctx["principal"]` looks perfectly stable *within one conversation* — the bug only shows up once a second principal's traffic shares the manifest and gets a differently-priced prefix. `tests/agent/test_prompt_cache_stability.py` asserts byte-identical rendering across two different ctx values, plus an independent leak sweep.
-- **Real-world**: any agent behind a provider that discounts a stable prompt prefix (Anthropic, OpenAI) — the discount silently disappears the moment something request-specific sneaks into the cached region.
+### 18. Cross-session memory
+`remember` is the only way a memory is written (`mutating`, gated like `add_note`). Recall is automatic, folded into retrieval: the model decides to *write*, never to *read*.
+- **Why writing is opt-in:** whatever writes memory decides what replays into every future prompt, so an autonomous write would be a privileged side channel.
+- **Re-filtered every call:** `recall_memories` applies `Policy.lower` fresh, scoped to tenant **and** owner, never cached.
+- **Framed like a retrieved document, and more so:** a poisoned document affects one answer; a poisoned memory replays every turn until removed.
+- **Not built:** an LLM-facing forget tool. `delete_by_filter` supports a data-subject-request script, not the model.
 
-### 20. **Hybrid Retrieval + Cross-Encoder Rerank + Cited Answers (`qdrant_store.py::hybrid_search`, `tools.py::gather_context`, `check_output`)**
-`search_docs`/`recall_memories`/`retrieve_context` run `hybrid_search()`: two parallel Qdrant legs (dense + BM25 sparse via `fastembed`), fused server-side (`FusionQuery(fusion=Fusion.RRF)`), then reranked by a local cross-encoder. Every hit is numbered (`[1]`, `[2]`, ...); `check_output` scans the final answer for the markers it actually contains (`_used_citations`) and writes only those to state — **never trusting the model's own claim about what it cited**.
-- **Two independent degradation layers**: sparse-leg failure falls back to dense-only (`agent_retrieval_degraded_total{stage="sparse"}`); reranker failure returns the RRF-fused order as-is (`stage="rerank"`). Either way the answer is still fully cited.
-- **Why local ONNX models, not an API call**: no network round trip on the retrieval hot path, no extra external dependency.
-- **Why citations are computed, not asked for**: `_used_citations` regexes the actual answer text and intersects with what retrieval actually offered — a hallucinated or forgotten marker both resolve correctly without trusting model self-report.
-- **Real-world**: any RAG system needing a real audit trail, not "the model said it used source 3."
+### 19. Prompt-cache stability
+`SYSTEM_PROMPT` is a plain constant: no principal, tenant or timestamp is ever interpolated. `SecurityCtx` flows through `config`/`state["ctx"]`, never into the messages sent to the LLM. The classic cache-buster, `ctx["principal"]` in the prefix, looks stable within one conversation and only shows once a second principal shares the manifest. `tests/agent/test_prompt_cache_stability.py` asserts byte-identical rendering across two ctx values, plus a leak sweep.
+- **Use when:** more than one principal's traffic shares a deployment behind a provider that discounts a stable prefix.
 
-### 21. **Fixed-Tool Structured Data Access + MCP Exposure (`sql_store.py`, `tools.py::query_employees`, `mcp/server.py`)**
-`query_employees` is a closed, typed query over Postgres — `tenant` (from `SecurityCtx`), `department` (a closed enum), `name_contains` are the only variables; no `execute(sql: str)` escape hatch anywhere. Every query is parameterized and always ANDs `WHERE tenant = %s` — filters can only narrow the tenant scope, never widen it.
-- **Same principle as pattern 15's `add_note`, for reads**: a tool is a fixed, typed, closed-vocabulary operation, never a query the model constructs — the access boundary lives in reviewable code, not a string the model writes.
-- **MCP exposure is a SEPARATE trust boundary**: `mcp/server.py` wraps the same fixed query behind `FastMCP` for external clients — but MCP has no equivalent of `RunnableConfig`, so `tenant`/`principal` are explicit tool arguments here, checked against the same fail-closed `Policy.permit` gate. It does NOT authenticate the MCP caller — a production server would derive identity from the client's own verified auth.
-- **Real-world**: HR/directory lookups, order status, inventory counts — where a text-to-SQL tool would be tempting and exactly wrong.
+### 20. Hybrid retrieval, rerank and cited answers
+`search_docs`/`recall_memories`/`retrieve_context` run `hybrid_search()` (`qdrant_store.py`): two Qdrant legs (dense via LiteLLM, BM25 sparse via in-process `fastembed`) fused server-side with RRF, then reranked by a cross-encoder that runs in the `ml-service` container (it was a measured concurrency bottleneck in-process). Every hit is numbered `[1]`, `[2]`, …; `check_output` scans the final answer for the markers it actually contains (`_used_citations`) and writes only those to state, **never trusting the model's claim about what it cited**.
+- **Two degradation layers:** sparse failure falls back to dense-only (`agent_retrieval_degraded_total{stage="sparse"}`); reranker failure returns the RRF order (`stage="rerank"`). The answer is still fully cited.
+- Citations are computed by intersecting the answer's markers with what retrieval offered, so a hallucinated or forgotten marker resolves correctly.
+- **Use when:** retrieval quality matters and an answer needs an audit trail.
 
-### 22. **Semantic Cache (`app/retrieval/semantic_cache.py`, `check_semantic_cache` + `write_semantic_cache` nodes)**
-`check_semantic_cache` (right after validation, before retrieval) embeds the query and does a cosine-KNN lookup in Redis Stack, scoped to tenant **and** principal. A hit within `SEMANTIC_CACHE_SIMILARITY_THRESHOLD` (0.95) short-circuits straight to a final `AIMessage` — no retrieval, no LLM call — then rejoins at `check_output`. `write_semantic_cache` writes back on a confirmed-final, non-retry turn, unless the turn was itself a cache hit.
-- **Why tenant AND principal**: a cached answer can carry citations into a principal's own memories — the cache must be at least as narrow as the memory filter.
-- **Never cache a turn that acted** (bug, fixed): `write_semantic_cache` stored the final text of ANY completed turn, including one that ran an approved write. A later near-identical request from the same principal then hit the cache and was answered with that text — "Remembered.", "Ticket #123 created" — with no model call, no `human_approval` pause and no write: the user is told something was done when nothing was, and the approval gate is bypassed outright because a hit never reaches it. Found by accident (a real-model browser test that repeated one prompt in a session got the cached answer instead of an approval prompt) and reproduced against the real graph. The write node now skips any turn whose CURRENT turn called a tool that is not `read_only` (an undeclared tool counts as `outward`, the repo-wide fail-closed default), using the calling domain's own capability map; a turn that only answered, or only read, is cached as before. **Not covered**: a cached answer that merely quotes live data (a read-only tool's result) can still be stale until its TTL, as before; and entries written before this fix remain until they expire.
-- **A latency optimization, never a correctness dependency**: `get`/`set` catch every exception and degrade (miss / no-op write), recording `agent_semantic_cache_total{outcome=...}`.
-- **Gotcha**: RediSearch TAG queries treat `-` as query syntax — an unescaped tenant value like `"other-co"` raised a syntax error; fixed via `_escape_tag`.
-- **The escape must be a rule, not a list** (bug, fixed): that first fix was a list of the characters known to bite, and it missed `|` — the OR operator inside a tag block — and the backslash that escapes. A principal `alice|bob` therefore built `@principal:{alice|bob}`, a filter that *also* matches `bob`'s cached answers (which can carry citations to bob's own memories): an isolation break through the very predicate the cache's isolation rests on. `_escape_tag` now escapes every ASCII character that is not a letter, digit or underscore (non-ASCII letters pass through), so a character nobody has thought of yet is escaped by default. Exploiting it needs a deployment where a principal or tenant string is user-influenced — today's trusted-header seam already lets a caller *claim* any identity — but it was held to the same standard as the filter. Found by writing the hermetic test the cache lacked; tested at the query-string level (`tests/retrieval/test_semantic_cache_tag_escaping.py`) and against a real Redis Stack (`tests/integration/test_semantic_cache_tag_escaping_real_redis.py`, which also checks a punctuation-bearing principal still hits its *own* entry).
-- **Real-world**: FAQ-style support, internal docs Q&A — repeated near-duplicate questions.
+### 21. Fixed-tool structured data access, plus MCP exposure
+`query_employees` is a closed, typed Postgres query: `tenant` (from `SecurityCtx`), `department` (a closed enum) and `name_contains` are the only variables, every query is parameterized and always ANDs `WHERE tenant = %s`. There is no `execute(sql)` anywhere. Same principle as `add_note` (15), for reads: the access boundary lives in reviewable code, not a string the model writes.
+- **MCP exposure is a separate trust boundary.** `mcp/server.py` wraps the same query for external clients, but MCP has no `RunnableConfig`, so `tenant`/`principal` are explicit arguments checked by the same fail-closed `Policy.permit`. It does not authenticate the caller; a production server would derive identity from the client's verified auth.
+- **Use when:** HR lookups, order status, inventory counts, wherever text-to-SQL would be tempting and exactly wrong.
 
-### 23. **Config-First Multi-Domain Composition (`AgentManifest` + `DomainPlugin`, `build_graph(manifest=..., domain=...)`)**
-`build_graph()` — unmodified topology — adapts to a new domain by swapping an `AgentManifest` (config: name, system prompt, exposed tools) and a `DomainPlugin` (code: tool implementations, capabilities, policy). `DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN` wrap the existing Ecorp setup unchanged. There is no `if domain == "..."` anywhere in `graph.py`.
-- **"Port-swapping," not just parameterization**: `should_continue` needs a domain's own capability mapping but LangGraph calls it with only `state` — solved via `functools.partial(should_continue, tool_capabilities=...)`, bound once per `build_graph()` call, with a default parameter so every existing direct caller is unaffected.
-- **The load-bearing test**: `tests/agent/test_manifest.py` builds a second domain with a genuinely different `Policy` class and one Ecorp-unknown tool, then proves the unmodified mandatory-approval gate correctly treats it as `mutating` using THAT domain's own capability map — plus a structural check that Ecorp's tools are genuinely absent from this domain's `ToolNode`.
-- **Circular-import gotcha**: `manifest.py` needs `graph.py`'s `SYSTEM_PROMPT`; `graph.py`'s `build_graph()` needs `manifest.py`'s defaults — resolved via a deferred import inside `build_graph()`'s body.
-- **What this doesn't do**: serve multiple domains from one running process — that's a further increment (pattern 47's own note).
-- **Real-world**: one hardened runtime (safety budgets, HITL, telemetry, checkpointing) shared across several products/deployments — see `app/domains/` (pattern 47).
+### 22. Semantic cache
+`check_semantic_cache` does a cosine-KNN lookup in Redis Stack scoped to tenant **and** principal (a cached answer can cite a principal's memories). A hit at or above `SEMANTIC_CACHE_SIMILARITY_THRESHOLD` (0.95) skips retrieval and the LLM and rejoins at `check_output`; `write_semantic_cache` stores confirmed-final turns that weren't hits. Every cache call degrades to a miss on failure: a latency optimization, never a correctness dependency (`app/retrieval/semantic_cache.py`).
+- **Bug: it cached turns that acted.** After an approved write, a near-identical request got "Ticket #123 created" with no model call, no approval and no write, because a hit never reaches the gate. Found when a browser test that repeated a prompt got the cached answer instead of an approval prompt. The write node now skips any turn that called a non-`read_only` tool. Not covered: an answer quoting live read-only data can be stale until its TTL.
+- **Bug: tag escaping.** RediSearch treats `-` as syntax, and the first fix (a list of known characters) missed `|`: principal `alice|bob` built a filter that also matched `bob`'s entries, an isolation break. `_escape_tag` now escapes every ASCII character that isn't a letter, digit or underscore: a rule, not a list. Tests: `test_semantic_cache_tag_escaping.py` and a real-Redis integration test.
+- **Use when:** near-duplicate questions repeat across sessions.
 
-### 24. **General-Purpose Ingestor with Parent-Child Chunking (`app/ingestion/chunking.py`, `app/ingestion/ingestor.py`)**
-`ingest_text`/`ingest_file`/`ingest_url` funnel through the same chunk → embed → `build_point` pipeline `make ingest` now uses too (one pipeline, not two that can drift). Every item is stamped with the owning tenant and refused without one.
-- **Parent AND child chunks**: a single chunk size fights two jobs — retrieval wants small/precise, answer quality wants surrounding context. `chunk_text` splits into ~1200-char **parent** chunks, then ~600-char overlapping **child** chunks; only the child is embedded, but the payload carries `parent_text`, which the agent prefers when present.
-- **Why overlapping**: a hard boundary can cut the one sentence that answers a query in half; the sliding window ensures at least one child captures it whole.
-- **Dedup**: several child chunks from the same parent can all score highly — `_dedupe_by_parent` keeps the highest-ranked hit per `parent_id`.
-- **SSRF guard**: `_assert_safe_url` requires `https://`, resolves the FULL A/AAAA record set and accepts only if EVERY address is globally routable (an allow-list via `ipaddress.is_global`, with an IPv4-mapped IPv6 address judged as the IPv4 it stands for, and the older private/loopback/link-local/reserved/multicast flags still checked), and disables redirects. **Two real defects, fixed**: the first version was a list of known-bad ranges and missed `100.64.0.0/10` (carrier-grade NAT, which also holds cloud metadata services — `100.100.100.200` is Alibaba Cloud's), so those addresses passed; and the name lookup was the blocking `getaddrinfo` called straight from `async def` code, so one slow DNS answer froze the whole event loop (a 0.5 s resolver stalled a concurrent heartbeat for 0.51 s) — async callers now use `assert_safe_url_async`, which resolves on the loop's resolver thread. Disclosed gaps: this validates-then-fetches, so a narrow DNS-rebinding race isn't fully closed; and a hung resolver is not time-bounded (it no longer blocks the loop, but holds the calling task and a worker thread).
-- **Real-world**: a standalone product ("point it at a folder/URL/text"), not a demo answering only over pre-loaded content.
+### 23. Config-first multi-domain composition
+`build_graph(manifest=…, domain=…)` keeps its topology and adapts to a domain through an `AgentManifest` (config: name, system prompt, exposed tools) and a `DomainPlugin` (code: tool implementations, capabilities, policy). There is no `if domain == "…"` in `graph.py`; `DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN` wrap the Ecorp setup.
+- **Port-swapping, not parameterization:** `should_continue` needs a domain's capability map but LangGraph calls it with only `state`, so it is bound with `functools.partial(should_continue, tool_capabilities=…)` once per build (with a default, so existing callers are unaffected).
+- **The load-bearing test:** `tests/agent/test_manifest.py` builds a domain with a different `Policy` and one Ecorp-unknown tool, proves the unmodified gate treats it as `mutating` using that domain's map, and checks Ecorp's tools are absent from its `ToolNode`.
+- **Gotcha:** `manifest.py` needs `graph.py`'s `SYSTEM_PROMPT` and `build_graph()` needs `manifest.py`'s defaults; a deferred import inside `build_graph()` breaks the cycle.
+- **Not done:** several domains from one process (see 47).
 
-### 25. **Input Moderation Before Any Spend (`app/agent/moderation.py`, `moderate_input` + `route_after_moderation` + `reject_moderation`)**
-Runs right after `validate_input`'s ctx/empty checks, before the semantic cache, retrieval, or any LLM call. `moderation.screen(text)` checks known injection/jailbreak phrasings plus a small denylist; a match short-circuits to `reject_moderation` → `END`.
-- **A real check, not a no-op default**: pattern-based, not an ML classifier (which would mean a hosted API or a second local model on the hot path) — honestly scoped, testable behavior against known patterns, not a claim of understanding intent.
-- **Fail-open only on the check's OWN failure**: a genuine match fails closed and blocks the turn; an exception in the moderation code itself fails open, recorded as `outcome="error"` — the two are deliberately not conflated.
-- **Real-world**: any agent with a public/semi-trusted input surface.
+### 24. General-purpose ingestor with parent-child chunking
+`ingest_text`/`ingest_file`/`ingest_url` and `make ingest` share one chunk → embed → `build_point` pipeline (`app/ingestion/`); every item carries its tenant and is refused without one.
+- **Parent and child chunks:** `chunk_text` makes ~1200-character parents and ~600-character overlapping children. Only children are embedded; the payload carries `parent_text`, which the agent prefers. Overlap keeps a boundary from splitting the answering sentence; `_dedupe_by_parent` keeps the best hit per parent.
+- **Idempotent ids:** `_content_point_id` derives each point id from `(tenant, source, chunk index, content)`, not `uuid4()`, so re-ingesting identical content upserts instead of duplicating.
+- **SSRF guard:** `https` only, every resolved address must be globally routable (`ipaddress.is_global`, an IPv4-mapped IPv6 address judged as the IPv4), no redirects.
+- **Bug:** the first guard was a deny-list and missed `100.64.0.0/10` (carrier-grade NAT, where cloud metadata services live). Separately, a blocking `getaddrinfo` in `async def` froze the event loop (a 0.5 s resolver stalled a heartbeat 0.51 s); async callers now use `assert_safe_url_async`.
+- **Gap:** validate-then-fetch leaves a narrow DNS-rebinding race, and a hung resolver still holds a task and a thread.
 
-### 26. **Real Usage/Cost Ledger (`app/agent/usage_ledger.py`, wired into `runtime_stream.py::_record_turn_metrics`)**
-`record_usage(ctx, thread_id, model_alias, total_tokens)` writes one row per completed turn into `usage_ledger` (same `appdata` Postgres), tenant+principal scoped. Wired at the one "a turn actually completed" call site.
-- **Why a real ledger, not a discarded counter**: `MAX_TOKENS_PER_TURN` bounds spend per turn but keeps no durable record of what was actually spent, by whom — `usage_summary` is the read path proving it isn't write-only.
-- **A turn that doesn't finish still spent tokens**: usage was recorded only on the success branch of `_run_graph_stream`; the timeout, error and cancel branches passed no state, on the stated reasoning that they "have `total_tokens == 0` anyway". They don't — steps the model already completed are in the checkpoint, and the turns that ran until the timeout are the ones most likely to have spent a lot, so they were exactly the ones missing from the ledger that the daily tenant budget is checked against (reproduced: a model that returns a 500-token step and then stalls past the timeout recorded nothing). `_record_unfinished_turn` now reads the last checkpoint on those three paths and records its tokens; the read is bounded (`UNFINISHED_TURN_STATE_READ_TIMEOUT_SECONDS`) and failure-proof, because it runs while a turn is already failing and must not hold up or worsen its terminal event. `agent_iterations` stays "completed turns" (the dashboard's meaning). **Disclosed gaps**: tokens of a model call cut off mid-flight never reach a checkpoint and are not counted; a turn paused for approval and never resumed records nothing (recording at the pause would double-count when it resumes, since `total_tokens` is cumulative across a resume and would need a per-thread "already recorded" watermark).
-- **Cost is approximate, honestly scoped**: `PRICE_PER_1K_TOKENS_USD` is $0 for any unlisted alias (every locally-run Ollama model); pointing at a real paid provider is a config change.
-- **The per-tenant daily cap counts in-flight turns too, as one hold per turn (`tenant_budget_holds`)**: `_tenant_over_daily_budget` sums the ledger, but a running turn only lands its row when it finishes, so N concurrent turns would all read the same "spent so far" and all pass. `reserve_budget` records a hold of `MAX_COST_USD_PER_TURN` before the turn runs, `release_budget_reservation` deletes exactly that hold (by id, tenant-scoped, so a duplicate release is a no-op), and `in_flight_reservation` sums the holds younger than `RESERVATION_STALE_AFTER_MINUTES`. **The first design was one running total per tenant with one `updated_at`, and it had two silent defects, both reproduced against a real Postgres**: a worker killed mid-turn never released its amount, the read ignored the row after five minutes, but the next reserve *added to the stale amount* and refreshed the timestamp, so the dead turn's spend came back and was never released; and because every reserve/release refreshed the same timestamp, a leaked amount never aged out for a tenant that kept running turns (still counted 40 simulated minutes later). Either could refuse a tenant's real turns over spend that never happened. The reservation test coverage was fake-cursor only, which cannot show behavior over time — `tests/integration/test_budget_holds_real_postgres.py` now ages holds against the real table. **Lesson**: one timestamp cannot be both "last touched" and "how old is what this holds"; give each unit of state its own clock. Still fail-open by design (a failed reserve or read means a turn runs unprotected, never blocked), and a turn that legitimately outlives the window stops being counted. The superseded `tenant_budget_reservations` table is left unused for a rolling deploy and should be dropped in a later release; against an existing volume `postgres-init/16-tenant-budget-holds.sql` must be applied by hand once, and until it is, protection against concurrent turns is off (`tenant_budget_reservation_failed` is logged).
-- **Real-world**: any agent serving more than one team/customer where "how much did this cost, by whom" needs to be answerable.
+### 25. Input moderation before any spend
+`moderate_input` + `route_after_moderation` + `reject_moderation` (`app/agent/moderation.py`) run right after `validate_input`'s checks, before the cache, retrieval or any LLM call. Two layers, cheapest first: (1) a regex screen for known injection/jailbreak phrasings plus a small denylist; (2) an ML classifier, Meta's Llama Prompt Guard 2 (22M) served by `ml-service`'s `/prompt-guard`, which catches paraphrases the patterns miss (`ML_INJECTION_THRESHOLD` 0.5; ~25–100 ms).
+- A real hit at either layer fails **closed**; a failure of the check *itself* (a regex bug, `ml-service` unreachable) fails **open**, recorded as `outcome="error"`. The two are deliberately not conflated.
+- **Gap:** the threshold is the model's natural boundary, not recalibrated on live traffic. Moderation screens words, not pixels (44).
+- **Use when:** any input surface reachable by someone not fully trusted.
 
-### 27. **Clarification and Follow-Ups Without Forking the Graph (`ask_clarification` tool, `suggest_followups` node)**
-Two different needs, two different mechanisms. Clarifying is `ask_clarification` — an ORDINARY `read_only` tool, no new node/routing: its result becomes a `ToolMessage`, and `SYSTEM_PROMPT` instructs the model to relay it verbatim next turn. Follow-ups are a real node, `suggest_followups`, after `check_output`'s non-retry branch, generating 2-3 short questions via one more small LLM call.
-- **Why follow-ups gate on `used_citations`**: an answer with nothing derived (a refusal, a clarification, general knowledge) naturally has empty `used_citations` — one existing signal suppresses follow-ups for all three cases.
-- **Why `suggest_followups` is skipped on a cache hit**: a semantic-cache hit means zero LLM calls for the turn; an unconditional follow-up call would silently reintroduce one, breaking a property the test suite asserts.
-- **Real-world**: `ask_clarification` for agents where a wrong guess costs more than one extra turn; `suggest_followups` for consumer chat surfaces where "what next" chips help engagement.
+### 26. Usage and cost ledger
+`record_usage(…)` writes one tenant+principal row per completed turn into `usage_ledger` (`app/agent/usage_ledger.py`), read back by `usage_summary` and the daily cap. Cost is approximate: `PRICE_PER_1K_TOKENS_USD` is $0 for unlisted aliases, so local models are free.
+- **Bug: unfinished turns weren't recorded.** Only the success branch recorded usage, yet completed steps sit in the checkpoint and timed-out turns spend the most. `_record_unfinished_turn` now reads the last checkpoint on the timeout, error and cancel paths.
+- **The daily cap counts in-flight turns.** `reserve_budget` records a hold of `MAX_COST_USD_PER_TURN` per running turn (`tenant_budget_holds`), released by id at the end; holds older than `RESERVATION_STALE_AFTER_MINUTES` stop counting. Without holds, N concurrent turns all read the same "spent so far".
+- **Bug: the first design was one running total per tenant.** A killed worker's amount was never released, and every reserve refreshed the same timestamp, so a leaked amount never aged out (still counted 40 minutes later), refusing real turns over spend that never happened. One timestamp can't mean both "last touched" and "how old is what this holds". Fake-cursor tests can't show this; `test_budget_holds_real_postgres.py` ages real rows.
+- **Gap:** tokens from a call cut off mid-flight, and turns paused and never resumed, aren't counted. The cap fails open (a failed reserve means unprotected, not blocked). Existing volumes need `16-tenant-budget-holds.sql` applied by hand.
 
-### 28. **Consuming a Remote MCP Tool Catalog (`app/mcp/client.py::load_remote_tools`)**
-The reverse of pattern 21's server direction: `load_remote_tools(command, args, capability_overrides)` connects to an external MCP server over stdio, lists its tools, and wraps each as a LangChain `StructuredTool` with the remote's own JSON Schema passed straight through.
-- **Why `capability_overrides` is the ONLY source of truth**: MCP's `ToolAnnotations` are self-reported hints, not verified guarantees (confirmed: this app's own server sets none). A remote tool not explicitly named defaults to `"outward"` — the same fail-closed default as an undeclared in-process tool. Once merged into a `DomainPlugin`, the mandatory gate applies with no special-casing.
-- **Sync AND async by necessity**: a sync `func` (bridging via `asyncio.run()` for `graph.invoke()`) and an async `coroutine` (for `astream_events`, already inside a running loop). One fresh connection per call — simpler than a persistent session, at the cost of per-call latency, a disclosed tradeoff.
-- **Real-world**: reaching tools this app doesn't own the implementation of, without inheriting whatever the remote claims about its own safety.
+### 27. Clarification and follow-ups without forking the graph
+`ask_clarification` is an ordinary `read_only` tool: its result becomes a `ToolMessage` and `SYSTEM_PROMPT` says to relay it verbatim. Follow-ups are a real node, `suggest_followups`, after `check_output`'s non-retry branch, making one small LLM call for 2–3 questions.
+- Follow-ups gate on `used_citations`: an answer with nothing derived (a refusal, a clarification, general knowledge) has none, so one signal suppresses all three cases. They are skipped on a cache hit, since an unconditional call would reintroduce an LLM call the hit exists to avoid.
 
-### 29. **Built-In Web UI (`app/api/static/index.html`, `GET /` in `app/api/main.py`)**
-A single self-contained HTML file (inline CSS/JS, no build step, no CDN) served at `GET /`, talking only to `POST /chat/stream/queued` and rendering exactly the published SSE vocabulary (`token`, `tool_start`, `tool_end`, `citations`, `approval_required`, `error`, `done`) — no bespoke endpoint of its own.
-- **Why `fetch()`, not `EventSource`**: the queued endpoint is POST and needs `X-Tenant-Id`/`X-Principal-Id` headers, which `EventSource` can't send — so the page manually parses SSE frames from a `fetch()` stream.
-- **A real bug this surfaced**: manually exercising this page against a live `uvicorn` process caught `asyncio.InvalidStateError` from sync checkpointer calls (`update_state`/`get_state`) running on the same loop the async checkpointer was opened on — three call sites needed their async counterparts (`aupdate_state`/`aget_state`, a new `resumability_error_async`), a defect the `MemorySaver`-backed test suite structurally couldn't catch.
-- **Real-world**: a usable interface without a frontend framework or build pipeline — appropriate for a demo/reference app.
+### 28. Consuming a remote MCP tool catalog
+`load_remote_tools(command, args, capability_overrides)` (`app/mcp/client.py`) connects to an MCP server over stdio and wraps each tool as a `StructuredTool` with the remote's JSON Schema passed through.
+- **`capability_overrides` is the only source of truth.** MCP `ToolAnnotations` are self-reported hints; a tool not named defaults to `outward`, the same fail-closed default as an undeclared local tool, and the mandatory gate then applies with no special-casing.
+- Sync (bridged with `asyncio.run()`) **and** async (for `astream_events`, already inside a loop) by necessity. One fresh connection per call: simpler, at the cost of latency.
 
-### 30. **Canonical Error Envelope (`app/core/errors.py`'s `ErrorCode`/`ErrorEnvelope`)**
-One shape — `{code, message, details}` — for every SSE `error` event and CLI error, drawn from a single `ErrorCode` enum rather than each call site inventing its own string.
-- **Why NOT applied to `ToolMessage` content**: what a failing tool returns to the LLM is natural-language by design, for a different audience (the model). Wrapping it would just be JSON the model has to re-parse into prose.
-- **The envelope's `message` is for the caller, never a window onto the exception**: `internal_error_envelope(exc)` is the one builder for `ErrorCode.INTERNAL` — a fixed message plus `details={"error_class": type(exc).__name__}`, never `str(exc)`. The class name lets an operator match a client report to a log line; the text goes to the trace.
-- **A real bug this fixed**: both the SSE generic `except` (`runtime_stream.py::_run_graph_stream`, plus the reference `runtime_legacy_stream.py`) and the queue worker's catch-all (`agent_worker.py::process_request`) put `str(exc)` into the caller-facing `error` event, so a driver error naming an internal host, a SQL fragment or a DSN crossed the trust boundary to whoever was reading the stream. The worker's variant was worse — `{"type": "error", "content": str(exc)}` had no `code` at all, so a client couldn't even switch on it. Three existing worker tests *asserted* the leak (`"graph blew up"`, `"checkpoint gone"`, the unknown-kind text) and the SSE path had no test at all; they now assert the opposite, with a hostname-shaped sentinel that must not appear anywhere in the serialized event.
-- **Deliberately not covered**: only the generic catch-alls in the chat path were changed. A dedicated `ErrorCode` whose message is built from caller-supplied data (e.g. a `ValueError` the API turns into a 4xx) is a different surface and unchanged. **Open follow-up — the ingest worker** (`ingest_worker.py::process_job`) has the same `{"type": "error", "content": str(exc)}` catch-all, but it mixes messages written *for* the uploader (`unsupported file type '.xyz' — only […] are supported`, `IngestRefused`) with unexpected failures (an object-store or Qdrant client error naming an internal host), so it needs a per-exception-class decision rather than a blanket swap — and `CrawlFailed`/`IngestRefused` embed a raw `{exc}` in some messages. Read from code, not reproduced.
-- **Real-world**: any surface with more than one caller that needs to distinguish "retry this" from "don't" programmatically — and any API that turns exceptions into responses.
+### 29. Built-in web UI
+One self-contained HTML file (`app/api/static/index.html`, inline CSS/JS, no build step, no CDN) served at `GET /`, talking only to `POST /chat/stream/queued` and rendering the published SSE vocabulary (`token`, `tool_start`, `tool_end`, `citations`, `approval_required`, `error`, `done`). It uses `fetch()`, not `EventSource`, because the endpoint is POST and needs the identity headers `EventSource` can't send.
+- **Bug it surfaced:** running the page against a live `uvicorn` raised `asyncio.InvalidStateError` from sync checkpointer calls (`update_state`/`get_state`) on the loop the async checkpointer was opened on. Three call sites needed `aupdate_state`/`aget_state` and a new `resumability_error_async`; the `MemorySaver` suite structurally couldn't catch it.
 
-### 31. **DB Connection Pool (`app/agent/sql_store.py`'s `ConnectionPool`)**
-A single `psycopg_pool.ConnectionPool` singleton (lazy, `min_size=1`/`max_size=10`) behind `get_connection()` — every call site is unchanged, so pooling is a transparent internal change. `close_pool()` is wired into the API lifespan shutdown (without it, background worker threads outlived process shutdown, a real reproduced bug).
-- **Real-world**: any app issuing more than a handful of DB queries/sec.
+### 30. Canonical error envelope
+One shape, `{code, message, details}`, from a single `ErrorCode` enum (`app/core/errors.py`) for every SSE `error` event and CLI error. It isn't applied to `ToolMessage` content, which is prose for the model.
+- `internal_error_envelope(exc)` returns a fixed message plus `error_class`, never `str(exc)`; the text goes to the trace.
+- **Bug:** both catch-alls (`runtime_stream.py::_run_graph_stream`, `agent_worker.py::process_request`) sent `str(exc)` to the caller, leaking internal hosts, SQL fragments or DSNs; the worker's had no `code` either. Three tests asserted the leak. They now assert a hostname-shaped sentinel never appears.
+- **Gap:** the ingest worker's `process_job` has the same catch-all but mixes uploader-facing messages with unexpected failures, so it needs a per-exception decision; `CrawlFailed`/`IngestRefused` also embed a raw `{exc}`. Read from code, not reproduced.
 
-### 32. **Credential/Secret Scrubbing on Tool Output (`app/core/scrubbing.py`)**
-Two layers at the one chokepoint every tool result funnels through: (1) static regex patterns for common credential shapes (API keys, AWS ids, `password=`/`token=` pairs, embedded `user:password@`, JWTs), and (2) this deployment's own bound secret values read from config, so an exact echo of a real configured secret is caught too.
-- **Why tool output specifically**: it never passes through the model's own input — a raw DB row or API response can carry a credential nobody asked for straight into `ToolMessage.content`, which a prompt-level scrubber would never see.
-- **Fails open**: degrades to unscrubbed text (logged) on its own internal failure.
-- **Real-world**: any agent whose tools touch systems that can legitimately contain secrets in their data.
+### 31. DB connection pool
+One lazy `psycopg_pool.ConnectionPool` singleton (`min_size=1`, `max_size=10`) behind `get_connection()` in `app/agent/sql_store.py`, so call sites didn't change. `close_pool()` runs in the API lifespan shutdown; without it, background pool threads outlived the process (a reproduced bug).
 
-### 33. **Memory Deletion Audit + Age Selector + Retention-at-Recall (`app/agent/memory.py::delete_memories`, `Policy.lower`)**
-`delete_memories(ctx, *, memory_id=None, older_than_days=None, target_principal=None)` requires EXACTLY ONE selector, refusing an ambiguous request rather than silently narrowing to "everything." Counts matches before deleting with the same filter, so the return value is accurate. Every call, refused or not, is recorded via metrics + a structured log.
-- **Retention-at-recall, independently**: `Policy.lower`'s memory filter ANDs a `DatetimeRange(gte=cutoff)` (`MEMORY_RETENTION_DAYS`, default 365) onto every recall, not just a manual sweep — an unswept expired memory is invisible at read time regardless.
-- **Real-world**: GDPR-style "right to erasure" or a support tool's "delete my data" button.
+### 32. Credential scrubbing on tool output
+`app/core/scrubbing.py`, at the one chokepoint every tool result funnels through: static patterns for common credential shapes (API keys, AWS ids, `password=`/`token=` pairs, `user:password@`, JWTs) plus this deployment's own configured secret values, so an exact echo of a real secret is caught. Tool output specifically because it never passes through the model's input: a raw DB row can carry a credential straight into `ToolMessage.content`. Fails open (logged) on its own internal failure.
 
-### 34. **No-Progress Detection (`_consecutive_repeat_count`, `_tool_call_fingerprint`, checked in `should_continue`)**
-A per-turn check (scans backward only from the most recent `HumanMessage`). `_tool_call_fingerprint` normalizes a batch (tool name + sorted args) order-independently; `MAX_REPEATED_ACTIONS` (3) identical consecutive batches ends the turn — independently of, and usually before, `MAX_ITERATIONS`.
-- **Why a pure function of `state["messages"]`**: the message history already IS the record of what's been tried — no second, driftable counter needed.
-- **Real-world**: a model stuck retrying an identical failing call verbatim — a real, observed failure mode.
+### 33. Memory deletion audit, age selector, retention at recall
+`delete_memories(ctx, *, memory_id=None, older_than_days=None, target_principal=None)` requires **exactly one** selector, refusing an ambiguous request rather than narrowing to "everything". It counts matches with the same filter before deleting, and records every call, refused or not, via metrics and a log. Independently, `Policy.lower`'s memory filter ANDs a `DatetimeRange(gte=cutoff)` (`MEMORY_RETENTION_DAYS`, 365) onto every recall, so an unswept expired memory is invisible regardless.
+- **Gap:** nothing calls `delete_memories` (no script, endpoint or make target); retention is enforced at read time only.
 
-### 35. **Cost Ceiling Enforcement (`MAX_COST_USD_PER_TURN`, checked in `should_continue`, computed in `agent()`)**
-A hard stop on cumulative per-turn dollar cost, distinct from `MAX_TOKENS_PER_TURN` since the same token count costs differently across model tiers. `agent()` computes incremental cost using the same price table the usage ledger (pattern 26) uses — one source of truth. Checked BEFORE the next call, not just after — enforcement, not just recording.
-- **Real-world**: a tool loop that could run away against a metered, real-dollar-cost model API.
+### 34. No-progress detection
+`_consecutive_repeat_count` scans backward from the latest `HumanMessage`; `_tool_call_fingerprint` normalizes a batch (tool name + sorted args) order-independently. `MAX_REPEATED_ACTIONS` (3) identical consecutive batches ends the turn, usually before `MAX_ITERATIONS`. It is a pure function of `state["messages"]`: the history already is the record, so there is no second counter to drift.
 
-### 36. **Run Cancellation (`CANCEL_SENTINEL`, third `human_approval` outcome, `runtime_stream.py::cancel_run`)**
-A genuinely third outcome for a paused interrupt, not a repurposed rejection. `route_after_approval` checks `cancelled` FIRST and routes straight to `__end__`, never back to `agent`.
-- **Why a real third branch**: a rejection still lets the agent react; a cancellation must guarantee the run stops, unconditionally.
-- **A cancel must not outlive its run** (bug, fixed): `cancelled` is a persisted `State` field and `route_after_approval` tests it *before* `approved`. Nothing cleared it, so after one cancel, a *later* pause on the same thread that the person **approved** went straight to `__end__` — the approved tool never ran, the last message was the assistant's own tool request with empty content (a dangling `tool_call` the next provider call would reject), and the turn reported finished. `validate_input` now resets `cancelled`/`approved` every turn (a resume re-enters inside `human_approval` and skips it, so a pause's own decision is never cleared). The cancel tests had covered the cancel and the routing function in isolation; `TestApprovalAfterAnEarlierCancel` runs a second approval on the same thread.
-- **Real-world**: a human changing their mind mid-review ("actually, just stop"), distinct from disapproving one action.
-- **The run an approval starts must be cancellable too** (gap, fixed): there are two cancel mechanisms — `cancel_run` for a run *paused* at the gate, and the Redis cancel flag polled by `_iterate_with_timeout` for a run *streaming*. `astream_events_resume` took no `cancel_check`, so the stretch in between — the user approves, then changes their mind while the approved tool and the model call that reads its result run — had neither: `POST /chat/cancel` set a flag nothing polled and the run went to the end. It now forwards `cancel_check` and `_process_resume` wires it (clearing a stale flag first, like `_process_turn`). Polled before the first event, so a cancel that lands before the worker picks the job up stops the turn *before* the approved write; a later one stops it at the next event boundary — an already-running tool call finishes, because cancellation is cooperative (pattern 43). Tested against a real graph with the tool's write stubbed to record calls: a cancelled approval records none and persists no `ToolMessage`.
+### 35. Cost ceiling
+`MAX_COST_USD_PER_TURN` is a hard stop on cumulative per-turn dollars, distinct from the token cap because the same tokens cost differently by model tier. `agent()` computes incremental cost from the same price table the ledger uses. It is checked **before** the next call: enforcement, not just recording.
 
-### 37. **Structured Per-Tool-Call Audit Record (`MetricsCallbackHandler`, `app/core/metrics.py`)**
-LangChain's own `run_id` correlates a `tool_called` start log with its matching success/failure log. Args and results are logged as a SHA-256-truncated fingerprint, never raw content — extending pattern 14's "never message content in a generic log" rule to tool-level audit logging.
-- **Real-world**: "which tool ran, with what, and did it succeed" answerable from grep-able logs alone at 3am.
+### 36. Run cancellation
+A third outcome for a paused interrupt, not a repurposed rejection: `route_after_approval` checks `cancelled` first and goes to `__end__`, never back to `agent` (`CANCEL_SENTINEL`, `runtime_stream.py::cancel_run`). A rejection lets the agent react; a cancel must stop the run.
+- **Bug: a cancel outlived its run.** Nothing cleared `cancelled`, so a later pause on the same thread that the person *approved* went straight to `__end__`, leaving a dangling `tool_call`. `validate_input` now resets `cancelled`/`approved` each turn (a resume skips it). Test: `TestApprovalAfterAnEarlierCancel`.
+- **Bug: an approved run couldn't be cancelled.** `astream_events_resume` took no `cancel_check`, so `POST /chat/cancel` between "approve" and "done" set a flag nothing polled. It now forwards it: a cancel before the worker picks the job up stops the turn before the approved write, and a later one stops it at the next event boundary (a running tool finishes; cancellation is cooperative).
+- **Use when:** a human might change their mind mid-review.
 
-### 38. **Resolved Concrete Model Recording (`app/agent/model_resolver.py::resolve_model`, wired into `usage_ledger.py::record_usage`)**
-Queries LiteLLM's `GET /model/info` to resolve a routing alias (`"chat"`) to the concrete model actually serving it — neither the response body nor LangChain's own metadata carries this; only a proxy-specific response header does, which LangChain doesn't surface. Cached per-process; degrades to `None` on failure; recorded as `resolved_model` in the usage ledger.
-- **It must not block the event loop, and a failure must not be repeated**: the first version was a synchronous `httpx.get` called from `record_usage`, which runs on the loop at the end of every completed turn — a slow LiteLLM froze every other turn, stream and health check on that worker (a 0.5 s answer stalled a concurrent heartbeat for 0.56 s), and while LiteLLM was down every recorded turn paid a fresh 5 s timeout for an answer that could not have changed. `resolve_model` is now `async` (awaited `httpx.AsyncClient`) and remembers a failed or alias-not-found lookup for `FAILED_LOOKUP_RETRY_SECONDS` (60 s) per alias. The regression test runs the real resolver against a deliberately slow local HTTP server with a heartbeat, because a mock cannot show a blocked loop. Concurrent first lookups during an outage can still each make one request before the failure is remembered. `tests/conftest.py::mock_model_resolver` (autouse) now keeps the default suite from reaching whatever answers on the proxy address.
-- **Why this matters despite alias-only-by-design**: the single input with the largest effect on output quality can silently change (a gateway remap) with no other trace of it — this makes model choice invisible to routing but visible to forensics.
-- **Real-world**: debugging a quality regression that turns out to be an unannounced backend model swap.
+### 37. Per-tool-call audit record
+`MetricsCallbackHandler` correlates a `tool_called` start log with its success/failure log by LangChain's `run_id`. Args and results are logged as a truncated SHA-256 fingerprint, never raw content (pattern 14's rule extended to tools). "Which tool ran, with what, did it succeed" is answerable from logs at 3 a.m.
 
-### 39. **Ungrounded Claims Count (`_ungrounded_claims_count`, computed in `check_output`)**
-The mirror image of `_used_citations` (pattern 20), computed INDEPENDENTLY from the same answer text so a bug in one can't mask a bug in the other. Counts `[n]` markers that don't match any real citation actually returned.
-- **Real-world**: making "did the model actually cite something real" a measurable, gateable property (pattern 40) rather than a spot-checked impression.
+### 38. Resolved model recording
+`model_resolver.resolve_model` asks LiteLLM's `GET /model/info` which concrete model serves an alias like `chat`, because neither the response body nor LangChain metadata carries it. Cached per process, degrades to `None`, recorded as `resolved_model` in the ledger. A silent gateway remap of the model behind an alias is otherwise invisible.
+- **Bug:** the first version was a synchronous `httpx.get` on the event loop at the end of every turn. A slow LiteLLM froze every other turn and health check on that worker (a 0.5 s answer stalled a heartbeat for 0.56 s), and during an outage every turn paid a fresh 5 s timeout. It is now `async` and remembers a failure for `FAILED_LOOKUP_RETRY_SECONDS` (60) per alias. The regression test runs the real resolver against a deliberately slow local server with a heartbeat, which a mock can't do. `tests/conftest.py::mock_model_resolver` (autouse) keeps the default suite off the network.
+- **Gap:** concurrent first lookups during an outage can each make one request before the failure is remembered.
 
-### 40. **Eval Statistical Rigor (`scripts/eval.py`'s `EVAL_REPETITIONS`/`REPETITION_PASS_THRESHOLD`/`GROUNDED_CLAIMS_THRESHOLD`)**
-Two release gates, not one pass/fail per case. (1) Each case runs `EVAL_REPETITIONS` times (5); a case passes only if `REPETITION_PASS_THRESHOLD` (80%, 4-of-5) of repetitions individually passed — a stochastic system graded once is a coin flip. (2) A grounded-claims gate over the WHOLE golden set (≥95% of every citation marker must be real), computed from the runtime's own `used_citations`/`ungrounded_claims_count` machinery, never a model's opinion of itself.
-- **Summed, not averaged**: tokens/cost/grounding counts are summed across a case's repetitions ("what did fully evaluating this cost"); latency is averaged ("how long does one attempt take").
-- **Real-world**: the 80%/95% thresholds are demo defaults, but the STRUCTURE generalizes to any stochastic-system eval.
+### 39. Ungrounded-claims count
+`_ungrounded_claims_count` in `check_output` mirrors `_used_citations` (20) but is computed **independently** from the same answer text, so a bug in one can't mask a bug in the other. It counts `[n]` markers matching no returned citation, which makes "did the model cite something real" a measurable, gateable property (40).
 
-### 41. **Bounded History Summarization (`compact_history` node, `history_summary` State field, `route_after_compaction` + `context_window_exceeded`)**
-Extends pattern 13's discard-only trim with an LLM-backed summarization step. `compact_history` summarizes exactly the discarded messages via one LLM call, folding the result into a CUMULATIVE `state["history_summary"]` that's never reset per-turn. `agent()` front-loads the bulk summary at the same fixed anchor retrieved context uses, while a short "don't restate this verbatim" reminder stays at the current tail (recency-weighted, since a small model was observed regurgitating the injected summary).
-- **Why a separate field, not reordering `messages`**: LangGraph's `add_messages` reducer has no "insert at position N" primitive — every new message is appended.
-- **A named terminal state**: if `history_summary` itself grows past `MAX_HISTORY_SUMMARY_CHARS`, `route_after_compaction` routes to `context_window_exceeded` — a real dead end, not silent truncation.
-- **Degrades safely**: a summarization LLM failure still applies the trim; it just skips updating the summary.
-- **Real-world**: a support thread referencing something discussed 20 turns ago, where dropping it outright would lose real information.
+### 40. Eval statistical rigor
+`scripts/eval.py` has two release gates. (1) Each case runs `EVAL_REPETITIONS` (5) times and passes only if `REPETITION_PASS_THRESHOLD` (80%) of repetitions pass: a stochastic system graded once is a coin flip. (2) A grounded-claims gate over the whole golden set (≥95% of citation markers real), computed from the runtime's own `used_citations`/`ungrounded_claims_count`, never a model's opinion of itself. Tokens, cost and grounding are summed across repetitions; latency is averaged. The thresholds are demo defaults; the structure generalizes.
 
-### 42. **Telegram Channel (`app/channels/telegram.py`)**
-A fourth first-party interface — genuinely thin: long-polls `getUpdates`, resolves a stable `thread_id`/`SecurityCtx` per chat/user, and drives `astream_events_turn_unattended()`, collecting streamed output into one final reply.
-- **Long-polling, not a webhook**: needs no inbound port/public URL, the right default for a local/demo deployment; a real production deployment would switch to `setWebhook`.
-- **The one surface reaching the public internet**: everything else in this stack runs fully local. `TELEGRAM_BOT_TOKEN` is empty by default and `run()` refuses to start without one.
-- **HITL reuses the existing auto-decline**: no interactive approve/reject UX here — a mutating/outward call gets auto-declined (repeatedly, up to `UNATTENDED_MAX_DECLINE_ROUNDS`, then the run is cancelled — see pattern 8), with a real reply explaining why, never a silent write. `_send_message` sends nothing for an empty string, so `handle_message` substitutes `_NO_REPLY_FALLBACK` when a turn produced no text at all; before that guard an empty turn read as the bot ignoring the user.
-- **At-least-once delivery**: `offset` only advances after a reply attempt completes, so a message is retried (not replayed after success) if the process dies mid-handling.
-- **Real-world**: any agent whose users already live in a chat app.
+### 41. Bounded history summarization
+`compact_history` summarizes exactly the discarded messages with one LLM call, folding the result into a cumulative `state["history_summary"]` that is never reset per turn. `agent()` front-loads the summary at the same anchor retrieved context uses, with a short "don't restate this" reminder at the tail (a small model was seen regurgitating the injected summary). A separate field, because `add_messages` has no insert-at-position.
+- If the summary itself passes `MAX_HISTORY_SUMMARY_CHARS`, `route_after_compaction` routes to `context_window_exceeded`: a named dead end, not silent truncation. A summarization failure still applies the trim and skips updating the summary.
 
-### 43. **Redis Streams as a Persistent Queue Between the SSE Service and Agent Workers (`app/job_queue/queue.py`, `app/job_queue/agent_worker.py`, `POST /chat/stream/queued`)**
-Now the ONLY HTTP chat path this app serves. The producer (`app/api/main.py`) publishes a turn request onto one shared stream (`agent:requests`), then reads events back from a fresh per-request results stream and forwards them as SSE — it never runs the graph. The consumer (`agent_worker.py`, `make agent-worker`) pulls requests via a Redis Streams consumer group, guaranteeing each request reaches exactly one worker — running N workers is the whole scaling story.
-- **Independently scalable**: the SSE tier scales concurrent connections; the worker tier scales concurrent turns — neither number constrains the other, unlike a single in-process `/chat/stream`.
-- **Per-request results stream**: avoids one turn's events leaking into another's SSE response, with self-cleaning TTL (300s) plus explicit `DEL` on a normal finish.
-- **At-least-once, not exactly-once**: a request is only ACKed after `process_request` finishes; a crashed worker leaves it pending. `XCLAIM`/`XAUTOCLAIM` redelivery is NOT wired up — a disclosed gap, not assumed away.
-- **A real bug this surfaced**: `redis-py`'s async client defaults `socket_timeout` to 5s, racing directly against `XREAD`'s own server-side `BLOCK` window — every blocking read raised `TimeoutError` before Redis's own block ever elapsed. Fixed with `socket_timeout=None`, guarded by a regression test.
-- **A worker pool that answers nothing must be visible (`agent_worker_unreachable_total{queue}`, alert `WorkerUnreachable`)** (gap, closed in part): `read_results` bounds the wait for a job's first event and, on expiry, yields an `error` to whoever is reading — which turned a hang into an error for ONE caller but recorded nothing, so a total outage (no agent-worker for a domain, no ingest-worker at all) was one identical error per request and no signal an operator could be paged on. Both `read_results` (chat and ingest) now count the expiry, labelled by queue, and `alerts.yml` warns when it sustains. Only the expiry counts: a job that was picked up, however slow, is not unreachable. `tests/core/test_alert_rules.py` also checks, without Prometheus, that every `agent_*` metric an alert expression names is defined in `app/core/metrics.py` (an alert on a metric nothing records is silent forever). **Not done**: a consumer-lag gauge from the group's pending count, a readiness probe that checks a consumer exists for the requests stream, and a rule for "no requests at all" (an `absent`-style condition); the rule is evaluated by hand against the expression only — `promtool test rules` is not wired in.
-- **Real-world**: many idle browser tabs (cheap to hold) against a small, expensive GPU-backed worker pool (expensive to hold) — scaling them on the same axis wastes whichever is cheaper.
+### 42. Telegram channel
+`app/channels/telegram.py` long-polls `getUpdates`, resolves a stable `thread_id`/`SecurityCtx` per chat, and drives `astream_events_turn_unattended()`, collecting the stream into one reply. Long-polling needs no inbound port or public URL; production would use `setWebhook`.
+- It reaches the public internet by design. `TELEGRAM_BOT_TOKEN` is empty by default and `run()` refuses to start without one.
+- **Approvals reuse the auto-decline** (no approve/reject UX): a gated call is declined up to `UNATTENDED_MAX_DECLINE_ROUNDS` times, then the run is cancelled (pattern 8) with a real reply explaining why, never a silent write. `_send_message` sends nothing for an empty string, so `handle_message` substitutes `_NO_REPLY_FALLBACK` when a turn produced no text; before that, an empty turn read as the bot ignoring the user.
+- **Bug: the long-poll `offset` was a local variable.** A restart reset it to 0 and Telegram redelivered every update it still remembered, each producing a duplicate turn and reply to a real user. It is now durable in Redis (`telegram:offset:{domain}`) and persisted **after** handling, so a mid-handling crash means one duplicate reply, never a dropped message.
+- **Gap:** one thread is still shared across every user of a group chat (17).
 
-### 44. **Multimodal / Image-Question Support (`_build_human_content`, `_human_text`/`_human_has_content`, `images` on every entry point)**
-`_build_human_content(text, images)` builds a plain string (byte-identical to before) with no image, or an OpenAI/LiteLLM multimodal content list when at least one is attached. This app never fetches/decodes an image itself — the backing model does.
-- **Why a text-extraction helper was needed at five call sites**: `route_after_validation`, `moderate_input`, `check_semantic_cache`, `retrieve_context`, `write_semantic_cache` all read `.content` assuming a plain string, which a multimodal message's list-shaped content would break. `_human_has_content` additionally treats "at least one image part" as real content, so an image-only question isn't wrongly rejected as empty.
-- **Two disclosed scope boundaries**: moderation screens words, not pixels (an image-only message passes unconditionally); retrieval/caching stay text-only (an image-only question searches/caches against an empty string).
+### 43. Redis Streams queue between the API and agent workers
+The only HTTP chat path. `POST /chat/stream/queued` publishes a turn to a Redis stream and relays events from a per-request results stream as SSE; it never runs the graph. `agent_worker.py` pulls through a consumer group, so each request reaches one worker and **N workers is the scaling story**. The SSE tier scales connections and the worker tier scales turns, independently.
+- Results streams expire (`RESULTS_STREAM_TTL_SECONDS`, 300), so one turn's events can't reach another's response.
+- **At-least-once:** a request is ACKed only after `process_request` finishes; a crashed worker's job is reclaimed (see Extending Further).
+- **Bug:** redis-py's async `socket_timeout` defaults to 5 s, racing `XREAD`'s server-side `BLOCK`, so blocking reads timed out early. Fixed with `socket_timeout=None` plus a regression test.
+- **An answerless pool must be visible.** With no worker running, each request got one error and nothing could page anyone. `read_results` now counts a first-event timeout (`agent_worker_unreachable_total{queue}`, alert `WorkerUnreachable`); a slow job that was picked up doesn't count. `test_alert_rules.py` checks every metric an alert names is defined, since an alert on an unrecorded metric is silent forever.
+- **Not done:** a consumer-lag gauge, a readiness probe for consumers, a "no requests at all" rule. `promtool test rules` isn't wired in.
+- **Use when:** SSE connection count and LLM concurrency need to scale on different axes.
 
-### 45. **Skill Packages with Progressive Disclosure (`app/agent/skills.py`, `skill_search`/`use_skill`, `scripts/index_skills.py`)**
-A two-tool pair: a bundled catalog of `SKILL.md` packages (YAML frontmatter + markdown body, one dir per skill under `skills/`), discovered by MEANING rather than binding every skill's full instructions permanently. `skill_search` hybrid-searches a small collection of `{name, description}`; `use_skill(name)` loads exactly one matched skill's full body — a turn that never needs a skill only pays for two tool schemas, not the total size of every skill.
-- **Reuses `hybrid_search`**, not a fork — `ensure_collection`/`upsert`/`hybrid_search` gained an optional `collection` param, zero duplicated fusion logic.
-- **Disk is content truth; Qdrant is only the search index** — `use_skill` reads the body from an on-disk registry, never from Qdrant, so there's no "index says X, file says Y" drift possible.
-- **Deliberate scope boundary**: skills are a bundled, shared catalog (no `SecurityCtx` needed, like `calculator`) — a tenant-authored skill catalog is a real, larger extension not attempted here.
-- **Real-world**: middle ground between "bind every capability's full instructions on every turn" and "hand-pick a fixed subset per deployment" — a searchable catalog that can grow to hundreds of skills without growing what's bound to any single turn.
+### 44. Multimodal image questions
+`_build_human_content(text, images)` returns a plain string (byte-identical to before) with no image and an OpenAI/LiteLLM content list with one or more. The app never fetches or decodes an image; the backing model does. Five call sites (`route_after_validation`, `moderate_input`, `check_semantic_cache`, `retrieve_context`, `write_semantic_cache`) assumed `.content` was a string, so `_human_text`/`_human_has_content` handle both, and an image-only question isn't rejected as empty.
+- **Two scope boundaries:** moderation screens words, not pixels (an image-only message passes); retrieval and caching stay text-only. Verify vision **and** tool-calling support before assuming an alias swap is enough.
 
-### 46. **Subagents: Scoped, Isolated Delegation (`app/agent/subagents.py`, `run_subagent`)**
-A genuinely separate nested agent run — a fresh `build_graph()` invocation with its own messages/prompt/budget, not more instructions loaded into the same context (that's what skills do). `run_subagent(subagent_name, task)` is one tool with a closed enum built from `AGENT.md` files under `subagents/<name>/`.
-- **The load-bearing decision: subagents may ONLY use `read_only` tools**, enforced structurally at catalog-build time — anything non-`read_only` is dropped with a warning. So `run_subagent` itself is a plain, static `read_only` declaration, needing zero special-casing in the mandatory-approval gate.
-- **Why not let subagents write, gated at the spawn boundary**: a subagent's nested graph runs synchronously on a throwaway `MemorySaver` inside one outer tool-call frame — there's no mechanism for a human to resume that specific nested run hours later, so a write-capable subagent would mean either an unresumable mandatory gate (a real deadlock) or a bypass of pattern 15's "no flag turns this off" invariant. The read-only restriction sidesteps the question entirely.
-- **Recursion blocked structurally**: `run_subagent` is unconditionally stripped from every subagent's own resolved tool set, regardless of its `AGENT.md`.
-- **Isolation**: a fresh `messages` list (the subagent's own system prompt entirely replacing `SYSTEM_PROMPT`, plus the delegated task as its sole `HumanMessage`); `SecurityCtx` inherited unconditionally; its own smaller fixed budget (`MAX_SUBAGENT_ITERATIONS=6`, `MAX_SUBAGENT_TOKENS_PER_RUN=4000`, its own cost ceiling and timeout) via the same `functools.partial` mechanism pattern 23 established; an ephemeral `MemorySaver`, never the durable saver.
-- **Compiled once, reused**: a graph cached by `(domain, subagent_name)`, the same "compile once, invoke many" shape as the top-level singleton. Nested spend folds into the parent's own budget via a `subagent_spend` reducer field (needed because parallel tool calls could otherwise race a read-then-overwrite). The reducer (`graph.py::_concat_or_reset`) concatenates **and** treats `None` as an explicit reset: a plain concatenating reducer made `validate_input`'s per-turn reset of this field a no-op, so spend from earlier turns kept counting toward later turns' ceilings (see pattern 10). Nested activity now traces/streams: parent callbacks + metadata thread into the nested `.invoke()`, and the client's token stream is guarded against leaking the subagent's own reasoning tokens.
-- **A dedicated, leaner graph** (`build_subagent_graph()`) shares `build_graph()`'s own node functions via a factored `_assemble_shared_graph_parts()`, dropping 5 of 21 nodes each for a specific, provably-safe reason (semantic cache, follow-ups, and history-compaction nodes are all either cross-talk risks or mathematically unreachable given the smaller token budget).
-- **Disclosed gap**: a new subagent needs a process restart to appear (eager, compile-time enum).
-- **Real-world**: a multi-step lookup whose intermediate noise shouldn't pollute the main thread, or a task better matched by a specialist prompt — comparable to Claude Code's Task tool.
+### 45. Skill packages with progressive disclosure
+A catalog of `SKILL.md` packages (YAML frontmatter + markdown, one directory under `skills/`) discovered by meaning. `skill_search` hybrid-searches `{name, description}`; `use_skill(name)` loads one matched skill's full body. A turn that needs no skill pays for two tool schemas, not the size of the catalog (`app/agent/skills.py`, `scripts/index_skills.py`).
+- Reuses `hybrid_search` via an optional `collection` parameter; no forked fusion logic. **Disk is content truth, Qdrant only the index:** `use_skill` reads the body from an on-disk registry, so the index can't disagree with the file.
+- Skills are a shared bundled catalog (no `SecurityCtx`, like `calculator`); a tenant-authored catalog is a larger extension not attempted. Domains scope skills with an optional `domains:` field.
 
-### 47. **Example Domains as a Load-Bearing Proof (`app/domains/`) — and Why a Cron Job Can't Call an Outward Tool**
-`app/domains/support/`, `app/domains/ops/`, `app/domains/sales/` turn pattern 23's test-only proof into three real, runnable products on the SAME unmodified graph: a Tier-1 support copilot, an internal ops bot (reusing this repo's own Prometheus/alert thresholds), and a sales/CRM concierge — each with its own `store.py`/`tools.py`/`domain.py` following `sql_store.py`/`tools.py`'s exact conventions, plus a new shared `app/domains/policy.py::ActionAllowlistPolicy`.
-- **The runtime change, kept minimal**: `init_graph_async` gained an optional `manifest`/`domain` pair (defaulting to `None`, reproducing today's exact behavior) — deliberately NOT the "several domains from one process" registry (still unbuilt), just "which ONE domain does THIS process boot as," decided once at start from `AGENT_DOMAIN`.
-- **The gate this exposed: an unattended cron job can never approve itself.** `post_to_team_channel` is the first real use of `outward` — and the mandatory gate has no bypass flag. Auto-declining would silently make a digest never post. Both cron scripts (`scripts/ops_digest.py`, `scripts/followup_sweep.py`) sidestep this by calling the domain's own `_impl` functions directly — a fixed pipeline, never entering the tool-calling loop for the write step.
-- **Real-world**: a platform team's answer to "we need a support bot, an ops bot, and a sales bot" — one hardened graph underneath three different products.
+### 46. Subagents: scoped, isolated delegation
+`run_subagent(subagent_name, task)` starts a separate nested run: a fresh `build_graph()` with its own messages, prompt and budget. Skills add instructions to the same context; this doesn't. One tool with a closed enum built from `subagents/<name>/AGENT.md` (`app/agent/subagents.py`).
+- **Read-only tools only,** enforced at catalog-build time (others are dropped with a warning), so `run_subagent` is a plain `read_only` tool needing no gate special case. The nested graph runs synchronously on a throwaway `MemorySaver` inside one tool call; nobody could resume it hours later, so a write-capable subagent would mean a deadlocked gate or a bypass of pattern 15.
+- **No recursion:** `run_subagent` is stripped from every subagent's tools.
+- **Isolation:** fresh messages (its own prompt, the task as the only `HumanMessage`), inherited `SecurityCtx`, its own budget (`MAX_SUBAGENT_ITERATIONS=6`, `MAX_SUBAGENT_TOKENS_PER_RUN=4000`) via pattern 23's `functools.partial`, and a leaner `build_subagent_graph()` without 5 of 21 nodes (cache, follow-ups, compaction). Graphs are cached by `(domain, subagent_name)`.
+- **Spend:** nested spend folds into the parent's budget through the `subagent_spend` reducer `_concat_or_reset`, which concatenates and treats `None` as a reset (pattern 10's bug). Parent callbacks thread into the nested run, and its reasoning tokens never reach the client's stream.
+- **Gap:** a new subagent needs a process restart.
 
-### 48. **Real-Backend Testing at Every Layer: Testcontainers, a Shared Ollama, Playwright, promptfoo, garak, deepeval**
-`tests/containers.py` generalizes the durable-checkpoint test's "skip cleanly if unreachable" contract into four `ensure_*()` helpers (Postgres, Redis, Qdrant, Ollama), each starting its own ephemeral testcontainer — so `tests/integration/`/`tests/live/` genuinely execute in CI while a laptop `pytest -q` with no Docker stays exactly as fast as before. `promptfoo/` and `garak/` are separate tools pointed at the same real small Ollama model directly.
-- **Shared-container caching under pytest-xdist needed a fixed cache dir, not pytest's own rotating `basetemp`** — the textbook `tmp_path_factory.getbasetemp().parent` recipe is subtly wrong for both a plain non-distributed run (it overshoots into a directory reused across every invocation) and the controller process (which never calls `getbasetemp()` itself, so it can't be trusted for teardown). Ryuk is disabled and `pytest_sessionfinish` does teardown explicitly, gated on being the controller/non-distributed run.
-- **A real concurrency bug this caught**: several xdist workers concurrently calling `init_graph_async()` for the first time against one shared Postgres hit `UniqueViolation` in `AsyncPostgresSaver.setup()`'s own migration bookkeeping (a real gap in the upstream library) — sidestepped by running `.setup()` once, inside its own lock, before any test can race it.
-- **Real native tool-calling confirmed, not assumed**: `OPENAI_API_BASE` points straight at Ollama's own OpenAI-compatible endpoint, verified via a raw `curl` round trip to have real structured `tool_calls`, no prompt-injection faking (unlike LiteLLM's own `ollama/` provider).
-- **promptfoo/garak config-schema gotchas, found by running them, not trusting docs**: promptfoo's `file://` paths resolve relative to the config file's directory, not the CWD; garak's `generators.openai...uri` must nest under a top-level `plugins:` key or it's silently ignored, falling back to a hardcoded default.
-- **Small local models are unreliable graders AND targets**: a garak `dan` probe scored 100% attack success against `qwen2.5:1.5b`, confirming `app/agent/moderation.py`'s pattern screen is the real line of defense, not a redundant layer. A local promptfoo redteam run (small local model as both generator AND grader) produced a misleading 93%-failed headline traced to malformed generated prompts and a grader confabulating evidence — moved `redteam.provider` to a cloud judge (`gemini-3.1-flash-lite`, later also `openai/gpt-oss-120b` via Groq for one deepeval file) once local-model-as-judge unreliability was independently reproduced three separate ways (promptfoo, deepeval's `FaithfulnessMetric`, `AnswerRelevancyMetric` all failed to discriminate a good answer from a bad one on a small local judge). The target model stays local always — only the grader/generator role moved to a cloud judge, kept manual (`make promptfoo-redteam`) rather than gated in CI.
-- **Real redteam findings, fixed same-day**: a real prompt-extraction leak (asked to "act as a senior auditor," the model echoed real system-prompt paragraphs) and a real sandbox-safety miss (asked to "wipe temp files" under an urgency pretext, the model authored a real destructive script) were both found via Gemini-judged redteam runs and fixed with explicit prompt-level scope/anti-disclosure rules — re-verified to hold against fresh adversarial variants, with a couple of narrower paraphrase-based gaps disclosed rather than chased further (a known ceiling of prompt-only defense on a small model, not a fixable wording bug).
-- **deepeval** (`tests/deepeval/`, `@pytest.mark.deepeval`, `make deepeval`) adds a genuinely different question none of the above ask: is an answer's own claim actually entailed by its cited context (`FaithfulnessMetric`/`AnswerRelevancyMetric`), did the agent call the right tool with sensible arguments (`ToolCorrectnessMetric`/`ArgumentCorrectnessMetric`), and does a multi-turn conversation hold up (`ConversationSimulator`, `RoleAdherenceMetric`/`KnowledgeRetentionMetric`). Runs in CI as a non-blocking signal (deepeval's own `flaky=True`, which still lets a genuine crash fail the job) rather than a gate. Each judge answers through a failover chain (`tests/deepeval/fallback.py`): its primary, then other models on the same provider (each has its own free-tier quota: a Groq 429 names the model, a Gemini one says `PerProjectPerModel`), then optional backup providers (`tests/deepeval/backup_providers.py`: Plugsky's free `plugsky-micro` then `plugsky-lite`, then OpenRouter's free `nvidia/nemotron-3-super-120b-a12b:free` then `qwen/qwen3.8-27b:free`; each enabled by its own key). A hand-over happens only on a rate limit, an overload or a timeout, and a model that failed is skipped for a while (5 min, an hour for a per-day limit) so a dead one is not retried with backoff on every metric call. **The first version of this fallback never engaged on the case it existed for**: deepeval's tenacity policy has `reraise=False`, so once its attempts run out the exception reaching the test is `tenacity.RetryError` wrapping the real `RateLimitError`, and the old check looked only at the outer exception (a real CI run hit Groq's per-day limit with the backup configured and idle, and the log had no hand-over line). The chain now looks inside, logs the model and the error class and status only (the old log printed the provider's message, which carries the organisation id and quota figures into this repo's public logs), and is tested with real tenacity/openai exception shapes. Disclosed gaps: Plugsky documents the free plan's 30 req/min per plan, not per model, and OpenRouter limits `:free` models account-wide (20 req/min, 50/day, 1,000/day with $10 of credits), so extra models within one provider add a different upstream, not more quota, and OpenRouter's 50/day can be exhausted by one run; `:free` ids churn and a retired one fails loudly rather than being skipped; neither OpenRouter default has been exercised against a real key. Hand-off order and key gating are pinned hermetically by `tests/deepeval/test_backup_providers.py`, the rule itself by `test_fallback_judge.py`.
-- **A session-scoped stack leaks state between tests, and a small model is sensitive to it**: `real_stack_with_retrieval` is shared by every browser e2e test, so a memory one test `remember`s stays in Qdrant and is pre-fetched into the next turns whose prompt resembles it. The approve-button test remembered "I prefer dark roast coffee." and the skill test, a few tests later, mentioned "coffee $5"; with the memory present the 3B model called `skill_search` with no arguments and then proposed a batch containing the mutating `add_note`, which paused for an approval nobody could give. That test failed in every CI run since Oct 3 (about 40 runs) and passed when run alone. Found by running the suite in CI order locally (it reproduced), then an A/B with only the memory removed between the two tests (pass, versus fail in all three runs with it present). Fixed by an autouse fixture that deletes, by id, the memories each retrieval-stack test added (`tests/live/memories.py`), so a future test that also writes one cannot poison the next.
-- **Wait for the turn to end, not for the text**: asserting `to_contain_text(..., timeout=<whole turn budget>)` on a live locator keeps polling for the full budget after the agent has stopped for good (here: paused at `human_approval` at 13:41, failed at 13:52, about half of the whole `test-live` job). The e2e tests now wait for the page's own "turn over" signal (Send re-enabled, or the Approve/Reject box up) and report a pause by the tool it was waiting to run (`tests/live/test_chat_ui.py::_answer_of_the_finished_turn`). A failed browser test also prints what the page showed (`tests/live/transcript.py`, attached by a report hook in `tests/live/conftest.py`): each message, each tool call with its arguments, the approval box and the status, because the browser is the only place those arguments exist (the server logs a fingerprint of them, on purpose) and a locator's "expected text X" cannot tell a wrong answer from a wrong tool or a pause. The subagent test is the one live test that still fails now and then (the model ends its turn saying there is no Support Lead; it failed in 15 of ~45 CI runs on Oct 2-3, in none of ~39 after, then once on Oct 4 and was green on re-run). The transcript, used for the first time, showed the mechanism: the parent model **paraphrases the task** into its `run_subagent` call, and the nested run then calls `query_employees({"department":"Support","name_contains":"Support Lead"})`, which returns "No matching employees found." because `Support Lead` is a title and the tool can only filter by department and by NAME. **Neither a prompt nor a tool change fixed it, and both attempts made things worse or no better**: telling the subagent to leave `name_contains` out failed 3 of 3 local runs against 4 of 4 passing with the original wording (the parent drops the instruction from its paraphrase, and the extra mention of the title put `'Support Lead'` into the task it wrote). Adding a `title_contains` filter to `query_employees` (a real gap: a title is not part of a name) made that explicit prompt pass 3 of 3, but made the repo's own prompt, which had passed 4 of 4, fail 3 of 3 (the nested run now answers "no Support Lead in the Engineering department"). A 3B model's tool use changes with any wording, and local pass rates do not predict CI's, so neither change was shipped. The CI record since the memory fix agrees: one run fully green, three failing on the subagent test, one on the skill test (whose failure, seen here for the first time through the transcript, is the model describing its next step after `skill_search` instead of doing it, caught by the app's output guard). A plain rerun-on-failure was considered and rejected: a completed read-only turn is written to the semantic cache, so the rerun would be answered with the same wrong answer.
-- **A gate must fail for a reason a change can cause**: two browser e2e tests need the 3B model to chain several calls (`skill_search` -> `use_skill` -> `calculator`; a delegation whose nested run must query correctly), and they do not do it reliably. Since the memory-leak fix the CI record is one fully green `test-live` run in five, the failures alternating between the two (the subagent test three times, the skill test once, whose failure is the model describing its next step instead of doing it). Two attempts to fix them by wording each fixed one case and broke another (a prompt change: 3 of 3 local failures against 4 of 4 passing; a `title_contains` filter on `query_employees`: the explicit prompt passed 3 of 3 but the repo's own prompt went from 4 of 4 to 0 of 3), and local pass rates do not predict CI's. Every other e2e test (a calculator call, a read-only query, a citation, the approve/reject round trip, the UI helpers) has passed in every CI run since Oct 3. So `test-live`'s e2e step is split: `-m "e2e and not advisory"` is the gate, and the two chained tests carry `@pytest.mark.advisory` and run in their own `continue-on-error` step (`-m "e2e and advisory"`), the same posture as the `deepeval` job and the rule in `.claude/rules/testing.md` that small-model-dependent signals are not hard gates. They still run on every push and a failure prints the page transcript, so the signal is kept; what is dropped is a red check that no code change caused. `tests/core/test_live_e2e_gate_split.py` pins the split (the gate is blocking, the advisory step is not and still runs after a red gate, no step runs plain `-m e2e`, and exactly these two tests are marked), so it cannot drift either way. The trade, stated plainly: a regression that breaks only skills or subagent delegation no longer turns the job red by itself; it shows in the advisory step's log, which someone has to read.
-- **Real-world**: any CI setup wanting genuine Docker-backed coverage under real test-runner parallelism without serializing everything or paying for N copies of an expensive shared resource.
+### 47. Example domains as a load-bearing proof
+`app/domains/support/`, `ops/` and `sales/` turn pattern 23's test-only proof into three runnable products on the same unmodified graph: a Tier-1 support copilot, an internal ops bot (reusing this repo's Prometheus thresholds) and a sales/CRM concierge. Each follows `sql_store.py`/`tools.py` conventions, plus a shared `app/domains/policy.py::ActionAllowlistPolicy`.
+- **Runtime change kept minimal:** `init_graph_async` takes an optional `manifest`/`domain` (default `None`, today's exact behavior): which one domain this process boots as, decided at start from `AGENT_DOMAIN`. Not a multi-domain registry.
+- **An unattended cron job can never approve itself.** `post_to_team_channel` is the first real `outward` tool and the gate has no bypass flag; auto-declining would silently make a digest never post. `scripts/ops_digest.py` and `followup_sweep.py` call the domain's `_impl` functions directly: a fixed pipeline that never enters the tool-calling loop.
 
-### 49. **Per-Domain Requests Streams: One Unified API Serving Every Domain's Queue (`queue.py::requests_stream_key`, `app/api/main.py::get_domain`)**
-Closes the gap where the queued API endpoints published every job onto one flat `agent:requests` stream regardless of domain, so the built-in web UI could only ever reach whichever domain a worker pool happened to be running. `requests_stream_key(domain)` (`agent:requests:{domain}`) gives each domain its own consumer group; `get_domain` reads the caller's `X-Domain` header (default `"ecorp"`) and routes onto that domain's stream — one unified API process now reaches every domain a worker pool is currently running for.
-- **Domain is inferred from which stream a message landed on**, never carried in the payload — a resume/cancel job must land on the same domain's stream the original turn did, since the paused graph was compiled from that domain's manifest/tools.
-- **An unknown `X-Domain` fails loud (422)** rather than publishing onto a stream nothing reads, which would hang silently.
-- **Real-world**: one SaaS product fronting several distinct bots, wanting one public API surface while scaling each bot's own execution capacity independently.
+### 48. Real-backend testing at every layer
+`tests/containers.py` provides `ensure_*()` helpers (Postgres, Redis, Qdrant, Ollama, …) that start ephemeral testcontainers, so `tests/integration/` and `tests/live/` run in CI while a no-Docker `pytest -q` stays fast. `promptfoo/` and `garak/` target the same small Ollama model.
+- **xdist:** shared containers need a fixed cache dir, not pytest's rotating `basetemp`; Ryuk is off and the controller tears down in `pytest_sessionfinish`. Concurrent first `init_graph_async()` calls hit an upstream `UniqueViolation` in `AsyncPostgresSaver.setup()`, so setup runs once, under a lock.
+- **Tool calling is real:** `OPENAI_API_BASE` points at Ollama's OpenAI-compatible endpoint, confirmed by a raw `curl` to return structured `tool_calls` (LiteLLM's `ollama/` provider fakes them).
+- **Tool gotchas:** promptfoo `file://` paths resolve from the config file, not the CWD; garak's `uri` must nest under `plugins:` or it is silently ignored.
+- **Small local models make poor judges and targets.** A garak `dan` probe had 100% attack success on `qwen2.5:1.5b`, so `moderation.py` is the real defence. A local-judge redteam run reported 93% failed from malformed prompts and a grader inventing evidence, and deepeval's metrics couldn't separate good answers from bad ones either. So the judge is hosted (Gemini, Groq) and the target stays local.
+- **Redteam findings, fixed:** a system-prompt leak under an "act as an auditor" framing, and a destructive script written for "wipe temp files" under urgency. Both got explicit prompt rules and were re-verified. Narrower paraphrase gaps remain: a ceiling of prompt-only defence on a small model.
+- **deepeval** (`make deepeval`) checks faithfulness and relevancy to cited context, tool and argument correctness, and multi-turn role adherence and knowledge retention. In CI every case is `flaky=True`, so only a crash fails the job.
+  - **Judge failover** (`tests/deepeval/fallback.py`): the primary, then other models on the same provider, then optional Plugsky and OpenRouter free models. It hands over only on a rate limit, overload or timeout, and skips a failed model for 5 minutes (an hour for a daily limit).
+  - **Bug:** the first version never fired. deepeval's tenacity policy has `reraise=False`, so the test sees `RetryError` wrapping the real `RateLimitError`, and the check read only the outer exception. It now looks inside and logs model, class and status only (the old log leaked an org id and quota figures into public logs).
+  - **Gap:** free-tier limits are per plan or account, not per model, so more models in one provider add no quota; OpenRouter's 50/day can run out in one run.
+- **Bug: a session-scoped stack leaked state.** A memory saved by the approve-button test ("dark roast coffee") was pre-fetched into the skill test's turn; the 3B model then called `skill_search` with no arguments and proposed `add_note`, pausing for an approval nobody could give. It failed in ~40 CI runs and passed alone. An autouse fixture now deletes each test's memories (`tests/live/memories.py`).
+- **Wait for the turn to end, not the text.** `to_contain_text(timeout=<whole budget>)` kept polling after the agent had stopped, wasting about half the job. Tests now wait for the page's "turn over" signal, and a failed browser test prints the page transcript (`tests/live/transcript.py`): messages, tool calls with arguments, the approval box.
+- **The subagent flake.** The transcript showed the parent paraphrases the task into `run_subagent`, and the nested run calls `query_employees(name_contains="Support Lead")`, which finds nothing because that's a title. Both fixes tried made things worse (a prompt tweak: 3 of 3 failures against 4 of 4 passing; a `title_contains` filter fixed the explicit prompt but broke the repo's own, 4 of 4 → 0 of 3), so neither shipped. A 3B model's tool use shifts with any wording, and local pass rates don't predict CI. A rerun was rejected: the semantic cache would replay the wrong answer.
+- **A gate must fail for a reason a change can cause.** Two e2e tests (the skill chain, subagent delegation) fail unpredictably: one fully green run in five. They carry `@pytest.mark.advisory` and run in their own `continue-on-error` step, while `-m "e2e and not advisory"` is the gate; `tests/core/test_live_e2e_gate_split.py` pins the split. **Trade-off:** a regression that breaks only skills or subagents no longer turns the job red; it shows in that step's log, which someone has to read.
 
-### 50. **Real Web Crawling (crawl4ai) and a Real Sandbox (OpenSandbox over MCP, Wrapped Narrow)**
-Closes two gaps: `ingest_url` was a bare `httpx.get` + HTML-strip (useless against JS-rendered sites); `calculator` was a narrow AST evaluator with nowhere safe to run arbitrary code. crawl4ai is a first-class **in-process dependency** (`app/ingestion/web_crawler.py`) so its output flows through this app's own SSRF guard and stores. OpenSandbox is consumed entirely **over MCP** (pattern 28's unmodified `load_remote_tools`), via a real `opensandbox-mcp` bridging to a separately-run `opensandbox-server`.
-- **One shared SSRF guard**, extracted to `app/core/url_safety.py`, used by both static-page ingest and crawl4ai's real-browser render (allow-list of globally routable addresses, async entry point — see pattern 24).
-- **Every one of these tools is `"outward"`** — the mandatory approval gate fires unconditionally, same tier as `post_to_team_channel`.
-- **A real live-verified model-capability finding that changed the design**: handing the LLM OpenSandbox's raw ~19-tool catalog directly caused `qwen2.5:3b` to hallucinate a `sandbox_id` and loop on the wrong recovery tool — three escalating prompt fixes didn't change its very first action. Fixed structurally, not with more prompt text: `app/domains/sandbox_session.py` hides the whole lifecycle behind three flat tools (`run_command_in_sandbox`, `read_sandbox_file`, `write_sandbox_file`), doing sandbox lookup/creation in code (keyed by a hash of the tenant and a hash of the raw conversation id, looked up server-side so it survives across horizontally-scaled workers) — re-verified live to fully eliminate the original failure mode.
-- **A later structural fix for a persistent shell-quoting ceiling**: the model kept producing a different broken `python -c '...'` one-liner each time despite repeated docstring warnings. `run_python_in_sandbox` eliminates the failure class by passing the script as a plain string argument (never through a shell), rather than warning about quoting again.
-- **`check_output` gained two new categories from live findings**: `fabricated_tool_output` (the model presents an invented "tool result" — code and output — with no real `tool_calls` behind it; ranked above other retry reasons since presenting false information as true is worse than failing to act) and `skipped_required_tool` (a skill said to use a specific tool, and the model estimated the answer in its head instead) — both backed by a proactive reminder plus a reactive catch, not the reminder alone.
-- **A real streaming-corruption bug**: two simultaneous tool calls from one model turn occasionally came back from the backend as one corrupted, glued-together `tool_calls` entry — fixed with `parallel_tool_calls=False` on `bind_tools()`.
-- **A tool-list-ordering finding, not a model ceiling**: sales' skill-based math question never routed through `skill_search` first despite three escalating prompt fixes — root cause was list POSITION (`skill_search`/`use_skill` landed at the end of every domain's bound tool list), not wording; reordering them to the front fixed it in every domain, confirmed 3/3 and 2/2 on fresh runs. **Lesson**: check the mundane structural explanation (tool order, schema shape) before concluding "the model just can't do this."
-- **A cluster of real infra "it's the environment" misdiagnoses, each corrected by tracing the actual request**: a mysterious `sandbox_create` 405 was eventually traced to a PORT COLLISION with this repo's own `open-webui` (both defaulted to 8080), not an OpenSandbox bug; a mysterious client-side timeout on sandbox reuse was traced to the OpenSandbox SDK trying to reach a Docker-bridge-internal IP unreachable from the host once the server was containerized, fixed via a `use_server_proxy=True` wrapper script (`scripts/opensandbox_mcp_bridge.py`), not a longer timeout. Both times, tracing the real network call — not accepting a plausible "it's just flaky infra" story — found a categorically different, fixable bug.
-- **Real, disclosed third-party/environment bugs, left as documented workarounds, not hidden**: `read_sandbox_file` reliably 404s immediately after a real successful write (an `opensandbox-mcp`/`server` gap, not this app's code) — every domain's docstring now says to fall back to `cat <path>` via `run_command_in_sandbox`. A non-root sandbox image needed an explicit `WORKDIR` for relative-path writes to work. Telegram's `telegram:{chat_id}` thread ids broke every sandbox metadata call (OpenSandbox's metadata charset forbids `:`) — first fixed by rewriting the id into the allowed charset, **which was itself a tenant-isolation bug**: the rewrite is many-to-one (`telegram:12345` and `telegram-12345`, or any two ids sharing their first 63 characters, resolved to ONE sandbox) and the lookup never named the tenant, so the same id under two tenants shared a sandbox and a file written under one was read under the other (Principle I). Now both the tenant and the raw conversation id are tagged as separate SHA-256 prefixes (hex always satisfies the charset, a chat id is no longer written into the sandbox service in the clear), `sandbox_list` filters on both, and the tags of what comes back are re-checked so a service that ignored the filter still can't cross conversations; `tenant` is a required keyword-only argument on every sandbox helper so a new caller can't forget it. `thread_id`'s format is still untouched everywhere else (the Postgres checkpointer key, Langfuse trace metadata). Sandboxes created before this change carry the old tag, are never matched again, and expire on their own TTL — a conversation in flight at deploy time continues in a fresh, empty sandbox once.
-- **What this deliberately doesn't attempt**: tenant/`SecurityCtx` scoping of the OpenSandbox *catalog* itself (the tool list is a shared operational resource, not tenant data — the approval gate is the real boundary); the *sandboxes* are per tenant and conversation, not shared. Not verified against a real service: that the sandbox service itself honours the metadata filter, and its "no network egress" claim (spec 009, A2); cross-thread sandbox reuse beyond a TTL; a file-listing tool.
-- **Real-world**: any agent needing live, JS-rendered web access or real isolated computation an LLM's own arithmetic can't reliably do — the general shape (gated behind mandatory approval, consumed over MCP) generalizes past OpenSandbox specifically.
+### 49. Per-domain requests streams
+Every queued job once went onto one `agent:requests` stream, so the web UI reached only whichever domain a worker pool happened to run. `requests_stream_key(domain)` (`agent:requests:{domain}`) gives each domain its own stream and consumer group; `get_domain` reads `X-Domain` (default `ecorp`), so one API process reaches every domain with a running pool.
+- The domain is inferred from which stream a message landed on, never carried in the payload: a resume or cancel must land where the original turn did, since the paused graph was compiled from that domain's manifest. An unknown `X-Domain` is a 422 rather than a publish nothing reads, which would hang silently.
+
+### 50. Web crawling (crawl4ai) and a sandbox (OpenSandbox over MCP)
+crawl4ai (`app/ingestion/web_crawler.py`) renders JS-heavy pages. OpenSandbox, consumed over MCP through pattern 28's unmodified `load_remote_tools`, runs code in isolation. Both go through the shared SSRF guard (`app/core/url_safety.py`), and every tool is `outward`, so the approval gate always fires.
+- **Wrapped narrow:** handing a 3B model OpenSandbox's ~19 tools made it hallucinate a `sandbox_id`, and three prompt fixes didn't help. `app/domains/sandbox_session.py` now does lookup and creation in code and exposes four flat tools (`run_command_in_sandbox`, `run_python_in_sandbox`, `read_sandbox_file`, `write_sandbox_file`). `run_python_in_sandbox` takes the script as a plain argument, not a shell string, because the model kept breaking `python -c '...'` quoting.
+- **Check the structure before blaming the model:** a skill-based math question never reached `skill_search` despite three prompt fixes. The cause was list position (those tools were last); moving them first fixed every domain.
+- **`check_output` gained two retry reasons:** `fabricated_tool_output` (an invented tool result with no real `tool_calls`; ranked first) and `skipped_required_tool`.
+- **Bug:** two simultaneous tool calls sometimes arrived glued into one `tool_calls` entry. Fixed with `parallel_tool_calls=False` on `bind_tools()`.
+- **Bug: tenants could share a sandbox.** Telegram ids (`telegram:123`) broke sandbox metadata (`:` is forbidden), and the first fix rewrote the id many-to-one without naming the tenant, so two tenants' conversations could share a sandbox and read each other's files (Principle I). Now tenant and raw conversation id are tagged as separate SHA-256 prefixes, lookups filter on both and re-check returned tags, and `tenant` is a required keyword argument on every sandbox helper. Old-tag sandboxes expire on their TTL.
+- **Misdiagnoses traced to the real request:** a 405 was a port clash with open-webui (both on 8080); a timeout was the SDK reaching a Docker-internal IP, fixed with `use_server_proxy=True` in `scripts/opensandbox_mcp_bridge.py`.
+- **Third-party bugs, documented:** `read_sandbox_file` 404s right after a write (use `cat` via `run_command_in_sandbox`); a non-root image needs an explicit `WORKDIR`.
+- **Not verified against a real service:** that the sandbox honours the metadata filter, and its "no network egress" claim (spec 009, A2). The catalog itself isn't tenant-scoped: it's a shared resource, and the approval gate is the boundary.
 
 ## Graph Flow
 
 ```
 START
   ↓
-validate_input  ← also resets iterations/total_tokens/run_id,
+validate_input  ← resets iterations/total_tokens/run_id/cancelled/approved,
   ↓                stamps SecurityCtx from config["configurable"]["ctx"]
-route_after_validation?  ← Decide: valid ctx? is the last HumanMessage non-empty?
-  ├─→ reject_context  (no valid tenant+principal — checked FIRST, see pattern 17)
-  │    ↓
-  │   END
-  │
-  ├─→ reject_input  ← AIMessage explaining the problem
-  │    ↓
-  │   END
-  │
-  └─→ compact_history  ← trims turns past HISTORY_TOKEN_CEILING (down to
-       │                  HISTORY_TOKEN_FLOOR) AND folds them into a
-       │                  cumulative history_summary via one LLM call
-       │                  (pattern 41); no-op when within budget
+route_after_validation?  ← valid ctx? last HumanMessage non-empty?
+  ├─→ reject_context  (no valid tenant+principal — checked FIRST, pattern 17) → END
+  ├─→ reject_input    (AIMessage explaining the problem) → END
+  └─→ compact_history  ← trims past HISTORY_TOKEN_CEILING down to FLOOR and folds the
+       │                  dropped turns into history_summary (pattern 41); no-op in budget
        ↓
-      route_after_compaction?  ← Decide: is history_summary itself still
-       │                          over MAX_HISTORY_SUMMARY_CHARS?
-       ├─→ context_window_exceeded  (a named dead end, not silent truncation)
-       │    ↓
-       │   END
-       │
-       └─→ moderate_input  ← real pattern-based screen for known injection/
-            │                 jailbreak phrasings + a small denylist (pattern 25);
-            │                 fail-open only on the CHECK's own failure, never on
-            │                 a real hit
+      route_after_compaction?  ← history_summary over MAX_HISTORY_SUMMARY_CHARS?
+       ├─→ context_window_exceeded  (a named dead end, not silent truncation) → END
+       └─→ moderate_input  ← regex screen + Prompt Guard classifier (pattern 25);
+            │                 fails closed on a hit, open on the check's own failure
             ↓
-           route_after_moderation?  ← Decide: screened out?
-            ├─→ reject_moderation  ("I can't help with that request.")
-            │    ↓
-            │   END
-            │
-            └─→ check_semantic_cache  ← tenant+principal-scoped cosine-KNN lookup in
-                 │                       Redis (app/retrieval/semantic_cache.py, pattern 22);
+           route_after_moderation?
+            ├─→ reject_moderation ("I can't help with that request.") → END
+            └─→ check_semantic_cache  ← tenant+principal cosine-KNN in Redis (pattern 22);
                  │                       degrades to a miss on any failure
                  ↓
-                route_after_cache?  ← Decide: near-identical query cached already?
-                 ├─→ check_output   (HIT — cached answer appended as a final
-                 │    ↑               AIMessage, no retrieval, no LLM call at all)
-                 │    │
-                 └─→ retrieve_context  ← MISS: enrich — hybrid dense+BM25 search,
-                      │                  RRF-fused, cross-encoder reranked, numbered
-                      │                  citations (pattern 20); + this principal's
-                      │                  memories; degrades on failure; both
-                      │                  tenant/owner-scoped via app/core/security.py's Policy
+                route_after_cache?
+                 ├─→ check_output   (HIT: cached answer as a final AIMessage, no retrieval, no LLM)
+                 └─→ retrieve_context  ← MISS: hybrid dense+BM25, RRF, rerank, numbered citations
+                      │                  (pattern 20) + this principal's memories; degrades on failure
                       ↓
-                     agent  ← Think: call LLM with context injected as a delimited,
-                     │        untrusted <retrieved_document> SystemMessage (retried on
-                     │        transient LLM failure via AGENT_RETRY_POLICY). Can call
-                     │        ask_clarification (an ordinary read_only tool, pattern 27)
-                     │        when a request is materially ambiguous instead of guessing.
+                     agent  ← LLM call with context as an untrusted <retrieved_document>
+                     │        SystemMessage; retried on transient failure (AGENT_RETRY_POLICY);
+                     │        may call ask_clarification (pattern 27)
                       ↓
-                     should_continue?  ← Decide: tools? too many at once? approval needed? done? over budget?
-                      ├─→ too_many_tool_calls  (> MAX_TOOL_CALLS_PER_TURN at once)
+                     should_continue?
+                      ├─→ too_many_tool_calls  (> MAX_TOOL_CALLS_PER_TURN) → agent, with ToolMessage rejections
+                      ├─→ human_approval  (require_approval, OR any non-read_only call — mandatory, pattern 15)
                       │    ↓
-                      │    agent  ← Loop back with synthesized ToolMessage rejections
-                      │
-                      ├─→ human_approval  (require_approval=True on input state, OR any
-                      │                    pending tool call is non-read_only — mandatory,
-                      │                    see TOOL_CAPABILITIES)
+                      │   route_after_approval?  ← interrupt() paused here
+                      │    ├─→ tools      (approved)
+                      │    ├─→ agent      (rejected, with synthesized ToolMessage rejections)
+                      │    └─→ __end__    (cancelled — checked FIRST, never loops back, pattern 36)
+                      ├─→ tools  ← concurrent execution; may include remote MCP tools (pattern 28)
                       │    ↓
-                      │   route_after_approval?  ← interrupt() paused here for a decision
-                      │    ├─→ tools       (approved)
-                      │    ├─→ agent       (rejected — with synthesized ToolMessage rejections)
-                      │    └─→ __end__     (cancelled — checked FIRST, never loops back, pattern 36)
-                      │
-                      ├─→ tools  ← Execute tool calls (concurrently, if there are several) —
-                      │    │       may include remote MCP tools (app/mcp/client.py, pattern 28)
-                      │    ↓       bound into a DomainPlugin like any other tool
-                      │    agent  ← Loop back to think again
-                      │
-                      └─→ check_output  ← also both cache-hit AND cache-miss paths
-                           │               rejoin here (see above); computes
-                           │               used_citations AND ungrounded_claims_count
-                           │               from the answer text (pattern 20, pattern 39)
+                      │    agent  (loop)
+                      └─→ check_output  ← cache hits and misses both rejoin here; computes
+                           │               used_citations and ungrounded_claims_count (20, 39)
                            ↓
-                          route_after_check?  ← Decide: is the answer too short?
-                           ├─→ retry_output  ← Append corrective HumanMessage
-                           │    ↓
-                           │    agent  ← Loop back with feedback
-                           │
-                           └─→ suggest_followups  ← 2-3 follow-ups from a GROUNDED
-                                │                     answer only (used_citations
-                                │                     non-empty); skipped on a cache
-                                │                     hit or an uncited answer (pattern 27)
+                          route_after_check?  ← answer too short, fabricated, or skipped a required tool?
+                           ├─→ retry_output  ← corrective HumanMessage → agent
+                           └─→ suggest_followups  ← only for a GROUNDED answer (used_citations
+                                │                     non-empty); skipped on a hit (pattern 27)
                                 ↓
-                               write_semantic_cache  ← writes query/answer/citations
-                                │                       back UNLESS this turn was
-                                │                       itself a cache hit (no-op then)
-                                ↓
+                               write_semantic_cache  ← writes back unless this turn was a hit
+                                ↓                       or called a non-read_only tool (pattern 22)
                                END
 ```
 
-`should_continue` also ends the run early (→ `__end__`, skipping `check_output`) on any of three independent safety budgets: the iteration cap, the token-per-turn cap (`MAX_TOKENS_PER_TURN`), the dollar cost ceiling (`MAX_COST_USD_PER_TURN`, pattern 35), or `MAX_REPEATED_ACTIONS` identical consecutive tool-call batches (pattern 34, no-progress detection) — none of these are shown as their own branch above to keep the diagram legible, but each is a real, independently-tested exit.
+`should_continue` also ends the run early (→ `__end__`, skipping `check_output`) on the iteration cap,
+`MAX_TOKENS_PER_TURN`, `MAX_COST_USD_PER_TURN` (35) or `MAX_REPEATED_ACTIONS` identical batches (34).
+They aren't drawn as branches, but each is an independently tested exit.
 
-## Differences from Basic Agent
+**21 nodes:** `validate_input`, `reject_input`, `reject_context`, `compact_history`,
+`context_window_exceeded`, `moderate_input`, `reject_moderation`, `check_semantic_cache`,
+`retrieve_context`, `agent`, `tools`, `human_approval`, `too_many_tool_calls`, `invalid_tool_call`,
+`use_skill_without_search`, `check_output`, `retry_output`, `retry_exhausted`, `no_answer`,
+`suggest_followups`, `write_semantic_cache`.
 
-| Aspect | Basic | Enhanced |
-|--------|-------|----------|
-| **State** | Just messages | + context, citations, used_citations, ungrounded_claims_count, cache_hit, moderation_blocked, followups, history_summary, iterations, total_tokens, total_cost_usd, run_id, graph_version, state_schema_version, ctx, require_approval, approved, cancelled |
-| **Nodes** | agent + tools | 21 nodes: validate_input, reject_input, reject_context, compact_history, context_window_exceeded, moderate_input, reject_moderation, check_semantic_cache, retrieve_context, agent, tools, human_approval, too_many_tool_calls, invalid_tool_call, use_skill_without_search, check_output, retry_output, retry_exhausted, no_answer, suggest_followups, write_semantic_cache |
-| **Flow** | LLM ↔ tools loop | Multi-stage pipeline: history compaction, a moderation screen, and a cache short-circuit up front, plus nine real conditional gates |
-| **Safety screening** | None | Pattern-based moderation before retrieval, cache, or any spend — a real hit fails closed, the check's own failure fails open (pattern 25) |
-| **Context** | LLM decides what to search | Pre-fetched (hybrid dense+BM25, RRF-fused, cross-encoder reranked, pattern 20 — plus retention-filtered memories, pattern 33), injected, delimited as untrusted (pattern 12), tenant/owner-scoped (pattern 17) |
-| **Answers** | Plain text | Numbered inline citations, filtered post-hoc to only markers actually used (pattern 20), an independently-computed ungrounded-claims count (pattern 39); clarifies instead of guessing when ambiguous, offers grounded follow-ups otherwise (pattern 27) |
-| **Isolation** | None — one shared corpus | Every read/write scoped to `SecurityCtx` via a store-level pre-filter, never a Python post-filter (pattern 17, 22) |
-| **Safety** | No loop limit | Nine independent budgets (pattern 10) — plus graceful degradation on retrieval/cache/follow-up/compaction failure, automatic LLM-call retry, and friendly tool-error messages instead of crashes |
-| **Output** | Whatever LLM says | Validated, with an actual retry path back to `agent` |
-| **Tools** | Two read-only tools | Five read-only (`search_docs`, `calculator`, `query_employees`, `ask_clarification`, remote MCP tools) + two mutating (`add_note`, `remember`), each declaring a capability (pattern 15); every result passes credential scrubbing (pattern 32) |
-| **Tool calls** | Run immediately | Run immediately (parallel if requested) *or* pause for approval — opt-in for read-only, **mandatory** for mutating/outward — with a genuine cancellation outcome (pattern 36) |
-| **Conversation history** | Unbounded, or naive truncation | Trimmed past `HISTORY_TOKEN_CEILING` (hysteresis, not sliding window) with discarded turns folded into a cumulative summary, not just dropped (pattern 41) |
-| **Memory** | None, or unscoped | Cross-session, write-gated, re-filtered against ctx and a retention horizon on every recall (pattern 18, 33), with audited deletion |
-| **Repeat queries** | Full retrieval + LLM call every time | Tenant+principal-scoped semantic cache short-circuits a near-identical query to the cached answer (pattern 22) |
-| **Ingestion** | Whatever the example seeded once | A general-purpose `Ingestor` (files/URLs/text), parent-child chunking, SSRF-guarded fetch (pattern 24) |
-| **Checkpointing** | Usually none, or `MemorySaver` | `AsyncPostgresSaver` for the real singleton — survives a restart and concurrent worker access, with build/schema versioning (pattern 16) |
-| **Persistence** | Whatever the example used | A pooled `ConnectionPool` (pattern 31), transparent to every call site |
-| **Observability** | None | Langfuse tracing + OTel metrics via OTLP (pattern 11), structlog lifecycle logs (pattern 14), per-tool-call audit records (pattern 37), a real usage-cost ledger (pattern 26, 38), an optional Grafana/Loki/Prometheus stack |
-| **Errors** | Whatever the framework raised | A canonical `{code, message, details}` envelope (pattern 30) |
-| **Regression detection** | None | `tests/` (fake-LLM) + `scripts/eval.py` golden dataset with repetition/grounded-claims release gates (pattern 40) |
-| **Domains** | One hardcoded agent | One graph, adapted per domain via `AgentManifest` + `DomainPlugin` (pattern 23) |
-| **Interface** | Whatever the example used | CLI + HTTP API + web UI (pattern 29) + Telegram (pattern 42), all on the same streaming core |
-| **Scaling model** | One process does everything | Queued via Redis Streams (pattern 43) — scale agent workers independently of SSE connections |
-| **Input** | Text only | Text, optionally with images (pattern 44) |
-
-## When to Use Each Pattern
-
-- **Validation**: Always. Costs nothing, catches most bad cases.
-- **Context enrichment**: When you have a knowledge base (Qdrant, DB, API).
-- **State tracking**: When you need loop control, retries, or multi-step logic.
-- **Output gating**: When answer quality matters (not every use case needs it).
-- **Conditional routing**: When different queries need different paths (most real agents).
-- **Error recovery**: Any tool that can fail — cheap to add via `handle_tool_errors`, so default to having it.
-- **Human-in-the-loop**: Side-effecting or costly actions. Not needed for read-only tools. For a tool that writes/sends/spends, don't make the gate opt-in — declare its capability and let pattern 15 make it mandatory.
-- **Parallel tool execution**: Automatic — nothing to opt into.
-- **Multi-layer safety budgets**: Any agent talking to a real model/tools over a network. Tune the constants to your model/traffic; the pattern (several narrow budgets, not one big one) is what matters.
-- **Custom metrics**: As soon as this agent has more than one user.
-- **Golden-dataset evaluation**: As soon as you're tempted to change the prompt/model/retrieval "just to see."
-- **Untrusted content framing**: Any time content the model didn't type re-enters the prompt. Cheap and structural — no reason to skip it.
-- **Bounded conversation history**: Any agent with multi-turn threads that can run for a while.
-- **Node telemetry**: As soon as this runs somewhere you can't attach a debugger — almost immediately.
-- **Tool capability declarations**: The moment a second tool exists — retrofitting after several mutating tools accumulate means auditing all at once instead of one at a time.
-- **Durable checkpointing**: As soon as any HITL gate is reachable in a deployment that restarts while a human might be reviewing.
-- **Multi-tenant isolation**: The moment more than one customer/workspace shares a deployment — do this before anything else on this list, since most other patterns here quietly assume a security boundary exists.
-- **Cross-session memory**: Any agent worth a "remember this" conversation. Skip if every session is truly stateless.
-- **Prompt-cache stability**: As soon as more than one principal's traffic shares a deployment AND the provider offers prefix caching.
-- **Hybrid retrieval + rerank + citations**: As soon as retrieval quality/recall matters (not a toy corpus) and an answer needs to be auditable.
-- **Fixed-tool structured data access**: The moment an agent needs to answer questions against a relational store. Never build text-to-SQL as the first move.
-- **MCP exposure**: When a tool needs to be reachable by a different agent/client, not just this app's own loop. Treat it as its own trust boundary.
-- **Semantic cache**: Once near-duplicate questions repeat across users/sessions often enough to matter.
-- **Config-first multi-domain composition**: The moment a second, genuinely different use case needs the same hardened graph but different tools/prompt/policy.
-- **General-purpose ingestion + chunking**: As soon as this needs to be a product someone can point at their own content.
-- **Input moderation**: Any input surface reachable by someone not fully trusted — most of them.
-- **A real usage/cost ledger**: The moment more than one team/customer shares a deployment and "how much, by whom" needs an answer later.
-- **Clarification and follow-ups**: Clarification where a wrong guess is expensive; follow-ups on consumer-facing chat surfaces.
-- **Consuming a remote MCP tool catalog**: When a useful tool already exists as an MCP server you don't own. Always pair with explicit `capability_overrides`.
-- **A built-in web UI**: As soon as "standalone product" is the actual claim, not "library other things call."
-- **A chat-platform channel**: When your users already live in a chat app.
-- **A Redis Streams queue**: The moment SSE-connection concurrency and LLM-call concurrency need to scale on different axes.
-- **Multimodal/image support**: Any agent whose users have a real reason to ask about an image — verify vision AND tool-calling capability before assuming an alias swap is enough.
-- **Canonical error envelope**: As soon as more than one caller needs to distinguish failure modes programmatically.
-- **DB connection pool**: Any deployment issuing more than a handful of queries/sec.
-- **Credential/secret scrubbing**: Any agent whose tools touch a system that could legitimately contain secrets.
-- **Memory deletion audit + retention**: Any product storing personal data under a retention policy.
-- **No-progress detection**: Any tool-calling agent against a real, imperfect model.
-- **Cost ceiling enforcement**: Any agent on a metered, real-dollar-cost model API.
-- **Run cancellation**: Any HITL-gated agent long-running enough that a human might want to stop it outright.
-- **Structured per-tool-call audit record**: As soon as "which tool, with what, did it succeed" needs to be answerable from logs alone.
-- **Resolved concrete model recording**: Any deployment behind a model gateway/router.
-- **Ungrounded claims count**: Any RAG system where citation accuracy needs to be measurable, not spot-checked.
-- **Eval statistical rigor**: As soon as a golden-dataset eval exists against a non-deterministic model.
-- **Bounded history summarization**: Any long-running conversational thread where losing early context outright would cost something real.
+**State fields beyond `messages`:** `context`, `citations`, `used_citations`, `ungrounded_claims_count`,
+`cache_hit`, `moderation_blocked`, `followups`, `history_summary`, `iterations`, `total_tokens`,
+`total_cost_usd`, `run_id`, `graph_version`, `state_schema_version`, `ctx`, `require_approval`,
+`approved`, `cancelled`, `subagent_spend`.
 
 ## Extending Further
 
-In production, you might still add:
-- **Fallback node**: If primary path fails, try alternative.
-- ~~A real HTTP resume flow~~ — **done**: `POST /chat/resume` is the HTTP counterpart to `astream_events_resume`, routed through the same Redis Streams queue (pattern 43).
-- ~~Grafana dashboards / alerting~~ — **done**: `docker-compose.observability.yml` (`make obs-up`) — Grafana + Loki + Prometheus + Alertmanager + otel-collector, two provisioned dashboards, a starter alert rule set (see pattern 11).
-- **A real vision-AND-tool-calling-capable local model** (pattern 44): every small local Ollama vision model tried supports vision OR tools, never both — `litellm-config.yaml`'s `vision` alias is a ready slot, not a working default.
-- **Image-aware moderation and Telegram/CLI image input**: moderation screens text only; Telegram/CLI have no UX for attaching an image at all, even though every server-side entry point carries one correctly.
-- ~~Fault-tolerant redelivery for the Redis Streams queue~~ — **done**: `queue.py::reclaim_stale_entries` (`XAUTOCLAIM`), run periodically by both `agent_worker.py` and `ingest_worker.py`'s own `_reclaim_loop`, finds entries abandoned by a worker that died mid-job. Never redelivers blindly — `agent_worker.py::_handle_reclaimed_job` proves per job whether it's safe: `"cancel"` and `"resume"` jobs are always safe now (see below); a `"turn"` is classified by `_classify_reclaimed_turn` from its checkpointed state (via `graph.aget_state` — never re-runs anything) since its own last `HumanMessage`: no `HumanMessage` yet → re-run fresh as a `"turn"`; its own `HumanMessage` checkpointed and unfinished → **continued**, as a `"turn_continue"` (`astream_events_continue_turn`), *even if a mutating/outward call already completed* — continuing the same checkpointed run never re-asks the LLM, so no new `tool_call_id` is minted (see the idempotency item below); already finished, paused at a real approval interrupt, or an unreadable checkpoint → dead-lettered. Ingest jobs are always retried (they are idempotent by construction — see the ingestion item below). Retried jobs are silently republished (`queue.py::republish_job`, capped by `MAX_AUTO_RECLAIM_RETRIES`); everything else (a finished or paused `"turn"`, any job out of retries) surfaces a `WORKER_LOST`/error event on the job's own results stream and is archived to a dead-letter stream (`queue.py::dead_letter_stream_key`) for manual inspection/replay. `agent_worker_job_reclaimed_total{queue,outcome}` distinguishes `retried` from `dead_lettered` — any nonzero rate still means workers are crashing, `outcome` just says whether that's self-healing.
-- ~~Idempotency keys on mutating/outward tools~~ — **done**: `app/agent/tool_idempotency.py::idempotent` wraps every `mutating`/`outward` tool call (`add_note`/`remember`, every sales/support/ops write tool, all four sandbox tools) — keyed by the LLM-provider-assigned `tool_call_id` (`InjectedToolCallId`), persisted in Postgres (`postgres-init/13-tool-call-dedup.sql`). A second invocation under the same id returns the first's own cached result instead of running the real side effect again. This is what makes a reclaimed `"resume"` job (above) safe to retry unconditionally: resuming re-invokes whichever tool calls were pending at the `human_approval` pause under their ORIGINAL tool_call_ids, so anything that already ran just dedupes. Deliberately does NOT, on its own, make *restarting* a `"turn"` safe — a fresh `astream_events_turn` call re-asks the LLM, which gets brand-new tool_call_ids unrelated to the crashed attempt's own, so dedup can't catch that case. That gap is closed one level up instead: a reclaimed turn whose own `HumanMessage` is checkpointed is **continued** (`astream_events_continue_turn`), not restarted, so the same checkpointed run — and the same tool_call_ids — carry on (`_classify_reclaimed_turn`). A restart is only chosen when nothing was checkpointed at all. Fails open (`agent_tool_dedup_degraded_total`) on its own storage failure, same posture as `usage_ledger.py`/`sessions.py`'s own `get_connection()` callers — a dedup-store outage must never block a mutating tool call outright.
-- ~~The same class of gap in ingestion, Telegram, and a live HTTP double-submit~~ — **done**, four related fixes:
-  - **Ingest jobs are now idempotent by construction, not by a dedup table**: `app/ingestion/ingestor.py::_content_point_id` derives every Qdrant point id from `(tenant, source, chunk index, chunk content)` instead of `uuid.uuid4()` — re-ingesting byte-identical content (a reclaimed job, or a client's double-submitted upload) upserts onto the exact same ids instead of duplicating them. This is what makes `ingest_worker.py`'s own reclaim loop safe to silently retry unconditionally now (capped by `MAX_AUTO_RECLAIM_RETRIES`, same as `agent_worker.py`), instead of always dead-lettering.
-  - **`app/channels/telegram.py`'s long-poll `offset` is now durable** (Redis, `telegram:offset:{domain}`), not a local variable — a real bug: a process restart used to reset it to 0, and Telegram would redeliver every update it still remembers, each producing a fresh duplicate turn and reply to a real user. Persisted AFTER handling each message (not before), so the failure mode on a mid-handling crash is "redeliver and re-handle one message" (a duplicate reply), never "silently drop it."
-  - **`_classify_reclaimed_turn` also refuses a `"turn"` that already produced a final answer** (`_turn_already_completed`), not only one paused at an approval — closes a narrower gap: a zero-tool-call turn (plain Q&A) that fully finished and had its usage/cost recorded (`_record_turn_metrics`), then crashed in the thin window before this job's own ack, used to be judged "safe" by a tool-call check alone and blindly re-run, double-recording that turn's cost for no benefit. (This guard was written as part of `_is_safe_to_retry_turn`, which no longer exists: its tool-call test was replaced by continuing the turn, and this check moved into the classifier unchanged.)
-  - **`POST /chat/stream/queued` gained submission dedup** (`queue.py::claim_or_get_existing_submission`) — the thread lock alone only rules out two jobs for the same thread_id running *concurrently*; a client retry that arrives after the first attempt already finished races nothing and used to run as a second, fully independent turn (its own fresh tool_call_ids, so `tool_idempotency` can't catch it either). An identical `(thread_id, message, images)` resubmission within `CHAT_SUBMIT_DEDUP_TTL_SECONDS` now reuses the first attempt's `request_id`, so the retry's SSE connection transparently gets the same turn's real events. Finding this exposed a second, real bug: `_queued_sse_response` used to eagerly delete a results stream the instant ANY reader saw its terminal event — safe when exactly one reader ever existed per `request_id`, no longer true once dedup lets two callers share one — so it no longer deletes eagerly at all, relying on `RESULTS_STREAM_TTL_SECONDS` alone.
-- ~~A second, DIFFERENT class of duplicate-side-effect gap: a soft timeout, not a crash~~ — **done**, seven related fixes. Every gap above is a REPLAY — the same `tool_call_id` seen twice. This round closes gaps where the SECOND attempt arrives under a brand new `tool_call_id`, which nothing keyed on that id can ever recognize:
-  - **`app/agent/tool_idempotency.py::MutatingToolTimedOut`**: `_arun_with_timeout`'s own docstring already named the risk — `asyncio.wait_for` cancels the AWAITING task, not necessarily whatever it's awaiting underneath, so a mutating/outward tool's real write can commit on the far side of a slow store even though the call reports failure. `idempotent()` now re-raises that specific `TimeoutError` as this distinguishable type, and `graph_utils.py::_friendly_tool_error` gives it its own message: steer the agent to verify via a read-only tool before retrying, instead of "try a different approach" — actively dangerous advice here, since "try again" means a fresh `tool_call_id` invisible to every id-keyed defense. The one general defense that works regardless of which tool this was, without needing a per-tool business key.
-  - **`add_note`/`remember`'s Qdrant point ids are now `tool_call_id`-derived** (`tools.py::_tool_call_point_id`, `uuid5`), not `uuid.uuid4()` — same "content-addressed, not random" fix pattern 24's `_content_point_id` already applied to ingestion, applied here to close the crash-replay race `tool_call_dedup`'s own docstring accepts (`result IS NULL` → run `fn()` again, same `tool_call_id`): a second real run now upserts onto the same point instead of duplicating the note/memory.
-  - **`tool_call_id UNIQUE` + `ON CONFLICT DO NOTHING` on the target row itself** (`postgres-init/14-tool-call-id-columns.sql`), for the three pure-INSERT mutating tools (`create_ticket`/`log_incident`/`add_followup`) — the same crash-replay race, closed one layer past `tool_call_dedup`'s own claim: even if `idempotent()` runs the impl twice for the same id, only the first INSERT lands; the second reads back and returns THAT row's id. Nullable (standard SQL UNIQUE treats every NULL as distinct), so any caller not passing a `tool_call_id` is unaffected.
-  - **`queue.py`/`ingest_queue.py::read_results` gained `first_event_deadline_seconds`**: `if not response: continue` used to loop forever the moment nobody was ever going to publish anything — no agent-worker/ingest-worker running at all, or a poisoned dedup claim (below). Bounds only the wait for the FIRST event; once one real event arrives the deadline clears, so a legitimately long-running job (an ingest job's own embedding loop can run minutes) is never cut short.
-  - **`POST /chat/stream/queued`'s submission-dedup claim now has a compensating delete** (`queue.py::release_submission_claim`): a claim that wins but whose `publish_request` then fails used to leave the dedup key pointing at a `request_id` no job was ever published under — any retry inside the window got `is_new=False` and streamed a results stream nobody would ever write to.
-  - **`POST /ingest/upload` no longer aborts the whole batch, or orphans a blob, on one file's failure**: a bad extension, an over-size file, or a MinIO/publish error now becomes that file's own `IngestUploadResult.error` — other files in the same request still succeed independently — and a file that reached MinIO but then failed to publish its job is cleaned up (`object_store.delete_object`) instead of left as a blob nothing will ever ingest or remove.
-  - **A retention sweep for `tool_call_dedup`** (`scripts/tool_call_dedup_sweep.py`, `make tool-call-dedup-sweep`): that table had no cleanup mechanism at all — every mutating/outward call ever made, full result text included, accumulated forever. Same "fixed pipeline, not an agent turn" shape as `followup_sweep.py`.
-  - **Deliberately not built**: a business-key uniqueness rule (e.g. "one open ticket per tenant+requester+subject") that would catch two tool_call_ids the agent GENUINELY decided to use for what's actually the same request — that's a product decision about what "the same ticket" means, not an engineering one; `MutatingToolTimedOut`'s steering message is the general mitigation until one domain actually needs it.
-- ~~The three appends (`add_comment`/`append_lead_note`/`find_or_create_lead`'s own notes merge) that the round above explicitly left open, because an appended TEXT column has no row to put `ON CONFLICT` on~~ — **done**: `postgres-init/15-append-notes-as-rows.sql` turns each append into its own row (`support_ticket_comments`, `crm_lead_notes`), `tool_call_id UNIQUE` + `ON CONFLICT DO NOTHING` exactly like the pure-INSERT tools above, with the flattened text computed at READ time (`STRING_AGG(... ORDER BY created_at)`, `LEFT JOIN` so a ticket/lead with zero notes still returns a row) instead of stored as a blob. `app/domains/*/tools.py` needed NO changes at all — `get_ticket`/`get_lead`/`lead_history` still return a single `notes` string under the same dict key, just computed differently, so every consumer (`check_ticket_status`, `package_lead_brief`) is unaffected. One side benefit worth naming: `find_or_create_lead`'s own lead-upsert half, once split from the note it used to append inline, turned out to need NO key at all — `ON CONFLICT (tenant, contact) DO UPDATE SET updated_at = now()` is naturally idempotent on its own (Category C: same end state no matter how many times it runs), so only the note insert needed `tool_call_id`.
-- **Auto-scaling / crash-restart for the worker pool**: `docker compose --profile app up -d --scale agent-worker=3` works and each worker handles `SIGTERM` gracefully, but a real orchestrator that restarts a crashed worker and scales on queue depth is still out of scope.
-- **A real webhook-based Telegram deployment**: long-polling needs no inbound port, the right default for a demo; production would switch to `setWebhook` without changing the core underneath.
-- **Real authentication**: pattern 17's `SecurityCtx`/`Policy` is the isolation structure; `app/api/main.py`'s trusted-header extraction deliberately isn't authentication — a production deployment adds a real auth gateway in front of it.
-- **Per-action authorization within a tenant**: today every principal in a tenant has the same write capability the gate allows at all — a finer-grained `Policy` reading `ctx["claims"]` would live here.
-- ~~`app/api/main.py` reading which domain a request is for~~ — **partly done** (pattern 49): the queued endpoints route per-request via `X-Domain`. Still unbuilt: a real multi-domain runtime — `app/agent/runtime.py`'s CLI/API singleton still only ever builds one graph for one domain; a single process serving several domains directly (not via a queue to an external worker) would need a per-domain graph registry and a seeding cache keyed by `(domain, thread_id)`.
+### Exactly-once side effects: how the gaps closed
 
-**Known gaps — found by reviewing the as-built system against the project constitution; each says how it was established, and none is hidden.** Each is a defect or a missing control that a fix PR deletes from this list:
-- **The shipped production proxy does not authenticate** (*read from `Caddyfile`*): it forwards to the API and neither sets nor strips `X-Tenant-Id`/`X-Principal-Id`, so as shipped a caller can name any tenant and principal; isolation then protects against bugs, not against a caller who sets another tenant's header. A real deployment needs an authenticating gateway in front that sets both and discards client-supplied copies.
-- **The ops domain is global** (*read from code*): `ops_incidents` has no tenant dimension by design (platform metrics), and any caller can name the domain in `X-Domain`. Nothing authorizes *which tenants* may use it, and Constitution Principle I has no carve-out for it.
-- **Approvals are unattributed** (*read from code*): a decision is counted by outcome only — no approver, time or action is recorded — so the gate is enforced but not auditable. Compounded by the unauthenticated proxy above: the principal on an approval is whatever header the caller set.
-- **`tool_call_dedup` lookup is not tenant-scoped** (*read from code*): `WHERE tool_call_id = %s`, no tenant predicate; provider-assigned ids are assumed globally unique. Adding the predicate changes what a cross-tenant collision means (a miss ⇒ a second real write), so it needs a decision, not just a one-line edit.
-- **A residual duplicate window for the team-channel notification** (*read from code and the spec*): if a second run finds the first's `tool_call_dedup` record still in flight (no cached result yet), it runs the call itself. Writes with a target row are protected by row-level uniqueness; the three tools that also post to a team channel (sales handoff, support escalation, ops `post_to_team_channel`) are protected only by the conversation lock and by reclaim waiting longer than a turn can run, so a second run in that window can post the message twice. The preceding write is unaffected, and the message is a best-effort pivot by design (`app/domains/notify.py`).
-- **The dedup table is cleaned by a manually run script** (*read from code*): `make tool-call-dedup-sweep` is "meant for real cron" and nothing schedules it; rows accumulate until someone does.
-- **Memory deletion has no entry point** (*read from code*): `memory.py::delete_memories` is built, audited and tested, but nothing calls it — no script, endpoint or make target; retention is enforced at read time only.
-- **Real-backend proof of tenant isolation is partial** (*read from code and tests*): documents and the cache's tenant axis are proven against a real Qdrant/Redis; memories, relational stores, sessions and the cache's principal axis are covered by hermetic tests only.
-- **The crash-recovery primitive is tested only against a fake** (*read from tests*): `reclaim_stale_entries` (`XAUTOCLAIM`, including its pagination cursor) is exercised by a hand-written fake that says it is "just enough of real XAUTOCLAIM" and is not paginated like the real one; no integration test covers it.
-- **The answer cache key ignores conversation context** (*read from code, not reproduced*): the key is the last human message only and the lookup runs before retrieval, so a context-dependent follow-up ("be more detailed") can hit an answer cached for a different conversation of the same caller. Scoped to tenant+principal and bounded by the TTL — a wrong-context risk, not a leak.
-- **A refused resume emits an error with no `code`** (*read from code*): `checkpoint_lost`/`checkpoint_incompatible` are registered `ErrorCode`s, but `astream_events_resume` yields `{"type": "error", "content": "checkpoint_lost: …"}` with no envelope, so a client cannot switch on it (pattern 30).
+Two kinds of duplicate: a **replay** sees the same `tool_call_id` twice; a **re-ask** arrives under a new
+`tool_call_id`, which nothing keyed on the id can recognize. The layering is summarized in the
+[README](README.md#safety-model); each row here is a defect found and closed.
 
-The key insight: **LangGraph lets you make every step of the pipeline explicit and controllable.** That's what separates it from "just LLM + tools."
+| Gap | Fix |
+|---|---|
+| A tool call runs twice (a reclaimed `resume`) | `tool_idempotency.py::idempotent` wraps every `mutating`/`outward` tool, keyed by `tool_call_id` in `tool_call_dedup` (`13-`). A second call returns the cached result. Resuming re-invokes pending calls under their **original** ids, so reclaiming a `resume` is always safe. Fails open (`agent_tool_dedup_degraded_total`) |
+| A worker dies mid-turn; a restart would re-ask the LLM for new ids | `queue.py::reclaim_stale_entries` (`XAUTOCLAIM`) runs in both workers. `_classify_reclaimed_turn` reads the checkpoint (never re-running anything): no `HumanMessage` yet → rerun; own `HumanMessage` checkpointed and unfinished → **continue** the run (`astream_events_continue_turn`), even after a write, since no new id is minted; finished, approval-paused or unreadable → dead-letter. Retries are capped by `MAX_AUTO_RECLAIM_RETRIES`; `agent_worker_job_reclaimed_total{queue,outcome}` separates `retried` from `dead_lettered` |
+| A finished zero-tool turn is reclaimed before its ack | `_turn_already_completed` refuses it; a tool-call check alone re-ran it and double-recorded its cost |
+| Ingest jobs on reclaim | Idempotent by construction (`_content_point_id`, pattern 24), so retried unconditionally |
+| A client resubmits the same message | `claim_or_get_existing_submission` reuses the first attempt's `request_id` within `CHAT_SUBMIT_DEDUP_TTL_SECONDS`. This exposed a bug: results streams were deleted when any reader saw the terminal event, unsafe once two readers share one, so they now rely on the TTL. `release_submission_claim` undoes a claim whose publish failed |
+| A tool times out but its write lands | `MutatingToolTimedOut` steers the agent to verify with a read-only tool first. `asyncio.wait_for` cancels the awaiting task, not necessarily the write, and "retry" would be a fresh id |
+| The dedup claim races (`result IS NULL` → run again) | `add_note`/`remember` point ids are `uuid5` of `tool_call_id`; `create_ticket`/`log_incident`/`add_followup` carry `tool_call_id UNIQUE` + `ON CONFLICT DO NOTHING` (`14-`) |
+| An append to a text column has no row for `ON CONFLICT` | `15-` makes each append its own row (`support_ticket_comments`, `crm_lead_notes`); flattened text is computed at read time, so `tools.py` didn't change. `find_or_create_lead`'s upsert is naturally idempotent and needs no key |
+| Nobody ever publishes (no worker, or a poisoned dedup claim) | `read_results` bounds the wait for the **first** event only (`first_event_deadline_seconds`), so long ingest jobs aren't cut short |
+| One bad upload aborts the batch or orphans a blob | `POST /ingest/upload` returns per-file errors and deletes a blob that failed to publish |
+| `tool_call_dedup` grows forever | `scripts/tool_call_dedup_sweep.py` (`make tool-call-dedup-sweep`) |
+| Telegram redelivers after a restart | Durable offset in Redis (pattern 42) |
+
+**Deliberately not built:** a business-key rule ("one open ticket per tenant + requester + subject") for two
+*different* ids used for the same request. What counts as "the same ticket" is a product decision;
+`MutatingToolTimedOut`'s steering is the general mitigation until a domain needs one.
+
+### Not built
+
+- **A fallback node** for the primary LLM path.
+- **A vision model that also does tool calling** (44). Small local vision models do one or the other; the `vision` alias is a slot, not a verified default.
+- **Image-aware moderation, and Telegram/CLI image input.**
+- **Crash-restart and autoscaling for workers.** `--scale` works and workers handle `SIGTERM`, but nothing restarts a crashed one or scales on queue depth.
+- **A Telegram webhook.** Long-polling needs no inbound port; production would use `setWebhook`.
+- **Real authentication.** Pattern 17's `SecurityCtx`/`Policy` is the isolation structure; header extraction isn't authentication.
+- **Per-action authorization within a tenant.** Every principal has the write capability the gate allows at all; a `Policy` reading `ctx["claims"]` would live here.
+- **A multi-domain runtime** (partly done, pattern 49). The API routes per request via `X-Domain`, but one process still builds one graph. Serving several would need a per-domain graph registry and a seeding cache keyed by `(domain, thread_id)`.
+
+### Known gaps
+
+From reviewing the as-built system against the constitution; each notes how it was established, and a fix PR
+deletes it from this list.
+
+- **The shipped proxy does not authenticate** (*read from `Caddyfile`*). It neither sets nor strips `X-Tenant-Id`/`X-Principal-Id`, so a caller can name any tenant. Isolation then guards against bugs, not against a caller who sets another tenant's header. Put an authenticating gateway in front.
+- **The ops domain is global** (*read from code*). `ops_incidents` has no tenant dimension by design, any caller can name the domain, and nothing authorizes which tenants may use it. Principle I has no carve-out for it.
+- **Approvals are unattributed** (*read from code*). Decisions are counted by outcome only (no approver, time or action), so the gate is enforced but not auditable, and the principal is whatever header the caller set.
+- **The `tool_call_dedup` lookup isn't tenant-scoped** (*read from code*). It assumes provider ids are globally unique. Adding a tenant predicate changes what a collision means (a miss ⇒ a second write), so it needs a decision.
+- **A residual duplicate window for team-channel posts** (*read from code and the spec*). If a second run finds the first's dedup record still in flight, it runs the call. Row-backed writes are protected by uniqueness; the three tools that also post to a channel (sales handoff, support escalation, ops `post_to_team_channel`) rely on the conversation lock and on reclaim waiting longer than a turn, so a second run can post twice. The write itself is unaffected; the post is best-effort by design (`app/domains/notify.py`).
+- **Nothing schedules `make tool-call-dedup-sweep`** (*read from code*), so dedup rows accumulate until someone runs it.
+- **Memory deletion has no entry point** (*read from code*). `delete_memories` is built and tested, but nothing calls it; retention is enforced at read time only.
+- **Tenant isolation is only partly proven against real backends** (*read from tests*). Documents and the cache's tenant axis hit real Qdrant/Redis; memories, relational stores, sessions and the cache's principal axis rely on hermetic tests.
+- **`reclaim_stale_entries` is tested only against a fake** (*read from tests*), hand-written and not paginated like real `XAUTOCLAIM`; no integration test covers it.
+- **The answer cache key ignores conversation context** (*read from code, not reproduced*). The key is the last human message, so a follow-up like "be more detailed" can hit an answer cached for a different conversation of the same caller. Bounded by tenant+principal scope and the TTL: wrong context, not a leak.
+- **A refused resume emits an error with no `code`** (*read from code*). `astream_events_resume` yields `{"type": "error", "content": "checkpoint_lost: …"}` outside the envelope, so a client can't switch on it (pattern 30).
+
+**The key insight:** LangGraph lets you make every step of the pipeline explicit and controllable. That is
+what separates it from "just LLM + tools."
