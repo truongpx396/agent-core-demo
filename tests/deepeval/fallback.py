@@ -13,8 +13,22 @@ into a RetryError and down `__cause__`/`__context__`, and the classifier looks a
 THE CHAIN. Each judge fixture is an ordered list: its primary, then other models on the SAME provider (each
 model has its own free-tier quota: Groq's 429 names the model, Gemini's names `PerProjectPerModel`), then
 the optional Plugsky backup. A transient failure (rate limit, overload, timeout) moves to the next model;
-anything else (auth, a 400 bad schema, a real bug) is re-raised untouched, because a different model cannot
-fix it and a fallback must not hide it.
+so does an UNUSABLE ANSWER (below). Anything else (auth, a 400 bad schema, a real bug) is re-raised
+untouched, because a different model cannot fix it and a fallback must not hide it.
+
+UNUSABLE ANSWERS. The second gap, found in CI run 37320398499 (the merge of #121, and #120 before it): both
+`test_conversation_simulator_deepeval.py` tests went red on `main` with the judge having ANSWERED, just not in
+the shape asked. deepeval 4.2.0's `LocalModel` sends no `response_format` (so Groq is only asked for JSON in
+the prompt), then runs `trim_and_load_json` and `schema.model_validate` on the text. One run got
+`{"verdicts": {...}}` where a list was wanted (a pydantic `ValidationError`), the other an EMPTY completion
+(`DeepEvalError: ... invalid JSON`, raised from inside `except JSONDecodeError`, so the `JSONDecodeError` is
+only its `__context__`). Neither is transient and neither is a bug in the repo, so the chain re-raised them and
+`flaky=True` (which only swallows a failed SCORE) could not help: the job went red on a judge's formatting. The
+log shows the Groq primary had just run out of daily tokens, so the answers most likely came from a weaker
+fallback; that is not proven, because a non-transient failure never named its model. Now it does. An unusable
+answer moves to the next model for THAT call only: no cooldown, since the model is up and the next prompt may
+suit it. If the last model also answers badly the error is raised, so a chain where nobody can answer still
+fails the job rather than passing on nothing.
 
 COOLDOWN. deepeval retries a dead model with backoff on EVERY call before the error surfaces, so a judge
 whose daily quota is gone would cost that wait again on each of dozens of metric calls. A model that failed
@@ -34,6 +48,10 @@ TRANSIENT_NAMES = frozenset(
     {"RateLimitError", "APITimeoutError", "APIConnectionError", "InternalServerError", "ServerError", "TimeoutError"}
 )
 TRANSIENT_CODES = frozenset({429, 500, 502, 503, 504})
+# A judge answer that arrived but cannot be used: pydantic rejecting its shape (`ValidationError`), or text that is
+# not JSON (`JSONDecodeError`, which deepeval wraps in a DeepEvalError and leaves only as `__context__`). By name,
+# for the same reason as above: this module imports neither pydantic nor deepeval.
+UNUSABLE_NAMES = frozenset({"ValidationError", "JSONDecodeError"})
 SHORT_COOLDOWN_S = 300.0
 DAILY_COOLDOWN_S = 3600.0
 _MAX_CHAIN = 8  # bound on how many wrapped exceptions are looked at: they can in principle form a cycle
@@ -64,20 +82,35 @@ def _status(exc: BaseException) -> int | None:
     return None
 
 
+def _named(exc: BaseException, names: frozenset[str]) -> bool:
+    """True if `exc`'s class, or any base class, is called one of `names`."""
+    return any(cls.__name__ in names for cls in type(exc).__mro__)
+
+
+def _is_transient_one(exc: BaseException) -> bool:
+    return _named(exc, TRANSIENT_NAMES) or _status(exc) in TRANSIENT_CODES
+
+
 def is_transient(exc: BaseException) -> bool:
     """True if any exception inside `exc` is a rate limit, an overload or a timeout."""
-    for inner in chain_of(exc):
-        if any(cls.__name__ in TRANSIENT_NAMES for cls in type(inner).__mro__) or _status(inner) in TRANSIENT_CODES:
-            return True
-    return False
+    return any(_is_transient_one(inner) for inner in chain_of(exc))
+
+
+def is_unusable_output(exc: BaseException) -> bool:
+    """True if any exception inside `exc` says the judge answered in a form deepeval could not use: invalid
+    JSON, or JSON of the wrong shape. A different model may answer that same prompt properly."""
+    return any(_named(inner, UNUSABLE_NAMES) for inner in chain_of(exc))
 
 
 def describe(exc: BaseException) -> str:
-    """For a log line: the class and status of the first transient exception inside, never its message."""
+    """For a log line: the class and status of the first transient or unusable-answer exception inside, never
+    its message (a pydantic `ValidationError` quotes the model's answer, which can echo the conversation)."""
     for inner in chain_of(exc):
-        status = _status(inner)
-        if any(cls.__name__ in TRANSIENT_NAMES for cls in type(inner).__mro__) or status in TRANSIENT_CODES:
+        if _is_transient_one(inner):
+            status = _status(inner)
             return type(inner).__name__ + (f" {status}" if status is not None else "")
+        if _named(inner, UNUSABLE_NAMES):
+            return type(inner).__name__
     return type(exc).__name__
 
 
@@ -144,17 +177,21 @@ class FailoverChain:
         return ready or list(range(len(self._links)))  # every model is cooling: try them all rather than none
 
     def _failed(self, index: int, exc: BaseException, following: Link | None) -> None:
-        self._skip_until[index] = self._clock() + cooldown_for(exc)
+        if is_transient(exc):
+            self._skip_until[index] = self._clock() + cooldown_for(exc)
+            what = f"hit a transient error ({describe(exc)})"
+        else:  # an unusable answer: the model is up, so no cooldown; the next prompt may suit it
+            what = f"returned an unusable answer ({describe(exc)})"
         tail = f"; falling back to {following.name}" if following else "; no model left to fall back to"
-        self._notify(f"[deepeval] {self._links[index].name} hit a transient error ({describe(exc)}){tail}")
+        self._notify(f"[deepeval] {self._links[index].name} {what}{tail}")
 
     def generate(self, prompt: str, schema: Any = None) -> Any:
         order = self._order()
         for position, index in enumerate(order):
             try:
                 return _content(self._links[index].model.generate(prompt, schema=schema))
-            except Exception as exc:  # noqa: BLE001 - classified right below: anything that is not transient is re-raised untouched
-                if not is_transient(exc):
+            except Exception as exc:  # noqa: BLE001 - classified right below: anything that is neither transient nor an unusable answer is re-raised untouched
+                if not (is_transient(exc) or is_unusable_output(exc)):
                     raise
                 following = self._links[order[position + 1]] if position + 1 < len(order) else None
                 self._failed(index, exc, following)
@@ -167,8 +204,8 @@ class FailoverChain:
         for position, index in enumerate(order):
             try:
                 return _content(await self._links[index].model.a_generate(prompt, schema=schema))
-            except Exception as exc:  # noqa: BLE001 - classified right below: anything that is not transient is re-raised untouched
-                if not is_transient(exc):
+            except Exception as exc:  # noqa: BLE001 - classified right below: anything that is neither transient nor an unusable answer is re-raised untouched
+                if not (is_transient(exc) or is_unusable_output(exc)):
                     raise
                 following = self._links[order[position + 1]] if position + 1 < len(order) else None
                 self._failed(index, exc, following)

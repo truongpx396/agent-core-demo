@@ -347,7 +347,7 @@ Prod runs the same stack on its own droplet ([infra/README.md](infra/README.md))
 `make promptfoo` after any prompt, model-alias or retrieval change.
 
 - **Advisory live tests.** Two browser tests need the 3B model to chain several tool calls (a skill, a subagent). They are marked `advisory` and run in their own non-blocking CI step, so a model that stops halfway shows in that step's log instead of failing the job. A failed browser test prints the page transcript (pattern 48).
-- **deepeval never gates on a score.** Every case is `flaky=True`, so the job goes red only on a crash. LLM judges disagree with themselves; read the printed reasons. The judges are hosted (Gemini, Groq) with a failover chain across other models and optional Plugsky and OpenRouter backups (see `.env.example`); the target model stays local.
+- **deepeval never gates on a score.** Every case is `flaky=True`, so the job goes red only on a crash. LLM judges disagree with themselves; read the printed reasons. The judges are hosted (Gemini, Groq) with a failover chain across other models and optional Plugsky and OpenRouter backups (see `.env.example`) that hands over on a rate limit, an overload, a timeout or an unusable answer (invalid JSON, wrong shape); the target model stays local.
 - **Small local models make poor judges and targets.** That is why the red-team grader is hosted and `garak` is report-only (pattern 48).
 
 ## Security scanning and load testing
