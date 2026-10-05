@@ -218,6 +218,26 @@ def mock_model_resolver(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def mock_budget_policies(monkeypatch):
+    """`budgets.check` reads the operator's per-tenant/per-person limit overrides
+    (`budget_policies.overrides_for`) before every turn. Without this, an ordinary turn test
+    would hit the `budget_policies` table, so its result would depend on whether one exists.
+    The default world has no overrides, so every test sees exactly the Settings defaults;
+    a test that needs one patches `overrides_for` itself, and
+    tests/agent/test_budget_policies.py restores the real function to exercise it. The
+    module's per-process cache is cleared on both sides."""
+    from app.agent import budget_policies
+
+    async def _no_overrides(tenant, principal):
+        return []
+
+    budget_policies.reset_cache()
+    monkeypatch.setattr(budget_policies, "overrides_for", _no_overrides)
+    yield
+    budget_policies.reset_cache()
+
+
+@pytest.fixture(autouse=True)
 def fresh_budget_crossing_log():
     """`budgets` remembers which threshold crossings it has already logged, per process, so a
     tenant sitting at 90% logs once a day instead of on every turn. That memory is process-wide,

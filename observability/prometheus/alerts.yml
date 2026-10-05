@@ -99,15 +99,18 @@ groups:
             read from that ledger now undercounts. Check the appdata Postgres.
 
       - alert: TenantAllowanceUnenforced
-        expr: increase(agent_cost_governance_degraded_total{path="ledger_read"}[10m]) > 0
+        expr: increase(agent_cost_governance_degraded_total{path=~"ledger_read|policy_read"}[10m]) > 0
         labels:
           severity: critical
         annotations:
           summary: "The per-tenant daily allowance is not being enforced"
           description: >-
-            The ledger read behind the tenant allowance failed in the last 10m. That
-            check fails open, so every turn it covered ran with NO daily cap. Check
-            the appdata Postgres.
+            The ledger read behind the tenant allowance (path=ledger_read), or the read of
+            the operator's per-tenant/per-person limit overrides (path=policy_read),
+            failed in the last 10m. Under BUDGET_CHECK_FAILURE_POLICY=open (the default)
+            every turn it covered ran unchecked — and a policy_read failure also means
+            an override set to SUSPEND someone is not being applied. Check the appdata
+            Postgres.
 
       - alert: ModerationBlockSpike
         expr: sum(rate(agent_moderation_total{outcome=~"blocked_.*"}[5m])) > 0.5

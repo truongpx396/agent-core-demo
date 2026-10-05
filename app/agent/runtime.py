@@ -99,9 +99,9 @@ async def _check_allowance(ctx: SecurityCtx | None) -> budgets.Allowance:
     """May this caller start another turn? The rule lives in `budgets.py`; this binds the
     configured limits at CALL time (not import time), so the module globals below stay the
     single place a test or a deployment re-points them."""
-    return await budgets.check_allowance(
+    return await budgets.check(
         ctx,
-        limits=budgets.configured_limits(
+        defaults=budgets.Defaults(
             tenant_day=MAX_COST_USD_PER_TENANT_PER_DAY,
             tenant_month=MAX_COST_USD_PER_TENANT_PER_MONTH,
             principal_day=MAX_COST_USD_PER_PRINCIPAL_PER_DAY,
