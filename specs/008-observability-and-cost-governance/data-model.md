@@ -56,6 +56,7 @@ Two Postgres tables, one metric catalog, two log shapes, a trace, and the config
 | `agent_rate_limit_exceeded_total` | Counter | — | RateLimitRejectionSpike | yes |
 | `agent_budget_exceeded_total` | Counter | `scope`, `window` | TenantBudgetExceeded (scope=tenant) | yes |
 | `agent_budget_threshold_total` | Counter | `scope`, `window`, `threshold` (70/85/95) | TenantBudgetNearLimit (scope=tenant, 95) | yes |
+| `agent_gateway_budget_exceeded_total` | Counter | — | GatewayBudgetExceeded | yes |
 | `agent_upload_rejected_total` | Counter | `reason` | — | yes |
 | `agent_upload_failed_total` | Counter | `reason` | IngestUploadFailing | — |
 | `agent_subagent_run_total` | Counter | `subagent`, `outcome` | — | — |
@@ -171,6 +172,7 @@ Tool results arrive credential-scrubbed; the user's text and the answer do not. 
 | `HighToolErrorRate` | tool errors ÷ tool calls `> 0.1` | 10 m | warning |
 | `TenantBudgetExceeded` | `increase(agent_budget_exceeded_total{scope="tenant"}[1h]) > 0` | — | warning |
 | `TenantBudgetNearLimit` | `increase(agent_budget_threshold_total{scope="tenant", threshold="95"}[30m]) > 0` | — | warning |
+| `GatewayBudgetExceeded` | `increase(agent_gateway_budget_exceeded_total[10m]) > 0` | — | critical |
 | `ModerationBlockSpike` | blocked moderation outcomes `> 0.5/s` | 5 m | warning |
 | `RateLimitRejectionSpike` | rate-limit rejections `> 1/s` | 5 m | warning |
 | `RetrievalDegraded` | `rate(agent_retrieval_degraded_total[15m]) > 0` | 15 m | warning |

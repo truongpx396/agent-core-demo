@@ -56,9 +56,9 @@ from langgraph.graph.message import add_messages
 # human_approval) but re-exported deliberately: graph_hitl.py reads it as
 # `graph_module.interrupt` so tests' `monkeypatch.setattr(graph,
 # "interrupt", ...)` keep working. Don't remove this import.
-from langgraph.types import RetryPolicy, interrupt  # noqa: F401
+from langgraph.types import RetryPolicy, default_retry_on, interrupt  # noqa: F401
 
-from app.agent import moderation
+from app.agent import gateway, moderation
 from app.agent.graph_messages import (
     _human_has_content,
     _human_text,
@@ -235,11 +235,19 @@ MAX_CONSECUTIVE_SAME_RETRY_REASON = 2  # check_output's own convergence
 MAX_SUBAGENT_ITERATIONS = 6
 MAX_SUBAGENT_TOKENS_PER_RUN = 4000
 
+def _retry_agent_on(exc: Exception) -> bool:
+    """LangGraph's own predicate, minus the gateway's budget stop. That refusal repeats until the
+    budget resets, so a retry cannot succeed: it only delays the caller's error by the backoff and
+    adds refused calls to the gateway's log (app/agent/gateway.py)."""
+    return not gateway.is_budget_exceeded(exc) and default_retry_on(exc)
+
+
 # Reliability policy for `agent` (see build_graph): retry a transient
 # LLM-endpoint failure (connection error, 5xx) before giving up. LangGraph's
 # default retry_on excludes programming errors, so this can't mask a real
-# bug as a flaky call (pattern 7).
-AGENT_RETRY_POLICY = RetryPolicy(max_attempts=3)
+# bug as a flaky call (pattern 7); `_retry_agent_on` adds the one failure
+# that is never worth retrying.
+AGENT_RETRY_POLICY = RetryPolicy(max_attempts=3, retry_on=_retry_agent_on)
 
 # Bump only on a genuinely incompatible State/topology change (a renamed/
 # removed State key, or a removed/reordered node a *paused* thread might

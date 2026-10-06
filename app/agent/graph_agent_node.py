@@ -10,9 +10,10 @@ would never see (binds once, at import time). Same pattern as
 graph_utils.py's `_make_llm`.
 """
 from langchain_core.messages import SystemMessage
+from langchain_core.runnables import RunnableConfig
 
+from app.agent import gateway, pricing
 from app.agent import graph as graph_module
-from app.agent import pricing
 from app.agent.graph import State
 from app.agent.graph_skills import _pending_skill_required_tool
 from app.agent.graph_tools import _current_turn_messages
@@ -31,7 +32,7 @@ def make_agent_node(llm, model_alias: str | None = None):
     docstring).
     """
 
-    async def agent(state: State) -> dict:
+    async def agent(state: State, config: RunnableConfig | None = None) -> dict:
         """Call the LLM, injecting retrieved context as an extra SystemMessage.
 
         The *base* SYSTEM_PROMPT is seeded once per thread by
@@ -149,7 +150,9 @@ def make_agent_node(llm, model_alias: str | None = None):
                 )
             )
 
-        response = await llm.ainvoke(messages)
+        # Tell the gateway whose call this is (app/agent/gateway.py): its spend logs and
+        # Langfuse are otherwise one anonymous caller.
+        response = await llm.ainvoke(messages, **gateway.identity_from_config(config))
 
         # usage_metadata is populated only when the model/proxy reports it
         # (not guaranteed) — missing usage just means the budget never trips.

@@ -452,6 +452,13 @@ agent_budget_threshold_total = Counter(
     ["scope", "window", "threshold"],
 )  # threshold: "70" | "85" | "95"
 
+agent_gateway_budget_exceeded_total = Counter(
+    "agent_gateway_budget_exceeded_total",
+    "LLM calls the gateway refused because the app's key reached its max_budget "
+    "(app/agent/gateway.py). The gateway is the BACKSTOP: this firing means the app-level "
+    "ceilings did not stop the spend first, or the backstop is sized too low.",
+)
+
 agent_unpriced_usage_total = Counter(
     "agent_unpriced_usage_total",
     "LLM calls that spent tokens on a model with no known price (app/agent/pricing.py) — "

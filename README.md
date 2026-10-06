@@ -190,6 +190,28 @@ Two things that bite on a first deploy:
 - **The shipped Caddy proxy does not authenticate.** It forwards `X-Tenant-Id`/`X-Principal-Id` as sent, so put an authenticating gateway in front that sets both and discards client copies ([Known gaps](#roadmap-and-known-gaps)).
 - **SQL migrations are not applied to an existing volume.** `postgres-init/*.sql` runs only on a fresh Postgres volume, and the deploy only syncs the files ([Example domains](#example-domains)).
 
+### Gateway backstop
+
+Per-turn, per-tenant and per-person ceilings live in the app, so a bug in the app can defeat them. LiteLLM
+sits in front of every model call and is the one place that can still stop spend when they fail, if the key
+the app sends carries a `max_budget` (the master key cannot). This part makes the app cooperate with that
+backstop; the key itself is minted by the next change.
+
+- **Every call is attributed.** The agent, follow-up, history-compaction and cron calls send a hashed
+  tenant id as LiteLLM's end-user (`end_user` on each spend-log row) and a `tenant:<name>` tag, so a runaway
+  bill can be traced to a tenant. The hash, not the name, is what LiteLLM may pass on to a provider.
+- **A stop is reported, not buried.** LiteLLM's `budget_exceeded` becomes `provider_budget_exceeded`,
+  increments `agent_gateway_budget_exceeded_total` and pages `GatewayBudgetExceeded`, including when
+  follow-ups or compaction swallow it. It is not retried: it repeats until the budget resets, and the status
+  LiteLLM uses has changed between versions (429 on `main-stable`), so the error `type` is what is recognised.
+- **Checked against a real LiteLLM** (`main-stable`, 2026-10), not only mocked: the `end_user`/tag attribution
+  and the refusal after a key's budget was spent. Two surprises worth knowing: the refusal was a 429, not the
+  400 the source read suggested, and an OpenAI-compatible backend received neither `user` nor `metadata`.
+- **Gap:** LiteLLM can also cap an *end user* (a tenant) at the gateway, which would make the backstop
+  per-tenant; that is not built (the app-level tenant limits already are). The openai SDK retries a 429 twice
+  inside one call (3 requests, ~1.3 s measured); harmless, since LiteLLM refuses at authentication before any
+  provider is called.
+
 ## HTTP API
 
 | Endpoint | Purpose |

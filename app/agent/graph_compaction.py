@@ -25,7 +25,9 @@ from langchain_core.messages import (
     RemoveMessage,
     SystemMessage,
 )
+from langchain_core.runnables import RunnableConfig
 
+from app.agent import gateway
 from app.agent.graph import HISTORY_TOKEN_CEILING, HISTORY_TOKEN_FLOOR, State
 from app.agent.graph_messages import _human_text
 from app.core import metrics
@@ -161,7 +163,7 @@ def make_compact_history_node(
     tests can trigger the hysteresis behavior with small budgets.
     """
 
-    async def compact_history(state: State) -> dict:
+    async def compact_history(state: State, config: RunnableConfig | None = None) -> dict:
         """Whatever `_messages_to_trim` would discard gets folded into the
         running `history_summary` instead of dropped — the trim itself is
         unchanged; only what happens to the discarded CONTENT is new.
@@ -198,9 +200,12 @@ def make_compact_history_node(
                 prior_clause=prior_clause,
                 turns_text=_format_turns_for_summary(to_summarize),
             )
-            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            response = await llm.ainvoke(
+                [HumanMessage(content=prompt)], **gateway.identity_from_config(config)
+            )
             new_summary = (response.content or "").strip()
         except Exception as exc:  # noqa: BLE001 - never fail the turn over a summary
+            gateway.note_budget_stop(exc)  # swallowed here, but the backstop firing is still counted
             logger.warning(
                 "history summarization failed; trimming without updating the summary",
                 extra={"node": "compact_history", "error_class": type(exc).__name__},

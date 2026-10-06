@@ -112,6 +112,21 @@ groups:
             an override set to SUSPEND someone is not being applied. Check the appdata
             Postgres.
 
+      - alert: GatewayBudgetExceeded
+        expr: increase(agent_gateway_budget_exceeded_total[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "The LLM gateway refused calls: a budget it enforces is spent"
+          description: >-
+            LiteLLM answered budget_exceeded in the last 10m, so a budget it enforces
+            (the app's key, an end user or a team) is spent and the model calls under it
+            are being refused until it resets or is raised. The gateway is the BACKSTOP
+            behind the per-turn, per-tenant and per-person ceilings, so this means those
+            did not stop the spend first (or the backstop is sized too low). Find who
+            spent it (LiteLLM spend logs, grouped by `end_user` / the `tenant:<name>`
+            tag) before raising it.
+
       - alert: ModerationBlockSpike
         expr: sum(rate(agent_moderation_total{outcome=~"blocked_.*"}[5m])) > 0.5
         for: 5m
