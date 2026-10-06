@@ -41,6 +41,55 @@ async def test_deletes_in_batches_until_a_short_batch_and_returns_the_total(monk
     assert len(conn.calls) == 3
 
 
+class _RunawayConn:
+    """Every batch comes back full, forever; raises past `limit` calls so a loop with no
+    ceiling fails this test instead of hanging the suite."""
+
+    def __init__(self, rows_per_batch, limit):
+        self._rows = rows_per_batch
+        self._limit = limit
+        self.calls = 0
+
+    async def execute(self, sql, params):
+        self.calls += 1
+        assert self.calls <= self._limit, "the sweep has no ceiling: it was still deleting after the limit"
+        return SimpleNamespace(rowcount=self._rows)
+
+
+async def test_one_run_stops_at_its_batch_ceiling_even_if_every_batch_is_full(monkeypatch, caplog):
+    """The app never writes a row older than the cutoff (`recorded_at` defaults to now()), so a sweep
+    normally ends at the first short batch. A restore or backfill that keeps re-inserting old rows
+    would make "until a short batch" unbounded: one run must have its own ceiling, say so when it
+    hits it (the next run continues), and never loop on its own."""
+    conn = _RunawayConn(rows_per_batch=500, limit=50)
+    _use(monkeypatch, conn)
+
+    with caplog.at_level("WARNING", logger=usage_ledger.logger.name):
+        deleted = await usage_ledger.sweep_old_rows(older_than_days=90, batch_size=500, max_batches=3)
+
+    assert conn.calls == 3
+    assert deleted == 1500
+    assert any(r.message == "usage_ledger_sweep_hit_batch_ceiling" for r in caplog.records)
+
+
+async def test_the_default_ceiling_is_finite(monkeypatch):
+    conn = _RunawayConn(rows_per_batch=usage_ledger.SWEEP_BATCH_SIZE, limit=usage_ledger.SWEEP_MAX_BATCHES + 5)
+    _use(monkeypatch, conn)
+
+    await usage_ledger.sweep_old_rows(older_than_days=400)
+
+    assert conn.calls == usage_ledger.SWEEP_MAX_BATCHES
+
+
+async def test_finishing_under_the_ceiling_does_not_warn(monkeypatch, caplog):
+    _use(monkeypatch, _Conn([500, 500, 3]))
+
+    with caplog.at_level("WARNING", logger=usage_ledger.logger.name):
+        await usage_ledger.sweep_old_rows(older_than_days=90, batch_size=500, max_batches=3)
+
+    assert not [r for r in caplog.records if r.message == "usage_ledger_sweep_hit_batch_ceiling"]
+
+
 async def test_an_empty_ledger_is_one_statement_and_zero(monkeypatch):
     conn = _Conn([0])
     _use(monkeypatch, conn)

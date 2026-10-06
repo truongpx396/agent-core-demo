@@ -213,9 +213,19 @@ async def in_flight_reservation(tenant: str) -> float:
 # Rows go in batches so one sweep never holds a long lock or one huge transaction
 # on a ledger that has grown for a year; each batch commits on its own.
 SWEEP_BATCH_SIZE = 5000
+# One run's ceiling: 1,000 batches is 5 million rows at the default size, far past a year's
+# backlog on any single deployment this was sized for. The app never writes a row older than
+# the cutoff, so a sweep ends at the first short batch; the ceiling is for the day something
+# does (a restore or backfill re-inserting old rows) so one run still has a bounded duration.
+SWEEP_MAX_BATCHES = 1000
 
 
-async def sweep_old_rows(*, older_than_days: int, batch_size: int = SWEEP_BATCH_SIZE) -> int:
+async def sweep_old_rows(
+    *,
+    older_than_days: int,
+    batch_size: int = SWEEP_BATCH_SIZE,
+    max_batches: int = SWEEP_MAX_BATCHES,
+) -> int:
     """Deletes ledger rows recorded more than `older_than_days` ago and returns
     how many (spec 008 A3: nothing ever trimmed this table, and the allowance
     read runs before every turn). An operator job (`scripts/usage_ledger_sweep.py`),
@@ -233,6 +243,10 @@ async def sweep_old_rows(*, older_than_days: int, batch_size: int = SWEEP_BATCH_
     the oldest sit first in the heap and the scan finds a full batch quickly, whereas
     sorting a year of rows to delete the oldest few thousand would cost more than the
     delete.
+
+    A run deletes at most `max_batches * batch_size` rows. Hitting that is logged
+    (`usage_ledger_sweep_hit_batch_ceiling`) and is not an error: the job is
+    idempotent, so the next run continues where this one stopped.
     """
     if older_than_days < USAGE_LEDGER_MIN_RETENTION_DAYS:
         raise ValueError(
@@ -240,7 +254,7 @@ async def sweep_old_rows(*, older_than_days: int, batch_size: int = SWEEP_BATCH_
             "a monthly budget window would stop counting spend that is still inside it"
         )
     total = 0
-    while True:
+    for _ in range(max_batches):
         async with get_connection() as conn:
             cur = await conn.execute(
                 "DELETE FROM usage_ledger WHERE id IN ("
@@ -252,3 +266,8 @@ async def sweep_old_rows(*, older_than_days: int, batch_size: int = SWEEP_BATCH_
         total += deleted
         if deleted < batch_size:
             return total
+    logger.warning(
+        "usage_ledger_sweep_hit_batch_ceiling",
+        extra={"deleted": total, "max_batches": max_batches, "batch_size": batch_size},
+    )
+    return total

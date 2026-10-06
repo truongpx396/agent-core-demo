@@ -19,6 +19,15 @@ def test_run_sweep_uses_the_configured_retention_and_returns_the_count(monkeypat
     assert captured["older_than_days"] == USAGE_LEDGER_RETENTION_DAYS
 
 
+def test_a_run_that_hit_its_ceiling_tells_the_operator_to_run_it_again():
+    ceiling = usage_ledger_sweep.SWEEP_MAX_BATCHES * usage_ledger_sweep.SWEEP_BATCH_SIZE
+
+    assert "run it again" in usage_ledger_sweep.describe(ceiling)
+    assert "run it again" not in usage_ledger_sweep.describe(ceiling - 1)
+    assert usage_ledger_sweep.describe(0) == "Nothing to sweep."
+    assert usage_ledger_sweep.describe(12) == "Deleted 12 usage_ledger row(s)."
+
+
 def test_run_sweep_honors_a_custom_window(monkeypatch):
     captured = {}
 

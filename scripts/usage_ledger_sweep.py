@@ -19,7 +19,7 @@ Idempotent: a re-run before more rows age out deletes nothing.
 import asyncio
 import logging
 
-from app.agent.usage_ledger import sweep_old_rows
+from app.agent.usage_ledger import SWEEP_BATCH_SIZE, SWEEP_MAX_BATCHES, sweep_old_rows
 from app.core.config import USAGE_LEDGER_RETENTION_DAYS
 from app.core.job_runtime import scheduled_job
 
@@ -35,10 +35,21 @@ async def run_sweep(older_than_days: int = USAGE_LEDGER_RETENTION_DAYS) -> int:
     return deleted
 
 
+def describe(count: int) -> str:
+    """What the operator sees on stdout. A run that deleted its full ceiling probably left
+    rows behind (`sweep_old_rows` stops there on purpose), and "Deleted 5000000" alone would
+    read as "done"."""
+    if not count:
+        return "Nothing to sweep."
+    message = f"Deleted {count} usage_ledger row(s)."
+    if count >= SWEEP_MAX_BATCHES * SWEEP_BATCH_SIZE:
+        message += " That is this run's ceiling, so older rows may remain: run it again."
+    return message
+
+
 def main() -> None:
     with scheduled_job("agent-core-usage-ledger-sweep"):
-        count = asyncio.run(run_sweep())
-        print(f"Deleted {count} usage_ledger row(s)." if count else "Nothing to sweep.")
+        print(describe(asyncio.run(run_sweep())))
 
 
 if __name__ == "__main__":
