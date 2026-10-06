@@ -1,3 +1,6 @@
+# LOCAL/DEMO ONLY. docker-compose.observability.prod.yml mounts alertmanager.prod.yml, which
+# has a real receiver; never mount this file in production (it delivers nothing).
+#
 # No real notification channel wired up by default — this is a local/demo
 # stack, and guessing at a Slack webhook or SMTP relay the user hasn't
 # provided would just be a receiver that silently fails. Alerts still show

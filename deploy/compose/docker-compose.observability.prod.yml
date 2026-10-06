@@ -52,11 +52,25 @@ services:
   alertmanager:
     image: prom/alertmanager:latest
     restart: unless-stopped
+    # alertmanager.PROD.yml, not the receiver-less demo file the dev stack mounts: with that
+    # one nothing is ever delivered and nothing says so (spec 008 A7). Alertmanager does no
+    # environment expansion, so the webhook URL secret is written to the file the config reads
+    # (`api_url_file`) just before it starts. `:?` makes `docker compose up` refuse to run
+    # without it — an observability stack that cannot reach anyone should fail the deploy,
+    # not come up looking healthy. The `$$` is compose's escape: the shell sees `$VAR`.
     volumes:
-      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./observability/alertmanager/alertmanager.prod.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager:/alertmanager
+    environment:
+      ALERTMANAGER_SLACK_WEBHOOK_URL: ${ALERTMANAGER_SLACK_WEBHOOK_URL:?set ALERTMANAGER_SLACK_WEBHOOK_URL in this droplet's .env (see deploy/env/observability.prod.env.example) - without a receiver no alert is ever delivered}
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - >-
+        umask 077 &&
+        printf '%s' "$$ALERTMANAGER_SLACK_WEBHOOK_URL" > /tmp/slack_webhook_url &&
+        exec /bin/alertmanager
+        --config.file=/etc/alertmanager/alertmanager.yml
+        --storage.path=/alertmanager
 
   loki:
     image: grafana/loki:latest
