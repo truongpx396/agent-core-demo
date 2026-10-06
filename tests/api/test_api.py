@@ -117,9 +117,41 @@ class TestUsage:
         assert result.total_cost_usd == 3.5
         assert result.last_24h_cost_usd == 0.1
         assert result.daily_budget_usd == 20.0
-        assert len(calls) == 2
+        assert len(calls) == 3  # all-time, rolling 24h, and the tenant/day status
         assert calls[0]["tenant"] == TEST_CTX["tenant"]
         assert calls[1]["since"] is not None
+
+    async def test_lists_the_budgets_that_apply_to_this_caller_with_how_much_is_left(self, monkeypatch):
+        async def fake_usage_summary(tenant, principal=None, since=None):
+            return {"total_tokens": 0, "total_cost_usd": 1.0 if principal else 8.0}
+
+        monkeypatch.setattr(usage_router.usage_ledger, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_PRINCIPAL_PER_DAY", 5.0)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_MONTH", 400.0)
+
+        result = await usage_router.usage(ctx=TEST_CTX)
+
+        by_key = {(b.scope, b.window): b for b in result.budgets}
+        assert set(by_key) == {("tenant", "day"), ("tenant", "month"), ("principal", "day")}
+        assert by_key[("tenant", "day")].remaining_usd == 12.0
+        assert (by_key[("principal", "day")].spent_usd, by_key[("principal", "day")].remaining_usd) == (1.0, 4.0)
+        assert by_key[("tenant", "month")].resets_at is not None
+        assert by_key[("tenant", "day")].resets_at is None
+
+    async def test_an_unconfigured_deployment_lists_only_the_always_on_tenant_daily_limit(self, monkeypatch):
+        async def fake_usage_summary(tenant, principal=None, since=None):
+            return {"total_tokens": 0, "total_cost_usd": 0.0}
+
+        monkeypatch.setattr(usage_router.usage_ledger, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_MONTH", 0.0)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_PRINCIPAL_PER_DAY", 0.0)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_PRINCIPAL_PER_MONTH", 0.0)
+
+        result = await usage_router.usage(ctx=TEST_CTX)
+
+        assert [(b.scope, b.window) for b in result.budgets] == [("tenant", "day")]
 
 
 class TestUi:

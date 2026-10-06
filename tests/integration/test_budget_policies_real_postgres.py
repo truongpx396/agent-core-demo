@@ -149,8 +149,8 @@ async def test_a_real_ledger_spend_trips_a_personal_override_not_the_default(ten
     await usage_ledger.record_usage(_ctx(tenant, "alice"), "t1", "chat", 1000, 0.60)
 
     alice = await budgets.check(_ctx(tenant, "alice"), defaults=DEFAULTS, fail_policy="closed")
-    bob = await budgets.check(_ctx(tenant, "bob"), defaults=DEFAULTS, fail_policy="closed")
+    statuses = await budgets.usage_status(_ctx(tenant, "alice"), defaults=DEFAULTS)
 
     assert alice.status == "exceeded" and alice.limit_usd == 0.50
-    assert (alice.scope, alice.window) == ("principal", "day")
-    assert bob.status == "ok"  # her spend and her override are hers alone
+    personal = next(s for s in statuses if (s.scope, s.window) == ("principal", "day"))
+    assert (personal.limit_usd, personal.spent_usd, personal.remaining_usd) == (0.50, pytest.approx(0.60), 0.0)

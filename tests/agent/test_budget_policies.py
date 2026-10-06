@@ -336,6 +336,42 @@ class TestWhenTheOverridesCannotBeRead:
         assert allowance.status == "unavailable"
 
 
+class TestUsageStatus:
+    async def test_lists_every_limit_that_applies_with_remaining_floored_at_zero(self, monkeypatch, ledger):
+        ledger.update(tenant=12.0, principal=6.0)
+        _overrides(monkeypatch, [O("", "day", 10.0)])
+
+        statuses = await budgets.usage_status(TEST_CTX, defaults=DEFAULTS)
+
+        by_key = {(s.scope, s.window): s for s in statuses}
+        assert by_key[("tenant", "day")].limit_usd == 10.0
+        assert by_key[("tenant", "day")].remaining_usd == 0.0  # 12 spent against a 10 cap: never negative
+        assert by_key[("principal", "day")].remaining_usd == 0.0  # 6 spent against the 5 default
+        assert by_key[("principal", "month")].remaining_usd == pytest.approx(94.0)
+
+    async def test_an_uncapped_limit_is_not_listed(self, monkeypatch, ledger):
+        _overrides(monkeypatch, [O("", "month", None)])
+
+        assert ("tenant", "month") not in {(s.scope, s.window) for s in await budgets.usage_status(TEST_CTX, defaults=DEFAULTS)}
+
+    async def test_a_monthly_status_says_when_it_resets_and_a_daily_one_does_not(self, ledger):
+        statuses = {(s.scope, s.window): s for s in await budgets.usage_status(TEST_CTX, defaults=DEFAULTS)}
+
+        assert statuses[("tenant", "month")].resets_at is not None
+        assert statuses[("tenant", "day")].resets_at is None
+
+    async def test_it_does_not_fail_open_when_the_ledger_cannot_be_read(self, monkeypatch):
+        from app.agent import usage_ledger
+
+        async def broken(*args, **kwargs):
+            raise ConnectionError("down")
+
+        monkeypatch.setattr(usage_ledger, "usage_summary", broken)
+
+        with pytest.raises(ConnectionError):
+            await budgets.usage_status(TEST_CTX, defaults=DEFAULTS)
+
+
 class TestAsRuntimeWiresIt:
     async def test_a_suspension_reaches_a_turn_as_a_personal_refusal(self, monkeypatch, ledger):
         _overrides(monkeypatch, [O(TEST_CTX["principal"], "day", 0.0)])

@@ -13,7 +13,7 @@ A **caller** reading its own usage, a **tenant** whose turns can be refused, and
 ## `GET /usage`
 
 - **Identity**: required (the two identity headers); the tenant is taken from it. There is **no parameter** to name another tenant.
-- **Response `200`**, `UsageResponse`: `total_tokens` (all time), `total_cost_usd` (all time), `last_24h_cost_usd` (the same rolling window the allowance uses), `daily_budget_usd` (`MAX_COST_USD_PER_TENANT_PER_DAY`). Two ledger reads per call.
+- **Response `200`**, `UsageResponse`: `total_tokens` (all time), `total_cost_usd` (all time), `last_24h_cost_usd` (the same rolling window the allowance uses), `daily_budget_usd` (`MAX_COST_USD_PER_TENANT_PER_DAY`), and `budgets` — one entry per limit that applies to THIS caller (tenant and the caller's own, overrides included) with `scope`, `window`, `limit_usd`, `spent_usd`, `remaining_usd` (never below 0; in-flight turns counted for tenant limits) and `resets_at` (a monthly window only). Two ledger reads per call, plus one per limit; unlike the allowance check this does not fail open on a ledger error.
 - **Not included**: the in-flight reservation, other tenants, per-principal figures.
 
 ## The ledger write — `record_usage(ctx, thread_id, model_alias, total_tokens)`

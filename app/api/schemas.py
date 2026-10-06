@@ -97,6 +97,21 @@ class ReadinessResponse(BaseModel):
     )
 
 
+class BudgetStatus(BaseModel):
+    """One spend limit that applies to the caller, with how much of it is used."""
+
+    scope: str = Field(..., description='"tenant" (the whole organisation) or "principal" (this caller alone).')
+    window: str = Field(..., description='"day" (rolling 24h) or "month" (the calendar month, UTC).')
+    limit_usd: float = Field(..., description="The cap, after any per-tenant or per-person override.")
+    spent_usd: float = Field(..., description="Recorded spend inside the window.")
+    remaining_usd: float = Field(
+        ..., description="What is left, counting in-flight turns for a tenant limit; never below 0."
+    )
+    resets_at: datetime | None = Field(
+        None, description="When a monthly window next starts from zero; null for the rolling day."
+    )
+
+
 class UsageResponse(BaseModel):
     """GET /usage's body — this caller's tenant, all-time plus the same
     rolling-24h number budgets.check_tenant_daily checks, so a caller can see
@@ -109,4 +124,12 @@ class UsageResponse(BaseModel):
     )
     daily_budget_usd: float = Field(
         ..., description="MAX_COST_USD_PER_TENANT_PER_DAY — the ceiling last_24h_cost_usd is checked against."
+    )
+    budgets: list[BudgetStatus] = Field(
+        default_factory=list,
+        description=(
+            "Every spend limit that applies to THIS caller — the tenant's and the caller's own, "
+            "overrides included — with how much is used, so they can see how close they are "
+            "before being refused. Only the caller's own personal figures; never another person's."
+        ),
     )
