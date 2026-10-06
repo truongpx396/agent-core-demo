@@ -54,7 +54,12 @@ G1 and G2 matter beyond billing: they are real spend invisible to today's dollar
 
 ## R5. Open items (implementation PRs must verify before building on them)
 
-- **O-A.** A stable per-call identity for a chat call: whether `AIMessage.id` is the same value on a checkpoint re-read and across a crash-continue, so the deterministic event id holds. Verify against the installed `langchain-core` / `langgraph` source and a real continue run. (PR 1)
+- **O-A. RESOLVED 2026-10-07** (langchain-core 0.3.86, langchain-openai 0.3.35, langgraph 0.2.76), by reading the installed source and by a real run through `ChatOpenAI` into a mock gateway and a `MemorySaver` graph:
+  - `AIMessage.id` is **assigned by langchain-core** (`_LC_ID_PREFIX` + the model run's id + the generation index), shaped `run--<uuid>-0`, **not taken from the provider's response**. It is unique per invocation: two identical calls that returned the *same* provider id still got different message ids.
+  - It is **identical after a checkpoint round-trip** (`aget_state` returned the same id the node returned), and `usage_metadata` is present on the same message.
+  - The provider's own id is present at `response_metadata["id"]` (`chatcmpl-…`), but it is **not** the event identity: a backend may return a fixed or missing one, and uniqueness must not depend on it.
+  - **Decision:** `event_id = uuid5(NAMESPACE, f"{tenant}|{ai_message.id}")`, read from the response the instant `ainvoke` returns. A LangGraph node retry that re-calls the model gets a new id and a new event, which is correct: a second paid call happened. The streaming path assigns `run-<run_id>` (no index) by the same mechanism, so it is unique too. PR 1a adds a test that pins all of this, so a langchain upgrade that changes id assignment fails loudly instead of silently double-counting.
+  - **Gap this does not close:** a call whose response arrives and whose process dies before the event commits is not recorded (the residual window in `plan.md`).
 - **O-B.** Whether LiteLLM can return per-request usage for an embedding call through the OpenAI client path the app uses, or only via its spend log. (PR 1)
 - **O-C.** PayPal's real shape for a credit-pack purchase (Orders capture, then webhook) and its webhook signature verification, from primary docs. (adapter PR, not this feature)
 - **O-D.** Stripe webhook signature scheme and tolerance, Polar's webhook signing (Standard Webhooks), from primary docs. (adapter PRs)

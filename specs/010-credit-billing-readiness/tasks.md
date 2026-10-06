@@ -15,7 +15,7 @@ entry and README update; its CI result reported, not assumed.
 
 ## Phase 1: Meter (PRs 1a, 1b) — US1
 
-- [ ] T002 [PR1a] **Verify O-A first**: a test, against the installed `langchain-core`/`langgraph` and a real continue run, that a call's identity is identical on a checkpoint re-read. Record the result in `research.md` R5. If it is not stable, the design changes before any code is written
+- [ ] T002 [PR1a] **O-A is resolved** (`research.md` R5: `AIMessage.id`, stable across a checkpoint read); this task is now the **pin test**: it fails if a library upgrade changes how the id is assigned, is not unique per call, or differs after a checkpoint re-read
 - [ ] T003 [PR1a] `postgres-init/19-usage-events.sql`: table, `(tenant, occurred_at)` index, append-only trigger. Header says how an existing volume applies it
 - [ ] T004 [PR1a] Failing real-Postgres test: the same `event_id` inserted twice yields one row; `UPDATE`/`DELETE` are rejected
 - [ ] T005 [PR1a] `app/agent/usage_events.py`: deterministic id, `INSERT … ON CONFLICT DO NOTHING`, fail-open with `usage_event_write_failed_total`; unpriced stored as NULL cost and counted
