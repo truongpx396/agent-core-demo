@@ -92,7 +92,9 @@ async def _record_turn_metrics(
             if ctx is not None and thread_id is not None:
                 from app.agent import usage_ledger
 
-                await usage_ledger.record_usage(ctx, thread_id, CHAT_MODEL, total_tokens)
+                await usage_ledger.record_usage(
+                    ctx, thread_id, CHAT_MODEL, total_tokens, state.get("total_cost_usd", 0.0)
+                )
 
 
 async def _record_unfinished_turn(graph, cfg, start: float, outcome: str) -> None:
@@ -542,8 +544,14 @@ async def astream_events_turn(
 
     Refused up front (an `error` event, never reaching the graph) if this
     tenant's rolling 24h spend already reached
-    MAX_COST_USD_PER_TENANT_PER_DAY.
+    MAX_COST_USD_PER_TENANT_PER_DAY, or if UNPRICED_MODEL_POLICY is "block" and
+    the chat model has no known price (nothing could be metered).
     """
+    if await runtime_module._chat_model_refused_as_unpriced():
+        metrics.agent_requests_total.labels(outcome="rejected").inc()
+        envelope = runtime_module._model_unpriced_envelope()
+        yield {"type": "error", "content": envelope.message, **envelope.to_dict()}
+        return
     if await runtime_module._tenant_over_daily_budget(ctx):
         metrics.agent_requests_total.labels(outcome="rejected").inc()
         envelope = runtime_module._tenant_budget_envelope()

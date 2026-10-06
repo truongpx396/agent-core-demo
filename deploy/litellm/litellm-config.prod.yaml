@@ -16,6 +16,14 @@ model_list:
       model: os.environ/LLM_CHAT_MODEL
       api_base: os.environ/LLM_API_BASE
       api_key: os.environ/LLM_API_KEY
+    # The app prices every call from this entry's `model_info` (GET /model/info), which
+    # LiteLLM fills from its own cost map for models it knows. A model it does NOT know
+    # (self-hosted vLLM, a fine-tune) has no price, and with UNPRICED_MODEL_POLICY=block
+    # the app refuses to serve it. State its price here, in USD per TOKEN:
+    #   model_info:
+    #     input_cost_per_token: 0.0000010
+    #     output_cost_per_token: 0.0000040
+    #     cache_read_input_token_cost: 0.0000001   # optional; omitted = cached billed as input
   - model_name: embed
     litellm_params:
       model: os.environ/LLM_EMBED_MODEL

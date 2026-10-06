@@ -56,6 +56,18 @@ groups:
             some tenant's turns are being refused for exceeding
             MAX_COST_USD_PER_TENANT_PER_DAY.
 
+      - alert: ModelUsageUnpriced
+        expr: increase(agent_unpriced_usage_total[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Tokens are being spent on a model with no known price"
+          description: >-
+            agent_unpriced_usage_total increased in the last 15m — LiteLLM reports no
+            price for a model that served calls, so the per-turn, per-subagent and
+            per-tenant dollar ceilings read $0 for that spend. Set input/output
+            cost under that model's `model_info` in the LiteLLM config.
+
       - alert: ModerationBlockSpike
         expr: sum(rate(agent_moderation_total{outcome=~"blocked_.*"}[5m])) > 0.5
         for: 5m

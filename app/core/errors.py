@@ -31,6 +31,7 @@ class ErrorCode(str, Enum):
     CANCELLED = "cancelled"
     COST_CEILING_EXCEEDED = "cost_ceiling_exceeded"
     TENANT_BUDGET_EXCEEDED = "tenant_budget_exceeded"
+    MODEL_UNPRICED = "model_unpriced"
     THREAD_BUSY = "thread_busy"
     NO_PROGRESS = "no_progress"
     WORKER_LOST = "worker_lost"

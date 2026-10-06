@@ -15,6 +15,8 @@ I/O), so every call below runs through `asyncio.run(...)`.
 """
 import asyncio
 
+import pytest
+
 from scripts import ops_digest
 
 
@@ -86,8 +88,9 @@ def test_run_digest_records_usage_when_tokens_are_reported(monkeypatch):
 
     recorded = {}
 
-    async def _fake_record_usage(ctx, thread_id, model_alias, total_tokens):
+    async def _fake_record_usage(ctx, thread_id, model_alias, total_tokens, cost_usd):
         recorded["total_tokens"] = total_tokens
+        recorded["cost_usd"] = cost_usd
 
     monkeypatch.setattr(ops_digest, "record_usage", _fake_record_usage)
 
@@ -120,3 +123,41 @@ def test_run_digest_skips_record_usage_when_no_tokens_reported(monkeypatch):
     asyncio.run(ops_digest.run_digest(llm=fake_chat))
 
     assert called == []
+
+
+def test_run_digest_records_the_priced_cost_of_its_own_call(monkeypatch):
+    """Spec 008 A2: a scheduled job calls the model itself, so it must price that
+    call itself — it used to hand the ledger a table-derived cost, and so any
+    model off the table cost $0 here too."""
+    from app.agent import pricing
+    from app.core.config import CHAT_MODEL
+
+    async def priced_fetch():
+        return [
+            {
+                "model_name": CHAT_MODEL,
+                "model_info": {"input_cost_per_token": 2.5e-06, "output_cost_per_token": 1e-05},
+            }
+        ]
+
+    async def fake_fetch_readings():
+        return {}
+
+    async def fake_post_to_team_channel(channel, message):
+        return None
+
+    monkeypatch.setattr(pricing, "_fetch_model_info", priced_fetch)
+    monkeypatch.setattr(ops_digest.metrics_client, "fetch_readings", fake_fetch_readings)
+    monkeypatch.setattr(ops_digest.metrics_client, "detect_anomalies", lambda readings: [])
+    monkeypatch.setattr(ops_digest.notify, "post_to_team_channel", fake_post_to_team_channel)
+    recorded = {}
+
+    async def _fake_record_usage(ctx, thread_id, model_alias, total_tokens, cost_usd):
+        recorded["cost_usd"] = cost_usd
+
+    monkeypatch.setattr(ops_digest, "record_usage", _fake_record_usage)
+    usage = {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500}
+
+    asyncio.run(ops_digest.run_digest(llm=_FakeChat(_FakeResponse("summary", usage_metadata=usage))))
+
+    assert recorded["cost_usd"] == pytest.approx(0.0075)

@@ -36,7 +36,11 @@ class _GraphThatSpentThenFailed:
 
     def __init__(self, exc, values=None, *, state_error=None, state_delay=0.0):
         self._exc = exc
-        self._values = values if values is not None else {"total_tokens": 500, "iterations": 2}
+        self._values = (
+            values
+            if values is not None
+            else {"total_tokens": 500, "total_cost_usd": 0.0125, "iterations": 2}
+        )
         self._state_error = state_error
         self._state_delay = state_delay
         self.state_reads = 0
@@ -60,8 +64,8 @@ class _GraphThatSpentThenFailed:
 def recorded(monkeypatch):
     calls: list[tuple] = []
 
-    async def fake_record_usage(ctx, thread_id, model_alias, total_tokens):
-        calls.append((ctx, thread_id, model_alias, total_tokens))
+    async def fake_record_usage(ctx, thread_id, model_alias, total_tokens, cost_usd):
+        calls.append((ctx, thread_id, model_alias, total_tokens, cost_usd))
 
     monkeypatch.setattr(usage_ledger, "record_usage", fake_record_usage)
     return calls
@@ -100,7 +104,7 @@ async def test_a_timed_out_turn_records_the_tokens_it_already_spent(recorded):
     events = await _run(_GraphThatSpentThenFailed(TimeoutError()))
 
     assert [e["type"] for e in events] == ["error"] and events[0]["code"] == "timeout"
-    assert recorded == [(TEST_CTX, THREAD, stream_module.CHAT_MODEL, 500)]
+    assert recorded == [(TEST_CTX, THREAD, stream_module.CHAT_MODEL, 500, 0.0125)]
     assert metric_value(metrics.agent_tokens_total) - tokens_before == 500
 
 
@@ -108,14 +112,14 @@ async def test_a_turn_that_errored_records_the_tokens_it_already_spent(recorded)
     events = await _run(_GraphThatSpentThenFailed(RuntimeError("boom")))
 
     assert events[0]["code"] == "internal"
-    assert recorded == [(TEST_CTX, THREAD, stream_module.CHAT_MODEL, 500)]
+    assert recorded == [(TEST_CTX, THREAD, stream_module.CHAT_MODEL, 500, 0.0125)]
 
 
 async def test_a_turn_the_user_cancelled_records_the_tokens_it_already_spent(recorded):
     events = await _run(_GraphThatSpentThenFailed(None), cancel_check=_always_cancelled)
 
     assert events[0]["code"] == "cancelled"
-    assert recorded == [(TEST_CTX, THREAD, stream_module.CHAT_MODEL, 500)]
+    assert recorded == [(TEST_CTX, THREAD, stream_module.CHAT_MODEL, 500, 0.0125)]
 
 
 async def test_a_task_cancellation_records_the_tokens_and_still_propagates(recorded):
@@ -124,7 +128,7 @@ async def test_a_task_cancellation_records_the_tokens_and_still_propagates(recor
     with pytest.raises(asyncio.CancelledError):
         await _run(_GraphThatSpentThenFailed(asyncio.CancelledError()))
 
-    assert recorded == [(TEST_CTX, THREAD, stream_module.CHAT_MODEL, 500)]
+    assert recorded == [(TEST_CTX, THREAD, stream_module.CHAT_MODEL, 500, 0.0125)]
 
 
 # --- what must not change ---------------------------------------------------------

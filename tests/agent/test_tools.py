@@ -1218,9 +1218,10 @@ class TestRunSubagentImpl:
 
         captured = {}
 
-        async def fake_record_usage(ctx, thread_id, model_alias, total_tokens):
+        async def fake_record_usage(ctx, thread_id, model_alias, total_tokens, cost_usd):
             captured["ctx"] = ctx
             captured["thread_id"] = thread_id
+            captured["cost_usd"] = cost_usd
 
         monkeypatch.setattr(usage_ledger, "record_usage", fake_record_usage)
         fake_llm = _RecordingFakeLLM(AIMessage(content="An answer, long enough to pass."))
@@ -1232,6 +1233,7 @@ class TestRunSubagentImpl:
 
         assert captured["ctx"] == TEST_CTX
         assert captured["thread_id"].startswith("parent-thread:subagent:researcher:")
+        assert captured["cost_usd"] == 0.0  # the nested run's own running total, here a free model
 
     async def test_never_touches_the_shared_semantic_cache(self, monkeypatch):
         """Closes GRAPH_PATTERNS.md pattern 46's previously-disclosed gap:

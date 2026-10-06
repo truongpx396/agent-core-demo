@@ -448,6 +448,20 @@ agent_tenant_budget_warning_total = Counter(
     "an early signal before agent_tenant_budget_exceeded_total starts firing",
 )
 
+agent_unpriced_usage_total = Counter(
+    "agent_unpriced_usage_total",
+    "LLM calls that spent tokens on a model with no known price (app/agent/pricing.py) — "
+    "every dollar ceiling reads $0 for that spend, so this must stay at zero in production",
+    ["model_alias"],
+)
+
+agent_cost_governance_degraded_total = Counter(
+    "agent_cost_governance_degraded_total",
+    "Cost-governance paths that failed and carried on instead of failing the turn "
+    "(spec 008 A1)",
+    ["path"],
+)  # path: price_lookup
+
 agent_upload_rejected_total = Counter(
     "agent_upload_rejected_total",
     "POST /ingest/upload files rejected before any MinIO write",
