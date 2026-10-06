@@ -125,7 +125,9 @@ groups:
             behind the per-turn, per-tenant and per-person ceilings, so this means those
             did not stop the spend first (or the backstop is sized too low). Find who
             spent it (LiteLLM spend logs, grouped by `end_user` / the `tenant:<name>`
-            tag) before raising it.
+            tag) before raising it. The app's key shows its spend and reset time with
+            `python -m scripts.litellm_key info`; it covers chat and embeddings, so
+            retrieval degrades along with answers.
 
       - alert: ModerationBlockSpike
         expr: sum(rate(agent_moderation_total{outcome=~"blocked_.*"}[5m])) > 0.5
