@@ -1,4 +1,4 @@
-.PHONY: help up up-app sandbox-up sandbox-build pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-ledger-sweep budget-policy test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
+.PHONY: help up up-app sandbox-up sandbox-build pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-ledger-sweep budget-policy litellm-key test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
 
 # Pinned DefectDojo release — see `defectdojo-up`'s own comment for why this
 # is a plain git clone into ~/.cache (NOT vendored into this repo, same
@@ -159,6 +159,9 @@ tool-call-dedup-sweep:  ## Delete stale tool_call_dedup rows past their retentio
 
 budget-policy:  ## Operator CLI for per-tenant / per-person spend-limit overrides, e.g. `make budget-policy ARGS="show --tenant acme --principal alice"` (see scripts/budget_policy.py)
 	python -m scripts.budget_policy $(ARGS)
+
+litellm-key:  ## Mint / inspect the app's scoped, budget-capped LiteLLM key, e.g. `LITELLM_MASTER_KEY=... make litellm-key ARGS="create --max-budget 600"` (see scripts/litellm_key.py)
+	python -m scripts.litellm_key $(ARGS)
 
 usage-ledger-sweep:  ## Delete usage_ledger rows older than USAGE_LEDGER_RETENTION_DAYS (see scripts/usage_ledger_sweep.py; a financial record, so wire to cron only once your retention policy is decided)
 	python -m scripts.usage_ledger_sweep

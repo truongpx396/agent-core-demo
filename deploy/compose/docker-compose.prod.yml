@@ -30,7 +30,13 @@ name: agent-core-demo
 
 x-app-env: &app-env
   OPENAI_API_BASE: http://litellm:4000/v1
-  OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
+  # The app should hold a SCOPED key, not the master: the master key is gateway admin (it can
+  # mint keys, read every spend log, rewrite models and remove budgets) and cannot carry a
+  # budget itself, so an app that sends it has no gateway-side spend cap and hands anyone who
+  # compromises one container the whole gateway. LITELLM_APP_KEY is minted once with
+  # `python -m scripts.litellm_key create` (see infra/README.md). Falls back to the master key
+  # ONLY so an existing deployment keeps running until the operator does that; set it.
+  OPENAI_API_KEY: ${LITELLM_APP_KEY:-${LITELLM_MASTER_KEY}}
   CHAT_MODEL: chat
   EMBED_MODEL: embed
   QDRANT_URL: http://qdrant:6333

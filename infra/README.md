@@ -150,7 +150,35 @@ provisioned before this change, either taint+recreate it, or just run `ssh
 deploy@<reserved_ip> sudo ufw delete allow 8000/tcp` once by hand; the
 latter touches no app data.
 
-### 6. Point DNS at them (optional)
+### 6. Mint the app's gateway key
+
+Until you do this the app sends LiteLLM's **master key**, which is gateway admin and cannot carry a
+budget, so the gateway has no spend cap of its own. Once the stack is up, mint a scoped,
+budget-capped key and give it to the app. The script ships in the `api` image and reaches `litellm`
+over the compose network; the master key is passed from your shell's environment, never as an argument:
+
+```
+cd /opt/agent-core-demo
+export LITELLM_MASTER_KEY="$(grep '^LITELLM_MASTER_KEY=' .env | cut -d= -f2-)"
+dc exec -e LITELLM_MASTER_KEY api python -m scripts.litellm_key create --max-budget <usd per window> --rpm-limit 600
+unset LITELLM_MASTER_KEY
+nano .env          # paste the printed key as LITELLM_APP_KEY=
+dc up -d           # recreates api / agent-worker / ingest-worker with the new key
+```
+
+- The key is printed **once**. `--max-budget` has no default because it is a business number: set it
+  **above** the sum of your tenants' own monthly caps, so it fires only when the app-level limits have
+  failed (below normal use it turns routine traffic into an outage). It covers chat and embeddings.
+- Check it any time with `dc exec -e LITELLM_MASTER_KEY -e LITELLM_APP_KEY api python -m
+  scripts.litellm_key info` (spend, budget and the real reset time; LiteLLM aligned `30d` to the next
+  month boundary when this was tried, so read `resets at` rather than assuming 30 days).
+- When the key is spent, turns fail with `provider_budget_exceeded` and `GatewayBudgetExceeded` pages.
+  Find who spent it in LiteLLM's spend logs (grouped by `end_user`, or the `tenant:<name>` tag) before
+  raising the budget; `python -m scripts.litellm_key end-user --tenant <name>` maps a name to its id.
+- To roll the key, mint a new one, swap `LITELLM_APP_KEY`, `dc up -d`, then delete the old key in
+  LiteLLM's UI.
+
+### 7. Point DNS at them (optional)
 
 If you set `DOMAIN_NAME` in the app droplet's `.env`, create an A (and
 AAAA, if you use one) record pointing it at the `reserved_ip` output.

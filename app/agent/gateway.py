@@ -43,8 +43,8 @@ from app.core.security import SecurityCtx, valid_ctx
 
 def end_user_id(tenant: str) -> str:
     """The id the gateway and the model provider see for `tenant`: stable, so a tenant's calls
-    group together, and opaque, so its name never leaves. The gateway's spend
-    log shows only this id, so an operator maps a tenant to it by calling this function; 16 hex characters is 64 bits, ample
+    group together, and opaque, so its name never leaves. Operators map it back with
+    `python -m scripts.litellm_key end-user --tenant <name>`; 16 hex characters is 64 bits, ample
     to keep distinct tenants distinct."""
     return "tenant_" + hashlib.sha256(tenant.encode()).hexdigest()[:16]
 

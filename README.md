@@ -182,6 +182,7 @@ the private network. Creating or destroying droplets is always a human-run `terr
 2. Add the repo secrets `DROPLET_HOST`, `OBS_DROPLET_HOST`, `DEPLOY_SSH_KEY`.
 3. SSH in once and create each droplet's `.env` from `deploy/env/prod.env.example` (`POSTGRES_PASSWORD`, `LITELLM_MASTER_KEY`, `LLM_*`, `MINIO_*`, `CORS_ALLOWED_ORIGINS`, ...).
 4. Merge to `main`.
+5. Once LiteLLM is up, mint the app's scoped gateway key and put it in `.env` as `LITELLM_APP_KEY` ([Gateway backstop](#gateway-backstop)).
 
 Full runbook, scaling, backups, rollback and teardown: **[infra/README.md](infra/README.md)**.
 
@@ -193,20 +194,35 @@ Two things that bite on a first deploy:
 ### Gateway backstop
 
 Per-turn, per-tenant and per-person ceilings live in the app, so a bug in the app can defeat them. LiteLLM
-sits in front of every model call and is the one place that can still stop spend when they fail, if the key
-the app sends carries a `max_budget` (the master key cannot). This part makes the app cooperate with that
-backstop; the key itself is minted by the next change.
+sits in front of every model call and is the one place that can still stop spend when they fail. Out of the
+box the app sends LiteLLM's **master key**, which cannot carry a budget and is gateway admin (it mints keys,
+reads every spend log, removes budgets), so there is no gateway-side cap and one compromised container owns
+the gateway. `deploy/compose/docker-compose.prod.yml` therefore sends `LITELLM_APP_KEY` when it is set and
+falls back to the master key only so an existing deployment keeps running until you mint one:
+
+```
+LITELLM_MASTER_KEY=… make litellm-key ARGS="create --max-budget 600 --rpm-limit 600"   # prints the key once
+LITELLM_MASTER_KEY=… LITELLM_APP_KEY=… make litellm-key ARGS=info                      # spend, budget, reset time
+```
+
+- **Size it above the app's own limits** (the sum of your tenants' monthly caps), so it fires only when
+  they have failed; a budget below normal use turns routine traffic into an outage. It covers chat **and**
+  embeddings, because it is one key: when it is spent, retrieval degrades along with answers.
 
 - **Every call is attributed.** The agent, follow-up, history-compaction and cron calls send a hashed
   tenant id as LiteLLM's end-user (`end_user` on each spend-log row) and a `tenant:<name>` tag, so a runaway
   bill can be traced to a tenant. The hash, not the name, is what LiteLLM may pass on to a provider.
+  `make litellm-key ARGS="end-user --tenant acme"` maps a name to its id.
 - **A stop is reported, not buried.** LiteLLM's `budget_exceeded` becomes `provider_budget_exceeded`,
   increments `agent_gateway_budget_exceeded_total` and pages `GatewayBudgetExceeded`, including when
   follow-ups or compaction swallow it. It is not retried: it repeats until the budget resets, and the status
   LiteLLM uses has changed between versions (429 on `main-stable`), so the error `type` is what is recognised.
-- **Checked against a real LiteLLM** (`main-stable`, 2026-10), not only mocked: the `end_user`/tag attribution
-  and the refusal after a key's budget was spent. Two surprises worth knowing: the refusal was a 429, not the
-  400 the source read suggested, and an OpenAI-compatible backend received neither `user` nor `metadata`.
+- **Checked against a real LiteLLM** (`main-stable`, 2026-10), not only mocked: the key the script minted
+  (and that the app's own pricing lookup and model resolver still work with it, since a scoped key could
+  have been refused `/model/info` and read as "unpriced"), the `end_user`/tag attribution, and the refusal
+  after the budget was spent. Surprises worth knowing: the refusal was a 429, not the 400 the source read
+  suggested; `budget_duration 30d` reset at the next month boundary rather than 30 days out (read `resets
+  at` from `info`); and an OpenAI-compatible backend received neither `user` nor `metadata`.
 - **Gap:** LiteLLM can also cap an *end user* (a tenant) at the gateway, which would make the backstop
   per-tenant; that is not built (the app-level tenant limits already are). The openai SDK retries a 429 twice
   inside one call (3 requests, ~1.3 s measured); harmless, since LiteLLM refuses at authentication before any
@@ -423,6 +439,7 @@ measurements put acted-on AI comments at roughly 6–19%, so treat it as a promp
 | `make agent-worker[-support\|-ops\|-sales]` · `make ingest-worker` | Queue consumers |
 | `make telegram[-support\|-sales]` | Telegram gateway for a domain (needs `TELEGRAM_BOT_TOKEN`) |
 | `make ops-digest` · `make followup-sweep` · `make tool-call-dedup-sweep` · `make usage-ledger-sweep` | One-shot jobs meant for cron (nothing schedules them). The last deletes `usage_ledger` rows past `USAGE_LEDGER_RETENTION_DAYS`; it is a financial record, so schedule it only once your retention policy is decided |
+| `make litellm-key ARGS="…"` | Mint or inspect the app's **scoped, budget-capped LiteLLM key** (`create --max-budget <usd>`, `info`, `end-user --tenant <name>`). The master key never leaves the gateway once `LITELLM_APP_KEY` is set (see [Gateway backstop](#gateway-backstop)) |
 | `make budget-policy ARGS="…"` | Operator CLI for per-tenant / per-person spend-limit overrides (set a tenant's plan limit, give every person in a tenant a personal limit, **suspend** one person with a limit of 0, or lift a cap with `none`). A running worker applies a change within `BUDGET_POLICY_REFRESH_SECONDS` (30). Needs `postgres-init/18-budget-policies.sql` |
 | `make mcp-serve[-ops]` · `make mcp-inspect` | MCP servers · MCP Inspector |
 | `make lint` · `make typecheck` · `make test` | The CI gates |
