@@ -1,0 +1,152 @@
+"""One immutable usage event per model call (postgres-init/19-usage-events.sql).
+
+`usage_ledger` records a completed TURN, summed, with no key that names a call. That is enough for
+a spend cap and not enough for billing: a billing meter must be able to say "this exact call, once",
+so that a replayed write, a retried export and a provider that deduplicates by a caller-supplied id
+(Stripe `identifier`, Polar `external_id`) all agree on what one call is. This module is that meter;
+the cost caps keep reading the ledger unchanged (a deliberate dual write, see below).
+
+## Identity
+
+`event_id = uuid5(NAMESPACE, f"{tenant}|{message_id}")`, where `message_id` is the response's
+`AIMessage.id`. Verified against the installed langchain-core / langchain-openai / langgraph
+(specs/010 research R5, pinned by tests/agent/test_usage_events.py): langchain-core assigns it as
+`run-<run id>-<index>`, it is unique per invocation (two identical calls that came back with the
+SAME provider id still got different ones), and it is identical after a checkpoint round trip. The
+provider's own `chatcmpl-...` id is deliberately not used: a backend may return a fixed or missing one.
+A LangGraph node retry that calls the model again gets a new id and a new event, which is right: a
+second paid call happened.
+
+## Failure policy
+
+Fail OPEN, counted, alerted. A failed write must not fail the turn it records (same posture as
+`usage_ledger.record_usage`), but a lost event is lost revenue and nobody is told by a log line, so:
+  * `agent_cost_governance_degraded_total{path="usage_event_write"}`  -> UsageEventWriteFailing (critical)
+  * `...{path="usage_event_table_missing"}` (migration 19 not applied) -> UsageEventTableMissing (warning)
+  * `...{path="usage_event_identity"}`: a response with no message id, so it got a random one
+    and cannot be de-duplicated (a replay would double-count it);
+  * `...{path="usage_missing"}`: the provider reported no usage for a call, so nothing could be
+    metered. Counted, not alerted: a local model may do this.
+`USAGE_EVENTS_ENABLED=false` is the kill switch.
+
+## The dual write
+
+Until budgets read this table (a later change, specs/010 T030), a turn is recorded twice: summed in
+`usage_ledger` (what the caps read) and per call here. Both come from the same `PricedCall`, so they
+cannot disagree about a call's cost; tests/agent/test_usage_events.py asserts the per-call events
+add up to the running total the ledger row is written from.
+"""
+import logging
+import uuid
+
+from psycopg import errors as pg_errors
+
+from app.agent.model_resolver import resolve_model
+from app.agent.pricing import PricedCall
+from app.agent.sql_store import get_connection
+from app.core import metrics
+from app.core.config import USAGE_EVENTS_ENABLED
+from app.core.security import SecurityCtx, valid_ctx
+
+logger = logging.getLogger(__name__)
+
+# The closed set the table's CHECK enforces. Embeddings and cron arrive with the PRs that route them here.
+KINDS = frozenset({"chat", "followups", "compaction", "subagent", "embedding", "cron"})
+
+_EVENT_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "agent-core-demo/usage-event")
+_warned_missing_table = False
+
+
+def event_id_for(tenant: str, message_id: str) -> str:
+    """The deterministic id of one call. 36 characters, inside Stripe's 100-character
+    `identifier` limit, and a pure function of its inputs so every retry agrees."""
+    return str(uuid.uuid5(_EVENT_NAMESPACE, f"{tenant}|{message_id}"))
+
+
+def _degraded(path: str) -> None:
+    metrics.agent_cost_governance_degraded_total.labels(path=path).inc()
+
+
+async def record_call(
+    ctx: SecurityCtx | None,
+    *,
+    thread_id: str,
+    message_id: str | None,
+    kind: str,
+    model_alias: str,
+    priced: PricedCall,
+) -> None:
+    """Best-effort: writes one event for one model call; never raises.
+
+    Does nothing without a valid ctx (an unattributable call has no tenant to meter to, the same
+    rule as `record_usage`). A call that reported no usage is counted and skipped."""
+    if not USAGE_EVENTS_ENABLED or not valid_ctx(ctx):
+        return
+    if kind not in KINDS:
+        # A programming error, not a runtime condition: loud in tests, and the CHECK constraint
+        # would refuse the row anyway. Counted so a typo in production is not silent.
+        logger.error("usage_event_unknown_kind", extra={"kind": kind})
+        _degraded("usage_event_write")
+        return
+    if not priced.spent_tokens:
+        _degraded("usage_missing")
+        return
+    if not message_id:
+        _degraded("usage_event_identity")
+        message_id = uuid.uuid4().hex
+    row = {
+        "event_id": event_id_for(ctx["tenant"], message_id),
+        "tenant": ctx["tenant"],
+        "principal": ctx["principal"],
+        "thread_id": thread_id,
+        "kind": kind,
+        "model_alias": model_alias,
+        "resolved_model": await resolve_model(model_alias),
+        "input_tokens": priced.input_tokens,
+        "output_tokens": priced.output_tokens,
+        "cached_input_tokens": priced.cached_input_tokens,
+        "total_tokens": priced.total_tokens,
+        "cost_usd": priced.cost_usd,
+        "price_input_per_token": priced.price.input_per_token if priced.price else None,
+        "price_output_per_token": priced.price.output_per_token if priced.price else None,
+    }
+    global _warned_missing_table
+    try:
+        await _insert(row)
+    except pg_errors.UndefinedTable:
+        _degraded("usage_event_table_missing")
+        if not _warned_missing_table:
+            _warned_missing_table = True
+            logger.warning(
+                "usage_events table is missing; no model call is being metered until "
+                "postgres-init/19-usage-events.sql is applied"
+            )
+    except Exception as exc:  # noqa: BLE001 - a failing write must not fail the turn it records; counted and alerted instead
+        _degraded("usage_event_write")
+        logger.warning("usage_event_write_failed", extra={"error_class": type(exc).__name__})
+
+
+async def _insert(row: dict) -> bool:
+    """True if a row was written, False if `event_id` was already there. The statement relies on
+    the table's PRIMARY KEY for `ON CONFLICT`, which a fake cursor cannot prove: the real-Postgres
+    test (tests/integration/test_usage_events_real_postgres.py) does."""
+    async with get_connection() as conn:
+        cur = await conn.execute(
+            "INSERT INTO usage_events "
+            "(event_id, tenant, principal, thread_id, kind, model_alias, resolved_model, "
+            "input_tokens, output_tokens, cached_input_tokens, total_tokens, cost_usd, "
+            "price_input_per_token, price_output_per_token) "
+            "VALUES (%(event_id)s, %(tenant)s, %(principal)s, %(thread_id)s, %(kind)s, "
+            "%(model_alias)s, %(resolved_model)s, %(input_tokens)s, %(output_tokens)s, "
+            "%(cached_input_tokens)s, %(total_tokens)s, %(cost_usd)s, "
+            "%(price_input_per_token)s, %(price_output_per_token)s) "
+            "ON CONFLICT (event_id) DO NOTHING",
+            row,
+        )
+        return cur.rowcount == 1
+
+
+def reset_state() -> None:
+    """Test hook: forget that the missing-table warning was already given."""
+    global _warned_missing_table
+    _warned_missing_table = False

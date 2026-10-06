@@ -7,7 +7,7 @@ unmodified graph. Python 3.13.
 Read these before changing behavior; they hold the reasoning this file deliberately omits:
 - `.specify/memory/constitution.md` — the non-negotiable rules. Principles I, II and IV
   (tenant isolation, mandatory approval, exactly-once side effects) are NON-NEGOTIABLE.
-- `GRAPH_PATTERNS.md` — 50 numbered patterns, each with the real bug that motivated it.
+- `GRAPH_PATTERNS.md` — 51 numbered patterns, each with the real bug that motivated it.
   "Extending Further" is the honest list of what is and isn't built.
 - `README.md` — architecture, make targets, testing tiers. `WORKER_CONCURRENCY.md` — worker sizing.
 

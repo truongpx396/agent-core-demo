@@ -12,8 +12,8 @@ graph_utils.py's `_make_llm`.
 from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
 
-from app.agent import gateway, pricing
 from app.agent import graph as graph_module
+from app.agent import metering
 from app.agent.graph import State
 from app.agent.graph_skills import _pending_skill_required_tool
 from app.agent.graph_tools import _current_turn_messages
@@ -21,7 +21,7 @@ from app.core.untrusted import frame_untrusted
 
 
 # --- Node: agent ---
-def make_agent_node(llm, model_alias: str | None = None):
+def make_agent_node(llm, model_alias: str | None = None, kind: str = "chat"):
     """Factory, not a plain function, because `agent` needs an LLM client.
     Tests build it with a fake (e.g. GenericFakeChatModel) via
     `make_agent_node(fake_llm)(state)` (see test_agent_node.py) to cover
@@ -150,25 +150,31 @@ def make_agent_node(llm, model_alias: str | None = None):
                 )
             )
 
-        # Tell the gateway whose call this is (app/agent/gateway.py): its spend logs and
-        # Langfuse are otherwise one anonymous caller.
-        response = await llm.ainvoke(messages, **gateway.identity_from_config(config))
+        # The one place a call is made, priced and recorded (app/agent/metering.py): it tells the
+        # gateway whose call this is (its spend logs and Langfuse are otherwise one anonymous
+        # caller), prices the usage once from the call's own input/output/cached split by the
+        # model this node's client actually talks to — `model_alias` for a delegated run whose
+        # specialist declares its own model, else the global chat alias — and writes one usage
+        # event. The in-run ceiling below, the ledger row (written from this same running total)
+        # and the event all come from that one pricing, so the ceiling and the bill can never
+        # disagree about what a turn cost (pattern 35).
+        call = await metering.metered_invoke(
+            llm,
+            messages,
+            config=config,
+            kind=kind,
+            model_alias=model_alias or graph_module.CHAT_MODEL,
+        )
+        response, usage = call.response, call.usage
 
         # usage_metadata is populated only when the model/proxy reports it
         # (not guaranteed) — missing usage just means the budget never trips.
-        usage = getattr(response, "usage_metadata", None) or {}
         turn_tokens = usage.get("total_tokens", 0)
         total_tokens = state.get("total_tokens", 0) + turn_tokens
 
         # Cost ceiling bookkeeping (pattern 35), applied HERE incrementally so
-        # should_continue can stop the run before the NEXT call. Priced from the
-        # call's own input/output/cached split by the model this node's client
-        # actually talks to — `model_alias` for a delegated run whose specialist
-        # declares its own model, else the global chat alias. The ledger row is
-        # written from this same running total, so the ceiling and the bill
-        # can never disagree about what a turn cost.
-        turn_cost = await pricing.price_usage(model_alias or graph_module.CHAT_MODEL, usage)
-        total_cost_usd = state.get("total_cost_usd", 0.0) + turn_cost
+        # should_continue can stop the run before the NEXT call.
+        total_cost_usd = state.get("total_cost_usd", 0.0) + call.cost_usd
 
         return {
             "messages": [response],

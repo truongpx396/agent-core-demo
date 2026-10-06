@@ -200,26 +200,54 @@ def note_unpriced(alias: str) -> None:
         )
 
 
-async def price_usage(alias: str, usage: Mapping) -> float:
-    """Dollars for one LLM call from its LangChain `usage_metadata`; 0.0 (and
-    `note_unpriced`) when the model has no price, 0.0 when nothing was spent.
+@dataclass(frozen=True)
+class PricedCall:
+    """What one LLM call cost, with the evidence. `cost_usd` is None when the model has no
+    price (unknown is not free: a usage event stores NULL, never 0), and `price` is the rate
+    snapshot it was computed from, so a later price change cannot rewrite what a call cost."""
 
-    A report that gives a total but not its input/output split is billed at the
-    dearer of the two rates for the unexplained remainder — never the cheaper."""
+    input_tokens: int
+    output_tokens: int
+    cached_input_tokens: int
+    total_tokens: int
+    cost_usd: float | None
+    price: ModelPrice | None
+
+    @property
+    def spent_tokens(self) -> bool:
+        return self.total_tokens > 0
+
+
+async def price_call(alias: str, usage: Mapping) -> PricedCall:
+    """Prices one LLM call from its LangChain `usage_metadata`, keeping the token split and the
+    price used. A call that spent nothing prices to `cost_usd=0.0`; one on an unpriced model
+    prices to None and is counted once here (`note_unpriced`).
+
+    A report that gives a total but not its input/output split is billed at the dearer of the
+    two rates for the unexplained remainder — never the cheaper."""
     input_tokens = int(usage.get("input_tokens") or 0)
     output_tokens = int(usage.get("output_tokens") or 0)
-    total_tokens = int(usage.get("total_tokens") or 0)
-    if max(input_tokens + output_tokens, total_tokens) <= 0:
-        return 0.0
+    reported_total = int(usage.get("total_tokens") or 0)
+    cached = int((usage.get("input_token_details") or {}).get("cache_read") or 0)
+    total_tokens = max(input_tokens + output_tokens, reported_total)
+    if total_tokens <= 0:
+        return PricedCall(0, 0, 0, 0, 0.0, None)
     price = await get_price(alias)
     if price is None:
         note_unpriced(alias)
-        return 0.0
-    cached = int((usage.get("input_token_details") or {}).get("cache_read") or 0)
-    unexplained = max(total_tokens - input_tokens - output_tokens, 0)
-    return cost_usd(price, input_tokens, output_tokens, cached) + unexplained * max(
+        return PricedCall(input_tokens, output_tokens, cached, total_tokens, None, None)
+    unexplained = max(reported_total - input_tokens - output_tokens, 0)
+    cost = cost_usd(price, input_tokens, output_tokens, cached) + unexplained * max(
         price.input_per_token, price.output_per_token
     )
+    return PricedCall(input_tokens, output_tokens, cached, total_tokens, cost, price)
+
+
+async def price_usage(alias: str, usage: Mapping) -> float:
+    """Dollars for one LLM call; 0.0 (and `note_unpriced`) when the model has no price, 0.0 when
+    nothing was spent. The running-total callers (the in-run ceiling, the per-turn ledger row)
+    want a number, so unknown folds to 0.0 here; a usage event keeps the None (`price_call`)."""
+    return (await price_call(alias, usage)).cost_usd or 0.0
 
 
 async def refuse_unpriced(alias: str) -> bool:

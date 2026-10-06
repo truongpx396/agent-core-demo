@@ -172,6 +172,13 @@ class Settings(BaseSettings):
     # today's behaviour.
     budget_check_failure_policy: Literal["open", "closed"] = "open"
 
+    # Per-call usage events (app/agent/usage_events.py, postgres-init/19-usage-events.sql): the
+    # meter a credit or usage-billing product is built on. On by default because a meter that is
+    # off cannot be reconciled after the fact; this is the kill switch for an emergency (a write
+    # path that is hurting the turn path), not a setting to leave off. A failed write never fails
+    # a turn either way; it is counted and alerted.
+    usage_events_enabled: bool = True
+
     # How long usage_ledger rows are kept by scripts/usage_ledger_sweep.py (spec
     # 008 A3: nothing trimmed the table, and the allowance reads it before every
     # turn). The floor is not a style choice: a budget window reads back up to a
@@ -512,6 +519,7 @@ PRICING_REFRESH_SECONDS = settings.pricing_refresh_seconds
 UNPRICED_MODEL_POLICY = settings.unpriced_model_policy
 USAGE_LEDGER_RETENTION_DAYS = settings.usage_ledger_retention_days
 BUDGET_CHECK_FAILURE_POLICY = settings.budget_check_failure_policy
+USAGE_EVENTS_ENABLED = settings.usage_events_enabled
 BUDGET_POLICY_REFRESH_SECONDS = settings.budget_policy_refresh_seconds
 REQUEST_TIMEOUT_SECONDS = settings.request_timeout_seconds
 SUBAGENT_TIMEOUT_SECONDS = settings.subagent_timeout_seconds
