@@ -43,7 +43,9 @@ async def test_a_failed_ledger_read_in_the_allowance_check_is_counted_as_ledger_
     monkeypatch.setattr(usage_ledger, "usage_summary", broken_summary)
     before = _count("ledger_read")
 
-    assert await runtime_module._tenant_over_daily_budget(TEST_CTX) is False  # still fails open
+    allowance = await runtime_module._check_allowance(TEST_CTX)
+    assert allowance.refused is False  # still fails open
+    assert allowance.degraded is True  # ...and says it was not actually verified
 
     assert _count("ledger_read") == before + 1
 

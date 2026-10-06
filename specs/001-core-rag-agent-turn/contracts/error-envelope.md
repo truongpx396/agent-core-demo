@@ -30,6 +30,7 @@ natural language by design and never uses this shape.
 | `internal` | yes | `runtime_stream.py` (generic `except`), `runtime_legacy_stream.py` | Unexpected failure. `message` is a fixed text and `details.error_class` names the exception class — never `str(exc)` (fixed in #64, via `internal_error_envelope` in `app/core/errors.py`). |
 | `pending_approval` | yes | `runtime_stream.py::astream_events_turn` and `::astream_events_continue_turn` | A new message arrived while the conversation is paused at an approval; or a crashed turn that had reached the pause. (Feature 003.) |
 | `tenant_budget_exceeded` | yes | `runtime.py::_tenant_budget_envelope`, via `astream_events_turn` | The tenant's rolling-24 h spend reached its daily cap; refused before any model work. |
+| `budget_check_unavailable` | yes | `budgets.py::refusal_envelope`, via `astream_events_turn` and `astream_events_resume` | `BUDGET_CHECK_FAILURE_POLICY=closed` and the ledger could not be read, so the allowance could not be verified; refused before any model work. Retry shortly. |
 | `model_unpriced` | yes | `runtime.py::_model_unpriced_envelope`, via `astream_events_turn` | `UNPRICED_MODEL_POLICY=block` and the chat model has no known price in LiteLLM, so no dollar ceiling could meter the turn; refused before any model work. An operator fix, not a caller one. |
 | `thread_busy` | yes | `agent_worker.py::process_request` | Another job is already running on this conversation. |
 | `worker_lost` | yes | `agent_worker.py::_handle_reclaimed_job` | The worker handling the request died and the job could not be safely retried. |
@@ -65,4 +66,4 @@ deviations still tracked as plan item **A2**.
 - Treat an `error` whose `code` is absent as non-retryable-by-default unless its text identifies
   a known transient (`No response for …`).
 - `thread_busy` and `worker_lost` are safe to retry after a pause; `pending_approval` is not (the
-  user must approve/reject/cancel first); `tenant_budget_exceeded` is not (until the window rolls); `model_unpriced` is not (until an operator prices the model).
+  user must approve/reject/cancel first); `tenant_budget_exceeded` is not (until the window rolls); `model_unpriced` is not (until an operator prices the model); `budget_check_unavailable` is (once the ledger answers again).

@@ -99,7 +99,7 @@ class ReadinessResponse(BaseModel):
 
 class UsageResponse(BaseModel):
     """GET /usage's body — this caller's tenant, all-time plus the same
-    rolling-24h number _tenant_over_daily_budget checks, so a caller can see
+    rolling-24h number budgets.check_tenant_daily checks, so a caller can see
     how close they are to the daily budget without getting refused first."""
 
     total_tokens: int = Field(..., description="All-time tokens recorded for this tenant.")

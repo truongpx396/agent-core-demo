@@ -28,7 +28,7 @@ Endpoints:
                               thread — lets the web UI re-show that prompt
                               after a reload/session switch
 - GET  /usage             -> this caller's tenant usage/cost, including the
-                              rolling-24h number _tenant_over_daily_budget checks
+                              rolling-24h number budgets.check_tenant_daily checks
 - POST /ingest/upload     -> upload PDF/DOCX documents; each becomes its own
                               job on a SEPARATE queue from chat turns,
                               processed by ingest_worker.py — this endpoint

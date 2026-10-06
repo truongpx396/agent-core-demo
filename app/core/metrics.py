@@ -439,7 +439,7 @@ agent_rate_limit_exceeded_total = Counter(
 agent_tenant_budget_exceeded_total = Counter(
     "agent_tenant_budget_exceeded_total",
     "Turns refused before starting because this tenant's rolling 24h spend already "
-    "reached MAX_COST_USD_PER_TENANT_PER_DAY (app/agent/runtime.py::_tenant_over_daily_budget)",
+    "reached MAX_COST_USD_PER_TENANT_PER_DAY (app/agent/budgets.py::check_tenant_daily)",
 )
 
 agent_tenant_budget_warning_total = Counter(

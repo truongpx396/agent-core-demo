@@ -22,6 +22,7 @@ import asyncio
 
 import pytest
 
+from app.agent import budgets
 from app.agent import runtime as runtime_module
 from app.agent import runtime_stream as stream_module
 from app.core import errors, metrics
@@ -38,9 +39,9 @@ def budget(monkeypatch):
     tenant is under budget unless the test flips `over`."""
     log = {"checks": 0, "reserved": [], "released": [], "over": False}
 
-    async def over_budget(ctx):
+    async def refusal(ctx):
         log["checks"] += 1
-        return log["over"]
+        return budgets.refusal_envelope(budgets.Allowance("exceeded")) if log["over"] else None
 
     async def reserve(ctx):
         log["reserved"].append(ctx)
@@ -49,7 +50,7 @@ def budget(monkeypatch):
     async def release(ctx, hold_id):
         log["released"].append(hold_id)
 
-    monkeypatch.setattr(runtime_module, "_tenant_over_daily_budget", over_budget)
+    monkeypatch.setattr(runtime_module, "_allowance_refusal", refusal)
     monkeypatch.setattr(runtime_module, "_reserve_turn_budget", reserve)
     monkeypatch.setattr(runtime_module, "_release_turn_budget", release)
     return log

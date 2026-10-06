@@ -1,6 +1,6 @@
 """Tests for app/agent/usage_ledger.py's in-flight budget reservation
 (reserve_budget/release_budget_reservation/in_flight_reservation) — the fix
-for the check-then-act race in app/agent/runtime.py::_tenant_over_daily_budget
+for the check-then-act race in app/agent/budgets.py::check_tenant_daily
 (tests/agent/test_tenant_budget.py covers that function itself; this file
 covers the reservation primitives it now reads).
 

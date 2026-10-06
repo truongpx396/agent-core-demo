@@ -185,6 +185,7 @@ telemetry layer adds no per-turn growth in threads, memory or blocking to the pr
 **Allowance**
 
 - **FR-018**: Before any graph work, a new turn MUST be refused with the budget-exceeded error if rolling-24-hour spend plus in-flight reservations is at or above the ceiling (counted); at or above 80% it MUST proceed with a counter and a log line carrying the figures.
+- **FR-019a**: When the ledger read behind the allowance fails, the turn MUST be served (`BUDGET_CHECK_FAILURE_POLICY=open`, default) or refused as `budget_check_unavailable` (`closed`), and either way counted. The allowance rule lives in `app/agent/budgets.py`.
 - **FR-019**: A proceeding turn MUST reserve its per-turn ceiling atomically against its tenant and release it in a `finally` on every exit path (off the critical path); a reservation or ledger failure MUST fail open and be logged.
 - **FR-020**: A reservation older than 5 minutes MUST be ignored when read.
 - **FR-021**: A reservation held by a worker that died MUST stop counting. *(Not met — B20.)*
