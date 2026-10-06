@@ -164,5 +164,12 @@ as `end_user`), and optionally the provider's balance, and reports drift per ten
 - **D6.** Refund policy default: claw back the credits the refunded purchase granted, allow the balance to go negative, refuse new usage until it is positive. This is a **product decision to confirm** (O2).
 - **D7.** Credit entries are a financial record: kept indefinitely by default. Usage events follow `USAGE_EVENT_RETENTION_DAYS`, and the retention job refuses to delete an event that is not yet exported when export is enabled.
 
-**Open product decisions (need an owner, not code):** **O1** the credits-per-dollar rate and markup (a business number, so no default is shipped);
-**O2** the refund and chargeback policy in D6; **O3** whether credits expire, and after how long, per source; **O4** which provider first.
+- **D8.** A tenant is on credit billing **only if it has a `credit_accounts` row**. No account means never debited and never gated, so the wallet changes nothing
+  for an existing tenant until an operator, or a verified purchase, opens one. This is per-tenant opt-in, finer than a global flag, and it is why no
+  tenant can be retroactively put into debt by this feature.
+- **D9. (closes O3, decided in PR 2.)** Expiry by source, enforced in code (`credits.EXPIRY_REQUIRED`): **promotional credits must expire** (a promo is a
+  liability to cap in time) and **subscription credits must expire** (they belong to their period and do not roll over). **Paid credits (`purchase`) do not expire
+  unless the caller says so**, because many jurisdictions restrict expiring a prepaid balance someone paid for; that is left to the operator, never a default.
+
+**Product decisions still to be recorded, each in the PR that implements it:** **O1** the credits-per-dollar rate and markup (PR 3); **O2** the refund and
+chargeback policy in D6 (PR 4); **O4** which provider first (PR 4).

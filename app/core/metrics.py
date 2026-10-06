@@ -466,6 +466,14 @@ agent_unpriced_usage_total = Counter(
     ["model_alias"],
 )
 
+agent_credit_overdraft_total = Counter(
+    "agent_credit_overdraft_total",
+    "Debits larger than the tenant's available credits (app/billing/credits.py): the model call "
+    "had already happened, so the shortfall was booked as overdraft instead of refused. With "
+    "gating on this should stay near zero; sustained growth means usage is outrunning the wallet "
+    "(a missed top-up, or gating off).",
+)
+
 agent_cost_governance_degraded_total = Counter(
     "agent_cost_governance_degraded_total",
     "Cost-governance paths that failed and carried on instead of failing the turn "
