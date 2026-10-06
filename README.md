@@ -400,7 +400,7 @@ measurements put acted-on AI comments at roughly 6–19%, so treat it as a promp
 | `make serve` | API + web UI on :8000 |
 | `make agent-worker[-support\|-ops\|-sales]` · `make ingest-worker` | Queue consumers |
 | `make telegram[-support\|-sales]` | Telegram gateway for a domain (needs `TELEGRAM_BOT_TOKEN`) |
-| `make ops-digest` · `make followup-sweep` · `make tool-call-dedup-sweep` | One-shot jobs meant for cron (nothing schedules them) |
+| `make ops-digest` · `make followup-sweep` · `make tool-call-dedup-sweep` · `make usage-ledger-sweep` | One-shot jobs meant for cron (nothing schedules them). The last deletes `usage_ledger` rows past `USAGE_LEDGER_RETENTION_DAYS`; it is a financial record, so schedule it only once your retention policy is decided |
 | `make mcp-serve[-ops]` · `make mcp-inspect` | MCP servers · MCP Inspector |
 | `make lint` · `make typecheck` · `make test` | The CI gates |
 | `make obs-up` · `make obs-down` | Observability stack |

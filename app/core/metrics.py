@@ -104,7 +104,7 @@ class Histogram:
 
 agent_requests_total = Counter(
     "agent_requests_total", "Total agent turns by outcome", ["outcome"]
-)  # outcome: success | rejected | error | timeout
+)  # outcome: success | rejected | error | timeout | cancelled
 
 agent_latency_seconds = Histogram(
     "agent_latency_seconds",
@@ -460,7 +460,7 @@ agent_cost_governance_degraded_total = Counter(
     "Cost-governance paths that failed and carried on instead of failing the turn "
     "(spec 008 A1)",
     ["path"],
-)  # path: price_lookup
+)  # path: price_lookup | ledger_write | ledger_read | reservation | model_resolve
 
 agent_upload_rejected_total = Counter(
     "agent_upload_rejected_total",

@@ -26,6 +26,7 @@ import time
 
 import httpx
 
+from app.core import metrics
 from app.core.config import OPENAI_API_BASE, OPENAI_API_KEY
 
 logger = logging.getLogger(__name__)
@@ -75,8 +76,9 @@ async def resolve_model(alias: str) -> str | None:
                     return resolved
         _failed_at[alias] = time.monotonic()
         return None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - observability only, never fails a turn; counted instead
         _failed_at[alias] = time.monotonic()
+        metrics.agent_cost_governance_degraded_total.labels(path="model_resolve").inc()
         logger.warning(
             "model resolution failed; continuing without it",
             extra={"alias": alias, "error_class": type(exc).__name__},
