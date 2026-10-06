@@ -20,6 +20,15 @@ and pays for none of their reads. The caller is refused by the FIRST exceeded li
 order given (`configured_limits` puts tenant before person: an organisation-wide stop is the
 more important thing to tell someone), and only that one is counted.
 
+## Overrides
+
+The four limits are Settings defaults that apply to everyone. `budget_policies` (a table an
+operator edits) overrides them per tenant, per person, or for every person in one tenant:
+`resolve_limits` applies a person's row, else the tenant's `*` row, else the default. An
+override of NULL means "no cap" and 0 means "refuse everything" (the suspend switch); see
+postgres-init/18-budget-policies.sql. The override read is one more read the check can fail,
+and it follows the same failure policy as the ledger read.
+
 ## Why in-flight holds are added to the ledger sum (tenant scopes)
 
 `spent` (usage_ledger's persisted sum) only reflects turns that have already COMPLETED and
@@ -51,11 +60,11 @@ time, which is what lets tests re-point them.
 """
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from app.agent import usage_ledger
+from app.agent import budget_policies, usage_ledger
 from app.core import metrics
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.security import SecurityCtx, valid_ctx
@@ -136,6 +145,45 @@ def window_resets_at(window: Window, now: datetime) -> datetime | None:
     return first.replace(month=first.month + 1)
 
 
+@dataclass(frozen=True)
+class Defaults:
+    """The Settings values a limit falls back to when no override applies. 0 means off for
+    every field but `tenant_day`, which is always enforced (0 there refuses everything)."""
+
+    tenant_day: float
+    tenant_month: float = 0.0
+    principal_day: float = 0.0
+    principal_month: float = 0.0
+
+
+def resolve_limits(
+    defaults: Defaults, overrides: Sequence[budget_policies.Override], principal: str
+) -> list[BudgetLimit]:
+    """The limits that apply to `principal`, tenant before person.
+
+    For each (scope, window) an override replaces the default: the tenant's limit by the row for
+    `subject=''`; a person's by their own row, else by the tenant's `*` row. A row of None is an
+    explicit "no cap" (the limit is omitted); any number, including 0, is the cap. With no
+    override the default applies when above 0, except tenant/day which is always enforced."""
+    by_key = {(o.subject, o.period): o for o in overrides}
+    limits: list[BudgetLimit] = []
+    for scope, window, subjects, default, always in (
+        ("tenant", "day", (budget_policies.TENANT_SUBJECT,), defaults.tenant_day, True),
+        ("tenant", "month", (budget_policies.TENANT_SUBJECT,), defaults.tenant_month, False),
+        ("principal", "day", (principal, budget_policies.ALL_PRINCIPALS), defaults.principal_day, False),
+        ("principal", "month", (principal, budget_policies.ALL_PRINCIPALS), defaults.principal_month, False),
+    ):
+        value: float | None = default if (always or default > 0) else None
+        for subject in subjects:
+            row = by_key.get((subject, window))
+            if row is not None:
+                value = row.limit_usd
+                break
+        if value is not None:
+            limits.append(BudgetLimit(scope, window, value))  # type: ignore[arg-type]  # scope/window are the Literal values above
+    return limits
+
+
 def configured_limits(
     *,
     tenant_day: float,
@@ -143,18 +191,10 @@ def configured_limits(
     principal_day: float = 0.0,
     principal_month: float = 0.0,
 ) -> list[BudgetLimit]:
-    """The limits to enforce, tenant before person. The tenant daily limit is always present
-    (a value of 0 there refuses everything, as it always has); the others are present only when
-    above 0."""
-    limits = [BudgetLimit("tenant", "day", tenant_day)]
-    for scope, window, value in (
-        ("tenant", "month", tenant_month),
-        ("principal", "day", principal_day),
-        ("principal", "month", principal_month),
-    ):
-        if value > 0:
-            limits.append(BudgetLimit(scope, window, value))  # type: ignore[arg-type]  # scope/window are the Literal values above
-    return limits
+    """The limits to enforce from the Settings defaults alone (no overrides), tenant before
+    person. The tenant daily limit is always present (a value of 0 there refuses everything, as
+    it always has); the others are present only when above 0."""
+    return resolve_limits(Defaults(tenant_day, tenant_month, principal_day, principal_month), [], "")
 
 
 async def _spend(limit: BudgetLimit, ctx: SecurityCtx, now: datetime) -> tuple[float, float]:
@@ -270,6 +310,41 @@ async def check_allowance(
                 window_resets_at(limit.window, now),
             )
     return closest or Allowance("ok")
+
+
+async def check(
+    ctx: SecurityCtx | None,
+    *,
+    defaults: Defaults,
+    fail_policy: str,
+    now: datetime | None = None,
+) -> Allowance:
+    """`check_allowance` for `ctx` with the operator's overrides applied: reads the tenant's and
+    the person's override rows, resolves the limits that apply, and checks them.
+
+    A failed override read is one more way the check cannot answer, and takes the same policy as
+    a failed ledger read: "closed" refuses the turn as unavailable; "open" serves it against the
+    Settings defaults alone — so an override set to SUSPEND someone is not enforced while the read
+    is failing — counted (`path="policy_read"`, alert `TenantAllowanceUnenforced`) and marked
+    `degraded`. (A missing table is not a failure; see `budget_policies.overrides_for`.)"""
+    if not valid_ctx(ctx):
+        return Allowance("ok")
+    degraded = False
+    try:
+        overrides = await budget_policies.overrides_for(ctx["tenant"], ctx["principal"])
+    except Exception as exc:  # noqa: BLE001 - an override read failing must not by itself take every turn down; BUDGET_CHECK_FAILURE_POLICY decides, and it is counted and alerted either way
+        metrics.agent_cost_governance_degraded_total.labels(path="policy_read").inc()
+        logger.warning(
+            "budget_policy_read_failed",
+            extra={"error_class": type(exc).__name__, "fail_policy": fail_policy},
+        )
+        if fail_policy == "closed":
+            return Allowance("unavailable")
+        overrides, degraded = [], True
+    allowance = await check_allowance(
+        ctx, limits=resolve_limits(defaults, overrides, ctx["principal"]), fail_policy=fail_policy, now=now
+    )
+    return replace(allowance, degraded=True) if degraded and not allowance.refused else allowance
 
 
 def refusal_envelope(allowance: Allowance) -> ErrorEnvelope:

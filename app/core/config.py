@@ -150,6 +150,12 @@ class Settings(BaseSettings):
     max_cost_usd_per_principal_per_day: float = Field(default=0.0, ge=0)
     max_cost_usd_per_principal_per_month: float = Field(default=0.0, ge=0)
 
+    # How long a tenant's or person's limit overrides (app/agent/budget_policies.py) are cached
+    # per process. They are read before every turn, so this trades promptness for a database
+    # round trip per turn: an override, including a SUSPEND, reaches a running worker within
+    # this many seconds. 0 disables the cache (every turn reads the table).
+    budget_policy_refresh_seconds: int = Field(default=30, ge=0)
+
     # Model prices come from LiteLLM's `GET /model/info` (app/agent/pricing.py),
     # which merges its cost map with any `model_info` a deployment sets in the
     # LiteLLM config. A price is trusted for this long before it is read again,
@@ -506,6 +512,7 @@ PRICING_REFRESH_SECONDS = settings.pricing_refresh_seconds
 UNPRICED_MODEL_POLICY = settings.unpriced_model_policy
 USAGE_LEDGER_RETENTION_DAYS = settings.usage_ledger_retention_days
 BUDGET_CHECK_FAILURE_POLICY = settings.budget_check_failure_policy
+BUDGET_POLICY_REFRESH_SECONDS = settings.budget_policy_refresh_seconds
 REQUEST_TIMEOUT_SECONDS = settings.request_timeout_seconds
 SUBAGENT_TIMEOUT_SECONDS = settings.subagent_timeout_seconds
 TELEGRAM_BOT_TOKEN = settings.telegram_bot_token

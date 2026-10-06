@@ -464,7 +464,7 @@ agent_cost_governance_degraded_total = Counter(
     "Cost-governance paths that failed and carried on instead of failing the turn "
     "(spec 008 A1)",
     ["path"],
-)  # path: price_lookup | ledger_write | ledger_read | reservation | model_resolve
+)  # path: price_lookup | ledger_write | ledger_read | policy_read | reservation | model_resolve
 
 agent_upload_rejected_total = Counter(
     "agent_upload_rejected_total",
