@@ -31,6 +31,7 @@ import time
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
 
+from app.agent import gateway
 from app.agent import runtime as runtime_module
 from app.agent.graph_compaction import COMPACTION_MARKER_KEY
 from app.agent.graph_hitl import (
@@ -442,6 +443,11 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 code=ErrorCode.TIMEOUT,
                 message=f"Request exceeded {REQUEST_TIMEOUT_SECONDS}s timeout",
             )
+        elif gateway.note_budget_stop(exc):
+            # The gateway's backstop fired: the app-level ceilings did not stop this spend first.
+            # Counted and alerted (GatewayBudgetExceeded), and not reported as an anonymous
+            # internal error, because it is the one failure whose cause an operator must act on.
+            envelope = gateway.budget_envelope()
         else:
             envelope = internal_error_envelope(exc)
         # "content" kept alongside the envelope fields for backward

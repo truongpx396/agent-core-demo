@@ -27,7 +27,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
-from app.agent import pricing
+from app.agent import gateway, pricing
 from app.agent.usage_ledger import record_usage
 from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_API_KEY
 from app.core.job_runtime import scheduled_job
@@ -82,7 +82,8 @@ async def run_digest(llm=None) -> str:
         temperature=0,
     )
     response = await chat.ainvoke(
-        [SystemMessage(content=_DIGEST_SYSTEM_PROMPT), HumanMessage(content=human_prompt)]
+        [SystemMessage(content=_DIGEST_SYSTEM_PROMPT), HumanMessage(content=human_prompt)],
+        **gateway.call_identity(_CRON_CTX),
     )
     summary = response.content if isinstance(response.content, str) else str(response.content)
 

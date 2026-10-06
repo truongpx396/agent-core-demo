@@ -25,7 +25,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
-from app.agent import pricing
+from app.agent import gateway, pricing
 from app.agent.usage_ledger import record_usage
 from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_API_KEY
 from app.core.job_runtime import scheduled_job
@@ -78,7 +78,8 @@ async def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm=None) -> list[str
     for item in due:
         human_prompt = build_followup_prompt(item["lead_name"], item["contact"], item["note"])
         response = await chat.ainvoke(
-            [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
+            [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)],
+            **gateway.call_identity(_CRON_CTX),
         )
         draft = response.content if isinstance(response.content, str) else str(response.content)
 

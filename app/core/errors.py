@@ -33,6 +33,7 @@ class ErrorCode(str, Enum):
     TENANT_BUDGET_EXCEEDED = "tenant_budget_exceeded"
     PERSONAL_BUDGET_EXCEEDED = "personal_budget_exceeded"
     BUDGET_CHECK_UNAVAILABLE = "budget_check_unavailable"
+    PROVIDER_BUDGET_EXCEEDED = "provider_budget_exceeded"
     MODEL_UNPRICED = "model_unpriced"
     THREAD_BUSY = "thread_busy"
     NO_PROGRESS = "no_progress"

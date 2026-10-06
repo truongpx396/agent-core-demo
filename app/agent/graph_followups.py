@@ -6,7 +6,9 @@ docstring. No behavior change from the pre-split single-file version.
 import logging
 
 from langchain_core.messages import HumanMessage
+from langchain_core.runnables import RunnableConfig
 
+from app.agent import gateway
 from app.agent.graph import State
 
 logger = logging.getLogger(__name__)
@@ -26,7 +28,7 @@ def make_suggest_followups_node(llm):
     non-retry branch), so it never runs on an answer about to be retried.
     """
 
-    async def suggest_followups(state: State) -> dict:
+    async def suggest_followups(state: State, config: RunnableConfig | None = None) -> dict:
         """Suggests follow-ups only for a GROUNDED answer (`used_citations`
         non-empty) — no citations means nothing to build from, which
         naturally suppresses this for a refusal, general-knowledge aside,
@@ -49,7 +51,8 @@ def make_suggest_followups_node(llm):
             return {"followups": []}
         try:
             response = await llm.ainvoke(
-                [HumanMessage(content=_FOLLOWUP_PROMPT.format(answer=content))]
+                [HumanMessage(content=_FOLLOWUP_PROMPT.format(answer=content))],
+                **gateway.identity_from_config(config),
             )
             lines = [
                 line.strip("-•* ").strip()
@@ -58,6 +61,7 @@ def make_suggest_followups_node(llm):
             ]
             return {"followups": lines[:3]}
         except Exception as exc:  # noqa: BLE001 - enrichment, never fail the turn
+            gateway.note_budget_stop(exc)  # swallowed here, but the backstop firing is still counted
             logger.warning(
                 "follow-up suggestion failed; continuing without follow-ups",
                 extra={"node": "suggest_followups", "error_class": type(exc).__name__},

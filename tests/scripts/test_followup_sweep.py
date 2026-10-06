@@ -12,6 +12,7 @@ import asyncio
 
 import pytest
 
+from app.agent import gateway
 from scripts import followup_sweep
 
 
@@ -25,9 +26,11 @@ class _FakeChat:
     def __init__(self, responses):
         self._responses = iter(responses)
         self.invocations = []
+        self.invoked_kwargs = []
 
-    async def ainvoke(self, messages):
+    async def ainvoke(self, messages, **kwargs):
         self.invocations.append(messages)
+        self.invoked_kwargs.append(kwargs)
         return next(self._responses)
 
 
@@ -87,6 +90,35 @@ def test_run_followup_sweep_drafts_posts_and_marks_each_followup_done(monkeypatc
     assert len(posted) == 2
     assert all(channel == "sales-followups" for channel, _ in posted)
     assert "Hi A, checking in on pricing!" in posted[0][1]
+
+
+def test_run_followup_sweep_tells_the_gateway_whose_call_it_is(monkeypatch):
+    """Otherwise the gateway's spend log shows this cron's spend as an anonymous caller
+    (app/agent/gateway.py)."""
+    due_items = [{"id": 1, "due_at": "2099-01-01", "note": "n", "contact": "a@example.com", "lead_name": "A"}]
+
+    async def fake_due_followups(tenant, as_of):
+        return due_items
+
+    async def fake_mark_followup_done(tenant, followup_id):
+        return None
+
+    async def fake_post_to_team_channel(channel, message):
+        return None
+
+    async def fake_record_usage(*a, **kw):
+        return None
+
+    monkeypatch.setattr(followup_sweep.store, "due_followups", fake_due_followups)
+    monkeypatch.setattr(followup_sweep.store, "mark_followup_done", fake_mark_followup_done)
+    monkeypatch.setattr(followup_sweep.notify, "post_to_team_channel", fake_post_to_team_channel)
+    monkeypatch.setattr(followup_sweep, "record_usage", fake_record_usage)
+
+    fake_chat = _FakeChat([_FakeResponse("Hi A!")])
+    asyncio.run(followup_sweep.run_followup_sweep(llm=fake_chat))
+
+    assert fake_chat.invoked_kwargs == [gateway.call_identity(followup_sweep._CRON_CTX)]
+    assert fake_chat.invoked_kwargs[0]["user"] == gateway.end_user_id(followup_sweep.DEFAULT_TENANT)
 
 
 def test_run_followup_sweep_records_usage_when_tokens_are_reported(monkeypatch):

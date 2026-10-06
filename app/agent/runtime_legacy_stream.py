@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 
 from langchain_core.messages import HumanMessage
 
+from app.agent import gateway
 from app.agent import runtime as runtime_module
 from app.agent.runtime_stream import (
     CallbackHandler,
@@ -151,6 +152,9 @@ async def astream_events_turn_ctx(text: str, thread_id: str, ctx: SecurityCtx):
                     code=ErrorCode.TIMEOUT,
                     message=f"Request exceeded {REQUEST_TIMEOUT_SECONDS}s timeout",
                 )
+            elif gateway.note_budget_stop(exc):
+                # See _run_graph_stream: the gateway's backstop fired.
+                envelope = gateway.budget_envelope()
             else:
                 envelope = internal_error_envelope(exc)
             yield {"type": "error", "content": envelope.message, **envelope.to_dict()}

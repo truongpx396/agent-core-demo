@@ -17,6 +17,7 @@ import asyncio
 
 import pytest
 
+from app.agent import gateway
 from scripts import ops_digest
 
 
@@ -30,9 +31,11 @@ class _FakeChat:
     def __init__(self, response):
         self._response = response
         self.invoked_with = None
+        self.invoked_kwargs = None
 
-    async def ainvoke(self, messages):
+    async def ainvoke(self, messages, **kwargs):
         self.invoked_with = messages
+        self.invoked_kwargs = kwargs
         return self._response
 
 
@@ -72,6 +75,31 @@ def test_run_digest_posts_the_summary_to_the_team_channel(monkeypatch):
 
     assert summary == "Everything is healthy today."
     assert posted["ops-digest"] == "Everything is healthy today."
+
+
+def test_run_digest_tells_the_gateway_whose_call_it_is(monkeypatch):
+    """Otherwise the gateway's spend log shows this cron's spend as an anonymous caller
+    (app/agent/gateway.py)."""
+
+    async def fake_fetch_readings():
+        return {"turn_error_rate": 0.01}
+
+    async def fake_post_to_team_channel(channel, message):
+        return None
+
+    async def fake_record_usage(*a, **kw):
+        return None
+
+    monkeypatch.setattr(ops_digest.metrics_client, "fetch_readings", fake_fetch_readings)
+    monkeypatch.setattr(ops_digest.metrics_client, "detect_anomalies", lambda readings: [])
+    monkeypatch.setattr(ops_digest.notify, "post_to_team_channel", fake_post_to_team_channel)
+    monkeypatch.setattr(ops_digest, "record_usage", fake_record_usage)
+
+    fake_chat = _FakeChat(_FakeResponse("Everything is healthy today."))
+    asyncio.run(ops_digest.run_digest(llm=fake_chat))
+
+    assert fake_chat.invoked_kwargs == gateway.call_identity(ops_digest._CRON_CTX)
+    assert fake_chat.invoked_kwargs["user"] == gateway.end_user_id(ops_digest.DEFAULT_TENANT)
 
 
 def test_run_digest_records_usage_when_tokens_are_reported(monkeypatch):
