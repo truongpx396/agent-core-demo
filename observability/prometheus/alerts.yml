@@ -45,16 +45,35 @@ groups:
           summary: "Tool call error rate above 10%"
           description: "agent_tool_errors_total / agent_tool_calls_total has been over 10% for 10m."
 
-      - alert: TenantDailyCostBudgetExceeded
-        expr: increase(agent_tenant_budget_exceeded_total[1h]) > 0
+      - alert: TenantBudgetExceeded
+        expr: increase(agent_budget_exceeded_total{scope="tenant"}[1h]) > 0
         labels:
           severity: warning
         annotations:
-          summary: "A tenant hit its daily cost ceiling"
+          summary: "A tenant hit a cost ceiling"
           description: >-
-            agent_tenant_budget_exceeded_total increased in the last hour —
-            some tenant's turns are being refused for exceeding
-            MAX_COST_USD_PER_TENANT_PER_DAY.
+            agent_budget_exceeded_total{scope="tenant"} increased in the last hour —
+            some tenant's turns are being refused for exceeding its daily
+            (MAX_COST_USD_PER_TENANT_PER_DAY) or monthly
+            (MAX_COST_USD_PER_TENANT_PER_MONTH) limit. The `window` label says
+            which; the refusal is logged with the tenant (`budget_exceeded`).
+            Renamed from TenantDailyCostBudgetExceeded when the monthly limit
+            was added.
+
+      - alert: TenantBudgetNearLimit
+        expr: increase(agent_budget_threshold_total{scope="tenant", threshold="95"}[30m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A tenant is within 5% of a cost ceiling"
+          description: >-
+            Turns were served in the last 30m for a tenant already at 95% or more
+            of its daily or monthly limit (`window` says which). The next ones
+            will be refused: time to raise the limit or talk to the tenant. The
+            crossing is logged once per day or month as `budget_threshold_crossed`,
+            with the tenant. Personal limits are deliberately not alerted: a
+            person reaching their own cap is the guard rail working, not an
+            operator's problem.
 
       - alert: ModelUsageUnpriced
         expr: increase(agent_unpriced_usage_total[15m]) > 0

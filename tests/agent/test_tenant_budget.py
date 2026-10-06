@@ -74,7 +74,7 @@ class TestCheckAllowance:
         monkeypatch.setattr(usage_ledger, "usage_summary", _broken)
         assert (await agent._check_allowance(TEST_CTX)).refused is False
 
-    async def test_warning_metric_fires_past_80_percent_but_stays_under_the_limit(self, monkeypatch):
+    async def test_a_warning_threshold_is_counted_once_crossed_but_the_turn_is_still_allowed(self, monkeypatch):
         from app.agent import usage_ledger
 
         async def fake_usage_summary(*a, **kw):
@@ -82,11 +82,14 @@ class TestCheckAllowance:
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
         monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
-        before = metric_value(metrics.agent_tenant_budget_warning_total)
+        before = metric_value(metrics.agent_budget_threshold_total, scope="tenant", window="day", threshold="85")
 
         assert (await agent._check_allowance(TEST_CTX)).refused is False
 
-        assert metric_value(metrics.agent_tenant_budget_warning_total) == before + 1
+        assert (
+            metric_value(metrics.agent_budget_threshold_total, scope="tenant", window="day", threshold="85")
+            == before + 1
+        )
 
     async def test_queries_a_rolling_24h_window_scoped_to_this_tenant(self, monkeypatch):
         from app.agent import usage_ledger

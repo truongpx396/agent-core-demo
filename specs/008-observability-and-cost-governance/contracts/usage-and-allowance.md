@@ -28,9 +28,9 @@ A **caller** reading its own usage, a **tenant** whose turns can be refused, and
 
 `astream_events_turn` (the one new-turn entry point; **not** resume or continue — **A6**):
 
-1. `_tenant_over_daily_budget(ctx)` — `spent` (rolling 24 h) + `reserved` (in-flight, fresh) against `MAX_COST_USD_PER_TENANT_PER_DAY`.
-   - at or above: `agent_tenant_budget_exceeded_total`++, `agent_requests_total{outcome="rejected"}`++, yield an `error` event with the `TENANT_BUDGET_EXCEEDED` envelope, **return** — the graph is never initialized, nothing is reserved.
-   - at or above 80%: `agent_tenant_budget_warning_total`++, a log line with the tenant and figures, proceed.
+1. `_allowance_refusal(ctx)` (rule: `budgets.check_allowance`) — `spent` (rolling 24 h) + `reserved` (in-flight, fresh) against `MAX_COST_USD_PER_TENANT_PER_DAY`.
+   - at or above: `agent_budget_exceeded_total{scope,window}`++, `agent_requests_total{outcome="rejected"}`++, yield an `error` event with the `TENANT_BUDGET_EXCEEDED` envelope, **return** — the graph is never initialized, nothing is reserved.
+   - at or above 80%: `agent_budget_threshold_total{scope,window,threshold}`++, a log line with the tenant and figures, proceed.
    - a failed ledger read: **proceeds** (logged; **unenforced** for this turn — A1).
 2. `_reserve_turn_budget(ctx)` — upsert `+MAX_COST_USD_PER_TURN`; returns the amount reserved, `0.0` if the write failed or the identity is invalid.
 3. Run the turn.

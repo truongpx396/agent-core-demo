@@ -218,6 +218,19 @@ def mock_model_resolver(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def fresh_budget_crossing_log():
+    """`budgets` remembers which threshold crossings it has already logged, per process, so a
+    tenant sitting at 90% logs once a day instead of on every turn. That memory is process-wide,
+    so one test's crossing would silence the same tenant's log line in the next test (and in
+    whichever test an xdist worker happens to run after it): cleared on both sides."""
+    from app.agent import budgets
+
+    budgets.reset_logged_crossings()
+    yield
+    budgets.reset_logged_crossings()
+
+
+@pytest.fixture(autouse=True)
 def mock_model_pricing(monkeypatch):
     """`pricing.get_price` reads every model's price from LiteLLM's
     `GET /model/info` on the agent node's hot path, so the same leak

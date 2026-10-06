@@ -112,7 +112,7 @@ The same code runs in both; only configuration and the compose file differ.
 | **Object storage** | MinIO container | DigitalOcean Spaces (any S3-compatible store) |
 | **Observability** | Optional `make obs-up` | Separate observability droplet, fed by sidecars over the private VPC |
 | **Config** | `.env` from `.env.example` | `/opt/agent-core-demo/.env` from `deploy/env/prod.env.example`, created once by hand, never touched by CI |
-| **Cost caps** | Local models cost $0 | `MAX_COST_USD_PER_TURN=0.50`, `MAX_COST_USD_PER_TENANT_PER_DAY=20.0` unless overridden |
+| **Cost caps** | Local models cost $0 | `MAX_COST_USD_PER_TURN=0.50`, `MAX_COST_USD_PER_TENANT_PER_DAY=20.0` unless overridden. Three optional limits are off at `0`: `MAX_COST_USD_PER_TENANT_PER_MONTH` (calendar month, UTC) and `MAX_COST_USD_PER_PRINCIPAL_PER_DAY` / `_PER_MONTH` (one person's spend inside their tenant). A person who hits their own limit gets `personal_budget_exceeded`; an organisation-wide stop stays `tenant_budget_exceeded` |
 | **Provisioning** | `make up` | Terraform (human-run) + `deploy.yml` (automatic after CI passes on `main`) |
 
 Prod does not ship Langfuse, open-webui, MinIO, crawl4ai or OpenSandbox; the tools that need them fail

@@ -138,6 +138,18 @@ class Settings(BaseSettings):
     # time. Same "$0 on local Ollama" note applies.
     max_cost_usd_per_tenant_per_day: float = 20.0
 
+    # The other three spend limits (app/agent/budgets.py). All are OFF at 0, so a deployment that
+    # sets none of them behaves exactly as before and pays for none of their ledger reads.
+    # `month` is the CALENDAR month in UTC (resets on the 1st, like an invoice); `day` is the
+    # rolling 24h above. A person's limit applies to that person's spend inside their tenant,
+    # and is checked after the tenant's: an organisation-wide stop is reported first. A person
+    # who runs several conversations at once can overshoot their own limit by up to
+    # (concurrent turns) x MAX_COST_USD_PER_TURN — in-flight holds are per tenant, not per
+    # person — so these are soft guard rails; the tenant limits are the exact ones.
+    max_cost_usd_per_tenant_per_month: float = Field(default=0.0, ge=0)
+    max_cost_usd_per_principal_per_day: float = Field(default=0.0, ge=0)
+    max_cost_usd_per_principal_per_month: float = Field(default=0.0, ge=0)
+
     # Model prices come from LiteLLM's `GET /model/info` (app/agent/pricing.py),
     # which merges its cost map with any `model_info` a deployment sets in the
     # LiteLLM config. A price is trusted for this long before it is read again,
@@ -487,6 +499,9 @@ MEMORY_RETENTION_DAYS = settings.memory_retention_days
 MAX_COST_USD_PER_TURN = settings.max_cost_usd_per_turn
 MAX_SUBAGENT_COST_USD_PER_RUN = settings.max_subagent_cost_usd_per_run
 MAX_COST_USD_PER_TENANT_PER_DAY = settings.max_cost_usd_per_tenant_per_day
+MAX_COST_USD_PER_TENANT_PER_MONTH = settings.max_cost_usd_per_tenant_per_month
+MAX_COST_USD_PER_PRINCIPAL_PER_DAY = settings.max_cost_usd_per_principal_per_day
+MAX_COST_USD_PER_PRINCIPAL_PER_MONTH = settings.max_cost_usd_per_principal_per_month
 PRICING_REFRESH_SECONDS = settings.pricing_refresh_seconds
 UNPRICED_MODEL_POLICY = settings.unpriced_model_policy
 USAGE_LEDGER_RETENTION_DAYS = settings.usage_ledger_retention_days
