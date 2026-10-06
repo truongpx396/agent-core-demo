@@ -1284,6 +1284,86 @@ class TestRunSubagentImpl:
         assert len(fake_llm.calls) == 1
 
 
+class TestASubagentOnAnUnpricedModelIsRefusedUnderTheBlockPolicy:
+    """`UNPRICED_MODEL_POLICY=block` promises that nothing runs on a model whose spend no dollar
+    ceiling can see. The turn-entry check only looks at the parent's CHAT_MODEL, but a subagent can
+    declare its own `model` in AGENT.md frontmatter, so a delegated run could spend on an unpriced
+    model unmetered (found by the advisory AI review on #124). Bounded by MAX_SUBAGENT_TOKENS_PER_RUN
+    and counted by agent_unpriced_usage_total, but "block" meant block."""
+
+    @staticmethod
+    def _delegate(llm, model):
+        registry = {"researcher": (_fake_subagent_record(model=model), ("calculator",))}
+        return _run_subagent_impl("researcher", "a task", _subagent_cfg(), registry=registry, llm=llm)
+
+    @staticmethod
+    def _policy(monkeypatch, policy):
+        from app.agent import pricing
+
+        monkeypatch.setattr(pricing, "UNPRICED_MODEL_POLICY", policy)
+
+    async def test_the_run_is_refused_before_any_model_work_and_nothing_is_recorded(self, monkeypatch):
+        from app.agent import usage_ledger
+
+        self._policy(monkeypatch, "block")
+        recorded = []
+
+        async def record_usage(*args, **kwargs):
+            recorded.append(args)
+
+        monkeypatch.setattr(usage_ledger, "record_usage", record_usage)
+        llm = _RecordingFakeLLM(AIMessage(content="must never be asked"))
+        before = metric_value(metrics.agent_subagent_run_total, subagent="researcher", outcome="model_unpriced")
+
+        result = await self._delegate(llm, model="specialist-with-no-price")
+
+        assert llm.calls == [], "a refused run must not reach the model"
+        assert (result.total_tokens, result.total_cost_usd) == (0, 0.0)
+        assert "cannot be run" in result.answer and "researcher" in result.answer
+        assert "specialist-with-no-price" not in result.answer, "model config is not the delegating model's business"
+        assert recorded == []
+        assert (
+            metric_value(metrics.agent_subagent_run_total, subagent="researcher", outcome="model_unpriced")
+            == before + 1
+        )
+
+    async def test_a_subagent_on_the_parents_own_model_still_runs(self, monkeypatch):
+        """No `model:` means CHAT_MODEL, which the turn-entry check already covers."""
+        self._policy(monkeypatch, "block")
+        llm = _RecordingFakeLLM(AIMessage(content="Delegated answer."))
+
+        result = await self._delegate(llm, model=None)
+
+        assert result.answer == "Delegated answer."
+
+    async def test_the_allow_policy_does_not_refuse_it(self, monkeypatch):
+        self._policy(monkeypatch, "allow")
+        llm = _RecordingFakeLLM(AIMessage(content="Delegated answer."))
+
+        result = await self._delegate(llm, model="specialist-with-no-price")
+
+        assert result.answer == "Delegated answer."
+
+    async def test_a_priced_specialist_model_still_runs_under_block(self, monkeypatch):
+        from app.agent import pricing
+
+        async def fetch():
+            return [
+                {
+                    "model_name": "priced-specialist",
+                    "model_info": {"input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002},
+                }
+            ]
+
+        monkeypatch.setattr(pricing, "_fetch_model_info", fetch)
+        self._policy(monkeypatch, "block")
+        llm = _RecordingFakeLLM(AIMessage(content="Delegated answer."))
+
+        result = await self._delegate(llm, model="priced-specialist")
+
+        assert result.answer == "Delegated answer."
+
+
 class TestSubagentGraphCache:
     """`use_cache=True` reuses a compiled nested graph across calls instead
     of rebuilding one from scratch every time (a whole StateGraph compile +

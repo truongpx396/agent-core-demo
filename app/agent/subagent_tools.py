@@ -39,6 +39,7 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.types import Command
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
+from app.agent import pricing
 from app.agent import subagents as subagents_module
 from app.agent import tools as tools_module
 from app.agent.tools import (
@@ -297,6 +298,18 @@ async def _run_subagent_impl(
     if entry is None:
         return SubagentResult(f"No subagent named {subagent_name!r} is registered.", 0, 0.0)
     record, resolved_tool_names = entry
+    # UNPRICED_MODEL_POLICY=block (app/agent/pricing.py) refuses a turn whose model no dollar
+    # ceiling can see, but the turn-entry check only covers the parent's CHAT_MODEL, and a
+    # subagent may declare its own `model`. Refused here, before any model work, with a message
+    # for the parent LLM that names neither the alias nor the policy.
+    if await pricing.refuse_unpriced(record.model or CHAT_MODEL):
+        metrics.agent_subagent_run_total.labels(subagent=record.name, outcome="model_unpriced").inc()
+        return SubagentResult(
+            f"Subagent {record.name!r} cannot be run: this deployment cannot meter its model's cost. "
+            "Answer without it, or tell the user it is unavailable.",
+            0,
+            0.0,
+        )
     all_tools_by_name = tools_by_name if tools_by_name is not None else {t.name: t for t in TOOLS}
     nested_tools = [all_tools_by_name[name] for name in resolved_tool_names if name in all_tools_by_name]
 
