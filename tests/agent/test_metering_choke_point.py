@@ -5,25 +5,21 @@ ledger, dollar ceiling or credit balance counted (specs/010 research G1).
 This is a ratchet, not a hope. It reads the source (the AST, so a docstring that merely mentions
 `llm.ainvoke(...)` does not count) and lists every chat-model call outside the choke point:
 
-  * a NEW call site fails the test, so a sixth hand-rolled `llm.ainvoke` cannot slip in unmetered;
-  * a site listed below that no longer exists fails it too, so the list can only shrink.
+  * a NEW call site fails the test, so a hand-rolled `llm.ainvoke` cannot slip in unmetered;
+  * an exemption listed below that no longer exists fails it too, so the list can only shrink.
 
-The four listed sites are known, disclosed (README, pattern 26) and routed by the next PR in the
-series (specs/010 PR 1b). When that PR lands it deletes these entries and this test then enforces
-"no exceptions".
+The list started with four known sites (follow-up suggestions, history compaction and the two cron
+scripts: specs/010 research G1) and is now empty. It stays, as an explicit and reviewable place to
+record a deliberate exception, rather than being deleted.
 """
 import ast
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 
-# Not yet routed through the choke point (PR 1b). Remove an entry when its file is routed.
-KNOWN_UNMETERED = {
-    "app/agent/graph_followups.py",
-    "app/agent/graph_compaction.py",
-    "scripts/ops_digest.py",
-    "scripts/followup_sweep.py",
-}
+# Empty: every chat-model call goes through the choke point. An exemption added here is a call the
+# billing meter cannot see, so it needs a reason that is written down and a plan to remove it.
+KNOWN_UNMETERED: set[str] = set()
 CHOKE_POINT = "app/agent/metering.py"
 
 

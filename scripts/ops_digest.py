@@ -27,8 +27,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
-from app.agent import gateway, pricing
-from app.agent.usage_ledger import record_usage
+from app.agent import metering
 from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_API_KEY
 from app.core.job_runtime import scheduled_job
 from app.core.security import SecurityCtx
@@ -81,18 +80,19 @@ async def run_digest(llm=None) -> str:
         api_key=SecretStr(OPENAI_API_KEY),
         temperature=0,
     )
-    response = await chat.ainvoke(
+    # One metered call (app/agent/metering.py): identity for the gateway, priced once, one usage
+    # event and this job's own ledger row (a cron job has no turn whose total could carry it).
+    thread_id = f"ops-digest:{datetime.now(UTC).date().isoformat()}"
+    call = await metering.metered_invoke(
+        chat,
         [SystemMessage(content=_DIGEST_SYSTEM_PROMPT), HumanMessage(content=human_prompt)],
-        **gateway.call_identity(_CRON_CTX),
+        config={"configurable": {"ctx": _CRON_CTX, "thread_id": thread_id}},
+        kind="cron",
+        model_alias=CHAT_MODEL,
+        to_ledger=True,
     )
+    response = call.response
     summary = response.content if isinstance(response.content, str) else str(response.content)
-
-    usage = getattr(response, "usage_metadata", None) or {}
-    total_tokens = usage.get("total_tokens", 0)
-    if total_tokens:
-        thread_id = f"ops-digest:{datetime.now(UTC).date().isoformat()}"
-        cost_usd = await pricing.price_usage(CHAT_MODEL, usage)
-        await record_usage(_CRON_CTX, thread_id, CHAT_MODEL, total_tokens, cost_usd)
 
     await notify.post_to_team_channel("ops-digest", summary)
     return summary

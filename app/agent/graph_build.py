@@ -118,7 +118,7 @@ def build_graph(
     # configured client for one follow-up-suggestion call per turn would
     # be a second thing to keep in sync with GraphDeps for no real
     # benefit; a tool-bound client asked a plain question just answers it.
-    suggest_followups = make_suggest_followups_node(parts.llm_client)
+    suggest_followups = make_suggest_followups_node(parts.llm_client, model_alias=parts.deps.model_alias)
     # Reuses the SAME llm client too — same reasoning as suggest_followups
     # above: a summarization call doesn't need tools bound, and a
     # tool-bound client asked a plain summarization prompt just answers it.
@@ -126,6 +126,7 @@ def build_graph(
         parts.llm_client,
         ceiling=history_token_ceiling if history_token_ceiling is not None else HISTORY_TOKEN_CEILING,
         floor=history_token_floor if history_token_floor is not None else HISTORY_TOKEN_FLOOR,
+        model_alias=parts.deps.model_alias,
     )
     # Read as graph_module.X, not a bare imported name — tests/conftest.py's
     # autouse mock_semantic_cache fixture monkeypatches these exact

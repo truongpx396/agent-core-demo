@@ -52,7 +52,8 @@ CLAUDE.md: one logical change per PR, target ≤ ~400 hand-written lines, ceilin
 |----|-------|-----------|---------------------------|
 | **0** | This spec; README and `GRAPH_PATTERNS.md` gap disclosure | none | docs |
 | **1a** | `usage_events` table, deterministic id (after verifying O-A), `metered_invoke` choke point, wiring the agent node and subagents; metrics, alert, real-Postgres test | 0 | ~450 |
-| **1b** | Route follow-ups, compaction and the two cron scripts through the choke point (closes G1); embeddings (G2) once O-B is answered | 1a | ~300 |
+| **1b** | Route follow-ups, compaction and the two cron scripts through the choke point, each with its own ledger row (closes G1) | 1a | ~350 |
+| **1c** | Embeddings (G2): plumb the tenant through the nine call sites that take no `ctx` (a context variable would break principle I), read usage from the raw client, attribute at the gateway | 1b | ~450 |
 | **2** | Wallet: lots, transactions, entries, grant/debit/expire/adjust, advisory-lock debit in the event's transaction; concurrency test | 1a | ~450 |
 | **3** | `CREDITS_PER_USD`/`MARKUP`, charge on event, gating in `budgets`, `INSUFFICIENT_CREDITS`, `GET /usage` balance, holds in credits | 2 | ~400 |
 | **4** | Port, `fake` adapter, contract suite, catalog, `billing_customers`, inbox, `POST /billing/webhooks/{provider}` | 2 | ~600; split if over |

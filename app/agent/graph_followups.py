@@ -8,7 +8,8 @@ import logging
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 
-from app.agent import gateway
+from app.agent import gateway, metering
+from app.agent import graph as graph_module
 from app.agent.graph import State
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,7 @@ _FOLLOWUP_PROMPT = (
 
 
 # --- Node: follow-up suggestions (GRAPH_PATTERNS.md pattern 27) ---
-def make_suggest_followups_node(llm):
+def make_suggest_followups_node(llm, model_alias: str | None = None):
     """Factory, same rationale as make_agent_node: needs an LLM client.
 
     Only reached once a turn is confirmed final (route_after_check's
@@ -50,10 +51,17 @@ def make_suggest_followups_node(llm):
         if not content:
             return {"followups": []}
         try:
-            response = await llm.ainvoke(
+            # Metered like every other model call (app/agent/metering.py): one usage event, and its
+            # own ledger row, because the cost never reaches the agent node's running total.
+            call = await metering.metered_invoke(
+                llm,
                 [HumanMessage(content=_FOLLOWUP_PROMPT.format(answer=content))],
-                **gateway.identity_from_config(config),
+                config=config,
+                kind="followups",
+                model_alias=model_alias or graph_module.CHAT_MODEL,
+                to_ledger=True,
             )
+            response = call.response
             lines = [
                 line.strip("-•* ").strip()
                 for line in (response.content or "").split("\n")

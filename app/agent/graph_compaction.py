@@ -27,7 +27,8 @@ from langchain_core.messages import (
 )
 from langchain_core.runnables import RunnableConfig
 
-from app.agent import gateway
+from app.agent import gateway, metering
+from app.agent import graph as graph_module
 from app.agent.graph import HISTORY_TOKEN_CEILING, HISTORY_TOKEN_FLOOR, State
 from app.agent.graph_messages import _human_text
 from app.core import metrics
@@ -149,7 +150,10 @@ def _compaction_marker_message(turns_dropped: int, *, summarized: bool) -> Syste
 
 
 def make_compact_history_node(
-    llm, ceiling: int = HISTORY_TOKEN_CEILING, floor: int = HISTORY_TOKEN_FLOOR
+    llm,
+    ceiling: int = HISTORY_TOKEN_CEILING,
+    floor: int = HISTORY_TOKEN_FLOOR,
+    model_alias: str | None = None,
 ):
     """Factory, same rationale as make_agent_node/make_suggest_followups_node:
     needs an LLM client to turn discarded turns into a running summary
@@ -161,6 +165,8 @@ def make_compact_history_node(
 
     `ceiling`/`floor` default to the module constants; overridable only so
     tests can trigger the hysteresis behavior with small budgets.
+    `model_alias` is the LiteLLM alias `llm` is bound to, used only to price and record its
+    calls (None = the global chat alias), the same meaning it has for `make_agent_node`.
     """
 
     async def compact_history(state: State, config: RunnableConfig | None = None) -> dict:
@@ -200,9 +206,18 @@ def make_compact_history_node(
                 prior_clause=prior_clause,
                 turns_text=_format_turns_for_summary(to_summarize),
             )
-            response = await llm.ainvoke(
-                [HumanMessage(content=prompt)], **gateway.identity_from_config(config)
+            # Metered like every other model call (app/agent/metering.py). Its own ledger row, and
+            # NOT added to the turn's token/cost budget: a long history summary must not be able to
+            # stop the answer the turn exists to give.
+            call = await metering.metered_invoke(
+                llm,
+                [HumanMessage(content=prompt)],
+                config=config,
+                kind="compaction",
+                model_alias=model_alias or graph_module.CHAT_MODEL,
+                to_ledger=True,
             )
+            response = call.response
             new_summary = (response.content or "").strip()
         except Exception as exc:  # noqa: BLE001 - never fail the turn over a summary
             gateway.note_budget_stop(exc)  # swallowed here, but the backstop firing is still counted

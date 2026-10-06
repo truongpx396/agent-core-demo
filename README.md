@@ -503,7 +503,7 @@ shipped proxy alone, the human deciding can be anyone who sets the right headers
 - **Approvals are not attributed.** The gate is enforced but not auditable.
 - **The ops domain is global**, with no control over which tenants may use it; **the dedup lookup is not tenant-scoped**.
 - **A residual duplicate window for team-channel notifications** (support escalation, sales handoff, ops post).
-- **Some model spend is not metered.** Follow-up suggestions, history compaction and embeddings reach the model but never the usage ledger, so no dollar ceiling sees them (only the gateway's own spend log does). Per-turn rows also carry no per-call id. Closing this is the first step of the billing design above.
+- **Embedding spend is not metered.** Follow-up suggestions, history compaction and the cron scripts are now recorded per call and counted by the dollar caps, but embeddings (retrieval queries and ingest) still reach the model without reaching the ledger or the usage events, and are not attributed at the gateway. That is the next change in the billing design above.
 
 ## Troubleshooting
 
