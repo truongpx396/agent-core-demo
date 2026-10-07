@@ -344,6 +344,9 @@ lag, webhook outcomes, the reconciliation's drift and outcomes. There is no Post
   minute. A stopped worker therefore **resolves** `CreditReconcileDrift` rather than leaving it firing, and Prometheus cannot tell a worker that never
   ran from one that died. The same is true of `UsageExportStuck` and the export worker. Cron plus `make credit-reconcile` still gives the report and the
   exit code; it gives the alert nothing durable.
+- **A pass scans `usage_events` and `usage_ledger` by time**, and both tables' indexes lead with the tenant (checked with EXPLAIN: a sequential scan). A
+  time-only index would make it cheap and would tax the insert of every model call for a job that runs a few times a day, so it was not added. Fine at
+  moderate volume; if a pass gets slow, that index (or a partition by day) is the fix and `CREDIT_RECONCILE_LOOKBACK_DAYS` the lever until then.
 - **Embeddings** are neither metered nor attributed to a tenant (research G2), so their spend shows as "no tenant of this app", never as drift.
 - **A call across midnight UTC** is recorded on one day by the gateway (its start) and another by the event (its insert); an expensive one on a quiet
   tenant shows as a pair of opposite drifts on adjacent days. That signature is the straddle, not a loss.

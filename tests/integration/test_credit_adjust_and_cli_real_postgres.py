@@ -203,10 +203,23 @@ class TestTheCommandEndToEnd:
         _, shown = await run("show", "--tenant", mine)
         _, as_json = await run("show", "--tenant", mine, "--json")
 
-        assert "their-reason" not in shown and "carol" not in shown and "22" not in shown
+        assert "their-reason" not in shown and "carol" not in shown and "granted 22" not in shown  # not a bare "22": a timestamp has one
         data = json.loads(as_json)
         assert [lot["granted"] for lot in data["lots"]] == ["11.000000"]
         assert {entry["reason"] for entry in data["entries"]} == {"mine-reason"}
+
+    async def test_show_prints_what_a_provider_chose_as_inert_text(self, appdata_url):
+        """A payment reference comes from a provider, a reason from any code path: neither may rewrite an operator's terminal."""
+        tenant = tenant_name()
+        await credits.grant(
+            tenant, 5, source="purchase", idempotency_key=f"g-{tenant}", actor="webhook:fake", reason="paid\x1b[2Jforged",
+            provider="fake", external_ref="pay_1\rbalance 9999",
+        )
+
+        _, shown = await run("show", "--tenant", tenant)
+
+        assert "\x1b" not in shown and "\r" not in shown
+        assert "paid\\x1b[2Jforged" in shown and "pay_1\\rbalance 9999" in shown
 
     async def test_the_entry_limit_is_bounded_and_newest_first(self):
         tenant = tenant_name()

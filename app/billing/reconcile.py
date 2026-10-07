@@ -45,6 +45,14 @@ from it). The sort has no tie-breaker, so a row could in principle move between 
 INCOMPLETE. An incomplete read is never compared: a truncated sum would show every tenant as under-metered and page someone
 for nothing. The ceiling is `CREDIT_RECONCILE_GATEWAY_MAX_PAGES`.
 
+## What a pass costs (disclosed)
+
+The events and the ledger are read by TIME, and both tables' indexes lead with the tenant (`usage_events (tenant, occurred_at)`,
+`usage_ledger (tenant, recorded_at)`), so a pass scans each table (checked with EXPLAIN: a sequential scan). A time-only index would
+make it cheap and would tax the insert of every model call for the benefit of a job that runs a few times a day, so it was not added.
+Acceptable for a few passes a day at moderate volume; if a pass becomes slow, that index (or a partition by day) is the fix, and
+`CREDIT_RECONCILE_LOOKBACK_DAYS` is the lever until then.
+
 Needs the gateway's admin key (`LITELLM_MASTER_KEY`, read from the environment by the caller, never stored here): spend logs are
 an admin view. A narrower key is a follow-up.
 """
@@ -59,6 +67,7 @@ from psycopg import errors as pg_errors
 
 from app.agent import gateway
 from app.agent.sql_store import get_connection
+from app.billing.display import printable
 from app.core import metrics
 from app.core.config import (
     CREDIT_RECONCILE_GATEWAY_MAX_PAGES,
@@ -330,18 +339,17 @@ async def ledger_by_tenant_day(window: Window) -> dict[Key, Decimal]:
         return {(t, d): Decimal(usd) for t, d, usd in await cur.fetchall()}
 
 
-async def known_tenants() -> set[str]:
-    """Every tenant this database has a record of, to map the gateway's one-way ids back to names."""
+async def wallet_tenants() -> set[str]:
+    """Every tenant with a wallet. With the tenants that have events or ledger rows in the window it is the set of names the
+    gateway's one-way ids are mapped back to; a small table, so it costs nothing next to the window scans. Empty when the
+    wallet tables do not exist (postgres-init/20): credit billing is not in use."""
     async with get_connection() as conn:
-        cur = await conn.execute("SELECT tenant FROM usage_events UNION SELECT tenant FROM usage_ledger")
-        names = {row[0] for row in await cur.fetchall()}
         try:
             async with conn.transaction():
                 cur = await conn.execute("SELECT tenant FROM credit_accounts")
-                names |= {row[0] for row in await cur.fetchall()}
+                return {row[0] for row in await cur.fetchall()}
         except pg_errors.UndefinedTable:
-            pass  # no wallet tables yet (postgres-init/20): credit billing is not in use
-    return names
+            return set()
 
 
 async def uncharged_by_tenant_day(window: Window) -> tuple[dict[Key, Decimal], dict[Key, str]]:
@@ -394,8 +402,8 @@ async def reconcile(
         return report
     events, unpriced, report.events = await events_by_tenant_day(window)
     ledger = await ledger_by_tenant_day(window)
-    tenants = await known_tenants()
-    report.tenants = len({tenant for tenant, _ in events} | {tenant for tenant, _ in ledger} | tenants)
+    tenants = {tenant for tenant, _ in events} | {tenant for tenant, _ in ledger} | await wallet_tenants()
+    report.tenants = len(tenants)
     report.findings += compare("ledger", events, ledger, report.tolerance)
 
     if gateway_client is None:
@@ -468,8 +476,8 @@ def render(report: Report) -> str:
     lines.append(f"DRIFT in {len(report.findings)} tenant-day(s); largest ${usd(report.max_drift_usd)}:")
     for f in report.findings:
         lines.append(
-            f"  [{f.kind}] {f.tenant}  {f.day}  expected ${usd(f.expected)}  actual ${usd(f.actual)}  drift {'+' if f.drift > 0 else '-'}${usd(abs(f.drift))}"
-            + (f"  ({f.note})" if f.note else "")
+            f"  [{f.kind}] {printable(f.tenant)}  {f.day}  expected ${usd(f.expected)}  actual ${usd(f.actual)}  drift {'+' if f.drift > 0 else '-'}${usd(abs(f.drift))}"
+            + (f"  ({printable(f.note)})" if f.note else "")
         )
         lines.append(f"      {f.meaning}")
     return "\n".join(lines)

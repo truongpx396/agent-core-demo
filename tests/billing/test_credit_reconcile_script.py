@@ -72,21 +72,37 @@ class TestOnePass:
 
 
 class TestFirstFailureIsVisible:
-    def test_every_outcome_exists_at_zero_before_anything_happens_so_the_first_failure_is_an_increase(self):
-        from tests.conftest import _METRIC_READER
+    def test_priming_adds_zero_to_every_outcome_so_each_series_exists_before_anything_happens(self, monkeypatch):
+        added: list[tuple[str, float]] = []
+
+        class Recorder:
+            def labels(self, **labels):
+                outcome = labels["outcome"]
+                return type("Bound", (), {"inc": lambda _self, amount=1: added.append((outcome, amount))})()
+
+        monkeypatch.setattr(metrics, "agent_credit_reconcile_total", Recorder())
 
         reconcile.prime_outcomes()
 
+        assert sorted(added) == sorted((outcome, 0) for outcome in reconcile.OUTCOMES)
+
+    def test_adding_zero_to_a_counter_really_does_create_its_series(self):
+        """The property the priming relies on, read from the SDK: without it priming would be a no-op that looks like a fix."""
+        from tests.conftest import _METRIC_READER
+
+        counter = metrics.Counter("agent_test_zero_priming_total", "a throwaway counter for this test", ["outcome"])
+        counter.labels(outcome="never_happened").inc(0)
+
         data = _METRIC_READER.get_metrics_data()
-        points = {
-            point.attributes["outcome"]: point.value
+        points = [
+            (dict(point.attributes), point.value)
             for resource_metrics in (data.resource_metrics if data else [])
             for scope_metrics in resource_metrics.scope_metrics
             for metric in scope_metrics.metrics
-            if metric.name == metrics.agent_credit_reconcile_total.name
+            if metric.name == counter.name
             for point in metric.data.data_points
-        }
-        assert set(points) == set(reconcile.OUTCOMES)  # present, whatever other tests have already counted
+        ]
+        assert points == [({"outcome": "never_happened"}, 0)]
 
 
 class TestTheGatewayKey:

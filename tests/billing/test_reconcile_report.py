@@ -45,7 +45,7 @@ def sources(monkeypatch):
 
     monkeypatch.setattr(reconcile, "events_by_tenant_day", events)
     monkeypatch.setattr(reconcile, "ledger_by_tenant_day", ledger)
-    monkeypatch.setattr(reconcile, "known_tenants", tenants)
+    monkeypatch.setattr(reconcile, "wallet_tenants", tenants)
     monkeypatch.setattr(reconcile, "uncharged_by_tenant_day", uncharged)
     monkeypatch.setattr(reconcile, "wallet_totals", wallet)
     return state
@@ -212,7 +212,7 @@ class TestWhatItCannotCompareIsSaidNotSkippedSilently:
         async def never(*args, **kwargs):
             raise AssertionError("an empty window must not touch the database")
 
-        for name in ("events_by_tenant_day", "ledger_by_tenant_day", "known_tenants"):
+        for name in ("events_by_tenant_day", "ledger_by_tenant_day", "wallet_tenants"):
             monkeypatch.setattr(reconcile, name, never)
 
         report = await reconcile.reconcile(Window(WINDOW.end, WINDOW.start))
@@ -270,6 +270,17 @@ class TestWhatItPublishes:
         assert {o: metric_value(metrics.agent_credit_reconcile_total, outcome=o) - before[o] for o in before} == {
             "ok": 1, "drift": 1, "incomplete": 1, "failed": 2,
         }
+
+
+class TestTheReportIsSafeToPrint:
+    def test_a_tenant_name_or_note_with_terminal_escapes_is_shown_inert(self):
+        hostile = "acme\x1b[2J\rforged"
+        report = Report(WINDOW, STRICT, findings=[reconcile.Finding("gateway", hostile, DAY, D("0"), D("1"), note="n\x07ote")])
+
+        text = reconcile.render(report)
+
+        assert "\x1b" not in text and "\r" not in text and "\x07" not in text
+        assert "acme\\x1b[2J\\rforged" in text and "n\\x07ote" in text
 
 
 class TestTheReport:

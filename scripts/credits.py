@@ -32,6 +32,7 @@ from decimal import Decimal, InvalidOperation
 
 from app.agent import sql_store
 from app.billing import credits
+from app.billing.display import printable
 from app.core.job_runtime import scheduled_job
 
 logger = logging.getLogger(__name__)
@@ -190,13 +191,14 @@ async def _show(args: argparse.Namespace) -> tuple[int, str]:
         f"Lots ({len(lots)}, newest first):",
         *[
             f"  {str(r[0])[:8]}  {r[1]:<10} granted {_n(r[2])}  remaining {_n(r[3])}  "
-            + (f"expires {r[4]:%Y-%m-%d %H:%M}Z" if r[4] else "no expiry") + f"  by {r[6]}"
+            + (f"expires {r[4]:%Y-%m-%d %H:%M}Z" if r[4] else "no expiry") + f"  by {printable(r[6])}"
+            + (f"  via {printable(r[7])} {printable(r[8])}" if r[7] or r[8] else "")
             for r in lots
         ],
         f"Newest {len(rows)} ledger entries:",
         *[
-            f"  {r[0]:%Y-%m-%d %H:%M:%S}Z  {r[1]:<8} {_n(r[3]):>14}  lot {str(r[2])[:8]}  {r[4]}"
-            + (f"  {r[5]}" if r[5] else "") + (f"  event {r[6][:8]}" if r[6] else "")
+            f"  {r[0]:%Y-%m-%d %H:%M:%S}Z  {r[1]:<8} {_n(r[3]):>14}  lot {str(r[2])[:8]}  {printable(r[4])}"
+            + (f"  {printable(r[5])}" if r[5] else "") + (f"  event {r[6][:8]}" if r[6] else "")
             for r in rows
         ],
     ]

@@ -191,4 +191,11 @@ as `end_user`), and optionally the provider's balance, and reports drift per ten
   exercises the least and has the most open questions (O-C). Stripe first because its webhook signing and replay window are the most widely documented. No adapter is written here:
   each needs a sandbox account and primary docs (O-C, O-D), and the in-repo `fake` already proves the port.
 
+- **D14. (PR 6.)** **The reconciliation is an independent check, so it is built to be wrong in the quiet direction only.** It reads the gateway's own spend log (`GET /spend/logs/v2`,
+  verified against LiteLLM 1.104's source) and compares per tenant per UTC day; a difference is drift only above the **larger** of a fixed USD amount and a percentage (SC-001's "stated
+  tolerance"), the newest minutes are left out (a turn still running has events and no ledger row), and **a gateway read that is not whole is never compared** (a truncated sum would
+  show every tenant as under-metered). It needs the gateway's admin key, held only by the reconciliation process. Embeddings are neither metered nor attributed, so their spend is reported as
+  "no tenant of this app" and is not drift. **The provider-balance comparison is deferred** with the first adapter that declares `BALANCE_READ` (none does). The wallet-side detector
+  names D11's gap (an event worth credits with no debit); **repairing one is still manual** (`credits adjust --key <event_id>`, documented and tested), a repair job is not built.
+
 **Product decisions still to be recorded:** none open for this feature; the adapters (`T029`) and the pro-rata policy for a partial refund or a dispute are follow-ups a person must decide.

@@ -228,13 +228,16 @@ class TestAnUnchargedEvent:
         assert (await credits.balance(tenant)).available == D("1000") - owed
         assert await reconcile_for(gateway, tenant) == []
 
-    async def test_a_free_call_is_never_reported_as_uncharged(self, appdata_url):
-        """A call that cost nothing is worth zero credits, and a debit of zero books no transaction by design: its absence is not a gap."""
+    async def test_a_call_worth_less_than_a_millionth_of_a_credit_is_never_reported_as_uncharged(self, appdata_url):
+        """At 1000 credits per dollar a $0.0000000004 call is worth 0.0000004 credits, which rounds to zero at six places. A debit of zero
+        books no transaction by design, so its absence is not a gap; but the event's own cost is above zero, so only the `credits > 0`
+        rule keeps it out of the report (a free call, cost 0, could never tell the difference: its drift would be zero either way)."""
         tenant = tenant_name()
         await credits.grant(tenant, 1000, source="purchase", idempotency_key=f"g-{tenant}", actor="test")
-        await turn(tenant, 0.0)
+        await turn(tenant, 4e-10)
+        assert (await fetch(appdata_url, "SELECT credits, cost_usd FROM usage_events WHERE tenant = %s", tenant)) == [(D("0.000000"), D("0.000000000400"))]
 
-        assert await reconcile_for(await gateway_seen(appdata_url, tenant), tenant) == []
+        assert await reconcile_for(await gateway_seen(appdata_url, tenant), tenant, tolerance=Tolerance(D("0.1"), D("100"))) == []
 
     async def test_an_event_recorded_before_the_wallet_existed_was_rightly_never_charged(self, appdata_url):
         tenant = tenant_name()
