@@ -493,6 +493,7 @@ promptfoo/ garak/ loadtest/   prompt checks, jailbreak scan, Locust
 - **A vision model that also does tool calling.** Small local vision models do one or the other; the `vision` alias is a slot, not a verified default. Moderation screens text only, and only the HTTP API accepts images.
 - **A Telegram webhook.** Long-polling needs no public URL; production would use `setWebhook`.
 - **A fallback node** for the primary LLM path.
+- **Credit-based billing.** The meter, the spend limits and the gateway backstop exist; a credit wallet, payment-provider integration (Stripe, PayPal, Polar) and usage export do not. The design, with provider behaviour checked against their own docs, is [specs/010-credit-billing-readiness](specs/010-credit-billing-readiness/spec.md).
 
 **Known gaps** from reviewing the as-built system against the constitution (the full list is in
 GRAPH_PATTERNS.md). None lets a write run without a human decision, but the first means that behind the
@@ -502,6 +503,7 @@ shipped proxy alone, the human deciding can be anyone who sets the right headers
 - **Approvals are not attributed.** The gate is enforced but not auditable.
 - **The ops domain is global**, with no control over which tenants may use it; **the dedup lookup is not tenant-scoped**.
 - **A residual duplicate window for team-channel notifications** (support escalation, sales handoff, ops post).
+- **Some model spend is not metered.** Follow-up suggestions, history compaction and embeddings reach the model but never the usage ledger, so no dollar ceiling sees them (only the gateway's own spend log does). Per-turn rows also carry no per-call id. Closing this is the first step of the billing design above.
 
 ## Troubleshooting
 
