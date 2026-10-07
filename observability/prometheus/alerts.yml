@@ -169,6 +169,58 @@ groups:
             postgres-init/20-credit-wallet.sql and 22-billing.sql are applied. If the database itself is down
             no inbox row is written, so the provider's own delivery dashboard is the only other record.
 
+      - alert: UsageExportStuck
+        expr: max(agent_usage_export_oldest_pending_age_seconds) > 604800
+        labels:
+          severity: critical
+        annotations:
+          summary: "Usage events have been waiting to reach a billing provider for over 7 days"
+          description: >-
+            The oldest unsent usage event is more than 7 days old. That is deliberately well inside
+            BILLING_EXPORT_MAX_AGE_DAYS (default 30, at most 34, because Stripe rejects events older than 35
+            days): this is the warning while the events can still be sent, before UsageExportExpired says
+            they cannot. Look at `SELECT provider, status, count(*), min(created_at), max(last_error_class)
+            FROM usage_export_outbox GROUP BY 1, 2`. A provider outage, a revoked credential, or a stopped
+            `make billing-export-worker` all look like this. Disclosed: if the worker is simply not running
+            the gauge stops being set, so check the worker too.
+
+      - alert: UsageExportExpired
+        expr: increase(agent_usage_export_total{outcome="expired"}[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Usage events aged out unsent: that usage will never be billed through the provider"
+          description: >-
+            Events passed BILLING_EXPORT_MAX_AGE_DAYS without being delivered and were marked `expired`, so
+            the provider will never see them (its own window closes soon after). This is revenue that was
+            earned and not billed. The rows are kept (`status = 'expired'`) with their usage events: decide
+            whether to bill them another way. Find the cause first (see UsageExportStuck), or the next ones
+            will expire too.
+
+      - alert: UsageExportFailed
+        expr: increase(agent_usage_export_total{outcome="failed"}[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Usage events were given up on: the provider refused them, or the retry budget ran out"
+          description: >-
+            An event reached `failed`: a permanent refusal by the provider, BILLING_EXPORT_MAX_ATTEMPTS spent,
+            or the tenant's customer link is gone (`last_error_class` says which). Nothing retries a failed
+            event. Fix the cause, then re-queue deliberately (the rows are terminal by trigger, so that is a
+            new row, not an UPDATE).
+
+      - alert: UsageExportEnqueueFailing
+        expr: increase(agent_cost_governance_degraded_total{path="export_enqueue"}[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Usage events are being recorded but not queued for export"
+          description: >-
+            Queuing a usage event for export failed in the last 10m. The event itself was written (the meter outranks
+            the export) so nothing is lost from the ledger, but that call will never reach the provider unless it is
+            queued another way. Check the appdata Postgres and that postgres-init/23-usage-export-outbox.sql is
+            applied.
+
       - alert: CreditGateUnenforced
         expr: increase(agent_cost_governance_degraded_total{path="credit_read"}[10m]) > 0
         labels:

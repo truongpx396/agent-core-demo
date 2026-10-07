@@ -60,3 +60,26 @@ def test_every_degrade_path_that_hides_committed_money_has_an_alert():
     ):
         assert alert in rules, f"{alert}: the {path} path hides committed money and has no alert"
         assert f'path="{path}"' in rules[alert], f"{alert} does not watch {path}"
+
+
+def test_every_way_usage_can_silently_fail_to_reach_a_billing_provider_has_an_alert():
+    """Usage that earned money and never reached the provider is revenue nobody was told was lost (constitution V)."""
+    rules = {rule["alert"]: rule["expr"] for rule in _rules()}
+
+    for alert, needle in (
+        ("UsageExportStuck", "agent_usage_export_oldest_pending_age_seconds"),
+        ("UsageExportExpired", 'outcome="expired"'),
+        ("UsageExportFailed", 'outcome="failed"'),
+        ("UsageExportEnqueueFailing", 'path="export_enqueue"'),
+        ("BillingWebhookQuarantined", 'outcome="quarantined"'),
+        ("BillingWebhookFailing", 'outcome="failed"'),
+    ):
+        assert alert in rules, f"{alert}: nothing alerts on {needle}"
+        assert needle in rules[alert], f"{alert} does not watch {needle}"
+
+
+def test_the_stuck_alert_fires_well_before_the_age_limit_expires_events():
+    """It is the warning while the events can still be sent, so its threshold must be under the limit's default (30 days)."""
+    expr = next(rule["expr"] for rule in _rules() if rule["alert"] == "UsageExportStuck")
+
+    assert int(expr.rsplit(">", 1)[1]) < 30 * 86400
