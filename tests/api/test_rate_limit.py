@@ -113,3 +113,58 @@ class TestTenantRateLimitMiddleware:
 
         after = metric_value(metrics.agent_rate_limit_exceeded_total)
         assert after == before + 1
+
+
+class TestTheWebhookRoute:
+    """POST /billing/webhooks/{provider} has no tenant (the caller is a payment provider), so it is limited per
+    SOURCE ADDRESS with its own ceiling (app/api/rate_limit.py)."""
+
+    @staticmethod
+    def _middleware(monkeypatch, *, webhook_limit: int, tenant_limit: int = 100):
+        middleware = _fresh_middleware(monkeypatch, limit_per_minute=tenant_limit)
+        monkeypatch.setattr(rate_limit, "_webhook_limit", RateLimitItemPerMinute(webhook_limit))
+        return middleware
+
+    async def test_it_is_limited_per_source_address(self, monkeypatch):
+        middleware = self._middleware(monkeypatch, webhook_limit=2)
+        provider_ip = _make_request("/billing/webhooks/fake", tenant=None, client_host="203.0.113.7")
+        other_ip = _make_request("/billing/webhooks/fake", tenant=None, client_host="198.51.100.9")
+
+        assert (await middleware.dispatch(provider_ip, _call_next)).status_code == 200
+        assert (await middleware.dispatch(provider_ip, _call_next)).status_code == 200
+        assert (await middleware.dispatch(provider_ip, _call_next)).status_code == 429
+        assert (await middleware.dispatch(other_ip, _call_next)).status_code == 200, "one source's flood is not another's"
+
+    async def test_a_tenant_header_on_the_webhook_route_is_never_a_reason_to_key_on_it(self, monkeypatch):
+        """The header is the sender's own claim: rotating it must not buy a fresh budget."""
+        middleware = self._middleware(monkeypatch, webhook_limit=1)
+
+        first = _make_request("/billing/webhooks/fake", tenant="a", client_host="203.0.113.7")
+        second = _make_request("/billing/webhooks/fake", tenant="b", client_host="203.0.113.7")
+
+        assert (await middleware.dispatch(first, _call_next)).status_code == 200
+        assert (await middleware.dispatch(second, _call_next)).status_code == 429
+
+    async def test_it_has_its_own_ceiling_apart_from_the_per_tenant_one(self, monkeypatch):
+        """A provider redelivering a backlog must not be throttled by the (much lower) per-tenant chat limit."""
+        middleware = self._middleware(monkeypatch, webhook_limit=50, tenant_limit=1)
+        request = _make_request("/billing/webhooks/fake", tenant=None)
+
+        statuses = [(await middleware.dispatch(request, _call_next)).status_code for _ in range(5)]
+
+        assert statuses == [200] * 5
+
+    async def test_the_refusal_names_no_limit(self, monkeypatch):
+        middleware = self._middleware(monkeypatch, webhook_limit=1)
+        request = _make_request("/billing/webhooks/fake", tenant=None)
+        await middleware.dispatch(request, _call_next)
+
+        response = await middleware.dispatch(request, _call_next)
+
+        assert response.status_code == 429 and b"per minute" not in response.body
+
+    async def test_chat_limits_are_unaffected_by_webhook_traffic(self, monkeypatch):
+        middleware = self._middleware(monkeypatch, webhook_limit=1, tenant_limit=1)
+        await middleware.dispatch(_make_request("/billing/webhooks/fake", tenant=None), _call_next)
+
+        assert (await middleware.dispatch(_make_request("/chat/stream/queued"), _call_next)).status_code == 200

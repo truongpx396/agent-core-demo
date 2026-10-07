@@ -23,7 +23,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from app.core import metrics
-from app.core.config import RATE_LIMIT_PER_MINUTE, REDIS_URL
+from app.core.config import (
+    BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE,
+    RATE_LIMIT_PER_MINUTE,
+    REDIS_URL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +41,13 @@ RATE_LIMITED_PATHS = frozenset(
 _storage = storage.storage_from_string(REDIS_URL)
 _strategy = strategies.MovingWindowRateLimiter(_storage)
 _limit = RateLimitItemPerMinute(RATE_LIMIT_PER_MINUTE)
+
+# The payment-provider webhook has no tenant (the caller is a provider, not a person), so it is limited per SOURCE
+# ADDRESS, with its own generous ceiling: a provider redelivering a backlog must not be throttled into a longer
+# outage. The signature, not this, is the defence; this only bounds how fast a stranger can make the app compute
+# MACs. Behind a proxy every request shares the proxy's address, so this is a global ceiling in practice (disclosed).
+WEBHOOK_PATH_PREFIX = "/billing/webhooks/"
+_webhook_limit = RateLimitItemPerMinute(BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE)
 
 
 def _tenant_key(request: Request) -> str:
@@ -53,12 +64,14 @@ def _tenant_key(request: Request) -> str:
 
 class TenantRateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
-        if request.url.path not in RATE_LIMITED_PATHS:
+        is_webhook = request.url.path.startswith(WEBHOOK_PATH_PREFIX)
+        if request.url.path not in RATE_LIMITED_PATHS and not is_webhook:
             return await call_next(request)
 
-        key = _tenant_key(request)
+        # A tenant header on the webhook route is the sender's own claim: never a reason to key on it.
+        key = f"billing-webhook:{request.client.host if request.client else 'unknown'}" if is_webhook else _tenant_key(request)
         try:
-            allowed = _strategy.hit(_limit, key)
+            allowed = _strategy.hit(_webhook_limit if is_webhook else _limit, key)
         except Exception as exc:  # noqa: BLE001 - Redis down must not block the core turn, see module docstring
             logger.warning(
                 "rate_limit_check_failed", extra={"error_class": type(exc).__name__}
@@ -67,6 +80,8 @@ class TenantRateLimitMiddleware(BaseHTTPMiddleware):
 
         if not allowed:
             metrics.agent_rate_limit_exceeded_total.inc()
+            if is_webhook:
+                return JSONResponse({"detail": "Too Many Requests"}, status_code=429)
             return JSONResponse(
                 {"detail": f"Rate limit exceeded: {RATE_LIMIT_PER_MINUTE} requests per minute per tenant"},
                 status_code=429,

@@ -314,9 +314,22 @@ async def debit_in(
         debt = await _overdraft_lot(conn, tenant, create=True)
         assert debt is not None  # just created or already there
         await _move(conn, tenant, transaction_id, debt[0], -shortfall)
-        metrics.agent_credit_overdraft_total.inc()
-        logger.warning("credit_overdraft", extra={"shortfall": str(shortfall)})
+        if kind == "debit":
+            # Usage outrunning the wallet is the degradation this counter exists to show. A clawback that
+            # outruns it is not: a refund after the credits were spent is the policy working (spec D6).
+            metrics.agent_credit_overdraft_total.inc()
+        logger.warning("credit_overdraft", extra={"shortfall": str(shortfall), "kind": kind})
     return Applied("applied", transaction_id, credits, shortfall)
+
+
+async def clawback_in(
+    conn: AsyncConnection, tenant: str, amount, *, idempotency_key: str, actor: str, reason: str | None = None
+) -> Applied:
+    """Takes back credits because the money behind them was returned (a refund, spec D6). The same path
+    as a debit (earliest-expiring lot first), recorded as kind 'clawback', and like a debit it is NEVER
+    refused for a short balance: credits already spent become debt on the overdraft lot, which refuses new
+    usage at the gate until the next grant repays it. A no-op (`no_account`) for a tenant with no wallet."""
+    return await debit_in(conn, tenant, amount, idempotency_key=idempotency_key, actor=actor, reason=reason, kind="clawback")
 
 
 async def _expire_lot_in(conn: AsyncConnection, tenant: str, lot_id: str) -> bool:

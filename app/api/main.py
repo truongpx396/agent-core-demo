@@ -27,6 +27,9 @@ Endpoints:
                               call(s) still awaiting approval on this
                               thread — lets the web UI re-show that prompt
                               after a reload/session switch
+- POST /billing/webhooks/{provider} -> a payment provider's signed webhook (NOT behind the
+                              tenant headers: authenticity is the signature; becomes credits
+                              exactly once, see app/api/routers/billing.py)
 - GET  /usage             -> this caller's tenant usage/cost, including the
                               rolling-24h number budgets.check_tenant_daily checks
 - POST /ingest/upload     -> upload PDF/DOCX documents; each becomes its own
@@ -60,7 +63,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.agent import sql_store
 from app.agent.runtime import close_checkpointer_pool, init_graph_async
 from app.api.rate_limit import TenantRateLimitMiddleware
-from app.api.routers import chat, ingest, system, usage
+from app.api.routers import billing, chat, ingest, system, usage
 from app.core.config import (
     CORS_ALLOWED_ORIGINS,
 )
@@ -87,6 +90,9 @@ async def lifespan(app: FastAPI):
     # win that race instead. Lifespan never runs under this app's test suite
     # (see tests/api/test_api.py), so this is safe here.
     configure_telemetry("agent-core-api")
+    # Refuses to start (raises) if a payment provider is enabled with no adapter or no signing secret: an
+    # endpoint that cannot verify a signature must not come up (app/api/routers/billing.py).
+    billing.validate_configuration()
     await init_graph_async()
     yield
     # Closes the Postgres pool's background worker threads cleanly
@@ -119,4 +125,5 @@ app.add_middleware(
 app.include_router(system.router)
 app.include_router(chat.router)
 app.include_router(usage.router)
+app.include_router(billing.router)
 app.include_router(ingest.router)

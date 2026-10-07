@@ -8,13 +8,17 @@ from decimal import Decimal
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Also load .env into os.environ so third-party SDKs that read env vars
 # directly (e.g. the Langfuse client) pick up their keys.
 load_dotenv()
 
+
+# The webhook inbox keeps an event for at least this long before the retention sweep may delete it: longer
+# than any payment provider keeps redelivering one, so a sweep never races a retry (app/billing/inbox.py).
+BILLING_INBOX_MIN_RETENTION_DAYS = 30
 
 # A budget window reads back up to a calendar month; retention below this would let a
 # sweep delete spend that is still inside one (app/agent/usage_ledger.py::sweep_old_rows).
@@ -203,6 +207,50 @@ class Settings(BaseSettings):
     # down. "closed" refuses it (ErrorCode.BUDGET_CHECK_UNAVAILABLE), for a deployment that would rather
     # be unavailable than serve a tenant it cannot confirm has credit. Only consulted when enforcing.
     credit_check_failure_policy: Literal["open", "closed"] = "open"
+
+    # Money in (specs/010 PR 4, app/billing/webhooks.py, POST /billing/webhooks/{provider}). A provider is
+    # served only if it is NAMED here, and then it MUST have a signing secret: a webhook endpoint that cannot
+    # verify a signature must not exist, so the process refuses to start rather than accept unauthenticated
+    # payments. Empty (the default) means no provider and no webhook route to speak of: every request 404s.
+    # Names are the adapter's `name` (app/billing/providers/__init__.py), e.g. "stripe". "fake" is the in-repo
+    # development and test adapter; do not enable it in production.
+    billing_providers: str = ""
+    # {"provider": "signing secret"} as JSON. SecretStr so the values never show in a repr or a log line.
+    billing_webhook_secrets: dict[str, SecretStr] = Field(default_factory=dict)
+    # A body larger than this is refused (413) BEFORE it is read: an unauthenticated endpoint must not buffer
+    # whatever it is sent. A real payment event is a few KB.
+    billing_webhook_max_body_bytes: int = Field(default=256 * 1024, ge=1024, le=10 * 1024 * 1024)
+    # Per source address, per minute, on the webhook route only. Generous on purpose: a provider redelivering a
+    # backlog must not be throttled into a longer outage, and the signature check, not this, is the defence.
+    billing_webhook_rate_limit_per_minute: int = Field(default=600, ge=1)
+    # How many times one event may fail to apply before it is quarantined (and alerted) instead of retried forever.
+    billing_webhook_max_attempts: int = Field(default=5, ge=1)
+    # A refund can arrive before the purchase it reverses. It is held (the provider is told to retry) until the
+    # purchase has been applied, but only this long, then quarantined: a wait on a counterparty needs a deadline.
+    billing_refund_hold_hours: int = Field(default=24, ge=1)
+    # How long scripts/billing_inbox_sweep.py keeps applied/ignored inbox rows. The floor is not a style choice
+    # (see BILLING_INBOX_MIN_RETENTION_DAYS). The wallet's own idempotency keys, not these rows, are what stop a
+    # late redelivery from granting twice, so the sweep is safe, but the rows are the audit trail of what was received.
+    billing_inbox_retention_days: int = Field(default=400, ge=BILLING_INBOX_MIN_RETENTION_DAYS)
+
+    @field_validator("billing_providers")
+    @classmethod
+    def _provider_names_are_path_safe(cls, value: str) -> str:
+        for name in (part.strip() for part in value.split(",") if part.strip()):
+            if not name.replace("_", "").replace("-", "").isalnum() or not name.islower():
+                raise ValueError(f"BILLING_PROVIDERS entry {name!r} must be lowercase letters, digits, '-' or '_'")
+        return value
+
+    @model_validator(mode="after")
+    def _every_enabled_provider_has_a_secret(self) -> "Settings":
+        for name in (part.strip() for part in self.billing_providers.split(",") if part.strip()):
+            secret = self.billing_webhook_secrets.get(name)
+            if secret is None or not secret.get_secret_value().strip():
+                raise ValueError(
+                    f"BILLING_PROVIDERS enables {name!r} but BILLING_WEBHOOK_SECRETS has no secret for it: "
+                    "an endpoint that cannot verify a signature must not start"
+                )
+        return self
 
     @field_validator("credits_per_usd", "markup")
     @classmethod
@@ -564,6 +612,13 @@ CREDITS_PER_USD = settings.credits_per_usd
 MARKUP = settings.markup
 CREDITS_ENFORCEMENT = settings.credits_enforcement
 CREDIT_CHECK_FAILURE_POLICY = settings.credit_check_failure_policy
+BILLING_PROVIDERS = tuple(part.strip() for part in settings.billing_providers.split(",") if part.strip())
+BILLING_WEBHOOK_SECRETS = {name: secret.get_secret_value() for name, secret in settings.billing_webhook_secrets.items()}
+BILLING_WEBHOOK_MAX_BODY_BYTES = settings.billing_webhook_max_body_bytes
+BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE = settings.billing_webhook_rate_limit_per_minute
+BILLING_WEBHOOK_MAX_ATTEMPTS = settings.billing_webhook_max_attempts
+BILLING_REFUND_HOLD_HOURS = settings.billing_refund_hold_hours
+BILLING_INBOX_RETENTION_DAYS = settings.billing_inbox_retention_days
 BUDGET_POLICY_REFRESH_SECONDS = settings.budget_policy_refresh_seconds
 REQUEST_TIMEOUT_SECONDS = settings.request_timeout_seconds
 SUBAGENT_TIMEOUT_SECONDS = settings.subagent_timeout_seconds

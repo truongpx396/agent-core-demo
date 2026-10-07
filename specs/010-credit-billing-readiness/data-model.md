@@ -97,6 +97,8 @@ app when it creates the provider-side customer at checkout, never from a webhook
 
 `provider`, `product_ref`, `credits NUMERIC(18,6)`, `expires_after_days` (nullable), `active`. A purchase's value is read from here.
 
+*(Built in PR 4: `postgres-init/22-billing.sql`, `app/billing/{store,webhooks,inbox}.py`. Refinements to the sketch below: `billing_customers` has `PRIMARY KEY (provider, customer_ref)` and `UNIQUE (tenant, provider)`; `credit_lots` gains a unique index `(tenant, provider, external_ref)` for purchase and subscription lots, so one payment is credited once even when a provider describes it in two events; the inbox has a trigger that makes `applied` and `ignored` terminal and an event's id, type, payload and receive time immutable, while `quarantined` may be reopened by an operator; `payload` holds only `BillingEvent.stored()`, a closed whitelist, never the raw body.)*
+
 ### `billing_webhook_events` — the inbox
 
 `provider`, `event_id`, `event_type`, `received_at`, `status`, `attempts`, `tenant` (nullable until linked), `payload JSONB` (scrubbed), `error_class`.
@@ -128,6 +130,6 @@ the second layer, because a crash between "sent" and "marked sent" is the one wi
 ## Metrics (each degrade path counted; alerts for the paths that hide money)
 
 `usage_event_write_failed_total` (**alert**: a lost event is lost revenue), `usage_event_unpriced_total`, `credit_debit_overdraft_total`,
-`credit_enforcement_refused_total`, plus two degrade paths on `agent_cost_governance_degraded_total` (**alerts**): `credit_debit` (`CreditDebitFailing`: the event was kept, its charge failed) and `credit_read` (`CreditGateUnenforced`: the gate could not read a wallet), `billing_webhook_total{provider,outcome}` (`applied|duplicate|ignored|quarantined|invalid_signature|failed`),
-`billing_webhook_quarantined` (**alert**), `usage_export_total{provider,outcome}`, `usage_export_oldest_pending_age_seconds` (**alert** at 7 days),
+`credit_enforcement_refused_total`, plus two degrade paths on `agent_cost_governance_degraded_total` (**alerts**): `credit_debit` (`CreditDebitFailing`: the event was kept, its charge failed) and `credit_read` (`CreditGateUnenforced`: the gate could not read a wallet), `agent_billing_webhook_total{provider,outcome}` (`applied|duplicate|ignored|quarantined|retry|failed|invalid_signature|invalid_payload|unknown_provider|too_large`; `provider` is a configured adapter or the fixed `unknown`, never the caller's own string),
+`quarantined` (**alert** `BillingWebhookQuarantined`: a customer paid and nobody is retrying) and `failed` (**alert** `BillingWebhookFailing`), `usage_export_total{provider,outcome}`, `usage_export_oldest_pending_age_seconds` (**alert** at 7 days),
 `usage_export_expired_total` (**alert**), `credit_reconcile_max_drift_usd` (a gauge: the largest per-tenant drift in the last run, so no tenant label; the per-tenant detail is in the report; **alert** above a threshold).

@@ -139,6 +139,36 @@ groups:
             missed charge can be replayed from its event (`credit_transactions.usage_event_id` is
             what is missing); find them by comparing events that carry `credits` with the wallet.
 
+      - alert: BillingWebhookQuarantined
+        expr: increase(agent_billing_webhook_total{outcome="quarantined"}[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "A payment-provider event was quarantined: a customer may have paid and received nothing"
+          description: >-
+            A webhook was quarantined in the last 10m and nobody is retrying it (the provider was told 2xx,
+            because retrying cannot fix it). Find it with
+            `SELECT provider, event_id, event_type, error_class, received_at FROM billing_webhook_events
+            WHERE status = 'quarantined' ORDER BY received_at DESC` — `error_class` is the reason:
+            unlinked_customer (no billing_customers row: link it, then re-open the event),
+            unknown_product / subscription_without_expiry (fix the credit_products catalog),
+            purchase_never_applied (a refund whose purchase never arrived), dispute_needs_a_decision and
+            partial_refund_needs_a_decision (a product decision nobody has made), max_attempts (applying it
+            kept failing: see BillingWebhookFailing). Until someone acts the customer is out of pocket.
+
+      - alert: BillingWebhookFailing
+        expr: increase(agent_billing_webhook_total{outcome="failed"}[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Payment-provider webhooks are failing to apply"
+          description: >-
+            Applying a verified webhook raised in the last 10m. The provider was told 5xx and will retry (up to
+            BILLING_WEBHOOK_MAX_ATTEMPTS per event, then it is quarantined), so nothing is lost yet, but
+            customers who paid are waiting for credits. Check the appdata Postgres and that
+            postgres-init/20-credit-wallet.sql and 22-billing.sql are applied. If the database itself is down
+            no inbox row is written, so the provider's own delivery dashboard is the only other record.
+
       - alert: CreditGateUnenforced
         expr: increase(agent_cost_governance_degraded_total{path="credit_read"}[10m]) > 0
         labels:

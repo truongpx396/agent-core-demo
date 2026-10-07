@@ -8,6 +8,8 @@ EXPECTED here on purpose: it is the one place the whole HTTP surface is listed.
 from fastapi.testclient import TestClient
 
 from app.api import main as api
+from app.core import metrics
+from tests.conftest import metric_value
 
 EXPECTED = {
     ("GET", "/"),
@@ -45,3 +47,17 @@ def test_the_identity_free_endpoints_answer_through_the_real_app():
     assert page.status_code == 200 and page.headers["content-type"].startswith("text/html")
     assert "<html" in page.text.lower()
     assert client.get("/health").status_code == 200
+
+
+def test_the_payment_webhook_is_mounted_though_it_is_deliberately_not_in_the_documented_api():
+    """`include_in_schema=False` keeps an unauthenticated, signature-verified endpoint out of /docs, which also
+    hides it from the OpenAPI-based check above: so a router that was never passed to `include_router` would
+    leave every handler test green while a provider's webhooks answered 404 (and its customers paid for nothing).
+    FastAPI does not flatten included routers into `app.routes`, so this proves the mount by behaviour: a request
+    through the real app must reach OUR handler, which counts it (a framework 404 would count nothing)."""
+    before = metric_value(metrics.agent_billing_webhook_total, provider="unknown", outcome="unknown_provider")
+
+    response = TestClient(api.app).post("/billing/webhooks/nobody-configured", content=b"{}")
+
+    assert response.status_code == 404
+    assert metric_value(metrics.agent_billing_webhook_total, provider="unknown", outcome="unknown_provider") == before + 1
