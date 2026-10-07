@@ -349,7 +349,7 @@ async def _run_subagent_impl(
             # model_alias: price this run's calls by the specialist's own model
             # (spec 008 A2) — the in-run ceiling used to price every step by
             # the parent's alias while the ledger row used the specialist's.
-            deps=GraphDeps(llm=nested_llm, model_alias=record.model or CHAT_MODEL),
+            deps=GraphDeps(llm=nested_llm, model_alias=record.model or CHAT_MODEL, meter_kind="subagent"),
             manifest=nested_manifest,
             domain=nested_domain,
             max_iterations=MAX_SUBAGENT_ITERATIONS,

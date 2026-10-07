@@ -641,6 +641,9 @@ class GraphDeps:
     # specialist declares its own model sets it so its calls are priced by that
     # model, not by the parent's.
     model_alias: str | None = None
+    # The usage-event `kind` this client's calls are recorded under (app/agent/usage_events.py).
+    # "chat" for the main loop; a delegated run sets "subagent" so its spend is separable.
+    meter_kind: str = "chat"
     search_docs: (
         Callable[[str, "SecurityCtx | None"], Awaitable[tuple[str, list[dict]]]] | None
     ) = None
@@ -709,7 +712,7 @@ def _assemble_shared_graph_parts(
     domain_valid_tool_names = frozenset(t.name for t in domain_tools)
 
     llm_client = deps.llm or _make_llm(domain_tools)
-    agent = make_agent_node(llm_client, model_alias=deps.model_alias)
+    agent = make_agent_node(llm_client, model_alias=deps.model_alias, kind=deps.meter_kind)
     retrieve_context = make_retrieve_context_node(deps.search_docs or _default_search)
     # A plain module-level function (not a factory) bound to this domain's
     # capability mapping via functools.partial — see should_continue's own

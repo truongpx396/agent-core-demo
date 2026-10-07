@@ -472,6 +472,7 @@ agent_cost_governance_degraded_total = Counter(
     "(spec 008 A1)",
     ["path"],
 )  # path: price_lookup | ledger_write | ledger_read | policy_read | reservation | model_resolve
+# | usage_event_write | usage_event_table_missing | usage_event_identity | usage_missing (app/agent/usage_events.py)
 
 agent_upload_rejected_total = Counter(
     "agent_upload_rejected_total",

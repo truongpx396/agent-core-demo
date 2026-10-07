@@ -98,6 +98,31 @@ groups:
             succeeded, so nobody was told: the row is gone, and every tenant allowance
             read from that ledger now undercounts. Check the appdata Postgres.
 
+      - alert: UsageEventWriteFailing
+        expr: increase(agent_cost_governance_degraded_total{path="usage_event_write"}[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Model calls are being made and their usage events are not recorded"
+          description: >-
+            A per-call usage event failed to write in the last 10m. The turn succeeded, so
+            nobody was told: that call is missing from the billing meter, which is lost revenue
+            the moment usage is billed. Check the appdata Postgres. Reconcile the gap against
+            the gateway spend log (grouped by `end_user`) before it ages out of any provider's
+            reporting window.
+
+      - alert: UsageEventTableMissing
+        expr: increase(agent_cost_governance_degraded_total{path="usage_event_table_missing"}[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "The usage_events table does not exist: no model call is being metered"
+          description: >-
+            postgres-init/19-usage-events.sql has not been applied to this database (init
+            scripts run only on a fresh volume). Apply it once with
+            `psql -U langfuse -d appdata -f postgres-init/19-usage-events.sql`. Turns are
+            unaffected; the per-turn usage_ledger the spend caps read is a separate table.
+
       - alert: TenantAllowanceUnenforced
         expr: increase(agent_cost_governance_degraded_total{path=~"ledger_read|policy_read"}[10m]) > 0
         labels:

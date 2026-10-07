@@ -218,6 +218,38 @@ def mock_model_resolver(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def usage_event_sink(monkeypatch):
+    """Every model call now writes one usage event (`usage_events.record_call`, via
+    `metering.metered_invoke`), which means a real INSERT into `appdata` Postgres and a real
+    `resolve_model` HTTP call on the turn path. Left alone, an ordinary agent-node test would pay a
+    connection timeout and an HTTP request per call and its result would depend on what is running
+    on the machine (the leak `mock_appdata_postgres` and `mock_model_resolver` close for their
+    modules). The default world records nothing real and CAPTURES each event row in a list the test
+    can read, so "this call was metered" is assertable without a database. The real `_insert`
+    statement is proven by tests/agent/test_usage_events.py (fake connection) and
+    tests/integration/test_usage_events_real_postgres.py (a real one); both restore it from the
+    reference saved at import time, which is before this fixture patches anything."""
+    from app.agent import usage_events
+
+    async def _no_model_resolution(alias):
+        return None
+
+    captured: list[dict] = []
+
+    async def _capture(row):
+        if row["event_id"] in {r["event_id"] for r in captured}:
+            return False  # the same duplicate story the real table tells
+        captured.append(row)
+        return True
+
+    monkeypatch.setattr(usage_events, "resolve_model", _no_model_resolution)
+    monkeypatch.setattr(usage_events, "_insert", _capture)
+    usage_events.reset_state()
+    yield captured
+    usage_events.reset_state()
+
+
+@pytest.fixture(autouse=True)
 def mock_budget_policies(monkeypatch):
     """`budgets.check` reads the operator's per-tenant/per-person limit overrides
     (`budget_policies.overrides_for`) before every turn. Without this, an ordinary turn test

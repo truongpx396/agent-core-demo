@@ -15,13 +15,13 @@ entry and README update; its CI result reported, not assumed.
 
 ## Phase 1: Meter (PRs 1a, 1b) — US1
 
-- [ ] T002 [PR1a] **O-A is resolved** (`research.md` R5: `AIMessage.id`, stable across a checkpoint read); this task is now the **pin test**: it fails if a library upgrade changes how the id is assigned, is not unique per call, or differs after a checkpoint re-read
-- [ ] T003 [PR1a] `postgres-init/19-usage-events.sql`: table, `(tenant, occurred_at)` index, append-only trigger. Header says how an existing volume applies it
-- [ ] T004 [PR1a] Failing real-Postgres test: the same `event_id` inserted twice yields one row; `UPDATE`/`DELETE` are rejected
-- [ ] T005 [PR1a] `app/agent/usage_events.py`: deterministic id, `INSERT … ON CONFLICT DO NOTHING`, fail-open with `usage_event_write_failed_total`; unpriced stored as NULL cost and counted
-- [ ] T006 [PR1a] `app/agent/metering.py::metered_invoke(llm, messages, *, config, kind)` doing identity + call + usage + event; wire the agent node and the subagent path
-- [ ] T007 [PR1a] Alert `UsageEventWriteFailing`; autouse mock in `tests/conftest.py`; per-thread agreement test between `usage_events` and `usage_ledger`; measure and quote the per-call insert cost
-- [ ] T008 [PR1b] Route follow-ups, compaction, `ops_digest` and `followup_sweep` through `metered_invoke` (closes **G1**); a test that fails if a new `llm.ainvoke` appears outside it
+- [x] T002 [PR1a] **O-A is resolved** (`research.md` R5: `AIMessage.id`, stable across a checkpoint read); this task is now the **pin test**: it fails if a library upgrade changes how the id is assigned, is not unique per call, or differs after a checkpoint re-read
+- [x] T003 [PR1a] `postgres-init/19-usage-events.sql`: table, `(tenant, occurred_at)` index, append-only trigger. Header says how an existing volume applies it
+- [x] T004 [PR1a] Failing real-Postgres test: the same `event_id` inserted twice yields one row; `UPDATE`/`DELETE` are rejected
+- [x] T005 [PR1a] `app/agent/usage_events.py`: deterministic id, `INSERT … ON CONFLICT DO NOTHING`, fail-open with `usage_event_write_failed_total`; unpriced stored as NULL cost and counted
+- [x] T006 [PR1a] `app/agent/metering.py::metered_invoke(llm, messages, *, config, kind)` doing identity + call + usage + event; wire the agent node and the subagent path
+- [x] T007 [PR1a] Alert `UsageEventWriteFailing`; autouse mock (`usage_event_sink`) in `tests/conftest.py`; an agreement test that the per-call events sum to the running total the ledger row is written from (per turn rather than per thread, since that is what the ledger is written from); the per-call insert measured at p50 0.56 ms / p95 0.79 ms on a pooled local Postgres (loopback: add your network round trip)
+- [ ] T008 [PR1b] (the ratchet `tests/agent/test_metering_choke_point.py` already exists from PR 1a and lists these four sites; delete its entries as each is routed) Route follow-ups, compaction, `ops_digest` and `followup_sweep` through `metered_invoke` (closes **G1**); a test that fails if a new `llm.ainvoke` appears outside it
 - [ ] T009 [PR1b] **Answer O-B**, then meter embeddings and attribute them at the gateway (closes **G2**), or record precisely why not and keep the gap disclosed
 
 ## Phase 2: Wallet (PR 2) — US2

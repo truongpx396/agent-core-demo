@@ -18,12 +18,14 @@ Money and credits are `NUMERIC`, never float. `cost_usd` keeps the existing `NUM
 | `kind` | `TEXT NOT NULL` | closed set: `chat`, `followups`, `compaction`, `subagent`, `embedding`, `cron` |
 | `model_alias`, `resolved_model` | `TEXT` | the alias the app used and the concrete model behind it (nullable, as in the ledger) |
 | `input_tokens`, `output_tokens`, `cached_input_tokens`, `total_tokens` | `INTEGER NOT NULL DEFAULT 0` | |
-| `cost_usd` | `NUMERIC(12,6)` | **NULL when unpriced** (never 0): unknown is not free |
+| `cost_usd` | `NUMERIC(18,12)` | **NULL when unpriced** (never 0): unknown is not free. Twelve places because a cheap call costs a fraction of a millionth of a dollar and six would store it as zero |
 | `price_input_per_token`, `price_output_per_token` | `NUMERIC(18,12)` | the price snapshot used |
 | `credits` | `NUMERIC(18,6)` | credits charged; NULL when credits are off or the call is unpriced |
 | `credits_per_usd`, `markup` | `NUMERIC(18,6)` | the rate in force, so a later rate change never rewrites history |
 | `occurred_at` | `TIMESTAMPTZ NOT NULL` | when the call happened (also the provider timestamp) |
 | `recorded_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | |
+
+The credit columns above (`credits`, `credits_per_usd`, `markup`) are **not** in the first migration: PR 1a creates the table without them (`postgres-init/19-usage-events.sql`) and PR 3 adds them with `ALTER TABLE`, since nothing can charge credits before a wallet and a rate exist.
 
 Indexes: `(tenant, occurred_at)`. **Invariant:** a trigger rejects `UPDATE` and `DELETE`, except through the retention job's role.
 `INSERT … ON CONFLICT (event_id) DO NOTHING` is the duplicate story, and it relies on that primary key (constitution VII: an
