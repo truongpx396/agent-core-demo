@@ -673,8 +673,15 @@ class TestRetention:
 
         assert await world.inbox_row("fake", event_id) is not None
 
-    async def test_a_second_run_deletes_nothing(self, world):
-        await self.old_row(world, "applied", 500, world.event_id())
+    async def test_a_second_run_finds_nothing_of_ours_left_and_does_not_disturb_what_it_must_keep(self, world):
+        """Idempotent. (Not asserted as 'deletes zero rows': the table is shared with other tests and workers, so another
+        test's old row may legitimately be what a sweep finds. What is ours is what is checked.)"""
+        old, recent = world.event_id("old"), world.event_id("recent")
+        await self.old_row(world, "applied", 500, old)
+        await self.old_row(world, "applied", 5, recent)
+
+        await inbox.sweep_old_rows(older_than_days=400)
         await inbox.sweep_old_rows(older_than_days=400)
 
-        assert await inbox.sweep_old_rows(older_than_days=400) == 0
+        assert await world.inbox_row("fake", old) is None
+        assert await world.inbox_row("fake", recent) is not None
