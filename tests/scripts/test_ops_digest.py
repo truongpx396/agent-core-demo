@@ -17,7 +17,7 @@ import asyncio
 
 import pytest
 
-from app.agent import gateway
+from app.agent import gateway, metering
 from scripts import ops_digest
 
 
@@ -68,7 +68,7 @@ def test_run_digest_posts_the_summary_to_the_team_channel(monkeypatch):
     async def fake_record_usage(*a, **kw):
         return None
 
-    monkeypatch.setattr(ops_digest, "record_usage", fake_record_usage)
+    monkeypatch.setattr(metering, "record_usage", fake_record_usage)
 
     fake_chat = _FakeChat(_FakeResponse("Everything is healthy today."))
     summary = asyncio.run(ops_digest.run_digest(llm=fake_chat))
@@ -93,7 +93,7 @@ def test_run_digest_tells_the_gateway_whose_call_it_is(monkeypatch):
     monkeypatch.setattr(ops_digest.metrics_client, "fetch_readings", fake_fetch_readings)
     monkeypatch.setattr(ops_digest.metrics_client, "detect_anomalies", lambda readings: [])
     monkeypatch.setattr(ops_digest.notify, "post_to_team_channel", fake_post_to_team_channel)
-    monkeypatch.setattr(ops_digest, "record_usage", fake_record_usage)
+    monkeypatch.setattr(metering, "record_usage", fake_record_usage)
 
     fake_chat = _FakeChat(_FakeResponse("Everything is healthy today."))
     asyncio.run(ops_digest.run_digest(llm=fake_chat))
@@ -120,12 +120,39 @@ def test_run_digest_records_usage_when_tokens_are_reported(monkeypatch):
         recorded["total_tokens"] = total_tokens
         recorded["cost_usd"] = cost_usd
 
-    monkeypatch.setattr(ops_digest, "record_usage", _fake_record_usage)
+    monkeypatch.setattr(metering, "record_usage", _fake_record_usage)
 
     fake_chat = _FakeChat(_FakeResponse("summary", usage_metadata={"total_tokens": 42}))
     asyncio.run(ops_digest.run_digest(llm=fake_chat))
 
     assert recorded["total_tokens"] == 42
+
+
+def test_run_digest_records_a_cron_usage_event(monkeypatch, usage_event_sink):
+    """The call goes through the metering choke point (app/agent/metering.py), so it is one usage
+    event under its own kind, attributed to the cron's identity, not an unmetered side call."""
+
+    async def fake_fetch_readings():
+        return {}
+
+    async def fake_post_to_team_channel(channel, message):
+        return None
+
+    async def fake_record_usage(*a, **kw):
+        return None
+
+    monkeypatch.setattr(ops_digest.metrics_client, "fetch_readings", fake_fetch_readings)
+    monkeypatch.setattr(ops_digest.metrics_client, "detect_anomalies", lambda readings: [])
+    monkeypatch.setattr(ops_digest.notify, "post_to_team_channel", fake_post_to_team_channel)
+    monkeypatch.setattr(metering, "record_usage", fake_record_usage)
+
+    usage = {"input_tokens": 30, "output_tokens": 12, "total_tokens": 42}
+    asyncio.run(ops_digest.run_digest(llm=_FakeChat(_FakeResponse("summary", usage_metadata=usage))))
+
+    (event,) = usage_event_sink
+    assert (event["kind"], event["tenant"], event["principal"]) == ("cron", ops_digest.DEFAULT_TENANT, "ops-cron")
+    assert event["thread_id"].startswith("ops-digest:")
+    assert (event["input_tokens"], event["output_tokens"], event["total_tokens"]) == (30, 12, 42)
 
 
 def test_run_digest_skips_record_usage_when_no_tokens_reported(monkeypatch):
@@ -145,7 +172,7 @@ def test_run_digest_skips_record_usage_when_no_tokens_reported(monkeypatch):
     async def fake_record_usage(*a, **kw):
         called.append(True)
 
-    monkeypatch.setattr(ops_digest, "record_usage", fake_record_usage)
+    monkeypatch.setattr(metering, "record_usage", fake_record_usage)
 
     fake_chat = _FakeChat(_FakeResponse("summary"))
     asyncio.run(ops_digest.run_digest(llm=fake_chat))
@@ -183,7 +210,7 @@ def test_run_digest_records_the_priced_cost_of_its_own_call(monkeypatch):
     async def _fake_record_usage(ctx, thread_id, model_alias, total_tokens, cost_usd):
         recorded["cost_usd"] = cost_usd
 
-    monkeypatch.setattr(ops_digest, "record_usage", _fake_record_usage)
+    monkeypatch.setattr(metering, "record_usage", _fake_record_usage)
     usage = {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500}
 
     asyncio.run(ops_digest.run_digest(llm=_FakeChat(_FakeResponse("summary", usage_metadata=usage))))

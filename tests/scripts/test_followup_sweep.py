@@ -12,7 +12,7 @@ import asyncio
 
 import pytest
 
-from app.agent import gateway
+from app.agent import gateway, metering
 from scripts import followup_sweep
 
 
@@ -80,7 +80,7 @@ def test_run_followup_sweep_drafts_posts_and_marks_each_followup_done(monkeypatc
     async def fake_record_usage(*a, **kw):
         return None
 
-    monkeypatch.setattr(followup_sweep, "record_usage", fake_record_usage)
+    monkeypatch.setattr(metering, "record_usage", fake_record_usage)
 
     fake_chat = _FakeChat([_FakeResponse("Hi A, checking in on pricing!"), _FakeResponse("Hi B, here's the demo link!")])
     drafts = asyncio.run(followup_sweep.run_followup_sweep(llm=fake_chat))
@@ -112,13 +112,47 @@ def test_run_followup_sweep_tells_the_gateway_whose_call_it_is(monkeypatch):
     monkeypatch.setattr(followup_sweep.store, "due_followups", fake_due_followups)
     monkeypatch.setattr(followup_sweep.store, "mark_followup_done", fake_mark_followup_done)
     monkeypatch.setattr(followup_sweep.notify, "post_to_team_channel", fake_post_to_team_channel)
-    monkeypatch.setattr(followup_sweep, "record_usage", fake_record_usage)
+    monkeypatch.setattr(metering, "record_usage", fake_record_usage)
 
     fake_chat = _FakeChat([_FakeResponse("Hi A!")])
     asyncio.run(followup_sweep.run_followup_sweep(llm=fake_chat))
 
     assert fake_chat.invoked_kwargs == [gateway.call_identity(followup_sweep._CRON_CTX)]
     assert fake_chat.invoked_kwargs[0]["user"] == gateway.end_user_id(followup_sweep.DEFAULT_TENANT)
+
+
+def test_run_followup_sweep_records_one_cron_usage_event_per_draft(monkeypatch, usage_event_sink):
+    due_items = [
+        {"id": 7, "due_at": "2099-01-01", "note": "n", "contact": "a@example.com", "lead_name": "A"},
+        {"id": 8, "due_at": "2099-01-01", "note": "n", "contact": "b@example.com", "lead_name": "B"},
+    ]
+
+    async def fake_due_followups(tenant, as_of):
+        return due_items
+
+    async def fake_mark_followup_done(tenant, followup_id):
+        return None
+
+    async def fake_post_to_team_channel(channel, message):
+        return None
+
+    async def fake_record_usage(*a, **kw):
+        return None
+
+    monkeypatch.setattr(followup_sweep.store, "due_followups", fake_due_followups)
+    monkeypatch.setattr(followup_sweep.store, "mark_followup_done", fake_mark_followup_done)
+    monkeypatch.setattr(followup_sweep.notify, "post_to_team_channel", fake_post_to_team_channel)
+    monkeypatch.setattr(metering, "record_usage", fake_record_usage)
+
+    usage = {"input_tokens": 20, "output_tokens": 10, "total_tokens": 30}
+    chat = _FakeChat([_FakeResponse("Hi A!", usage_metadata=usage), _FakeResponse("Hi B!", usage_metadata=usage)])
+    asyncio.run(followup_sweep.run_followup_sweep(llm=chat))
+
+    assert [(e["kind"], e["thread_id"]) for e in usage_event_sink] == [
+        ("cron", "followup-sweep:7"),
+        ("cron", "followup-sweep:8"),
+    ]
+    assert len({e["event_id"] for e in usage_event_sink}) == 2
 
 
 def test_run_followup_sweep_records_usage_when_tokens_are_reported(monkeypatch):
@@ -143,7 +177,7 @@ def test_run_followup_sweep_records_usage_when_tokens_are_reported(monkeypatch):
         recorded["total_tokens"] = total_tokens
         recorded["cost_usd"] = cost_usd
 
-    monkeypatch.setattr(followup_sweep, "record_usage", fake_record_usage)
+    monkeypatch.setattr(metering, "record_usage", fake_record_usage)
 
     fake_chat = _FakeChat([_FakeResponse("draft", usage_metadata={"total_tokens": 17})])
     asyncio.run(followup_sweep.run_followup_sweep(llm=fake_chat))
@@ -184,7 +218,7 @@ def test_run_followup_sweep_records_the_priced_cost_of_each_draft(monkeypatch):
     async def fake_record_usage(ctx, thread_id, model_alias, total_tokens, cost_usd):
         recorded["cost_usd"] = cost_usd
 
-    monkeypatch.setattr(followup_sweep, "record_usage", fake_record_usage)
+    monkeypatch.setattr(metering, "record_usage", fake_record_usage)
     usage = {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500}
 
     asyncio.run(followup_sweep.run_followup_sweep(llm=_FakeChat([_FakeResponse("draft", usage_metadata=usage)])))

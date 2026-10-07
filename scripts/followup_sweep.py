@@ -25,8 +25,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
-from app.agent import gateway, pricing
-from app.agent.usage_ledger import record_usage
+from app.agent import metering
 from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_API_KEY
 from app.core.job_runtime import scheduled_job
 from app.core.security import SecurityCtx
@@ -77,19 +76,18 @@ async def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm=None) -> list[str
     drafts = []
     for item in due:
         human_prompt = build_followup_prompt(item["lead_name"], item["contact"], item["note"])
-        response = await chat.ainvoke(
+        # One metered call (app/agent/metering.py): identity, priced once, one usage event and
+        # this nudge's own ledger row, keyed by the follow-up it drafts.
+        call = await metering.metered_invoke(
+            chat,
             [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)],
-            **gateway.call_identity(_CRON_CTX),
+            config={"configurable": {"ctx": _CRON_CTX, "thread_id": f"followup-sweep:{item['id']}"}},
+            kind="cron",
+            model_alias=CHAT_MODEL,
+            to_ledger=True,
         )
+        response = call.response
         draft = response.content if isinstance(response.content, str) else str(response.content)
-
-        usage = getattr(response, "usage_metadata", None) or {}
-        total_tokens = usage.get("total_tokens", 0)
-        if total_tokens:
-            cost_usd = await pricing.price_usage(CHAT_MODEL, usage)
-            await record_usage(
-                _CRON_CTX, f"followup-sweep:{item['id']}", CHAT_MODEL, total_tokens, cost_usd
-            )
 
         await notify.post_to_team_channel(
             "sales-followups",
