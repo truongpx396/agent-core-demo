@@ -233,6 +233,32 @@ class Settings(BaseSettings):
     # late redelivery from granting twice, so the sweep is safe, but the rows are the audit trail of what was received.
     billing_inbox_retention_days: int = Field(default=400, ge=BILLING_INBOX_MIN_RETENTION_DAYS)
 
+    # Money out (specs/010 PR 5, app/billing/export.py, `make billing-export-worker`): usage events of a tenant linked to a
+    # provider that bills on usage are exported through an outbox. All of it is bounded: a loop with no ceiling is how a
+    # provider's outage becomes a flood of retries, or events the provider silently discards once they age out.
+    billing_export_batch_size: int = Field(default=100, ge=1, le=1000)
+    billing_export_interval_seconds: int = Field(default=30, ge=1)
+    # Retryable failures of one event before it is given up on (`failed`, alert UsageExportFailed).
+    billing_export_max_attempts: int = Field(default=10, ge=1)
+    # After the k-th failed attempt an event waits min(base * 2**(k-1), cap) before the next: exponential, so a provider
+    # that is down is not hammered, and capped, so a long outage still retries within hours rather than days.
+    billing_export_backoff_base_seconds: int = Field(default=30, ge=1)
+    billing_export_backoff_cap_seconds: int = Field(default=6 * 3600, ge=1)
+    # An event still unsent after this many days is `expired`, counted and alerted, never silently dropped. The ceiling is
+    # a provider fact, not a style choice: Stripe accepts a meter event only if its timestamp is within the past 35 days
+    # (research R1), so the age limit must close BEFORE the provider's own window does or a "retry" is a silent discard.
+    billing_export_max_age_days: int = Field(default=30, ge=1, le=34)
+    # The deadline for ONE call to a provider. The worker holds the batch's row locks while it waits, so a wait with no
+    # ceiling would hold them (and every other worker's view of those rows) for as long as a provider chooses to hang.
+    # A call that times out may still have landed: it is retried with the same event id, which the provider dedupes.
+    billing_export_call_timeout_seconds: int = Field(default=30, ge=1)
+
+    @model_validator(mode="after")
+    def _backoff_cap_is_not_below_its_base(self) -> "Settings":
+        if self.billing_export_backoff_cap_seconds < self.billing_export_backoff_base_seconds:
+            raise ValueError("BILLING_EXPORT_BACKOFF_CAP_SECONDS must be at least BILLING_EXPORT_BACKOFF_BASE_SECONDS")
+        return self
+
     @field_validator("billing_providers")
     @classmethod
     def _provider_names_are_path_safe(cls, value: str) -> str:
@@ -619,6 +645,13 @@ BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE = settings.billing_webhook_rate_limit_per_
 BILLING_WEBHOOK_MAX_ATTEMPTS = settings.billing_webhook_max_attempts
 BILLING_REFUND_HOLD_HOURS = settings.billing_refund_hold_hours
 BILLING_INBOX_RETENTION_DAYS = settings.billing_inbox_retention_days
+BILLING_EXPORT_BATCH_SIZE = settings.billing_export_batch_size
+BILLING_EXPORT_INTERVAL_SECONDS = settings.billing_export_interval_seconds
+BILLING_EXPORT_MAX_ATTEMPTS = settings.billing_export_max_attempts
+BILLING_EXPORT_BACKOFF_BASE_SECONDS = settings.billing_export_backoff_base_seconds
+BILLING_EXPORT_BACKOFF_CAP_SECONDS = settings.billing_export_backoff_cap_seconds
+BILLING_EXPORT_MAX_AGE_DAYS = settings.billing_export_max_age_days
+BILLING_EXPORT_CALL_TIMEOUT_SECONDS = settings.billing_export_call_timeout_seconds
 BUDGET_POLICY_REFRESH_SECONDS = settings.budget_policy_refresh_seconds
 REQUEST_TIMEOUT_SECONDS = settings.request_timeout_seconds
 SUBAGENT_TIMEOUT_SECONDS = settings.subagent_timeout_seconds

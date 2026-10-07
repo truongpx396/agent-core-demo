@@ -25,6 +25,7 @@ Fail OPEN, counted, alerted. A failed write must not fail the turn it records (s
   * `...{path="usage_event_table_missing"}` (migration 19, or 21 once CREDITS_PER_USD is set, not applied)
     -> UsageEventTableMissing (warning)
   * `...{path="credit_debit"}`: the event was written and its wallet debit was not -> CreditDebitFailing (critical)
+  * `...{path="export_enqueue"}`: the event was written and queuing it for export was not -> UsageExportEnqueueFailing (critical)
   * `...{path="usage_event_identity"}`: a response with no message id, so it got a random one
     and cannot be de-duplicated (a replay would double-count it);
   * `...{path="usage_missing"}`: the provider reported no usage for a call, so nothing could be
@@ -56,6 +57,15 @@ job exists (specs/010 PR 6's reconciliation names the gap), an uncharged event s
 With `CREDITS_PER_USD` unset the row has no credit keys at all and the original statement is used, so a
 deployment that has not applied postgres-init/21 sees no change.
 
+## Queuing for export (specs/010 T023)
+
+For a tenant linked to a provider that bills on usage (it declares USAGE_EXPORT) and that this process has enabled
+(`BILLING_PROVIDERS`), the same transaction also inserts a `usage_export_outbox` row, so the event and its pending export
+cannot disagree about what exists, and a replay that finds the event already there queues nothing. It uses a savepoint like the
+charge, for the same reason: the meter outranks everything built on it, so a failure to queue (counted as
+`{path="export_enqueue"}`, alert UsageExportEnqueueFailing) loses the export of one event, never the event. With no such provider
+enabled (the default) nothing extra is sent: one list lookup and no statement.
+
 ## The dual write
 
 Until budgets read this table (a later change, specs/010 T030), a turn is recorded twice: summed in
@@ -73,9 +83,14 @@ from psycopg import errors as pg_errors
 from app.agent.model_resolver import resolve_model
 from app.agent.pricing import PricedCall
 from app.agent.sql_store import get_connection
-from app.billing import credits
+from app.billing import credits, providers
 from app.core import metrics
-from app.core.config import CREDITS_PER_USD, MARKUP, USAGE_EVENTS_ENABLED
+from app.core.config import (
+    BILLING_PROVIDERS,
+    CREDITS_PER_USD,
+    MARKUP,
+    USAGE_EVENTS_ENABLED,
+)
 from app.core.security import SecurityCtx, valid_ctx
 
 logger = logging.getLogger(__name__)
@@ -208,7 +223,29 @@ async def _insert(row: dict) -> bool:
         inserted = cur.rowcount == 1
         if inserted and rated and row["credits"] is not None:
             await _charge(conn, row)
+        if inserted:
+            await _enqueue_export(conn, row)
         return inserted
+
+
+async def _enqueue_export(conn: AsyncConnection, row: dict) -> None:
+    """Queues the event for every usage-billing provider this tenant is linked to (and this process has enabled), inside a
+    savepoint so a fault undoes only the queuing. Never raises. A tenant with no such link inserts nothing: the SELECT is
+    over `billing_customers`, so the outbox only ever holds events someone has a customer to send them under."""
+    exporters = providers.usage_export_providers(BILLING_PROVIDERS)
+    if not exporters:
+        return
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                "INSERT INTO usage_export_outbox (provider, event_id, tenant) "
+                "SELECT c.provider, %(event_id)s, %(tenant)s FROM billing_customers c "
+                "WHERE c.tenant = %(tenant)s AND c.provider = ANY(%(providers)s) ON CONFLICT (provider, event_id) DO NOTHING",
+                {"event_id": row["event_id"], "tenant": row["tenant"], "providers": list(exporters)},
+            )
+    except Exception as exc:  # noqa: BLE001 - a failure to queue must not lose the event it concerns; counted and alerted instead (UsageExportEnqueueFailing)
+        _degraded("export_enqueue")
+        logger.warning("usage_export_enqueue_failed", extra={"error_class": type(exc).__name__})
 
 
 async def _charge(conn: AsyncConnection, row: dict) -> None:

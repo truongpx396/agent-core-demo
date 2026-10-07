@@ -5,7 +5,7 @@ changes (SC-004). An adapter that has not passed `tests/billing/contract.py` mus
 """
 from collections.abc import Callable, Mapping
 
-from app.billing.providers.base import BillingProvider
+from app.billing.providers.base import BillingProvider, Capability
 from app.billing.providers.fake import FakeProvider
 
 FACTORIES: dict[str, Callable[[str], BillingProvider]] = {
@@ -36,3 +36,11 @@ def build_configured(names: tuple[str, ...], secrets: Mapping[str, str]) -> dict
             raise UnknownProvider(f"billing provider {name!r} is enabled but BILLING_WEBHOOK_SECRETS has no secret for it")
         built[name] = build(name, secret)
     return built
+
+
+def usage_export_providers(names: tuple[str, ...]) -> tuple[str, ...]:
+    """Which of the enabled providers bill on usage (declare USAGE_EXPORT). Read from the adapter CLASS, so it needs no
+    secret and no instance: the usage-event write asks it on the hot path, and "none" must cost nothing."""
+    return tuple(
+        name for name in names if name in FACTORIES and Capability.USAGE_EXPORT in getattr(FACTORIES[name], "capabilities", frozenset())
+    )

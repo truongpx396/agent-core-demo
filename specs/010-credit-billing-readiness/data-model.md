@@ -121,8 +121,17 @@ Created in the same transaction as the event, **only** for a tenant linked to a 
 ```
 pending ──▶ sent
    │  └───▶ pending      (retry: exponential backoff, capped; attempts bounded)
-   └──────▶ expired      (age ≥ 30 days, inside Stripe's 35-day window: counted and alerted, never silently dropped)
+   ├──────▶ expired      (age ≥ 30 days, inside Stripe's 35-day window: counted and alerted, never silently dropped)
+   └──────▶ failed       (added in PR 5: a permanent refusal, the attempt budget spent, or no customer link left; alerted)
 ```
+
+*(Built in PR 5: `postgres-init/23-usage-export-outbox.sql`, `app/billing/export.py`, `scripts/billing_export_worker.py`. Refinements to the sketch above: a fourth status, `failed`,
+because "bounded attempts" needs somewhere to end that is not `sent` and not `expired`; an event cannot be exported under another tenant, enforced by a **trigger** and not by a composite foreign key like the wallet's (a composite key would need a second
+unique constraint on `usage_events`, and **that breaks `ON CONFLICT (event_id)` under concurrency**: two writers of one event can collide on the non-arbiter index and get a `UniqueViolation` instead of a no-op;
+found by a real-Postgres test failing 3 runs in 40, and now pinned by a test that `usage_events` has exactly one unique index); a trigger also makes
+`sent`/`expired`/`failed` terminal and a row's identity immutable; **age is measured from the event's `occurred_at`**, the timestamp the provider sees, not from when the row was queued; an expiry
+pass only touches the providers the worker serves; the age limit is capped at 34 days by the setting itself, since a limit past Stripe's 35-day window would turn a retry into a silent discard.
+The foreign key also means an event with an outbox row cannot be deleted, which is the guard behind D7: a retention job must clear finished outbox rows first, on purpose.)*
 
 A worker claims rows with `FOR UPDATE SKIP LOCKED`, so replicas never double-send; the provider-side idempotency key (the event id) is
 the second layer, because a crash between "sent" and "marked sent" is the one window the first layer cannot see.
@@ -131,5 +140,5 @@ the second layer, because a crash between "sent" and "marked sent" is the one wi
 
 `usage_event_write_failed_total` (**alert**: a lost event is lost revenue), `usage_event_unpriced_total`, `credit_debit_overdraft_total`,
 `credit_enforcement_refused_total`, plus two degrade paths on `agent_cost_governance_degraded_total` (**alerts**): `credit_debit` (`CreditDebitFailing`: the event was kept, its charge failed) and `credit_read` (`CreditGateUnenforced`: the gate could not read a wallet), `agent_billing_webhook_total{provider,outcome}` (`applied|duplicate|ignored|quarantined|retry|failed|invalid_signature|invalid_payload|unknown_provider|too_large`; `provider` is a configured adapter or the fixed `unknown`, never the caller's own string),
-`quarantined` (**alert** `BillingWebhookQuarantined`: a customer paid and nobody is retrying) and `failed` (**alert** `BillingWebhookFailing`), `usage_export_total{provider,outcome}`, `usage_export_oldest_pending_age_seconds` (**alert** at 7 days),
-`usage_export_expired_total` (**alert**), `credit_reconcile_max_drift_usd` (a gauge: the largest per-tenant drift in the last run, so no tenant label; the per-tenant detail is in the report; **alert** above a threshold).
+`quarantined` (**alert** `BillingWebhookQuarantined`: a customer paid and nobody is retrying) and `failed` (**alert** `BillingWebhookFailing`), `agent_usage_export_total{provider,outcome}` (`sent|retry|failed|expired`; **alerts** `UsageExportExpired` and `UsageExportFailed`), `agent_usage_export_oldest_pending_age_seconds` (a per-provider gauge set each worker pass; **alert** `UsageExportStuck` at 7 days),
+the degrade path `agent_cost_governance_degraded_total{path="export_enqueue"}` (**alert** `UsageExportEnqueueFailing`: the event was kept, queuing it failed), `credit_reconcile_max_drift_usd` (a gauge: the largest per-tenant drift in the last run, so no tenant label; the per-tenant detail is in the report; **alert** above a threshold).

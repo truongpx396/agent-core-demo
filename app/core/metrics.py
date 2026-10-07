@@ -25,6 +25,7 @@ generic callback events.
 import hashlib
 import logging
 from collections.abc import Mapping
+from typing import Any
 
 from langchain_core.callbacks import BaseCallbackHandler
 from opentelemetry import metrics as metrics_api
@@ -100,6 +101,35 @@ class Histogram:
 
     def observe(self, value: float) -> None:
         self._instrument.record(value)
+
+
+class _BoundGauge:
+    __slots__ = ("_instrument", "_attributes")
+
+    # `Any`: this OpenTelemetry release exposes the synchronous Gauge only under a private name (`_Gauge`), while
+    # `Meter.create_gauge` that returns it is public; naming the private class here would break on the next release.
+    def __init__(self, instrument: Any, attributes: Mapping[str, str]):
+        self._instrument = instrument
+        self._attributes = attributes
+
+    def set(self, value: float) -> None:
+        self._instrument.set(value, attributes=self._attributes)
+
+
+class Gauge:
+    """prometheus_client.Gauge-shaped wrapper around an OTel synchronous Gauge: the LAST value set wins, which is what a
+    "how old is the oldest unsent thing right now" reading needs and a Counter cannot say."""
+
+    def __init__(self, name: str, description: str = "", unit: str = "", labelnames=()):
+        self.name = name
+        self._instrument = _meter.create_gauge(name, description=description, unit=unit)
+        self._labelnames = tuple(labelnames)
+
+    def labels(self, **kwargs: str) -> _BoundGauge:
+        return _BoundGauge(self._instrument, kwargs)
+
+    def set(self, value: float) -> None:
+        self._instrument.set(value)
 
 
 agent_requests_total = Counter(
@@ -492,6 +522,25 @@ agent_billing_webhook_total = Counter(
     ["provider", "outcome"],
 )  # outcome: applied | duplicate | ignored | quarantined | retry | failed | invalid_signature | invalid_payload | unknown_provider | too_large
 
+agent_usage_export_total = Counter(
+    "agent_usage_export_total",
+    "Usage events handled by the export worker (app/billing/export.py), by outcome. `expired` means an event aged past "
+    "BILLING_EXPORT_MAX_AGE_DAYS unsent (alert UsageExportExpired: usage the provider will never bill); `failed` means a "
+    "permanent refusal, the attempt budget spent, or no customer link (alert UsageExportFailed); `retry` is a retryable "
+    "failure that will back off and try again; `sent` includes a provider-reported duplicate, which is success.",
+    ["provider", "outcome"],
+)  # outcome: sent | retry | failed | expired
+
+agent_usage_export_oldest_pending_age_seconds = Gauge(
+    "agent_usage_export_oldest_pending_age_seconds",
+    "Age of the oldest usage event still waiting to be exported, per provider, set each worker pass (0 when nothing is "
+    "waiting). Alert UsageExportStuck at 7 days: well inside the age limit, so someone is told while the events are "
+    "still sendable. Disclosed: if the worker itself is down this stops being SET, and a stale gauge keeps its last value, so a dead worker is "
+    "visible here only as the age of the oldest event growing while the series goes flat (the worker's own liveness is not alerted yet).",
+    unit="s",
+    labelnames=["provider"],
+)
+
 agent_cost_governance_degraded_total = Counter(
     "agent_cost_governance_degraded_total",
     "Cost-governance paths that failed and carried on instead of failing the turn "
@@ -499,6 +548,7 @@ agent_cost_governance_degraded_total = Counter(
     ["path"],
 )  # path: price_lookup | ledger_write | ledger_read | policy_read | reservation | model_resolve
 # | usage_event_write | usage_event_table_missing | usage_event_identity | usage_missing (app/agent/usage_events.py)
+# | export_enqueue (app/agent/usage_events.py: the event was kept, queuing it for export failed)
 # | credit_debit (app/agent/usage_events.py: the event was kept, its debit failed) | credit_read (app/agent/budgets.py: the gate
 # could not read the wallet)
 

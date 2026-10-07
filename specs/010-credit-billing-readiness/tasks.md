@@ -48,9 +48,9 @@ entry and README update; its CI result reported, not assumed.
 
 ## Phase 5: Export (PR 5) — US5
 
-- [ ] T023 [PR5] `postgres-init/23-usage-export-outbox.sql`; rows created in the event's transaction, only for a tenant linked to a `USAGE_EXPORT` provider
-- [ ] T024 [PR5] Failing tests: fail twice then succeed (one delivery); two workers (no double send, via `SKIP LOCKED` on a real Postgres); an event past 30 days is `expired`, counted and alerted
-- [ ] T025 [PR5] `scripts/billing_export_worker.py` + `make billing-export-worker`: batches, exponential backoff with a cap, bounded attempts; alerts `UsageExportStuck` and `UsageExportExpired`
+- [x] T023 [PR5] `postgres-init/23-usage-export-outbox.sql`; rows created in the event's transaction (in a savepoint, so a failure to queue costs the export of one event and never the event), only for a tenant linked to a `USAGE_EXPORT` provider that the writing process has enabled; terminal-by-trigger; a trigger keeps an event with its own tenant (a composite foreign key was tried and rejected: it needs a second unique constraint on `usage_events`, which breaks `ON CONFLICT (event_id)` under concurrency)
+- [x] T024 [PR5] Failing tests: fail twice then succeed (one delivery); two workers (no double send, via `SKIP LOCKED` on a real Postgres); an event past 30 days is `expired`, counted and alerted. Also: a crash between "the provider accepted it" and "marked sent" re-sends and the provider dedupes; a provider that raises or hangs is a bounded retry; an unreported id is not assumed sent; the two-workers test proves `SKIP LOCKED` by showing the sends **overlapped** (a blocked worker would also not double-send, so no-double-send alone cannot tell them apart); the capability-conditional contract tests run for every adapter that declares `USAGE_EXPORT`
+- [x] T025 [PR5] `scripts/billing_export_worker.py` + `make billing-export-worker`: batches, exponential backoff with a cap, bounded attempts; alerts `UsageExportStuck` and `UsageExportExpired`, plus `UsageExportFailed` and `UsageExportEnqueueFailing`; a per-call deadline (the batch's locks are held while the provider is called); `--once` for a single pass. Not wired into compose: run it like the other workers
 
 ## Phase 6: Reconcile and operate (PR 6) — US6
 

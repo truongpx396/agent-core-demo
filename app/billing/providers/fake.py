@@ -14,20 +14,25 @@ The shape is borrowed from the common signed-webhook pattern (a timestamp bound 
 delivery cannot be replayed outside the tolerance window). The body also carries fields the app must NEVER
 trust or store ("tenant", "credits", buyer details) precisely so the contract tests can prove it ignores them.
 """
+import asyncio
 import hashlib
 import hmac
 import json
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 from app.billing.providers.base import (
+    BillingCustomer,
     BillingEvent,
     Capability,
     EventKind,
+    ExportFailure,
+    ExportResult,
     InvalidPayload,
     InvalidSignature,
+    UsageEvent,
 )
 
 SIGNATURE_HEADER = "x-fake-signature"
@@ -45,13 +50,27 @@ _KINDS = {
 
 class FakeProvider:
     name = "fake"
-    capabilities: frozenset[Capability] = frozenset()  # webhook-only: a complete adapter
+    # Declared on the CLASS so the usage-event write can ask "does any enabled provider bill on usage?" without a secret or
+    # an instance (providers.usage_export_providers). The fake accepts usage so the whole outbox path is provable end to end.
+    capabilities: frozenset[Capability] = frozenset({Capability.USAGE_EXPORT})
 
     def __init__(self, secret: str, *, clock: Callable[[], float] = time.time):
         if not secret:
             raise ValueError("a provider needs a webhook secret")
         self._secret = secret.encode()
         self._clock = clock
+        # What this "provider" has been told, by event id: its own idempotency ledger, in memory. A real one is remote.
+        self.received: dict[str, tuple[str, UsageEvent]] = {}
+        self.calls: list[list[str]] = []  # the event ids of every export_usage call, in order
+        self.spans: list[tuple[float, float]] = []  # (started, finished) of each call on the monotonic clock: lets a test prove two overlapped
+        self.delay = 0.0  # seconds each call takes: lets a test hold a batch in flight while another worker looks
+        self._script: list[str] = []
+
+    def script(self, *steps: str) -> None:
+        """Scripts the next export_usage calls, one step each: "ok", "retryable" (every event reported as a retryable
+        failure), "permanent" (reported as a permanent one) or "raise" (the call itself fails, as a network error does).
+        Once the script runs out, calls succeed."""
+        self._script.extend(steps)
 
     # --- signing: how a test (or a developer) plays the provider ---------------------------------------
 
@@ -108,8 +127,29 @@ class FakeProvider:
     async def create_checkout(self, *args, **kwargs):
         raise NotImplementedError("the fake provider declares no CHECKOUT capability")
 
-    async def export_usage(self, *args, **kwargs):
-        raise NotImplementedError("the fake provider declares no USAGE_EXPORT capability")
+    async def export_usage(self, customer: BillingCustomer, events: Sequence[UsageEvent]) -> ExportResult:
+        """Idempotent by event id, like Stripe's `identifier` and Polar's `external_id`: sending an id it has already
+        recorded is reported as a duplicate (a success), never recorded twice."""
+        self.calls.append([event.event_id for event in events])
+        started = time.monotonic()
+        try:
+            if self.delay:
+                await asyncio.sleep(self.delay)
+            step = self._script.pop(0) if self._script else "ok"
+            if step == "raise":
+                raise ConnectionError("the provider is unreachable")
+            if step in ("retryable", "permanent"):
+                return ExportResult(failed=[ExportFailure(event.event_id, retryable=step == "retryable") for event in events])
+            accepted, duplicate = [], []
+            for event in events:
+                if event.event_id in self.received:
+                    duplicate.append(event.event_id)
+                else:
+                    self.received[event.event_id] = (customer.customer_ref, event)
+                    accepted.append(event.event_id)
+            return ExportResult(accepted=accepted, duplicate=duplicate)
+        finally:
+            self.spans.append((started, time.monotonic()))
 
     async def read_balance(self, *args, **kwargs):
         raise NotImplementedError("the fake provider declares no BALANCE_READ capability")

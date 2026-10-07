@@ -6,15 +6,19 @@ tests/integration/test_billing_webhooks_real_postgres.py, parameterised over the
 """
 import json
 import socket
+from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 
 from app.billing.providers.base import (
+    BillingCustomer,
     BillingEvent,
     Capability,
     EventKind,
     InvalidPayload,
     InvalidSignature,
+    UsageEvent,
 )
 from tests.billing.contract import HARNESSES, Delivery, registered_without_a_harness
 
@@ -138,3 +142,49 @@ class TestWhatItDoesNotUnderstand:
     def test_an_authentic_body_in_the_wrong_shape_is_an_invalid_payload_not_a_forgery_or_a_crash(self, harness):
         with pytest.raises(InvalidPayload):
             parse(harness, harness.signed_garbage())
+
+
+class TestUsageExport:
+    """Only for an adapter that declares USAGE_EXPORT (Stripe meters, Polar events). The one promise that matters is the
+    idempotency key: re-sending an event id is reported as a duplicate or succeeds, and is NEVER recorded, and so never
+    billed, a second time (FR-017)."""
+
+    CUSTOMER = BillingCustomer("acme", "any", "cus_1")
+
+    @pytest.fixture(autouse=True)
+    def only_if_declared(self, harness):
+        if Capability.USAGE_EXPORT not in harness.provider.capabilities:
+            pytest.skip("this adapter does not declare USAGE_EXPORT")
+
+    @staticmethod
+    def events(*ids: str) -> list[UsageEvent]:
+        return [UsageEvent(i, datetime(2026, 10, 1, tzinfo=UTC), Decimal("1.5"), Decimal("0.0015"), "chat", 100) for i in ids]
+
+    async def test_new_events_are_accepted_and_each_id_is_reported_exactly_once(self, harness):
+        result = await harness.provider.export_usage(self.CUSTOMER, self.events("u1", "u2", "u3"))
+
+        assert sorted(result.accepted) == ["u1", "u2", "u3"] and not result.duplicate and not result.failed
+        assert harness.received_ids() == ["u1", "u2", "u3"]
+
+    async def test_resending_the_same_ids_is_a_duplicate_never_a_second_record(self, harness):
+        await harness.provider.export_usage(self.CUSTOMER, self.events("u1", "u2"))
+
+        again = await harness.provider.export_usage(self.CUSTOMER, self.events("u1", "u2"))
+
+        assert not again.failed, "a duplicate is a success, not an error"
+        assert sorted(set(again.accepted) | set(again.duplicate)) == ["u1", "u2"]
+        assert not again.accepted, "nothing is accepted twice"
+        assert harness.received_ids() == ["u1", "u2"], "and nothing is recorded (billed) twice"
+
+    async def test_a_batch_with_some_events_already_sent_splits_them(self, harness):
+        await harness.provider.export_usage(self.CUSTOMER, self.events("u1"))
+
+        result = await harness.provider.export_usage(self.CUSTOMER, self.events("u1", "u2"))
+
+        assert list(result.duplicate) == ["u1"] and list(result.accepted) == ["u2"]
+        assert harness.received_ids() == ["u1", "u2"]
+
+    async def test_an_empty_batch_is_a_no_op(self, harness):
+        result = await harness.provider.export_usage(self.CUSTOMER, [])
+
+        assert not result.accepted and not result.duplicate and not result.failed

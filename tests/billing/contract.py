@@ -54,6 +54,10 @@ class Harness(Protocol):
         """The same body, signed by someone who does not hold the secret."""
         ...
 
+    def received_ids(self) -> list[str]:
+        """The usage event ids the provider has recorded so far, once each (only meaningful for USAGE_EXPORT)."""
+        ...
+
 
 class FakeHarness:
     name = "fake"
@@ -95,6 +99,9 @@ class FakeHarness:
 
     def signed_garbage(self) -> Delivery:
         return self._signed({"not": "an event"})
+
+    def received_ids(self) -> list[str]:
+        return list(self.provider.received)
 
     def forged(self, delivery: Delivery) -> Delivery:
         # The same event, signed by someone who does not hold the secret (it re-serialises to the same bytes).
