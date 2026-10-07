@@ -180,4 +180,15 @@ as `end_user`), and optionally the provider's balance, and reports drift per ten
   kept with the credits it was worth, counted (`credit_debit`) and alerted (`CreditDebitFailing`). One all-or-nothing transaction would turn a wallet outage into a meter outage, and a
   lost event cannot be repaired while an uncharged one can (the debit key is the event id and the row holds every figure it needs). **Disclosed gap:** nothing repairs an uncharged event yet; PR 6's reconciliation names it.
 
-**Product decisions still to be recorded, each in the PR that implements it:** **O2** the refund and chargeback policy in D6 (PR 4); **O4** which provider first (PR 4).
+- **D12. (closes O2, decided in PR 4.)** **A refund of the whole payment** claws back the credits that payment granted, **except credits that already left the wallet by expiry**
+  (taking those back again would book a debt for credits the customer no longer has); credits already *spent* are reclaimed, so the balance goes negative and the gate refuses usage
+  until the next grant repays it (D6, confirmed). A payment is taken back **at most once**, whichever refund event arrives first (the clawback is keyed by the payment). **A chargeback
+  (`DISPUTE_*`) and a partial refund are NOT decided**: what a dispute or part of a payment is worth in credits is a product call nobody has made, so each is **quarantined and
+  alerted**, never guessed at (an adapter must report a partial refund as `PAYMENT_PARTIALLY_REFUNDED`, never as a full refund, which would take back every credit, nor as ignored, which would keep them all).
+  A refund that arrives before its purchase is held (the provider retries) for `BILLING_REFUND_HOLD_HOURS`, then quarantined.
+- **D13. (closes O4, decided in PR 4; reversible, it is only an order.)** **Stripe first, then Polar, PayPal last.** Both Stripe and Polar can take usage events (`USAGE_EXPORT`) and have
+  documented, deduplicating ingestion keyed by the event id (research R1, verified), so they exercise the whole port; PayPal, as far as found, can only sell a credit pack, so it
+  exercises the least and has the most open questions (O-C). Stripe first because its webhook signing and replay window are the most widely documented. No adapter is written here:
+  each needs a sandbox account and primary docs (O-C, O-D), and the in-repo `fake` already proves the port.
+
+**Product decisions still to be recorded:** none open for this feature; the adapters (`T029`) and the pro-rata policy for a partial refund or a dispute are follow-ups a person must decide.

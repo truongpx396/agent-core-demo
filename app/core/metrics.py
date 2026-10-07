@@ -481,6 +481,17 @@ agent_credit_enforcement_refused_total = Counter(
     "has run out, so it is a rate to watch, not an alert. It has no tenant label (who is in the log line).",
 )
 
+agent_billing_webhook_total = Counter(
+    "agent_billing_webhook_total",
+    "Payment-provider webhook deliveries by outcome (POST /billing/webhooks/{provider}, app/billing/webhooks.py). "
+    "`quarantined` means a customer PAID and was granted nothing and nobody is retrying: it pages "
+    "(BillingWebhookQuarantined). `failed` means applying it raised and the provider will retry: it pages too "
+    "(BillingWebhookFailing), because a sustained database fault would otherwise surface only as a provider's "
+    "dashboard. `invalid_signature` is a forged or misconfigured delivery. `provider` is a configured adapter "
+    "name or `unknown` (never the caller's own string: an unauthenticated route must not mint label values).",
+    ["provider", "outcome"],
+)  # outcome: applied | duplicate | ignored | quarantined | retry | failed | invalid_signature | invalid_payload | unknown_provider | too_large
+
 agent_cost_governance_degraded_total = Counter(
     "agent_cost_governance_degraded_total",
     "Cost-governance paths that failed and carried on instead of failing the turn "

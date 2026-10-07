@@ -91,7 +91,8 @@ def test_a_listed_default_is_the_settings_real_default():
     must be the real one; a drifted default is worse than none. Active entries
     that deliberately differ from the default (keys an operator must fill in) are
     left empty here and so compare equal."""
-    defaults = {name.upper(): field.default for name, field in Settings.model_fields.items()}
+    # `get_default` also resolves a `default_factory` (BILLING_WEBHOOK_SECRETS: an empty dict), which `.default` does not.
+    defaults = {name.upper(): field.get_default(call_default_factory=True) for name, field in Settings.model_fields.items()}
     mismatched = []
     for name, value in _VALUE.findall((REPO / ".env.example").read_text()):
         if name in defaults and not _same(value, defaults[name]):

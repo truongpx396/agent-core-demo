@@ -40,11 +40,11 @@ entry and README update; its CI result reported, not assumed.
 
 ## Phase 4: Port, inbox, webhooks (PR 4) — US4
 
-- [ ] T018 [PR4] `app/billing/providers/base.py` (the port), `fake.py` (signs and parses its own payloads), and `tests/billing/contract.py` parameterised over registered adapters
-- [ ] T019 [PR4] `postgres-init/22-billing.sql`: `billing_customers`, `credit_products`, `billing_webhook_events`
-- [ ] T020 [PR4] Failing tests first: duplicate and concurrent delivery (one grant); invalid signature (rejected, counted, nothing applied); unlinked customer (quarantined, alerted); a payload naming a different tenant (grant goes to the linked one); refund after spend (negative balance, usage refused)
-- [ ] T021 [PR4] `POST /billing/webhooks/{provider}` with the seven steps in the contract; body-size cap before read; refuses to start when a configured provider has no secret
-- [ ] T022 [PR4] Alert `BillingWebhookQuarantined`; scrub PII from the stored payload; retention for the inbox
+- [x] T018 [PR4] `app/billing/providers/base.py` (the port), `fake.py` (signs and parses its own payloads), and `tests/billing/contract.py` parameterised over registered adapters (the pure half in `test_provider_contract.py`; the same harnesses run through the real inbox and wallet in the integration tier; registering an adapter without a harness fails a test). The fake declares no capability: the capability-conditional contract tests arrive with the first adapter that declares one (PR 5 for `USAGE_EXPORT`)
+- [x] T019 [PR4] `postgres-init/22-billing.sql`: `billing_customers`, `credit_products`, `billing_webhook_events`, plus a trigger that makes `applied`/`ignored` terminal and a unique index that allows one grant per payment
+- [x] T020 [PR4] Failing tests first: duplicate and concurrent delivery (one grant); invalid signature (rejected, counted, nothing applied); unlinked customer (quarantined, alerted); a payload naming a different tenant (grant goes to the linked one); refund after spend (negative balance, usage refused). Also: a refund before its purchase is held then applied or quarantined at its deadline; a failure part-way leaves no grant and is bounded; the grant and the inbox status are one transaction
+- [x] T021 [PR4] `POST /billing/webhooks/{provider}` with the seven steps in the contract; body-size cap before read; refuses to start when a configured provider has no secret (settings refuse to load, and the lifespan builds the adapters); per-source rate limit
+- [x] T022 [PR4] Alerts `BillingWebhookQuarantined` and `BillingWebhookFailing`; PII is kept out of the stored payload by a **whitelist** (only the normalized fields are stored, never the raw body); retention for the inbox (`make billing-inbox-sweep`, floor 30 days, never touches an open or quarantined row)
 
 ## Phase 5: Export (PR 5) — US5
 
