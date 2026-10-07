@@ -33,31 +33,51 @@ integration-tier test proves it against a real Postgres, not a fake cursor).
 
 ## Wallet
 
+*(Built in PR 2: `postgres-init/20-credit-wallet.sql`, `app/billing/credits.py`.)*
+
+### `credit_accounts` — opt-in
+
+`tenant PK`, `created_at`, `created_by`. **A tenant is on credit billing if and only if it has a row here.** A tenant with no account is
+never debited and never gated, so shipping the wallet changes nothing for an existing tenant until an operator, or a verified purchase
+webhook, opens one (a grant opens it).
+
 ### `credit_lots` — one row per grant
 
-`id UUID PK`, `tenant`, `source` (`purchase`, `subscription`, `promo`, `manual`, `adjustment`, `overdraft`),
-`provider` (nullable), `external_ref` (the provider's payment or event reference, nullable), `granted` `NUMERIC(18,6)`,
-`expires_at` (nullable: credits do not expire unless set), `created_at`, `created_by`.
+`id UUID PK`, `tenant` (FK to the account), `source` (`purchase`, `subscription`, `promo`, `manual`, `adjustment`, `overdraft`),
+`provider` / `external_ref` (nullable), `granted NUMERIC(18,6)`, **`remaining NUMERIC(18,6)`** (a cache, see invariant 2), `expires_at`
+(nullable), `created_at`, `created_by`. `UNIQUE (id, tenant)` so children can reference both. A trigger allows **only `remaining` to change** and
+refuses any delete. A partial unique index allows **at most one `overdraft` lot per tenant**.
 
 ### `credit_transactions` — the idempotency unit
 
-`id UUID PK`, `tenant`, `kind` (`grant`, `debit`, `expire`, `adjust`, `clawback`), `idempotency_key TEXT NOT NULL`,
-`usage_event_id` (nullable, for a debit), `reason TEXT`, `actor TEXT NOT NULL`, `created_at`.
-**`UNIQUE (tenant, idempotency_key)`**: replaying any grant, debit, expiry or clawback with the same key inserts nothing.
+`id UUID PK`, `tenant`, `kind` (`grant`, `debit`, `expire`, `adjust`, `clawback`), `idempotency_key TEXT NOT NULL CHECK (<> '')`,
+`usage_event_id` (a plain reference, **not** a foreign key: events are trimmed by retention and the wallet is a financial record that must
+outlive them), `reason`, `actor NOT NULL`, `created_at`. **`UNIQUE (tenant, idempotency_key)`**: replaying any grant, debit or expiry with
+the same key inserts nothing. Append-only by trigger.
 
 ### `credit_entries` — signed amounts, append-only
 
-`id BIGSERIAL PK`, `transaction_id FK`, `tenant`, `lot_id FK`, `amount NUMERIC(18,6) NOT NULL` (grants positive; debits, expiries and
-clawbacks negative). A debit that spans lots is one transaction with several entries.
+`id BIGSERIAL PK`, `transaction_id`, `tenant`, `lot_id`, `amount NUMERIC(18,6) CHECK (<> 0)`. **Composite foreign keys**
+`(transaction_id, tenant)` and `(lot_id, tenant)` mean an entry cannot reference another tenant's lot or transaction: a cross-tenant move
+fails in the database, not only in code that might share the bug. Append-only by trigger.
 
-**Invariants** (each has a test):
-1. `balance(tenant) = SUM(credit_entries.amount)`; nothing else is "the balance".
-2. A lot's remaining amount is the sum of its entries and is never negative, except the tenant's `overdraft` lot.
-3. Debits consume lots by earliest `expires_at` (NULLs last), then oldest `created_at`.
-4. A debit larger than the available lots books the shortfall as a negative entry on the tenant's `overdraft` lot; the next grant first repays it.
-5. A debit and the `usage_events` insert that caused it commit in **one transaction**; `credit_transactions.idempotency_key = event_id`.
-6. Debits for one tenant serialize on `pg_advisory_xact_lock(hashtext(tenant))`. Throughput per tenant is low (a few model calls a second at most), so a per-tenant lock is simpler and safer than row-level juggling.
-7. Entries are never updated or deleted. A mistake is corrected by an `adjust` transaction with an actor and a reason.
+**Invariants** (each has a test, and each guard has a mutant that fails it):
+1. The ledger is the truth: `credit_entries` is never updated or deleted; a mistake is corrected by a new transaction with an actor and a reason.
+2. A lot's `remaining` is a cache kept equal to the sum of its entries inside the lock, so a debit costs O(lots), not O(every debit ever made).
+   `credits.verify()` reports any drift. No lot is negative except the overdraft lot.
+3. Debits consume lots by earliest `expires_at` (NULLs last), then oldest `created_at`. A lot past `expires_at` is **never consumed**, whether or not
+   the sweep has booked its expiry, so the available balance is right the instant it expires. `available` (live lots, minus debt) is distinct from
+   `ledger` (every lot, including expired-unswept), as in Stripe's balance summary.
+4. A debit larger than the available lots **is never refused** (the model call it pays for has already happened): the shortfall is booked on the
+   overdraft lot (a negative `remaining`), counted (`agent_credit_overdraft_total`), and repaid first by the next grant. Stopping the spend is the job
+   of gating, checked before the call.
+5. A debit takes `idempotency_key = usage event id` and runs in the **caller's transaction**, so it commits together with the event that caused it or not at all.
+6. Every write for a tenant takes `pg_advisory_xact_lock(hashtextextended(tenant))`. The row locks already stop a lost update on a lot; what only the lock
+   adds is the **canonical state**: a debit racing a grant ends as a serial run would, never leaving a debt next to live credit. Removing the lock fails
+   the stress test 3 of 3 times and no other test, which is how its purpose was established rather than assumed.
+7. `expire_due(limit, tenant=None)` is a bounded, idempotent sweep, one transaction per lot, keyed `expire:<lot id>`.
+
+*Deferred to the PRs that need them:* `adjust` (the operator CLI, PR 6) and `clawback` (refunds, PR 4), both thin variants of the same debit path.
 
 ### Credit math
 

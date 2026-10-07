@@ -26,10 +26,10 @@ entry and README update; its CI result reported, not assumed.
 
 ## Phase 2: Wallet (PR 2) — US2
 
-- [ ] T010 [PR2] `postgres-init/20-credit-wallet.sql`: lots, transactions (`UNIQUE (tenant, idempotency_key)`), entries
-- [ ] T011 [PR2] Failing real-Postgres tests: replay a grant/debit/expiry (one effect); consume the sooner-expiring lot first; overdraft booked and repaid by the next grant; `balance == SUM(entries)`; **50 concurrent debits** lose no update
-- [ ] T012 [PR2] `app/billing/credits.py`: `grant`, `debit` (inside the event's transaction, under `pg_advisory_xact_lock`), `expire_due`, `adjust`; every call records actor and reason
-- [ ] T013 [PR2] Test that no `credit`/`billing` function is registered as an agent tool
+- [x] T010 [PR2] `postgres-init/20-credit-wallet.sql`: lots, transactions (`UNIQUE (tenant, idempotency_key)`), entries
+- [x] T011 [PR2] Failing real-Postgres tests: replay a grant/debit/expiry (one effect); consume the sooner-expiring lot first; overdraft booked and repaid by the next grant; `balance == SUM(entries)`; **50 concurrent debits** lose no update
+- [x] T012 [PR2] `app/billing/credits.py`: `grant`, `debit` (inside the event's transaction, under `pg_advisory_xact_lock`), `expire_due`, `balance`, `verify`; every call records actor and reason (`adjust` and `clawback` follow with the CLI and refunds)
+- [x] T013 [PR2] Structural test that no module that defines or serves an agent tool imports `app.billing` (the model has no path to a balance)
 
 ## Phase 3: Charge and gate (PR 3) — US3
 
