@@ -172,6 +172,15 @@ billing-export-worker:  ## Drain usage_export_outbox to the enabled providers th
 billing-inbox-sweep:  ## Delete applied/ignored billing webhook inbox rows older than BILLING_INBOX_RETENTION_DAYS (see scripts/billing_inbox_sweep.py; never touches open or quarantined rows; wire to cron once your retention policy is decided)
 	python -m scripts.billing_inbox_sweep
 
+credits:  ## Operator CLI for the credit wallet, e.g. `make credits ARGS="grant --tenant acme --amount 500 --by alice --reason 'pilot top-up'"`, `adjust` (signed) and `show` (balance, lots, entries); --by and --reason are required for a change (see scripts/credits.py)
+	python -m scripts.credits $(ARGS)
+
+credit-reconcile:  ## Compare usage events with the ledger, the gateway's spend log and the wallets over the last CREDIT_RECONCILE_LOOKBACK_DAYS; exit 0 agree / 1 drift / 2 could not finish. Needs LITELLM_MASTER_KEY (or ARGS=--no-gateway); ARGS="--days 7 --json" (see scripts/credit_reconcile.py)
+	python -m scripts.credit_reconcile $(ARGS)
+
+credit-reconcile-worker:  ## The same comparison as a worker: a pass every CREDIT_RECONCILE_INTERVAL_SECONDS, re-publishing the drift and balance gauges every minute for the dashboard and alerts (see scripts/credit_reconcile.py)
+	python -m scripts.credit_reconcile --loop $(ARGS)
+
 test:  ## Run the graph test suite in parallel (no live services needed — fake LLM, no Qdrant)
 	pytest -n auto -q
 

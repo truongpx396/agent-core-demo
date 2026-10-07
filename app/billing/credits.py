@@ -260,6 +260,7 @@ async def grant_in(
         repay = min(credits, -debt[1])
         await _move(conn, tenant, transaction_id, debt[0], repay)
         await _move(conn, tenant, transaction_id, lot_id, -repay)
+    metrics.agent_credit_granted_total.labels(source=source).inc(float(credits))
     return Applied("applied", transaction_id, credits)
 
 
@@ -319,6 +320,7 @@ async def debit_in(
             # outruns it is not: a refund after the credits were spent is the policy working (spec D6).
             metrics.agent_credit_overdraft_total.inc()
         logger.warning("credit_overdraft", extra={"shortfall": str(shortfall), "kind": kind})
+    metrics.agent_credit_debited_total.labels(kind=kind).inc(float(credits))
     return Applied("applied", transaction_id, credits, shortfall)
 
 
@@ -330,6 +332,38 @@ async def clawback_in(
     refused for a short balance: credits already spent become debt on the overdraft lot, which refuses new
     usage at the gate until the next grant repays it. A no-op (`no_account`) for a tenant with no wallet."""
     return await debit_in(conn, tenant, amount, idempotency_key=idempotency_key, actor=actor, reason=reason, kind="clawback")
+
+
+async def adjust_in(
+    conn: AsyncConnection,
+    tenant: str,
+    amount,
+    *,
+    idempotency_key: str,
+    actor: str,
+    reason: str,
+    expires_at: datetime | None = None,
+) -> Applied:
+    """A correction made by hand (`scripts/credits.py adjust`), signed: positive adds credits, negative takes them back.
+
+    A positive adjustment is a grant whose lot source is 'adjustment' (so it repays debt first and can be told apart from
+    a purchase or a promo in the lot list); a negative one goes the debit path as kind 'adjust' (earliest-expiring first,
+    never refused for a short balance: the same rule as a clawback, because an operator correcting a mistake must not be
+    blocked by the very mistake). Unlike a grant, the REASON is required: it is the one entry nobody else can explain.
+    A negative adjustment on a tenant with no wallet is a no-op (`no_account`), never an account opened to hold a debt."""
+    credits = credits_amount(amount)
+    if credits == 0:
+        raise ValueError("an adjustment of zero changes nothing")
+    if not (reason or "").strip():
+        raise ValueError("an adjustment needs a reason: it is a correction made by hand")
+    if credits > 0:
+        return await grant_in(
+            conn, tenant, credits, source="adjustment", idempotency_key=idempotency_key, actor=actor, reason=reason,
+            expires_at=expires_at,
+        )
+    if expires_at is not None:
+        raise ValueError("a negative adjustment takes credits back; an expiry only applies to credits added")
+    return await debit_in(conn, tenant, -credits, idempotency_key=idempotency_key, actor=actor, reason=reason, kind="adjust")
 
 
 async def _expire_lot_in(conn: AsyncConnection, tenant: str, lot_id: str) -> bool:
@@ -419,6 +453,11 @@ async def grant(tenant: str, amount, **kwargs) -> Applied:
 async def debit(tenant: str, amount, **kwargs) -> Applied:
     async with get_connection() as conn:
         return await debit_in(conn, tenant, amount, **kwargs)
+
+
+async def adjust(tenant: str, amount, **kwargs) -> Applied:
+    async with get_connection() as conn:
+        return await adjust_in(conn, tenant, amount, **kwargs)
 
 
 async def balance(tenant: str) -> Balance:

@@ -253,6 +253,24 @@ class Settings(BaseSettings):
     # A call that times out may still have landed: it is retried with the same event id, which the provider dedupes.
     billing_export_call_timeout_seconds: int = Field(default=30, ge=1)
 
+    # Reconciliation (specs/010 PR 6, app/billing/reconcile.py, `make credit-reconcile`): the app's events against its own
+    # ledger and the gateway's spend log. A difference is drift only above the LARGER of the two tolerances: the fixed one
+    # stops a tenant that spent a cent from being reported over rounding, the percentage stops a busy tenant's rounding (the
+    # ledger keeps six decimal places a turn, the event twelve a call) from being reported as a gap. SC-001's "stated tolerance".
+    credit_reconcile_tolerance_usd: Decimal = Field(default=Decimal("0.01"), ge=0)
+    credit_reconcile_tolerance_pct: Decimal = Field(default=Decimal("1"), ge=0, le=100)
+    # The newest minutes are left out: a turn still running has written its events and not yet its ledger row, and the
+    # gateway writes its spend log in batches, so comparing the very latest traffic reports drift that is only latency.
+    # Keep it above request_timeout_seconds plus the gateway's batch interval.
+    credit_reconcile_settle_seconds: int = Field(default=900, ge=0)
+    # How many whole UTC days back each run looks. Short on purpose: a run that re-reads a year of spend logs every few hours
+    # is a load on the gateway database, and a gap older than this was already reported by every run since it appeared.
+    credit_reconcile_lookback_days: int = Field(default=2, ge=1, le=35)
+    credit_reconcile_interval_seconds: int = Field(default=6 * 3600, ge=60)
+    # The ceiling on gateway pages (1000 rows each) read per run. A window with more spend-log rows than this is reported as
+    # INCOMPLETE rather than compared as if it were whole: a truncated sum would show every tenant as under-metered.
+    credit_reconcile_gateway_max_pages: int = Field(default=200, ge=1)
+
     @model_validator(mode="after")
     def _backoff_cap_is_not_below_its_base(self) -> "Settings":
         if self.billing_export_backoff_cap_seconds < self.billing_export_backoff_base_seconds:
@@ -652,6 +670,12 @@ BILLING_EXPORT_BACKOFF_BASE_SECONDS = settings.billing_export_backoff_base_secon
 BILLING_EXPORT_BACKOFF_CAP_SECONDS = settings.billing_export_backoff_cap_seconds
 BILLING_EXPORT_MAX_AGE_DAYS = settings.billing_export_max_age_days
 BILLING_EXPORT_CALL_TIMEOUT_SECONDS = settings.billing_export_call_timeout_seconds
+CREDIT_RECONCILE_TOLERANCE_USD = settings.credit_reconcile_tolerance_usd
+CREDIT_RECONCILE_TOLERANCE_PCT = settings.credit_reconcile_tolerance_pct
+CREDIT_RECONCILE_SETTLE_SECONDS = settings.credit_reconcile_settle_seconds
+CREDIT_RECONCILE_LOOKBACK_DAYS = settings.credit_reconcile_lookback_days
+CREDIT_RECONCILE_INTERVAL_SECONDS = settings.credit_reconcile_interval_seconds
+CREDIT_RECONCILE_GATEWAY_MAX_PAGES = settings.credit_reconcile_gateway_max_pages
 BUDGET_POLICY_REFRESH_SECONDS = settings.budget_policy_refresh_seconds
 REQUEST_TIMEOUT_SECONDS = settings.request_timeout_seconds
 SUBAGENT_TIMEOUT_SECONDS = settings.subagent_timeout_seconds

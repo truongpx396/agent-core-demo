@@ -244,6 +244,114 @@ app droplet's Docker volumes (postgres/qdrant/redis) is gone with it unless
 backed up first (see above); the observability droplet has nothing worth
 preserving.
 
+## Credit billing: running it
+
+(specs/010-credit-billing-readiness. Everything here is optional: with `CREDITS_PER_USD` unset the whole feature is off and
+nothing below applies.)
+
+Three records of the same spending exist, and an operator's job is to know they agree:
+
+| Record | Written by | Read for |
+|---|---|---|
+| `usage_events`, one row per model call | the app, per call (the billing meter) | what a tenant is charged |
+| `usage_ledger`, one row per turn | the app, per turn | the dollar caps |
+| the gateway's spend log (LiteLLM, by `end_user`) | the gateway, from the request itself | the independent second meter |
+
+and a fourth question for a tenant with a wallet: was every event worth credits actually debited?
+
+### Turning it on, in the order that cannot hurt
+
+1. Apply the migrations on an existing volume (init scripts run only on a fresh one): `postgres-init/19`..`23`, each with
+   `psql -U langfuse -d appdata -f postgres-init/<file>`. Nothing breaks until the next step: no tenant has a wallet.
+2. Set `CREDITS_PER_USD` (no default: the price is your decision) and leave `CREDITS_ENFORCEMENT=false`. This is **shadow mode**:
+   tenants with a wallet are debited and nobody is refused, so you can watch balances move first (dashboard "Credit Billing").
+3. Give a tenant a wallet and credits: `make credits ARGS="grant --tenant acme --amount 500 --by <you> --reason '<why>'"`.
+4. Start the two workers below, watch a few days of `make credit-reconcile` come back clean, **then** set `CREDITS_ENFORCEMENT=true`.
+
+### Changing a wallet by hand
+
+```
+make credits ARGS="show --tenant acme"                                   # balance, lots, newest ledger entries (read-only)
+make credits ARGS="grant --tenant acme --amount 500 --by alice --reason 'pilot top-up, ticket 4412'"
+make credits ARGS="grant --tenant acme --amount 100 --source promo --expires-in-days 30 --by alice --reason 'launch'"
+make credits ARGS="adjust --tenant acme --amount=-12.5 --by alice --reason 'call billed twice'"
+```
+
+`--by` and `--reason` are required and stored on the transaction; promo and subscription grants must expire; a negative adjustment can
+leave a wallet in debt (a correction is never blocked by the mistake it fixes). **A retry is safe only with the same `--key`**: every
+change prints its idempotency key, and re-running the command without it is a second change on purpose.
+
+### The reconciliation
+
+```
+make credit-reconcile                       # one pass over today and yesterday (UTC): 0 agree, 1 drift, 2 could not finish
+make credit-reconcile ARGS="--days 7"       # look further back (1-35)
+make credit-reconcile ARGS="--json"         # machine-readable
+make credit-reconcile-worker                # a pass every CREDIT_RECONCILE_INTERVAL_SECONDS, feeding the gauges and alerts
+```
+
+The gateway comparison needs the gateway's **admin** key (spend logs are an admin view): `LITELLM_MASTER_KEY` in the environment, never an
+argument, and `LITELLM_URL` unless the app's own gateway address resolves (`http://litellm:4000` on the app droplet). Give it to the
+reconcile container only; the app itself should keep running on `LITELLM_APP_KEY`. The worker refuses to start without the key rather than
+quietly skipping the independent meter (`ARGS=--no-gateway` compares only the app's own records).
+
+Neither worker is a compose service yet (disclosed): on the app droplet run them from the app image, which carries `scripts/`:
+
+```
+# LITELLM_MASTER_KEY is in the droplet's .env; compose reads .env for interpolation only, so export it for this one command
+set -a; . ./.env; set +a
+dc run -d --no-deps --name credit-reconcile -e LITELLM_MASTER_KEY api python -m scripts.credit_reconcile --loop
+dc run -d --no-deps --name billing-export    api python -m scripts.billing_export_worker      # only if a provider bills on usage
+```
+
+**Reading a finding.** Each names the tenant, the UTC day and the amounts, and says what it means:
+
+| Finding | Meaning | First step |
+|---|---|---|
+| `gateway`, drift **above** zero | the gateway spent more than the events record: a call whose event was never written (`UsageEventWriteFailing`), an unpriced call (the note says how many), or spend the app does not meter | check the alert history for that day; `usage_event_unpriced_total`; the pricing of the model |
+| `gateway`, drift **below** zero | events with no call behind them, or spend the gateway lost | check the gateway database and its spend-log write queue |
+| `ledger`, events above the ledger | a turn's ledger write failed (`ledger_write`): the dollar caps under-counted that day | usually self-evident from the logs; no money was lost, a cap was loose |
+| `uncharged` | an event worth credits with no debit: the wallet failed after the meter kept the event (`CreditDebitFailing`) | find the cause first; then repair (below) |
+| a tenant named `tenant_<hash> (no tenant in this database hashes to it)` | the gateway spent for someone with no events and no ledger rows at all, the worst shape a lost meter takes | look the hash up with `python -m scripts.litellm_key end-user --tenant <name>`; check it is not another deployment sharing the gateway |
+
+**Repairing an uncharged event, for now by hand.** The debit key IS the event id, so booking an adjustment under that key clears the finding
+and can never double-charge: `make credits ARGS="adjust --tenant <t> --amount=-<the event's credits> --key <event_id> --by <you> --reason 'uncharged event <event_id>'"`
+(the credits are in `usage_events.credits`; the report lists the count and total per tenant-day). It books as kind `adjust`, by you, not as a `debit`. A repair job is not built (disclosed).
+
+**Tolerance.** A difference is drift only above the larger of `CREDIT_RECONCILE_TOLERANCE_USD` and `_PCT` of the larger figure. A small
+**persistent** gap on every tenant is a price mismatch between the app and the gateway for one of your models, not a loss: tune the percentage
+to your own difference rather than ignoring the report. The newest `CREDIT_RECONCILE_SETTLE_SECONDS` of traffic is left out (a running turn has
+events and no ledger row yet).
+
+### Dashboard and alerts
+
+"Credit Billing" in Grafana (`observability/grafana/dashboards/credit-billing.json`): credits outstanding and owed, grant and debit rates, export
+lag, webhook outcomes, the reconciliation's drift and outcomes. There is no Postgres datasource, so who holds what is `make credits ... show`.
+
+| Alert | Means | Do |
+|---|---|---|
+| `CreditReconcileDrift` | the last pass found a tenant-day above tolerance | `make credit-reconcile` |
+| `CreditReconcileNotCompleting` | a pass failed, or the gateway had more rows than `CREDIT_RECONCILE_GATEWAY_MAX_PAGES` | log `credit_reconcile_failed`; shorten `CREDIT_RECONCILE_LOOKBACK_DAYS` or raise the ceiling |
+| `CreditDebitFailing` | an event was kept and its wallet debit failed | find why; the next reconciliation names the events |
+| `UsageEventWriteFailing` | a call was made and its event was not written | reconcile that day against the gateway |
+| `UsageExportStuck` / `Expired` / `Failed` / `EnqueueFailing` | usage is not reaching a provider that bills on it | `usage_export_outbox` (see the alert text) |
+| `BillingWebhookQuarantined` / `Failing` | a customer paid and was granted nothing, or applying a payment keeps failing | `billing_webhook_events` |
+
+### What this does not cover (disclosed)
+
+- **The gauges exist only while `credit-reconcile-worker` runs.** A synchronous OpenTelemetry gauge is exported once per set and the collector forgets
+  a series five minutes after its last update (both verified; `tests/core/test_gauge_export.py` pins the first), so the worker re-sets them every
+  minute. A stopped worker therefore **resolves** `CreditReconcileDrift` rather than leaving it firing, and Prometheus cannot tell a worker that never
+  ran from one that died. The same is true of `UsageExportStuck` and the export worker. Cron plus `make credit-reconcile` still gives the report and the
+  exit code; it gives the alert nothing durable.
+- **Embeddings** are neither metered nor attributed to a tenant (research G2), so their spend shows as "no tenant of this app", never as drift.
+- **A call across midnight UTC** is recorded on one day by the gateway (its start) and another by the event (its insert); an expensive one on a quiet
+  tenant shows as a pair of opposite drifts on adjacent days. That signature is the straddle, not a loss.
+- **A provider's own balance** is not reconciled: the port has `read_balance` (`BALANCE_READ`) and no adapter declares it yet, so there is nothing to
+  compare. It lands with the first adapter that does, through the same contract test.
+- **Events that were never queued for export** are alerted by `UsageExportEnqueueFailing` when the failure happens, but the reconciliation does not
+  re-derive them afterwards.
+
 ## Security scanning in front of all this
 
 - **Checkov** (`.checkov.yaml`, CI's `checkov` job, `make checkov`) scans
