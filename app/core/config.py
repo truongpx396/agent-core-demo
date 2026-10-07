@@ -4,10 +4,11 @@ Values are read from the environment / .env. A single `Settings` instance is
 created and its fields are also re-exported as module constants so existing
 imports (`from app.core.config import QDRANT_URL`) keep working.
 """
+from decimal import Decimal
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Also load .env into os.environ so third-party SDKs that read env vars
@@ -178,6 +179,45 @@ class Settings(BaseSettings):
     # path that is hurting the turn path), not a setting to leave off. A failed write never fails
     # a turn either way; it is counted and alerted.
     usage_events_enabled: bool = True
+
+    # Credit billing (specs/010-credit-billing-readiness, app/billing/credits.py). A call's price in
+    # credits is `round_half_up(cost_usd x CREDITS_PER_USD x MARKUP, 6)`, computed when its usage event
+    # is written and stored on the event with the rate used, so changing either later never rewrites
+    # what a past call was charged.
+    #
+    # `credits_per_usd` has NO shipped default, on purpose: a price is a product decision (spec O1)
+    # and a default would put an accidental one live. Unset means credits are off for the whole
+    # deployment: nothing is rated, debited, gated or shown, and every tenant behaves exactly as before.
+    # Set, a tenant WITH a wallet (a `credit_accounts` row) is debited per call; a tenant without one is
+    # untouched. `markup` is a multiplier on cost (1 = at cost, 1.5 = cost + 50%).
+    credits_per_usd: Decimal | None = Field(default=None, gt=0)
+    markup: Decimal = Field(default=Decimal("1"), gt=0)
+    # Whether a tenant WITH a wallet whose available credits (balance minus in-flight holds) are not
+    # positive is refused before any model work (ErrorCode.INSUFFICIENT_CREDITS). Off by default: with
+    # a rate set and this off the wallet is still debited ("shadow mode"), so an operator can watch
+    # balances move before anyone is refused. Needs CREDITS_PER_USD (a gate with no price is meaningless).
+    credits_enforcement: bool = False
+    # What the credit gate does when it cannot READ the wallet, the same decision as
+    # BUDGET_CHECK_FAILURE_POLICY and made separately because the two can fail separately. "open" serves
+    # the turn and counts it (alert CreditGateUnenforced): a wallet outage must not also take every turn
+    # down. "closed" refuses it (ErrorCode.BUDGET_CHECK_UNAVAILABLE), for a deployment that would rather
+    # be unavailable than serve a tenant it cannot confirm has credit. Only consulted when enforcing.
+    credit_check_failure_policy: Literal["open", "closed"] = "open"
+
+    @field_validator("credits_per_usd", "markup")
+    @classmethod
+    def _six_places_at_most(cls, value: Decimal | None) -> Decimal | None:
+        """The columns that record these on each event are NUMERIC(18,6): a rate with more places would
+        be stored rounded, and the row would no longer reproduce the credits it was charged."""
+        if value is not None and value != value.quantize(Decimal("0.000001")):
+            raise ValueError("at most 6 decimal places (the event row stores the rate as NUMERIC(18,6))")
+        return value
+
+    @model_validator(mode="after")
+    def _enforcement_needs_a_rate(self) -> "Settings":
+        if self.credits_enforcement and self.credits_per_usd is None:
+            raise ValueError("CREDITS_ENFORCEMENT=true needs CREDITS_PER_USD: a gate with no price is meaningless")
+        return self
 
     # How long usage_ledger rows are kept by scripts/usage_ledger_sweep.py (spec
     # 008 A3: nothing trimmed the table, and the allowance reads it before every
@@ -520,6 +560,10 @@ UNPRICED_MODEL_POLICY = settings.unpriced_model_policy
 USAGE_LEDGER_RETENTION_DAYS = settings.usage_ledger_retention_days
 BUDGET_CHECK_FAILURE_POLICY = settings.budget_check_failure_policy
 USAGE_EVENTS_ENABLED = settings.usage_events_enabled
+CREDITS_PER_USD = settings.credits_per_usd
+MARKUP = settings.markup
+CREDITS_ENFORCEMENT = settings.credits_enforcement
+CREDIT_CHECK_FAILURE_POLICY = settings.credit_check_failure_policy
 BUDGET_POLICY_REFRESH_SECONDS = settings.budget_policy_refresh_seconds
 REQUEST_TIMEOUT_SECONDS = settings.request_timeout_seconds
 SUBAGENT_TIMEOUT_SECONDS = settings.subagent_timeout_seconds

@@ -474,6 +474,13 @@ agent_credit_overdraft_total = Counter(
     "(a missed top-up, or gating off).",
 )
 
+agent_credit_enforcement_refused_total = Counter(
+    "agent_credit_enforcement_refused_total",
+    "Turns refused before any model work because the tenant's wallet had no available credits "
+    "(app/agent/budgets.py, ErrorCode.INSUFFICIENT_CREDITS). Normal operation for a prepaid tenant that "
+    "has run out, so it is a rate to watch, not an alert. It has no tenant label (who is in the log line).",
+)
+
 agent_cost_governance_degraded_total = Counter(
     "agent_cost_governance_degraded_total",
     "Cost-governance paths that failed and carried on instead of failing the turn "
@@ -481,6 +488,8 @@ agent_cost_governance_degraded_total = Counter(
     ["path"],
 )  # path: price_lookup | ledger_write | ledger_read | policy_read | reservation | model_resolve
 # | usage_event_write | usage_event_table_missing | usage_event_identity | usage_missing (app/agent/usage_events.py)
+# | credit_debit (app/agent/usage_events.py: the event was kept, its debit failed) | credit_read (app/agent/budgets.py: the gate
+# could not read the wallet)
 
 agent_upload_rejected_total = Counter(
     "agent_upload_rejected_total",

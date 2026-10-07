@@ -188,8 +188,13 @@ def mock_semantic_cache(monkeypatch):
 @pytest.fixture(autouse=True)
 def mock_appdata_postgres(monkeypatch):
     from app.agent import sessions, tool_idempotency, usage_ledger
+    from app.billing import credits
 
     monkeypatch.setattr(usage_ledger, "get_connection", _no_postgres_in_tests)
+    # The credit wallet is read before a turn only when CREDITS_ENFORCEMENT is on and on the usage
+    # endpoint only when CREDITS_PER_USD is set; both are off in the default world, but a test that
+    # turns one on must not reach a real database by forgetting to stub the wallet.
+    monkeypatch.setattr(credits, "get_connection", _no_postgres_in_tests)
     monkeypatch.setattr(sessions, "get_connection", _no_postgres_in_tests)
     # tool_idempotency.idempotent() degrades the SAME way (see its own
     # module docstring) — every mutating/outward tool test in this suite

@@ -6,7 +6,8 @@ a wallet from one would be a write the approval gate exists to stop: the fix is 
 
 This is structural rather than a list of names: a tool cannot reach the wallet without importing it, so
 no module that defines or serves agent tools may import `app.billing` at all. (`usage_events`, which
-is not a tool module, is where the wallet is debited, in a later change.)
+is not a tool module, is where the wallet is debited, and `budgets`, which is not one either, is where it
+is read to gate a turn; both run in the app's own turn path, outside anything the model can call.)
 """
 import ast
 from pathlib import Path
