@@ -25,7 +25,9 @@ Money and credits are `NUMERIC`, never float. `cost_usd` keeps the existing `NUM
 | `occurred_at` | `TIMESTAMPTZ NOT NULL` | when the call happened (also the provider timestamp) |
 | `recorded_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | |
 
-The credit columns above (`credits`, `credits_per_usd`, `markup`) are **not** in the first migration: PR 1a creates the table without them (`postgres-init/19-usage-events.sql`) and PR 3 adds them with `ALTER TABLE`, since nothing can charge credits before a wallet and a rate exist.
+The credit columns above (`credits`, `credits_per_usd`, `markup`) are **not** in the first migration: PR 1a creates the table without them (`postgres-init/19-usage-events.sql`) and PR 3 adds them with `ALTER TABLE` (`postgres-init/21-usage-event-credits.sql`, re-runnable), since nothing can charge credits before a wallet and a rate exist.
+
+**What `credits` means (decided in PR 3).** It is what the call is *worth* at the rate in force, whether or not the tenant has a wallet to charge: the same figure a usage-billing provider is sent. Whether a wallet was actually debited is the `credit_transactions` row whose `usage_event_id` and `idempotency_key` are this event's id. `credits` is NULL when credits are off (no rate) or the call is unpriced, and a real `0` for a free call; the database refuses credits without a rate (`usage_events_credits_have_a_rate`). The cost is rounded to the column's twelve places **before** it is multiplied, and that stored cost is what is multiplied, so `credits = credits_for_cost(cost_usd, credits_per_usd, markup)` holds for the row exactly and a reconciliation can recompute it. With no rate the credit columns are not mentioned at all (the original statement runs), so a deployment that has not applied the migration is unaffected.
 
 Indexes: `(tenant, occurred_at)`. **Invariant:** a trigger rejects `UPDATE` and `DELETE`, except through the retention job's role.
 `INSERT … ON CONFLICT (event_id) DO NOTHING` is the duplicate story, and it relies on that primary key (constitution VII: an
@@ -71,7 +73,7 @@ fails in the database, not only in code that might share the bug. Append-only by
 4. A debit larger than the available lots **is never refused** (the model call it pays for has already happened): the shortfall is booked on the
    overdraft lot (a negative `remaining`), counted (`agent_credit_overdraft_total`), and repaid first by the next grant. Stopping the spend is the job
    of gating, checked before the call.
-5. A debit takes `idempotency_key = usage event id` and runs in the **caller's transaction**, so it commits together with the event that caused it or not at all.
+5. A debit takes `idempotency_key = usage event id` and runs in the **caller's transaction**, so it commits together with the event that caused it. **Refinement (PR 3, spec D11):** it runs inside a *savepoint*, so a wallet fault rolls back only the debit and the event is kept, counted and alerted (`credit_debit`): the meter outranks the charge, because a lost event cannot be repaired and an uncharged one can.
 6. Every write for a tenant takes `pg_advisory_xact_lock(hashtextextended(tenant))`. The row locks already stop a lost update on a lot; what only the lock
    adds is the **canonical state**: a debit racing a grant ends as a serial run would, never leaving a debt next to live credit. Removing the lock fails
    the stress test 3 of 3 times and no other test, which is how its purpose was established rather than assumed.
@@ -126,6 +128,6 @@ the second layer, because a crash between "sent" and "marked sent" is the one wi
 ## Metrics (each degrade path counted; alerts for the paths that hide money)
 
 `usage_event_write_failed_total` (**alert**: a lost event is lost revenue), `usage_event_unpriced_total`, `credit_debit_overdraft_total`,
-`credit_enforcement_refused_total`, `billing_webhook_total{provider,outcome}` (`applied|duplicate|ignored|quarantined|invalid_signature|failed`),
+`credit_enforcement_refused_total`, plus two degrade paths on `agent_cost_governance_degraded_total` (**alerts**): `credit_debit` (`CreditDebitFailing`: the event was kept, its charge failed) and `credit_read` (`CreditGateUnenforced`: the gate could not read a wallet), `billing_webhook_total{provider,outcome}` (`applied|duplicate|ignored|quarantined|invalid_signature|failed`),
 `billing_webhook_quarantined` (**alert**), `usage_export_total{provider,outcome}`, `usage_export_oldest_pending_age_seconds` (**alert** at 7 days),
 `usage_export_expired_total` (**alert**), `credit_reconcile_max_drift_usd` (a gauge: the largest per-tenant drift in the last run, so no tenant label; the per-tenant detail is in the report; **alert** above a threshold).

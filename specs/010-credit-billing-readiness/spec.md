@@ -171,5 +171,13 @@ as `end_user`), and optionally the provider's balance, and reports drift per ten
   liability to cap in time) and **subscription credits must expire** (they belong to their period and do not roll over). **Paid credits (`purchase`) do not expire
   unless the caller says so**, because many jurisdictions restrict expiring a prepaid balance someone paid for; that is left to the operator, never a default.
 
-**Product decisions still to be recorded, each in the PR that implements it:** **O1** the credits-per-dollar rate and markup (PR 3); **O2** the refund and
-chargeback policy in D6 (PR 4); **O4** which provider first (PR 4).
+- **D10. (closes O1, decided in PR 3.)** **The app ships no price.** `CREDITS_PER_USD` has no default and `MARKUP` defaults to a neutral 1 (at cost): what a credit is
+  worth is the deploying operator's own commercial decision, and a default would put an accidental one live. With no rate set, credits are off for the whole deployment: nothing is
+  rated, debited, gated or shown, and every tenant behaves exactly as before. With a rate and `CREDITS_ENFORCEMENT` off, a tenant that has a wallet is still debited (**shadow
+  mode**), so an operator can watch balances move before anyone is refused. `CREDITS_ENFORCEMENT` is refused at startup without a rate, and both numbers are limited to the
+  six decimal places the event row stores, so a row always reproduces the credits it was charged.
+- **D11. (PR 3.)** **The meter outranks the charge.** The debit commits in the event's transaction, but inside a savepoint: if the wallet fails, only the debit is undone and the event is
+  kept with the credits it was worth, counted (`credit_debit`) and alerted (`CreditDebitFailing`). One all-or-nothing transaction would turn a wallet outage into a meter outage, and a
+  lost event cannot be repaired while an uncharged one can (the debit key is the event id and the row holds every figure it needs). **Disclosed gap:** nothing repairs an uncharged event yet; PR 6's reconciliation names it.
+
+**Product decisions still to be recorded, each in the PR that implements it:** **O2** the refund and chargeback policy in D6 (PR 4); **O4** which provider first (PR 4).

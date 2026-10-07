@@ -49,6 +49,10 @@ from app.core.config import (
     CHAT_MODEL,
     CHECKPOINTER_DATABASE_URL,
     CHECKPOINTER_POOL_MAX_SIZE,
+    CREDIT_CHECK_FAILURE_POLICY,
+    CREDITS_ENFORCEMENT,
+    CREDITS_PER_USD,
+    MARKUP,
     MAX_COST_USD_PER_PRINCIPAL_PER_DAY,
     MAX_COST_USD_PER_PRINCIPAL_PER_MONTH,
     MAX_COST_USD_PER_TENANT_PER_DAY,
@@ -95,6 +99,17 @@ _seeded: set[str] = set()
 RECURSION_LIMIT = MAX_ITERATIONS * 2 + 15
 
 
+def _credit_gate() -> budgets.CreditGate | None:
+    """The credit gate to apply, or None when `CREDITS_ENFORCEMENT` is off (the wallet is then never
+    read). Bound at call time, like the limits. Settings refuse enforcement without a rate at startup,
+    so the guard below is for a test or a caller that re-points the globals into a state they forbid."""
+    if not CREDITS_ENFORCEMENT:
+        return None
+    if CREDITS_PER_USD is None:
+        raise RuntimeError("CREDITS_ENFORCEMENT is on but CREDITS_PER_USD is not set")
+    return budgets.CreditGate(CREDITS_PER_USD, MARKUP, CREDIT_CHECK_FAILURE_POLICY)
+
+
 async def _check_allowance(ctx: SecurityCtx | None) -> budgets.Allowance:
     """May this caller start another turn? The rule lives in `budgets.py`; this binds the
     configured limits at CALL time (not import time), so the module globals below stay the
@@ -108,6 +123,7 @@ async def _check_allowance(ctx: SecurityCtx | None) -> budgets.Allowance:
             principal_month=MAX_COST_USD_PER_PRINCIPAL_PER_MONTH,
         ),
         fail_policy=BUDGET_CHECK_FAILURE_POLICY,
+        credit_gate=_credit_gate(),
     )
 
 

@@ -9,6 +9,7 @@ already takes for graph nodes (see tests/agent/test_nodes.py's module docstring)
 """
 import io
 import json
+from decimal import Decimal
 
 import pytest
 from fastapi import HTTPException, Response
@@ -21,6 +22,7 @@ from app.api.routers import system as system_router
 from app.api.routers import usage as usage_router
 from app.api.routers.system import ui
 from app.api.schemas import CancelRequest, ChatRequest, ResumeRequest
+from app.billing import credits
 from app.core import metrics
 from app.ingestion import ingest_queue
 from app.job_queue import queue
@@ -152,6 +154,87 @@ class TestUsage:
         result = await usage_router.usage(ctx=TEST_CTX)
 
         assert [(b.scope, b.window) for b in result.budgets] == [("tenant", "day")]
+
+
+class TestUsageCredits:
+    """`GET /usage` reports the tenant's credit wallet (specs/010 T016), and only when the deployment has
+    credits on AND this tenant has a wallet: a deployment that never set a rate must not read a table it
+    may not have, and a tenant with no wallet is not "at zero"."""
+
+    @pytest.fixture(autouse=True)
+    def quiet_ledger(self, monkeypatch):
+        async def usage_summary(tenant, principal=None, since=None):
+            return {"total_tokens": 0, "total_cost_usd": 0.0}
+
+        monkeypatch.setattr(usage_router.usage_ledger, "usage_summary", usage_summary)
+        monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
+
+    @pytest.fixture
+    def wallet(self, monkeypatch):
+        reads = []
+        state = {"balance": credits.Balance(Decimal("12.500000"), Decimal("12.500000"), Decimal("0"))}
+
+        async def account_balance(tenant):
+            reads.append(tenant)
+            return state["balance"]
+
+        monkeypatch.setattr(usage_router.credits, "account_balance", account_balance)
+        state["reads"] = reads
+        return state
+
+    async def test_it_is_null_and_the_wallet_is_never_read_when_credits_are_off(self, monkeypatch, wallet):
+        monkeypatch.setattr(usage_router, "CREDITS_PER_USD", None)
+
+        result = await usage_router.usage(ctx=TEST_CTX)
+
+        assert result.credits is None
+        assert wallet["reads"] == []
+
+    async def test_it_reports_the_tenants_own_balance_and_whether_it_is_enforced(self, monkeypatch, wallet):
+        monkeypatch.setattr(usage_router, "CREDITS_PER_USD", Decimal("1000"))
+        monkeypatch.setattr(usage_router, "CREDITS_ENFORCEMENT", True)
+        wallet["balance"] = credits.Balance(available=Decimal("-3.5"), ledger=Decimal("-3.5"), debt=Decimal("3.5"))
+
+        result = await usage_router.usage(ctx=TEST_CTX)
+
+        assert (result.credits.available, result.credits.debt, result.credits.enforced) == (Decimal("-3.5"), Decimal("3.5"), True)
+        assert wallet["reads"] == [TEST_CTX["tenant"]], "only the caller's own tenant is ever read"
+
+    async def test_a_tenant_with_no_wallet_gets_null_not_zero(self, monkeypatch, wallet):
+        monkeypatch.setattr(usage_router, "CREDITS_PER_USD", Decimal("1000"))
+        wallet["balance"] = None
+
+        result = await usage_router.usage(ctx=TEST_CTX)
+
+        assert result.credits is None
+
+    async def test_shadow_mode_reports_the_balance_with_enforced_false(self, monkeypatch, wallet):
+        monkeypatch.setattr(usage_router, "CREDITS_PER_USD", Decimal("1000"))
+        monkeypatch.setattr(usage_router, "CREDITS_ENFORCEMENT", False)
+
+        result = await usage_router.usage(ctx=TEST_CTX)
+
+        assert result.credits.enforced is False and result.credits.available == Decimal("12.5")
+
+    async def test_amounts_are_serialised_as_exact_strings_never_floats(self, monkeypatch, wallet):
+        monkeypatch.setattr(usage_router, "CREDITS_PER_USD", Decimal("1000"))
+        wallet["balance"] = credits.Balance(Decimal("0.300000"), Decimal("0.300000"), Decimal("0"))
+
+        body = (await usage_router.usage(ctx=TEST_CTX)).model_dump(mode="json")
+
+        assert body["credits"]["available"] == "0.300000", "a JSON number would round-trip through a float"
+
+    async def test_an_unreadable_wallet_is_an_error_not_a_calm_null(self, monkeypatch, wallet):
+        """Unlike the gate, a status endpoint must not report "no wallet" when it simply could not look."""
+        monkeypatch.setattr(usage_router, "CREDITS_PER_USD", Decimal("1000"))
+
+        async def broken(tenant):
+            raise ConnectionError("wallet unreachable")
+
+        monkeypatch.setattr(usage_router.credits, "account_balance", broken)
+
+        with pytest.raises(ConnectionError):
+            await usage_router.usage(ctx=TEST_CTX)
 
 
 class TestUi:

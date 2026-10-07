@@ -22,12 +22,39 @@ second paid call happened.
 Fail OPEN, counted, alerted. A failed write must not fail the turn it records (same posture as
 `usage_ledger.record_usage`), but a lost event is lost revenue and nobody is told by a log line, so:
   * `agent_cost_governance_degraded_total{path="usage_event_write"}`  -> UsageEventWriteFailing (critical)
-  * `...{path="usage_event_table_missing"}` (migration 19 not applied) -> UsageEventTableMissing (warning)
+  * `...{path="usage_event_table_missing"}` (migration 19, or 21 once CREDITS_PER_USD is set, not applied)
+    -> UsageEventTableMissing (warning)
+  * `...{path="credit_debit"}`: the event was written and its wallet debit was not -> CreditDebitFailing (critical)
   * `...{path="usage_event_identity"}`: a response with no message id, so it got a random one
     and cannot be de-duplicated (a replay would double-count it);
   * `...{path="usage_missing"}`: the provider reported no usage for a call, so nothing could be
     metered. Counted, not alerted: a local model may do this.
 `USAGE_EVENTS_ENABLED=false` is the kill switch.
+
+## Charging credits (specs/010 T015)
+
+With `CREDITS_PER_USD` set, an event is also RATED: `credits = round_half_up(cost_usd x CREDITS_PER_USD x
+MARKUP, 6)`, stored on the row together with the rate and markup used (postgres-init/21), so the figure is
+reproducible from the row and a later rate change never rewrites a past call. The cost is first rounded
+to the column's twelve places and that rounded figure is what is stored AND what is multiplied, so
+`credits == credits_for_cost(cost_usd, credits_per_usd, markup)` holds for the row exactly. An UNPRICED call
+has `credits` NULL and debits nothing (unknown is never silently free; it is already counted once by
+`pricing.note_unpriced`).
+
+A tenant WITH a wallet is then debited, in the SAME transaction as the insert and keyed by the event id, so
+a replayed call that finds its event already there debits nothing (the insert reports it, and the debit
+key would refuse it anyway). A tenant with no wallet costs one indexed lookup (`credits.debit_in`).
+
+**A wallet fault must not lose the meter, so the debit runs in a savepoint.** If it raises, only the debit
+rolls back: the event is still committed (with the credits it was worth, so the missing charge is
+visible and replayable: the debit key IS the event id and the row holds every figure it needs), the
+failure is counted as `agent_cost_governance_degraded_total{path="credit_debit"}` and pages
+(`CreditDebitFailing`). The alternative, one all-or-nothing transaction, would turn a wallet outage into a
+meter outage, and a lost event cannot be repaired while an uncharged one can. The residual: until a repair
+job exists (specs/010 PR 6's reconciliation names the gap), an uncharged event stays uncharged.
+
+With `CREDITS_PER_USD` unset the row has no credit keys at all and the original statement is used, so a
+deployment that has not applied postgres-init/21 sees no change.
 
 ## The dual write
 
@@ -38,20 +65,26 @@ add up to the running total the ledger row is written from.
 """
 import logging
 import uuid
+from decimal import ROUND_HALF_UP, Decimal
 
+from psycopg import AsyncConnection
 from psycopg import errors as pg_errors
 
 from app.agent.model_resolver import resolve_model
 from app.agent.pricing import PricedCall
 from app.agent.sql_store import get_connection
+from app.billing import credits
 from app.core import metrics
-from app.core.config import USAGE_EVENTS_ENABLED
+from app.core.config import CREDITS_PER_USD, MARKUP, USAGE_EVENTS_ENABLED
 from app.core.security import SecurityCtx, valid_ctx
 
 logger = logging.getLogger(__name__)
 
 # The closed set the table's CHECK enforces. Embeddings and cron arrive with the PRs that route them here.
 KINDS = frozenset({"chat", "followups", "compaction", "subagent", "embedding", "cron"})
+
+# `cost_usd` has twelve decimal places in the table; the credits are computed from the cost AS STORED.
+_COST_UNIT = Decimal("0.000000000001")
 
 _EVENT_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "agent-core-demo/usage-event")
 _warned_missing_table = False
@@ -110,40 +143,94 @@ async def record_call(
         "price_input_per_token": priced.price.input_per_token if priced.price else None,
         "price_output_per_token": priced.price.output_per_token if priced.price else None,
     }
+    row.update(_rating(priced))
     global _warned_missing_table
     try:
         await _insert(row)
-    except pg_errors.UndefinedTable:
+    except (pg_errors.UndefinedTable, pg_errors.UndefinedColumn):
+        # The table (19), or the credit columns CREDITS_PER_USD needs (21), are not applied.
         _degraded("usage_event_table_missing")
         if not _warned_missing_table:
             _warned_missing_table = True
             logger.warning(
-                "usage_events table is missing; no model call is being metered until "
-                "postgres-init/19-usage-events.sql is applied"
+                "usage_events table is missing (or lacks the credit columns CREDITS_PER_USD needs); no model call "
+                "is being metered until postgres-init/19-usage-events.sql and 21-usage-event-credits.sql are applied"
             )
     except Exception as exc:  # noqa: BLE001 - a failing write must not fail the turn it records; counted and alerted instead
         _degraded("usage_event_write")
         logger.warning("usage_event_write_failed", extra={"error_class": type(exc).__name__})
 
 
+def _rating(priced: PricedCall) -> dict:
+    """The credit fields of an event, or {} when credits are off (no `CREDITS_PER_USD`).
+
+    The keys are present exactly when credits are on: `_insert` picks its statement by them, so a
+    deployment that has not set a rate never mentions a column it may not have. `credits` is None for an
+    unpriced call (unknown, not free). The cost is the one the row stores (see `_COST_UNIT`)."""
+    if CREDITS_PER_USD is None:
+        return {}
+    rating: dict = {"credits": None, "credits_per_usd": CREDITS_PER_USD, "markup": MARKUP}
+    if priced.cost_usd is not None:
+        cost = Decimal(str(priced.cost_usd)).quantize(_COST_UNIT, rounding=ROUND_HALF_UP)
+        rating["cost_usd"] = cost
+        rating["credits"] = credits.credits_for_cost(cost, CREDITS_PER_USD, MARKUP)
+    return rating
+
+
+_COLUMNS = (
+    "event_id, tenant, principal, thread_id, kind, model_alias, resolved_model, "
+    "input_tokens, output_tokens, cached_input_tokens, total_tokens, cost_usd, "
+    "price_input_per_token, price_output_per_token"
+)
+_VALUES = (
+    "%(event_id)s, %(tenant)s, %(principal)s, %(thread_id)s, %(kind)s, "
+    "%(model_alias)s, %(resolved_model)s, %(input_tokens)s, %(output_tokens)s, "
+    "%(cached_input_tokens)s, %(total_tokens)s, %(cost_usd)s, "
+    "%(price_input_per_token)s, %(price_output_per_token)s"
+)
+_INSERT = f"INSERT INTO usage_events ({_COLUMNS}) VALUES ({_VALUES}) ON CONFLICT (event_id) DO NOTHING"
+_INSERT_RATED = (
+    f"INSERT INTO usage_events ({_COLUMNS}, credits, credits_per_usd, markup) "
+    f"VALUES ({_VALUES}, %(credits)s, %(credits_per_usd)s, %(markup)s) ON CONFLICT (event_id) DO NOTHING"
+)
+
+
 async def _insert(row: dict) -> bool:
     """True if a row was written, False if `event_id` was already there. The statement relies on
     the table's PRIMARY KEY for `ON CONFLICT`, which a fake cursor cannot prove: the real-Postgres
-    test (tests/integration/test_usage_events_real_postgres.py) does."""
+    test (tests/integration/test_usage_events_real_postgres.py) does.
+
+    A rated row (credits on) is followed, in the same transaction, by the debit for a tenant with a
+    wallet; see "Charging credits" in the module docstring. A duplicate is never charged."""
+    rated = "credits" in row
     async with get_connection() as conn:
-        cur = await conn.execute(
-            "INSERT INTO usage_events "
-            "(event_id, tenant, principal, thread_id, kind, model_alias, resolved_model, "
-            "input_tokens, output_tokens, cached_input_tokens, total_tokens, cost_usd, "
-            "price_input_per_token, price_output_per_token) "
-            "VALUES (%(event_id)s, %(tenant)s, %(principal)s, %(thread_id)s, %(kind)s, "
-            "%(model_alias)s, %(resolved_model)s, %(input_tokens)s, %(output_tokens)s, "
-            "%(cached_input_tokens)s, %(total_tokens)s, %(cost_usd)s, "
-            "%(price_input_per_token)s, %(price_output_per_token)s) "
-            "ON CONFLICT (event_id) DO NOTHING",
-            row,
-        )
-        return cur.rowcount == 1
+        cur = await conn.execute(_INSERT_RATED if rated else _INSERT, row)
+        inserted = cur.rowcount == 1
+        if inserted and rated and row["credits"] is not None:
+            await _charge(conn, row)
+        return inserted
+
+
+async def _charge(conn: AsyncConnection, row: dict) -> None:
+    """Debits the tenant's wallet for the event just inserted on `conn`, inside a savepoint so that a
+    wallet fault undoes only the debit and never the event (module docstring: the meter outranks the
+    charge, because a lost event cannot be repaired and an uncharged one can). Never raises."""
+    try:
+        async with conn.transaction():
+            await credits.debit_in(
+                conn,
+                row["tenant"],
+                row["credits"],
+                idempotency_key=row["event_id"],
+                usage_event_id=row["event_id"],
+                reason=f"model call ({row['kind']})",
+                pricing=credits.Pricing(
+                    cost_usd=row["cost_usd"], credits_per_usd=row["credits_per_usd"], markup=row["markup"]
+                ),
+            )
+    except Exception as exc:  # noqa: BLE001 - a wallet fault must not lose the event it was charging for; counted and alerted instead (CreditDebitFailing)
+        _degraded("credit_debit")
+        logger.warning("credit_debit_failed", extra={"error_class": type(exc).__name__})
 
 
 def reset_state() -> None:

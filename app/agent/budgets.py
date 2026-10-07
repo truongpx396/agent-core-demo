@@ -44,6 +44,31 @@ up to (concurrent turns) x MAX_COST_USD_PER_TURN. That is a soft guard rail, not
 meter, and closing it would mean a schema change to the hold table for a cap whose overshoot is
 this small; the tenant limits above it stay exact.
 
+## The credit gate (specs/010 T016)
+
+A deployment that sells credits adds one more kind of limit, and it is a different KIND: not a ceiling
+that resets, but a prepaid balance that only a grant refills. When `CREDITS_ENFORCEMENT` is on, a tenant
+that HAS a wallet (a `credit_accounts` row) is refused, before any model work, with
+`ErrorCode.INSUFFICIENT_CREDITS` once its available credits minus its in-flight holds are not positive.
+A tenant with no wallet is never gated (spec D8): shipping this changes nothing for anyone until an
+operator, or a verified purchase, opens one.
+
+  * **Holds are expressed in credits.** Each running turn holds `MAX_COST_USD_PER_TURN` dollars
+    (`usage_ledger.reserve_budget`); the gate converts that to credits at the configured rate, so a
+    tenant with 100 credits cannot start a second concurrent turn that may spend 500. The first turn of
+    a tenant is checked against the balance alone, so it can overdraw by at most one turn's worth, which
+    the wallet books as debt instead of refusing (`credits.debit_in`) and which the next grant repays.
+  * **It runs after the dollar limits**, so an operator's spend cap is what a caller is told about when
+    both apply: buying credits would not help a tenant the cap is stopping. Only a turn the dollar limits
+    would serve reads the wallet, so a refused turn pays for no extra read.
+  * **Off means untouched.** `credit_gate=None` (enforcement off) reads nothing: the wallet is not
+    queried, so the turn path costs exactly what it did before (SC-005).
+  * **A wallet that cannot be read** is governed by `CREDIT_CHECK_FAILURE_POLICY`, separately from the
+    ledger's because the two can fail separately. "open" serves the turn and counts it
+    (`agent_cost_governance_degraded_total{path="credit_read"}`, alert `CreditGateUnenforced`); "closed"
+    refuses it as `budget_check_unavailable`, which blames no one's balance. The in-flight hold read
+    stays open to 0.0 either way, as above.
+
 ## When the check cannot answer
 
   * the ledger READ fails — governed by `BUDGET_CHECK_FAILURE_POLICY`. "open" (the default)
@@ -62,9 +87,11 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Literal
 
 from app.agent import budget_policies, usage_ledger
+from app.billing import credits
 from app.core import metrics
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.security import SecurityCtx, valid_ctx
@@ -107,13 +134,14 @@ class BudgetLimit:
 class Allowance:
     """The answer to "may this turn start?".
 
-    `status` is "ok", "exceeded" (a limit has been used up), or "unavailable" (the check could
-    not be made AND the policy is "closed"). For "exceeded" the scope/window/figures are those of
+    `status` is "ok", "exceeded" (a limit has been used up), "insufficient_credits" (the tenant's
+    wallet has nothing left to spend), or "unavailable" (the check could not be made AND the policy
+    is "closed"). For "exceeded" the scope/window/figures are those of
     the limit that refused; for "ok" they are those of the limit closest to its cap. `degraded`
     marks an "ok" granted only because a read failed under the "open" policy, so a caller or a
     test can tell a verified pass from an unverified one."""
 
-    status: Literal["ok", "exceeded", "unavailable"]
+    status: Literal["ok", "exceeded", "unavailable", "insufficient_credits"]
     scope: Scope = "tenant"
     window: Window = "day"
     spent_usd: float = 0.0
@@ -121,10 +149,25 @@ class Allowance:
     limit_usd: float = 0.0
     resets_at: datetime | None = None
     degraded: bool = False
+    # Set only when the credit gate refused ("insufficient_credits"): the wallet's available credits and
+    # the in-flight holds, in credits. The scope/window/usd figures above mean nothing for that status.
+    available_credits: Decimal | None = None
+    reserved_credits: Decimal | None = None
 
     @property
     def refused(self) -> bool:
         return self.status != "ok"
+
+
+@dataclass(frozen=True)
+class CreditGate:
+    """What the credit gate needs, bound at call time like `Defaults` (runtime.py). Passing one means
+    enforcement is on: `credits_per_usd` and `markup` turn the dollar holds into credits, and
+    `fail_policy` ("open" | "closed") says what to do when the wallet cannot be read."""
+
+    credits_per_usd: Decimal
+    markup: Decimal
+    fail_policy: str
 
 
 def window_start(window: Window, now: datetime) -> datetime:
@@ -239,12 +282,43 @@ def _note_threshold(ctx: SecurityCtx, limit: BudgetLimit, threshold: float, spen
     )
 
 
+async def _credit_check(ctx: SecurityCtx, gate: CreditGate) -> tuple[Allowance | None, bool]:
+    """(a refusal, or None if the gate has no objection; whether the wallet could not be read and the
+    turn was served anyway). Called only for a valid ctx."""
+    tenant = ctx["tenant"]
+    try:
+        wallet = await credits.account_balance(tenant)
+    except Exception as exc:  # noqa: BLE001 - a wallet read failing must not by itself take every turn down; CREDIT_CHECK_FAILURE_POLICY decides, and it is counted and alerted either way
+        metrics.agent_cost_governance_degraded_total.labels(path="credit_read").inc()
+        logger.warning(
+            "credit_check_failed", extra={"error_class": type(exc).__name__, "fail_policy": gate.fail_policy}
+        )
+        return (Allowance("unavailable"), False) if gate.fail_policy == "closed" else (None, True)
+    if wallet is None:
+        return None, False  # no wallet: not on credit billing, never gated (spec D8)
+    reserved = credits.credits_for_cost(await usage_ledger.in_flight_reservation(tenant), gate.credits_per_usd, gate.markup)
+    if wallet.available - reserved > 0:
+        return None, False
+    metrics.agent_credit_enforcement_refused_total.inc()
+    logger.warning(
+        "credits_exhausted",
+        extra={
+            "tenant": tenant,
+            "principal": ctx["principal"],
+            "available_credits": str(wallet.available),
+            "reserved_credits": str(reserved),
+        },
+    )
+    return Allowance("insufficient_credits", available_credits=wallet.available, reserved_credits=reserved), False
+
+
 async def check_allowance(
     ctx: SecurityCtx | None,
     *,
     limits: Sequence[BudgetLimit],
     fail_policy: str,
     now: datetime | None = None,
+    credit_gate: CreditGate | None = None,
 ) -> Allowance:
     """Spend over each limit's window (`usage_ledger`) plus, for tenant limits, in-flight holds,
     against that limit.
@@ -255,6 +329,9 @@ async def check_allowance(
     for. Limits that still allow the turn but have crossed a warning threshold are counted and
     logged as an early signal. Reads are sequential and only made for limits that are enabled, so
     a deployment with just the daily tenant limit pays for exactly one ledger read, as before.
+
+    With a `credit_gate`, a turn the limits above would serve is then checked against the tenant's
+    wallet ("The credit gate" in the module docstring); without one the wallet is never read.
     """
     if not valid_ctx(ctx):
         return Allowance("ok")
@@ -296,6 +373,10 @@ async def check_allowance(
                 window_resets_at(limit.window, now),
             )
 
+    credit_refusal, credit_degraded = await _credit_check(ctx, credit_gate) if credit_gate else (None, False)
+    if credit_refusal is not None:
+        return credit_refusal
+
     closest: Allowance | None = None
     closest_fraction = -1.0
     for limit, (spent, reserved) in zip(limits, spends, strict=True):
@@ -309,7 +390,8 @@ async def check_allowance(
                 "ok", limit.scope, limit.window, spent, reserved, limit.limit_usd,
                 window_resets_at(limit.window, now),
             )
-    return closest or Allowance("ok")
+    allowance = closest or Allowance("ok")
+    return replace(allowance, degraded=True) if credit_degraded else allowance
 
 
 async def check(
@@ -318,6 +400,7 @@ async def check(
     defaults: Defaults,
     fail_policy: str,
     now: datetime | None = None,
+    credit_gate: CreditGate | None = None,
 ) -> Allowance:
     """`check_allowance` for `ctx` with the operator's overrides applied: reads the tenant's and
     the person's override rows, resolves the limits that apply, and checks them.
@@ -342,7 +425,11 @@ async def check(
             return Allowance("unavailable")
         overrides, degraded = [], True
     allowance = await check_allowance(
-        ctx, limits=resolve_limits(defaults, overrides, ctx["principal"]), fail_policy=fail_policy, now=now
+        ctx,
+        limits=resolve_limits(defaults, overrides, ctx["principal"]),
+        fail_policy=fail_policy,
+        now=now,
+        credit_gate=credit_gate,
     )
     return replace(allowance, degraded=True) if degraded and not allowance.refused else allowance
 
@@ -392,6 +479,14 @@ def refusal_envelope(allowance: Allowance) -> ErrorEnvelope:
         return ErrorEnvelope(
             code=ErrorCode.BUDGET_CHECK_UNAVAILABLE,
             message="Usage could not be verified right now, so this request was not started. Please try again shortly.",
+        )
+    if allowance.status == "insufficient_credits":
+        # No figure in the message or details: the balance is `GET /usage`'s to report, and an error
+        # that echoed it would leak it into every log that keeps error text.
+        return ErrorEnvelope(
+            code=ErrorCode.INSUFFICIENT_CREDITS,
+            message="This organisation has no credits left, so this request was not started. Credits need to be added before it can continue.",
+            details={"scope": "tenant"},
         )
     word = _WINDOW_WORD[allowance.window]
     details: dict = {"scope": allowance.scope, "window": allowance.window}

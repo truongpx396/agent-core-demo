@@ -1,6 +1,7 @@
 """Pydantic request/response models for the FastAPI service."""
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
@@ -112,6 +113,22 @@ class BudgetStatus(BaseModel):
     )
 
 
+class CreditBalance(BaseModel):
+    """The caller's tenant's wallet (app/billing/credits.py). Exact decimals, serialised as strings:
+    a JSON number would round-trip through a float and a balance must not drift."""
+
+    available: Decimal = Field(
+        ..., description="What may still be consumed right now: live (unexpired) credits minus any debt. Can be negative."
+    )
+    debt: Decimal = Field(..., description="Credits consumed beyond the balance, repaid first by the next grant; 0 if none.")
+    ledger: Decimal = Field(
+        ..., description="Every lot including expired ones not yet swept, plus debt: the ledger's own total."
+    )
+    enforced: bool = Field(
+        ..., description="Whether a turn is refused (insufficient_credits) when `available` is not positive."
+    )
+
+
 class UsageResponse(BaseModel):
     """GET /usage's body — this caller's tenant, all-time plus the same
     rolling-24h number budgets.check_tenant_daily checks, so a caller can see
@@ -131,5 +148,12 @@ class UsageResponse(BaseModel):
             "Every spend limit that applies to THIS caller — the tenant's and the caller's own, "
             "overrides included — with how much is used, so they can see how close they are "
             "before being refused. Only the caller's own personal figures; never another person's."
+        ),
+    )
+    credits: CreditBalance | None = Field(
+        None,
+        description=(
+            "The tenant's credit wallet, or null when the deployment has credits off or this tenant has "
+            "no wallet (it is then never charged or gated). Tenant-wide, like the cost figures above."
         ),
     )

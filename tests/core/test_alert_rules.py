@@ -45,3 +45,18 @@ def test_a_worker_pool_that_answers_nothing_has_an_alert():
     assert "WorkerUnreachable" in rules, "a total worker outage produces no alert"
     assert "agent_worker_unreachable_total" in rules["WorkerUnreachable"]["expr"]
     assert rules["WorkerUnreachable"]["labels"]["severity"] in {"warning", "critical"}
+
+
+def test_every_degrade_path_that_hides_committed_money_has_an_alert():
+    """A metric nobody alerts on is still silent. These are the credit paths where money is committed or
+    unverified and no human would otherwise know (constitution V): an event kept whose charge failed, a gate
+    that could not read a wallet, and an event that could not be written at all."""
+    rules = {rule["alert"]: rule["expr"] for rule in _rules()}
+
+    for alert, path in (
+        ("CreditDebitFailing", "credit_debit"),
+        ("CreditGateUnenforced", "credit_read"),
+        ("UsageEventWriteFailing", "usage_event_write"),
+    ):
+        assert alert in rules, f"{alert}: the {path} path hides committed money and has no alert"
+        assert f'path="{path}"' in rules[alert], f"{alert} does not watch {path}"

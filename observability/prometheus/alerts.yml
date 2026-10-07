@@ -119,9 +119,40 @@ groups:
           summary: "The usage_events table does not exist: no model call is being metered"
           description: >-
             postgres-init/19-usage-events.sql has not been applied to this database (init
-            scripts run only on a fresh volume). Apply it once with
-            `psql -U langfuse -d appdata -f postgres-init/19-usage-events.sql`. Turns are
-            unaffected; the per-turn usage_ledger the spend caps read is a separate table.
+            scripts run only on a fresh volume), or CREDITS_PER_USD is set and
+            postgres-init/21-usage-event-credits.sql has not. Apply it once with
+            `psql -U langfuse -d appdata -f postgres-init/<file>`. Turns are unaffected; the
+            per-turn usage_ledger the spend caps read is a separate table.
+
+      - alert: CreditDebitFailing
+        expr: increase(agent_cost_governance_degraded_total{path="credit_debit"}[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Model calls are being metered but a tenant's credits are not being charged"
+          description: >-
+            A usage event was written and the wallet debit for it failed in the last 10m. The
+            turn succeeded and the event is kept (a lost event cannot be repaired, an uncharged one
+            can), so nobody was told: that tenant has had usage it was not charged for, and its
+            balance is higher than it should be. Check the appdata Postgres, and that
+            postgres-init/20-credit-wallet.sql is applied. The debit key IS the event id, so each
+            missed charge can be replayed from its event (`credit_transactions.usage_event_id` is
+            what is missing); find them by comparing events that carry `credits` with the wallet.
+
+      - alert: CreditGateUnenforced
+        expr: increase(agent_cost_governance_degraded_total{path="credit_read"}[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "The credit gate could not read a wallet: tenants may be spending without credits"
+          description: >-
+            The wallet read behind CREDITS_ENFORCEMENT failed in the last 10m. Under
+            CREDIT_CHECK_FAILURE_POLICY=open (the default) every turn it covered was served
+            without checking that the tenant has credits; under closed they were refused as
+            budget_check_unavailable. Check the appdata Postgres and
+            postgres-init/20-credit-wallet.sql. Usage in the window is still recorded and
+            debited (overdraft is booked, never refused), so the cost is a tenant running into
+            debt, not lost usage.
 
       - alert: TenantAllowanceUnenforced
         expr: increase(agent_cost_governance_degraded_total{path=~"ledger_read|policy_read"}[10m]) > 0

@@ -113,6 +113,7 @@ The same code runs in both; only configuration and the compose file differ.
 | **Observability** | Optional `make obs-up` | Separate observability droplet, fed by sidecars over the private VPC |
 | **Config** | `.env` from `.env.example` | `/opt/agent-core-demo/.env` from `deploy/env/prod.env.example`, created once by hand, never touched by CI |
 | **Cost caps** | Local models cost $0 | `MAX_COST_USD_PER_TURN=0.50`, `MAX_COST_USD_PER_TENANT_PER_DAY=20.0` unless overridden. Three optional limits are off at `0`: `MAX_COST_USD_PER_TENANT_PER_MONTH` (calendar month, UTC) and `MAX_COST_USD_PER_PRINCIPAL_PER_DAY` / `_PER_MONTH` (one person's spend inside their tenant). A person who hits their own limit gets `personal_budget_exceeded`; an organisation-wide stop stays `tenant_budget_exceeded` |
+| **Credits** | Off | Off until `CREDITS_PER_USD` is set (**no default**: a price is your decision). Then a tenant that has a credit wallet is debited per model call, in the same transaction as its usage event. `CREDITS_ENFORCEMENT=true` additionally refuses a tenant whose available credits, less in-flight holds, are not positive (`insufficient_credits`); with it off the wallet is still debited ("shadow mode"). `MARKUP` (default 1) multiplies cost; `CREDIT_CHECK_FAILURE_POLICY` (default `open`) decides what happens when the wallet cannot be read. A tenant with no wallet is never debited or gated |
 | **Provisioning** | `make up` | Terraform (human-run) + `deploy.yml` (automatic after CI passes on `main`) |
 
 Prod does not ship Langfuse, open-webui, MinIO, crawl4ai or OpenSandbox; the tools that need them fail
@@ -237,7 +238,7 @@ LITELLM_MASTER_KEY=… LITELLM_APP_KEY=… make litellm-key ARGS=info           
 | `POST /chat/stream/queued` | Start a turn; SSE stream. Needs a running `agent-worker` |
 | `POST /chat/resume` · `POST /chat/cancel` | Approve/reject a paused tool call · stop a run |
 | `GET /chat/sessions` · `…/{id}/messages` · `…/{id}/pending_approval` | Conversation history and any pending approval |
-| `GET /usage` | The caller's tenant cost, including the rolling-24h figure checked against `MAX_COST_USD_PER_TENANT_PER_DAY`, plus `budgets`: every spend limit that applies to the caller (tenant and their own, overrides included) with spent, remaining and, for a month, `resets_at` |
+| `GET /usage` | The caller's tenant cost, including the rolling-24h figure checked against `MAX_COST_USD_PER_TENANT_PER_DAY`, plus `budgets`: every spend limit that applies to the caller (tenant and their own, overrides included) with spent, remaining and, for a month, `resets_at`, and `credits`: the tenant's wallet (`available`, `debt`, `ledger`, exact decimal strings, and whether it is `enforced`), or `null` when credits are off or the tenant has no wallet |
 | `POST /ingest/upload` · `GET /ingest/stream/{job_id}` | Upload PDF/DOCX/text to the ingest worker · follow its progress |
 
 Interactive docs at `/docs`. Every request needs `X-Tenant-Id` and `X-Principal-Id` (422 without them),
@@ -347,6 +348,9 @@ volume, apply each file you lack by hand, in order (`psql -U langfuse -d appdata
 | `14-tool-call-id-columns` | `tool_call_id UNIQUE` on tickets, incidents, follow-ups | Creating those rows fails |
 | `15-append-notes-as-rows` | `support_ticket_comments`, `crm_lead_notes` | Adding a comment or note fails. **Drops `support_tickets.notes` and `crm_leads.notes` with no data carried over** — copy first |
 | `16-tenant-budget-holds` | One budget hold per in-flight turn | The daily cap stops counting running turns; the reserve fails open |
+| `19-usage-events` | One immutable row per model call (the billing meter) | No call is metered (alert `UsageEventTableMissing`); turns are unaffected |
+| `20-credit-wallet` | The credit wallet: accounts, lots, transactions, entries | Nothing reads it unless `CREDITS_PER_USD` is set; then a charge fails and is counted (`CreditDebitFailing`) |
+| `21-usage-event-credits` | `credits`, `credits_per_usd`, `markup` on `usage_events` | **Apply before setting `CREDITS_PER_USD`**, or every event write fails and is counted (`UsageEventTableMissing`) |
 
 ## Observability
 
@@ -493,7 +497,7 @@ promptfoo/ garak/ loadtest/   prompt checks, jailbreak scan, Locust
 - **A vision model that also does tool calling.** Small local vision models do one or the other; the `vision` alias is a slot, not a verified default. Moderation screens text only, and only the HTTP API accepts images.
 - **A Telegram webhook.** Long-polling needs no public URL; production would use `setWebhook`.
 - **A fallback node** for the primary LLM path.
-- **Credit-based billing.** The meter, the spend limits and the gateway backstop exist; a credit wallet, payment-provider integration (Stripe, PayPal, Polar) and usage export do not. The design, with provider behaviour checked against their own docs, is [specs/010-credit-billing-readiness](specs/010-credit-billing-readiness/spec.md).
+- **Credit-based billing, past the gate.** The meter, the spend limits, the gateway backstop, the credit wallet and the gate that refuses a tenant with no credits all exist (off by default). **Payment-provider integration (Stripe, PayPal, Polar), purchases that become grants, usage export and reconciliation do not**, so today credits are granted only by calling `app/billing/credits.py` directly. The design, with provider behaviour checked against their own docs, is [specs/010-credit-billing-readiness](specs/010-credit-billing-readiness/spec.md).
 
 **Known gaps** from reviewing the as-built system against the constitution (the full list is in
 GRAPH_PATTERNS.md). None lets a write run without a human decision, but the first means that behind the

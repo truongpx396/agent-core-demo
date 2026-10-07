@@ -73,6 +73,9 @@ _VALUE = re.compile(r"^\s*#?\s*([A-Z][A-Z0-9_]+)=(\S*)", re.MULTILINE)
 
 
 def _same(example_value: str, default) -> bool:
+    if default is None:
+        # A setting with NO default (CREDITS_PER_USD: a price is the operator's decision) is listed empty.
+        return example_value == ""
     if isinstance(default, bool):
         return example_value.lower() == str(default).lower()
     if isinstance(default, (int, float)):

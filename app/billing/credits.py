@@ -27,7 +27,7 @@ existing tenant until an operator, or a verified purchase webhook, opens an acco
   * **A debit never fails because the balance is short.** The model call it pays for has already
     happened, so refusing to record it would only lose the fact. The shortfall is booked on the
     tenant's `overdraft` lot (a negative `remaining`), counted, and repaid first by the next grant.
-    Stopping the spend is the job of gating (checked BEFORE the call, a later change), not of the debit.
+    Stopping the spend is the job of gating (`budgets.check_allowance`, checked BEFORE the call), not of the debit.
 
 ## Consumption order
 
@@ -357,17 +357,33 @@ async def expire_due(*, limit: int = 100, tenant: str | None = None) -> int:
     return expired
 
 
-async def balance_in(conn: AsyncConnection, tenant: str) -> Balance:
+async def _read_balance(conn: AsyncConnection, tenant: str) -> tuple[bool, Balance]:
+    """(has an account, balance) in ONE statement. The join starts from `credit_accounts`, so a tenant
+    with an account and no lots yet is one row (zero credits) while a tenant with no account is no row
+    (`COUNT` of 0): the gate must tell "not on credit billing" apart from "on it, with nothing left"."""
     cur = await conn.execute(
-        "SELECT "
-        "COALESCE(SUM(remaining) FILTER (WHERE source <> 'overdraft' AND (expires_at IS NULL OR expires_at > now())), 0), "
-        "COALESCE(SUM(remaining), 0), "
-        "COALESCE(-SUM(remaining) FILTER (WHERE source = 'overdraft'), 0) "
-        "FROM credit_lots WHERE tenant = %s",
+        "SELECT COUNT(DISTINCT a.tenant), "
+        "COALESCE(SUM(l.remaining) FILTER (WHERE l.source <> 'overdraft' AND (l.expires_at IS NULL OR l.expires_at > now())), 0), "
+        "COALESCE(SUM(l.remaining), 0), "
+        "COALESCE(-SUM(l.remaining) FILTER (WHERE l.source = 'overdraft'), 0) "
+        "FROM credit_accounts a LEFT JOIN credit_lots l ON l.tenant = a.tenant WHERE a.tenant = %s",
         (tenant,),
     )
-    live, ledger, debt = await _one(cur)
-    return Balance(available=live - debt, ledger=ledger, debt=debt)
+    accounts, live, ledger, debt = await _one(cur)
+    return accounts > 0, Balance(available=live - debt, ledger=ledger, debt=debt)
+
+
+async def balance_in(conn: AsyncConnection, tenant: str) -> Balance:
+    """The tenant's balance; all zeros for a tenant with no account (use `account_balance_in` to tell)."""
+    return (await _read_balance(conn, tenant))[1]
+
+
+async def account_balance_in(conn: AsyncConnection, tenant: str) -> Balance | None:
+    """The balance of a tenant that is ON credit billing, or None for one that is not (no account:
+    never debited, never gated, spec D8). One round trip, which matters because the gate reads it
+    before every turn of an enforcing deployment."""
+    has_account, balance = await _read_balance(conn, tenant)
+    return balance if has_account else None
 
 
 async def verify_in(conn: AsyncConnection, tenant: str) -> list[str]:
@@ -395,6 +411,11 @@ async def debit(tenant: str, amount, **kwargs) -> Applied:
 async def balance(tenant: str) -> Balance:
     async with get_connection() as conn:
         return await balance_in(conn, tenant)
+
+
+async def account_balance(tenant: str) -> Balance | None:
+    async with get_connection() as conn:
+        return await account_balance_in(conn, tenant)
 
 
 async def verify(tenant: str) -> list[str]:
