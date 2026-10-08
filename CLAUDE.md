@@ -28,7 +28,7 @@ make agent-worker      # queue consumer for the Ecorp domain (also agent-worker-
 make chat              # CLI agent; chat-hitl adds approval prompts
 ```
 
-`make eval`, `promptfoo`, `garak`, `deepeval`, `test-sandbox` need live models or services and
+`make eval`, `promptfoo`, `garak`, `deepeval`, `test-sandbox`, `test-provider-sandbox` need live models or services and
 are manual by design. Run `make eval` + `make promptfoo` after a prompt, model-alias or
 retrieval change. Don't run `make clean`, `clear-*`, or `restart-all` without being asked —
 they delete volumes or kill running processes.

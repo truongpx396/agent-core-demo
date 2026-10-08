@@ -15,6 +15,7 @@ from app.billing.providers.base import (
     BillingCustomer,
     BillingEvent,
     Capability,
+    CreditProduct,
     EventKind,
     InvalidPayload,
     InvalidSignature,
@@ -188,3 +189,56 @@ class TestUsageExport:
         result = await harness.provider.export_usage(self.CUSTOMER, [])
 
         assert not result.accepted and not result.duplicate and not result.failed
+
+
+class TestCheckout:
+    """Only for an adapter that declares CHECKOUT (Stripe, Polar). A checkout is how the customer pays for a pack, and four things about
+    it cost money or trust if they are wrong: a retry must not start a SECOND purchase, the session must carry back what the webhook
+    will echo (that is how a payment finds its catalog entry), no tenant may travel to the provider, and a refusal must say whether
+    trying again can help without repeating the provider's own words."""
+
+    CUSTOMER = BillingCustomer("acme-secret-tenant-name", "any", "cus_1")
+    PRODUCT = CreditProduct("any", "price_pack_100", Decimal("100"))
+
+    @pytest.fixture(autouse=True)
+    def only_if_declared(self, harness):
+        if Capability.CHECKOUT not in harness.provider.capabilities:
+            pytest.skip("this adapter does not declare CHECKOUT")
+
+    async def checkout(self, harness, key="attempt-1"):
+        return await harness.provider.create_checkout(
+            self.CUSTOMER, self.PRODUCT, idempotency_key=key, success_url="https://app.example/ok", cancel_url="https://app.example/no"
+        )
+
+    async def test_it_returns_a_session_the_customer_can_be_sent_to(self, harness):
+        session = await self.checkout(harness)
+
+        assert session.session_ref and session.url.startswith("https://")
+
+    async def test_the_same_idempotency_key_twice_is_the_same_session_not_two_purchases(self, harness):
+        first = await self.checkout(harness, "attempt-1")
+        again = await self.checkout(harness, "attempt-1")
+
+        assert again == first
+
+    async def test_a_different_key_is_a_different_purchase_attempt(self, harness):
+        first = await self.checkout(harness, "attempt-1")
+        second = await self.checkout(harness, "attempt-2")
+
+        assert second.session_ref != first.session_ref
+
+    async def test_paying_the_session_echoes_the_customer_and_the_catalog_entry_it_was_made_for(self, harness):
+        """This is the provider-side reference the webhook will echo: without it a payment cannot find what it bought."""
+        session = await self.checkout(harness)
+
+        (event,) = parse(harness, harness.paid(session.session_ref))
+
+        assert event.kind is EventKind.CREDITS_PURCHASED
+        assert (event.customer_ref, event.product_ref) == (self.CUSTOMER.customer_ref, self.PRODUCT.product_ref)
+        assert event.payment_ref, "a payment reference is what a later refund will point at"
+
+    async def test_no_tenant_goes_to_the_provider(self, harness):
+        await self.checkout(harness)
+
+        wire = json.dumps(harness.checkout_requests())
+        assert self.CUSTOMER.tenant not in wire, "the provider knows its own customer id; the link to a tenant is this app's table"

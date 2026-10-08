@@ -1,10 +1,12 @@
 """The Stripe and Polar credential settings (app/core/config.py, specs/010 T029).
 
-The adapters that will read them are not built, so these tests pin only what the settings themselves promise: a real key is
+These tests pin only what the settings themselves promise (the Stripe adapter reads one of them, the Polar adapter is not built): a real key is
 secret-wrapped, the obvious pasting mistake is refused at startup, a blank line in `.env` means "not set", Polar defaults to
 its sandbox, and, the one that mattered, a rejected value is never printed back in the startup error.
 
 `_env_file=None` and a scrubbed environment: `Settings()` otherwise reads the developer's own `.env`."""
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -12,7 +14,7 @@ from app.billing import providers
 from app.core.config import Settings
 
 _ENV = (
-    "STRIPE_API_KEY", "STRIPE_METER_EVENT_NAME", "POLAR_ACCESS_TOKEN", "POLAR_ENVIRONMENT", "POLAR_USAGE_EVENT_NAME",
+    "STRIPE_API_KEY", "POLAR_ACCESS_TOKEN", "POLAR_ENVIRONMENT",
     "BILLING_PROVIDERS", "BILLING_WEBHOOK_SECRETS",
 )
 
@@ -28,7 +30,6 @@ def test_by_default_nothing_is_configured_and_polar_is_the_sandbox():
 
     assert settings.stripe_api_key is None and settings.polar_access_token is None
     assert settings.polar_environment == "sandbox"
-    assert settings.stripe_meter_event_name == settings.polar_usage_event_name == "agent_credits_used"
 
 
 @pytest.mark.parametrize("key", ["sk_test_abc123", "rk_test_abc123", "sk_live_abc123", "rk_live_abc123"])
@@ -103,26 +104,20 @@ def test_an_unknown_polar_environment_is_refused(monkeypatch):
         Settings(_env_file=None)
 
 
-@pytest.mark.parametrize(
-    ("name", "limit"), [("STRIPE_METER_EVENT_NAME", 100), ("POLAR_USAGE_EVENT_NAME", 128)]
-)
-def test_an_event_name_is_bounded_by_what_the_provider_accepts(monkeypatch, name, limit):
-    monkeypatch.setenv(name, "x" * limit)
-    Settings(_env_file=None)  # the limit itself is fine
-
-    monkeypatch.setenv(name, "x" * (limit + 1))
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-    monkeypatch.setenv(name, "")
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-def test_the_warning_in_env_example_is_still_true_while_no_adapter_is_registered():
-    """`.env.example` tells the operator not to put `stripe` or `polar` in BILLING_PROVIDERS because only `fake` is
-    registered and an unregistered name makes the API refuse to start. When an adapter is registered this fails, which
-    is the prompt to rewrite that comment (and the settings' comment in config.py) instead of leaving it to mislead."""
-    assert set(providers.FACTORIES) == {"fake"}
+def test_the_comment_in_env_example_names_the_adapters_that_exist_and_an_unbuilt_name_still_refuses_to_start():
+    """`.env.example` tells the operator which providers can go in BILLING_PROVIDERS. When an adapter is registered or removed
+    this fails, which is the prompt to rewrite that comment (and the settings' comment in config.py) instead of leaving it to
+    mislead. (Stripe's landed first, then Polar's; PayPal's is the one still unbuilt, so it is the example of a name that refuses.)"""
+    assert set(providers.FACTORIES) == {"fake", "stripe", "polar"}
     with pytest.raises(providers.UnknownProvider):
-        providers.build_configured(("stripe",), {"stripe": "whsec_x"})
+        providers.build_configured(("paypal",), {"paypal": "whsec_x"})
+    for name in ("stripe", "polar"):
+        assert providers.build_configured((name,), {name: "whsec_x"})[name].name == name
+    example = (Path(__file__).resolve().parents[2] / ".env.example").read_text()
+    assert "STRIPE and POLAR adapters are built" in example and "PAYPAL" in example
+
+
+def test_there_is_no_usage_event_name_setting_because_the_model_is_prepaid_packs():
+    """Spec D16: nothing is sent to a provider as usage, so nothing needs a Stripe Meter or a Polar event name. A setting
+    that nothing reads is a promise the code does not keep; it returns with the adapter that exports usage."""
+    assert not {name for name in Settings.model_fields if "event_name" in name}

@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.agent import budgets, spend, usage_ledger
+from app.agent import budget_holds, budgets, spend
 from app.agent import runtime as runtime_module
 from app.agent import runtime_stream as stream_module
 from app.core import errors, metrics
@@ -52,7 +52,7 @@ def ledger(monkeypatch):
         return state["reserved"]
 
     monkeypatch.setattr(spend, "usage_summary", usage_summary)
-    monkeypatch.setattr(usage_ledger, "in_flight_reservation", in_flight_reservation)
+    monkeypatch.setattr(budget_holds, "in_flight_reservation", in_flight_reservation)
     return state
 
 

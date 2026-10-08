@@ -204,8 +204,9 @@ class TestAForgery:
 class TestStartup:
     def test_an_enabled_provider_with_no_registered_adapter_stops_the_process(self, monkeypatch):
         monkeypatch.setattr(billing_router, "_providers", None)
-        monkeypatch.setattr(billing_router, "BILLING_PROVIDERS", ("stripe",))
-        monkeypatch.setattr(billing_router, "BILLING_WEBHOOK_SECRETS", {"stripe": "whsec"})
+        # `paypal`: Stripe's and Polar's adapters are registered; PayPal's is the one still unbuilt (R5 O-C, last in D13).
+        monkeypatch.setattr(billing_router, "BILLING_PROVIDERS", ("paypal",))
+        monkeypatch.setattr(billing_router, "BILLING_WEBHOOK_SECRETS", {"paypal": "whsec"})
 
         with pytest.raises(providers.UnknownProvider, match="no billing adapter"):
             billing_router.validate_configuration()
