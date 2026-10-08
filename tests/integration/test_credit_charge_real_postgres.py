@@ -28,7 +28,7 @@ import psycopg
 import pytest
 from psycopg import errors as pg_errors
 
-from app.agent import budgets, usage_events, usage_ledger
+from app.agent import budget_holds, budgets, usage_events
 from app.agent.pricing import ModelPrice, PricedCall
 from app.billing import credits
 from app.core import metrics
@@ -54,7 +54,7 @@ def real_appdata(appdata_url, monkeypatch):
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:  # commits on a normal exit
             yield conn
 
-    for module in (usage_events, credits, usage_ledger):
+    for module in (usage_events, credits, budget_holds):
         monkeypatch.setattr(module, "get_connection", get_connection)
     monkeypatch.setattr(usage_events, "_insert", _REAL_INSERT)  # the autouse sink replaced it
     monkeypatch.setattr(usage_events, "CREDITS_PER_USD", D("1000"))
@@ -387,12 +387,12 @@ class TestTheGateAgainstARealWallet:
         await fund(tenant, "100")
         assert (await self.check(tenant)).status == "ok"
 
-        hold = await usage_ledger.reserve_budget(ctx_for(tenant), 0.50)
+        hold = await budget_holds.reserve_budget(ctx_for(tenant), 0.50)
         try:
             assert hold is not None
             assert (await self.check(tenant)).status == "insufficient_credits"
         finally:
-            await usage_ledger.release_budget_reservation(ctx_for(tenant), hold)
+            await budget_holds.release_budget_reservation(ctx_for(tenant), hold)
 
         assert (await self.check(tenant)).status == "ok", "the hold is gone with the turn"
 

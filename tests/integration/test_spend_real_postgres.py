@@ -24,14 +24,15 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent import budgets, metering, spend, usage_events, usage_ledger
+from app.agent import budget_holds, budgets, metering, spend, usage_events
 from scripts import usage_events_carry_over as carry
 from tests.containers import ensure_postgres
-from tests.integration.usage_seed import seed_event, seed_ledger_row
+from tests.integration.usage_seed import purge_events, seed_event, seed_ledger_row
 
-# Two tests here write `usage_ledger` rows (one of them three years old, the history a carry-over copies) and the ledger sweep tests
-# (test_ledger_real_postgres.py) delete old ledger rows across tenants up to a ceiling: same xdist group, rows removed afterwards.
-pytestmark = [pytest.mark.integration, pytest.mark.xdist_group("usage_ledger_real_postgres")]
+# One test here copies three-year-old history into `usage_events` (a carry-over), and the usage-event retention sweep tests
+# (test_usage_events_retention_real_postgres.py) delete old events across ALL tenants: left to run at the same moment, the sweep would
+# remove the history mid-test. Same xdist group, so they never overlap. The ledger rows these tests write are removed afterwards.
+pytestmark = [pytest.mark.integration, pytest.mark.xdist_group("usage_events_old_rows")]
 
 _REAL_INSERT = usage_events._insert
 
@@ -51,7 +52,7 @@ def real_appdata(appdata_url, monkeypatch):
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
             yield conn
 
-    for module in (spend, usage_ledger, usage_events, carry):
+    for module in (spend, budget_holds, usage_events, carry):
         monkeypatch.setattr(module, "get_connection", get_connection)
     monkeypatch.setattr(usage_events, "_insert", _REAL_INSERT)  # the autouse sink replaced it
     return get_connection
@@ -59,11 +60,12 @@ def real_appdata(appdata_url, monkeypatch):
 
 @pytest.fixture
 async def tenant(real_appdata) -> str:
-    """A tenant of this test's own; any ledger rows it wrote are removed afterwards (events are append-only and stay)."""
+    """A tenant of this test's own; everything it wrote, ledger rows and events, is removed afterwards (see `purge_events`)."""
     name = f"acme-{uuid.uuid4().hex[:8]}"
     yield name
     async with real_appdata() as conn:
         await conn.execute("DELETE FROM usage_ledger WHERE tenant = %s", (name,))
+        await purge_events(conn, name)
 
 
 def _ctx(tenant: str, principal: str = "alice") -> dict:

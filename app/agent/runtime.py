@@ -163,9 +163,9 @@ async def _reserve_turn_budget(ctx: SecurityCtx | None) -> str | None:
     invalid or the write itself failed — callers pass this straight to
     `_release_turn_budget` in a `finally`, so a failed reservation and a real
     one both round-trip correctly (releasing None is a no-op)."""
-    from app.agent import usage_ledger
+    from app.agent import budget_holds
 
-    return await usage_ledger.reserve_budget(ctx, MAX_COST_USD_PER_TURN)
+    return await budget_holds.reserve_budget(ctx, MAX_COST_USD_PER_TURN)
 
 
 async def _release_turn_budget(ctx: SecurityCtx | None, hold_id: str | None) -> None:
@@ -174,9 +174,9 @@ async def _release_turn_budget(ctx: SecurityCtx | None, hold_id: str | None) -> 
     reservation's whole job is to cover the WINDOW while this turn is
     running, not to track whether it actually succeeded (the usage events,
     written as each call returned, are the real accounting for a turn)."""
-    from app.agent import usage_ledger
+    from app.agent import budget_holds
 
-    await usage_ledger.release_budget_reservation(ctx, hold_id)
+    await budget_holds.release_budget_reservation(ctx, hold_id)
 
 
 async def _upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> None:

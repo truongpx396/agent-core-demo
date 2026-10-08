@@ -64,7 +64,7 @@ CLAUDE.md: one logical change per PR, target ≤ ~400 hand-written lines, ceilin
 | **7b** | The caps and `/usage` read `usage_events`; refuse the events kill switch (T030b, D15) | 7a | ~500 |
 | **7c-1** | Drop the reconciliation's ledger leg (T030c1) | 7b | ~250 |
 | **7c-2** | Stop the per-turn `usage_ledger` write and the dual-write test (T030c2) | 7c-1 | ~500 |
-| **7c-3** | An events retention sweep; move the holds out of `usage_ledger.py` and delete it (T030c3) | 7c-2 | ~500 |
+| **7c-3** | An events retention sweep (3a); move the holds out of `usage_ledger.py` and delete it (3b) (T030c3) | 7c-2 | ~500 |
 
 ## Risks accepted
 

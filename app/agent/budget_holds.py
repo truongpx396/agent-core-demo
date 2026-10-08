@@ -1,24 +1,25 @@
-"""The frozen per-turn `usage_ledger` table, and the in-flight budget holds that happen to live beside it.
+"""The in-flight budget holds: what keeps N concurrent turns from all passing the same stale cap check.
 
-The table (`postgres-init/03-meter.sql`) used to be what the dollar caps read (pattern 26, spec 008). Since specs/010 T030
-the caps sum the per-call usage events (`app/agent/spend.py`), and since T030c2 NOTHING WRITES this table: `record_usage`
-is gone, the turn-end row and the subagent's row with it. What remains here is
+A turn that passed `budgets.check` reserves `MAX_COST_USD_PER_TURN` for its duration (`reserve_budget`) and gives it back when it
+ends (`release_budget_reservation`, always, in a `finally`); a sibling turn for the same tenant adds the tenant's in-flight total
+(`in_flight_reservation`) to what the usage events say was already spent. Without the hold, N turns racing one tenant would all read
+the same stale "spent so far", all pass, and all proceed: a check-then-act race. It is about concurrency, not history: a hold is
+a row in `tenant_budget_holds` (postgres-init/16) with its own timestamp, and one that outlives its turn ages out on its own clock.
 
-  * the budget holds (`reserve_budget`, `release_budget_reservation`, `in_flight_reservation`): a tenant's running turns
-    reserve `MAX_COST_USD_PER_TURN` so that N concurrent turns cannot all pass the same stale check. They are about
-    concurrency, not history, and are stored in `tenant_budget_holds`, not in the ledger; they live in this module only
-    because they always did, and move out of it when it is deleted (T030c3);
-  * `sweep_old_rows`, the retention sweep of the frozen table, retired in T030c3 together with its script.
+This used to live in `usage_ledger.py`, beside the per-turn ledger the caps read. That module is gone (specs/010 T030c3): nothing
+writes the ledger since T030c2, the caps sum the usage events (`app/agent/spend.py`), and its retention sweep was replaced by the
+events' (`app/agent/usage_events_retention.py`). The holds had never had anything to do with the ledger except sharing its file.
+The `usage_ledger` TABLE stays as read-only history that `scripts/usage_events_carry_over.py` can copy into the events; dropping it
+is a later, separate, destructive migration.
 
-The table itself stays as read-only history (the carry-over, `scripts/usage_events_carry_over.py`, copied it into the events);
-dropping it is a later, separate, destructive migration.
+Every function here fails OPEN (a hold that cannot be written or read must not block a turn) and counts the failure
+(`agent_cost_governance_degraded_total{path="reservation"}`).
 """
 import logging
 import uuid
 
 from app.agent.sql_store import get_connection
 from app.core import metrics
-from app.core.config import USAGE_LEDGER_MIN_RETENTION_DAYS
 from app.core.security import SecurityCtx, valid_ctx
 
 logger = logging.getLogger(__name__)
@@ -128,66 +129,3 @@ async def in_flight_reservation(tenant: str) -> float:
             "tenant_budget_in_flight_read_failed", extra={"error_class": type(exc).__name__}
         )
         return 0.0
-
-
-# Rows go in batches so one sweep never holds a long lock or one huge transaction
-# on a ledger that has grown for a year; each batch commits on its own.
-SWEEP_BATCH_SIZE = 5000
-# One run's ceiling: 1,000 batches is 5 million rows at the default size, far past a year's
-# backlog on any single deployment this was sized for. The app never writes a row older than
-# the cutoff, so a sweep ends at the first short batch; the ceiling is for the day something
-# does (a restore or backfill re-inserting old rows) so one run still has a bounded duration.
-SWEEP_MAX_BATCHES = 1000
-
-
-async def sweep_old_rows(
-    *,
-    older_than_days: int,
-    batch_size: int = SWEEP_BATCH_SIZE,
-    max_batches: int = SWEEP_MAX_BATCHES,
-) -> int:
-    """Deletes ledger rows recorded more than `older_than_days` ago and returns
-    how many (spec 008 A3: nothing ever trimmed this table, and the allowance
-    read runs before every turn). An operator job (`scripts/usage_ledger_sweep.py`),
-    never reachable from a request, so unlike every other statement in this module
-    it deliberately spans tenants — retention is a property of the table, not of one
-    tenant's data.
-
-    The caller must keep `older_than_days` above the longest window any budget
-    reads (a 31-day month), or a window would silently stop counting spend that is
-    still inside it: anything under `USAGE_LEDGER_MIN_RETENTION_DAYS` raises here,
-    before a row is touched, so the floor holds for every caller and not just the
-    script.
-
-    The inner SELECT has no ORDER BY on purpose: rows are inserted in time order, so
-    the oldest sit first in the heap and the scan finds a full batch quickly, whereas
-    sorting a year of rows to delete the oldest few thousand would cost more than the
-    delete.
-
-    A run deletes at most `max_batches * batch_size` rows. Hitting that is logged
-    (`usage_ledger_sweep_hit_batch_ceiling`) and is not an error: the job is
-    idempotent, so the next run continues where this one stopped.
-    """
-    if older_than_days < USAGE_LEDGER_MIN_RETENTION_DAYS:
-        raise ValueError(
-            f"older_than_days={older_than_days} is below the {USAGE_LEDGER_MIN_RETENTION_DAYS}-day floor: "
-            "a monthly budget window would stop counting spend that is still inside it"
-        )
-    total = 0
-    for _ in range(max_batches):
-        async with get_connection() as conn:
-            cur = await conn.execute(
-                "DELETE FROM usage_ledger WHERE id IN ("
-                "SELECT id FROM usage_ledger "
-                "WHERE recorded_at < now() - make_interval(days => %s) LIMIT %s)",
-                (older_than_days, batch_size),
-            )
-            deleted = cur.rowcount
-        total += deleted
-        if deleted < batch_size:
-            return total
-    logger.warning(
-        "usage_ledger_sweep_hit_batch_ceiling",
-        extra={"deleted": total, "max_batches": max_batches, "batch_size": batch_size},
-    )
-    return total
