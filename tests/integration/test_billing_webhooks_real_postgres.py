@@ -128,6 +128,19 @@ async def deliver(harness, delivery: Delivery) -> list[str]:
     return [await webhooks.process_event(event) for event in events]
 
 
+async def setup_deliver(harness, delivery: Delivery) -> list[str]:
+    """A delivery made to set the stage for what a test is about, not to test: it must not have FAILED.
+
+    `webhooks.process_event` never raises: a failure (a lock timeout, a deadlock with another worker's DDL, a database blip)
+    is recorded and returned as "failed". A bare `await deliver(...)` throws that away, and the test then fails somewhere else
+    with a message about something unrelated, as `test_the_database_itself_refuses_a_second_grant_of_one_payment` did
+    ("DID NOT RAISE": the first grant had never happened, so the second one succeeded). Asserting here makes the failure say
+    what it is, and where."""
+    outcomes = await deliver(harness, delivery)
+    assert "failed" not in outcomes, f"the setup delivery FAILED ({outcomes}); the reason is on its billing_webhook_events row"
+    return outcomes
+
+
 def count(outcome: str, provider: str = "fake") -> float:
     return metric_value(metrics.agent_billing_webhook_total, provider=provider, outcome=outcome)
 
@@ -152,7 +165,7 @@ class TestOneDeliveryIsOneGrant:
         await world.stock()
         event_id = world.event_id()
 
-        await deliver(harness, harness.purchase(event_id, customer=world.customer, product=world.product, payment=world.payment))
+        await setup_deliver(harness, harness.purchase(event_id, customer=world.customer, product=world.product, payment=world.payment))
 
         status, tenant, reason, attempts, _ = await world.inbox_row("fake", event_id)
         assert (status, tenant, reason, attempts) == ("applied", world.tenant, None, 1)
@@ -190,7 +203,7 @@ class TestOneDeliveryIsOneGrant:
         await world.stock("100")
         event_id = world.event_id()
         delivery = harness.purchase(event_id, customer=world.customer, product=world.product, payment=world.payment)
-        await deliver(harness, delivery)
+        await setup_deliver(harness, delivery)
         async with await world.connect() as conn:
             await conn.execute("DELETE FROM billing_webhook_events WHERE provider = 'fake' AND event_id = %s", (event_id,))
 
@@ -204,7 +217,7 @@ class TestOneDeliveryIsOneGrant:
         await world.link()
         await world.stock("100")
         for label in ("first", "second"):
-            await deliver(harness, harness.purchase(world.event_id(label), customer=world.customer, product=world.product, payment=world.payment))
+            await setup_deliver(harness, harness.purchase(world.event_id(label), customer=world.customer, product=world.product, payment=world.payment))
 
         assert len(await world.lots()) == 1 and (await world.balance()).available == D("100.000000")
 
@@ -353,7 +366,7 @@ class TestARefund:
     async def bought(self, world, harness, credits_: str = "100"):
         await world.link()
         await world.stock(credits_)
-        await deliver(harness, harness.purchase(world.event_id("buy"), customer=world.customer, product=world.product, payment=world.payment))
+        await setup_deliver(harness, harness.purchase(world.event_id("buy"), customer=world.customer, product=world.product, payment=world.payment))
 
     async def test_a_refund_before_any_spend_takes_the_credits_back(self, world, harness):
         await self.bought(world, harness)
@@ -384,11 +397,11 @@ class TestARefund:
     async def test_a_new_purchase_repays_the_debt_and_usage_resumes(self, world, harness):
         await self.bought(world, harness, "100")
         await credits.debit(world.tenant, "70", idempotency_key=f"spent-{world.payment}")
-        await deliver(harness, harness.refund(world.event_id("refund"), customer=world.customer, payment=world.payment))
+        await setup_deliver(harness, harness.refund(world.event_id("refund"), customer=world.customer, payment=world.payment))
         ctx = {"tenant": world.tenant, "principal": "p", "claims": {}}
         assert (await budgets.check_allowance(ctx, limits=[], fail_policy="open", credit_gate=GATE)).status == "insufficient_credits"
 
-        await deliver(harness, harness.purchase(world.event_id("again"), customer=world.customer, product=world.product, payment=f"{world.payment}-2"))
+        await setup_deliver(harness, harness.purchase(world.event_id("again"), customer=world.customer, product=world.product, payment=f"{world.payment}-2"))
 
         assert (await world.balance()).available == D("30.000000")
         assert (await budgets.check_allowance(ctx, limits=[], fail_policy="open", credit_gate=GATE)).status == "ok"
@@ -404,7 +417,7 @@ class TestARefund:
 
     async def test_a_second_refund_event_for_the_same_payment_is_ignored_not_taken_twice(self, world, harness):
         await self.bought(world, harness)
-        await deliver(harness, harness.refund(world.event_id("r1"), customer=world.customer, payment=world.payment))
+        await setup_deliver(harness, harness.refund(world.event_id("r1"), customer=world.customer, payment=world.payment))
 
         outcomes = await deliver(harness, harness.refund(world.event_id("r2"), customer=world.customer, payment=world.payment))
 
@@ -423,7 +436,7 @@ class TestARefund:
         status, _, reason, _, _ = await world.inbox_row("fake", refund_id)
         assert (status, reason) == ("received", "purchase_not_applied_yet")
 
-        await deliver(harness, harness.purchase(world.event_id("buy"), customer=world.customer, product=world.product, payment=world.payment))
+        await setup_deliver(harness, harness.purchase(world.event_id("buy"), customer=world.customer, product=world.product, payment=world.payment))
         assert await deliver(harness, refund) == ["applied"]
         assert (await world.balance()).available == D("0.000000")
 
@@ -453,10 +466,10 @@ class TestARefund:
         await other.link()
         await world.stock("100")
         await other.stock("100")
-        await deliver(harness, harness.purchase(world.event_id(), customer=world.customer, product=world.product, payment="pay_shared"))
-        await deliver(harness, harness.purchase(other.event_id(), customer=other.customer, product=other.product, payment="pay_shared"))
+        await setup_deliver(harness, harness.purchase(world.event_id(), customer=world.customer, product=world.product, payment="pay_shared"))
+        await setup_deliver(harness, harness.purchase(other.event_id(), customer=other.customer, product=other.product, payment="pay_shared"))
 
-        await deliver(harness, harness.refund(world.event_id("refund"), customer=world.customer, payment="pay_shared"))
+        await setup_deliver(harness, harness.refund(world.event_id("refund"), customer=world.customer, payment="pay_shared"))
 
         assert (await world.balance()).available == D("0.000000")
         assert (await other.balance()).available == D("100.000000"), "the other tenant is untouched"
@@ -571,7 +584,7 @@ class TestWhatIsStored:
         await world.stock("100")
         event_id = world.event_id()
 
-        await deliver(harness, harness.purchase(event_id, customer=world.customer, product=world.product, payment=world.payment, buyer_details=True, claims_tenant="evil-corp"))
+        await setup_deliver(harness, harness.purchase(event_id, customer=world.customer, product=world.product, payment=world.payment, buyer_details=True, claims_tenant="evil-corp"))
 
         payload = (await world.inbox_row("fake", event_id))[4]
         text = json.dumps(payload)
@@ -585,7 +598,7 @@ class TestTheSchemaGuards:
         await world.link()
         await world.stock("100")
         event_id = world.event_id()
-        await deliver(harness, harness.purchase(event_id, customer=world.customer, product=world.product, payment=world.payment))
+        await setup_deliver(harness, harness.purchase(event_id, customer=world.customer, product=world.product, payment=world.payment))
 
         async with await world.connect() as conn:
             with pytest.raises(pg_errors.RaiseException, match="terminal"):
@@ -595,7 +608,7 @@ class TestTheSchemaGuards:
         await world.link()
         await world.stock("100")
         event_id = world.event_id()
-        await deliver(harness, harness.purchase(event_id, customer=world.customer, product=world.product, payment=world.payment))
+        await setup_deliver(harness, harness.purchase(event_id, customer=world.customer, product=world.product, payment=world.payment))
 
         async with await world.connect() as conn:
             with pytest.raises(pg_errors.RaiseException, match="never changes"):
@@ -626,7 +639,7 @@ class TestTheSchemaGuards:
     async def test_the_database_itself_refuses_a_second_grant_of_one_payment(self, world, harness):
         await world.link()
         await world.stock("100")
-        await deliver(harness, harness.purchase(world.event_id(), customer=world.customer, product=world.product, payment=world.payment))
+        await setup_deliver(harness, harness.purchase(world.event_id(), customer=world.customer, product=world.product, payment=world.payment))
 
         async with await world.connect() as conn:
             with pytest.raises(pg_errors.UniqueViolation):
@@ -639,6 +652,25 @@ class TestTheSchemaGuards:
         # Through the helper, not a bare `execute`: re-running this DDL while other workers write to the same tables used to
         # deadlock with them, and sometimes the other side was the one that failed (tests/integration/schema_reapply.py).
         await reapply(world.url, "22-billing.sql")  # no exception
+
+
+class TestTheSetupHelper:
+    async def test_a_setup_delivery_that_failed_says_so_instead_of_leaving_the_test_to_fail_elsewhere(self, world, harness, monkeypatch):
+        async def failing(event):
+            return "failed"
+
+        monkeypatch.setattr(webhooks, "process_event", failing)
+
+        with pytest.raises(AssertionError, match="setup delivery FAILED"):
+            await setup_deliver(harness, harness.purchase(world.event_id(), customer=world.customer, product=world.product, payment=world.payment))
+
+    async def test_a_setup_delivery_that_was_merely_ignored_or_a_duplicate_is_not_a_failure(self, world, harness, monkeypatch):
+        async def ignoring(event):
+            return "ignored"
+
+        monkeypatch.setattr(webhooks, "process_event", ignoring)
+
+        assert await setup_deliver(harness, harness.purchase(world.event_id(), customer=world.customer, product=world.product, payment=world.payment)) == ["ignored"]
 
 
 class TestRetention:
