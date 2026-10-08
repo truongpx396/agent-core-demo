@@ -1,10 +1,11 @@
 """Tests for scripts/followup_sweep.py — same hermetic-DI approach as
 tests/scripts/test_ops_digest.py: a fake LLM via `llm=`, and
-store/notify/record_usage monkeypatched so this never touches a real
-Postgres, network, or filesystem sink.
+store/notify monkeypatched so this never touches a real Postgres, network, or
+filesystem sink. The metered call's usage event is captured by tests/conftest.py's
+autouse `usage_event_sink`.
 
 `run_followup_sweep` is `async def` now (awaits `store.due_followups`,
-`chat.ainvoke`, `record_usage`, `notify.post_to_team_channel`,
+`chat.ainvoke`, `notify.post_to_team_channel`,
 `store.mark_followup_done` — all real I/O), so every call below runs
 through `asyncio.run(...)`.
 """
@@ -12,7 +13,7 @@ import asyncio
 
 import pytest
 
-from app.agent import gateway, metering
+from app.agent import gateway
 from scripts import followup_sweep
 
 
@@ -77,10 +78,7 @@ def test_run_followup_sweep_drafts_posts_and_marks_each_followup_done(monkeypatc
 
     monkeypatch.setattr(followup_sweep.notify, "post_to_team_channel", fake_post_to_team_channel)
 
-    async def fake_record_usage(*a, **kw):
-        return None
 
-    monkeypatch.setattr(metering, "record_usage", fake_record_usage)
 
     fake_chat = _FakeChat([_FakeResponse("Hi A, checking in on pricing!"), _FakeResponse("Hi B, here's the demo link!")])
     drafts = asyncio.run(followup_sweep.run_followup_sweep(llm=fake_chat))
@@ -106,13 +104,10 @@ def test_run_followup_sweep_tells_the_gateway_whose_call_it_is(monkeypatch):
     async def fake_post_to_team_channel(channel, message):
         return None
 
-    async def fake_record_usage(*a, **kw):
-        return None
 
     monkeypatch.setattr(followup_sweep.store, "due_followups", fake_due_followups)
     monkeypatch.setattr(followup_sweep.store, "mark_followup_done", fake_mark_followup_done)
     monkeypatch.setattr(followup_sweep.notify, "post_to_team_channel", fake_post_to_team_channel)
-    monkeypatch.setattr(metering, "record_usage", fake_record_usage)
 
     fake_chat = _FakeChat([_FakeResponse("Hi A!")])
     asyncio.run(followup_sweep.run_followup_sweep(llm=fake_chat))
@@ -136,13 +131,10 @@ def test_run_followup_sweep_records_one_cron_usage_event_per_draft(monkeypatch, 
     async def fake_post_to_team_channel(channel, message):
         return None
 
-    async def fake_record_usage(*a, **kw):
-        return None
 
     monkeypatch.setattr(followup_sweep.store, "due_followups", fake_due_followups)
     monkeypatch.setattr(followup_sweep.store, "mark_followup_done", fake_mark_followup_done)
     monkeypatch.setattr(followup_sweep.notify, "post_to_team_channel", fake_post_to_team_channel)
-    monkeypatch.setattr(metering, "record_usage", fake_record_usage)
 
     usage = {"input_tokens": 20, "output_tokens": 10, "total_tokens": 30}
     chat = _FakeChat([_FakeResponse("Hi A!", usage_metadata=usage), _FakeResponse("Hi B!", usage_metadata=usage)])
@@ -155,7 +147,7 @@ def test_run_followup_sweep_records_one_cron_usage_event_per_draft(monkeypatch, 
     assert len({e["event_id"] for e in usage_event_sink}) == 2
 
 
-def test_run_followup_sweep_records_usage_when_tokens_are_reported(monkeypatch):
+def test_run_followup_sweep_records_usage_when_tokens_are_reported(monkeypatch, usage_event_sink):
     due_items = [{"id": 1, "due_at": "2099-01-01", "note": "n", "contact": "a@example.com", "lead_name": "A"}]
 
     async def fake_due_followups(tenant, as_of):
@@ -171,21 +163,13 @@ def test_run_followup_sweep_records_usage_when_tokens_are_reported(monkeypatch):
     monkeypatch.setattr(followup_sweep.store, "mark_followup_done", fake_mark_followup_done)
     monkeypatch.setattr(followup_sweep.notify, "post_to_team_channel", fake_post_to_team_channel)
 
-    recorded = {}
-
-    async def fake_record_usage(ctx, thread_id, model_alias, total_tokens, cost_usd):
-        recorded["total_tokens"] = total_tokens
-        recorded["cost_usd"] = cost_usd
-
-    monkeypatch.setattr(metering, "record_usage", fake_record_usage)
-
     fake_chat = _FakeChat([_FakeResponse("draft", usage_metadata={"total_tokens": 17})])
     asyncio.run(followup_sweep.run_followup_sweep(llm=fake_chat))
 
-    assert recorded["total_tokens"] == 17
+    assert [event["total_tokens"] for event in usage_event_sink] == [17]
 
 
-def test_run_followup_sweep_records_the_priced_cost_of_each_draft(monkeypatch):
+def test_run_followup_sweep_records_the_priced_cost_of_each_draft(monkeypatch, usage_event_sink):
     """Spec 008 A2: same as the digest — the job prices its own model call."""
     from app.agent import pricing
     from app.core.config import CHAT_MODEL
@@ -213,14 +197,9 @@ def test_run_followup_sweep_records_the_priced_cost_of_each_draft(monkeypatch):
     monkeypatch.setattr(followup_sweep.store, "due_followups", fake_due_followups)
     monkeypatch.setattr(followup_sweep.store, "mark_followup_done", fake_mark_followup_done)
     monkeypatch.setattr(followup_sweep.notify, "post_to_team_channel", fake_post_to_team_channel)
-    recorded = {}
-
-    async def fake_record_usage(ctx, thread_id, model_alias, total_tokens, cost_usd):
-        recorded["cost_usd"] = cost_usd
-
-    monkeypatch.setattr(metering, "record_usage", fake_record_usage)
     usage = {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500}
 
     asyncio.run(followup_sweep.run_followup_sweep(llm=_FakeChat([_FakeResponse("draft", usage_metadata=usage)])))
 
-    assert recorded["cost_usd"] == pytest.approx(0.0075)
+    (event,) = usage_event_sink
+    assert event["cost_usd"] == pytest.approx(0.0075)  # 1000 * 2.5e-06 + 500 * 1e-05

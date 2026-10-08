@@ -1,17 +1,19 @@
-"""Do the numbers agree? Usage events against the ledger, the gateway's spend log and the wallet (specs/010 US6, T026).
+"""Do the numbers agree? Usage events against the gateway's spend log and the wallet (specs/010 US6, T026, T030c).
 
-Three independent records of the same spending exist, and each can drift from the others for a reason nobody sees
+Independent records of the same spending exist, and each can drift from the others for a reason nobody sees
 until a customer does:
 
-  * `usage_events`: one row per model call, the billing meter (postgres-init/19);
-  * `usage_ledger`: one row per turn, the figure the dollar caps read (postgres-init/03). Both are written from the
-    same `PricedCall`, so a difference is a lost write, not a different opinion;
+  * `usage_events`: one row per model call, the billing meter AND the spend the dollar caps sum (postgres-init/19);
   * the gateway's own spend log (LiteLLM, `end_user` = `gateway.end_user_id(tenant)`): what the provider was actually
     asked to spend. It is written by another process from the request itself, which is what makes it an independent
     second meter (research G5) and the only detector for a call whose event was never written (spec 010 plan: "a model
     call that returns just before a crash is not recorded; the reconciliation is the detector, not a prevention").
 
-and, for a tenant with a wallet, a fourth question: was every event that was worth credits actually debited? The charge
+The per-turn `usage_ledger` used to be a second record compared here ("events above the ledger" meant a turn's ledger write had failed).
+It is no longer: the dollar caps sum the events themselves (T030b), so a lost event now shows as a loose cap and as a gateway
+difference, and the ledger is being retired (T030c), so a comparison against it would only report that retirement as drift.
+
+and, for a tenant with a wallet, a further question: was every event that was worth credits actually debited? The charge
 runs in a savepoint so that a wallet fault never loses the meter (D11); the price of that is that an event can exist
 uncharged, and "nothing repairs an uncharged event yet" was the gap D11 promised this module would at least NAME.
 
@@ -23,8 +25,8 @@ an operator can go straight to "acme, 2026-10-06, $0.76 of spend the gateway saw
 
 ## What is deliberately not a finding
 
-  * **The newest minutes** (`CREDIT_RECONCILE_SETTLE_SECONDS`): a running turn has events and no ledger row yet, and the
-    gateway writes its spend log in batches.
+  * **The newest minutes** (`CREDIT_RECONCILE_SETTLE_SECONDS`): the gateway writes its spend log in batches, so the newest
+    calls are in the events and not yet in the log.
   * **Embeddings.** They are not metered and carry no identity (research G2), so the gateway attributes them to nobody.
     That spend lands in `unattributed_usd`, which is reported but is not drift: it is a known, separate gap.
   * **Another application's end users** on a shared gateway (an `end_user` that is not `tenant_<hash>`): same bucket.
@@ -34,7 +36,7 @@ an operator can go straight to "acme, 2026-10-06, $0.76 of spend the gateway saw
 A call that STARTS before midnight UTC and is recorded after it lands on different days in the gateway (its start time) and
 in the event (the time it was inserted). A busy tenant's tolerance absorbs a call; a tenant with almost no other spend that
 day and an expensive call across midnight shows a pair of opposite drifts on adjacent days. That signature is the
-straddle, not a loss. The ledger compares the same way (a turn is recorded when it ENDS).
+straddle, not a loss.
 
 ## The gateway read
 
@@ -47,8 +49,8 @@ for nothing. The ceiling is `CREDIT_RECONCILE_GATEWAY_MAX_PAGES`.
 
 ## What a pass costs (disclosed)
 
-The events and the ledger are read by TIME, and both tables' indexes lead with the tenant (`usage_events (tenant, occurred_at)`,
-`usage_ledger (tenant, recorded_at)`), so a pass scans each table (checked with EXPLAIN: a sequential scan). A time-only index would
+The events are read by TIME, and the table's index leads with the tenant (`usage_events (tenant, occurred_at)`), so a pass scans
+the table (checked with EXPLAIN: a sequential scan). A time-only index would
 make it cheap and would tax the insert of every model call for the benefit of a job that runs a few times a day, so it was not added.
 Acceptable for a few passes a day at moderate volume; if a pass becomes slow, that index (or a partition by day) is the fix, and
 `CREDIT_RECONCILE_LOOKBACK_DAYS` is the lever until then.
@@ -91,7 +93,7 @@ Key = tuple[str, date]
 @dataclass(frozen=True)
 class Tolerance:
     """A difference is drift only above `max(usd, pct% of the larger figure)`. Both, because each alone is wrong: a fixed
-    amount flags a busy tenant's rounding (the ledger keeps six decimal places a turn and the event twelve a call), a
+    amount flags a busy tenant's rounding (the gateway and the events round differently), a
     percentage flags a cent of noise on a tenant that spent three."""
 
     usd: Decimal = CREDIT_RECONCILE_TOLERANCE_USD
@@ -132,7 +134,7 @@ class Finding:
     """One tenant-day where two records disagree. `expected` is the meter's figure (the events), `actual` the other record's;
     for `uncharged` the expected figure is nothing debited and the actual one is what those events cost."""
 
-    kind: str  # gateway | ledger | uncharged
+    kind: str  # gateway | uncharged
     tenant: str
     day: date
     expected: Decimal
@@ -151,12 +153,6 @@ class Finding:
                 "the gateway spent more than the events record: a call whose event was never written, or spend the app does not meter"
                 if above
                 else "the events record more than the gateway spent: events with no call behind them, or spend the gateway lost"
-            )
-        if self.kind == "ledger":
-            return (
-                "the ledger is above the events: a ledger row with no events behind it"
-                if above
-                else "the events are above the ledger: a turn's ledger write failed (counted as ledger_write), so the dollar caps under-count"
             )
         return "events worth credits that no debit was ever booked for (the wallet failed after the meter kept the event: CreditDebitFailing)"
 
@@ -238,7 +234,7 @@ def attribute_gateway(
 
     The gateway holds a ONE-WAY id (`tenant_<hash>`), so tenants are found by hashing the ones this database knows.
     An id in the app's own format that matches none of them is still a finding, named by that id: it is spend for a
-    tenant that has no events and no ledger rows at all, which is the worst shape a lost meter can take. Anything else
+    tenant that has no events at all, which is the worst shape a lost meter can take. Anything else
     (no identity, or another application's end users) is `unattributed`: reported, never drift."""
     names = {gateway.end_user_id(tenant): tenant for tenant in tenants}
     attributed: dict[Key, Decimal] = {}
@@ -329,18 +325,8 @@ async def events_by_tenant_day(window: Window) -> tuple[dict[Key, Decimal], dict
     )
 
 
-async def ledger_by_tenant_day(window: Window) -> dict[Key, Decimal]:
-    async with get_connection() as conn:
-        cur = await conn.execute(
-            "SELECT tenant, (recorded_at AT TIME ZONE 'UTC')::date, COALESCE(SUM(cost_usd), 0) "
-            "FROM usage_ledger WHERE recorded_at >= %s AND recorded_at <= %s GROUP BY 1, 2",
-            (window.start, window.end),
-        )
-        return {(t, d): Decimal(usd) for t, d, usd in await cur.fetchall()}
-
-
 async def wallet_tenants() -> set[str]:
-    """Every tenant with a wallet. With the tenants that have events or ledger rows in the window it is the set of names the
+    """Every tenant with a wallet. With the tenants that have events in the window it is the set of names the
     gateway's one-way ids are mapped back to; a small table, so it costs nothing next to the window scans. Empty when the
     wallet tables do not exist (postgres-init/20): credit billing is not in use."""
     async with get_connection() as conn:
@@ -392,7 +378,7 @@ async def reconcile(
     tolerance: Tolerance | None = None,
     max_pages: int = CREDIT_RECONCILE_GATEWAY_MAX_PAGES,
 ) -> Report:
-    """One pass. Raises when the events or the ledger cannot be read or the gateway answers wrongly: a pass that did not
+    """One pass. Raises when the events cannot be read or the gateway answers wrongly: a pass that did not
     run is a failure to report, never an all-clear. A comparison that cannot run for a stated reason (no wallet tables, an
     incomplete gateway read) is listed in `skipped` instead, and the others still run."""
     window = window or default_window()
@@ -401,10 +387,8 @@ async def reconcile(
         report.skipped.append("window: it is empty (the settle period reaches back past the start of the day)")
         return report
     events, unpriced, report.events = await events_by_tenant_day(window)
-    ledger = await ledger_by_tenant_day(window)
-    tenants = {tenant for tenant, _ in events} | {tenant for tenant, _ in ledger} | await wallet_tenants()
+    tenants = {tenant for tenant, _ in events} | await wallet_tenants()
     report.tenants = len(tenants)
-    report.findings += compare("ledger", events, ledger, report.tolerance)
 
     if gateway_client is None:
         report.skipped.append("gateway: not compared (not requested)")

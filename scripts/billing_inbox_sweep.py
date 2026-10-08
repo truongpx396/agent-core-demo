@@ -4,7 +4,7 @@
 Deletes `applied` and `ignored` rows older than `BILLING_INBOX_RETENTION_DAYS` (400 by default; the setting
 enforces a 30-day floor so a sweep never races a provider's retries). It never touches a row that is still
 open (`received`, `failed`, `quarantined`). Same "fixed pipeline, not an agent turn" shape as
-scripts/usage_ledger_sweep.py, and like that one it is deliberately NOT run by anything automatically: wire it to
+scripts/usage_events_sweep.py, and like that one it is deliberately NOT run by anything automatically: wire it to
 real cron once your retention policy is decided, e.g.
 
     45 3 * * 0 cd /path/to/agent-core-demo && python -m scripts.billing_inbox_sweep

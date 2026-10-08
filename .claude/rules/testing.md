@@ -27,11 +27,12 @@ Constitution Principle VII applies. The default suite must stay hermetic and fas
 
 ## Real-backend tiers
 
-- Markers: `integration`, `llm`, `e2e`, `deepeval`, `crawl`, `sandbox`. Only mark a test with one
+- Markers: `integration`, `llm`, `e2e`, `deepeval`, `crawl`, `sandbox`, `provider_sandbox` (a payment provider's real sandbox over the internet, manual, never CI). Only mark a test with one
   of these if it genuinely needs the real service; a fake-able test belongs in the default tier.
 - Real services come from `tests/containers.py::ensure_postgres/redis/qdrant/ml_service/
   crawl4ai/ollama()`. Each starts its own testcontainer and the test self-skips (never fails) when
   Docker is unreachable.
+- A test that re-applies a `postgres-init/*.sql` migration to the shared database goes through `tests/integration/schema_reapply.py::reapply`, never a bare `execute(sql)`: DDL takes table locks (even `ADD COLUMN IF NOT EXISTS` when nothing changes) and deadlocks with other workers' writes, and the other worker's test is the one that fails (pattern 60).
 - Under `pytest -n auto` containers are shared across workers via a fixed cache dir, and
   `AsyncPostgresSaver.setup()` runs once under a lock before any test can race it. Don't call
   `.setup()` per worker. Integration runs use `--dist=loadgroup`.

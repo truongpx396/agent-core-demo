@@ -10,8 +10,8 @@ instead — via `GraphDeps(search_docs=fake)`/`GraphDeps(cache_get=fake, ...)`
 `graph_cache.make_check_semantic_cache_node(fake)` (node-level) — which simply
 bypasses these defaults.
 
-`mock_model_resolver` is the same guarantee for `usage_ledger.record_usage`'s
-model-alias lookup against LiteLLM (see that fixture).
+The usage event's model-alias lookup against LiteLLM is guarded the same way, inside `usage_event_sink` (the only caller of
+`model_resolver.resolve_model` since the per-turn ledger write was retired).
 
 `mock_ml_moderation` is the same guarantee for `app/agent/moderation.py`'s
 ML injection-classifier layer: `moderate_input` runs on every full-graph
@@ -36,8 +36,8 @@ service (`appdata` Postgres, app/agent/sql_store.py) — a gap this suite
 had until it was found the hard way: `app/agent/runtime_stream.py::astream_events_turn`
 calls `_check_allowance`/`_upsert_session` UNCONDITIONALLY
 on every turn (`spend.usage_summary`/`sessions.upsert_session` underneath),
-and `_record_turn_metrics` calls `usage_ledger.record_usage` on every COMPLETED
-one — all three already degrade gracefully on a connection FAILURE (each
+and every model call writes a usage event (`usage_events._insert`, guarded by
+`usage_event_sink` below) — all of these already degrade gracefully on a connection FAILURE (each
 has its own try/except, independently tested — see
 tests/agent/test_tenant_budget.py/test_sessions.py), but none of them were
 ever meant to degrade gracefully from a slow, real TCP connection attempt
@@ -51,14 +51,14 @@ suite from ~10s (locally, against a real docker-compose Postgres) to
 ~20+ minutes in CI (see GRAPH_PATTERNS.md pattern 46's note on the
 recursion_limit fix found the same way).
 
-Patched at `usage_ledger.get_connection`/`spend.get_connection`/`sessions.get_connection`/
+Patched at `budget_holds.get_connection`/`spend.get_connection`/`sessions.get_connection`/
 `tool_idempotency.get_connection` — each module's OWN
 `from app.agent.sql_store import get_connection` binding, not
 `sql_store.get_connection` itself (a `from X import Y` binding is a
 separate reference; patching the origin module wouldn't reach it) — and
 specifically NOT the higher-level functions themselves
 (`_check_allowance`, `usage_summary`, `upsert_session`,
-`record_usage`, `idempotent`), because tests/agent/test_tenant_budget.py,
+`idempotent`), because tests/agent/test_tenant_budget.py,
 tests/agent/test_sessions.py, and tests/agent/test_tool_idempotency.py test
 several of those AS the function under test, monkeypatching `get_connection`
 locally to inject their own fake — this fixture's patch is simply
@@ -187,11 +187,11 @@ def mock_semantic_cache(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def mock_appdata_postgres(monkeypatch):
-    from app.agent import sessions, spend, tool_idempotency, usage_ledger
+    from app.agent import budget_holds, sessions, spend, tool_idempotency
     from app.billing import credits
 
-    monkeypatch.setattr(usage_ledger, "get_connection", _no_postgres_in_tests)
-    # The spend read behind every dollar cap and GET /usage (specs/010 T030): it moved out of usage_ledger, so it
+    monkeypatch.setattr(budget_holds, "get_connection", _no_postgres_in_tests)
+    # The spend read behind every dollar cap and GET /usage (specs/010 T030): it moved out of the retired usage_ledger module, so it
     # needs its own guard or an ordinary turn test would pay a real connection attempt for it again.
     monkeypatch.setattr(spend, "get_connection", _no_postgres_in_tests)
     # The credit wallet is read before a turn only when CREDITS_ENFORCEMENT is on and on the usage
@@ -207,31 +207,12 @@ def mock_appdata_postgres(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def mock_model_resolver(monkeypatch):
-    """`usage_ledger.record_usage` resolves the chat alias to its concrete model
-    over HTTP (LiteLLM's `GET /model/info`) on every completed turn. Without
-    this, the "hermetic" suite made a real request to whatever answers on the
-    configured proxy address — so a result depended on whether a LiteLLM
-    happened to be running on the machine, the same class of leak
-    `mock_ml_moderation` closes for the ML service. Patches the CALLER's own
-    binding (`usage_ledger.resolve_model`), so tests/agent/test_model_resolver.py
-    still exercises the real resolver."""
-
-    async def _no_model_resolution(alias):
-        return None
-
-    from app.agent import usage_ledger
-
-    monkeypatch.setattr(usage_ledger, "resolve_model", _no_model_resolution)
-
-
-@pytest.fixture(autouse=True)
 def usage_event_sink(monkeypatch):
     """Every model call now writes one usage event (`usage_events.record_call`, via
     `metering.metered_invoke`), which means a real INSERT into `appdata` Postgres and a real
     `resolve_model` HTTP call on the turn path. Left alone, an ordinary agent-node test would pay a
     connection timeout and an HTTP request per call and its result would depend on what is running
-    on the machine (the leak `mock_appdata_postgres` and `mock_model_resolver` close for their
+    on the machine (the leak `mock_appdata_postgres` closes for its
     modules). The default world records nothing real and CAPTURES each event row in a list the test
     can read, so "this call was metered" is assertable without a database. The real `_insert`
     statement is proven by tests/agent/test_usage_events.py (fake connection) and
@@ -294,7 +275,7 @@ def fresh_budget_crossing_log():
 def mock_model_pricing(monkeypatch):
     """`pricing.get_price` reads every model's price from LiteLLM's
     `GET /model/info` on the agent node's hot path, so the same leak
-    `mock_model_resolver` closes applies: a test's cost must not depend on
+    `usage_event_sink` closes for the model-alias lookup applies: a test's cost must not depend on
     whether a proxy answers on the configured address. The default world is the
     one this app ships with — a local, free model (LiteLLM reports Ollama as a
     KNOWN $0, not an unknown price) — so an ordinary turn costs nothing and
