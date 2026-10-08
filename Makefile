@@ -1,4 +1,4 @@
-.PHONY: help up up-app sandbox-up sandbox-build pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-ledger-sweep billing-inbox-sweep billing-export-worker budget-policy litellm-key test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
+.PHONY: help up up-app sandbox-up sandbox-build pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-ledger-sweep usage-events-carry-over billing-inbox-sweep billing-export-worker budget-policy litellm-key test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
 
 # Pinned DefectDojo release — see `defectdojo-up`'s own comment for why this
 # is a plain git clone into ~/.cache (NOT vendored into this repo, same
@@ -165,6 +165,9 @@ litellm-key:  ## Mint / inspect the app's scoped, budget-capped LiteLLM key, e.g
 
 usage-ledger-sweep:  ## Delete usage_ledger rows older than USAGE_LEDGER_RETENTION_DAYS (see scripts/usage_ledger_sweep.py; a financial record, so wire to cron only once your retention policy is decided)
 	python -m scripts.usage_ledger_sweep
+
+usage-events-carry-over:  ## One-time, idempotent: copy usage_ledger history older than the first usage event into usage_events, ahead of the change that makes the dollar caps sum the events. ARGS=--dry-run counts and writes nothing; ARGS="--tenant acme" does one tenant (see scripts/usage_events_carry_over.py)
+	python -m scripts.usage_events_carry_over $(ARGS)
 
 billing-export-worker:  ## Drain usage_export_outbox to the enabled providers that bill on usage, in a loop (see scripts/billing_export_worker.py; `ARGS=--once` for a single pass; set BILLING_PROVIDERS the same as the API and agent workers)
 	python -m scripts.billing_export_worker $(ARGS)

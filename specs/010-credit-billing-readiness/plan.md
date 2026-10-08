@@ -59,12 +59,14 @@ CLAUDE.md: one logical change per PR, target ≤ ~400 hand-written lines, ceilin
 | **4** | Port, `fake` adapter, contract suite, catalog, `billing_customers`, inbox, `POST /billing/webhooks/{provider}` | 2 | ~600; split if over |
 | **5** | Export outbox, worker, bounded retries, age expiry, metrics and alerts | 1a, 4 | ~450 |
 | **6** | Reconciliation (events vs ledger vs gateway), `scripts/credits.py` operator CLI, runbook | 2, 5 | ~400 |
-| **later** | One adapter per provider (Stripe, Polar, PayPal), each against **primary docs and a sandbox account**, each passing the contract suite | 4, 5 | n/a |
-| **later** | Make `budgets` read `usage_events` and retire the per-turn `usage_ledger` write (removes the dual write below) | 1b | n/a |
+| **later (blocked)** | One adapter per provider (Stripe, Polar, PayPal), each against **primary docs and a sandbox account**, each passing the contract suite | 4, 5 | n/a |
+| **7a** | `make usage-events-carry-over`: copy the ledger's history into the events (additive; run before 7b) (T030a) | 1b | ~350 |
+| **7b** | The caps and `/usage` read `usage_events`; refuse the events kill switch (T030b, D15) | 7a | ~500 |
+| **7c** | Retire the per-turn `usage_ledger` write, the dual-write test and the reconciliation's ledger leg; an events retention sweep (T030c) | 7b | ~400 |
 
 ## Risks accepted
 
-- **A dual write** (`usage_ledger` per turn and `usage_events` per call) exists from PR 1a until the later consolidation. Mitigation: a test asserts the two agree per thread, and the reconciliation reports drift. Chosen over a big-bang rewrite of the budgets, which would put the working cost caps at risk.
+- **A dual write** (`usage_ledger` per turn and `usage_events` per call) exists from PR 1a until PR 7c (from 7b the caps read the events and the ledger is the second record and the way back). Mitigation: a test asserts the two agree per thread, and the reconciliation reports drift. Chosen over a big-bang rewrite of the budgets, which would put the working cost caps at risk.
 - **A per-call insert on the hot path.** Measured in PR 1a; the fail-open policy means a slow or failing write cannot stop a turn.
 - **Provider semantics.** Only items marked Verified in `research.md` are in the contract. The Open items (R5) gate the adapter PRs, so a wrong assumption cannot reach production through this feature.
 - **Product decisions are not mine to default.** O1 to O4 in the spec need an owner; PR 3 ships without a `CREDITS_PER_USD` default so no accidental price goes live.

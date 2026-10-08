@@ -33,6 +33,11 @@ Indexes: `(tenant, occurred_at)`. **Invariant:** a trigger rejects `UPDATE` and 
 `INSERT … ON CONFLICT (event_id) DO NOTHING` is the duplicate story, and it relies on that primary key (constitution VII: an
 integration-tier test proves it against a real Postgres, not a fake cursor).
 
+**Two kinds of row (T030a).** A *call* row is written by `usage_events.record_call` for one model call. A *carried* row, `event_id = 'ledger:<usage_ledger.id>'`, is written once by
+`make usage-events-carry-over` for one old `usage_ledger` row (one TURN, `kind = 'chat'`, no input/output split, `occurred_at` = the ledger row's own time), so a sum over this table sees
+the history from before the table existed. A carried row is **never rated, charged or queued for export**: it has no `credits`, no wallet debit and no outbox row, and it is produced by plain SQL outside the paths
+that create those. Only rows older than the first *call* row are carried, so no turn is in the table twice.
+
 ## Wallet
 
 *(Built in PR 2: `postgres-init/20-credit-wallet.sql`, `app/billing/credits.py`.)*

@@ -244,6 +244,19 @@ app droplet's Docker volumes (postgres/qdrant/redis) is gone with it unless
 backed up first (see above); the observability droplet has nothing worth
 preserving.
 
+## Upgrading: carry the ledger's history into the usage events
+
+Run this **before** the release in which the dollar caps and `GET /usage` start summing `usage_events` instead of `usage_ledger` (specs/010 T030b). That table only has rows from the day
+`postgres-init/19-usage-events.sql` was applied, so without it a monthly cap would forget the month so far. It changes no behaviour on its own, which is why it can be run and checked first,
+and it applies to every deployment, with or without credit billing.
+
+1. Apply `postgres-init/19-usage-events.sql` on an existing volume if you have not (init scripts run only on a fresh one).
+2. `make usage-events-carry-over ARGS=--dry-run` and read what it says, then `make usage-events-carry-over`. It copies each `usage_ledger` row older than the first real usage
+   event into `usage_events` as `ledger:<id>` (never rated, charged or exported; idempotent; a run that stops at its ceiling is continued by the next). `ARGS="--tenant acme"` does one tenant.
+3. After the release is deployed, run it once more. It normally prints `Nothing to carry`; if it carries rows, they were recorded in the gap.
+
+Nothing alerts that step 2 was skipped, so check it: `ARGS=--dry-run` printing `Would carry 0` means the history is whole.
+
 ## Credit billing: running it
 
 (specs/010-credit-billing-readiness. Everything here is optional: with `CREDITS_PER_USD` unset the whole feature is off and
