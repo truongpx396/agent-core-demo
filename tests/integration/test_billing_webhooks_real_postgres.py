@@ -23,7 +23,6 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
 
 import psycopg
 import pytest
@@ -39,6 +38,7 @@ from app.core import metrics
 from tests.billing.contract import HARNESSES, Delivery
 from tests.conftest import metric_value
 from tests.containers import ensure_postgres
+from tests.integration.schema_reapply import reapply
 
 pytestmark = pytest.mark.integration
 
@@ -636,11 +636,9 @@ class TestTheSchemaGuards:
                 )
 
     async def test_the_script_can_be_applied_twice(self, world):
-        script = Path(__file__).resolve().parents[2] / "postgres-init" / "22-billing.sql"
-        sql = "\n".join(line for line in script.read_text().splitlines() if not line.startswith("\\connect"))
-
-        async with await world.connect() as conn:
-            await conn.execute(sql)  # no exception
+        # Through the helper, not a bare `execute`: re-running this DDL while other workers write to the same tables used to
+        # deadlock with them, and sometimes the other side was the one that failed (tests/integration/schema_reapply.py).
+        await reapply(world.url, "22-billing.sql")  # no exception
 
 
 class TestRetention:
