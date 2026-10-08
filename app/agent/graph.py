@@ -314,7 +314,7 @@ class State(TypedDict):
     total_tokens: int  # Cumulative token usage *this turn* (see agent()).
     total_cost_usd: float  # Cumulative $ cost *this turn*, priced per call from
     # the model's LiteLLM prices (app/agent/pricing.py) — should_continue enforces
-    # MAX_COST_USD_PER_TURN against this, and the ledger row is written from it
+    # MAX_COST_USD_PER_TURN against this
     # (GRAPH_PATTERNS.md patterns 26 and 35).
     subagent_spend: Annotated[list[tuple[int, float]], _concat_or_reset]  # One
     # (tokens, cost_usd) entry per completed run_subagent call this turn,

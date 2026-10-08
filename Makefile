@@ -1,4 +1,4 @@
-.PHONY: help up up-app sandbox-up sandbox-build pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-ledger-sweep usage-events-carry-over billing-inbox-sweep billing-export-worker budget-policy litellm-key test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
+.PHONY: help up up-app sandbox-up sandbox-build pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-inbox-sweep billing-export-worker budget-policy litellm-key test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
 
 # Pinned DefectDojo release — see `defectdojo-up`'s own comment for why this
 # is a plain git clone into ~/.cache (NOT vendored into this repo, same
@@ -163,8 +163,8 @@ budget-policy:  ## Operator CLI for per-tenant / per-person spend-limit override
 litellm-key:  ## Mint / inspect the app's scoped, budget-capped LiteLLM key, e.g. `LITELLM_MASTER_KEY=... make litellm-key ARGS="create --max-budget 600"` (see scripts/litellm_key.py)
 	python -m scripts.litellm_key $(ARGS)
 
-usage-ledger-sweep:  ## Delete usage_ledger rows older than USAGE_LEDGER_RETENTION_DAYS (see scripts/usage_ledger_sweep.py; a financial record, so wire to cron only once your retention policy is decided)
-	python -m scripts.usage_ledger_sweep
+usage-events-sweep:  ## Delete usage events older than USAGE_EVENT_RETENTION_DAYS (floor 35), never one whose export never finished (see scripts/usage_events_sweep.py; the table the caps read, so wire to cron only once your retention policy is decided)
+	python -m scripts.usage_events_sweep
 
 usage-events-carry-over:  ## One-time, idempotent: copy usage_ledger history older than the first usage event into usage_events, because the dollar caps sum the events and would otherwise forget the month so far. Run it before deploying that change and once after. ARGS=--dry-run counts and writes nothing; ARGS="--tenant acme" does one tenant (see scripts/usage_events_carry_over.py)
 	python -m scripts.usage_events_carry_over $(ARGS)
