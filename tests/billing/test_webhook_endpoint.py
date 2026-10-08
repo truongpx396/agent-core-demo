@@ -204,8 +204,9 @@ class TestAForgery:
 class TestStartup:
     def test_an_enabled_provider_with_no_registered_adapter_stops_the_process(self, monkeypatch):
         monkeypatch.setattr(billing_router, "_providers", None)
-        monkeypatch.setattr(billing_router, "BILLING_PROVIDERS", ("stripe",))
-        monkeypatch.setattr(billing_router, "BILLING_WEBHOOK_SECRETS", {"stripe": "whsec"})
+        # `polar`, not `stripe`: Stripe's adapter is registered, Polar's is not (until specs/010 T029b).
+        monkeypatch.setattr(billing_router, "BILLING_PROVIDERS", ("polar",))
+        monkeypatch.setattr(billing_router, "BILLING_WEBHOOK_SECRETS", {"polar": "whsec"})
 
         with pytest.raises(providers.UnknownProvider, match="no billing adapter"):
             billing_router.validate_configuration()
