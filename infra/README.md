@@ -361,6 +361,8 @@ psql -U langfuse -d appdata -c "INSERT INTO billing_customers (tenant, provider,
    A purchase for a customer or a price that is not in these tables is **quarantined, not guessed at** (`unlinked_customer`, `unknown_product`, and `no_customer` for a guest checkout; alert `BillingWebhookQuarantined`).
 5. **Nothing in the API starts a checkout yet.** `StripeProvider.create_checkout` works (the sandbox test calls it) but no route calls it, so today a pack is bought only from
    code; a session made any other way (a Payment Link, the Dashboard) carries no `metadata.product_ref` and is quarantined as `unknown_product`.
+6. **Prove the wiring** with the real sandbox: `make test-provider-sandbox` creates labelled test objects, starts `stripe listen`, and checks real signed deliveries (needs the
+   `stripe` CLI logged in to the same sandbox).
 
 ### Dashboard and alerts
 
