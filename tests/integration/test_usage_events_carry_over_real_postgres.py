@@ -6,7 +6,7 @@ show is what the statements DO, and the cutover's safety rests on it:
   * history older than the first real event is copied, and NOTHING newer (those turns already have events: copying them
     would count them twice, which doubles a tenant's spend on the day it is switched on);
   * a re-run copies nothing (`ledger:<id>` is deterministic, the event id is the primary key);
-  * after it, the sum the dollar caps are about to take sees the old spend (the point of it all);
+  * after it, the sum the dollar caps take sees the old spend (the point of it all);
   * a carried row is history, not a call: it is never rated, charged or queued for export, so it cannot bill anyone or
     reach a provider;
   * a run that stopped at its ceiling is CONTINUED by the next one (the bug a scan restarted from id 0 would have had);
@@ -120,7 +120,7 @@ async def test_a_rerun_carries_nothing_more(tenant, real_appdata):
 
 
 async def _sum(conn, tenant: str, since: datetime) -> tuple[int, Decimal]:
-    """The sum the dollar caps are about to take (specs/010 T030b), as plain SQL so this PR does not depend on that one."""
+    """The sum the dollar caps take (`spend.usage_summary`, specs/010 T030b), as plain SQL so this file does not depend on that module."""
     cur = await conn.execute(
         "SELECT COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0) FROM usage_events WHERE tenant = %s AND occurred_at >= %s",
         (tenant, since),

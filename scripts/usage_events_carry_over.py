@@ -1,10 +1,10 @@
 """One-time carry-over of the usage ledger's history into the usage events (specs/010 T030).
 
-The dollar caps and `GET /usage` are about to sum `usage_events` instead of `usage_ledger` (the next change, specs/010 T030b), and that
-table only has rows from the day postgres-init/19 was applied. Without this, a monthly cap would then forget everything spent earlier in
-the month and `/usage` would report a fraction of the all-time total. This copies each `usage_ledger` row recorded BEFORE the first real
-event into `usage_events`, one row each, so the sum is whole from the first day the ledger has. It changes no behaviour by itself: until
-that change lands, nothing reads the copies, which is why it can be run, and checked, first.
+The dollar caps and `GET /usage` sum `usage_events` (`app/agent/spend.py`, specs/010 T030b), and that table only has rows from the day
+postgres-init/19 was applied. Without this, a monthly cap would forget everything spent earlier in the month and `/usage` would report a
+fraction of the all-time total. This copies each `usage_ledger` row recorded BEFORE the first real event into `usage_events`, one row
+each, so the sum is whole from the first day the ledger has. It was merged BEFORE the change that reads the events, so it could be run,
+and checked, first.
 
 ## What a carried row is
 

@@ -166,7 +166,7 @@ litellm-key:  ## Mint / inspect the app's scoped, budget-capped LiteLLM key, e.g
 usage-ledger-sweep:  ## Delete usage_ledger rows older than USAGE_LEDGER_RETENTION_DAYS (see scripts/usage_ledger_sweep.py; a financial record, so wire to cron only once your retention policy is decided)
 	python -m scripts.usage_ledger_sweep
 
-usage-events-carry-over:  ## One-time, idempotent: copy usage_ledger history older than the first usage event into usage_events, ahead of the change that makes the dollar caps sum the events. ARGS=--dry-run counts and writes nothing; ARGS="--tenant acme" does one tenant (see scripts/usage_events_carry_over.py)
+usage-events-carry-over:  ## One-time, idempotent: copy usage_ledger history older than the first usage event into usage_events, because the dollar caps sum the events and would otherwise forget the month so far. Run it before deploying that change and once after. ARGS=--dry-run counts and writes nothing; ARGS="--tenant acme" does one tenant (see scripts/usage_events_carry_over.py)
 	python -m scripts.usage_events_carry_over $(ARGS)
 
 billing-export-worker:  ## Drain usage_export_outbox to the enabled providers that bill on usage, in a loop (see scripts/billing_export_worker.py; `ARGS=--once` for a single pass; set BILLING_PROVIDERS the same as the API and agent workers)

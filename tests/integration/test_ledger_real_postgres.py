@@ -4,16 +4,17 @@ tests/agent/test_record_usage.py and test_usage_ledger.py pin the SQL the ledger
 sends through a fake cursor. That proves statement shape, not what the real table
 does — and the real table is where this module has been wrong before (the budget
 reservation, spec 008 B20, passed every fake-cursor test and still leaked). These
-run `record_usage`, `usage_summary` and `sweep_old_rows` against the shipped
-`postgres-init/*.sql` schema:
+run `record_usage` and `sweep_old_rows` against the shipped `postgres-init/*.sql`
+schema:
 
   * a row lands with the tenant, principal, tokens and cost the caller gave;
-  * the rolling-window read honours `since`, and never crosses tenants or, when
-    narrowed, principals — the property every budget decision depends on;
   * the retention sweep deletes only rows past the cutoff, across batches, and
     leaves every recent row alone;
-  * `17-usage-ledger-indexes.sql` applies on a fresh volume and the allowance read
-    can actually use its index.
+  * `17-usage-ledger-indexes.sql` applies on a fresh volume.
+
+The rolling-window READ that used to be here (`usage_summary`, and the proof that
+its index serves the allowance query) moved with the dollar caps to the usage events:
+see tests/integration/test_spend_real_postgres.py (specs/010 T030).
 
 "Time passing" is simulated by moving `recorded_at` into the past, not by sleeping.
 Each test uses its own tenant; the container is shared across tests and xdist
@@ -21,7 +22,6 @@ workers, and the sweep spans tenants by design, so this module is one xdist grou
 """
 import uuid
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
 
 import psycopg
 import pytest
@@ -95,39 +95,6 @@ async def test_record_usage_writes_nothing_for_no_identity_or_no_tokens(tenant, 
     assert await _row_count(real_appdata, tenant) == 0
 
 
-async def test_usage_summary_sums_only_this_tenant(tenant):
-    other = f"{tenant}-other"
-    await usage_ledger.record_usage(_ctx(tenant), "t1", "chat", 100, 0.10)
-    await usage_ledger.record_usage(_ctx(tenant), "t2", "chat", 200, 0.20)
-    await usage_ledger.record_usage(_ctx(other), "t3", "chat", 9999, 9.99)
-
-    summary = await usage_ledger.usage_summary(tenant)
-
-    assert summary["total_tokens"] == 300
-    assert summary["total_cost_usd"] == pytest.approx(0.30)
-
-
-async def test_usage_summary_narrows_to_one_principal_inside_a_tenant(tenant):
-    await usage_ledger.record_usage(_ctx(tenant, "alice"), "t1", "chat", 100, 0.10)
-    await usage_ledger.record_usage(_ctx(tenant, "bob"), "t2", "chat", 700, 0.70)
-
-    assert (await usage_ledger.usage_summary(tenant, principal="alice"))["total_cost_usd"] == pytest.approx(0.10)
-    assert (await usage_ledger.usage_summary(tenant))["total_cost_usd"] == pytest.approx(0.80)
-
-
-async def test_usage_summary_since_is_a_rolling_window_not_a_calendar_day(tenant, real_appdata):
-    await usage_ledger.record_usage(_ctx(tenant), "old", "chat", 100, 5.00)
-    await _age(real_appdata, tenant, days=2)
-    await usage_ledger.record_usage(_ctx(tenant), "new", "chat", 100, 0.50)
-    since = datetime.now(UTC) - timedelta(hours=24)
-
-    in_window = await usage_ledger.usage_summary(tenant, since=since)
-    all_time = await usage_ledger.usage_summary(tenant)
-
-    assert in_window["total_cost_usd"] == pytest.approx(0.50)
-    assert all_time["total_cost_usd"] == pytest.approx(5.50)
-
-
 async def test_sweep_deletes_only_rows_past_the_cutoff_and_across_batches(tenant, real_appdata):
     other = f"{tenant}-other"
     for i in range(5):
@@ -160,20 +127,3 @@ async def test_the_shipped_schema_has_the_window_indexes_and_not_the_redundant_o
     assert "usage_ledger_tenant_recorded_at_idx" in names
     assert "usage_ledger_tenant_principal_recorded_at_idx" in names
     assert "usage_ledger_tenant_principal_idx" not in names  # a prefix of the new one
-
-
-async def test_the_allowance_read_can_use_its_index(tenant, real_appdata):
-    """With sequential scans disabled the planner must pick the (tenant,
-    recorded_at) index for the allowance query — proving the index serves that
-    exact predicate, not merely that it exists. (On a table this small the
-    planner would otherwise choose a scan on cost alone, which says nothing.)"""
-    async with real_appdata() as conn:
-        await conn.execute("SET enable_seqscan = off")
-        cur = await conn.execute(
-            "EXPLAIN SELECT COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0) "
-            "FROM usage_ledger WHERE tenant = %s AND recorded_at >= %s",
-            (tenant, datetime.now(UTC) - timedelta(hours=24)),
-        )
-        plan = "\n".join(row[0] for row in await cur.fetchall())
-
-    assert "usage_ledger_tenant_recorded_at_idx" in plan

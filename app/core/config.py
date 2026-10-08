@@ -138,7 +138,7 @@ class Settings(BaseSettings):
     max_subagent_cost_usd_per_run: float = 0.15
 
     # Per-tenant ceiling across MANY turns (runtime.py's
-    # budgets.check_tenant_daily), rolling 24h window against usage_ledger —
+    # budgets.check_tenant_daily), rolling 24h window against the usage events —
     # distinct from MAX_COST_USD_PER_TURN, which only sees one turn at a
     # time. Same "$0 on local Ollama" note applies.
     max_cost_usd_per_tenant_per_day: float = 20.0
@@ -178,10 +178,12 @@ class Settings(BaseSettings):
     budget_check_failure_policy: Literal["open", "closed"] = "open"
 
     # Per-call usage events (app/agent/usage_events.py, postgres-init/19-usage-events.sql): the
-    # meter a credit or usage-billing product is built on. On by default because a meter that is
-    # off cannot be reconciled after the fact; this is the kill switch for an emergency (a write
-    # path that is hurting the turn path), not a setting to leave off. A failed write never fails
-    # a turn either way; it is counted and alerted.
+    # meter a credit or usage-billing product is built on, AND (specs/010 T030) the spend the dollar
+    # caps and GET /usage sum. It used to be an emergency kill switch; with the caps reading the same
+    # rows, switching the writes off would make every cap read $0 and stop enforcing without a sound, so
+    # `false` is refused at startup (`_usage_events_are_the_spend_the_caps_read`). The field remains so
+    # that the refusal can say why, instead of an old `.env` line being quietly ignored. A failed write
+    # never fails a turn; it is counted and alerted (UsageEventWriteFailing).
     usage_events_enabled: bool = True
 
     # Credit billing (specs/010-credit-billing-readiness, app/billing/credits.py). A call's price in
@@ -270,6 +272,16 @@ class Settings(BaseSettings):
     # The ceiling on gateway pages (1000 rows each) read per run. A window with more spend-log rows than this is reported as
     # INCOMPLETE rather than compared as if it were whole: a truncated sum would show every tenant as under-metered.
     credit_reconcile_gateway_max_pages: int = Field(default=200, ge=1)
+
+    @model_validator(mode="after")
+    def _usage_events_are_the_spend_the_caps_read(self) -> "Settings":
+        if not self.usage_events_enabled:
+            raise ValueError(
+                "USAGE_EVENTS_ENABLED=false is no longer allowed: the dollar caps and GET /usage sum the usage events "
+                "(specs/010 T030), so with none written every cap would read $0 and silently stop enforcing. "
+                "Remove the line; to relieve a hurting write path, fix the database, not the meter"
+            )
+        return self
 
     @model_validator(mode="after")
     def _backoff_cap_is_not_below_its_base(self) -> "Settings":
@@ -651,7 +663,6 @@ PRICING_REFRESH_SECONDS = settings.pricing_refresh_seconds
 UNPRICED_MODEL_POLICY = settings.unpriced_model_policy
 USAGE_LEDGER_RETENTION_DAYS = settings.usage_ledger_retention_days
 BUDGET_CHECK_FAILURE_POLICY = settings.budget_check_failure_policy
-USAGE_EVENTS_ENABLED = settings.usage_events_enabled
 CREDITS_PER_USD = settings.credits_per_usd
 MARKUP = settings.markup
 CREDITS_ENFORCEMENT = settings.credits_enforcement

@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.agent import budgets, usage_ledger
+from app.agent import budgets, spend, usage_ledger
 from app.agent import runtime as runtime_module
 from app.agent import runtime_stream as stream_module
 from app.core import errors, metrics
@@ -51,7 +51,7 @@ def ledger(monkeypatch):
     async def in_flight_reservation(tenant):
         return state["reserved"]
 
-    monkeypatch.setattr(usage_ledger, "usage_summary", usage_summary)
+    monkeypatch.setattr(spend, "usage_summary", usage_summary)
     monkeypatch.setattr(usage_ledger, "in_flight_reservation", in_flight_reservation)
     return state
 
@@ -202,7 +202,7 @@ class TestCheckAllowance:
         async def fail(*args, **kwargs):
             raise AssertionError("nothing to meter for an invalid ctx")
 
-        monkeypatch.setattr(usage_ledger, "usage_summary", fail)
+        monkeypatch.setattr(spend, "usage_summary", fail)
 
         assert (await _check(ctx=ctx)).status == "ok"
 

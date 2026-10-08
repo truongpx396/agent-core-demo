@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends
 
-from app.agent import budgets, usage_ledger
+from app.agent import budgets, spend
 from app.api.deps import get_ctx
 from app.api.schemas import BudgetStatus, CreditBalance, UsageResponse
 from app.billing import credits
@@ -22,8 +22,8 @@ router = APIRouter()
 
 @router.get("/usage", response_model=UsageResponse)
 async def usage(ctx: SecurityCtx = Depends(get_ctx)) -> UsageResponse:
-    """This caller's own tenant usage — exposes the existing
-    `usage_summary` over HTTP, so a caller can see how close they are to
+    """This caller's own tenant usage — exposes
+    `spend.usage_summary` (the usage events) over HTTP, so a caller can see how close they are to
     MAX_COST_USD_PER_TENANT_PER_DAY without getting refused first. `budgets` adds every limit
     that applies to this caller (the tenant's and their own, overrides included).
     Tenant-scoped only; no way to query another tenant's spend, or another person's.
@@ -31,9 +31,9 @@ async def usage(ctx: SecurityCtx = Depends(get_ctx)) -> UsageResponse:
     `credits` is the tenant's wallet, present only when the deployment has credits on
     (`CREDITS_PER_USD`) and the tenant has a wallet. Like the budget figures it does not fail open:
     an endpoint that cannot read the wallet says so rather than report a calm "no wallet"."""
-    all_time = await usage_ledger.usage_summary(ctx["tenant"])
+    all_time = await spend.usage_summary(ctx["tenant"])
     since = datetime.now(UTC) - timedelta(hours=24)
-    last_24h = await usage_ledger.usage_summary(ctx["tenant"], since=since)
+    last_24h = await spend.usage_summary(ctx["tenant"], since=since)
     statuses = await budgets.usage_status(
         ctx,
         defaults=budgets.Defaults(

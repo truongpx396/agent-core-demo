@@ -246,16 +246,18 @@ preserving.
 
 ## Upgrading: carry the ledger's history into the usage events
 
-Run this **before** the release in which the dollar caps and `GET /usage` start summing `usage_events` instead of `usage_ledger` (specs/010 T030b). That table only has rows from the day
-`postgres-init/19-usage-events.sql` was applied, so without it a monthly cap would forget the month so far. It changes no behaviour on its own, which is why it can be run and checked first,
-and it applies to every deployment, with or without credit billing.
+The dollar caps and `GET /usage` now sum `usage_events` (one row per model call) instead of `usage_ledger` (one row per turn), specs/010 T030b. This applies to **every** deployment, with or without
+credit billing. The events only have rows from the day `postgres-init/19-usage-events.sql` was applied, so do it in this order:
 
-1. Apply `postgres-init/19-usage-events.sql` on an existing volume if you have not (init scripts run only on a fresh one).
+1. Apply `postgres-init/19-usage-events.sql` on an existing volume (and `21-usage-event-credits.sql` if `CREDITS_PER_USD` is set). Skipping it makes every cap read fail:
+   under the default `BUDGET_CHECK_FAILURE_POLICY=open` every turn then runs **unchecked** and `TenantAllowanceUnenforced` pages; under `closed` every turn is refused.
 2. `make usage-events-carry-over ARGS=--dry-run` and read what it says, then `make usage-events-carry-over`. It copies each `usage_ledger` row older than the first real usage
-   event into `usage_events` as `ledger:<id>` (never rated, charged or exported; idempotent; a run that stops at its ceiling is continued by the next). `ARGS="--tenant acme"` does one tenant.
-3. After the release is deployed, run it once more. It normally prints `Nothing to carry`; if it carries rows, they were recorded in the gap.
+   event into `usage_events` as `ledger:<id>` (never rated, charged or exported; idempotent; a run that stops at its ceiling is continued by the next), so a monthly cap does not forget the month so far. `ARGS="--tenant acme"` does one tenant.
+3. Deploy the release.
+4. Run `make usage-events-carry-over` once more. It normally prints `Nothing to carry`; if it carries rows, they were recorded in the gap between steps 2 and 3.
 
-Nothing alerts that step 2 was skipped, so check it: `ARGS=--dry-run` printing `Would carry 0` means the history is whole.
+Nothing alerts that step 2 was skipped, so check it: `ARGS=--dry-run` printing `Would carry 0` means the history is whole. To go back, revert the release: the per-turn ledger is
+still written beside the events, so the old read finds it complete. `USAGE_EVENTS_ENABLED=false` no longer exists as a switch (it is refused at startup): the caps would read $0.
 
 ## Credit billing: running it
 
@@ -266,8 +268,8 @@ Three records of the same spending exist, and an operator's job is to know they 
 
 | Record | Written by | Read for |
 |---|---|---|
-| `usage_events`, one row per model call | the app, per call (the billing meter) | what a tenant is charged |
-| `usage_ledger`, one row per turn | the app, per turn | the dollar caps |
+| `usage_events`, one row per model call | the app, per call (the billing meter) | what a tenant is charged, **and the dollar caps** |
+| `usage_ledger`, one row per turn | the app, per turn | the second record the events are checked against, and the way back |
 | the gateway's spend log (LiteLLM, by `end_user`) | the gateway, from the request itself | the independent second meter |
 
 and a fourth question for a tenant with a wallet: was every event worth credits actually debited?
@@ -321,9 +323,9 @@ dc run -d --no-deps --name billing-export    api python -m scripts.billing_expor
 
 | Finding | Meaning | First step |
 |---|---|---|
-| `gateway`, drift **above** zero | the gateway spent more than the events record: a call whose event was never written (`UsageEventWriteFailing`), an unpriced call (the note says how many), or spend the app does not meter | check the alert history for that day; `usage_event_unpriced_total`; the pricing of the model |
+| `gateway`, drift **above** zero | the gateway spent more than the events record: a call whose event was never written (`UsageEventWriteFailing`), an unpriced call (the note says how many), or spend the app does not meter | check the alert history for that day; `usage_event_unpriced_total`; the pricing of the model. A call with no event is also a call no dollar cap counted |
 | `gateway`, drift **below** zero | events with no call behind them, or spend the gateway lost | check the gateway database and its spend-log write queue |
-| `ledger`, events above the ledger | a turn's ledger write failed (`ledger_write`): the dollar caps under-counted that day | usually self-evident from the logs; no money was lost, a cap was loose |
+| `ledger`, events above the ledger | a turn's ledger write failed (`ledger_write`): the per-turn ledger is missing a turn. The caps read the events, so they were not affected | usually self-evident from the logs; no money was lost and no cap was loose |
 | `uncharged` | an event worth credits with no debit: the wallet failed after the meter kept the event (`CreditDebitFailing`) | find the cause first; then repair (below) |
 | a tenant named `tenant_<hash> (no tenant in this database hashes to it)` | the gateway spent for someone with no events and no ledger rows at all, the worst shape a lost meter takes | look the hash up with `python -m scripts.litellm_key end-user --tenant <name>`; check it is not another deployment sharing the gateway |
 

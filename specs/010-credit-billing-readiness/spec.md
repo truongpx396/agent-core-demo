@@ -198,4 +198,12 @@ as `end_user`), and optionally the provider's balance, and reports drift per ten
   "no tenant of this app" and is not drift. **The provider-balance comparison is deferred** with the first adapter that declares `BALANCE_READ` (none does). The wallet-side detector
   names D11's gap (an event worth credits with no debit); **repairing one is still manual** (`credits adjust --key <event_id>`, documented and tested), a repair job is not built.
 
-**Product decisions still to be recorded:** none open for this feature; the adapters (`T029`) and the pro-rata policy for a partial refund or a dispute are follow-ups a person must decide.
+- **D15. (T030b.)** **The caps read the meter, so the meter can no longer be switched off.** The dollar caps and `GET /usage` sum `usage_events` (one row per call), the same rows billing, the wallet and the
+  export use, instead of `usage_ledger` (one row per turn). Consequences taken, each tested: (a) `USAGE_EVENTS_ENABLED=false` is **refused at startup**, because with the caps reading the events it would make every
+  cap read $0 and stop enforcing without a sound; (b) the history comes across first (T030a, `make usage-events-carry-over`) and the upgrade order is in the README and the runbook; (c) an unpriced call adds its
+  tokens and $0; (d) the window is the time of the call, not the end of the turn; (e) a running turn is counted twice in the safe direction (its finished calls are events while its hold stands), so a sibling can be
+  refused a little early and a burst is never let through. **Measured, with a decision recorded:** with 2,000,000 events in 30 days for one tenant, the always-on rolling 24h tenant read is 9 ms, a person's day 6 ms,
+  a person's month 98 ms and the tenant's calendar month 426 ms (a sequential scan). A `(tenant, principal, occurred_at)` index was **not** added (the existing index already gives a good plan; it would save about
+  5 ms on an opt-in cap and cost 118 MB and a write per model call), and the monthly caps' linear cost is disclosed with its lever (a per-day rollup, not built). The ledger write is retired in T030c, not here.
+
+**Product decisions still to be recorded:** none open for this feature; the adapters (`T029`, which need a sandbox account per provider) and the pro-rata policy for a partial refund or a dispute are follow-ups a person must decide.
