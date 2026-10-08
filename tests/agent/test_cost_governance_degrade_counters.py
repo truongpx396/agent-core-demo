@@ -1,10 +1,10 @@
 """Every cost-governance path that fails and carries on is counted (spec 008 A1).
 
 Each of these already had a test that the failure does NOT reach the turn (see
-test_record_usage.py, test_usage_ledger.py, test_tenant_budget.py,
+test_usage_events.py, test_usage_ledger.py, test_tenant_budget.py,
 test_model_resolver.py). What none of them asserted is that the failure leaves a
-trace anywhere but a log line — and a lost ledger row is committed spend that a
-human will not learn about from a log. Constitution Principle V: a
+trace anywhere but a log line — and a lost usage event is committed spend that a
+human will not learn about from a log (the usage-event write's own counter is pinned in test_usage_events.py). Constitution Principle V: a
 degrade-and-continue path MUST increment a metric.
 
 Statement shape and the fail-open behaviour are covered by those files; this one
@@ -25,15 +25,6 @@ def _count(path: str) -> float:
 
 def _broken():
     raise ConnectionError("appdata postgres unreachable")
-
-
-async def test_a_failed_ledger_write_is_counted_as_ledger_write(monkeypatch):
-    monkeypatch.setattr(usage_ledger, "get_connection", _broken)
-    before = _count("ledger_write")
-
-    await usage_ledger.record_usage(TEST_CTX, "thread-1", "chat", 500, 0.1)
-
-    assert _count("ledger_write") == before + 1
 
 
 async def test_a_failed_spend_read_in_the_allowance_check_is_counted_as_ledger_read(monkeypatch):

@@ -324,7 +324,6 @@ async def _run_subagent_impl(
     )
     from app.agent.graph_build_subagent import build_subagent_graph
     from app.agent.manifest import AgentManifest
-    from app.agent.usage_ledger import record_usage
 
     # Computed fresh every call regardless of caching below — cheap, fully
     # determined by record.system_prompt, no need to cache separately.
@@ -448,10 +447,8 @@ async def _run_subagent_impl(
         )
         outcome = "budget_exceeded"
 
-    await record_usage(
-        ctx, nested_thread_id, record.model or CHAT_MODEL, total_tokens, total_cost_usd
-    )
-
+    # No ledger row for the run: each of the nested graph's model calls wrote its own usage event (kind="subagent") as it
+    # returned, and those events are what the dollar caps sum.
     metrics.agent_subagent_run_total.labels(subagent=record.name, outcome=outcome).inc()
     metrics.agent_subagent_duration_seconds.labels(subagent=record.name).observe(duration)
     logger.info(

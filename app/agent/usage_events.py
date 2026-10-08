@@ -19,8 +19,7 @@ second paid call happened.
 
 ## Failure policy
 
-Fail OPEN, counted, alerted. A failed write must not fail the turn it records (same posture as
-`usage_ledger.record_usage`), but a lost event is lost revenue and nobody is told by a log line, so:
+Fail OPEN, counted, alerted. A failed write must not fail the turn it records, but a lost event is lost revenue and nobody is told by a log line, so:
   * `agent_cost_governance_degraded_total{path="usage_event_write"}`  -> UsageEventWriteFailing (critical)
   * `...{path="usage_event_table_missing"}` (migration 19, or 21 once CREDITS_PER_USD is set, not applied)
     -> UsageEventTableMissing (warning)
@@ -68,13 +67,13 @@ charge, for the same reason: the meter outranks everything built on it, so a fai
 `{path="export_enqueue"}`, alert UsageExportEnqueueFailing) loses the export of one event, never the event. With no such provider
 enabled (the default) nothing extra is sent: one list lookup and no statement.
 
-## The dual write (until the ledger write is retired)
+## There is no second record any more
 
-The caps read this table (`spend.usage_summary`), and a turn is still ALSO summed into `usage_ledger`, on purpose:
-it is the second record `app/billing/reconcile.py` checks the events against, and the way back if the cutover has
-to be reverted (reverting the read is then a one-line change that finds the ledger complete). Both come from the same
-`PricedCall`, so they cannot disagree about a call's cost; tests/agent/test_usage_events.py asserts the per-call
-events add up to the running total the ledger row is written from. The write is retired in the next change.
+For a while (specs/010 PR 1a to T030c1) a turn was ALSO summed into the per-turn `usage_ledger`: the caps read it, and then,
+after the caps moved here (T030b), it stayed as the way back and as a second record for the reconciliation. Both
+are gone (T030c): nothing writes the ledger, the reconciliation compares the events with the gateway's own spend log,
+and a failing write here is the one thing that makes a cap under-count (`UsageEventWriteFailing`). The old table is frozen history
+that `scripts/usage_events_carry_over.py` copied into this one.
 """
 import logging
 import uuid
@@ -129,7 +128,7 @@ async def record_call(
     """Best-effort: writes one event for one model call; never raises.
 
     Does nothing without a valid ctx (an unattributable call has no tenant to meter to, the same
-    rule as `record_usage`). A call that reported no usage is counted and skipped."""
+    rule as every other write on the turn path). A call that reported no usage is counted and skipped."""
     if not valid_ctx(ctx):
         return
     if kind not in KINDS:

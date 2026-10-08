@@ -68,7 +68,7 @@ CLAUDE.md: one logical change per PR, target ≤ ~400 hand-written lines, ceilin
 
 ## Risks accepted
 
-- **A dual write** (`usage_ledger` per turn and `usage_events` per call) exists from PR 1a until PR 7c (from 7b the caps read the events and the ledger is the second record and the way back). Mitigation: a test asserts the two agree per thread, and the reconciliation reports drift. Chosen over a big-bang rewrite of the budgets, which would put the working cost caps at risk.
+- **A dual write** (`usage_ledger` per turn and `usage_events` per call) existed from PR 1a until PR 7c-2 (from 7b the caps read the events and the ledger was the second record and the way back; 7c-1 stopped comparing it, 7c-2 stopped writing it). Mitigation: a test asserts the two agree per thread, and the reconciliation reports drift. Chosen over a big-bang rewrite of the budgets, which would put the working cost caps at risk.
 - **A per-call insert on the hot path.** Measured in PR 1a; the fail-open policy means a slow or failing write cannot stop a turn.
 - **Provider semantics.** Only items marked Verified in `research.md` are in the contract. The Open items (R5) gate the adapter PRs, so a wrong assumption cannot reach production through this feature.
 - **Product decisions are not mine to default.** O1 to O4 in the spec need an owner; PR 3 ships without a `CREDITS_PER_USD` default so no accidental price goes live.

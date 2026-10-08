@@ -17,7 +17,7 @@ and checked, first.
 
 ## The cutoff, and why a row is not copied twice
 
-Since the events existed, every turn has been recorded in BOTH tables (the dual write), so copying a ledger row from
+While the events existed alongside the ledger (until T030c2 stopped the ledger write), every turn was recorded in BOTH tables, so copying a ledger row from
 that period would count the turn twice. The cutoff is therefore the time of the FIRST REAL event (a row whose id does
 not start with `ledger:`): only older ledger rows are carried. With no real event yet the cutoff is "now", and a
 re-run after the deployment starts writing events picks up whatever was recorded in the gap, because the cutoff is
