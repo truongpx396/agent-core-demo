@@ -5,7 +5,7 @@ created and its fields are also re-exported as module constants so existing
 imports (`from app.core.config import QDRANT_URL`) keep working.
 """
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -26,7 +26,11 @@ USAGE_LEDGER_MIN_RETENTION_DAYS = 35
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # `hide_input_in_errors`: a ValidationError normally prints the offending raw value (`input_value='...'`). This class
+    # holds API keys and webhook signing secrets, and a settings error is printed at import time, to a terminal or a
+    # container log, so a key pasted into the wrong variable (or a malformed BILLING_WEBHOOK_SECRETS) would be echoed
+    # whole. The error still names the field and the rule; it just no longer repeats the value.
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     # LLM proxy (OpenAI-compatible LiteLLM endpoint)
     openai_api_base: str = "http://localhost:4000/v1"
@@ -219,6 +223,22 @@ class Settings(BaseSettings):
     billing_providers: str = ""
     # {"provider": "signing secret"} as JSON. SecretStr so the values never show in a repr or a log line.
     billing_webhook_secrets: dict[str, SecretStr] = Field(default_factory=dict)
+    # Credentials for the payment-provider adapters (specs/010 T029). THE ADAPTERS ARE NOT BUILT YET, so nothing reads
+    # these today: they exist so that a real key is secret-wrapped (never in a repr or a log line), checked for the
+    # obvious mistake and listed in `.env.example` before anyone puts one in `.env`. Use SANDBOX credentials while the
+    # adapters are built. A webhook signing secret is not here: it goes in `billing_webhook_secrets` above, per provider.
+    #
+    # Stripe: a server-side key from the sandbox's API keys page. Stripe recommends a restricted key (`rk_`) over a secret
+    # key (`sk_`); a publishable key (`pk_`) cannot do anything on a server and is refused.
+    stripe_api_key: SecretStr | None = None
+    # The `event_name` of the Meter created in Stripe (at most 100 characters there): usage is sent under it.
+    stripe_meter_event_name: str = Field(default="agent_credits_used", min_length=1, max_length=100)
+    # Polar: an Organization Access Token. Sandbox and production are separate accounts with separate tokens.
+    polar_access_token: SecretStr | None = None
+    # Which Polar API the adapter talks to. "sandbox" is the default, so nothing reaches production unless it is asked to.
+    polar_environment: Literal["sandbox", "production"] = "sandbox"
+    # The `name` of the events sent to Polar's ingest endpoint (at most 128 characters there).
+    polar_usage_event_name: str = Field(default="agent_credits_used", min_length=1, max_length=128)
     # A body larger than this is refused (413) BEFORE it is read: an unauthenticated endpoint must not buffer
     # whatever it is sent. A real payment event is a few KB.
     billing_webhook_max_body_bytes: int = Field(default=256 * 1024, ge=1024, le=10 * 1024 * 1024)
@@ -295,6 +315,24 @@ class Settings(BaseSettings):
         for name in (part.strip() for part in value.split(",") if part.strip()):
             if not name.replace("_", "").replace("-", "").isalnum() or not name.islower():
                 raise ValueError(f"BILLING_PROVIDERS entry {name!r} must be lowercase letters, digits, '-' or '_'")
+        return value
+
+    @field_validator("stripe_api_key", "polar_access_token", mode="before")
+    @classmethod
+    def _a_blank_credential_is_unset(cls, value: Any) -> Any:
+        """`STRIPE_API_KEY=` left in `.env` with no value arrives as an empty string. That means "not set", not a key
+        that is empty. (Only a blank is touched here: a real value is never inspected before it is secret-wrapped.)"""
+        return None if isinstance(value, str) and not value.strip() else value
+
+    @field_validator("stripe_api_key")
+    @classmethod
+    def _stripe_key_is_a_server_side_key(cls, value: SecretStr | None) -> SecretStr | None:
+        """The mistake worth catching at startup is pasting the publishable key (`pk_`), which is the first one on Stripe's
+        API keys page and which cannot create anything on a server. The message never repeats the value."""
+        if value is not None and not value.get_secret_value().startswith(("sk_", "rk_")):
+            raise ValueError(
+                "STRIPE_API_KEY must be a secret (sk_) or restricted (rk_) key; a publishable key (pk_) cannot be used on a server"
+            )
         return value
 
     @model_validator(mode="after")
