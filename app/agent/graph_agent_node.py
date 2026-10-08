@@ -155,8 +155,7 @@ def make_agent_node(llm, model_alias: str | None = None, kind: str = "chat"):
         # caller), prices the usage once from the call's own input/output/cached split by the
         # model this node's client actually talks to — `model_alias` for a delegated run whose
         # specialist declares its own model, else the global chat alias — and writes one usage
-        # event. The in-run ceiling below, the ledger row (written from this same running total)
-        # and the event all come from that one pricing, so the ceiling and the bill can never
+        # event. The in-run ceiling below and the event all come from that one pricing, so the ceiling and the bill can never
         # disagree about what a turn cost (pattern 35).
         call = await metering.metered_invoke(
             llm,

@@ -83,10 +83,10 @@ class TestCompare:
         assert findings[0].drift == D("0.765500")
 
     def test_the_other_direction_is_reported_with_its_own_sign(self):
-        (finding,) = compare("ledger", {("acme", DAY): D("3")}, {("acme", DAY): D("2")}, self.TOLERANCE)
+        (finding,) = compare("gateway", {("acme", DAY): D("3")}, {("acme", DAY): D("2")}, self.TOLERANCE)
 
         assert finding.drift == D("-1")
-        assert "ledger write failed" in finding.meaning
+        assert "events with no call behind them" in finding.meaning
 
     def test_findings_are_largest_first_then_by_tenant_and_day(self):
         events = {("a", DAY): D("0"), ("b", DAY): D("0"), ("b", NEXT): D("0")}
@@ -148,7 +148,7 @@ def test_the_window_type_is_inclusive_at_both_ends_like_the_gateways_own_filter(
     assert not window.empty  # a single instant is a window, and the gateway reads `>=` start and `<=` end
 
 
-@pytest.mark.parametrize("kind", ["gateway", "ledger", "uncharged"])
+@pytest.mark.parametrize("kind", ["gateway", "uncharged"])
 def test_every_kind_of_finding_explains_itself_in_both_directions(kind):
     meanings = {Finding(kind, "acme", DAY, D("0"), drift).meaning for drift in (D("1"), D("-1"))}
 

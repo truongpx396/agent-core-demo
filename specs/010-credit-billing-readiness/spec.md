@@ -100,7 +100,7 @@ is marked expired, counted and alerted instead of silently dropped.
 
 ### User Story 6 - An operator can prove the numbers agree (Priority: P6)
 
-A reconciliation compares the app's events, the app's ledger and the gateway's own spend log (which already carries the tenant
+A reconciliation compares the app's events and the gateway's own spend log (it also compared the per-turn ledger until T030c1) (which already carries the tenant
 as `end_user`), and optionally the provider's balance, and reports drift per tenant per day.
 
 **Independent Test**: delete one event row in a test database; confirm the report names the tenant, day and amount.
@@ -162,7 +162,7 @@ as `end_user`), and optionally the provider's balance, and reports drift per ten
 - **D4.** USD only. The conversion is `credits = round_half_up(cost_usd × CREDITS_PER_USD × MARKUP, 6)`, both from settings.
 - **D5.** No real provider adapter in this feature; a fake adapter proves the port.
 - **D6.** Refund policy default: claw back the credits the refunded purchase granted, allow the balance to go negative, refuse new usage until it is positive. This is a **product decision to confirm** (O2).
-- **D7.** Credit entries are a financial record: kept indefinitely by default. Usage events follow `USAGE_EVENT_RETENTION_DAYS`, and the retention job refuses to delete an event that is not yet exported when export is enabled.
+- **D7.** Credit entries are a financial record: kept indefinitely by default. Usage events follow `USAGE_EVENT_RETENTION_DAYS` (built in T030c3: `make usage-events-sweep`), and the retention job refuses to delete an event that is not yet exported when export is enabled.
 
 - **D8.** A tenant is on credit billing **only if it has a `credit_accounts` row**. No account means never debited and never gated, so the wallet changes nothing
   for an existing tenant until an operator, or a verified purchase, opens one. This is per-tenant opt-in, finer than a global flag, and it is why no
@@ -197,6 +197,7 @@ as `end_user`), and optionally the provider's balance, and reports drift per ten
   show every tenant as under-metered). It needs the gateway's admin key, held only by the reconciliation process. Embeddings are neither metered nor attributed, so their spend is reported as
   "no tenant of this app" and is not drift. **The provider-balance comparison is deferred** with the first adapter that declares `BALANCE_READ` (none does). The wallet-side detector
   names D11's gap (an event worth credits with no debit); **repairing one is still manual** (`credits adjust --key <event_id>`, documented and tested), a repair job is not built.
+  **Amended (T030c1):** the ledger leg is gone. The caps sum the events, so a lost event is a loose cap and a gateway difference; a tenant whose every event is gone and that has no wallet is now named by its gateway hash id (nothing in the database knows its name any more, where a ledger row used to), the fallback the runbook already describes.
 
 - **D15. (T030b.)** **The caps read the meter, so the meter can no longer be switched off.** The dollar caps and `GET /usage` sum `usage_events` (one row per call), the same rows billing, the wallet and the
   export use, instead of `usage_ledger` (one row per turn). Consequences taken, each tested: (a) `USAGE_EVENTS_ENABLED=false` is **refused at startup**, because with the caps reading the events it would make every
@@ -205,5 +206,10 @@ as `end_user`), and optionally the provider's balance, and reports drift per ten
   refused a little early and a burst is never let through. **Measured, with a decision recorded:** with 2,000,000 events in 30 days for one tenant, the always-on rolling 24h tenant read is 9 ms, a person's day 6 ms,
   a person's month 98 ms and the tenant's calendar month 426 ms (a sequential scan). A `(tenant, principal, occurred_at)` index was **not** added (the existing index already gives a good plan; it would save about
   5 ms on an opt-in cap and cost 118 MB and a write per model call), and the monthly caps' linear cost is disclosed with its lever (a per-day rollup, not built). The ledger write is retired in T030c, not here.
+
+- **D16. (decided 2026-10-08, closes the "what does a provider need to know" question.)** **The billing model is prepaid packs.** The provider sells a pack (a checkout) and tells the app
+  it was paid (a signed webhook); the app credits its own wallet and debits it per call. The provider is never told what was consumed, so the Stripe and Polar adapters declare
+  `CHECKOUT` and nothing else: **no `USAGE_EXPORT`, no `BALANCE_READ`**. The export outbox and its worker (PR 5) stay built and off, for a later model where a provider must see consumption (Stripe invoices
+  for metered usage, Polar's meter-backed credits): that is a different decision, and it brings its own settings (a Stripe Meter's event name, a Polar event name) with it. Until then those settings do not exist.
 
 **Product decisions still to be recorded:** none open for this feature; the adapters (`T029`, which need a sandbox account per provider) and the pro-rata policy for a partial refund or a dispute are follow-ups a person must decide.

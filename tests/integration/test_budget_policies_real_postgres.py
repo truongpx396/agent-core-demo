@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 import psycopg
 import pytest
 
-from app.agent import budget_policies, budgets, spend, usage_ledger
+from app.agent import budget_holds, budget_policies, budgets, spend
 from scripts import budget_policy
 from tests.containers import ensure_postgres
 from tests.integration.usage_seed import seed_event
@@ -44,7 +44,7 @@ def real_appdata(appdata_url, monkeypatch):
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
             yield conn
 
-    for module in (budget_policies, usage_ledger, spend):
+    for module in (budget_policies, budget_holds, spend):
         monkeypatch.setattr(module, "get_connection", get_connection)
     monkeypatch.setattr(budget_policies, "overrides_for", _REAL_OVERRIDES_FOR)
     monkeypatch.setattr(budget_policies, "BUDGET_POLICY_REFRESH_SECONDS", 0)
