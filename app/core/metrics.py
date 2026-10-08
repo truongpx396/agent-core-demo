@@ -535,11 +535,54 @@ agent_usage_export_oldest_pending_age_seconds = Gauge(
     "agent_usage_export_oldest_pending_age_seconds",
     "Age of the oldest usage event still waiting to be exported, per provider, set each worker pass (0 when nothing is "
     "waiting). Alert UsageExportStuck at 7 days: well inside the age limit, so someone is told while the events are "
-    "still sendable. Disclosed: if the worker itself is down this stops being SET, and a stale gauge keeps its last value, so a dead worker is "
-    "visible here only as the age of the oldest event growing while the series goes flat (the worker's own liveness is not alerted yet).",
+    "still sendable. Disclosed (corrected in PR 6, which verified it): a synchronous gauge is exported ONCE per set (the SDK "
+    "clears it after collecting) and the collector's Prometheus exporter drops a series 5 minutes after its last update "
+    "(`metric_expiration`), so a dead worker does not leave a stale value behind: the series DISAPPEARS and UsageExportStuck "
+    "resolves on its own. The worker's own liveness is not alerted yet; Prometheus cannot tell a worker that never ran from one that died.",
     unit="s",
     labelnames=["provider"],
 )
+
+agent_credit_granted_total = Counter(
+    "agent_credit_granted_total",
+    "Credits added to wallets (app/billing/credits.py), by lot source: purchase | subscription | promo | manual | "
+    "adjustment. Counted when the grant is applied, inside the caller's transaction, so one that later rolls back "
+    "is over-counted: this is a rate for a dashboard, and the wallet's entries are the record.",
+    ["source"],
+)
+
+agent_credit_debited_total = Counter(
+    "agent_credit_debited_total",
+    "Credits taken from wallets, by transaction kind: debit (a model call) | clawback (a refund) | adjust (an "
+    "operator correction). Expiry is not here: it is credits that left unused, not credits used. Counted at apply "
+    "time like agent_credit_granted_total, with the same caveat.",
+    ["kind"],
+)
+
+agent_credit_outstanding = Gauge(
+    "agent_credit_outstanding",
+    "Credits held across every wallet, set by each reconciliation pass (app/billing/reconcile.py): `available` is what "
+    "may still be consumed, `debt` is what overdraft lots owe (a positive number). Deliberately no tenant label: who "
+    "holds what is `make credits ARGS='show --tenant ...'`. Only as fresh as the last pass.",
+    labelnames=["state"],
+)
+
+agent_credit_reconcile_max_drift_usd = Gauge(
+    "agent_credit_reconcile_max_drift_usd",
+    "The largest per-tenant, per-day difference ABOVE tolerance between usage events and the ledger, the gateway spend log "
+    "or the wallet, in USD, as of the last reconciliation pass (0 when everything agrees). No tenant label: the report "
+    "(`make credit-reconcile`) names them. Alert CreditReconcileDrift. The worker re-sets it every minute because the "
+    "collector forgets a series 5 minutes after its last update.",
+    unit="USD",
+)
+
+agent_credit_reconcile_total = Counter(
+    "agent_credit_reconcile_total",
+    "Reconciliation passes by outcome: ok (everything agrees) | drift (something is above tolerance) | incomplete (the "
+    "gateway had more rows than CREDIT_RECONCILE_GATEWAY_MAX_PAGES, so that comparison was skipped) | failed (the pass "
+    "itself raised: the gateway or database was unreachable; alert CreditReconcileFailing).",
+    ["outcome"],
+)  # outcome: ok | drift | incomplete | failed
 
 agent_cost_governance_degraded_total = Counter(
     "agent_cost_governance_degraded_total",

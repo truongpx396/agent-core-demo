@@ -78,6 +78,19 @@ def test_every_way_usage_can_silently_fail_to_reach_a_billing_provider_has_an_al
         assert needle in rules[alert], f"{alert} does not watch {needle}"
 
 
+def test_a_reconciliation_that_finds_drift_or_cannot_finish_has_an_alert():
+    """The independent check on the meter is only worth its name if someone is told when it disagrees, and when it stops
+    being able to say anything (constitution V)."""
+    rules = {rule["alert"]: rule["expr"] for rule in _rules()}
+
+    for alert, needle in (
+        ("CreditReconcileDrift", "agent_credit_reconcile_max_drift_usd"),
+        ("CreditReconcileNotCompleting", 'outcome=~"failed|incomplete"'),
+    ):
+        assert alert in rules, f"{alert}: nothing alerts on {needle}"
+        assert needle in rules[alert], f"{alert} does not watch {needle}"
+
+
 def test_the_stuck_alert_fires_well_before_the_age_limit_expires_events():
     """It is the warning while the events can still be sent, so its threshold must be under the limit's default (30 days)."""
     expr = next(rule["expr"] for rule in _rules() if rule["alert"] == "UsageExportStuck")

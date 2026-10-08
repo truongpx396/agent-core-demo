@@ -181,8 +181,11 @@ groups:
             days): this is the warning while the events can still be sent, before UsageExportExpired says
             they cannot. Look at `SELECT provider, status, count(*), min(created_at), max(last_error_class)
             FROM usage_export_outbox GROUP BY 1, 2`. A provider outage, a revoked credential, or a stopped
-            `make billing-export-worker` all look like this. Disclosed: if the worker is simply not running
-            the gauge stops being set, so check the worker too.
+            `make billing-export-worker` all look like this. Disclosed (verified in PR 6): if the worker itself
+            stops, the series DISAPPEARS within five minutes (a synchronous gauge is exported once per set and the
+            collector forgets a series that long after its last update) and this alert RESOLVES on its own while
+            events keep piling up. It cannot tell a dead worker from a healthy one with nothing to send, so also
+            check that `make billing-export-worker` is running.
 
       - alert: UsageExportExpired
         expr: increase(agent_usage_export_total{outcome="expired"}[15m]) > 0
@@ -220,6 +223,37 @@ groups:
             the export) so nothing is lost from the ledger, but that call will never reach the provider unless it is
             queued another way. Check the appdata Postgres and that postgres-init/23-usage-export-outbox.sql is
             applied.
+
+      - alert: CreditReconcileDrift
+        expr: max(agent_credit_reconcile_max_drift_usd) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The usage records disagree: the meter, the ledger, the gateway or a wallet is off by more than tolerance"
+          description: >-
+            The last reconciliation pass found a tenant-day where usage events, the ledger, the gateway's spend
+            log or the wallet differ by more than CREDIT_RECONCILE_TOLERANCE_USD / _PCT. The gauge is the largest
+            such difference in USD and carries no tenant: run `make credit-reconcile` for the report, which names
+            the tenant, the day and the amount. A gateway figure above the events is a call whose event was never
+            written (or spend the app does not meter); events above the ledger is a failed ledger write; an
+            `uncharged` finding is an event the wallet failed to debit. Disclosed: the gauge only exists while
+            `make credit-reconcile-worker` runs, so a stopped worker resolves this alert; and a call that spans
+            midnight UTC can show as a pair of opposite drifts on adjacent days, which is that, not a loss.
+
+      - alert: CreditReconcileNotCompleting
+        expr: increase(agent_credit_reconcile_total{outcome=~"failed|incomplete"}[2h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A reconciliation pass could not finish, so nothing was proven about the usage records"
+          description: >-
+            `failed` means the pass raised (the gateway or the appdata Postgres was unreachable, or the gateway's
+            spend-log API answered in a shape this version does not know); the log line `credit_reconcile_failed`
+            carries the error class. `incomplete` means the gateway had more spend-log rows in the window than
+            CREDIT_RECONCILE_GATEWAY_MAX_PAGES allows (or the log changed while it was read), so that comparison
+            was skipped rather than reported from a partial sum: shorten CREDIT_RECONCILE_LOOKBACK_DAYS or raise
+            the ceiling. Until it completes, the independent check on the meter is not running.
 
       - alert: CreditGateUnenforced
         expr: increase(agent_cost_governance_degraded_total{path="credit_read"}[10m]) > 0

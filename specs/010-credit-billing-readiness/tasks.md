@@ -54,9 +54,9 @@ entry and README update; its CI result reported, not assumed.
 
 ## Phase 6: Reconcile and operate (PR 6) — US6
 
-- [ ] T026 [PR6] Reconciliation of events vs `usage_ledger` vs the gateway spend log (by `end_user`), and optionally a provider balance; a test that deletes one event and expects the report to name tenant, day and amount
-- [ ] T027 [PR6] `scripts/credits.py` + `make credits`: `grant`, `adjust`, `show` (lots, entries, balance); `--by` and `--reason` required
-- [ ] T028 [PR6] Runbook in `infra/README.md`; Grafana panel for balance, grant and debit rates, export lag
+- [x] T026 [PR6] Reconciliation of events vs `usage_ledger` vs the gateway spend log (by `end_user`), and optionally a provider balance; a test that deletes one event and expects the report to name tenant, day and amount. Also compares events with the wallet (an event worth credits that no debit was booked for: D11's disclosed gap, now named), against a stand-in for `/spend/logs/v2` built from LiteLLM 1.104's own source; an incomplete gateway read is never compared. **The provider-balance comparison is not built** (it was optional: no adapter declares `BALANCE_READ`, so there is nothing to compare against); it lands with the first adapter that does. `scripts/credit_reconcile.py` + `make credit-reconcile[-worker]`; alerts `CreditReconcileDrift` and `CreditReconcileNotCompleting`
+- [x] T027 [PR6] `scripts/credits.py` + `make credits`: `grant`, `adjust`, `show` (lots, entries, balance); `--by` and `--reason` required. `show` is read-only and asks for neither. `credits.adjust_in` (positive = a grant whose lot source is `adjustment`; negative = a debit of kind `adjust`, never refused for a short balance, no wallet opened to hold a debt); a retry is safe only with the same `--key`, which is printed
+- [x] T028 [PR6] Runbook in `infra/README.md`; Grafana panel for balance, grant and debit rates, export lag. The dashboard is `observability/grafana/dashboards/credit-billing.json`; there is no Postgres datasource, so the balance panel reads a gauge the reconciliation worker sets, and per-tenant balances stay `make credits ... show`
 
 ## Later (separate PRs, each needs a sandbox account)
 
