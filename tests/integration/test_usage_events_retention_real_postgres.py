@@ -23,7 +23,7 @@ from psycopg import errors as pg_errors
 from app.agent import usage_events_retention as retention
 from app.billing import credits
 from tests.containers import ensure_postgres
-from tests.integration.usage_seed import seed_event
+from tests.integration.usage_seed import purge_events, seed_event
 
 pytestmark = [pytest.mark.integration, pytest.mark.xdist_group("usage_ledger_real_postgres")]
 
@@ -50,8 +50,13 @@ def real_appdata(appdata_url, monkeypatch):
 
 
 @pytest.fixture
-def tenant() -> str:
-    return f"acme-{uuid.uuid4().hex[:8]}"
+async def tenant(real_appdata) -> str:
+    """A tenant of this test's own. The events it keeps on purpose (unfinished exports) are removed afterwards, so they do not
+    accumulate across the session or collide with a test that clears the outbox (see `purge_events`)."""
+    name = f"acme-{uuid.uuid4().hex[:8]}"
+    yield name
+    async with real_appdata() as conn:
+        await purge_events(conn, name, f"{name}-other")
 
 
 async def _events(conn, tenant: str) -> set[str]:
@@ -77,7 +82,9 @@ async def test_only_events_past_the_cutoff_go_and_a_rerun_deletes_nothing_more(t
         old = {await seed_event(conn, tenant, occurred_at=OLD) for _ in range(5)}
         keep = {await seed_event(conn, tenant, occurred_at=INSIDE), await seed_event(conn, tenant)}
 
-    first = await retention.sweep_old_events(older_than_days=400, batch_size=2)  # 2 + 2 + 1 of ours, among whatever else is old
+    # Batches of 2 (so ours take 2 + 2 + 1), with a ceiling far above the default: the sweep spans tenants, so anything old that
+    # another test left behind is swept first, and the default ceiling (2,000 rows at this size) must not decide this test's result.
+    first = await retention.sweep_old_events(older_than_days=400, batch_size=2, max_batches=100_000)
     second = await retention.sweep_old_events(older_than_days=400)
 
     async with real_appdata() as conn:
