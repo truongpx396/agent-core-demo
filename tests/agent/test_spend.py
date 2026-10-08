@@ -1,16 +1,17 @@
 """`app/agent/spend.py`: the spend read behind every dollar cap and `GET /usage` (specs/010 T030).
 
-Same "no live Postgres" approach as tests/agent/test_usage_ledger.py: `get_connection` is replaced by a fake that records
+Same "no live Postgres" approach as tests/agent/test_budget_holds.py: `get_connection` is replaced by a fake that records
 the SQL and parameters it was handed. That proves statement SHAPE (tenant in every query, which table, which column the
 window uses), not how the real table behaves: tests/integration/test_spend_real_postgres.py runs the same read against it.
 """
+import importlib
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
-from app.agent import budgets, spend, usage_ledger
+from app.agent import budget_holds, budgets, spend
 from tests.conftest import TEST_CTX, _NoPostgresInTests
 
 
@@ -140,21 +141,22 @@ async def test_a_database_error_is_raised_not_read_as_zero(monkeypatch):
         await spend.usage_summary("acme")
 
 
-def test_the_ledger_no_longer_answers_this_question():
-    """A stale caller must fail loudly (AttributeError) instead of quietly reading the frozen per-turn table."""
-    assert not hasattr(usage_ledger, "usage_summary")
+def test_the_ledger_module_is_gone_so_a_stale_caller_fails_loudly():
+    """A caller that still imports it must get an ImportError instead of quietly reading the frozen per-turn table."""
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("app.agent.usage_ledger")
 
 
 async def test_a_cap_reads_the_events_through_this_module(monkeypatch):
-    """The wiring: `budgets` asks `spend`, so events summed here refuse a turn. Under the old ledger read this goes
-    through `usage_ledger.get_connection`, which the suite's autouse guard makes raise, so the check would FAIL OPEN
+    """The wiring: `budgets` asks `spend`, so events summed here refuse a turn. Under the old ledger read this went
+    through the ledger's own `get_connection`, which the suite's autouse guard made raise, so the check would FAIL OPEN
     and the turn would be served: this test fails without the change."""
     _use(monkeypatch, _Connection(row=(900, Decimal("6.50"))))
 
     async def no_holds(tenant):
         return 0.0
 
-    monkeypatch.setattr(usage_ledger, "in_flight_reservation", no_holds)
+    monkeypatch.setattr(budget_holds, "in_flight_reservation", no_holds)
 
     allowance = await budgets.check_allowance(
         TEST_CTX, limits=[budgets.BudgetLimit("tenant", "day", 5.0)], fail_policy="open"

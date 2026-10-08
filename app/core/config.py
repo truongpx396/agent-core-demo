@@ -20,9 +20,10 @@ load_dotenv()
 # than any payment provider keeps redelivering one, so a sweep never races a retry (app/billing/inbox.py).
 BILLING_INBOX_MIN_RETENTION_DAYS = 30
 
-# A budget window reads back up to a calendar month; retention below this would let a
-# sweep delete spend that is still inside one (app/agent/usage_ledger.py::sweep_old_rows).
-USAGE_LEDGER_MIN_RETENTION_DAYS = 35
+# A window something still reads must never lose spend: a monthly cap reads back 31 days, the reconciliation up to 35, the export
+# outbox gives up on an unsent event at 30. Retention below this would let the sweep delete spend that is still inside one
+# (app/agent/usage_events_retention.py::sweep_old_events).
+USAGE_EVENT_MIN_RETENTION_DAYS = 35
 
 
 class Settings(BaseSettings):
@@ -223,22 +224,23 @@ class Settings(BaseSettings):
     billing_providers: str = ""
     # {"provider": "signing secret"} as JSON. SecretStr so the values never show in a repr or a log line.
     billing_webhook_secrets: dict[str, SecretStr] = Field(default_factory=dict)
-    # Credentials for the payment-provider adapters (specs/010 T029). THE ADAPTERS ARE NOT BUILT YET, so nothing reads
-    # these today: they exist so that a real key is secret-wrapped (never in a repr or a log line), checked for the
-    # obvious mistake and listed in `.env.example` before anyone puts one in `.env`. Use SANDBOX credentials while the
-    # adapters are built. A webhook signing secret is not here: it goes in `billing_webhook_secrets` above, per provider.
+    # Credentials for the payment-provider adapters (specs/010 T029). The Stripe adapter reads `stripe_api_key` (to create a
+    # Checkout Session); the Polar adapter is NOT BUILT YET, so nothing reads the `polar_*` values today: they exist so that a
+    # real key is secret-wrapped (never in a repr or a log line), checked for the obvious mistake and listed in `.env.example`
+    # before anyone puts one in `.env`. Use SANDBOX credentials. A webhook signing secret is not here: it goes in
+    # `billing_webhook_secrets` above, per provider.
+    # There is no "usage event name" setting on purpose: the billing model is prepaid packs (spec D16), so no adapter sends
+    # usage to a provider and none needs the name of a Stripe Meter or a Polar event. If that ever changes it comes back
+    # with the `USAGE_EXPORT` adapter that needs it, not before.
     #
     # Stripe: a server-side key from the sandbox's API keys page. Stripe recommends a restricted key (`rk_`) over a secret
-    # key (`sk_`); a publishable key (`pk_`) cannot do anything on a server and is refused.
+    # key (`sk_`); a publishable key (`pk_`) cannot do anything on a server and is refused. A webhook-only deployment may leave
+    # it unset: the adapter then verifies deliveries but refuses to create a checkout.
     stripe_api_key: SecretStr | None = None
-    # The `event_name` of the Meter created in Stripe (at most 100 characters there): usage is sent under it.
-    stripe_meter_event_name: str = Field(default="agent_credits_used", min_length=1, max_length=100)
     # Polar: an Organization Access Token. Sandbox and production are separate accounts with separate tokens.
     polar_access_token: SecretStr | None = None
     # Which Polar API the adapter talks to. "sandbox" is the default, so nothing reaches production unless it is asked to.
     polar_environment: Literal["sandbox", "production"] = "sandbox"
-    # The `name` of the events sent to Polar's ingest endpoint (at most 128 characters there).
-    polar_usage_event_name: str = Field(default="agent_credits_used", min_length=1, max_length=128)
     # A body larger than this is refused (413) BEFORE it is read: an unauthenticated endpoint must not buffer
     # whatever it is sent. A real payment event is a few KB.
     billing_webhook_max_body_bytes: int = Field(default=256 * 1024, ge=1024, le=10 * 1024 * 1024)
@@ -361,12 +363,11 @@ class Settings(BaseSettings):
             raise ValueError("CREDITS_ENFORCEMENT=true needs CREDITS_PER_USD: a gate with no price is meaningless")
         return self
 
-    # How long usage_ledger rows are kept by scripts/usage_ledger_sweep.py (spec
-    # 008 A3: nothing trimmed the table, and the allowance reads it before every
-    # turn). The floor is not a style choice: a budget window reads back up to a
-    # calendar month (31 days), and a sweep that deleted inside a window would make
-    # the tenant look cheaper than it was. 400 days keeps a year-on-year view.
-    usage_ledger_retention_days: int = Field(default=400, ge=USAGE_LEDGER_MIN_RETENTION_DAYS)
+    # How long usage EVENTS are kept by scripts/usage_events_sweep.py (spec D7; nothing trimmed them, and the caps and the
+    # reconciliation read them). The floor is the same as the ledger's for the same reason: a window something still reads must
+    # never lose spend, so a smaller value is refused at startup. 400 days keeps a year-on-year view. An event whose export never
+    # finished is kept whatever its age (see the module), and the wallet's debits are never touched.
+    usage_event_retention_days: int = Field(default=400, ge=USAGE_EVENT_MIN_RETENTION_DAYS)
 
     # What a turn does when the chat model has NO known price. Every dollar
     # ceiling above multiplies tokens by a price, so an unpriced model makes
@@ -699,8 +700,9 @@ MAX_COST_USD_PER_PRINCIPAL_PER_DAY = settings.max_cost_usd_per_principal_per_day
 MAX_COST_USD_PER_PRINCIPAL_PER_MONTH = settings.max_cost_usd_per_principal_per_month
 PRICING_REFRESH_SECONDS = settings.pricing_refresh_seconds
 UNPRICED_MODEL_POLICY = settings.unpriced_model_policy
-USAGE_LEDGER_RETENTION_DAYS = settings.usage_ledger_retention_days
+USAGE_EVENT_RETENTION_DAYS = settings.usage_event_retention_days
 BUDGET_CHECK_FAILURE_POLICY = settings.budget_check_failure_policy
+STRIPE_API_KEY = settings.stripe_api_key.get_secret_value() if settings.stripe_api_key else ""
 CREDITS_PER_USD = settings.credits_per_usd
 MARKUP = settings.markup
 CREDITS_ENFORCEMENT = settings.credits_enforcement

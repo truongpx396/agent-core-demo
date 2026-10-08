@@ -247,10 +247,10 @@ def ledger(monkeypatch):
     async def in_flight_reservation(tenant):
         return 0.0
 
-    from app.agent import spend, usage_ledger
+    from app.agent import budget_holds, spend
 
     monkeypatch.setattr(spend, "usage_summary", usage_summary)
-    monkeypatch.setattr(usage_ledger, "in_flight_reservation", in_flight_reservation)
+    monkeypatch.setattr(budget_holds, "in_flight_reservation", in_flight_reservation)
     return spent
 
 

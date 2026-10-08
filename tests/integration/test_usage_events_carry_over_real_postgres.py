@@ -27,12 +27,13 @@ import pytest
 
 from scripts import usage_events_carry_over as carry
 from tests.containers import ensure_postgres
-from tests.integration.usage_seed import seed_event
+from tests.integration.usage_seed import purge_events, seed_event
 
-# The ledger sweep tests (test_ledger_real_postgres.py) delete old `usage_ledger` rows ACROSS tenants, in batches, up to a ceiling, and
-# these tests deliberately write old ledger rows (the history to carry), 3,000 of them in the race test: left behind or running at the
-# same moment, they push the sweep test's own rows past its ceiling and it fails. Same xdist group, so the two never run concurrently.
-pytestmark = [pytest.mark.integration, pytest.mark.xdist_group("usage_ledger_real_postgres")]
+# These tests deliberately write old history: ledger rows, and the carried events they become (years old, 3,000 in the race test). The
+# usage-event retention sweep tests (test_usage_events_retention_real_postgres.py) delete old events across ALL tenants, so running at
+# the same moment the sweep would remove the carried rows out from under the assertions about them. Same xdist group, so the two never
+# overlap. (Until T030c3 the same group also kept these tests away from the LEDGER's sweep tests, whose batch ceiling 3,000 old rows pushed past.)
+pytestmark = [pytest.mark.integration, pytest.mark.xdist_group("usage_events_old_rows")]
 
 NOW = datetime.now(UTC)
 YEARS_AGO = NOW - timedelta(days=3 * 365)
@@ -56,12 +57,13 @@ def real_appdata(appdata_url, monkeypatch):
 
 @pytest.fixture
 async def tenant(real_appdata) -> str:
-    """A tenant of this test's own. Its ledger rows are removed afterwards (the ledger is not append-only; the events are, so
-    those stay): old ledger rows left in the shared table are what the sweep tests would otherwise trip over."""
+    """A tenant of this test's own. Everything it wrote is removed afterwards, ledger rows and events alike: old history left in the
+    shared table is what a retention sweep test would otherwise trip over (see `purge_events`)."""
     name = f"acme-{uuid.uuid4().hex[:8]}"
     yield name
     async with real_appdata() as conn:
         await conn.execute("DELETE FROM usage_ledger WHERE tenant = %s OR tenant = %s", (name, f"{name}-other"))
+        await purge_events(conn, name, f"{name}-other")  # the carried rows and the seeded events: years old, and a sweep spans tenants
 
 
 async def _ledger(conn, tenant: str, *, recorded_at: datetime, cost: float, tokens: int = 100, principal: str = "alice") -> int:
@@ -224,6 +226,9 @@ async def test_with_no_real_event_at_all_the_cutoff_is_now(real_appdata):
     is untouched. (Only the retention job may delete, and it must say so inside its own transaction.)"""
     async with real_appdata() as conn:
         await conn.execute("SET LOCAL usage_events.allow_delete = 'on'")
+        # Other tests leave export rows behind (the retention tests keep unfinished ones on purpose), and the foreign key from the
+        # outbox would refuse the delete below; clearing them is as undone by the rollback as the delete itself.
+        await conn.execute("DELETE FROM usage_export_outbox")
         await conn.execute("DELETE FROM usage_events WHERE event_id NOT LIKE 'ledger:%'")
 
         cutoff = await carry.cutoff_for(conn)
