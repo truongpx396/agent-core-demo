@@ -41,7 +41,6 @@ from app.agent.graph_hitl import (
 )
 from app.core import metrics, tracing
 from app.core.config import (
-    CHAT_MODEL,
     REQUEST_TIMEOUT_SECONDS,
     UNATTENDED_MAX_DECLINE_ROUNDS,
 )
@@ -72,11 +71,13 @@ async def _record_turn_metrics(
     elapsed: float,
     outcome: str,
     state: dict | None = None,
-    ctx: SecurityCtx | None = None,
-    thread_id: str | None = None,
     *,
     observe_iterations: bool = True,
 ) -> None:
+    """Counts a turn: its outcome, latency, iterations and tokens. It records no SPEND: the money is in the usage events,
+    written as each model call returned (app/agent/metering.py), which is what the dollar caps sum. It used to also write
+    the turn's `usage_ledger` row from `state` here; that row is retired (specs/010 T030c2), and with it the reason this
+    needed the tenant and the thread."""
     metrics.agent_requests_total.labels(outcome=outcome).inc()
     metrics.agent_latency_seconds.observe(elapsed)
     if state is not None:
@@ -87,30 +88,23 @@ async def _record_turn_metrics(
         total_tokens = state.get("total_tokens", 0)
         if total_tokens:
             metrics.agent_tokens_total.inc(total_tokens)
-            # Usage ledger (pattern 26) — only recorded where ctx/thread_id
-            # are actually available.
-            # record_usage degrades to a no-op on its own failure.
-            if ctx is not None and thread_id is not None:
-                from app.agent import usage_ledger
-
-                await usage_ledger.record_usage(
-                    ctx, thread_id, CHAT_MODEL, total_tokens, state.get("total_cost_usd", 0.0)
-                )
 
 
 async def _record_unfinished_turn(graph, cfg, start: float, outcome: str) -> None:
     """Records a turn that ended by timeout, error or cancellation: the outcome
     and latency always, and the tokens it had already spent when its last
-    checkpoint holds any.
+    checkpoint holds any (for `agent_tokens_total`).
 
     These branches used to pass no state at all, on the stated reasoning that
     they "have total_tokens == 0 anyway". They don't: steps the model had already
     completed are in the checkpoint, and the turns that run until the timeout are
-    the ones most likely to have spent a lot — so they were the ones missing from
-    the ledger the tenant's daily budget is checked against (spec 008, B17).
-    Tokens of a model call cut off mid-flight never reached a checkpoint and are
-    not counted. A turn paused for approval and never resumed also records
-    nothing (disclosed in GRAPH_PATTERNS.md pattern 26).
+    the ones most likely to have spent a lot (spec 008, B17). That used to matter for
+    MONEY too, because the ledger row was written at the end of a turn and a failing turn
+    never reached it. The money no longer depends on this: each call's usage event was
+    written the moment the call returned, so a turn that times out, is cancelled or is
+    paused for approval has already been counted by the dollar caps. What remains here is
+    the tokens metric. Tokens of a model call cut off mid-flight never reached a
+    checkpoint and are not counted in it.
 
     Never raises and never waits long: this runs while a turn is already failing,
     and accounting for it must not make that worse or hold up its terminal event.
@@ -123,16 +117,8 @@ async def _record_unfinished_turn(graph, cfg, start: float, outcome: str) -> Non
         values = dict(snapshot.values) if snapshot is not None and snapshot.values else None
     except Exception as exc:  # noqa: BLE001 - accounting must not worsen a turn that is already failing
         logger.warning("unfinished_turn_state_read_failed", extra={"error_class": type(exc).__name__})
-    configurable = cfg.get("configurable") or {}
     try:
-        await _record_turn_metrics(
-            time.monotonic() - start,
-            outcome,
-            values,
-            ctx=configurable.get("ctx"),
-            thread_id=configurable.get("thread_id"),
-            observe_iterations=False,
-        )
+        await _record_turn_metrics(time.monotonic() - start, outcome, values, observe_iterations=False)
     except Exception as exc:  # noqa: BLE001 - same: the turn's terminal event comes first
         logger.warning("unfinished_turn_record_failed", extra={"error_class": type(exc).__name__})
 
@@ -499,13 +485,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                     yield {"type": "token", "content": skipped_text}
             if trace:
                 trace.update(output="".join(final_answer))
-            await _record_turn_metrics(
-                time.monotonic() - start,
-                _turn_outcome(state.values),
-                state.values,
-                ctx=(cfg.get("configurable") or {}).get("ctx"),
-                thread_id=(cfg.get("configurable") or {}).get("thread_id"),
-            )
+            await _record_turn_metrics(time.monotonic() - start, _turn_outcome(state.values), state.values)
             terminal_event = {"type": "done"}
     # No per-turn flush: the shared client's own background consumer sends
     # events as they arrive and app/core/tracing.py flushes it at process exit.
@@ -567,9 +547,9 @@ async def astream_events_turn(
     # total for the rest of this generator's life (released in `finally`
     # below, unconditionally) — see runtime.py::_reserve_turn_budget's own
     # docstring for the race this closes: without it, a sibling turn for
-    # the same tenant starting moments later would see the exact same
-    # `spent` this turn's own check just read, since usage_ledger only
-    # gets this turn's real cost once it's done.
+    # the same tenant starting moments later would see nearly the same
+    # `spent` this turn's own check just read: the usage events land as each
+    # call returns, but not the calls this turn has yet to make.
     budget_hold = await runtime_module._reserve_turn_budget(ctx)
     try:
         graph = await runtime_module.init_graph_async()

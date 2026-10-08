@@ -1213,27 +1213,24 @@ class TestRunSubagentImpl:
 
         assert after == before + 1
 
-    async def test_records_usage_to_the_ledger_with_a_derived_thread_id(self, monkeypatch):
-        from app.agent import usage_ledger
-
-        captured = {}
-
-        async def fake_record_usage(ctx, thread_id, model_alias, total_tokens, cost_usd):
-            captured["ctx"] = ctx
-            captured["thread_id"] = thread_id
-            captured["cost_usd"] = cost_usd
-
-        monkeypatch.setattr(usage_ledger, "record_usage", fake_record_usage)
-        fake_llm = _RecordingFakeLLM(AIMessage(content="An answer, long enough to pass."))
+    async def test_the_nested_runs_spend_is_recorded_as_events_under_a_derived_thread_id(self, usage_event_sink):
+        """The delegated run writes no ledger row of its own any more: each of its model calls is a usage event (kind
+        "subagent", the thing the dollar caps sum), under a thread id derived from the parent's so it can be told apart."""
+        reply = AIMessage(
+            content="An answer, long enough to pass.",
+            usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        )
+        fake_llm = _RecordingFakeLLM(reply)
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
         await _run_subagent_impl(
             "researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
-        assert captured["ctx"] == TEST_CTX
-        assert captured["thread_id"].startswith("parent-thread:subagent:researcher:")
-        assert captured["cost_usd"] == 0.0  # the nested run's own running total, here a free model
+        (row,) = usage_event_sink
+        assert (row["tenant"], row["principal"], row["kind"]) == (TEST_CTX["tenant"], TEST_CTX["principal"], "subagent")
+        assert row["thread_id"].startswith("parent-thread:subagent:researcher:")
+        assert row["total_tokens"] == 15
 
     async def test_never_touches_the_shared_semantic_cache(self, monkeypatch):
         """Closes GRAPH_PATTERNS.md pattern 46's previously-disclosed gap:
@@ -1302,16 +1299,8 @@ class TestASubagentOnAnUnpricedModelIsRefusedUnderTheBlockPolicy:
 
         monkeypatch.setattr(pricing, "UNPRICED_MODEL_POLICY", policy)
 
-    async def test_the_run_is_refused_before_any_model_work_and_nothing_is_recorded(self, monkeypatch):
-        from app.agent import usage_ledger
-
+    async def test_the_run_is_refused_before_any_model_work_and_nothing_is_recorded(self, monkeypatch, usage_event_sink):
         self._policy(monkeypatch, "block")
-        recorded = []
-
-        async def record_usage(*args, **kwargs):
-            recorded.append(args)
-
-        monkeypatch.setattr(usage_ledger, "record_usage", record_usage)
         llm = _RecordingFakeLLM(AIMessage(content="must never be asked"))
         before = metric_value(metrics.agent_subagent_run_total, subagent="researcher", outcome="model_unpriced")
 
@@ -1321,7 +1310,7 @@ class TestASubagentOnAnUnpricedModelIsRefusedUnderTheBlockPolicy:
         assert (result.total_tokens, result.total_cost_usd) == (0, 0.0)
         assert "cannot be run" in result.answer and "researcher" in result.answer
         assert "specialist-with-no-price" not in result.answer, "model config is not the delegating model's business"
-        assert recorded == []
+        assert usage_event_sink == [], "no model call was made, so no event was written"
         assert (
             metric_value(metrics.agent_subagent_run_total, subagent="researcher", outcome="model_unpriced")
             == before + 1

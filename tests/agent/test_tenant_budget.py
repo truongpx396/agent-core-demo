@@ -3,13 +3,13 @@
 app/agent/graph.py's own MAX_COST_USD_PER_TURN, which only ever sees one turn at a time.
 
 `_check_allowance` itself is tested directly against a monkeypatched
-app.agent.usage_ledger.usage_summary (no live Postgres); the rule's own cases, with explicit
+app.agent.spend.usage_summary (no live Postgres); the rule's own cases, with explicit
 arguments, are in tests/agent/test_budgets.py. The entry point (astream_events_turn) is tested
 by stubbing `_allowance_refusal` to an envelope/None and asserting it never even calls
 init_graph_async() when refused — proving the short-circuit happens BEFORE any real graph
 work, not just that it returns the right shape.
 
-Both `_check_allowance` and `usage_ledger.usage_summary` are `async def`
+Both `_check_allowance` and `spend.usage_summary` are `async def`
 now (a real `AsyncConnectionPool`, see app/agent/sql_store.py's own
 docstring).
 """
@@ -114,7 +114,7 @@ class TestCheckAllowance:
         tenant would all see the SAME persisted `spent` (none of their own
         cost is recorded yet) — in_flight_reservation is what lets this
         function see the turns already running and refuse regardless."""
-        from app.agent import spend, usage_ledger
+        from app.agent import budget_holds, spend
 
         async def fake_usage_summary(*a, **kw):
             return {"total_cost_usd": 6.0, "total_tokens": 100}
@@ -124,14 +124,14 @@ class TestCheckAllowance:
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
         monkeypatch.setattr(spend, "usage_summary", fake_usage_summary)
-        monkeypatch.setattr(usage_ledger, "in_flight_reservation", fake_in_flight_reservation)
+        monkeypatch.setattr(budget_holds, "in_flight_reservation", fake_in_flight_reservation)
 
         assert (await agent._check_allowance(TEST_CTX)).refused is True
 
     async def test_false_when_ledger_spend_plus_reservations_both_stay_under_the_limit(
         self, monkeypatch
     ):
-        from app.agent import spend, usage_ledger
+        from app.agent import budget_holds, spend
 
         async def fake_usage_summary(*a, **kw):
             return {"total_cost_usd": 6.0, "total_tokens": 100}
@@ -141,44 +141,44 @@ class TestCheckAllowance:
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
         monkeypatch.setattr(spend, "usage_summary", fake_usage_summary)
-        monkeypatch.setattr(usage_ledger, "in_flight_reservation", fake_in_flight_reservation)
+        monkeypatch.setattr(budget_holds, "in_flight_reservation", fake_in_flight_reservation)
 
         assert (await agent._check_allowance(TEST_CTX)).refused is False
 
 class TestReserveAndReleaseTurnBudget:
-    """runtime.py's thin wrappers around usage_ledger's reservation
+    """runtime.py's thin wrappers around budget_holds' reservation
     primitives — astream_events_turn calls these directly (see
     TestEntryPointsRefuseBeforeTouchingTheGraph below for the entry-point
     wiring itself)."""
 
     async def test_reserve_holds_the_per_turn_ceiling_and_returns_the_hold_id(self, monkeypatch):
-        from app.agent import usage_ledger
+        from app.agent import budget_holds
 
         async def fake_reserve_budget(ctx, amount):
             assert amount == agent.MAX_COST_USD_PER_TURN
             return "hold-1"
 
-        monkeypatch.setattr(usage_ledger, "reserve_budget", fake_reserve_budget)
+        monkeypatch.setattr(budget_holds, "reserve_budget", fake_reserve_budget)
         assert await agent._reserve_turn_budget(TEST_CTX) == "hold-1"
 
     async def test_reserve_returns_none_when_the_reservation_itself_fails(self, monkeypatch):
-        from app.agent import usage_ledger
+        from app.agent import budget_holds
 
         async def fake_reserve_budget(ctx, amount):
             return None
 
-        monkeypatch.setattr(usage_ledger, "reserve_budget", fake_reserve_budget)
+        monkeypatch.setattr(budget_holds, "reserve_budget", fake_reserve_budget)
         assert await agent._reserve_turn_budget(TEST_CTX) is None
 
-    async def test_release_forwards_to_usage_ledger_with_the_same_hold_id(self, monkeypatch):
-        from app.agent import usage_ledger
+    async def test_release_forwards_to_budget_holds_with_the_same_hold_id(self, monkeypatch):
+        from app.agent import budget_holds
 
         captured = {}
 
         async def fake_release(ctx, hold_id):
             captured.update(ctx=ctx, hold_id=hold_id)
 
-        monkeypatch.setattr(usage_ledger, "release_budget_reservation", fake_release)
+        monkeypatch.setattr(budget_holds, "release_budget_reservation", fake_release)
         await agent._release_turn_budget(TEST_CTX, "hold-1")
 
         assert captured == {"ctx": TEST_CTX, "hold_id": "hold-1"}
