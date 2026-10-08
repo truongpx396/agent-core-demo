@@ -163,27 +163,26 @@ async def _reserve_turn_budget(ctx: SecurityCtx | None) -> str | None:
     invalid or the write itself failed — callers pass this straight to
     `_release_turn_budget` in a `finally`, so a failed reservation and a real
     one both round-trip correctly (releasing None is a no-op)."""
-    from app.agent import usage_ledger
+    from app.agent import budget_holds
 
-    return await usage_ledger.reserve_budget(ctx, MAX_COST_USD_PER_TURN)
+    return await budget_holds.reserve_budget(ctx, MAX_COST_USD_PER_TURN)
 
 
 async def _release_turn_budget(ctx: SecurityCtx | None, hold_id: str | None) -> None:
     """Reverses `_reserve_turn_budget` — called unconditionally once a
     turn ends (success, failure, or timeout), never only on success: the
     reservation's whole job is to cover the WINDOW while this turn is
-    running, not to track whether it actually succeeded (usage_ledger's
-    own `record_usage`, called separately, is the real accounting for a
-    completed turn)."""
-    from app.agent import usage_ledger
+    running, not to track whether it actually succeeded (the usage events,
+    written as each call returned, are the real accounting for a turn)."""
+    from app.agent import budget_holds
 
-    await usage_ledger.release_budget_reservation(ctx, hold_id)
+    await budget_holds.release_budget_reservation(ctx, hold_id)
 
 
 async def _upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> None:
     """Record/refresh this thread_id in the session directory (the conversation
     switcher, app/agent/sessions.py) — called at the START of every turn, unlike
-    usage_ledger's metrics which only fire on a completed turn. Deliberate: a
+    the turn metrics which only fire on a completed turn. Deliberate: a
     rejected/moderated/short-circuited turn is still a real conversation and
     should still appear in "switch conversation." Degrades to a no-op on its
     own failure (can't fail the turn).

@@ -2,7 +2,7 @@
 and switch between their own past conversation threads.
 
 Persisted in the `appdata` Postgres database (`chat_sessions` table,
-postgres-init/06-chat-sessions.sql), not reused from `usage_ledger`: that
+postgres-init/06-chat-sessions.sql), not reused from the usage tables: that
 table no-ops on a zero-token/rejected turn and carries no title, so a
 session with no billable tokens would vanish from the switcher. The
 checkpointer's own `checkpoints` table has no tenant/principal column to
@@ -49,14 +49,14 @@ async def upsert_session(
 ) -> None:
     """Best-effort write-through at the start of every turn
     (`runtime.py::astream_events_turn`, right after seeding) — NOT gated
-    on the turn completing, unlike `usage_ledger.py::record_usage`, so a
+    on the turn completing, unlike the turn metrics, so a
     rejected/moderated/short-circuited turn still shows up in the session
     list.
 
     `title`/`domain` are set ONLY on first insert; later turns only
     refresh `last_active_at`, so both stay fixed at the opening turn's
     values. A failing write must not fail the turn — same
-    degrade-don't-crash posture as record_usage.
+    degrade-don't-crash posture as the usage events' write.
     """
     if not valid_ctx(ctx) or not thread_id:
         return

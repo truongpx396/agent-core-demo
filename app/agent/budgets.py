@@ -35,7 +35,7 @@ and it follows the same failure policy as the spend read.
 `usage_ledger` sum until then). An event lands the moment a model call returns, so a sibling turn that is
 still running has spent SOME of its money in the sum already, but not the calls it has yet to make, so
 without a hold N concurrent turns would all read a stale `spent`, all pass, and all proceed — a check-then-act
-race. Every turn reserves `MAX_COST_USD_PER_TURN` for its duration (`usage_ledger.reserve_budget`), so the
+race. Every turn reserves `MAX_COST_USD_PER_TURN` for its duration (`budget_holds.reserve_budget`), so the
 tenant limits see a burst the events alone would miss. The hold is the WHOLE per-turn ceiling and the events
 are the part already spent, so a running turn is counted twice for what it has spent so far: a conservative
 over-count, bounded by `MAX_COST_USD_PER_TURN` per running turn, which can refuse a sibling a little early and
@@ -57,7 +57,7 @@ A tenant with no wallet is never gated (spec D8): shipping this changes nothing 
 operator, or a verified purchase, opens one.
 
   * **Holds are expressed in credits.** Each running turn holds `MAX_COST_USD_PER_TURN` dollars
-    (`usage_ledger.reserve_budget`); the gate converts that to credits at the configured rate, so a
+    (`budget_holds.reserve_budget`); the gate converts that to credits at the configured rate, so a
     tenant with 100 credits cannot start a second concurrent turn that may spend 500. The first turn of
     a tenant is checked against the balance alone, so it can overdraw by at most one turn's worth, which
     the wallet books as debt instead of refusing (`credits.debit_in`) and which the next grant repays.
@@ -95,7 +95,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Literal
 
-from app.agent import budget_policies, spend, usage_ledger
+from app.agent import budget_holds, budget_policies, spend
 from app.billing import credits
 from app.core import metrics
 from app.core.errors import ErrorCode, ErrorEnvelope
@@ -247,12 +247,12 @@ def configured_limits(
 
 async def _spend(limit: BudgetLimit, ctx: SecurityCtx, now: datetime) -> tuple[float, float]:
     """(spend in the limit's window, in-flight holds) for this limit's scope. The spend is the usage events'
-    (`spend.usage_summary`); the holds are still `usage_ledger`'s (concurrency, not history)."""
+    (`spend.usage_summary`); the holds are `budget_holds`' (concurrency, not history)."""
     principal = ctx["principal"] if limit.scope == "principal" else None
     summary = await spend.usage_summary(
         ctx["tenant"], principal=principal, since=window_start(limit.window, now)
     )
-    reserved = await usage_ledger.in_flight_reservation(ctx["tenant"]) if limit.scope == "tenant" else 0.0
+    reserved = await budget_holds.in_flight_reservation(ctx["tenant"]) if limit.scope == "tenant" else 0.0
     return summary["total_cost_usd"], reserved
 
 
@@ -302,7 +302,7 @@ async def _credit_check(ctx: SecurityCtx, gate: CreditGate) -> tuple[Allowance |
         return (Allowance("unavailable"), False) if gate.fail_policy == "closed" else (None, True)
     if wallet is None:
         return None, False  # no wallet: not on credit billing, never gated (spec D8)
-    reserved = credits.credits_for_cost(await usage_ledger.in_flight_reservation(tenant), gate.credits_per_usd, gate.markup)
+    reserved = credits.credits_for_cost(await budget_holds.in_flight_reservation(tenant), gate.credits_per_usd, gate.markup)
     if wallet.available - reserved > 0:
         return None, False
     metrics.agent_credit_enforcement_refused_total.inc()

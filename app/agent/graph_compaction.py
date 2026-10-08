@@ -206,7 +206,7 @@ def make_compact_history_node(
                 prior_clause=prior_clause,
                 turns_text=_format_turns_for_summary(to_summarize),
             )
-            # Metered like every other model call (app/agent/metering.py). Its own ledger row, and
+            # Metered like every other model call (app/agent/metering.py): one usage event, and
             # NOT added to the turn's token/cost budget: a long history summary must not be able to
             # stop the answer the turn exists to give.
             call = await metering.metered_invoke(
@@ -215,7 +215,6 @@ def make_compact_history_node(
                 config=config,
                 kind="compaction",
                 model_alias=model_alias or graph_module.CHAT_MODEL,
-                to_ledger=True,
             )
             response = call.response
             new_summary = (response.content or "").strip()
