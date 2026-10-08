@@ -76,15 +76,13 @@ async def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm=None) -> list[str
     drafts = []
     for item in due:
         human_prompt = build_followup_prompt(item["lead_name"], item["contact"], item["note"])
-        # One metered call (app/agent/metering.py): identity, priced once, one usage event and
-        # this nudge's own ledger row, keyed by the follow-up it drafts.
+        # One metered call (app/agent/metering.py): identity, priced once, one usage event.
         call = await metering.metered_invoke(
             chat,
             [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)],
             config={"configurable": {"ctx": _CRON_CTX, "thread_id": f"followup-sweep:{item['id']}"}},
             kind="cron",
             model_alias=CHAT_MODEL,
-            to_ledger=True,
         )
         response = call.response
         draft = response.content if isinstance(response.content, str) else str(response.content)

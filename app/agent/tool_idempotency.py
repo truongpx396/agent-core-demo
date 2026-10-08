@@ -27,7 +27,7 @@ paragraph, generalized from "resume" to any crashed turn; see
 docstrings.
 
 Fails OPEN on its own storage failure — same posture, and same reason, as
-`app/agent/usage_ledger.py`/`app/agent/sessions.py`'s own `get_connection()`
+`app/agent/budget_holds.py`/`app/agent/sessions.py`'s own `get_connection()`
 callers (see tests/conftest.py's `mock_appdata_postgres` docstring): a
 dedup-store outage must degrade to "run the tool, unprotected" rather than
 block every mutating/outward tool call in the app on it. This is a

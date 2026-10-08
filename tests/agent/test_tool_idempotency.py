@@ -1,7 +1,7 @@
 """Tests for app/agent/tool_idempotency.py's idempotent() — the exactly-once
 guard every mutating/outward tool now runs its real side effect through.
 
-Same "no live Postgres" approach as tests/agent/test_usage_ledger.py: a
+Same "no live Postgres" approach as tests/agent/test_budget_holds.py: a
 tiny in-memory fake stands in for the tool_call_dedup table, real enough to
 prove idempotent()'s actual claim/cache-hit/store logic (not just record
 calls) — get_connection() is called up to three times per idempotent()

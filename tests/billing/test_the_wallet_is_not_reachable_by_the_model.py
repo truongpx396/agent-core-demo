@@ -55,5 +55,5 @@ def test_the_scanner_does_recognise_an_import_of_the_wallet(tmp_path):
     for source in ("from app.billing import credits", "import app.billing.credits", "from app import billing"):
         sample.write_text(source + "\n")
         assert _imports_billing(sample), source
-    sample.write_text("from app.agent import usage_ledger\n")
+    sample.write_text("from app.agent import budget_holds\n")
     assert not _imports_billing(sample)

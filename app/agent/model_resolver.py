@@ -10,10 +10,10 @@ Naming only aliases keeps this app portable (swapping providers is a
 config change), but means the biggest lever on output quality (a gateway
 remap) can change without any recorded artifact reflecting it. Resolving
 it here keeps model choice invisible to routing but visible to forensics
-(usage_ledger.py).
+(the usage events, `usage_events.py`).
 
 Async, with a short negative cache. The first version was a plain synchronous
-`httpx.get` called from `usage_ledger.record_usage`, which runs on the event loop
+`httpx.get` called from the per-turn ledger write (since retired), which ran on the event loop
 at the end of every completed turn: a slow LiteLLM froze every other turn,
 stream and health check on that worker for the length of the lookup (measured:
 a 0.5 s answer stalled a concurrent heartbeat for 0.56 s), and while LiteLLM was

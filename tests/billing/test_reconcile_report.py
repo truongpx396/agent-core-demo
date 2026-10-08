@@ -25,14 +25,11 @@ STRICT = Tolerance(usd=D("0.001"), pct=D("0"))
 
 @pytest.fixture
 def sources(monkeypatch):
-    """The three records and the wallet, as a test sets them: events, ledger and uncharged by (tenant, day)."""
-    state = {"events": {}, "unpriced": {}, "ledger": {}, "uncharged": {}, "tenants": {"acme"}, "wallet": (D("0"), D("0"))}
+    """The records and the wallet, as a test sets them: events and uncharged by (tenant, day)."""
+    state = {"events": {}, "unpriced": {}, "uncharged": {}, "tenants": {"acme"}, "wallet": (D("0"), D("0"))}
 
     async def events(window):
         return dict(state["events"]), dict(state["unpriced"]), len(state["events"])
-
-    async def ledger(window):
-        return dict(state["ledger"])
 
     async def tenants():
         return set(state["tenants"])
@@ -44,7 +41,6 @@ def sources(monkeypatch):
         return state["wallet"]
 
     monkeypatch.setattr(reconcile, "events_by_tenant_day", events)
-    monkeypatch.setattr(reconcile, "ledger_by_tenant_day", ledger)
     monkeypatch.setattr(reconcile, "wallet_tenants", tenants)
     monkeypatch.setattr(reconcile, "uncharged_by_tenant_day", uncharged)
     monkeypatch.setattr(reconcile, "wallet_totals", wallet)
@@ -67,7 +63,6 @@ async def run(gateway: FakeGateway | None, **kwargs) -> Report:
 class TestTheRecordsAgree:
     async def test_matching_records_are_ok(self, sources):
         sources["events"] = {("acme", DAY): D("1.500000")}
-        sources["ledger"] = {("acme", DAY): D("1.500000")}
 
         report = await run(gateway_saw(1.0, 0.5))
 
@@ -77,7 +72,6 @@ class TestTheRecordsAgree:
 
     async def test_differences_inside_the_tolerance_are_not_drift(self, sources):
         sources["events"] = {("acme", DAY): D("100")}
-        sources["ledger"] = {("acme", DAY): D("100.5")}
 
         report = await run(gateway_saw(100.9), tolerance=Tolerance(usd=D("0.01"), pct=D("1")))
 
@@ -88,7 +82,6 @@ class TestADeletedEvent:
     async def test_the_report_names_the_tenant_the_day_and_the_amount(self, sources):
         # The meter recorded 1.0 and 0.5; the 0.5 event is deleted. The gateway and the ledger still hold both.
         sources["events"] = {("acme", DAY): D("1.0")}
-        sources["ledger"] = {("acme", DAY): D("1.5")}
 
         report = await run(gateway_saw(1.0, 0.5))
 
@@ -98,14 +91,6 @@ class TestADeletedEvent:
         text = reconcile.render(report)
         assert "acme" in text and "2026-10-06" in text and "drift +$0.500000" in text
         assert "a call whose event was never written" in text
-
-    async def test_the_ledger_names_it_too_so_a_missing_event_is_seen_from_two_sides(self, sources):
-        sources["events"] = {("acme", DAY): D("1.0")}
-        sources["ledger"] = {("acme", DAY): D("1.5")}
-
-        report = await run(gateway_saw(1.0, 0.5))
-
-        assert {f.kind for f in report.findings} == {"gateway", "ledger"}
 
     async def test_a_tenant_whose_every_event_is_gone_is_still_named_from_the_gateway_alone(self, sources):
         sources["tenants"] = {"acme"}  # a tenant the database still knows by its wallet (credit_accounts)
@@ -124,19 +109,17 @@ class TestADeletedEvent:
 
 
 class TestEveryComparisonStandsOnItsOwn:
-    async def test_events_above_the_ledger_means_a_turn_never_reached_the_dollar_caps(self, sources):
+    async def test_events_above_the_gateway_is_reported_with_its_own_sign_and_counts_by_size(self, sources):
         sources["events"] = {("acme", DAY): D("2.0")}
-        sources["ledger"] = {("acme", DAY): D("1.0")}
 
-        report = await run(gateway_saw(2.0))
+        report = await run(gateway_saw(1.0))
 
         (finding,) = report.findings
-        assert finding.kind == "ledger" and finding.drift == D("-1.0")
+        assert finding.kind == "gateway" and finding.drift == D("-1.0")
         assert report.max_drift_usd == D("1.0")  # the size of the gap, whichever side is larger: a signed maximum would read it as zero
 
     async def test_an_uncharged_event_is_named_and_counts_toward_the_largest_drift(self, sources):
         sources["events"] = {("acme", DAY): D("0.25")}
-        sources["ledger"] = {("acme", DAY): D("0.25")}
         sources["uncharged"] = {("acme", DAY): D("0.25")}
 
         report = await run(gateway_saw(0.25))
@@ -147,7 +130,6 @@ class TestEveryComparisonStandsOnItsOwn:
 
     async def test_an_uncharged_event_is_exact_with_no_tolerance_to_hide_a_day_of_cheap_calls_in(self, sources):
         sources["events"] = {("acme", DAY): D("0.000004")}
-        sources["ledger"] = {("acme", DAY): D("0.000004")}
         sources["uncharged"] = {("acme", DAY): D("0.000004")}
 
         report = await run(gateway_saw(0.000004), tolerance=Tolerance(usd=D("1"), pct=D("50")))
@@ -164,7 +146,6 @@ class TestEveryComparisonStandsOnItsOwn:
 
     async def test_spend_the_gateway_cannot_attribute_is_reported_and_is_never_drift(self, sources):
         sources["events"] = {("acme", DAY): D("1.0")}
-        sources["ledger"] = {("acme", DAY): D("1.0")}
         gateway = FakeGateway([spend_row(end_user_id("acme"), NOON, 1.0, "a"), spend_row(None, NOON, 0.4, "embedding-1")])
 
         report = await run(gateway)
@@ -176,7 +157,6 @@ class TestEveryComparisonStandsOnItsOwn:
 class TestWhatItCannotCompareIsSaidNotSkippedSilently:
     async def test_an_incomplete_gateway_read_is_never_compared_and_is_its_own_outcome(self, sources):
         sources["events"] = {("acme", DAY): D("1.0")}
-        sources["ledger"] = {("acme", DAY): D("1.0")}
         many = FakeGateway([spend_row(end_user_id("acme"), NOON, 0.0, f"r{i}") for i in range(2500)])
 
         report = await run(many, max_pages=1)
@@ -187,7 +167,6 @@ class TestWhatItCannotCompareIsSaidNotSkippedSilently:
 
     async def test_no_gateway_is_a_stated_choice_not_an_incomplete_pass(self, sources):
         sources["events"] = {("acme", DAY): D("1.0")}
-        sources["ledger"] = {("acme", DAY): D("1.0")}
 
         report = await run(None)
 
@@ -201,18 +180,17 @@ class TestWhatItCannotCompareIsSaidNotSkippedSilently:
 
         monkeypatch.setattr(reconcile, "uncharged_by_tenant_day", missing)
         sources["events"] = {("acme", DAY): D("1.0")}
-        sources["ledger"] = {("acme", DAY): D("3.0")}
 
-        report = await run(None)
+        report = await run(gateway_saw(3.0))
 
-        assert [f.kind for f in report.findings] == ["ledger"]
+        assert [f.kind for f in report.findings] == ["gateway"]
         assert any(s.startswith("wallet: not checked") for s in report.skipped)
 
     async def test_an_empty_window_reads_nothing_and_says_why(self, monkeypatch):
         async def never(*args, **kwargs):
             raise AssertionError("an empty window must not touch the database")
 
-        for name in ("events_by_tenant_day", "ledger_by_tenant_day", "wallet_tenants"):
+        for name in ("events_by_tenant_day", "wallet_tenants"):
             monkeypatch.setattr(reconcile, name, never)
 
         report = await reconcile.reconcile(Window(WINDOW.end, WINDOW.start))
