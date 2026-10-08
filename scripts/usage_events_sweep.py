@@ -7,7 +7,7 @@ of 35 days so a calendar-month cap or a reconciliation window can never lose spe
 event whose export to a billing provider did not finish: those are counted and reported, not removed. The wallet's debits are
 never touched.
 
-Same "fixed pipeline, not an agent turn" shape as scripts/usage_ledger_sweep.py, and like that one it is deliberately NOT run by
+Same "fixed pipeline, not an agent turn" shape as the sweeps before it (scripts/billing_inbox_sweep.py), and like them it is deliberately NOT run by
 anything automatically: this is the table spend is read from, so wire it to real cron once your retention policy is decided, e.g.
 
     30 3 * * 0 cd /path/to/agent-core-demo && python -m scripts.usage_events_sweep

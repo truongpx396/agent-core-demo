@@ -30,7 +30,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from psycopg import errors as pg_errors
 
-from app.agent import budgets, usage_ledger
+from app.agent import budget_holds, budgets
 from app.api.routers import billing as billing_router
 from app.billing import credits, inbox, store, webhooks
 from app.billing.providers.base import BillingEvent, CreditProduct, EventKind
@@ -58,7 +58,7 @@ def real_appdata(appdata_url, monkeypatch):
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:  # commits on a normal exit
             yield conn
 
-    for module in (webhooks, credits, inbox, usage_ledger):
+    for module in (webhooks, credits, inbox, budget_holds):
         monkeypatch.setattr(module, "get_connection", get_connection)
     return get_connection
 

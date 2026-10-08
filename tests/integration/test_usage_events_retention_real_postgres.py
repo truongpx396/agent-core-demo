@@ -25,7 +25,7 @@ from app.billing import credits
 from tests.containers import ensure_postgres
 from tests.integration.usage_seed import purge_events, seed_event
 
-pytestmark = [pytest.mark.integration, pytest.mark.xdist_group("usage_ledger_real_postgres")]
+pytestmark = [pytest.mark.integration, pytest.mark.xdist_group("usage_events_old_rows")]
 
 NOW = datetime.now(UTC)
 OLD = NOW - timedelta(days=500)  # past the default 400

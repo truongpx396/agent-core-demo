@@ -1,7 +1,7 @@
 """Retention for the usage events: the sweep spec D7 promised and nothing built (specs/010 T030c3).
 
 `usage_events` is append-only and, since the caps sum it (T030b), it grows with every model call. Nothing trimmed it: the ledger
-had a sweep (`scripts/usage_ledger_sweep.py`), the table that replaced it had none, so a year of calls was a year of rows read by
+had a sweep (since retired with it), the table that replaced it had none, so a year of calls was a year of rows read by
 the reconciliation and scanned by the monthly caps. This deletes events older than `USAGE_EVENT_RETENTION_DAYS`.
 
 ## What it must not delete
