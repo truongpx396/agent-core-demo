@@ -336,6 +336,22 @@ and can never double-charge: `make credits ARGS="adjust --tenant <t> --amount=-<
 to your own difference rather than ignoring the report. The newest `CREDIT_RECONCILE_SETTLE_SECONDS` of traffic is left out (the gateway
 writes its spend log in batches, so the newest calls are in the events first).
 
+### Trimming the usage events
+
+`make usage-events-sweep` deletes usage events older than `USAGE_EVENT_RETENTION_DAYS` (400 by default; **35 is the floor**, because a monthly cap and the
+reconciliation read back that far). Nothing schedules it: this is the table spend is read from, so run it from cron only once your retention policy is decided
+(`ARGS` are not taken; the window is the setting). It prints what it did.
+
+- **`Cleared N finished export row(s)`**: events already `sent` to a provider go together with their finished export row.
+- **`KEPT N old event(s) whose export never finished`**: events whose export is `pending`, `failed` or `expired` are never deleted, however old, because they are usage
+  that was meant to reach a provider and did not (`UsageExportFailed`, `UsageExportExpired`). Find them with
+  `SELECT provider, status, count(*) FROM usage_export_outbox WHERE status <> 'sent' GROUP BY 1, 2`. Fix the cause and let the worker send them, or, when you have
+  decided that usage will never be sent, delete its outbox row by hand (`DELETE FROM usage_export_outbox WHERE provider = '<p>' AND event_id = '<id>'`), after which
+  the next sweep removes the event. There is no "resolved" state yet, so this is a deliberate act.
+- **The wallet is never touched.** A debit keeps its `usage_event_id`, and the balance does not move. What a deleted event takes with it is the ability to recompute that
+  debit's credits from the event row, so keep events as long as you may need to explain a charge.
+- The all-time total on `GET /usage` is bounded by this window.
+
 ### Dashboard and alerts
 
 "Credit Billing" in Grafana (`observability/grafana/dashboards/credit-billing.json`): credits outstanding and owed, grant and debit rates, export

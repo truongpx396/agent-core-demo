@@ -24,6 +24,10 @@ BILLING_INBOX_MIN_RETENTION_DAYS = 30
 # sweep delete spend that is still inside one (app/agent/usage_ledger.py::sweep_old_rows).
 USAGE_LEDGER_MIN_RETENTION_DAYS = 35
 
+# The same floor for the usage EVENTS, which the caps and the reconciliation read now (app/agent/usage_events_retention.py): a
+# monthly cap reads back 31 days, the reconciliation up to 35, the export outbox gives up on an unsent event at 30.
+USAGE_EVENT_MIN_RETENTION_DAYS = 35
+
 
 class Settings(BaseSettings):
     # `hide_input_in_errors`: a ValidationError normally prints the offending raw value (`input_value='...'`). This class
@@ -368,6 +372,12 @@ class Settings(BaseSettings):
     # the tenant look cheaper than it was. 400 days keeps a year-on-year view.
     usage_ledger_retention_days: int = Field(default=400, ge=USAGE_LEDGER_MIN_RETENTION_DAYS)
 
+    # How long usage EVENTS are kept by scripts/usage_events_sweep.py (spec D7; nothing trimmed them, and the caps and the
+    # reconciliation read them). The floor is the same as the ledger's for the same reason: a window something still reads must
+    # never lose spend, so a smaller value is refused at startup. 400 days keeps a year-on-year view. An event whose export never
+    # finished is kept whatever its age (see the module), and the wallet's debits are never touched.
+    usage_event_retention_days: int = Field(default=400, ge=USAGE_EVENT_MIN_RETENTION_DAYS)
+
     # What a turn does when the chat model has NO known price. Every dollar
     # ceiling above multiplies tokens by a price, so an unpriced model makes
     # them all read $0 — the failure is silent by construction. "allow" keeps
@@ -700,6 +710,7 @@ MAX_COST_USD_PER_PRINCIPAL_PER_MONTH = settings.max_cost_usd_per_principal_per_m
 PRICING_REFRESH_SECONDS = settings.pricing_refresh_seconds
 UNPRICED_MODEL_POLICY = settings.unpriced_model_policy
 USAGE_LEDGER_RETENTION_DAYS = settings.usage_ledger_retention_days
+USAGE_EVENT_RETENTION_DAYS = settings.usage_event_retention_days
 BUDGET_CHECK_FAILURE_POLICY = settings.budget_check_failure_policy
 CREDITS_PER_USD = settings.credits_per_usd
 MARKUP = settings.markup
