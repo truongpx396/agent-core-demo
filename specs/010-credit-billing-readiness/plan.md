@@ -62,7 +62,9 @@ CLAUDE.md: one logical change per PR, target ≤ ~400 hand-written lines, ceilin
 | **later (blocked)** | One adapter per provider (Stripe, Polar, PayPal), each against **primary docs and a sandbox account**, each passing the contract suite | 4, 5 | n/a |
 | **7a** | `make usage-events-carry-over`: copy the ledger's history into the events (additive; run before 7b) (T030a) | 1b | ~350 |
 | **7b** | The caps and `/usage` read `usage_events`; refuse the events kill switch (T030b, D15) | 7a | ~500 |
-| **7c** | Retire the per-turn `usage_ledger` write, the dual-write test and the reconciliation's ledger leg; an events retention sweep (T030c) | 7b | ~400 |
+| **7c-1** | Drop the reconciliation's ledger leg (T030c1) | 7b | ~250 |
+| **7c-2** | Stop the per-turn `usage_ledger` write and the dual-write test (T030c2) | 7c-1 | ~500 |
+| **7c-3** | An events retention sweep; move the holds out of `usage_ledger.py` and delete it (T030c3) | 7c-2 | ~500 |
 
 ## Risks accepted
 
