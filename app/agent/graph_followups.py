@@ -51,15 +51,14 @@ def make_suggest_followups_node(llm, model_alias: str | None = None):
         if not content:
             return {"followups": []}
         try:
-            # Metered like every other model call (app/agent/metering.py): one usage event, and its
-            # own ledger row, because the cost never reaches the agent node's running total.
+            # Metered like every other model call (app/agent/metering.py): one usage event. Its cost never
+            # joins the agent node's running total, and the event is what the dollar caps count.
             call = await metering.metered_invoke(
                 llm,
                 [HumanMessage(content=_FOLLOWUP_PROMPT.format(answer=content))],
                 config=config,
                 kind="followups",
                 model_alias=model_alias or graph_module.CHAT_MODEL,
-                to_ledger=True,
             )
             response = call.response
             lines = [

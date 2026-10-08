@@ -191,6 +191,32 @@ class TestWhatAnEventRecords:
         assert row["cost_usd"] == pytest.approx(0.2)  # 100 * 0.001 + 50 * 0.002
         assert (row["price_input_per_token"], row["price_output_per_token"]) == (0.001, 0.002)
 
+    async def test_the_concrete_model_behind_the_alias_is_recorded(self, usage_event_sink, monkeypatch):
+        """Pattern 38: an alias can be re-pointed at another model, so what a call actually ran on is written down with it.
+        (This was the per-turn ledger's test until the ledger write was retired; the property moved with the money.)"""
+
+        async def resolve(alias):
+            assert alias == "gpt-4o"
+            return "openai/gpt-4o-2024-08-06"
+
+        monkeypatch.setattr(usage_events, "resolve_model", resolve)
+
+        await metering.metered_invoke(
+            _llm(_reply()), [HumanMessage(content="q")], config=CONFIG, kind="chat", model_alias="gpt-4o"
+        )
+
+        (row,) = usage_event_sink
+        assert (row["model_alias"], row["resolved_model"]) == ("gpt-4o", "openai/gpt-4o-2024-08-06")
+
+    async def test_a_model_that_cannot_be_resolved_is_recorded_as_null_not_skipped(self, usage_event_sink):
+        """The conftest default resolves nothing, which is also what LiteLLM being down looks like: the event is still written."""
+        await metering.metered_invoke(
+            _llm(_reply()), [HumanMessage(content="q")], config=CONFIG, kind="chat", model_alias="chat"
+        )
+
+        (row,) = usage_event_sink
+        assert row["resolved_model"] is None and row["total_tokens"] > 0
+
     async def test_cached_input_is_carved_out_and_recorded(self, usage_event_sink, monkeypatch):
         _price_models(monkeypatch, chat=(0.001, 0.002))
 

@@ -27,7 +27,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from app.agent import budgets, metering, spend, usage_events, usage_ledger
 from scripts import usage_events_carry_over as carry
 from tests.containers import ensure_postgres
-from tests.integration.usage_seed import seed_event
+from tests.integration.usage_seed import purge_events, seed_event, seed_ledger_row
 
 # Two tests here write `usage_ledger` rows (one of them three years old, the history a carry-over copies) and the ledger sweep tests
 # (test_ledger_real_postgres.py) delete old ledger rows across tenants up to a ceiling: same xdist group, rows removed afterwards.
@@ -59,11 +59,12 @@ def real_appdata(appdata_url, monkeypatch):
 
 @pytest.fixture
 async def tenant(real_appdata) -> str:
-    """A tenant of this test's own; any ledger rows it wrote are removed afterwards (events are append-only and stay)."""
+    """A tenant of this test's own; everything it wrote, ledger rows and events, is removed afterwards (see `purge_events`)."""
     name = f"acme-{uuid.uuid4().hex[:8]}"
     yield name
     async with real_appdata() as conn:
         await conn.execute("DELETE FROM usage_ledger WHERE tenant = %s", (name,))
+        await purge_events(conn, name)
 
 
 def _ctx(tenant: str, principal: str = "alice") -> dict:
@@ -146,10 +147,11 @@ async def test_a_cap_is_not_tripped_by_spend_inside_its_limit(tenant, real_appda
     assert allowance.refused is False
 
 
-async def test_a_ledger_row_alone_is_no_longer_counted(tenant):
+async def test_a_ledger_row_alone_is_no_longer_counted(tenant, real_appdata):
     """Pins the cutover: history that lives only in the ledger is invisible until `make usage-events-carry-over` copies
     it. Without this a revert of the read that forgot the carry-over would pass every other test."""
-    await usage_ledger.record_usage(_ctx(tenant), "thread-1", "chat", 1000, 50.0)
+    async with real_appdata() as conn:
+        await seed_ledger_row(conn, tenant, thread_id="thread-1", total_tokens=1000, cost_usd=50.0)
 
     assert await spend.usage_summary(tenant) == {"total_tokens": 0, "total_cost_usd": 0.0}
 

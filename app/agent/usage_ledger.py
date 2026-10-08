@@ -1,30 +1,21 @@
-"""Real usage/cost ledger (pattern 26) — closes the "no hollow Meter" gap:
-a shipped default should keep an actual ledger, not a no-op that makes a
-broken deployment look configured (same principle as moderation.py's real
-check).
+"""The frozen per-turn `usage_ledger` table, and the in-flight budget holds that happen to live beside it.
 
-Persisted in the same `appdata` Postgres database as sql_store.py
-(`usage_ledger` table, postgres-init/03-meter.sql). Every row is
-tenant+principal scoped.
+The table (`postgres-init/03-meter.sql`) used to be what the dollar caps read (pattern 26, spec 008). Since specs/010 T030
+the caps sum the per-call usage events (`app/agent/spend.py`), and since T030c2 NOTHING WRITES this table: `record_usage`
+is gone, the turn-end row and the subagent's row with it. What remains here is
 
-Cost is NOT computed here. The agent node prices every LLM call as it happens
-(app/agent/pricing.py: LiteLLM's per-model input/output/cached rates) and keeps a
-running `total_cost_usd`; the caller hands that figure to `record_usage`. One
-number therefore feeds the in-run ceiling, the ledger and the tenant allowance,
-and they cannot disagree. An unpriced model records $0 here — loudly: see
-pricing.py and `agent_unpriced_usage_total` — never as a quiet default.
+  * the budget holds (`reserve_budget`, `release_budget_reservation`, `in_flight_reservation`): a tenant's running turns
+    reserve `MAX_COST_USD_PER_TURN` so that N concurrent turns cannot all pass the same stale check. They are about
+    concurrency, not history, and are stored in `tenant_budget_holds`, not in the ledger; they live in this module only
+    because they always did, and move out of it when it is deleted (T030c3);
+  * `sweep_old_rows`, the retention sweep of the frozen table, retired in T030c3 together with its script.
 
-## No longer what the caps read (specs/010 T030)
-
-The dollar caps and `GET /usage` now sum `usage_events` (`app/agent/spend.py`), the per-call meter. This
-module still WRITES a per-turn row, deliberately: it is the second record the events are reconciled
-against (`app/billing/reconcile.py`) and the way back if the cutover has to be reverted. It also still owns
-the in-flight budget holds below, which are about concurrency and not about history.
+The table itself stays as read-only history (the carry-over, `scripts/usage_events_carry_over.py`, copied it into the events);
+dropping it is a later, separate, destructive migration.
 """
 import logging
 import uuid
 
-from app.agent.model_resolver import resolve_model
 from app.agent.sql_store import get_connection
 from app.core import metrics
 from app.core.config import USAGE_LEDGER_MIN_RETENTION_DAYS
@@ -44,62 +35,13 @@ logger = logging.getLogger(__name__)
 RESERVATION_STALE_AFTER_MINUTES = 5
 
 
-async def record_usage(
-    ctx: SecurityCtx | None,
-    thread_id: str,
-    model_alias: str,
-    total_tokens: int,
-    cost_usd: float,
-) -> None:
-    """Best-effort write-through after a turn completes
-    (`runtime.py::_record_turn_metrics`). A failing write must not fail
-    the turn it's recording — same degrade-don't-crash posture as
-    `semantic_cache.py::set()`. No-ops without a valid ctx or with zero
-    tokens (unattributable / nothing to meter). `cost_usd` is the turn's
-    running total from the agent node (see the module docstring); a negative
-    figure is clamped to 0 so a bad price can never credit a tenant.
-    """
-    if not valid_ctx(ctx) or total_tokens <= 0:
-        return
-    cost_usd = max(cost_usd, 0.0)
-    # The resolved CONCRETE model behind `model_alias` (GRAPH_PATTERNS.md
-    # pattern 38) — None if resolution itself degrades (LiteLLM
-    # unreachable, alias unknown); never blocks the write.
-    resolved_model = await resolve_model(model_alias)
-    try:
-        async with get_connection() as conn:
-            await conn.execute(
-                "INSERT INTO usage_ledger "
-                "(tenant, principal, thread_id, model_alias, total_tokens, cost_usd, resolved_model) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (
-                    ctx["tenant"],
-                    ctx["principal"],
-                    thread_id,
-                    model_alias,
-                    total_tokens,
-                    cost_usd,
-                    resolved_model,
-                ),
-            )
-    except Exception as exc:  # noqa: BLE001 - a failing write must not fail the turn it records; counted and alerted instead
-        # Not just a log line: this is committed spend that never reached the
-        # ledger the tenant allowance is read from, so the allowance undercounts
-        # until someone notices (alert LedgerWriteFailing, spec 008 A1).
-        metrics.agent_cost_governance_degraded_total.labels(path="ledger_write").inc()
-        logger.warning(
-            "usage ledger write failed; continuing without recording",
-            extra={"error_class": type(exc).__name__},
-        )
-
-
 async def reserve_budget(ctx: SecurityCtx | None, amount_usd: float) -> str | None:
     """Records a hold of `amount_usd` against `ctx`'s tenant — one row for this
     turn, with its own timestamp — called right before a turn that passed
     `budgets.check_tenant_daily`'s check actually starts spending. Closes the gap
-    between "checked" and "recorded": this turn's own cost isn't in
-    usage_ledger yet (record_usage only runs after it completes), so without a
-    hold a sibling turn racing the same tenant would see the SAME stale "spent
+    between "checked" and "recorded": the calls this turn has yet to
+    make aren't in usage_events yet (each call's event lands when the call returns), so without a
+    hold a sibling turn racing the same tenant would see nearly the SAME "spent
     so far" and pass the check too. Always paired with
     `release_budget_reservation` once the turn ends (success, failure, or
     timeout) — callers use a `finally` for that, same shape as
