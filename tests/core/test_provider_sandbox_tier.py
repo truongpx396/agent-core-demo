@@ -216,3 +216,38 @@ class TestPolarRedaction:
 
     def test_an_empty_known_value_does_not_blank_the_whole_text(self):
         assert redact("hello", [""]) == "hello"
+
+
+class TestTheGuardCoversTheWholeTier:
+    """Creating an object in a sandbox emits a webhook to every listening session, so a module that only makes API calls reaches a
+    developer's own listener just as a module that triggers events does."""
+
+    @pytest.mark.parametrize(
+        ("module", "cli"),
+        [("tests.provider_sandbox.test_polar_sandbox", "polar"), ("tests.provider_sandbox.test_stripe_sandbox", "stripe"),
+         ("test_polar_sandbox", "polar"), ("tests.provider_sandbox.test_other", None)],
+    )
+    def test_a_modules_file_name_says_which_listener_it_would_reach(self, module, cli):
+        assert tier.listener_cli_for(module) == cli
+
+    @pytest.mark.parametrize("path", sorted(TIER.glob("test_*.py")), ids=lambda p: p.name)
+    def test_every_test_module_in_the_tier_maps_to_a_listener_so_a_new_provider_cannot_escape_the_guard(self, path):
+        assert tier.listener_cli_for(path.stem) is not None, f"{path.name}: name it after its provider (stripe/polar) or extend listener_cli_for"
+
+    def test_the_guard_is_applied_to_every_module_without_the_module_asking_for_it(self):
+        source = (TIER / "conftest.py").read_text()
+
+        assert '@pytest.fixture(autouse=True, scope="module")\ndef _not_beside_a_foreign_listener(request):\n    guard_module(request.module.__name__)' in source
+
+    def test_a_module_that_only_makes_api_calls_is_skipped_beside_its_providers_listener(self, monkeypatch):
+        monkeypatch.setattr(tier, "other_listener", lambda cli: "88727" if cli == "polar" else None)
+        monkeypatch.delenv(tier.SHARE_LISTENER, raising=False)
+
+        with pytest.raises(pytest.skip.Exception):
+            tier.guard_module("tests.provider_sandbox.test_polar_sandbox")
+
+    def test_another_providers_listener_does_not_stop_this_providers_module(self, monkeypatch):
+        monkeypatch.setattr(tier, "other_listener", lambda cli: "88727" if cli == "polar" else None)
+        monkeypatch.delenv(tier.SHARE_LISTENER, raising=False)
+
+        tier.guard_module("tests.provider_sandbox.test_stripe_sandbox")  # does not skip

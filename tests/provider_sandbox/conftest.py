@@ -99,6 +99,26 @@ def refuse_beside_a_foreign_listener(cli: str) -> None:
         )
 
 
+def listener_cli_for(module_name: str) -> str | None:
+    """Which provider CLI's `listen` a test module's activity would reach: the module's file name says (`test_polar_sandbox`, ...)."""
+    leaf = module_name.rsplit(".", 1)[-1]
+    return next((cli for cli in ("stripe", "polar") if cli in leaf), None)
+
+
+def guard_module(module_name: str) -> None:
+    """Skip a module of the tier while a foreign `listen` for ITS provider is running. Every module, not only the ones that start a listener
+    of their own: creating a customer, a product or a checkout in a sandbox emits a webhook to EVERY listening session of the account, so
+    even the checkout tests would feed a developer's own `listen`."""
+    cli = listener_cli_for(module_name)
+    if cli:
+        refuse_beside_a_foreign_listener(cli)
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _not_beside_a_foreign_listener(request):
+    guard_module(request.module.__name__)
+
+
 def require_test_mode_key(key: str | None) -> str:
     """The key this tier may use. Unset skips (nothing ran); anything that is not a TEST-mode secret or restricted key FAILS, before a
     single request is made. Kept a plain function so a hermetic test can pin it: it is the one thing standing between this tier and a

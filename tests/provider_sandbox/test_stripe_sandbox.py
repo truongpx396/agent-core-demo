@@ -33,7 +33,6 @@ from app.billing.providers.base import (
     InvalidSignature,
 )
 from app.billing.providers.stripe import StripeProvider
-from tests.provider_sandbox.conftest import refuse_beside_a_foreign_listener
 from tests.provider_sandbox.stripe_listener import StripeListener, redact
 
 pytestmark = pytest.mark.provider_sandbox
@@ -129,7 +128,6 @@ class TestCheckoutAgainstTheRealApi:
 def listener(stripe_key):
     if shutil.which("stripe") is None:
         pytest.skip("the `stripe` CLI is not installed (brew install stripe/stripe-cli/stripe, then `stripe login`)")
-    refuse_beside_a_foreign_listener("stripe")
     live = StripeListener(stripe_key, EVENTS)
     try:
         live.start()

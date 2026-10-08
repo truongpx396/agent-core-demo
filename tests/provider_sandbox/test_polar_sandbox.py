@@ -34,10 +34,7 @@ from app.billing.providers.base import (
     InvalidSignature,
 )
 from app.billing.providers.polar import ATTEMPT_KEY, PolarProvider
-from tests.provider_sandbox.conftest import (
-    POLAR_SANDBOX_API,
-    refuse_beside_a_foreign_listener,
-)
+from tests.provider_sandbox.conftest import POLAR_SANDBOX_API
 from tests.provider_sandbox.polar_listener import PolarListener
 
 pytestmark = pytest.mark.provider_sandbox
@@ -146,7 +143,6 @@ class TestCheckoutAgainstTheRealApi:
 def listener(polar_token):
     if shutil.which("polar") is None:
         pytest.skip("the `polar` CLI is not installed (curl -fsSL https://polar.sh/install.sh | bash, then `polar auth login`)")
-    refuse_beside_a_foreign_listener("polar")
     live = PolarListener()
     try:
         live.start()
