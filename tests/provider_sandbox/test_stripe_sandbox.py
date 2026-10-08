@@ -10,10 +10,9 @@ API reference. This proves it against Stripe itself, in three ways nothing else 
   * a REAL `checkout.session.completed` and the REAL `charge.refunded` it leads to normalize to a purchase and a refund that share one
     `payment_ref`: the one fact the wallet's refund logic cannot work without.
 
-What is NOT proved here, and is said so in the PR: the sandbox cannot complete a hosted Checkout page without a browser, so the purchase
-event comes from `stripe trigger checkout.session.completed`'s fixture (a guest checkout with no `customer` and no `metadata.product_ref`);
-that this adapter ties a session this app created to a catalog entry rests on the open session's metadata (asserted below) plus Stripe's
-documented behaviour of copying a session's metadata into its completion event.
+What this module does NOT do: complete a hosted Checkout page (that takes a browser), so the purchase event here comes from
+`stripe trigger checkout.session.completed`'s fixture (a guest checkout with no `customer` and no `metadata.product_ref`). A session THIS APP
+created, paid in a real browser, is tests/provider_sandbox/test_stripe_paid_checkout.py.
 
 Needs: STRIPE_API_KEY (a `sk_test_`/`rk_test_` key; a live key FAILS the run), the `stripe` CLI logged in to the same sandbox. It creates
 labelled objects (`metadata[agent_core_demo_test]=true`) and archives/deletes what it can; PaymentIntents and Charges cannot be deleted.
