@@ -207,4 +207,9 @@ as `end_user`), and optionally the provider's balance, and reports drift per ten
   a person's month 98 ms and the tenant's calendar month 426 ms (a sequential scan). A `(tenant, principal, occurred_at)` index was **not** added (the existing index already gives a good plan; it would save about
   5 ms on an opt-in cap and cost 118 MB and a write per model call), and the monthly caps' linear cost is disclosed with its lever (a per-day rollup, not built). The ledger write is retired in T030c, not here.
 
+- **D16. (decided 2026-10-08, closes the "what does a provider need to know" question.)** **The billing model is prepaid packs.** The provider sells a pack (a checkout) and tells the app
+  it was paid (a signed webhook); the app credits its own wallet and debits it per call. The provider is never told what was consumed, so the Stripe and Polar adapters declare
+  `CHECKOUT` and nothing else: **no `USAGE_EXPORT`, no `BALANCE_READ`**. The export outbox and its worker (PR 5) stay built and off, for a later model where a provider must see consumption (Stripe invoices
+  for metered usage, Polar's meter-backed credits): that is a different decision, and it brings its own settings (a Stripe Meter's event name, a Polar event name) with it. Until then those settings do not exist.
+
 **Product decisions still to be recorded:** none open for this feature; the adapters (`T029`, which need a sandbox account per provider) and the pro-rata policy for a partial refund or a dispute are follow-ups a person must decide.
