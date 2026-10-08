@@ -569,7 +569,7 @@ agent_credit_outstanding = Gauge(
 
 agent_credit_reconcile_max_drift_usd = Gauge(
     "agent_credit_reconcile_max_drift_usd",
-    "The largest per-tenant, per-day difference ABOVE tolerance between usage events and the ledger, the gateway spend log "
+    "The largest per-tenant, per-day difference ABOVE tolerance between usage events and the gateway spend log "
     "or the wallet, in USD, as of the last reconciliation pass (0 when everything agrees). No tenant label: the report "
     "(`make credit-reconcile`) names them. Alert CreditReconcileDrift. The worker re-sets it every minute because the "
     "collector forgets a series 5 minutes after its last update.",

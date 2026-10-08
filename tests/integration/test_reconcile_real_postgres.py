@@ -19,7 +19,7 @@ from decimal import Decimal
 import psycopg
 import pytest
 
-from app.agent import usage_events, usage_ledger
+from app.agent import usage_events
 from app.agent.gateway import end_user_id
 from app.agent.pricing import ModelPrice, PricedCall
 from app.billing import credits, reconcile
@@ -46,7 +46,7 @@ def real_appdata(appdata_url, monkeypatch):
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:  # commits on a normal exit
             yield conn
 
-    for module in (usage_events, credits, usage_ledger, reconcile):
+    for module in (usage_events, credits, reconcile):
         monkeypatch.setattr(module, "get_connection", get_connection)
     monkeypatch.setattr(usage_events, "_insert", _REAL_INSERT)  # the autouse sink replaced it
     monkeypatch.setattr(usage_events, "CREDITS_PER_USD", D("1000"))
@@ -66,12 +66,11 @@ def priced(cost_usd: float) -> PricedCall:
 
 
 async def turn(tenant: str, cost_usd: float) -> str:
-    """One turn the way the app records it: a per-call usage event AND the per-turn ledger row, both from the same priced call."""
+    """One model call the way the app records it: a usage event (which is also what the dollar caps sum)."""
     message_id = uuid.uuid4().hex
     await usage_events.record_call(
         ctx_for(tenant), thread_id="t", message_id=message_id, kind="chat", model_alias="chat", priced=priced(cost_usd)
     )
-    await usage_ledger.record_usage(ctx_for(tenant), "t", "chat", 150, cost_usd)
     return usage_events.event_id_for(tenant, message_id)
 
 
@@ -117,7 +116,7 @@ async def utc_day_of(url: str, event_id: str):
 
 
 class TestWhenTheRecordsAgree:
-    async def test_a_tenants_turns_reconcile_to_nothing_against_the_ledger_and_the_gateway(self, appdata_url):
+    async def test_a_tenants_turns_reconcile_to_nothing_against_the_gateway(self, appdata_url):
         tenant = tenant_name()
         for cost in (0.01, 0.02, 0.04):
             await turn(tenant, cost)
@@ -137,24 +136,36 @@ class TestADeletedEvent:
         await delete_event(appdata_url, lost)
         findings = await reconcile_for(gateway, tenant)
 
-        by_kind = {f.kind: f for f in findings}
-        assert set(by_kind) == {"gateway", "ledger"}  # the gateway and the ledger both still hold what the meter lost
-        assert (by_kind["gateway"].tenant, by_kind["gateway"].day, by_kind["gateway"].drift) == (tenant, day, D("0.02"))
-        assert (by_kind["ledger"].tenant, by_kind["ledger"].day, by_kind["ledger"].drift) == (tenant, day, D("0.02"))
+        (finding,) = findings  # the gateway still holds what the meter lost
+        assert (finding.kind, finding.tenant, finding.day, finding.drift) == ("gateway", tenant, day, D("0.02"))
         report = reconcile.Report(window(), STRICT, findings=findings)
         text = reconcile.render(report)
         assert tenant in text and str(day) in text and "0.020000" in text
 
     async def test_it_is_that_tenants_day_only_never_another_tenants(self, appdata_url):
         mine, other = tenant_name(), tenant_name()
+        await turn(mine, 0.01)
         lost = await turn(mine, 0.05)
         await turn(other, 0.05)
         gateway = await gateway_seen(appdata_url, mine, other)
 
         await delete_event(appdata_url, lost)
 
-        assert [f.tenant for f in await reconcile_for(gateway, mine)] == [mine, mine]
+        assert [f.tenant for f in await reconcile_for(gateway, mine)] == [mine]
         assert await reconcile_for(gateway, other) == []
+
+    async def test_a_tenant_whose_every_event_is_gone_and_has_no_wallet_is_named_by_its_gateway_id(self, appdata_url):
+        """Since the ledger stopped being compared there is nothing left in the database that knows such a tenant's name (a ledger
+        row used to), so the gateway's one-way id is all the report can give. That is the documented fallback: the runbook
+        says how to turn the hash back into a name (`litellm_key end-user --tenant <name>`)."""
+        gone = tenant_name()
+        only = await turn(gone, 0.05)
+        gateway = await gateway_seen(appdata_url, gone)
+        await delete_event(appdata_url, only)
+
+        findings = await reconcile_for(gateway, f"{end_user_id(gone)} (no tenant in this database hashes to it)")
+
+        assert [(f.kind, f.drift) for f in findings] == [("gateway", D("0.05"))]
 
     async def test_a_tenant_with_a_wallet_and_every_event_gone_is_named_not_left_as_a_hash(self, appdata_url):
         tenant = tenant_name()
@@ -164,16 +175,6 @@ class TestADeletedEvent:
         findings = await reconcile_for(gateway, tenant)
 
         assert [(f.kind, f.drift) for f in findings] == [("gateway", D("0.3"))]  # `credit_accounts` is how the hash was mapped back
-
-    async def test_a_deleted_ledger_row_is_the_other_direction(self, appdata_url):
-        tenant = tenant_name()
-        await turn(tenant, 0.03)
-        async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
-            await conn.execute("DELETE FROM usage_ledger WHERE tenant = %s", (tenant,))
-
-        (finding,) = await reconcile_for(await gateway_seen(appdata_url, tenant), tenant)
-
-        assert finding.kind == "ledger" and finding.drift == D("-0.03") and "ledger write failed" in finding.meaning
 
 
 class TestAnUnchargedEvent:

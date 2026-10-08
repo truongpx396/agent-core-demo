@@ -100,7 +100,7 @@ is marked expired, counted and alerted instead of silently dropped.
 
 ### User Story 6 - An operator can prove the numbers agree (Priority: P6)
 
-A reconciliation compares the app's events, the app's ledger and the gateway's own spend log (which already carries the tenant
+A reconciliation compares the app's events and the gateway's own spend log (it also compared the per-turn ledger until T030c1) (which already carries the tenant
 as `end_user`), and optionally the provider's balance, and reports drift per tenant per day.
 
 **Independent Test**: delete one event row in a test database; confirm the report names the tenant, day and amount.
@@ -197,6 +197,7 @@ as `end_user`), and optionally the provider's balance, and reports drift per ten
   show every tenant as under-metered). It needs the gateway's admin key, held only by the reconciliation process. Embeddings are neither metered nor attributed, so their spend is reported as
   "no tenant of this app" and is not drift. **The provider-balance comparison is deferred** with the first adapter that declares `BALANCE_READ` (none does). The wallet-side detector
   names D11's gap (an event worth credits with no debit); **repairing one is still manual** (`credits adjust --key <event_id>`, documented and tested), a repair job is not built.
+  **Amended (T030c1):** the ledger leg is gone. The caps sum the events, so a lost event is a loose cap and a gateway difference; a tenant whose every event is gone and that has no wallet is now named by its gateway hash id (nothing in the database knows its name any more, where a ledger row used to), the fallback the runbook already describes.
 
 - **D15. (T030b.)** **The caps read the meter, so the meter can no longer be switched off.** The dollar caps and `GET /usage` sum `usage_events` (one row per call), the same rows billing, the wallet and the
   export use, instead of `usage_ledger` (one row per turn). Consequences taken, each tested: (a) `USAGE_EVENTS_ENABLED=false` is **refused at startup**, because with the caps reading the events it would make every
