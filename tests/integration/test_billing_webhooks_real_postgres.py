@@ -73,8 +73,11 @@ def harness(request, monkeypatch):
 class World:
     """One test's tenant, customer, product and payment: unique, so tests never touch each other's rows."""
 
-    def __init__(self, url: str):
+    def __init__(self, url: str, provider: str = "fake"):
         self.url = url
+        # The provider whose deliveries this test plays: the harness's, when the test uses one (so the same assertions hold for every
+        # registered adapter), else "fake", which is only a label for tests that hand `process_event` a hand-built event.
+        self.provider = provider
         tag = uuid.uuid4().hex[:10]
         self.tenant, self.customer, self.product, self.payment = f"t-{tag}", f"cus_{tag}", f"pack_{tag}", f"pay_{tag}"
 
@@ -84,13 +87,13 @@ class World:
     async def connect(self):
         return await psycopg.AsyncConnection.connect(self.url)
 
-    async def link(self, tenant: str | None = None, customer: str | None = None, provider: str = "fake") -> None:
+    async def link(self, tenant: str | None = None, customer: str | None = None, provider: str | None = None) -> None:
         async with await self.connect() as conn:
-            await store.link_customer(conn, tenant or self.tenant, provider, customer or self.customer)
+            await store.link_customer(conn, tenant or self.tenant, provider or self.provider, customer or self.customer)
 
-    async def stock(self, credits_: str = "100", *, expires_after_days: int | None = None, active: bool = True, provider: str = "fake") -> None:
+    async def stock(self, credits_: str = "100", *, expires_after_days: int | None = None, active: bool = True, provider: str | None = None) -> None:
         async with await self.connect() as conn:
-            await store.put_product(conn, CreditProduct(provider, self.product, D(credits_), expires_after_days, active))
+            await store.put_product(conn, CreditProduct(provider or self.provider, self.product, D(credits_), expires_after_days, active))
 
     async def one(self, sql: str, *params):
         async with await self.connect() as conn:
@@ -118,8 +121,9 @@ class World:
 
 
 @pytest.fixture
-def world(appdata_url) -> World:
-    return World(appdata_url)
+def world(appdata_url, request) -> World:
+    provider = request.getfixturevalue("harness").name if "harness" in request.fixturenames else "fake"
+    return World(appdata_url, provider)
 
 
 async def deliver(harness, delivery: Delivery) -> list[str]:
@@ -141,7 +145,7 @@ async def setup_deliver(harness, delivery: Delivery) -> list[str]:
     return outcomes
 
 
-def count(outcome: str, provider: str = "fake") -> float:
+def count(outcome: str, provider: str) -> float:
     return metric_value(metrics.agent_billing_webhook_total, provider=provider, outcome=outcome)
 
 
@@ -151,12 +155,12 @@ class TestOneDeliveryIsOneGrant:
         second is never read: who is the link's, how much is the catalog's (FR-014, FR-015)."""
         await world.link()
         await world.stock("100")
-        applied_before = count("applied")
+        applied_before = count("applied", world.provider)
 
         outcomes = await deliver(harness, harness.purchase(world.event_id(), customer=world.customer, product=world.product, payment=world.payment, claims_tenant="evil-corp"))
 
-        assert outcomes == ["applied"] and count("applied") == applied_before + 1
-        assert await world.lots() == [(D("100.000000"), "purchase", "fake", world.payment)]
+        assert outcomes == ["applied"] and count("applied", world.provider) == applied_before + 1
+        assert await world.lots() == [(D("100.000000"), "purchase", world.provider, world.payment)]
         assert (await world.balance()).available == D("100.000000")
         assert await world.scalar("SELECT count(*) FROM credit_accounts WHERE tenant = %s", "evil-corp") == 0
 
@@ -167,19 +171,19 @@ class TestOneDeliveryIsOneGrant:
 
         await setup_deliver(harness, harness.purchase(event_id, customer=world.customer, product=world.product, payment=world.payment))
 
-        status, tenant, reason, attempts, _ = await world.inbox_row("fake", event_id)
+        status, tenant, reason, attempts, _ = await world.inbox_row(world.provider, event_id)
         assert (status, tenant, reason, attempts) == ("applied", world.tenant, None, 1)
 
     async def test_the_same_delivery_five_times_is_one_grant(self, world, harness):
         await world.link()
         await world.stock("100")
         delivery = harness.purchase(world.event_id(), customer=world.customer, product=world.product, payment=world.payment)
-        duplicates_before = count("duplicate")
+        duplicates_before = count("duplicate", world.provider)
 
         outcomes = [await deliver(harness, delivery) for _ in range(5)]
 
         assert outcomes == [["applied"], ["duplicate"], ["duplicate"], ["duplicate"], ["duplicate"]]
-        assert count("duplicate") == duplicates_before + 4
+        assert count("duplicate", world.provider) == duplicates_before + 4
         assert len(await world.lots()) == 1
         assert (await world.balance()).available == D("100.000000")
 
@@ -205,7 +209,7 @@ class TestOneDeliveryIsOneGrant:
         delivery = harness.purchase(event_id, customer=world.customer, product=world.product, payment=world.payment)
         await setup_deliver(harness, delivery)
         async with await world.connect() as conn:
-            await conn.execute("DELETE FROM billing_webhook_events WHERE provider = 'fake' AND event_id = %s", (event_id,))
+            await conn.execute("DELETE FROM billing_webhook_events WHERE provider = %s AND event_id = %s", (world.provider, event_id))
 
         outcomes = await deliver(harness, delivery)
 
@@ -249,13 +253,13 @@ class TestAForgeryStoresNothing:
         event_id = world.event_id()
         good = harness.purchase(event_id, customer=world.customer, product=world.product, payment=world.payment)
         forged = harness.forged(good)
-        before = count("invalid_signature")
+        before = count("invalid_signature", world.provider)
 
         response = self.client().post(f"/billing/webhooks/{harness.name}", content=forged.body, headers=forged.headers)
 
         assert response.status_code == 400
-        assert count("invalid_signature") == before + 1
-        assert await world.inbox_row("fake", event_id) is None, "a forger does not get to fill the inbox"
+        assert count("invalid_signature", world.provider) == before + 1
+        assert await world.inbox_row(world.provider, event_id) is None, "a forger does not get to fill the inbox"
         assert await world.balance() is None, "and no wallet was opened"
 
     async def test_a_genuine_delivery_through_http_becomes_credits(self, world, harness):
@@ -274,12 +278,12 @@ class TestWhatCannotBeAppliedIsQuarantinedNotGuessedAt:
     async def test_an_unlinked_customer_is_quarantined_alerted_and_grants_nothing(self, world, harness):
         await world.stock("100")  # a real product, but nobody has linked this customer
         event_id = world.event_id()
-        before = count("quarantined")
+        before = count("quarantined", world.provider)
 
         outcomes = await deliver(harness, harness.purchase(event_id, customer="cus_nobody_linked", product=world.product, payment=world.payment))
 
-        assert outcomes == ["quarantined"] and count("quarantined") == before + 1, "this is what pages (BillingWebhookQuarantined)"
-        status, tenant, reason, _, _ = await world.inbox_row("fake", event_id)
+        assert outcomes == ["quarantined"] and count("quarantined", world.provider) == before + 1, "this is what pages (BillingWebhookQuarantined)"
+        status, tenant, reason, _, _ = await world.inbox_row(world.provider, event_id)
         assert (status, tenant, reason) == ("quarantined", None, "unlinked_customer")
         assert await world.lots() == [] and await world.balance() is None
 
@@ -303,7 +307,7 @@ class TestWhatCannotBeAppliedIsQuarantinedNotGuessedAt:
         assert await deliver(harness, delivery) == ["duplicate"], "unchanged until a person acts"
         await world.link()
         async with await world.connect() as conn:
-            await conn.execute("UPDATE billing_webhook_events SET status = 'received' WHERE provider = 'fake' AND event_id = %s", (event_id,))
+            await conn.execute("UPDATE billing_webhook_events SET status = 'received' WHERE provider = %s AND event_id = %s", (world.provider, event_id))
 
         assert await deliver(harness, delivery) == ["applied"]
         assert (await world.balance()).available == D("100.000000")
@@ -322,14 +326,14 @@ class TestWhatCannotBeAppliedIsQuarantinedNotGuessedAt:
         await world.link()
         await world.stock("100")  # a catalog entry that never expires
         event = BillingEvent(
-            "fake", world.event_id(), kind, world.customer, world.product if product else "pack_not_in_the_catalog",
+            world.provider, world.event_id(), kind, world.customer, world.product if product else "pack_not_in_the_catalog",
             world.payment, 1000, "usd", None, "x",
         )
 
         outcome = await webhooks.process_event(event)
 
         assert outcome == "quarantined"
-        assert (await world.inbox_row("fake", event.event_id))[2] == expected
+        assert (await world.inbox_row(world.provider, event.event_id))[2] == expected
         assert await world.lots() == []
 
     async def test_a_retired_product_is_quarantined(self, world, harness):
@@ -343,7 +347,7 @@ class TestWhatCannotBeAppliedIsQuarantinedNotGuessedAt:
     async def test_a_subscription_period_grants_an_expiring_lot(self, world):
         await world.link()
         await world.stock("500", expires_after_days=31)
-        event = BillingEvent("fake", world.event_id(), EventKind.SUBSCRIPTION_PERIOD_STARTED, world.customer, world.product, world.payment, 2000, "usd", None, "x")
+        event = BillingEvent(world.provider, world.event_id(), EventKind.SUBSCRIPTION_PERIOD_STARTED, world.customer, world.product, world.payment, 2000, "usd", None, "x")
 
         assert await webhooks.process_event(event) == "applied"
 
@@ -358,7 +362,7 @@ class TestWhatCannotBeAppliedIsQuarantinedNotGuessedAt:
         outcomes = await deliver(harness, harness.unknown_event_type(event_id))
 
         assert outcomes == ["ignored"]
-        status, _, reason, _, payload = await world.inbox_row("fake", event_id)
+        status, _, reason, _, payload = await world.inbox_row(world.provider, event_id)
         assert (status, reason) == ("ignored", "unhandled_type") and payload["raw_type"] == "invoice.something_new_in_2027"
 
 
@@ -429,11 +433,11 @@ class TestARefund:
         await world.stock("100")
         refund_id = world.event_id("refund")
         refund = harness.refund(refund_id, customer=world.customer, payment=world.payment)
-        retry_before = count("retry")
+        retry_before = count("retry", world.provider)
 
         assert await deliver(harness, refund) == ["retry"], "the provider is told 5xx and redelivers"
-        assert count("retry") == retry_before + 1
-        status, _, reason, _, _ = await world.inbox_row("fake", refund_id)
+        assert count("retry", world.provider) == retry_before + 1
+        status, _, reason, _, _ = await world.inbox_row(world.provider, refund_id)
         assert (status, reason) == ("received", "purchase_not_applied_yet")
 
         await setup_deliver(harness, harness.purchase(world.event_id("buy"), customer=world.customer, product=world.product, payment=world.payment))
@@ -456,12 +460,12 @@ class TestARefund:
         monkeypatch.setattr(webhooks, "BILLING_REFUND_HOLD_HOURS", 0)  # the deadline has passed
 
         assert await deliver(harness, refund) == ["quarantined"]
-        assert (await world.inbox_row("fake", refund_id))[2] == "purchase_never_applied"
+        assert (await world.inbox_row(world.provider, refund_id))[2] == "purchase_never_applied"
 
     async def test_a_refund_never_reaches_another_tenants_grant_of_the_same_payment_reference(self, world, harness, appdata_url):
         """Payment references are the provider's, so two tenants can in principle share one. The lookup is by the
         LINKED tenant, so a refund can only ever take back its own tenant's grant."""
-        other = World(appdata_url)
+        other = World(appdata_url, world.provider)
         await world.link()
         await other.link()
         await world.stock("100")
@@ -481,7 +485,7 @@ class TestARefund:
         async with await world.connect() as conn:
             await credits.grant_in(
                 conn, world.tenant, "100", source="purchase", idempotency_key=f"g-{world.payment}", actor="test",
-                provider="fake", external_ref=world.payment, expires_at=datetime.now(UTC) + timedelta(seconds=2),
+                provider=world.provider, external_ref=world.payment, expires_at=datetime.now(UTC) + timedelta(seconds=2),
             )
         await credits.debit(world.tenant, "30", idempotency_key=f"spent-{world.payment}")
         await asyncio.sleep(2.2)
@@ -497,14 +501,14 @@ class TestARefund:
         async with await world.connect() as conn:
             await credits.grant_in(
                 conn, world.tenant, "100", source="purchase", idempotency_key=f"g-{world.payment}", actor="test",
-                provider="fake", external_ref=world.payment, expires_at=datetime.now(UTC) + timedelta(seconds=2),
+                provider=world.provider, external_ref=world.payment, expires_at=datetime.now(UTC) + timedelta(seconds=2),
             )
         await asyncio.sleep(2.2)  # past expires_at, never swept
 
         refund_id = world.event_id("refund")
 
         assert await deliver(harness, harness.refund(refund_id, customer=world.customer, payment=world.payment)) == ["ignored"]
-        assert (await world.inbox_row("fake", refund_id))[2] == "nothing_to_reclaim"
+        assert (await world.inbox_row(world.provider, refund_id))[2] == "nothing_to_reclaim"
 
 
 class TestAFailureIsAtomicAndBounded:
@@ -529,14 +533,14 @@ class TestAFailureIsAtomicAndBounded:
         await world.stock("100")
         event_id = world.event_id()
         delivery = harness.purchase(event_id, customer=world.customer, product=world.product, payment=world.payment)
-        failed_before = count("failed")
+        failed_before = count("failed", world.provider)
         wallet_fault.break_()
 
         assert await deliver(harness, delivery) == ["failed"]
 
-        assert count("failed") == failed_before + 1, "this is what pages (BillingWebhookFailing)"
+        assert count("failed", world.provider) == failed_before + 1, "this is what pages (BillingWebhookFailing)"
         assert await world.lots() == [] and await world.balance() is None, "the grant rolled back with the status"
-        status, _, reason, attempts, _ = await world.inbox_row("fake", event_id)
+        status, _, reason, attempts, _ = await world.inbox_row(world.provider, event_id)
         assert (status, attempts) == ("failed", 1)
         assert reason == "RuntimeError", "a class name only: an exception's text can carry a host or a credential"
 
@@ -566,13 +570,13 @@ class TestAFailureIsAtomicAndBounded:
         delivery = harness.purchase(event_id, customer=world.customer, product=world.product, payment=world.payment)
         monkeypatch.setattr(webhooks, "BILLING_WEBHOOK_MAX_ATTEMPTS", 3)
         wallet_fault.break_()
-        quarantined_before = count("quarantined")
+        quarantined_before = count("quarantined", world.provider)
 
         outcomes = [(await deliver(harness, delivery))[0] for _ in range(3)]
 
         assert outcomes == ["failed", "failed", "quarantined"], "a poison event is not retried for ever"
-        assert count("quarantined") == quarantined_before + 1
-        status, _, reason, attempts, _ = await world.inbox_row("fake", event_id)
+        assert count("quarantined", world.provider) == quarantined_before + 1
+        status, _, reason, attempts, _ = await world.inbox_row(world.provider, event_id)
         assert (status, attempts) == ("quarantined", 3) and reason.startswith("max_attempts")
         wallet_fault.heal()
         assert await deliver(harness, delivery) == ["duplicate"], "and it stays quarantined until a person acts"
@@ -586,7 +590,7 @@ class TestWhatIsStored:
 
         await setup_deliver(harness, harness.purchase(event_id, customer=world.customer, product=world.product, payment=world.payment, buyer_details=True, claims_tenant="evil-corp"))
 
-        payload = (await world.inbox_row("fake", event_id))[4]
+        payload = (await world.inbox_row(world.provider, event_id))[4]
         text = json.dumps(payload)
         for secret in ("jane.doe@example.com", "Jane Doe", "Privet Drive", "4242", "evil-corp", "999999999"):
             assert secret not in text, f"{secret!r} reached the stored payload"
@@ -602,7 +606,7 @@ class TestTheSchemaGuards:
 
         async with await world.connect() as conn:
             with pytest.raises(pg_errors.RaiseException, match="terminal"):
-                await conn.execute("UPDATE billing_webhook_events SET status = 'received' WHERE provider = 'fake' AND event_id = %s", (event_id,))
+                await conn.execute("UPDATE billing_webhook_events SET status = 'received' WHERE provider = %s AND event_id = %s", (world.provider, event_id))
 
     async def test_what_an_event_was_never_changes(self, world, harness):
         await world.link()
@@ -612,7 +616,7 @@ class TestTheSchemaGuards:
 
         async with await world.connect() as conn:
             with pytest.raises(pg_errors.RaiseException, match="never changes"):
-                await conn.execute("UPDATE billing_webhook_events SET payload = '{}'::jsonb WHERE provider = 'fake' AND event_id = %s", (event_id,))
+                await conn.execute("UPDATE billing_webhook_events SET payload = '{}'::jsonb WHERE provider = %s AND event_id = %s", (world.provider, event_id))
 
     async def test_a_customer_cannot_be_linked_to_a_second_tenant(self, world, appdata_url):
         await world.link()
@@ -622,7 +626,7 @@ class TestTheSchemaGuards:
             await thief.link(tenant=thief.tenant, customer=world.customer)
 
         async with await world.connect() as conn:
-            assert await store.tenant_for_customer(conn, "fake", world.customer) == world.tenant, "the link did not move"
+            assert await store.tenant_for_customer(conn, world.provider, world.customer) == world.tenant, "the link did not move"
 
     async def test_relinking_the_same_customer_to_the_same_tenant_is_idempotent(self, world):
         await world.link()
@@ -645,7 +649,7 @@ class TestTheSchemaGuards:
             with pytest.raises(pg_errors.UniqueViolation):
                 await credits.grant_in(
                     conn, world.tenant, "100", source="purchase", idempotency_key="a-different-key", actor="bug",
-                    provider="fake", external_ref=world.payment,
+                    provider=world.provider, external_ref=world.payment,
                 )
 
     async def test_the_script_can_be_applied_twice(self, world):
@@ -701,7 +705,7 @@ class TestRetention:
         with pytest.raises(ValueError, match="floor"):
             await inbox.sweep_old_rows(older_than_days=7)
 
-        assert await world.inbox_row("fake", event_id) is not None
+        assert await world.inbox_row(world.provider, event_id) is not None
 
     async def test_a_second_run_finds_nothing_of_ours_left_and_does_not_disturb_what_it_must_keep(self, world):
         """Idempotent. (Not asserted as 'deletes zero rows': the table is shared with other tests and workers, so another
@@ -713,5 +717,5 @@ class TestRetention:
         await inbox.sweep_old_rows(older_than_days=400)
         await inbox.sweep_old_rows(older_than_days=400)
 
-        assert await world.inbox_row("fake", old) is None
-        assert await world.inbox_row("fake", recent) is not None
+        assert await world.inbox_row(world.provider, old) is None
+        assert await world.inbox_row(world.provider, recent) is not None

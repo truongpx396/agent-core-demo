@@ -338,6 +338,30 @@ and can never double-charge: `make credits ARGS="adjust --tenant <t> --amount=-<
 to your own difference rather than ignoring the report. The newest `CREDIT_RECONCILE_SETTLE_SECONDS` of traffic is left out (a running turn has
 events and no ledger row yet).
 
+### Selling a credit pack with Stripe (sandbox first)
+
+(specs/010 T029a. The model is prepaid packs: Stripe takes the money and signs a webhook; the wallet above is the real-time gate. Stripe is never told what was
+consumed. The Polar adapter is not built.)
+
+1. **In the Stripe sandbox**, create a Product and a one-time Price for the pack. The **Price id (`price_...`) is the catalog's `product_ref`.** With **Managed
+   Payments** on (the default for a new account) Stripe refuses a Checkout line item whose Product has no `tax_code` (HTTP 400, "the product tax code is missing");
+   set an eligible one on the Product (e.g. `txcd_10103001`, SaaS for business use; the list is `GET /v1/tax_codes`). Found by the real sandbox run, not by any document.
+2. **The signing secret.** A Dashboard webhook endpoint pointed at `https://<your host>/billing/webhooks/stripe` shows a `whsec_...`; locally, `stripe listen --events
+   checkout.session.completed,checkout.session.async_payment_succeeded,charge.refunded,charge.dispute.created,charge.dispute.closed --forward-to localhost:8000/billing/webhooks/stripe`
+   prints one. Subscribe to exactly those events: others are acknowledged and ignored.
+3. **`.env`** (API, agent workers and export worker alike): `BILLING_PROVIDERS=stripe`, `BILLING_WEBHOOK_SECRETS={"stripe":"whsec_..."}`, and `STRIPE_API_KEY` (a `sk_test_`/`rk_test_`
+   key) if anything will start a checkout. Without the key the adapter still verifies deliveries and refuses to create a checkout.
+4. **The catalog and the customer link are SQL today (disclosed: there is no CLI for them).** A pack and the Stripe customer that belongs to a tenant:
+
+```
+psql -U langfuse -d appdata -c "INSERT INTO credit_products (provider, product_ref, credits) VALUES ('stripe', 'price_...', 5000)"
+psql -U langfuse -d appdata -c "INSERT INTO billing_customers (tenant, provider, customer_ref) VALUES ('acme', 'stripe', 'cus_...')"
+```
+
+   A purchase for a customer or a price that is not in these tables is **quarantined, not guessed at** (`unlinked_customer`, `unknown_product`, and `no_customer` for a guest checkout; alert `BillingWebhookQuarantined`).
+5. **Nothing in the API starts a checkout yet.** `StripeProvider.create_checkout` works (the sandbox test calls it) but no route calls it, so today a pack is bought only from
+   code; a session made any other way (a Payment Link, the Dashboard) carries no `metadata.product_ref` and is quarantined as `unknown_product`.
+
 ### Dashboard and alerts
 
 "Credit Billing" in Grafana (`observability/grafana/dashboards/credit-billing.json`): credits outstanding and owed, grant and debit rates, export

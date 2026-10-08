@@ -7,9 +7,11 @@ from collections.abc import Callable, Mapping
 
 from app.billing.providers.base import BillingProvider, Capability
 from app.billing.providers.fake import FakeProvider
+from app.billing.providers.stripe import StripeProvider
 
 FACTORIES: dict[str, Callable[[str], BillingProvider]] = {
     FakeProvider.name: FakeProvider,
+    StripeProvider.name: StripeProvider,
 }
 
 

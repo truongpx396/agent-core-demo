@@ -1,10 +1,12 @@
 """The Stripe and Polar credential settings (app/core/config.py, specs/010 T029).
 
-The adapters that will read them are not built, so these tests pin only what the settings themselves promise: a real key is
+These tests pin only what the settings themselves promise (the Stripe adapter reads one of them, the Polar adapter is not built): a real key is
 secret-wrapped, the obvious pasting mistake is refused at startup, a blank line in `.env` means "not set", Polar defaults to
 its sandbox, and, the one that mattered, a rejected value is never printed back in the startup error.
 
 `_env_file=None` and a scrubbed environment: `Settings()` otherwise reads the developer's own `.env`."""
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -102,13 +104,17 @@ def test_an_unknown_polar_environment_is_refused(monkeypatch):
         Settings(_env_file=None)
 
 
-def test_the_warning_in_env_example_is_still_true_while_no_adapter_is_registered():
-    """`.env.example` tells the operator not to put `stripe` or `polar` in BILLING_PROVIDERS because only `fake` is
-    registered and an unregistered name makes the API refuse to start. When an adapter is registered this fails, which
-    is the prompt to rewrite that comment (and the settings' comment in config.py) instead of leaving it to mislead."""
-    assert set(providers.FACTORIES) == {"fake"}
+def test_the_warning_in_env_example_is_still_true_while_polar_has_no_adapter():
+    """`.env.example` tells the operator that `polar` must not go in BILLING_PROVIDERS because it has no adapter and an
+    unregistered name makes the API refuse to start. When the Polar adapter is registered this fails, which is the prompt
+    to rewrite that comment (and the settings' comment in config.py) instead of leaving it to mislead. (Stripe's adapter
+    landed first, so its warning is gone and `stripe` is the example the comment now gives of a name that works.)"""
+    assert set(providers.FACTORIES) == {"fake", "stripe"}
     with pytest.raises(providers.UnknownProvider):
-        providers.build_configured(("stripe",), {"stripe": "whsec_x"})
+        providers.build_configured(("polar",), {"polar": "whsec_x"})
+    assert providers.build_configured(("stripe",), {"stripe": "whsec_x"})["stripe"].name == "stripe"
+    example = (Path(__file__).resolve().parents[2] / ".env.example").read_text()
+    assert "POLAR adapter is NOT BUILT YET" in example and "STRIPE adapter is built" in example
 
 
 def test_there_is_no_usage_event_name_setting_because_the_model_is_prepaid_packs():
