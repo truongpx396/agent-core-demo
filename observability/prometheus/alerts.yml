@@ -87,20 +87,6 @@ groups:
             per-tenant dollar ceilings read $0 for that spend. Set input/output
             cost under that model's `model_info` in the LiteLLM config.
 
-      - alert: LedgerWriteFailing
-        expr: increase(agent_cost_governance_degraded_total{path="ledger_write"}[10m]) > 0
-        labels:
-          severity: critical
-        annotations:
-          summary: "A turn's spend is missing from the per-turn usage ledger"
-          description: >-
-            A completed turn's usage_ledger write failed in the last 10m. The turn
-            succeeded, so nobody was told: the row is gone. The dollar caps read the
-            usage events (a separate table, UsageEventWriteFailing), so they are not
-            undercounting because of this; what is lost is the second record the events
-            are reconciled against, and the way back if the spend read is ever reverted
-            to the ledger. Check the appdata Postgres.
-
       - alert: UsageEventWriteFailing
         expr: increase(agent_cost_governance_degraded_total{path="usage_event_write"}[10m]) > 0
         labels:

@@ -256,8 +256,8 @@ credit billing. The events only have rows from the day `postgres-init/19-usage-e
 3. Deploy the release.
 4. Run `make usage-events-carry-over` once more. It normally prints `Nothing to carry`; if it carries rows, they were recorded in the gap between steps 2 and 3.
 
-Nothing alerts that step 2 was skipped, so check it: `ARGS=--dry-run` printing `Would carry 0` means the history is whole. To go back, revert the release: the per-turn ledger is
-still written beside the events, so the old read finds it complete. `USAGE_EVENTS_ENABLED=false` no longer exists as a switch (it is refused at startup): the caps would read $0.
+Nothing alerts that step 2 was skipped, so check it: `ARGS=--dry-run` printing `Would carry 0` means the history is whole. There is **no way back by reverting**: since T030c2 nothing writes
+the per-turn ledger, so a release that reads it would know spend only up to the day this one deployed. `USAGE_EVENTS_ENABLED=false` no longer exists as a switch (it is refused at startup): the caps would read $0.
 
 ## Credit billing: running it
 

@@ -589,7 +589,7 @@ agent_cost_governance_degraded_total = Counter(
     "Cost-governance paths that failed and carried on instead of failing the turn "
     "(spec 008 A1)",
     ["path"],
-)  # path: price_lookup | ledger_write | ledger_read | policy_read | reservation | model_resolve
+)  # path: price_lookup | ledger_read | policy_read | reservation | model_resolve
 # | usage_event_write | usage_event_table_missing | usage_event_identity | usage_missing (app/agent/usage_events.py)
 # | export_enqueue (app/agent/usage_events.py: the event was kept, queuing it for export failed)
 # | credit_debit (app/agent/usage_events.py: the event was kept, its debit failed) | credit_read (app/agent/budgets.py: the gate

@@ -34,7 +34,7 @@ from app.core.security import SecurityCtx
 from app.domains import notify
 from app.domains.ops import metrics_client
 
-# The automated job's own identity — never a real person's — so usage-ledger
+# The automated job's own identity — never a real person's — so usage-event
 # rows and team-channel posts from this script are attributable to "the
 # cron job ran," distinct from any interactive user's own principal.
 _CRON_CTX: SecurityCtx = {"tenant": DEFAULT_TENANT, "principal": "ops-cron", "claims": {}}
@@ -81,7 +81,7 @@ async def run_digest(llm=None) -> str:
         temperature=0,
     )
     # One metered call (app/agent/metering.py): identity for the gateway, priced once, one usage
-    # event and this job's own ledger row (a cron job has no turn whose total could carry it).
+    # event (a cron job has no turn whose total could carry it, and the event is what the caps count).
     thread_id = f"ops-digest:{datetime.now(UTC).date().isoformat()}"
     call = await metering.metered_invoke(
         chat,
@@ -89,7 +89,6 @@ async def run_digest(llm=None) -> str:
         config={"configurable": {"ctx": _CRON_CTX, "thread_id": thread_id}},
         kind="cron",
         model_alias=CHAT_MODEL,
-        to_ledger=True,
     )
     response = call.response
     summary = response.content if isinstance(response.content, str) else str(response.content)

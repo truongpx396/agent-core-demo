@@ -63,8 +63,8 @@ async def _get_pool() -> AsyncConnectionPool:
 @asynccontextmanager
 async def get_connection():
     """A pooled connection, checked out and returned (not closed) on
-    exit — commits on normal exit, which `usage_ledger.py::record_usage`
-    depends on. Wrapped in its own `@asynccontextmanager` so the pool is
+    exit — commits on normal exit, which every single-statement writer
+    here (`usage_events._insert`, the budget holds) depends on. Wrapped in its own `@asynccontextmanager` so the pool is
     only looked up (and lazily opened) from inside a real `async with`
     block.
 

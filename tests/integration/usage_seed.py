@@ -26,3 +26,23 @@ async def seed_event(
         (event_id, tenant, principal, kind, total_tokens, cost_usd, occurred_at, occurred_at),
     )
     return event_id
+
+
+async def seed_ledger_row(
+    conn,
+    tenant: str,
+    *,
+    principal: str = "alice",
+    thread_id: str = "seed",
+    total_tokens: int = 10,
+    cost_usd: float = 0.01,
+    recorded_at: datetime | None = None,
+) -> None:
+    """Inserts one `usage_ledger` row on `conn`. Nothing in the app writes this table any more (specs/010 T030c2: the caps
+    sum the usage events), so the tests that still need a row, to prove the frozen table is no longer counted or to exercise
+    its retention sweep, put it there directly."""
+    await conn.execute(
+        "INSERT INTO usage_ledger (tenant, principal, thread_id, model_alias, total_tokens, cost_usd, recorded_at) "
+        "VALUES (%s, %s, %s, 'chat', %s, %s, COALESCE(%s, now()))",
+        (tenant, principal, thread_id, total_tokens, cost_usd, recorded_at),
+    )
