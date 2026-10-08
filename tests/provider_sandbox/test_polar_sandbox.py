@@ -35,7 +35,7 @@ from app.billing.providers.base import (
 )
 from app.billing.providers.polar import ATTEMPT_KEY, PolarProvider
 from tests.provider_sandbox.conftest import POLAR_SANDBOX_API
-from tests.provider_sandbox.polar_listener import PolarListener
+from tests.provider_sandbox.polar_listener import PolarListener, redact
 
 pytestmark = pytest.mark.provider_sandbox
 
@@ -152,11 +152,21 @@ def listener(polar_token):
     live.stop()
 
 
-def send(listener: PolarListener, event: str, *overrides: str, seed: int | None = None):
+def send(listener: PolarListener, event: str, *overrides: str, seed: int | None = None, if_polar_cannot_build_it: str = "fail"):
     """Ask Polar to send a sample and wait for it. The CLI's own exit status is not asserted: it reports a failure for a delivery that
-    arrived whenever the receiver's connection handling differs from what it expects, so what counts is what was received."""
+    arrived whenever the receiver's connection handling differs from what it expects, so what counts is what was received.
+
+    One refusal IS acted on, because waiting 90 s for it would only blame the adapter for Polar's own fault: `polar trigger` builds some
+    samples that Polar's API then rejects ("subscription.created.data.product.external_id: Field required", seen 2026-10-09 for
+    `subscription.created`, `subscription.cycled` and `product.updated`, reproducible with no code of ours). For an event the adapter
+    must handle that fails at once with the CLI's words; for one it must merely ignore, `if_polar_cannot_build_it="skip"` skips."""
     before = len(listener.deliveries())
-    listener.trigger(event, *overrides, seed=seed)
+    result = listener.trigger(event, *overrides, seed=seed)
+    said = redact((result.stdout + result.stderr).strip(), [listener.secret])
+    if "rejected the request" in said:
+        if if_polar_cannot_build_it == "skip":
+            pytest.skip(f"`polar trigger {event}` makes Polar's own API reject the sample, so nothing can be delivered: {said[-160:]}")
+        raise AssertionError(f"`polar trigger {event}` was rejected by Polar's API: {said[-300:]}")
     return listener.wait_for(lambda e: e.get("type") == event, after=before)
 
 
@@ -268,7 +278,7 @@ class TestRealEventsNormalize:
          "customer.created", "subscription.created", "subscription.cycled", "product.updated"],
     )
     def test_every_other_event_polar_can_send_is_ignored_and_keeps_no_references(self, listener, event_type):
-        delivery = send(listener, event_type)
+        delivery = send(listener, event_type, if_polar_cannot_build_it="skip")
 
         (event,) = parse(listener, delivery)
 
