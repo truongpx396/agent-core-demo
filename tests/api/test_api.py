@@ -97,7 +97,7 @@ class TestHealthReady:
 
 
 class TestUsage:
-    """GET /usage — a thin pass-through to app/agent/usage_ledger.py::usage_summary,
+    """GET /usage — a thin pass-through to app/agent/spend.py::usage_summary,
     called once all-time and once scoped to the rolling 24h window
     app/agent/budgets.py::check_tenant_daily itself checks."""
 
@@ -110,7 +110,7 @@ class TestUsage:
                 return {"total_tokens": 5000, "total_cost_usd": 3.5}
             return {"total_tokens": 200, "total_cost_usd": 0.1}
 
-        monkeypatch.setattr(usage_router.usage_ledger, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(usage_router.spend, "usage_summary", fake_usage_summary)
         monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
 
         result = await usage_router.usage(ctx=TEST_CTX)
@@ -127,7 +127,7 @@ class TestUsage:
         async def fake_usage_summary(tenant, principal=None, since=None):
             return {"total_tokens": 0, "total_cost_usd": 1.0 if principal else 8.0}
 
-        monkeypatch.setattr(usage_router.usage_ledger, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(usage_router.spend, "usage_summary", fake_usage_summary)
         monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
         monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_PRINCIPAL_PER_DAY", 5.0)
         monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_MONTH", 400.0)
@@ -145,7 +145,7 @@ class TestUsage:
         async def fake_usage_summary(tenant, principal=None, since=None):
             return {"total_tokens": 0, "total_cost_usd": 0.0}
 
-        monkeypatch.setattr(usage_router.usage_ledger, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(usage_router.spend, "usage_summary", fake_usage_summary)
         monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
         monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_MONTH", 0.0)
         monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_PRINCIPAL_PER_DAY", 0.0)
@@ -166,7 +166,7 @@ class TestUsageCredits:
         async def usage_summary(tenant, principal=None, since=None):
             return {"total_tokens": 0, "total_cost_usd": 0.0}
 
-        monkeypatch.setattr(usage_router.usage_ledger, "usage_summary", usage_summary)
+        monkeypatch.setattr(usage_router.spend, "usage_summary", usage_summary)
         monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
 
     @pytest.fixture

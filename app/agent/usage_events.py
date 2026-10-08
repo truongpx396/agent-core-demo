@@ -3,8 +3,8 @@
 `usage_ledger` records a completed TURN, summed, with no key that names a call. That is enough for
 a spend cap and not enough for billing: a billing meter must be able to say "this exact call, once",
 so that a replayed write, a retried export and a provider that deduplicates by a caller-supplied id
-(Stripe `identifier`, Polar `external_id`) all agree on what one call is. This module is that meter;
-the cost caps keep reading the ledger unchanged (a deliberate dual write, see below).
+(Stripe `identifier`, Polar `external_id`) all agree on what one call is. This module is that meter, and
+since specs/010 T030 it is also what the dollar caps and `GET /usage` sum (`app/agent/spend.py`).
 
 ## Identity
 
@@ -30,7 +30,9 @@ Fail OPEN, counted, alerted. A failed write must not fail the turn it records (s
     and cannot be de-duplicated (a replay would double-count it);
   * `...{path="usage_missing"}`: the provider reported no usage for a call, so nothing could be
     metered. Counted, not alerted: a local model may do this.
-`USAGE_EVENTS_ENABLED=false` is the kill switch.
+There is no kill switch: the caps sum these rows, so switching the writes off would make every cap read $0
+(`USAGE_EVENTS_ENABLED=false` is refused at startup, `config.py`). Because the caps now depend on the write,
+a failing one is also a cap under-counting: `UsageEventWriteFailing` is the alert for both.
 
 ## Charging credits (specs/010 T015)
 
@@ -66,12 +68,13 @@ charge, for the same reason: the meter outranks everything built on it, so a fai
 `{path="export_enqueue"}`, alert UsageExportEnqueueFailing) loses the export of one event, never the event. With no such provider
 enabled (the default) nothing extra is sent: one list lookup and no statement.
 
-## The dual write
+## The dual write (until the ledger write is retired)
 
-Until budgets read this table (a later change, specs/010 T030), a turn is recorded twice: summed in
-`usage_ledger` (what the caps read) and per call here. Both come from the same `PricedCall`, so they
-cannot disagree about a call's cost; tests/agent/test_usage_events.py asserts the per-call events
-add up to the running total the ledger row is written from.
+The caps read this table (`spend.usage_summary`), and a turn is still ALSO summed into `usage_ledger`, on purpose:
+it is the second record `app/billing/reconcile.py` checks the events against, and the way back if the cutover has
+to be reverted (reverting the read is then a one-line change that finds the ledger complete). Both come from the same
+`PricedCall`, so they cannot disagree about a call's cost; tests/agent/test_usage_events.py asserts the per-call
+events add up to the running total the ledger row is written from. The write is retired in the next change.
 """
 import logging
 import uuid
@@ -89,7 +92,6 @@ from app.core.config import (
     BILLING_PROVIDERS,
     CREDITS_PER_USD,
     MARKUP,
-    USAGE_EVENTS_ENABLED,
 )
 from app.core.security import SecurityCtx, valid_ctx
 
@@ -128,7 +130,7 @@ async def record_call(
 
     Does nothing without a valid ctx (an unattributable call has no tenant to meter to, the same
     rule as `record_usage`). A call that reported no usage is counted and skipped."""
-    if not USAGE_EVENTS_ENABLED or not valid_ctx(ctx):
+    if not valid_ctx(ctx):
         return
     if kind not in KINDS:
         # A programming error, not a runtime condition: loud in tests, and the CHECK constraint

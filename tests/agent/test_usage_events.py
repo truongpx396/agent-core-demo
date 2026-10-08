@@ -276,15 +276,6 @@ class TestWhenNothingCanBeMetered:
         assert usage_event_sink == []
         assert _count("usage_missing") == before + 1
 
-    async def test_the_kill_switch_writes_nothing(self, usage_event_sink, monkeypatch):
-        monkeypatch.setattr(usage_events, "USAGE_EVENTS_ENABLED", False)
-
-        await metering.metered_invoke(
-            _llm(_reply()), [HumanMessage(content="q")], config=CONFIG, kind="chat", model_alias="chat"
-        )
-
-        assert usage_event_sink == []
-
     async def test_a_response_with_no_message_id_is_still_recorded_but_counted(self, usage_event_sink):
         """It cannot be de-duplicated, so a replay would double-count it: visible, not silent."""
         before = _count("usage_event_identity")

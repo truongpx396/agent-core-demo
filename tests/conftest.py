@@ -35,7 +35,7 @@ exceptions.
 service (`appdata` Postgres, app/agent/sql_store.py) — a gap this suite
 had until it was found the hard way: `app/agent/runtime_stream.py::astream_events_turn`
 calls `_check_allowance`/`_upsert_session` UNCONDITIONALLY
-on every turn (`usage_ledger.usage_summary`/`sessions.upsert_session` underneath),
+on every turn (`spend.usage_summary`/`sessions.upsert_session` underneath),
 and `_record_turn_metrics` calls `usage_ledger.record_usage` on every COMPLETED
 one — all three already degrade gracefully on a connection FAILURE (each
 has its own try/except, independently tested — see
@@ -51,7 +51,7 @@ suite from ~10s (locally, against a real docker-compose Postgres) to
 ~20+ minutes in CI (see GRAPH_PATTERNS.md pattern 46's note on the
 recursion_limit fix found the same way).
 
-Patched at `usage_ledger.get_connection`/`sessions.get_connection`/
+Patched at `usage_ledger.get_connection`/`spend.get_connection`/`sessions.get_connection`/
 `tool_idempotency.get_connection` — each module's OWN
 `from app.agent.sql_store import get_connection` binding, not
 `sql_store.get_connection` itself (a `from X import Y` binding is a
@@ -187,10 +187,13 @@ def mock_semantic_cache(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def mock_appdata_postgres(monkeypatch):
-    from app.agent import sessions, tool_idempotency, usage_ledger
+    from app.agent import sessions, spend, tool_idempotency, usage_ledger
     from app.billing import credits
 
     monkeypatch.setattr(usage_ledger, "get_connection", _no_postgres_in_tests)
+    # The spend read behind every dollar cap and GET /usage (specs/010 T030): it moved out of usage_ledger, so it
+    # needs its own guard or an ordinary turn test would pay a real connection attempt for it again.
+    monkeypatch.setattr(spend, "get_connection", _no_postgres_in_tests)
     # The credit wallet is read before a turn only when CREDITS_ENFORCEMENT is on and on the usage
     # endpoint only when CREDITS_PER_USD is set; both are off in the default world, but a test that
     # turns one on must not reach a real database by forgetting to stub the wallet.

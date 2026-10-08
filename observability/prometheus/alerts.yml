@@ -92,11 +92,14 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Spend is being incurred and not recorded"
+          summary: "A turn's spend is missing from the per-turn usage ledger"
           description: >-
             A completed turn's usage_ledger write failed in the last 10m. The turn
-            succeeded, so nobody was told: the row is gone, and every tenant allowance
-            read from that ledger now undercounts. Check the appdata Postgres.
+            succeeded, so nobody was told: the row is gone. The dollar caps read the
+            usage events (a separate table, UsageEventWriteFailing), so they are not
+            undercounting because of this; what is lost is the second record the events
+            are reconciled against, and the way back if the spend read is ever reverted
+            to the ledger. Check the appdata Postgres.
 
       - alert: UsageEventWriteFailing
         expr: increase(agent_cost_governance_degraded_total{path="usage_event_write"}[10m]) > 0
@@ -107,7 +110,8 @@ groups:
           description: >-
             A per-call usage event failed to write in the last 10m. The turn succeeded, so
             nobody was told: that call is missing from the billing meter, which is lost revenue
-            the moment usage is billed. Check the appdata Postgres. Reconcile the gap against
+            the moment usage is billed, and from the spend the dollar caps sum, so a tenant's
+            allowance undercounts by that call. Check the appdata Postgres. Reconcile the gap against
             the gateway spend log (grouped by `end_user`) before it ages out of any provider's
             reporting window.
 
@@ -121,8 +125,10 @@ groups:
             postgres-init/19-usage-events.sql has not been applied to this database (init
             scripts run only on a fresh volume), or CREDITS_PER_USD is set and
             postgres-init/21-usage-event-credits.sql has not. Apply it once with
-            `psql -U langfuse -d appdata -f postgres-init/<file>`. Turns are unaffected; the
-            per-turn usage_ledger the spend caps read is a separate table.
+            `psql -U langfuse -d appdata -f postgres-init/<file>`. Turns are served, but the
+            dollar caps sum this table too: with it missing their spend read fails as well
+            (TenantAllowanceUnenforced), and under the default BUDGET_CHECK_FAILURE_POLICY=open
+            every turn runs unchecked until it is applied.
 
       - alert: CreditDebitFailing
         expr: increase(agent_cost_governance_degraded_total{path="credit_debit"}[10m]) > 0
@@ -277,7 +283,8 @@ groups:
         annotations:
           summary: "The per-tenant daily allowance is not being enforced"
           description: >-
-            The ledger read behind the tenant allowance (path=ledger_read), or the read of
+            The spend read behind the tenant allowance (the usage events; the label
+            path=ledger_read is a name kept from when it was the ledger), or the read of
             the operator's per-tenant/per-person limit overrides (path=policy_read),
             failed in the last 10m. Under BUDGET_CHECK_FAILURE_POLICY=open (the default)
             every turn it covered ran unchecked — and a policy_read failure also means

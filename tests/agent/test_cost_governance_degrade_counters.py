@@ -13,7 +13,7 @@ only pins "and it is counted, under the right `path`".
 import httpx
 import pytest
 
-from app.agent import model_resolver, usage_ledger
+from app.agent import model_resolver, spend, usage_ledger
 from app.agent import runtime as runtime_module
 from app.core import metrics
 from tests.conftest import TEST_CTX, metric_value
@@ -36,11 +36,11 @@ async def test_a_failed_ledger_write_is_counted_as_ledger_write(monkeypatch):
     assert _count("ledger_write") == before + 1
 
 
-async def test_a_failed_ledger_read_in_the_allowance_check_is_counted_as_ledger_read(monkeypatch):
+async def test_a_failed_spend_read_in_the_allowance_check_is_counted_as_ledger_read(monkeypatch):
     async def broken_summary(*args, **kwargs):
         raise ConnectionError("appdata postgres unreachable")
 
-    monkeypatch.setattr(usage_ledger, "usage_summary", broken_summary)
+    monkeypatch.setattr(spend, "usage_summary", broken_summary)
     before = _count("ledger_read")
 
     allowance = await runtime_module._check_allowance(TEST_CTX)

@@ -13,10 +13,16 @@ running `total_cost_usd`; the caller hands that figure to `record_usage`. One
 number therefore feeds the in-run ceiling, the ledger and the tenant allowance,
 and they cannot disagree. An unpriced model records $0 here — loudly: see
 pricing.py and `agent_unpriced_usage_total` — never as a quiet default.
+
+## No longer what the caps read (specs/010 T030)
+
+The dollar caps and `GET /usage` now sum `usage_events` (`app/agent/spend.py`), the per-call meter. This
+module still WRITES a per-turn row, deliberately: it is the second record the events are reconciled
+against (`app/billing/reconcile.py`) and the way back if the cutover has to be reverted. It also still owns
+the in-flight budget holds below, which are about concurrency and not about history.
 """
 import logging
 import uuid
-from datetime import datetime
 
 from app.agent.model_resolver import resolve_model
 from app.agent.sql_store import get_connection
@@ -85,34 +91,6 @@ async def record_usage(
             "usage ledger write failed; continuing without recording",
             extra={"error_class": type(exc).__name__},
         )
-
-
-async def usage_summary(
-    tenant: str, principal: str | None = None, since: datetime | None = None
-) -> dict:
-    """Total tokens and cost for `tenant`, optionally narrowed to one
-    `principal` and/or to usage on/after `since`. `since` is what
-    `budgets.check_tenant_daily` uses for a ROLLING 24h window
-    (`now - 24h`, not calendar-day boundaries, so a tenant's near-limit
-    status never resets mid-day). `since=None` (all-time) is the right
-    default for `GET /usage`'s "total ever spent" question instead."""
-    where = ["tenant = %s"]
-    params: list = [tenant]
-    if principal:
-        where.append("principal = %s")
-        params.append(principal)
-    if since is not None:
-        where.append("recorded_at >= %s")
-        params.append(since)
-
-    sql = (
-        "SELECT COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0) "
-        f"FROM usage_ledger WHERE {' AND '.join(where)}"
-    )
-    async with get_connection() as conn:
-        cur = await conn.execute(sql, params)
-        total_tokens, total_cost = await cur.fetchone()
-    return {"total_tokens": int(total_tokens), "total_cost_usd": float(total_cost)}
 
 
 async def reserve_budget(ctx: SecurityCtx | None, amount_usd: float) -> str | None:

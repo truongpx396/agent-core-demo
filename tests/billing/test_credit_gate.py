@@ -17,7 +17,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.agent import budgets, usage_ledger
+from app.agent import budgets, spend, usage_ledger
 from app.agent import runtime as runtime_module
 from app.agent import runtime_stream as stream_module
 from app.billing import credits
@@ -55,7 +55,7 @@ def world(monkeypatch):
         return state["reserved_usd"]
 
     monkeypatch.setattr(credits, "account_balance", account_balance)
-    monkeypatch.setattr(usage_ledger, "usage_summary", usage_summary)
+    monkeypatch.setattr(spend, "usage_summary", usage_summary)
     monkeypatch.setattr(usage_ledger, "in_flight_reservation", in_flight_reservation)
     return state
 

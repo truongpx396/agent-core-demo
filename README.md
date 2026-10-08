@@ -10,7 +10,7 @@ changing model provider is a LiteLLM config change, not a code change.
 | Agent runtime | **LangGraph** — typed state, Postgres checkpointer, human-approval pause that survives a restart |
 | Model gateway | **LiteLLM** proxy — retries, fallbacks, alias routing (Ollama in dev, a hosted endpoint in prod) |
 | Retrieval | **Qdrant** — dense + BM25 hybrid search, metadata pre-filtering |
-| State | **Postgres** (checkpoints, app data, usage ledger), **Redis** (Streams queue, semantic cache) |
+| State | **Postgres** (checkpoints, app data, usage events), **Redis** (Streams queue, semantic cache) |
 | Observability | **Langfuse** traces, **OpenTelemetry** metrics, structlog JSON logs, optional Grafana/Loki/Prometheus |
 | API | **FastAPI** + Pydantic — SSE chat, approval resume/cancel, uploads, built-in web UI |
 
@@ -192,6 +192,7 @@ Two things that bite on a first deploy:
 
 - **The shipped Caddy proxy does not authenticate.** It forwards `X-Tenant-Id`/`X-Principal-Id` as sent, so put an authenticating gateway in front that sets both and discards client copies ([Known gaps](#roadmap-and-known-gaps)).
 - **SQL migrations are not applied to an existing volume.** `postgres-init/*.sql` runs only on a fresh Postgres volume, and the deploy only syncs the files ([Example domains](#example-domains)).
+- **Upgrading to the release where the spend caps read `usage_events`** (specs/010 T030b) has an order that matters, because the caps sum that table now and it only has rows from the day `19-usage-events.sql` was applied: (1) apply `postgres-init/19` (and `21` if `CREDITS_PER_USD` is set); (2) `make usage-events-carry-over ARGS=--dry-run`, then `make usage-events-carry-over`, which copies the older `usage_ledger` history across; (3) deploy; (4) run `make usage-events-carry-over` once more (it normally carries nothing). Skip (1) and the caps fail open until it is applied (`TenantAllowanceUnenforced` pages); skip (2) and a monthly cap forgets the month so far ([runbook](infra/README.md#upgrading-carry-the-ledgers-history-into-the-usage-events)).
 
 ### Gateway backstop
 
@@ -349,7 +350,7 @@ volume, apply each file you lack by hand, in order (`psql -U langfuse -d appdata
 | `14-tool-call-id-columns` | `tool_call_id UNIQUE` on tickets, incidents, follow-ups | Creating those rows fails |
 | `15-append-notes-as-rows` | `support_ticket_comments`, `crm_lead_notes` | Adding a comment or note fails. **Drops `support_tickets.notes` and `crm_leads.notes` with no data carried over** — copy first |
 | `16-tenant-budget-holds` | One budget hold per in-flight turn | The daily cap stops counting running turns; the reserve fails open |
-| `19-usage-events` | One immutable row per model call (the billing meter) | No call is metered (alert `UsageEventTableMissing`); turns are unaffected |
+| `19-usage-events` | One immutable row per model call: the billing meter **and the spend the dollar caps and `GET /usage` sum** | No call is metered (`UsageEventTableMissing`) **and the caps' spend read fails**: under the default `BUDGET_CHECK_FAILURE_POLICY=open` every turn runs unchecked and `TenantAllowanceUnenforced` pages. Apply it **before** deploying the change that reads the caps from it, then run `make usage-events-carry-over` |
 | `20-credit-wallet` | The credit wallet: accounts, lots, transactions, entries | Nothing reads it unless `CREDITS_PER_USD` is set; then a charge fails and is counted (`CreditDebitFailing`) |
 | `21-usage-event-credits` | `credits`, `credits_per_usd`, `markup` on `usage_events` | **Apply before setting `CREDITS_PER_USD`**, or every event write fails and is counted (`UsageEventTableMissing`) |
 | `22-billing` | The tenant link, the product catalog and the webhook inbox | No provider is enabled by default, so nothing reads them; with `BILLING_PROVIDERS` set, webhooks fail 5xx (the provider retries) and `BillingWebhookFailing` pages |
@@ -360,7 +361,7 @@ volume, apply each file you lack by hand, in order (`psql -U langfuse -d appdata
 - **Logs:** structlog JSON from every service, with `request_id`/`thread_id` on each line (pattern 14).
 - **Metrics:** 25+ OpenTelemetry counters and histograms (`app/core/metrics.py`), **pushed** over OTLP by the API and every worker replica to one otel-collector (pattern 11).
 - **Traces:** Langfuse, grouped by `thread_id`.
-- **Cost:** a per-tenant/principal usage ledger that records the concrete model behind each alias (patterns 26, 38).
+- **Cost:** per-call usage events, tenant- and principal-scoped, that record the concrete model behind each alias and are what the dollar caps sum (patterns 26, 38, 51, 58); a per-turn ledger is still written beside them for now.
 
 `make obs-up` starts a separate stack, [`docker-compose.observability.yml`](deploy/compose/docker-compose.observability.yml),
 that nothing in the app depends on:
@@ -445,7 +446,7 @@ measurements put acted-on AI comments at roughly 6–19%, so treat it as a promp
 | `make serve` | API + web UI on :8000 |
 | `make agent-worker[-support\|-ops\|-sales]` · `make ingest-worker` | Queue consumers |
 | `make telegram[-support\|-sales]` | Telegram gateway for a domain (needs `TELEGRAM_BOT_TOKEN`) |
-| `make usage-events-carry-over` | One-time and idempotent: copies `usage_ledger` history older than the first usage event into `usage_events`, ahead of the change that makes the dollar caps sum the events (specs/010 T030b), so a monthly cap does not then forget the month so far. Changes no behaviour by itself. `ARGS=--dry-run` counts and writes nothing; `ARGS="--tenant acme"` limits it to one tenant ([runbook](infra/README.md#upgrading-carry-the-ledgers-history-into-the-usage-events)) |
+| `make usage-events-carry-over` | One-time and idempotent: copies `usage_ledger` history older than the first usage event into `usage_events`, because the dollar caps now sum the events (specs/010 T030b) and would otherwise forget the month so far. Run it before deploying that change and once after. `ARGS=--dry-run` counts and writes nothing; `ARGS="--tenant acme"` limits it to one tenant ([runbook](infra/README.md#upgrading-carry-the-ledgers-history-into-the-usage-events)) |
 | `make ops-digest` · `make followup-sweep` · `make tool-call-dedup-sweep` · `make usage-ledger-sweep` | One-shot jobs meant for cron (nothing schedules them). The last deletes `usage_ledger` rows past `USAGE_LEDGER_RETENTION_DAYS`; it is a financial record, so schedule it only once your retention policy is decided |
 | `make litellm-key ARGS="…"` | Mint or inspect the app's **scoped, budget-capped LiteLLM key** (`create --max-budget <usd>`, `info`, `end-user --tenant <name>`). The master key never leaves the gateway once `LITELLM_APP_KEY` is set (see [Gateway backstop](#gateway-backstop)) |
 | `make budget-policy ARGS="…"` | Operator CLI for per-tenant / per-person spend-limit overrides (set a tenant's plan limit, give every person in a tenant a personal limit, **suspend** one person with a limit of 0, or lift a cap with `none`). A running worker applies a change within `BUDGET_POLICY_REFRESH_SECONDS` (30). Needs `postgres-init/18-budget-policies.sql` |
@@ -511,6 +512,8 @@ shipped proxy alone, the human deciding can be anyone who sets the right headers
 - **Approvals are not attributed.** The gate is enforced but not auditable.
 - **The ops domain is global**, with no control over which tenants may use it; **the dedup lookup is not tenant-scoped**.
 - **A residual duplicate window for team-channel notifications** (support escalation, sales handoff, ops post).
+- **The monthly spend caps are linear in a month's model calls.** The caps sum `usage_events` (one row per call, several per turn): measured at 2,000,000 events in 30 days, the always-on rolling 24h tenant read is 9 ms, a person's day 6 ms, a person's month 98 ms and **the tenant's calendar month 426 ms** (a sequential scan). The monthly caps are off by default; the lever is a per-day rollup, which is not built (pattern 58).
+- **Nothing alerts that the ledger carry-over was skipped.** Until `make usage-events-carry-over` has run, a monthly cap under-counts the month so far and the all-time `/usage` total is short; `ARGS=--dry-run` printing `Would carry 0` is the check. **Nothing trims `usage_events`** yet (the retention job spec D7 promised was never built, and `make usage-ledger-sweep` no longer governs what the caps read).
 - **Embedding spend is not metered.** Follow-up suggestions, history compaction and the cron scripts are now recorded per call and counted by the dollar caps, but embeddings (retrieval queries and ingest) still reach the model without reaching the ledger or the usage events, and are not attributed at the gateway. That is the next change in the billing design above.
 
 ## Troubleshooting

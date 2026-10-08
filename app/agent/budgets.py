@@ -27,16 +27,19 @@ operator edits) overrides them per tenant, per person, or for every person in on
 `resolve_limits` applies a person's row, else the tenant's `*` row, else the default. An
 override of NULL means "no cap" and 0 means "refuse everything" (the suspend switch); see
 postgres-init/18-budget-policies.sql. The override read is one more read the check can fail,
-and it follows the same failure policy as the ledger read.
+and it follows the same failure policy as the spend read.
 
-## Why in-flight holds are added to the ledger sum (tenant scopes)
+## Where `spent` comes from, and why in-flight holds are added to it (tenant scopes)
 
-`spent` (usage_ledger's persisted sum) only reflects turns that have already COMPLETED and
-recorded their cost. A sibling turn for the same tenant that is already running has not landed
-its row yet, so without counting it N concurrent turns would all read the same stale `spent`,
-all pass, and all proceed — a check-then-act race. Every turn reserves `MAX_COST_USD_PER_TURN`
-for its duration (`usage_ledger.reserve_budget`), so the tenant limits see a burst the ledger
-alone would miss.
+`spent` is the sum of the usage events (`spend.usage_summary`, specs/010 T030; it was the per-turn
+`usage_ledger` sum until then). An event lands the moment a model call returns, so a sibling turn that is
+still running has spent SOME of its money in the sum already, but not the calls it has yet to make, so
+without a hold N concurrent turns would all read a stale `spent`, all pass, and all proceed — a check-then-act
+race. Every turn reserves `MAX_COST_USD_PER_TURN` for its duration (`usage_ledger.reserve_budget`), so the
+tenant limits see a burst the events alone would miss. The hold is the WHOLE per-turn ceiling and the events
+are the part already spent, so a running turn is counted twice for what it has spent so far: a conservative
+over-count, bounded by `MAX_COST_USD_PER_TURN` per running turn, which can refuse a sibling a little early and
+can never let a burst through.
 
 Holds are per TENANT, not per person, so a person's limit does not see their own concurrent
 turns: one person running several conversations at once can overshoot their personal limit by
@@ -64,23 +67,25 @@ operator, or a verified purchase, opens one.
   * **Off means untouched.** `credit_gate=None` (enforcement off) reads nothing: the wallet is not
     queried, so the turn path costs exactly what it did before (SC-005).
   * **A wallet that cannot be read** is governed by `CREDIT_CHECK_FAILURE_POLICY`, separately from the
-    ledger's because the two can fail separately. "open" serves the turn and counts it
+    spend read's because the two can fail separately. "open" serves the turn and counts it
     (`agent_cost_governance_degraded_total{path="credit_read"}`, alert `CreditGateUnenforced`); "closed"
     refuses it as `budget_check_unavailable`, which blames no one's balance. The in-flight hold read
     stays open to 0.0 either way, as above.
 
 ## When the check cannot answer
 
-  * the ledger READ fails — governed by `BUDGET_CHECK_FAILURE_POLICY`. "open" (the default)
-    serves the turn and counts the failure (`agent_cost_governance_degraded_total`, alert
-    `TenantAllowanceUnenforced`): a ledger outage must not also take down every turn. "closed"
+  * the spend READ fails (the `usage_events` table is unreachable or was never applied) — governed by
+    `BUDGET_CHECK_FAILURE_POLICY`. "open" (the default)
+    serves the turn and counts the failure (`agent_cost_governance_degraded_total{path="ledger_read"}`, a label
+    kept from when this was the ledger so the alert and dashboards still match, alert
+    `TenantAllowanceUnenforced`): a database outage must not also take down every turn. "closed"
     refuses it with `ErrorCode.BUDGET_CHECK_UNAVAILABLE`: with real money behind the ceiling,
     some deployments would rather refuse than run unmetered. Either way it is a decision.
   * the in-flight hold read fails — always open, to 0.0, counted. It only closes a race between
-    concurrent turns; the ledger check beneath it is still enforced.
+    concurrent turns; the spend check beneath it is still enforced.
 
 Everything here takes its limits as arguments, so the decision is a plain function of
-(ctx, limits, ledger, holds); runtime.py's thin wrappers read the configured values at call
+(ctx, limits, spend, holds); runtime.py's thin wrappers read the configured values at call
 time, which is what lets tests re-point them.
 """
 import logging
@@ -90,7 +95,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Literal
 
-from app.agent import budget_policies, usage_ledger
+from app.agent import budget_policies, spend, usage_ledger
 from app.billing import credits
 from app.core import metrics
 from app.core.errors import ErrorCode, ErrorEnvelope
@@ -241,9 +246,10 @@ def configured_limits(
 
 
 async def _spend(limit: BudgetLimit, ctx: SecurityCtx, now: datetime) -> tuple[float, float]:
-    """(ledger spend in the limit's window, in-flight holds) for this limit's scope."""
+    """(spend in the limit's window, in-flight holds) for this limit's scope. The spend is the usage events'
+    (`spend.usage_summary`); the holds are still `usage_ledger`'s (concurrency, not history)."""
     principal = ctx["principal"] if limit.scope == "principal" else None
-    summary = await usage_ledger.usage_summary(
+    summary = await spend.usage_summary(
         ctx["tenant"], principal=principal, since=window_start(limit.window, now)
     )
     reserved = await usage_ledger.in_flight_reservation(ctx["tenant"]) if limit.scope == "tenant" else 0.0
@@ -320,15 +326,15 @@ async def check_allowance(
     now: datetime | None = None,
     credit_gate: CreditGate | None = None,
 ) -> Allowance:
-    """Spend over each limit's window (`usage_ledger`) plus, for tenant limits, in-flight holds,
+    """Spend over each limit's window (the usage events, `spend.usage_summary`) plus, for tenant limits, in-flight holds,
     against that limit.
 
-    An invalid ctx is unattributable, so there is nothing to meter: "ok", without a ledger read.
+    An invalid ctx is unattributable, so there is nothing to meter: "ok", without a spend read.
     The first limit at or past its cap refuses the turn ("exceeded"): counted under its scope and
     window, and logged with the tenant and principal, which the counter deliberately has no label
     for. Limits that still allow the turn but have crossed a warning threshold are counted and
     logged as an early signal. Reads are sequential and only made for limits that are enabled, so
-    a deployment with just the daily tenant limit pays for exactly one ledger read, as before.
+    a deployment with just the daily tenant limit pays for exactly one spend read, as before.
 
     With a `credit_gate`, a turn the limits above would serve is then checked against the tenant's
     wallet ("The credit gate" in the module docstring); without one the wallet is never read.
@@ -341,7 +347,7 @@ async def check_allowance(
     try:
         for limit in limits:
             spends.append(await _spend(limit, ctx, now))
-    except Exception as exc:  # noqa: BLE001 - a ledger read failing must not by itself take every turn down; BUDGET_CHECK_FAILURE_POLICY decides, and it is counted and alerted either way
+    except Exception as exc:  # noqa: BLE001 - a spend read failing must not by itself take every turn down; BUDGET_CHECK_FAILURE_POLICY decides, and it is counted and alerted either way
         # While this is firing under "open" the allowance is UNENFORCED for every turn that
         # hits it (alert TenantAllowanceUnenforced, spec 008 A1).
         metrics.agent_cost_governance_degraded_total.labels(path="ledger_read").inc()
@@ -406,7 +412,7 @@ async def check(
     the person's override rows, resolves the limits that apply, and checks them.
 
     A failed override read is one more way the check cannot answer, and takes the same policy as
-    a failed ledger read: "closed" refuses the turn as unavailable; "open" serves it against the
+    a failed spend read: "closed" refuses the turn as unavailable; "open" serves it against the
     Settings defaults alone — so an override set to SUSPEND someone is not enforced while the read
     is failing — counted (`path="policy_read"`, alert `TenantAllowanceUnenforced`) and marked
     `degraded`. (A missing table is not a failure; see `budget_policies.overrides_for`.)"""
@@ -456,7 +462,7 @@ async def usage_status(
     """Every limit that applies to `ctx` (overrides included) with its spend, so a caller can see
     how close they are before being refused. Spend includes in-flight holds for tenant limits,
     exactly as the check counts it. Unlike the check this does not fail open: a status endpoint
-    that cannot read the ledger should say so, not report a calm zero."""
+    that cannot read the spend should say so, not report a calm zero."""
     now = now or datetime.now(UTC)
     overrides = await budget_policies.overrides_for(ctx["tenant"], ctx["principal"])
     statuses = []

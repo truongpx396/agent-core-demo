@@ -23,42 +23,42 @@ from tests.conftest import TEST_CTX, metric_value
 
 class TestCheckAllowance:
     async def test_false_when_under_the_limit(self, monkeypatch):
-        from app.agent import usage_ledger
+        from app.agent import spend
 
         async def fake_usage_summary(*a, **kw):
             return {"total_cost_usd": 1.0, "total_tokens": 100}
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
-        monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(spend, "usage_summary", fake_usage_summary)
         assert (await agent._check_allowance(TEST_CTX)).refused is False
 
     async def test_true_when_spend_meets_the_limit(self, monkeypatch):
-        from app.agent import usage_ledger
+        from app.agent import spend
 
         async def fake_usage_summary(*a, **kw):
             return {"total_cost_usd": 10.0, "total_tokens": 5000}
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
-        monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(spend, "usage_summary", fake_usage_summary)
         assert (await agent._check_allowance(TEST_CTX)).refused is True
 
     async def test_true_when_spend_exceeds_the_limit(self, monkeypatch):
-        from app.agent import usage_ledger
+        from app.agent import spend
 
         async def fake_usage_summary(*a, **kw):
             return {"total_cost_usd": 15.0, "total_tokens": 5000}
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
-        monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(spend, "usage_summary", fake_usage_summary)
         assert (await agent._check_allowance(TEST_CTX)).refused is True
 
     async def test_false_for_an_invalid_ctx_without_even_querying_the_ledger(self, monkeypatch):
-        from app.agent import usage_ledger
+        from app.agent import spend
 
         async def _fail_if_called(*a, **kw):
             raise AssertionError("usage_summary should not be queried for an invalid ctx")
 
-        monkeypatch.setattr(usage_ledger, "usage_summary", _fail_if_called)
+        monkeypatch.setattr(spend, "usage_summary", _fail_if_called)
         assert (await agent._check_allowance(None)).refused is False
         assert (await agent._check_allowance({"tenant": "", "principal": "", "claims": {}})).refused is False
 
@@ -66,22 +66,22 @@ class TestCheckAllowance:
         """A usage-ledger outage must not ALSO take down every turn on top
         of whatever already took the ledger down — same degrade-don't-crash
         posture as app/retrieval/semantic_cache.py and app/agent/moderation.py."""
-        from app.agent import usage_ledger
+        from app.agent import spend
 
         async def _broken(*a, **kw):
             raise ConnectionError("appdata postgres unreachable")
 
-        monkeypatch.setattr(usage_ledger, "usage_summary", _broken)
+        monkeypatch.setattr(spend, "usage_summary", _broken)
         assert (await agent._check_allowance(TEST_CTX)).refused is False
 
     async def test_a_warning_threshold_is_counted_once_crossed_but_the_turn_is_still_allowed(self, monkeypatch):
-        from app.agent import usage_ledger
+        from app.agent import spend
 
         async def fake_usage_summary(*a, **kw):
             return {"total_cost_usd": 8.5, "total_tokens": 100}
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
-        monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(spend, "usage_summary", fake_usage_summary)
         before = metric_value(metrics.agent_budget_threshold_total, scope="tenant", window="day", threshold="85")
 
         assert (await agent._check_allowance(TEST_CTX)).refused is False
@@ -92,7 +92,7 @@ class TestCheckAllowance:
         )
 
     async def test_queries_a_rolling_24h_window_scoped_to_this_tenant(self, monkeypatch):
-        from app.agent import usage_ledger
+        from app.agent import spend
 
         captured = {}
 
@@ -101,7 +101,7 @@ class TestCheckAllowance:
             captured["since"] = since
             return {"total_cost_usd": 0.0, "total_tokens": 0}
 
-        monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(spend, "usage_summary", fake_usage_summary)
         await agent._check_allowance(TEST_CTX)
 
         assert captured["tenant"] == TEST_CTX["tenant"]
@@ -114,7 +114,7 @@ class TestCheckAllowance:
         tenant would all see the SAME persisted `spent` (none of their own
         cost is recorded yet) — in_flight_reservation is what lets this
         function see the turns already running and refuse regardless."""
-        from app.agent import usage_ledger
+        from app.agent import spend, usage_ledger
 
         async def fake_usage_summary(*a, **kw):
             return {"total_cost_usd": 6.0, "total_tokens": 100}
@@ -123,7 +123,7 @@ class TestCheckAllowance:
             return 4.5  # e.g. 9 concurrent turns each reserving MAX_COST_USD_PER_TURN=0.5
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
-        monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(spend, "usage_summary", fake_usage_summary)
         monkeypatch.setattr(usage_ledger, "in_flight_reservation", fake_in_flight_reservation)
 
         assert (await agent._check_allowance(TEST_CTX)).refused is True
@@ -131,7 +131,7 @@ class TestCheckAllowance:
     async def test_false_when_ledger_spend_plus_reservations_both_stay_under_the_limit(
         self, monkeypatch
     ):
-        from app.agent import usage_ledger
+        from app.agent import spend, usage_ledger
 
         async def fake_usage_summary(*a, **kw):
             return {"total_cost_usd": 6.0, "total_tokens": 100}
@@ -140,7 +140,7 @@ class TestCheckAllowance:
             return 1.0
 
         monkeypatch.setattr(agent, "MAX_COST_USD_PER_TENANT_PER_DAY", 10.0)
-        monkeypatch.setattr(usage_ledger, "usage_summary", fake_usage_summary)
+        monkeypatch.setattr(spend, "usage_summary", fake_usage_summary)
         monkeypatch.setattr(usage_ledger, "in_flight_reservation", fake_in_flight_reservation)
 
         assert (await agent._check_allowance(TEST_CTX)).refused is False

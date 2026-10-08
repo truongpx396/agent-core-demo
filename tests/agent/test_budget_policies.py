@@ -239,19 +239,19 @@ class TestWriting:
 
 @pytest.fixture
 def ledger(monkeypatch):
-    spend = {}
+    spent = {}
 
     async def usage_summary(tenant, principal=None, since=None):
-        return {"total_cost_usd": spend.get("principal" if principal else "tenant", 0.0), "total_tokens": 0}
+        return {"total_cost_usd": spent.get("principal" if principal else "tenant", 0.0), "total_tokens": 0}
 
     async def in_flight_reservation(tenant):
         return 0.0
 
-    from app.agent import usage_ledger
+    from app.agent import spend, usage_ledger
 
-    monkeypatch.setattr(usage_ledger, "usage_summary", usage_summary)
+    monkeypatch.setattr(spend, "usage_summary", usage_summary)
     monkeypatch.setattr(usage_ledger, "in_flight_reservation", in_flight_reservation)
-    return spend
+    return spent
 
 
 def _overrides(monkeypatch, rows=None, error=None):
@@ -361,12 +361,12 @@ class TestUsageStatus:
         assert statuses[("tenant", "day")].resets_at is None
 
     async def test_it_does_not_fail_open_when_the_ledger_cannot_be_read(self, monkeypatch):
-        from app.agent import usage_ledger
+        from app.agent import spend
 
         async def broken(*args, **kwargs):
             raise ConnectionError("down")
 
-        monkeypatch.setattr(usage_ledger, "usage_summary", broken)
+        monkeypatch.setattr(spend, "usage_summary", broken)
 
         with pytest.raises(ConnectionError):
             await budgets.usage_status(TEST_CTX, defaults=DEFAULTS)

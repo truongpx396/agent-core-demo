@@ -10,7 +10,7 @@ cursor. What it cannot show is what the table itself does, and three properties 
     bypasses the Python validation;
   * the shipped migration applies cleanly on a fresh volume.
 
-The last test runs the whole path with a real ledger: suspending one person refuses that person's
+The last test runs the whole path with real usage events: suspending one person refuses that person's
 turns and leaves a colleague's alone.
 
 Each test uses its own tenant; the container is shared across tests and xdist workers.
@@ -21,9 +21,10 @@ from contextlib import asynccontextmanager
 import psycopg
 import pytest
 
-from app.agent import budget_policies, budgets, usage_ledger
+from app.agent import budget_policies, budgets, spend, usage_ledger
 from scripts import budget_policy
 from tests.containers import ensure_postgres
+from tests.integration.usage_seed import seed_event
 
 pytestmark = pytest.mark.integration
 
@@ -43,7 +44,7 @@ def real_appdata(appdata_url, monkeypatch):
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
             yield conn
 
-    for module in (budget_policies, usage_ledger):
+    for module in (budget_policies, usage_ledger, spend):
         monkeypatch.setattr(module, "get_connection", get_connection)
     monkeypatch.setattr(budget_policies, "overrides_for", _REAL_OVERRIDES_FOR)
     monkeypatch.setattr(budget_policies, "BUDGET_POLICY_REFRESH_SECONDS", 0)
@@ -144,9 +145,10 @@ async def test_a_suspension_refuses_that_person_and_not_a_colleague_end_to_end(t
     assert bob.status == "ok" and bob.degraded is False
 
 
-async def test_a_real_ledger_spend_trips_a_personal_override_not_the_default(tenant):
+async def test_a_real_event_spend_trips_a_personal_override_not_the_default(tenant, real_appdata):
     await budget_policies.set_override(tenant, "alice", "day", 0.50, "ops")
-    await usage_ledger.record_usage(_ctx(tenant, "alice"), "t1", "chat", 1000, 0.60)
+    async with real_appdata() as conn:
+        await seed_event(conn, tenant, principal="alice", cost_usd=0.60, total_tokens=1000)
 
     alice = await budgets.check(_ctx(tenant, "alice"), defaults=DEFAULTS, fail_policy="closed")
     statuses = await budgets.usage_status(_ctx(tenant, "alice"), defaults=DEFAULTS)
