@@ -58,10 +58,15 @@ entry and README update; its CI result reported, not assumed.
 - [x] T027 [PR6] `scripts/credits.py` + `make credits`: `grant`, `adjust`, `show` (lots, entries, balance); `--by` and `--reason` required. `show` is read-only and asks for neither. `credits.adjust_in` (positive = a grant whose lot source is `adjustment`; negative = a debit of kind `adjust`, never refused for a short balance, no wallet opened to hold a debt); a retry is safe only with the same `--key`, which is printed
 - [x] T028 [PR6] Runbook in `infra/README.md`; Grafana panel for balance, grant and debit rates, export lag. The dashboard is `observability/grafana/dashboards/credit-billing.json`; there is no Postgres datasource, so the balance panel reads a gauge the reconciliation worker sets, and per-tenant balances stay `make credits ... show`
 
-## Later (separate PRs, each needs a sandbox account)
+## Later
 
-- [ ] T029 One adapter per provider, written against primary docs (R5 O-C, O-D), passing the contract suite unchanged
-- [ ] T030 Make `budgets` read `usage_events`; stop the per-turn `usage_ledger` write; delete the dual-write test
+**T029 needs a sandbox account and cannot be built without one**; T030 does not (it is the same codebase, no third party), and is three PRs because moving the caps' read and retiring the
+ledger write in one change would remove the way back for the thing that stops a tenant spending without limit, and because the carry-over is additive and has to be run before the read moves.
+
+- [ ] T029 [adapters] One adapter per provider, written against primary docs (R5 O-C, O-D), passing the contract suite unchanged. **Blocked: it needs a sandbox account and its keys for each provider** (D13: Stripe first, then Polar, PayPal last), which are the operator's to create and are not available to this repository's tooling (`.env` is deny-listed on purpose). What can be verified without one (a webhook signature against the vendor's own library, a request shape against the vendor's published OpenAPI) does not substitute for a real round trip, and the contract suite is silent about a wire format it has never met. Until then the in-repo `fake` is the only adapter.
+- [ ] T030a [PR 7a] `make usage-events-carry-over`: copy the `usage_ledger` history older than the first real usage event into `usage_events` (`ledger:<id>` rows, never rated, charged or exported; idempotent; resumable; `--dry-run`, `--tenant`). Additive, changes no behaviour, and is run **before** T030b
+- [ ] T030b [PR 7b] The dollar caps and `GET /usage` read `usage_events` instead of `usage_ledger`; refuse `USAGE_EVENTS_ENABLED=false` (it would make every cap read $0); the ledger is **still written**, so reverting the read is one line
+- [ ] T030c [PR 7c] Stop the per-turn `usage_ledger` write and delete the dual-write test; drop the reconciliation's ledger leg and the `LedgerWriteFailing` alert; replace `usage-ledger-sweep` with an events retention sweep (the job spec D7 promised and nothing built); move the budget holds out of `usage_ledger.py`
 
 ## Dependencies
 
