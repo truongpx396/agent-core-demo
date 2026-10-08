@@ -227,18 +227,17 @@ class Settings(BaseSettings):
     # these today: they exist so that a real key is secret-wrapped (never in a repr or a log line), checked for the
     # obvious mistake and listed in `.env.example` before anyone puts one in `.env`. Use SANDBOX credentials while the
     # adapters are built. A webhook signing secret is not here: it goes in `billing_webhook_secrets` above, per provider.
+    # There is no "usage event name" setting on purpose: the billing model is prepaid packs (spec D16), so no adapter sends
+    # usage to a provider and none needs the name of a Stripe Meter or a Polar event. If that ever changes it comes back
+    # with the `USAGE_EXPORT` adapter that needs it, not before.
     #
     # Stripe: a server-side key from the sandbox's API keys page. Stripe recommends a restricted key (`rk_`) over a secret
     # key (`sk_`); a publishable key (`pk_`) cannot do anything on a server and is refused.
     stripe_api_key: SecretStr | None = None
-    # The `event_name` of the Meter created in Stripe (at most 100 characters there): usage is sent under it.
-    stripe_meter_event_name: str = Field(default="agent_credits_used", min_length=1, max_length=100)
     # Polar: an Organization Access Token. Sandbox and production are separate accounts with separate tokens.
     polar_access_token: SecretStr | None = None
     # Which Polar API the adapter talks to. "sandbox" is the default, so nothing reaches production unless it is asked to.
     polar_environment: Literal["sandbox", "production"] = "sandbox"
-    # The `name` of the events sent to Polar's ingest endpoint (at most 128 characters there).
-    polar_usage_event_name: str = Field(default="agent_credits_used", min_length=1, max_length=128)
     # A body larger than this is refused (413) BEFORE it is read: an unauthenticated endpoint must not buffer
     # whatever it is sent. A real payment event is a few KB.
     billing_webhook_max_body_bytes: int = Field(default=256 * 1024, ge=1024, le=10 * 1024 * 1024)
