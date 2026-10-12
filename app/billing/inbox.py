@@ -11,7 +11,7 @@ good, so the redelivered event inserts a fresh inbox row and then finds its gran
 real Postgres in tests/integration/test_billing_webhooks_real_postgres.py). The floor below is therefore about
 not racing a provider's retries, not about correctness.
 
-An operator job (`scripts/billing_inbox_sweep.py`), never reachable from a request: like `usage_ledger`'s sweep it
+An operator job (`scripts/billing_inbox_sweep.py`), never reachable from a request: like the usage events' sweep (`scripts/usage_events_sweep.py`) it
 spans tenants, because retention is a property of the table. Bounded: a run deletes at most
 `SWEEP_MAX_BATCHES * SWEEP_BATCH_SIZE` rows and the job is idempotent, so the next run continues.
 """

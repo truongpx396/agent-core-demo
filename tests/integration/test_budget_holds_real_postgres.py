@@ -1,6 +1,6 @@
 """The in-flight budget reservation against a REAL Postgres.
 
-tests/agent/test_usage_ledger.py pins the SQL the ledger sends (tenant in every
+tests/agent/test_budget_holds.py pins the SQL the ledger sends (tenant in every
 WHERE, the staleness cutoff). What a fake cursor cannot show is how the real
 table behaves over TIME — which is exactly where this feature failed, twice,
 before it moved from one running total per tenant to one hold per turn
@@ -27,12 +27,12 @@ from contextlib import asynccontextmanager
 import psycopg
 import pytest
 
-from app.agent import usage_ledger
+from app.agent import budget_holds
 from tests.containers import ensure_postgres
 
 pytestmark = pytest.mark.integration
 
-_STALE = usage_ledger.RESERVATION_STALE_AFTER_MINUTES
+_STALE = budget_holds.RESERVATION_STALE_AFTER_MINUTES
 
 
 @pytest.fixture(scope="module")
@@ -53,7 +53,7 @@ def real_appdata(appdata_url, monkeypatch):
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
             yield conn
 
-    monkeypatch.setattr(usage_ledger, "get_connection", get_connection)
+    monkeypatch.setattr(budget_holds, "get_connection", get_connection)
     return get_connection
 
 
@@ -82,36 +82,36 @@ async def _hold_count(real_appdata, tenant: str) -> int:
 
 
 async def test_a_turns_hold_counts_while_it_runs_and_is_gone_after_its_release(tenant):
-    hold = await usage_ledger.reserve_budget(_ctx(tenant), 0.5)
+    hold = await budget_holds.reserve_budget(_ctx(tenant), 0.5)
 
     assert hold is not None
-    assert await usage_ledger.in_flight_reservation(tenant) == 0.5
+    assert await budget_holds.in_flight_reservation(tenant) == 0.5
 
-    await usage_ledger.release_budget_reservation(_ctx(tenant), hold)
+    await budget_holds.release_budget_reservation(_ctx(tenant), hold)
 
-    assert await usage_ledger.in_flight_reservation(tenant) == 0.0
+    assert await budget_holds.in_flight_reservation(tenant) == 0.0
 
 
 async def test_concurrent_turns_add_up(tenant):
-    await usage_ledger.reserve_budget(_ctx(tenant), 0.5)
-    await usage_ledger.reserve_budget(_ctx(tenant), 0.25)
+    await budget_holds.reserve_budget(_ctx(tenant), 0.5)
+    await budget_holds.reserve_budget(_ctx(tenant), 0.25)
 
-    assert await usage_ledger.in_flight_reservation(tenant) == 0.75
+    assert await budget_holds.in_flight_reservation(tenant) == 0.75
 
 
 async def test_an_abandoned_hold_is_not_resurrected_by_the_next_reserve(tenant, real_appdata):
     """The spec's Scenario B20. A worker dies after reserving and never
     releases; ten minutes on it no longer counts; a new turn then reserves —
     and the read must show ONLY that turn, not the dead one back as well."""
-    await usage_ledger.reserve_budget(_ctx(tenant), 0.5)  # the turn whose worker was killed
+    await budget_holds.reserve_budget(_ctx(tenant), 0.5)  # the turn whose worker was killed
     await _age(real_appdata, tenant, minutes=_STALE + 5)
-    assert await usage_ledger.in_flight_reservation(tenant) == 0.0, "control: an abandoned hold is ignored"
+    assert await budget_holds.in_flight_reservation(tenant) == 0.0, "control: an abandoned hold is ignored"
 
-    healthy = await usage_ledger.reserve_budget(_ctx(tenant), 0.5)
+    healthy = await budget_holds.reserve_budget(_ctx(tenant), 0.5)
 
-    assert await usage_ledger.in_flight_reservation(tenant) == 0.5  # was 1.0 with the running total
-    await usage_ledger.release_budget_reservation(_ctx(tenant), healthy)
-    assert await usage_ledger.in_flight_reservation(tenant) == 0.0  # was 0.5: the leak outlived every release
+    assert await budget_holds.in_flight_reservation(tenant) == 0.5  # was 1.0 with the running total
+    await budget_holds.release_budget_reservation(_ctx(tenant), healthy)
+    assert await budget_holds.in_flight_reservation(tenant) == 0.0  # was 0.5: the leak outlived every release
 
 
 async def test_an_abandoned_hold_ages_out_even_while_the_tenant_keeps_working(tenant, real_appdata):
@@ -120,46 +120,46 @@ async def test_an_abandoned_hold_ages_out_even_while_the_tenant_keeps_working(te
     refreshes it, so a tenant that is never idle for five minutes carries a
     leak forever. Here a healthy turn runs every four (simulated) minutes for
     forty, and the leak must stop counting on its own clock."""
-    await usage_ledger.reserve_budget(_ctx(tenant), 0.5)  # leaked
+    await budget_holds.reserve_budget(_ctx(tenant), 0.5)  # leaked
     for _ in range(10):
         await _age(real_appdata, tenant, minutes=4)
-        healthy = await usage_ledger.reserve_budget(_ctx(tenant), 0.1)
-        await usage_ledger.release_budget_reservation(_ctx(tenant), healthy)
+        healthy = await budget_holds.reserve_budget(_ctx(tenant), 0.1)
+        await budget_holds.release_budget_reservation(_ctx(tenant), healthy)
 
-    assert await usage_ledger.in_flight_reservation(tenant) == 0.0
+    assert await budget_holds.in_flight_reservation(tenant) == 0.0
 
 
 async def test_reserve_sweeps_this_tenants_abandoned_holds_and_only_this_tenants(tenant, real_appdata):
     other = f"globex-{uuid.uuid4().hex[:8]}"
-    await usage_ledger.reserve_budget(_ctx(tenant), 0.5)
-    await usage_ledger.reserve_budget(_ctx(other), 0.5)
+    await budget_holds.reserve_budget(_ctx(tenant), 0.5)
+    await budget_holds.reserve_budget(_ctx(other), 0.5)
     await _age(real_appdata, tenant, minutes=_STALE + 5)
     await _age(real_appdata, other, minutes=_STALE + 5)
 
-    await usage_ledger.reserve_budget(_ctx(tenant), 0.25)
+    await budget_holds.reserve_budget(_ctx(tenant), 0.25)
 
     assert await _hold_count(real_appdata, tenant) == 1, "the abandoned hold was swept, the new one kept"
     assert await _hold_count(real_appdata, other) == 1, "another tenant's rows are not this tenant's to delete"
 
 
 async def test_a_second_release_is_a_no_op_and_cannot_reach_another_turns_hold(tenant):
-    first = await usage_ledger.reserve_budget(_ctx(tenant), 0.5)
-    await usage_ledger.reserve_budget(_ctx(tenant), 0.25)
+    first = await budget_holds.reserve_budget(_ctx(tenant), 0.5)
+    await budget_holds.reserve_budget(_ctx(tenant), 0.25)
 
-    await usage_ledger.release_budget_reservation(_ctx(tenant), first)
-    await usage_ledger.release_budget_reservation(_ctx(tenant), first)
+    await budget_holds.release_budget_reservation(_ctx(tenant), first)
+    await budget_holds.release_budget_reservation(_ctx(tenant), first)
 
-    assert await usage_ledger.in_flight_reservation(tenant) == 0.25
+    assert await budget_holds.in_flight_reservation(tenant) == 0.25
 
 
 async def test_holds_are_tenant_scoped_for_the_read_and_for_release(tenant):
     """Principle I: another tenant neither sees this tenant's holds nor, even
     knowing a hold id, can release it."""
     other = f"globex-{uuid.uuid4().hex[:8]}"
-    hold = await usage_ledger.reserve_budget(_ctx(tenant), 0.5)
+    hold = await budget_holds.reserve_budget(_ctx(tenant), 0.5)
 
-    assert await usage_ledger.in_flight_reservation(other) == 0.0
+    assert await budget_holds.in_flight_reservation(other) == 0.0
 
-    await usage_ledger.release_budget_reservation(_ctx(other), hold)
+    await budget_holds.release_budget_reservation(_ctx(other), hold)
 
-    assert await usage_ledger.in_flight_reservation(tenant) == 0.5
+    assert await budget_holds.in_flight_reservation(tenant) == 0.5

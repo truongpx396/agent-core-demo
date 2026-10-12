@@ -23,7 +23,7 @@ two that a test has to keep agreeing, and it closes three gaps the ledger could 
     `recorded_at`, which for a turn is the END of the turn; an event's is the moment of the call, so a long turn
     is counted in the window it ran in.
   * **A running turn is counted twice, in the safe direction.** Its finished calls are already events while its hold
-    (`usage_ledger.reserve_budget`, `MAX_COST_USD_PER_TURN`) still stands, so a sibling's tenant-level check sees
+    (`budget_holds.reserve_budget`, `MAX_COST_USD_PER_TURN`) still stands, so a sibling's tenant-level check sees
     "spent so far + the whole hold". That over-counts by at most what the running turn has spent so far, and
     never lets a burst through, which is the direction the hold exists to protect. (A person's limit ignores
     holds, as before.)

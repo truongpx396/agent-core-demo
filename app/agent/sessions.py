@@ -2,7 +2,7 @@
 and switch between their own past conversation threads.
 
 Persisted in the `appdata` Postgres database (`chat_sessions` table,
-postgres-init/06-chat-sessions.sql), not reused from `usage_ledger`: that
+postgres-init/06-chat-sessions.sql), not reused from the usage tables: that
 table no-ops on a zero-token/rejected turn and carries no title, so a
 session with no billable tokens would vanish from the switcher. The
 checkpointer's own `checkpoints` table has no tenant/principal column to

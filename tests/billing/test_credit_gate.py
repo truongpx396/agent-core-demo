@@ -17,7 +17,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.agent import budgets, spend, usage_ledger
+from app.agent import budget_holds, budgets, spend
 from app.agent import runtime as runtime_module
 from app.agent import runtime_stream as stream_module
 from app.billing import credits
@@ -56,7 +56,7 @@ def world(monkeypatch):
 
     monkeypatch.setattr(credits, "account_balance", account_balance)
     monkeypatch.setattr(spend, "usage_summary", usage_summary)
-    monkeypatch.setattr(usage_ledger, "in_flight_reservation", in_flight_reservation)
+    monkeypatch.setattr(budget_holds, "in_flight_reservation", in_flight_reservation)
     return state
 
 
@@ -263,7 +263,7 @@ class TestWhenTheWalletCannotBeRead:
     async def test_a_failed_hold_read_fails_open_to_no_holds_and_is_counted(self, world, monkeypatch):
         """The hold read only closes a race between concurrent turns (as for the dollar limits), so it
         fails open either way; the real function swallows its own error, so use it against a dead database."""
-        monkeypatch.setattr(usage_ledger, "in_flight_reservation", _REAL_IN_FLIGHT)  # conftest's autouse mock refuses the connection
+        monkeypatch.setattr(budget_holds, "in_flight_reservation", _REAL_IN_FLIGHT)  # conftest's autouse mock refuses the connection
         world["wallet"] = _balance(5)
         before = _degraded("reservation")
 
@@ -273,7 +273,7 @@ class TestWhenTheWalletCannotBeRead:
         assert _degraded("reservation") == before + 1
 
 
-_REAL_IN_FLIGHT = usage_ledger.in_flight_reservation
+_REAL_IN_FLIGHT = budget_holds.in_flight_reservation
 
 
 class TestTheRefusal:

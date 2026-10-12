@@ -29,10 +29,11 @@ from scripts import usage_events_carry_over as carry
 from tests.containers import ensure_postgres
 from tests.integration.usage_seed import purge_events, seed_event
 
-# The ledger sweep tests (test_ledger_real_postgres.py) delete old `usage_ledger` rows ACROSS tenants, in batches, up to a ceiling, and
-# these tests deliberately write old ledger rows (the history to carry), 3,000 of them in the race test: left behind or running at the
-# same moment, they push the sweep test's own rows past its ceiling and it fails. Same xdist group, so the two never run concurrently.
-pytestmark = [pytest.mark.integration, pytest.mark.xdist_group("usage_ledger_real_postgres")]
+# These tests deliberately write old history: ledger rows, and the carried events they become (years old, 3,000 in the race test). The
+# usage-event retention sweep tests (test_usage_events_retention_real_postgres.py) delete old events across ALL tenants, so running at
+# the same moment the sweep would remove the carried rows out from under the assertions about them. Same xdist group, so the two never
+# overlap. (Until T030c3 the same group also kept these tests away from the LEDGER's sweep tests, whose batch ceiling 3,000 old rows pushed past.)
+pytestmark = [pytest.mark.integration, pytest.mark.xdist_group("usage_events_old_rows")]
 
 NOW = datetime.now(UTC)
 YEARS_AGO = NOW - timedelta(days=3 * 365)
