@@ -162,7 +162,7 @@ as `end_user`), and optionally the provider's balance, and reports drift per ten
 - **D4.** USD only. The conversion is `credits = round_half_up(cost_usd × CREDITS_PER_USD × MARKUP, 6)`, both from settings.
 - **D5.** No real provider adapter in this feature; a fake adapter proves the port.
 - **D6.** Refund policy default: claw back the credits the refunded purchase granted, allow the balance to go negative, refuse new usage until it is positive. This is a **product decision to confirm** (O2).
-- **D7.** Credit entries are a financial record: kept indefinitely by default. Usage events follow `USAGE_EVENT_RETENTION_DAYS`, and the retention job refuses to delete an event that is not yet exported when export is enabled.
+- **D7.** Credit entries are a financial record: kept indefinitely by default. Usage events follow `USAGE_EVENT_RETENTION_DAYS` (built in T030c3: `make usage-events-sweep`), and the retention job refuses to delete an event that is not yet exported when export is enabled.
 
 - **D8.** A tenant is on credit billing **only if it has a `credit_accounts` row**. No account means never debited and never gated, so the wallet changes nothing
   for an existing tenant until an operator, or a verified purchase, opens one. This is per-tenant opt-in, finer than a global flag, and it is why no
