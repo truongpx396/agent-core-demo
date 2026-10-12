@@ -264,15 +264,14 @@ still written beside the events, so the old read finds it complete. `USAGE_EVENT
 (specs/010-credit-billing-readiness. Everything here is optional: with `CREDITS_PER_USD` unset the whole feature is off and
 nothing below applies.)
 
-Three records of the same spending exist, and an operator's job is to know they agree:
+Two records of the same spending exist, and an operator's job is to know they agree:
 
 | Record | Written by | Read for |
 |---|---|---|
 | `usage_events`, one row per model call | the app, per call (the billing meter) | what a tenant is charged, **and the dollar caps** |
-| `usage_ledger`, one row per turn | the app, per turn | the second record the events are checked against, and the way back |
 | the gateway's spend log (LiteLLM, by `end_user`) | the gateway, from the request itself | the independent second meter |
 
-and a fourth question for a tenant with a wallet: was every event worth credits actually debited?
+and a further question for a tenant with a wallet: was every event worth credits actually debited?
 
 ### Turning it on, in the order that cannot hurt
 
@@ -325,9 +324,8 @@ dc run -d --no-deps --name billing-export    api python -m scripts.billing_expor
 |---|---|---|
 | `gateway`, drift **above** zero | the gateway spent more than the events record: a call whose event was never written (`UsageEventWriteFailing`), an unpriced call (the note says how many), or spend the app does not meter | check the alert history for that day; `usage_event_unpriced_total`; the pricing of the model. A call with no event is also a call no dollar cap counted |
 | `gateway`, drift **below** zero | events with no call behind them, or spend the gateway lost | check the gateway database and its spend-log write queue |
-| `ledger`, events above the ledger | a turn's ledger write failed (`ledger_write`): the per-turn ledger is missing a turn. The caps read the events, so they were not affected | usually self-evident from the logs; no money was lost and no cap was loose |
 | `uncharged` | an event worth credits with no debit: the wallet failed after the meter kept the event (`CreditDebitFailing`) | find the cause first; then repair (below) |
-| a tenant named `tenant_<hash> (no tenant in this database hashes to it)` | the gateway spent for someone with no events and no ledger rows at all, the worst shape a lost meter takes | look the hash up with `python -m scripts.litellm_key end-user --tenant <name>`; check it is not another deployment sharing the gateway |
+| a tenant named `tenant_<hash> (no tenant in this database hashes to it)` | the gateway spent for someone with no events at all, the worst shape a lost meter takes | look the hash up with `python -m scripts.litellm_key end-user --tenant <name>`; check it is not another deployment sharing the gateway |
 
 **Repairing an uncharged event, for now by hand.** The debit key IS the event id, so booking an adjustment under that key clears the finding
 and can never double-charge: `make credits ARGS="adjust --tenant <t> --amount=-<the event's credits> --key <event_id> --by <you> --reason 'uncharged event <event_id>'"`
@@ -335,8 +333,8 @@ and can never double-charge: `make credits ARGS="adjust --tenant <t> --amount=-<
 
 **Tolerance.** A difference is drift only above the larger of `CREDIT_RECONCILE_TOLERANCE_USD` and `_PCT` of the larger figure. A small
 **persistent** gap on every tenant is a price mismatch between the app and the gateway for one of your models, not a loss: tune the percentage
-to your own difference rather than ignoring the report. The newest `CREDIT_RECONCILE_SETTLE_SECONDS` of traffic is left out (a running turn has
-events and no ledger row yet).
+to your own difference rather than ignoring the report. The newest `CREDIT_RECONCILE_SETTLE_SECONDS` of traffic is left out (the gateway
+writes its spend log in batches, so the newest calls are in the events first).
 
 ### Dashboard and alerts
 
@@ -359,7 +357,7 @@ lag, webhook outcomes, the reconciliation's drift and outcomes. There is no Post
   minute. A stopped worker therefore **resolves** `CreditReconcileDrift` rather than leaving it firing, and Prometheus cannot tell a worker that never
   ran from one that died. The same is true of `UsageExportStuck` and the export worker. Cron plus `make credit-reconcile` still gives the report and the
   exit code; it gives the alert nothing durable.
-- **A pass scans `usage_events` and `usage_ledger` by time**, and both tables' indexes lead with the tenant (checked with EXPLAIN: a sequential scan). A
+- **A pass scans `usage_events` by time**, and the table's index leads with the tenant (checked with EXPLAIN: a sequential scan). A
   time-only index would make it cheap and would tax the insert of every model call for a job that runs a few times a day, so it was not added. Fine at
   moderate volume; if a pass gets slow, that index (or a partition by day) is the fix and `CREDIT_RECONCILE_LOOKBACK_DAYS` the lever until then.
 - **Embeddings** are neither metered nor attributed to a tenant (research G2), so their spend shows as "no tenant of this app", never as drift.
