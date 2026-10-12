@@ -361,7 +361,7 @@ volume, apply each file you lack by hand, in order (`psql -U langfuse -d appdata
 - **Logs:** structlog JSON from every service, with `request_id`/`thread_id` on each line (pattern 14).
 - **Metrics:** 25+ OpenTelemetry counters and histograms (`app/core/metrics.py`), **pushed** over OTLP by the API and every worker replica to one otel-collector (pattern 11).
 - **Traces:** Langfuse, grouped by `thread_id`.
-- **Cost:** per-call usage events, tenant- and principal-scoped, that record the concrete model behind each alias and are what the dollar caps sum (patterns 26, 38, 51, 58); a per-turn ledger is still written beside them for now.
+- **Cost:** per-call usage events, tenant- and principal-scoped, that record the concrete model behind each alias and are what the dollar caps sum (patterns 26, 38, 51, 58); the old per-turn ledger is no longer written (frozen history; pattern 62).
 
 `make obs-up` starts a separate stack, [`docker-compose.observability.yml`](deploy/compose/docker-compose.observability.yml),
 that nothing in the app depends on:
