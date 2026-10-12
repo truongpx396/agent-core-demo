@@ -22,7 +22,6 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
 
 import psycopg
 import pytest
@@ -34,6 +33,7 @@ from app.billing import credits
 from app.core import metrics
 from tests.conftest import metric_value
 from tests.containers import ensure_postgres
+from tests.integration.schema_reapply import reapply
 
 pytestmark = pytest.mark.integration
 
@@ -315,11 +315,9 @@ class TestMigration21:
 
     async def test_the_script_can_be_applied_twice(self, appdata_url):
         """An operator re-running it by hand against a volume that already has it must not fail."""
-        script = Path(__file__).resolve().parents[2] / "postgres-init" / "21-usage-event-credits.sql"
-        sql = "\n".join(line for line in script.read_text().splitlines() if not line.startswith("\\connect"))
-
-        async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
-            await conn.execute(sql)  # no exception
+        # `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` takes an ACCESS EXCLUSIVE lock even when the column exists, so this must not
+        # run bare against a database other workers are writing to (tests/integration/schema_reapply.py).
+        await reapply(appdata_url, "21-usage-event-credits.sql")  # no exception
 
     async def test_an_event_written_without_credit_columns_still_works_after_the_migration(self, appdata_url, monkeypatch):
         """A deployment with no CREDITS_PER_USD keeps the original statement and the columns stay NULL."""

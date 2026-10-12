@@ -22,7 +22,6 @@ import asyncio
 import uuid
 from contextlib import asynccontextmanager
 from decimal import Decimal
-from pathlib import Path
 
 import psycopg
 import pytest
@@ -35,6 +34,7 @@ from app.billing.providers.fake import FakeProvider
 from app.core import metrics
 from tests.conftest import metric_value
 from tests.containers import ensure_postgres
+from tests.integration.schema_reapply import reapply
 
 pytestmark = pytest.mark.integration
 
@@ -440,8 +440,4 @@ class TestTheSchemaGuards:
                 await conn.execute("DELETE FROM usage_events WHERE event_id = %s", (event_id,))
 
     async def test_the_script_can_be_applied_twice(self, world, appdata_url):
-        script = Path(__file__).resolve().parents[2] / "postgres-init" / "23-usage-export-outbox.sql"
-        sql = "\n".join(line for line in script.read_text().splitlines() if not line.startswith("\\connect"))
-
-        async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
-            await conn.execute(sql)  # no exception
+        await reapply(appdata_url, "23-usage-export-outbox.sql")  # no exception (see tests/integration/schema_reapply.py)
