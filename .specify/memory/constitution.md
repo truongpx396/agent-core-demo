@@ -83,7 +83,8 @@ No loop, wait, retry, or degradation may be unbounded or silent.
 - Every dependency-failure path MUST pick its policy deliberately and document it: enrichment
   degrades, a failed LLM call retries, a security check fails closed, a defense-in-depth store
   fails open.
-- Every degrade-and-continue path MUST increment a metric (`app/core/metrics.py`). A path that
+- Every degrade-and-continue path MUST increment a metric (`app/core/metrics.py`, or the metrics
+  module of the self-contained package that owns the path). A path that
   can leave a human unaware of committed business state (a failed notification, a degraded
   dedup store, a failed upload) MUST also have a Prometheus alert rule in
   `observability/prometheus/alerts.yml`.
@@ -142,9 +143,13 @@ fast only if nothing in it can quietly reach a live service.
 
 ### VIII. Why-First Documentation and Honest Gaps
 Documentation records why, and the failure that motivated the code.
-- A new architectural pattern MUST be added to `GRAPH_PATTERNS.md` as a numbered entry that
-  states the bug or gotcha behind it. A change that closes a gap MUST update the matching
-  "Extending Further" entry.
+- A new architectural pattern MUST be added as a numbered entry that states the bug or gotcha
+  behind it: to `GRAPH_PATTERNS.md` when it concerns the agent core, or to the pattern file of the
+  self-contained package it belongs to, or of that package's integration package (see
+  "Self-contained packages"). `GRAPH_PATTERNS.md` stays about the agent core: a pattern that moves
+  out leaves a one-line pointer in its place, and a pattern number is never reused or shifted. A
+  change that closes a gap MUST update the matching "Extending Further" entry in the file that
+  holds the pattern.
 - Known limitations MUST be disclosed in the README "Roadmap" or "Extending Further", never
   omitted or papered over. A fix that deliberately leaves an adjacent gap open MUST name it.
 - Module docstrings and non-obvious comments MUST explain the invariant and the reason, not
@@ -170,7 +175,9 @@ cannot be judged or safely changed later.
   semantic cache), MinIO (uploads).
   Appdata access goes through `app/agent/sql_store.py`'s pooled `get_connection()`; the only
   other direct psycopg users are the checkpointer pool (`app/agent/runtime.py`) and the health
-  probe (`app/api/health.py`).
+  probe (`app/api/health.py`). A self-contained package opens no pool of its own: it receives that
+  connection by injection from the host (`app/billing/db.py::configure`) and refuses (fails
+  closed) when none was supplied.
 - **Schema changes**: add a new numbered `postgres-init/NN-*.sql` that continues the sequence.
   Prefer a new script over editing an applied one. State in the script's header how an existing
   volume applies it (init scripts only auto-run on a fresh volume).
@@ -185,15 +192,31 @@ cannot be judged or safely changed later.
   stream a job landed on, never from its payload. A queue consumer is at-least-once, so its
   handler MUST be safe under redelivery (Principle IV).
 - **Configuration**: tunables live in `app/core/config.py` `Settings` (pydantic-settings, read
-  from `.env`) with a matching `.env.example` entry. Secrets (`.env`, `CREDENTIALS.local.md`)
-  MUST NOT be committed or echoed into logs, traces, or docs.
+  from `.env`) with a matching `.env.example` entry. A self-contained package may define its own
+  settings class (e.g. `app/billing/settings.py::BillingSettings`) that `Settings` inherits, so each
+  variable is defined once and keeps its name and its `.env.example` entry. Secrets (`.env`,
+  `CREDENTIALS.local.md`) MUST NOT be committed or echoed into logs, traces, or docs.
 - **Dependencies**: `requirements.txt` is the human-edited source and every non-obvious pin
   carries a reason comment; `requirements-lock.txt` is machine-generated and is what Docker and
   CI install; dev-only tools live in `requirements-dev.txt`.
 - **Observability**: structlog JSON logs correlated by `run_id`; metrics via
-  `app/core/metrics.py` pushed over OTLP with explicit histogram buckets; Langfuse tracing keyed
-  by `thread_id`. Every node is wrapped by `_instrumented` at registration time in
-  `build_graph`, never inside the node body.
+  `app/core/metrics.py` pushed over OTLP with explicit histogram buckets (a self-contained package
+  defines its own counters on the OpenTelemetry API in its own module, e.g.
+  `app/billing/metrics.py`, and never imports the host's; the host process still installs the SDK
+  and the exporter); Langfuse tracing keyed by `thread_id`. Every node is wrapped by
+  `_instrumented` at registration time in `build_graph`, never inside the node body.
+- **Self-contained packages**: a module built to be extracted from this repository (today
+  `app/billing/`, reached by the app through `app/billing_integration/`) follows these rules.
+  - It imports only itself and third-party libraries, never the host (`app.agent`, `app.core`,
+    `app.api`, and so on). The host reaches it only through one integration package, and what the
+    package needs from the host arrives by injection (its connection) or is defined in it (its
+    settings, its metrics).
+  - The boundary is enforced in both directions by a test that fails the build, not by convention
+    (`tests/billing/test_billing_core_boundary.py`); a package is not self-contained until such a
+    test exists.
+  - Principles I, II and IV apply to it unchanged: tenant scoping inside its own queries, no
+    module that defines or serves a tool may import it or its integration package, and its
+    writes are idempotent at the target.
 
 ## Development Workflow & Quality Gates
 
@@ -216,14 +239,14 @@ cannot be judged or safely changed later.
   story. A feature that adds a store or queue consumer MUST state its failure policy and the
   metric/alert covering it.
 - **Definition of done**: a behavior change ships with tests at the right tier, the matching
-  `GRAPH_PATTERNS.md` / README updates (Principle VIII), and, where a degrade path was added, its
-  metric and alert rule (Principle V).
+  `GRAPH_PATTERNS.md` (or the owning package's pattern file) / README updates (Principle VIII),
+  and, where a degrade path was added, its metric and alert rule (Principle V).
 
 ## Governance
 
 This constitution supersedes ad-hoc practice and individual preference. When it conflicts with
-a description in `GRAPH_PATTERNS.md` or the README, the constitution states the intent and the
-conflicting document MUST be corrected.
+a description in `GRAPH_PATTERNS.md`, a package's pattern file or the README, the constitution
+states the intent and the conflicting document MUST be corrected.
 
 - **Amendments**: change this file in a pull request that states the rationale, the Sync Impact
   Report, and, for any rule that existing code violates, a migration plan listing the violating
@@ -239,4 +262,4 @@ conflicting document MUST be corrected.
 - **Runtime guidance**: day-to-day development guidance for agents and contributors lives in
   `CLAUDE.md` and `.claude/rules/`; those files MUST NOT contradict this constitution.
 
-**Version**: 1.0.0 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-10-01
+**Version**: 1.1.0 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-10-14

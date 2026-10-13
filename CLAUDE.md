@@ -7,8 +7,11 @@ unmodified graph. Python 3.13.
 Read these before changing behavior; they hold the reasoning this file deliberately omits:
 - `.specify/memory/constitution.md` — the non-negotiable rules. Principles I, II and IV
   (tenant isolation, mandatory approval, exactly-once side effects) are NON-NEGOTIABLE.
-- `GRAPH_PATTERNS.md` — 56 numbered patterns, each with the real bug that motivated it.
-  "Extending Further" is the honest list of what is and isn't built.
+- `GRAPH_PATTERNS.md` — the agent core's numbered patterns (1-66 so far), each with the real bug
+  that motivated it. "Extending Further" is the honest list of what is and isn't built. A
+  self-contained package (`app/billing/`, see the constitution's "Self-contained packages") may keep
+  its own pattern file; a pattern that moves out leaves a one-line pointer here and its number is
+  never reused.
 - `README.md` — architecture, make targets, testing tiers. `WORKER_CONCURRENCY.md` — worker sizing.
 
 ## Commands
@@ -61,7 +64,8 @@ they delete volumes or kill running processes.
 - A broad `except Exception` needs `# noqa: BLE001 - <reason>`; every `# type: ignore[...]` and
   `# noqa` carries a reason. Comments here are long-form on purpose — explain why.
 - A bug fix lands with a regression test that fails without it, plus the matching
-  `GRAPH_PATTERNS.md` / README update. Disclose a gap you leave open rather than omitting it.
+  `GRAPH_PATTERNS.md` (or the owning package's pattern file) / README update. Disclose a gap you
+  leave open rather than omitting it.
 - Commits use `fix:`/`feat:`/`test:`/`docs:`/`infra:`/`chore:` prefixes; the body states the
   failure mode and root cause. Work on a topic branch and open a PR to `main`.
 - After opening a PR, report its CI result and don't call the work done while checks are pending
