@@ -4,7 +4,7 @@ The port is **shaped as the service API** (D18) so that a network implementation
 
 | | Operation | Idempotency key | Atomic with the caller? | When the wallet is unreachable |
 |---|---|---|---|---|
-| ● | `record_usage_in(conn, tenant, credits, *, event_id, kind, pricing)` (today `credits.debit_in`) | `event_id` (replay returns the existing transaction) | **yes**, in the caller's transaction and savepoint | the caller's savepoint undoes only the debit; the event is kept (`CreditDebitFailing`) |
+| ● | `record_usage_in(conn, tenant, amount, *, event_id, kind, pricing=None) -> Applied` (today `credits.debit_in`; `event_id` is both the idempotency key and the lineage id, `kind` the call's kind in the reason `model call (<kind>)`) | `event_id` (replay returns the existing transaction) | **yes**, in the caller's transaction and savepoint | the caller's savepoint undoes only the debit; the event is kept (`CreditDebitFailing`) |
 | ● | `account_balance(tenant) -> Balance \| None` | none (read) | no | the gate's `CREDIT_CHECK_FAILURE_POLICY` decides (`open` default, counted, alerted) |
 | ● | `credits_for_cost(cost_usd, credits_per_usd, markup) -> Decimal` | none (pure) | n/a | n/a. Rating stays in the host through 011 (O1) |
 | ○ | `check(tenant, amount) -> allowed, balance` | none | no | fail-open by default |
