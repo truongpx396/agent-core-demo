@@ -85,23 +85,27 @@ description: "Task list for feature 011: a self-contained billing module (three 
 
 ---
 
-## Phase 3: User Story 2 (P1) and User Story 4 (P3), PR B. The host reaches billing through one port
+## Phase 3: User Story 2 (P1) and User Story 4 (P3), PR B. The host reaches billing through one seam
 
-Re-confirm this phase against the merged state of PR A before starting (it will have moved).
+Re-planned on the merged tree on 2026-10-14 (decision D19, plan.md "PR B: design"). Branch `chore/billing-port-pr-b` from `main` at `955d569`. Baseline recorded the same day: hermetic **3003 passed, 13 skipped**; integration **341 passed** (the tree equals the one verified for PR A); surface identical to PR A's baseline.
 
-**Independent Test**: substitute a stub for the in-process port in a test, run the debit and the gate through it; a scan finds no other billing import in host code and no core table name in host SQL.
+**Goal**: outside the core and the integration package no file imports `app.billing`; the wallet is reached through a swappable protocol; the webhook route lives in the core.
 
-- [ ] T028 [US2] (MOVE) `git mv app/api/routers/billing.py app/billing/http.py` and nothing else.
-- [ ] T029 [US2] (EDIT) `app/billing/http.py`: imports only `app.billing.*` and FastAPI (constants from `app.billing.settings`); `app/api/main.py` includes the router from `app.billing.http`; the route, status codes, counters and rate-limit keying unchanged.
-- [ ] T030 [P] [US2] (EDIT) Create `app/billing/port.py` per `contracts/billing-port.md`: the `WalletPort` protocol with plain types and the in-process implementation delegating to `credits` (●: `record_usage_in`, `account_balance`, `credits_for_cost`; ○ operations documented, not coded); re-home `Pricing` and `Balance` for it.
-- [ ] T031 [P] [US2] (EDIT) `app/billing/store.py`: a function returning the customer links for a tenant and a set of providers, replacing the raw `SELECT … FROM billing_customers` in `app/agent/usage_events.py::_enqueue_export`.
-- [ ] T032 [US2] (EDIT) Host call sites go through the port: `app/agent/usage_events.py` (`_charge`, `_enqueue_export`), `app/agent/budgets.py` (`_credit_check`), `app/api/routers/usage.py`. Same SQL effects, same idempotency keys, same savepoint, same `CREDIT_CHECK_FAILURE_POLICY` behaviour. Collapse the six `import app.billing_integration` lines into the port's own import.
-- [ ] T033 [US2] (TEST) Extend `tests/billing/test_billing_core_boundary.py`: host code outside `app/billing/` and `app/billing_integration/` imports only `app.billing.port` and `app.billing.http`; a text-level scan finds none of `billing_customers`, `credit_accounts`, `credit_lots`, `credit_transactions`, `credit_entries`, `credit_products`, `billing_webhook_events` in host files outside `app/billing_integration/`; both scanners prove they recognise a violation.
-- [ ] T034 [US2] (TEST) A stub port substituted in `tests/billing/test_port_substitution.py` runs `usage_events._charge` and `budgets._credit_check` and nothing else touches billing; the debit still commits or rolls back with the event's transaction (real-Postgres case in `tests/integration/`).
-- [ ] T035 [US4] (DOCS) Finalise `contracts/billing-port.md` and write `specs/011-billing-module-boundary/design-note.md`: triggers for a standalone service, each port operation's wire form, the consistency change (in-transaction debit to an at-least-once consume keyed by event id; the balance lags the meter; overdraft already booked as debt; gate behaviour while the wallet is unreachable), the missing migration tool as the first prerequisite, the four extensions of D16, the remaining couplings (D9) and the listed exemption for `app/billing_integration/`.
-- [ ] T036 [US2] Verification as T021-T025 (lint, typecheck, test, integration locally, surface diff, mutation check on the two new scans), then the PR `chore: the host reaches billing through one port (spec 011 PR B)` with the same body discipline as T027, and CI watched to a result.
+**Independent Test**: install a stub that implements `WalletPort` as `billing_port.wallet`; `usage_events._charge`, `budgets._credit_check` and `GET /usage` run through it and nothing else touches billing; the two scans go red on a planted violation.
 
-**Checkpoint**: PR B merged. The seam is explicit, scanned, and replaceable.
+- [ ] T028 [US2] (DOCS) Commit the re-plan: D19 in `spec.md`, "PR B: design" in `plan.md`, the structure section of `contracts/billing-port.md`, this phase of `tasks.md`.
+- [ ] T029 [US2] (MOVE) `git mv app/api/routers/billing.py app/billing/http.py` and nothing else.
+- [ ] T030 [P] [US2] (EDIT) `app/billing/http.py`: delete the `import app.billing_integration` wiring line (a core module cannot import the host package), take `BILLING_PROVIDERS`, `BILLING_WEBHOOK_MAX_BODY_BYTES`, `BILLING_WEBHOOK_SECRETS` from `app.billing.settings`, fix the docstring path. Create `app/billing/port.py` per plan.md: `WalletPort` (`record_usage_in`, `account_balance`), `InProcessWallet` calling `credits` at call time, `credits_for_cost`, re-exported `Applied`, `Balance`, `Pricing`. Imports nothing from `app` outside `app.billing`.
+- [ ] T031 [P] [US2] (EDIT) `app/billing_integration/port.py` (`wallet`, the three functions, `Pricing`, `Balance`), `app/billing_integration/http.py` (re-export `router`, `validate_configuration`, `configured_providers`), and in `app/billing_integration/export.py` add `usage_export_providers(names)`, `enqueue_in(conn, event_id, tenant, exporters)` (the `INSERT … SELECT … FROM billing_customers … ON CONFLICT (provider, event_id) DO NOTHING` moved **verbatim**, inside its own `conn.transaction()` savepoint, raising on failure) and `configured_adapters(names, secrets)`.
+- [ ] T032 [US2] (EDIT) Host call sites (after T030, T031): `app/agent/usage_events.py` (`_rating` uses `billing_port.credits_for_cost`; `_charge` calls `billing_port.record_usage_in(conn, row["tenant"], row["credits"], event_id=row["event_id"], kind=row["kind"], pricing=billing_port.Pricing(...))` inside the same savepoint and the same `except`; `_enqueue_export` keeps its early return and its degrade counter and calls `export.enqueue_in`; drop `from app.billing import credits, providers`), `app/agent/budgets.py`, `app/api/routers/usage.py`, `app/api/main.py` (`billing_http.router`, `billing_http.validate_configuration()`; fix the docstring path), `scripts/billing_export_worker.py`. Fix stale path mentions in comments.
+- [ ] T033 [US2] (TEST) Move the existing tests with the code: `tests/billing/test_webhook_endpoint.py` and `tests/integration/test_billing_webhooks_real_postgres.py` import the router from `app.billing.http`; `tests/billing/test_charge_on_event.py` (`usage_events.credits` patch) and `tests/api/test_api.py` (two `usage_router.credits` patches) patch the port. No assertion changes.
+- [ ] T034 [US2] (TEST) Extend `tests/billing/test_billing_core_boundary.py`: (1) no file under `app/` or `scripts/` outside `app/billing/`, `app/billing_integration/` and `scripts/credits.py`, `scripts/billing_inbox_sweep.py` imports `app.billing`; (2) a string-literal scan (docstrings excluded) for `billing_customers`, `credit_accounts`, `credit_lots`, `credit_transactions`, `credit_entries`, `credit_products`, `billing_webhook_events` beside an SQL keyword, over the same files; (3) self-tests for both (a lazy import, a table name in an f-string SQL, versus a docstring and a comment, which are fine).
+- [ ] T035 [US2] (TEST) Create `tests/billing/test_port.py` per plan.md "New tests": protocol conformance and signature parity; delegation parity against `credits.debit_in`; a stub wallet drives `_charge`, `_credit_check` and `GET /usage`; a raising stub is swallowed and counted by `_charge`, and `CREDIT_CHECK_FAILURE_POLICY` still decides for the gate.
+- [ ] T036 [US4] (DOCS) Write `specs/011-billing-module-boundary/design-note.md`: the triggers for a standalone service; each port operation's wire form; the consistency change of a remote wallet (in-transaction debit to an at-least-once consume keyed by event id, the balance lagging the meter, overdraft already booked as debt, what the gate does while the wallet is unreachable); the missing migration tool as the first prerequisite; the four extensions of D16; the remaining couplings (D9) and the exemptions (D19). Update `contracts/billing-port.md` where the code settled it.
+- [ ] T037 [US2] Verification as T021-T025: `make lint`, `make typecheck`, `make test` (expect 3003 + exactly the new tests), `make test-integration` (expect 341), the surface diff, and a mutation check (a changed idempotency key, a dropped `usage_event_id`, a changed reason in `record_usage_in`; a host file importing `app.billing`; a core table name in a host SQL literal; the router losing a status code), each of which must turn a test red; discard and redo any mutant that is not a valid module.
+- [ ] T038 [US2] Open the PR `chore: the host reaches billing through one seam (spec 011 PR B)`, body as T027 (failure mode, root cause, what changed, what is not done, before/after table, commit order), and watch CI to a result.
+
+**Checkpoint**: PR B merged. The seam is explicit, scanned and replaceable.
 
 ---
 
@@ -111,15 +115,15 @@ Re-plan this phase against the merged state of PR B before starting; decisions O
 
 **Independent Test**: in a fresh virtual environment with only the package installed (host `app/` absent), its hermetic tests pass; a database built from scratch before and after the move has an identical schema; CI's new job proves the first on every push.
 
-- [ ] T037 [US3] (DOCS) First, as its own small PR: amend constitution VIII through `/speckit-constitution` (a self-contained package records its architectural patterns in its own file) with the Sync Impact Report. PR C depends on it.
-- [ ] T038 [US3] (MOVE) `app/billing/` to `packages/billing/src/credit_billing/`; the billing tests (`tests/billing/`, and the billing files under `tests/core/`, `tests/integration/`, `tests/provider_sandbox/`, `tests/scripts/`) to `packages/billing/tests/`; `scripts/credits.py`, `scripts/billing_inbox_sweep.py` to `packages/billing/scripts/`; the pure-rename commit only.
-- [ ] T039 [US3] (EDIT) `packages/billing/pyproject.toml` (distribution `credit-billing`, extras `http` and `test`, the dependencies the core really uses, pytest markers), the rename sweep `app.billing` to `credit_billing` across the host (mechanical), `requirements.txt` editable install, `requirements-lock.txt` **regenerated** (never hand-edited), `Dockerfile` copies the package before installing, `pyproject.toml` mypy/ruff/pytest paths, Makefile targets keep their names.
-- [ ] T040 [P] [US3] (EDIT) Canonical `packages/billing/sql/20-credit-wallet.sql` and `22-billing.sql`; `postgres-init/20-…` and `22-…` stay as committed copies; a test asserts byte equality; a fresh-database catalog comparison before and after is attached to the PR (SC-005).
-- [ ] T041 [P] [US3] (EDIT) Split alerts and the dashboard by emitter (`BillingWebhookQuarantined`/`BillingWebhookFailing` and the wallet panels to the package, copies delivered like the SQL); extend `test_alert_rules`/`test_credit_dashboard` to both files.
-- [ ] T042 [P] [US3] (EDIT) The package's job bootstrap (logging, telemetry, flush on exit, D11) with a flush-on-failure test, and its own Postgres container test helper; decide the meter scope string, and if it changes, probe it against a real collector (`research.md` P6), pre-create known label sets at 0 and audit the two `increase()` rules.
-- [ ] T043 [US3] (EDIT) CI: a `billing-package` job in `.github/workflows/ci.yml` that installs only the package and runs its hermetic tests with `app` absent; a collected-count comparison (FR-017).
-- [ ] T044 [US3] (DOCS) Per D14: move patterns 52, 54, 65, 66 to `packages/billing/docs/PATTERNS.md`, 53, 55, 56, 61 to `BILLING_INTEGRATION.md`, rewrite 59 and 60 generic, leave "moved" index lines (numbers never reused, next is 67); the package README and living docs; the `CLAUDE.md` pointer (and fix its "56 numbered patterns").
-- [ ] T045 [US3] Verification as T021-T025 plus the package-alone run, then the PR `chore: billing becomes an independent package (spec 011 PR C)`, CI watched to a result.
+- [ ] T039 [US3] (DOCS) First, as its own small PR: amend constitution VIII through `/speckit-constitution` (a self-contained package records its architectural patterns in its own file) with the Sync Impact Report. PR C depends on it.
+- [ ] T040 [US3] (MOVE) `app/billing/` to `packages/billing/src/credit_billing/`; the billing tests (`tests/billing/`, and the billing files under `tests/core/`, `tests/integration/`, `tests/provider_sandbox/`, `tests/scripts/`) to `packages/billing/tests/`; `scripts/credits.py`, `scripts/billing_inbox_sweep.py` to `packages/billing/scripts/`; the pure-rename commit only.
+- [ ] T041 [US3] (EDIT) `packages/billing/pyproject.toml` (distribution `credit-billing`, extras `http` and `test`, the dependencies the core really uses, pytest markers), the rename sweep `app.billing` to `credit_billing` across the host (mechanical), `requirements.txt` editable install, `requirements-lock.txt` **regenerated** (never hand-edited), `Dockerfile` copies the package before installing, `pyproject.toml` mypy/ruff/pytest paths, Makefile targets keep their names.
+- [ ] T042 [P] [US3] (EDIT) Canonical `packages/billing/sql/20-credit-wallet.sql` and `22-billing.sql`; `postgres-init/20-…` and `22-…` stay as committed copies; a test asserts byte equality; a fresh-database catalog comparison before and after is attached to the PR (SC-005).
+- [ ] T043 [P] [US3] (EDIT) Split alerts and the dashboard by emitter (`BillingWebhookQuarantined`/`BillingWebhookFailing` and the wallet panels to the package, copies delivered like the SQL); extend `test_alert_rules`/`test_credit_dashboard` to both files.
+- [ ] T044 [P] [US3] (EDIT) The package's job bootstrap (logging, telemetry, flush on exit, D11) with a flush-on-failure test, and its own Postgres container test helper; decide the meter scope string, and if it changes, probe it against a real collector (`research.md` P6), pre-create known label sets at 0 and audit the two `increase()` rules.
+- [ ] T045 [US3] (EDIT) CI: a `billing-package` job in `.github/workflows/ci.yml` that installs only the package and runs its hermetic tests with `app` absent; a collected-count comparison (FR-017).
+- [ ] T046 [US3] (DOCS) Per D14: move patterns 52, 54, 65, 66 to `packages/billing/docs/PATTERNS.md`, 53, 55, 56, 61 to `BILLING_INTEGRATION.md`, rewrite 59 and 60 generic, leave "moved" index lines (numbers never reused, next is 67); the package README and living docs; the `CLAUDE.md` pointer (and fix its "56 numbered patterns").
+- [ ] T047 [US3] Verification as T021-T025 plus the package-alone run, then the PR `chore: billing becomes an independent package (spec 011 PR C)`, CI watched to a result.
 
 **Checkpoint**: PR C merged. `packages/billing/` can be installed and tested alone.
 
@@ -127,8 +131,8 @@ Re-plan this phase against the merged state of PR B before starting; decisions O
 
 ## Phase 5: Polish and cross-cutting
 
-- [ ] T046 Update the project memory (`credit-billing-readiness` or a new `billing-module-boundary` entry): PR numbers and states, the Docker/`gh` PATH facts, the scope-label finding, the decisions O1-O4.
-- [ ] T047 Open the follow-on specs the roadmap names (D17: 012 the wallet contract with holds and the service-side event store, 013 the service shell, 014 turnkey operation) only when asked; this feature does not start them.
+- [ ] T048 Update the project memory (`credit-billing-readiness` or a new `billing-module-boundary` entry): PR numbers and states, the Docker/`gh` PATH facts, the scope-label finding, the decisions O1-O4.
+- [ ] T049 Open the follow-on specs the roadmap names (D17: 012 the wallet contract with holds and the service-side event store, 013 the service shell, 014 turnkey operation) only when asked; this feature does not start them.
 
 ---
 
@@ -136,7 +140,7 @@ Re-plan this phase against the merged state of PR B before starting; decisions O
 
 - T001 then T002 first. Inside PR A the order is the commit order: T003 (MOVE), T004-T013 (EDIT), T014-T020 (TEST), then T021-T027. Within T004-T013: T005 needs T004; T007 needs T006; T009 needs T004, T006, T008; T010 needs T004; T011-T013 need T009 and T003.
 - **Parallel**: T004, T006, T008 (three new files); T010 beside T009; T014, T015, T016, T019 (different files).
-- PR B starts only after PR A merges (T028-T036 depend on the merged tree); PR C only after PR B merges and T037 lands.
+- PR B starts only after PR A merges (T028-T036 depend on the merged tree); PR C only after PR B merges and T039 lands.
 - US2 depends on US1; US3 depends on US2; US4 is written inside PR B.
 
 ## Implementation strategy

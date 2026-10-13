@@ -18,5 +18,7 @@ Today a replayed key returns the existing transaction **without comparing parame
 ## Errors
 `BillingNotConfigured` (no connection supplied), `InvalidSignature` and `InvalidPayload` (webhook), and the existing `ValueError`s for a negative or empty debit. A network implementation maps these to status codes; it adds no new meaning.
 
-## What the host may import
-Outside `app/billing/` and `app/billing_integration/`: `app.billing.port` and `app.billing.http` only. `app/billing_integration/` may also use the `credits` read functions and the provider registry (a listed exemption removed by 012/013).
+## Where the pieces live (D19)
+- **The contract** is `app/billing/port.py`: `WalletPort`, the in-process implementation and the plain types. A network client would implement the same protocol.
+- **The host's one seam** is `app/billing_integration/port.py`: it holds the implementation in use (`wallet`), exposes the operations as functions, and importing it wires the core.
+- **What the host may import:** outside `app/billing/`, `app/billing_integration/` and the two core operator scripts that move into the package in PR C, nothing under `app/` or `scripts/` imports `app.billing`. `app/billing_integration/` itself may use the `credits` read functions, the provider registry and the core table names (a listed exemption that 012/013 removes when wallet-side reconciliation moves into the service).
