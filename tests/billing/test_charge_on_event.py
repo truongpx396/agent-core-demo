@@ -115,7 +115,7 @@ def wallet(monkeypatch):
             raise spy.error
         return credits.Applied("applied")
 
-    monkeypatch.setattr(usage_events.credits, "debit_in", debit_in)
+    monkeypatch.setattr(credits, "debit_in", debit_in)  # the in-process wallet (app/billing/port.py) resolves it at call time
     return spy
 
 

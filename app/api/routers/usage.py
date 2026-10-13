@@ -3,11 +3,10 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends
 
-import app.billing_integration  # noqa: F401 - wires the billing core to this app's connection pool (app/billing_integration/__init__.py); a scan requires it of every module that imports app.billing
 from app.agent import budgets, spend
 from app.api.deps import get_ctx
 from app.api.schemas import BudgetStatus, CreditBalance, UsageResponse
-from app.billing import credits
+from app.billing_integration import port as billing_port
 from app.core.config import (
     CREDITS_ENFORCEMENT,
     CREDITS_PER_USD,
@@ -44,7 +43,7 @@ async def usage(ctx: SecurityCtx = Depends(get_ctx)) -> UsageResponse:
             principal_month=MAX_COST_USD_PER_PRINCIPAL_PER_MONTH,
         ),
     )
-    wallet = await credits.account_balance(ctx["tenant"]) if CREDITS_PER_USD is not None else None
+    wallet = await billing_port.account_balance(ctx["tenant"]) if CREDITS_PER_USD is not None else None
     return UsageResponse(
         total_tokens=all_time["total_tokens"],
         total_cost_usd=all_time["total_cost_usd"],

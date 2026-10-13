@@ -95,9 +95,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Literal
 
-import app.billing_integration  # noqa: F401 - wires the billing core to this app's connection pool (app/billing_integration/__init__.py); a scan requires it of every module that imports app.billing
 from app.agent import budget_holds, budget_policies, spend
-from app.billing import credits
+from app.billing_integration import port as billing_port
 from app.core import metrics
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.security import SecurityCtx, valid_ctx
@@ -294,7 +293,7 @@ async def _credit_check(ctx: SecurityCtx, gate: CreditGate) -> tuple[Allowance |
     turn was served anyway). Called only for a valid ctx."""
     tenant = ctx["tenant"]
     try:
-        wallet = await credits.account_balance(tenant)
+        wallet = await billing_port.account_balance(tenant)
     except Exception as exc:  # noqa: BLE001 - a wallet read failing must not by itself take every turn down; CREDIT_CHECK_FAILURE_POLICY decides, and it is counted and alerted either way
         metrics.agent_cost_governance_degraded_total.labels(path="credit_read").inc()
         logger.warning(
@@ -303,7 +302,7 @@ async def _credit_check(ctx: SecurityCtx, gate: CreditGate) -> tuple[Allowance |
         return (Allowance("unavailable"), False) if gate.fail_policy == "closed" else (None, True)
     if wallet is None:
         return None, False  # no wallet: not on credit billing, never gated (spec D8)
-    reserved = credits.credits_for_cost(await budget_holds.in_flight_reservation(tenant), gate.credits_per_usd, gate.markup)
+    reserved = billing_port.credits_for_cost(await budget_holds.in_flight_reservation(tenant), gate.credits_per_usd, gate.markup)
     if wallet.available - reserved > 0:
         return None, False
     metrics.agent_credit_enforcement_refused_total.inc()

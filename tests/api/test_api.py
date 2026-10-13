@@ -178,7 +178,7 @@ class TestUsageCredits:
             reads.append(tenant)
             return state["balance"]
 
-        monkeypatch.setattr(usage_router.credits, "account_balance", account_balance)
+        monkeypatch.setattr(usage_router.billing_port, "account_balance", account_balance)
         state["reads"] = reads
         return state
 
@@ -231,7 +231,7 @@ class TestUsageCredits:
         async def broken(tenant):
             raise ConnectionError("wallet unreachable")
 
-        monkeypatch.setattr(usage_router.credits, "account_balance", broken)
+        monkeypatch.setattr(usage_router.billing_port, "account_balance", broken)
 
         with pytest.raises(ConnectionError):
             await usage_router.usage(ctx=TEST_CTX)

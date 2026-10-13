@@ -1,5 +1,11 @@
 """`POST /billing/webhooks/{provider}`: money in (specs/010-credit-billing-readiness, T021).
 
+This module is the billing core's own inbound path (spec 011): it lived in `app/api/routers/` until the core had to
+be installable without the agent app, and it needs only FastAPI, the core's settings and the core's metrics. It does
+not wire itself to a database: the agent app mounts it through `app/billing_integration/http.py`, and importing
+that package is what gives the core its connection. The per-source rate limit stays a host middleware keyed on the
+path prefix (`app/api/rate_limit.py`).
+
 This route is deliberately NOT behind the tenant-identity headers (`deps.get_ctx`): a payment provider cannot
 send them, so the caller is unauthenticated and its authenticity is the provider's SIGNATURE and nothing else.
 It is built for that, in the order the contract fixes (contracts/billing-provider-port.md):
@@ -21,10 +27,9 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-import app.billing_integration  # noqa: F401 - wires the billing core to this app's connection pool (app/billing_integration/__init__.py); a scan requires it of every module that imports app.billing
 from app.billing import metrics, providers, webhooks
 from app.billing.providers.base import BillingProvider, InvalidPayload, InvalidSignature
-from app.core.config import (
+from app.billing.settings import (
     BILLING_PROVIDERS,
     BILLING_WEBHOOK_MAX_BODY_BYTES,
     BILLING_WEBHOOK_SECRETS,

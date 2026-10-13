@@ -18,7 +18,6 @@ import logging
 import signal
 
 from app.agent import sql_store
-from app.billing import providers
 from app.billing_integration import export
 from app.core.config import (
     BILLING_EXPORT_INTERVAL_SECONDS,
@@ -34,8 +33,8 @@ logger = logging.getLogger(__name__)
 def serving() -> dict:
     """The adapters this worker drains: enabled, with a secret, and able to take usage. Raises if an enabled provider has no
     adapter or no secret, so a misconfigured deployment stops instead of exporting nothing."""
-    names = providers.usage_export_providers(BILLING_PROVIDERS)
-    return providers.build_configured(names, BILLING_WEBHOOK_SECRETS)
+    names = export.usage_export_providers(BILLING_PROVIDERS)
+    return export.configured_adapters(names, BILLING_WEBHOOK_SECRETS)
 
 
 async def run(*, once: bool) -> int:

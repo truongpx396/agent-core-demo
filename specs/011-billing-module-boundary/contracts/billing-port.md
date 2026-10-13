@@ -4,7 +4,7 @@ The port is **shaped as the service API** (D18) so that a network implementation
 
 | | Operation | Idempotency key | Atomic with the caller? | When the wallet is unreachable |
 |---|---|---|---|---|
-| ● | `record_usage_in(conn, tenant, credits, *, event_id, kind, pricing)` (today `credits.debit_in`) | `event_id` (replay returns the existing transaction) | **yes**, in the caller's transaction and savepoint | the caller's savepoint undoes only the debit; the event is kept (`CreditDebitFailing`) |
+| ● | `record_usage_in(conn, tenant, amount, *, event_id, kind, pricing=None) -> Applied` (today `credits.debit_in`; `event_id` is both the idempotency key and the lineage id, `kind` the call's kind in the reason `model call (<kind>)`) | `event_id` (replay returns the existing transaction) | **yes**, in the caller's transaction and savepoint | the caller's savepoint undoes only the debit; the event is kept (`CreditDebitFailing`) |
 | ● | `account_balance(tenant) -> Balance \| None` | none (read) | no | the gate's `CREDIT_CHECK_FAILURE_POLICY` decides (`open` default, counted, alerted) |
 | ● | `credits_for_cost(cost_usd, credits_per_usd, markup) -> Decimal` | none (pure) | n/a | n/a. Rating stays in the host through 011 (O1) |
 | ○ | `check(tenant, amount) -> allowed, balance` | none | no | fail-open by default |
@@ -18,5 +18,7 @@ Today a replayed key returns the existing transaction **without comparing parame
 ## Errors
 `BillingNotConfigured` (no connection supplied), `InvalidSignature` and `InvalidPayload` (webhook), and the existing `ValueError`s for a negative or empty debit. A network implementation maps these to status codes; it adds no new meaning.
 
-## What the host may import
-Outside `app/billing/` and `app/billing_integration/`: `app.billing.port` and `app.billing.http` only. `app/billing_integration/` may also use the `credits` read functions and the provider registry (a listed exemption removed by 012/013).
+## Where the pieces live (D19)
+- **The contract** is `app/billing/port.py`: `WalletPort`, the in-process implementation and the plain types. A network client would implement the same protocol.
+- **The host's one seam** is `app/billing_integration/port.py`: it holds the implementation in use (`wallet`), exposes the operations as functions, and importing it wires the core.
+- **What the host may import:** outside `app/billing/`, `app/billing_integration/` and the two core operator scripts that move into the package in PR C, nothing under `app/` or `scripts/` imports `app.billing`. `app/billing_integration/` itself may use the `credits` read functions, the provider registry and the core table names (a listed exemption that 012/013 removes when wallet-side reconciliation moves into the service).
