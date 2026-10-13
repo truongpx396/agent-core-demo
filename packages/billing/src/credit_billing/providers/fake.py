@@ -23,7 +23,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from app.billing.providers.base import (
+from credit_billing.providers.base import (
     BillingCustomer,
     BillingEvent,
     Capability,

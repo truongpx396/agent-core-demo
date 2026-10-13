@@ -66,7 +66,7 @@ from typing import Any
 
 import httpx
 
-from app.billing.providers.base import (
+from credit_billing.providers.base import (
     BillingCustomer,
     BillingEvent,
     Capability,
@@ -117,7 +117,7 @@ class StripeProvider:
         self._transport = transport
         self._api_base = api_base
         if api_key is None:
-            from app.billing.settings import (
+            from credit_billing.settings import (
                 STRIPE_API_KEY,  # read at construction, not import: tests re-point the settings
             )
 

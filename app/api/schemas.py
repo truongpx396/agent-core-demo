@@ -114,7 +114,7 @@ class BudgetStatus(BaseModel):
 
 
 class CreditBalance(BaseModel):
-    """The caller's tenant's wallet (app/billing/credits.py). Exact decimals, serialised as strings:
+    """The caller's tenant's wallet (packages/billing/src/credit_billing/credits.py). Exact decimals, serialised as strings:
     a JSON number would round-trip through a float and a balance must not drift."""
 
     available: Decimal = Field(

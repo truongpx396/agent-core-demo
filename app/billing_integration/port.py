@@ -1,9 +1,9 @@
 """The one module host code imports to use the billing wallet (specs/011-billing-module-boundary, D19).
 
-Outside `app/billing/` and `app/billing_integration/` nothing under `app/` or `scripts/` imports `app.billing`
+Outside `packages/billing/src/credit_billing/` and `app/billing_integration/` nothing under `app/` or `scripts/` imports `credit_billing`
 (tests/billing/test_billing_core_boundary.py enforces it), so this is where the agent app meets the wallet:
 
-  * `wallet` is the implementation in use. Today it is `InProcessWallet`, a thin call into `app/billing/credits.py`
+  * `wallet` is the implementation in use. Today it is `InProcessWallet`, a thin call into `packages/billing/src/credit_billing/credits.py`
     over the same pool as the caller. A network client implementing the same `WalletPort` would be selected here, and
     a test installs a stub here (`monkeypatch.setattr(billing_port, "wallet", stub)`): it is a module-level name read
     at CALL time, which is the repo's idiom for a seam a test replaces.
@@ -18,8 +18,8 @@ from decimal import Decimal
 
 from psycopg import AsyncConnection
 
-from app.billing.port import Applied, Balance, InProcessWallet, Pricing, WalletPort
-from app.billing.port import credits_for_cost as _credits_for_cost
+from credit_billing.port import Applied, Balance, InProcessWallet, Pricing, WalletPort
+from credit_billing.port import credits_for_cost as _credits_for_cost
 
 __all__ = ["Applied", "Balance", "Pricing", "account_balance", "credits_for_cost", "record_usage_in", "wallet"]
 
@@ -35,7 +35,7 @@ async def record_usage_in(
     kind: str,
     pricing: Pricing | None = None,
 ) -> Applied:
-    """Debits the usage event's credits in the CALLER's transaction (see `app/billing/port.py` for the contract)."""
+    """Debits the usage event's credits in the CALLER's transaction (see `packages/billing/src/credit_billing/port.py` for the contract)."""
     return await wallet.record_usage_in(conn, tenant, amount, event_id=event_id, kind=kind, pricing=pricing)
 
 

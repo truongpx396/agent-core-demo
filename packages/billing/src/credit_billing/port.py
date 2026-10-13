@@ -17,18 +17,18 @@ its patch, and the hermetic suite's connection guard still applies). The host do
 place on the host's side and importing it wires the core to the host's pool.
 
 What is deliberately not here: grants, adjustments and webhook intake (the core serves those itself: the operator CLI
-and `app/billing/http.py`), checkout, holds, and rating. `credits_for_cost` is a pure function and stays one; moving
+and `packages/billing/src/credit_billing/http.py`), checkout, holds, and rating. `credits_for_cost` is a pure function and stays one; moving
 rating behind the port is a later feature (O1, D15).
 
-Imports nothing from `app` outside `app.billing` (enforced by tests/billing/test_billing_core_boundary.py).
+Imports nothing from `app` outside `credit_billing` (enforced by tests/billing/test_billing_core_boundary.py).
 """
 from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
 from psycopg import AsyncConnection
 
-from app.billing import credits
-from app.billing.credits import Applied, Balance, Pricing
+from credit_billing import credits
+from credit_billing.credits import Applied, Balance, Pricing
 
 __all__ = ["Applied", "Balance", "InProcessWallet", "Pricing", "WalletPort", "credits_for_cost"]
 

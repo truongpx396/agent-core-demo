@@ -16,22 +16,25 @@ records nothing.
 `tests/conftest.py::metric_value` finds a counter's data points (an OTel instrument does not expose its own
 name back). The copy is the price of the core not importing the host.
 
-**The meter scope string is deliberately still "app.core.metrics".** The collector's Prometheus exporter turns the
-scope into an `otel_scope_name` label and does NOT merge series: the same metric name emitted under two scopes
-comes out as two series (specs/011 research.md P6, verified with a throwaway collector running this repo's
-exporter config). Renaming the scope would fork every series below, and the two alert rules on
-`agent_billing_webhook_total` are bare `increase(...)` expressions, which cannot count the first sample of a
-series that did not exist before. Changing it is decided when this module becomes its own package, with the
-known label sets pre-created at 0 and those rules audited.
+**The meter scope is `credit_billing` and carries no version** (spec 011 D23). The collector's Prometheus exporter turns the scope
+into an `otel_scope_name` label and does NOT merge series: the same metric name emitted under two scopes comes out as two
+series (verified with a throwaway collector running this repo's exporter config; research.md P6). Until the package was
+extracted these counters kept the agent app's scope, `app.core.metrics`, so that moving the code forked nothing. A package other
+projects install should not emit another project's scope, so the scope changed once, here. Dashboards aggregate with `sum by`,
+so they carry across; the two alert rules on `agent_billing_webhook_total` are bare `increase(...)` expressions, which cannot
+count the FIRST sample of a series that did not exist before, so `initialise_webhook_series` creates every series the alerts
+look at, at 0, when the process validates its configuration. That closes a gap that existed before the scope change too (the
+first-ever quarantined event for a provider was invisible to the alert). No scope VERSION is set on purpose: a release number
+in the scope would fork every series again at every release.
 
 Imports nothing from `app` (enforced by tests/billing/test_billing_core_boundary.py).
 """
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 from opentelemetry import metrics as metrics_api
 
-# See the module docstring before changing this string.
-_meter = metrics_api.get_meter("app.core.metrics")
+# See the module docstring before changing this string (and never add a version argument).
+_meter = metrics_api.get_meter("credit_billing")
 
 
 class _BoundCounter:
@@ -96,3 +99,24 @@ agent_credit_debited_total = Counter(
     "time like agent_credit_granted_total, with the same caveat.",
     ["kind"],
 )
+
+
+# Every `outcome` label value `agent_billing_webhook_total` can carry: the six `webhooks.process_event` returns and the four the route
+# itself counts before an event exists. tests/test_metrics.py fails if the code can emit one that is not listed here.
+WEBHOOK_OUTCOMES = (
+    "applied", "duplicate", "ignored", "quarantined", "retry", "failed",
+    "invalid_signature", "invalid_payload", "unknown_provider", "too_large",
+)
+_NO_PROVIDER_OUTCOMES = ("unknown_provider",)  # counted under the fixed label `unknown`, never a caller's own string
+
+
+def initialise_webhook_series(providers: Iterable[str]) -> None:
+    """Creates, at 0, every `agent_billing_webhook_total` series the alerts and the dashboard look at: each configured provider with
+    every outcome a delivery for a known provider can have, and `unknown` with `unknown_provider`. A counter series otherwise
+    appears on its first increment, and an `increase(...)` over a series whose first sample is 1 is 0 (see the module docstring)."""
+    for provider in providers:
+        for outcome in WEBHOOK_OUTCOMES:
+            if outcome not in _NO_PROVIDER_OUTCOMES:
+                agent_billing_webhook_total.labels(provider=provider, outcome=outcome).inc(0)
+    for outcome in _NO_PROVIDER_OUTCOMES:
+        agent_billing_webhook_total.labels(provider="unknown", outcome=outcome).inc(0)

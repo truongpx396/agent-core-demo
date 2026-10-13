@@ -1,29 +1,29 @@
 """Cron-callable retention sweep for the billing webhook inbox
-(app/billing/inbox.py, postgres-init/22-billing.sql).
+(credit_billing/inbox.py, credit_billing/sql/22-billing.sql).
 
 Deletes `applied` and `ignored` rows older than `BILLING_INBOX_RETENTION_DAYS` (400 by default; the setting
 enforces a 30-day floor so a sweep never races a provider's retries). It never touches a row that is still
 open (`received`, `failed`, `quarantined`). Same "fixed pipeline, not an agent turn" shape as
-scripts/usage_events_sweep.py, and like that one it is deliberately NOT run by anything automatically: wire it to
+the agent app's scripts/usage_events_sweep.py, and like that one it is deliberately NOT run by anything automatically: wire it to
 real cron once your retention policy is decided, e.g.
 
-    45 3 * * 0 cd /path/to/agent-core-demo && python -m scripts.billing_inbox_sweep
+    45 3 * * 0 python -m credit_billing.cli.inbox_sweep        # or: credit-billing-inbox-sweep
 
 Idempotent: a re-run before more rows age out deletes nothing.
 """
 import asyncio
 import logging
 
-import app.billing_integration  # noqa: F401 - wires the billing core to this app's connection pool (app/billing_integration/__init__.py); a scan requires it of every module that imports app.billing
-from app.billing.inbox import SWEEP_BATCH_SIZE, SWEEP_MAX_BATCHES, sweep_old_rows
-from app.core.config import BILLING_INBOX_RETENTION_DAYS
-from app.core.job_runtime import scheduled_job
+from credit_billing.cli._runtime import scheduled_job, wired_pool
+from credit_billing.inbox import SWEEP_BATCH_SIZE, SWEEP_MAX_BATCHES, sweep_old_rows
+from credit_billing.settings import BILLING_INBOX_RETENTION_DAYS
 
 logger = logging.getLogger(__name__)
 
 
 async def run_sweep(older_than_days: int = BILLING_INBOX_RETENTION_DAYS) -> int:
-    deleted = await sweep_old_rows(older_than_days=older_than_days)
+    async with wired_pool():
+        deleted = await sweep_old_rows(older_than_days=older_than_days)
     logger.info("billing_inbox_swept", extra={"deleted": deleted, "older_than_days": older_than_days})
     return deleted
 

@@ -27,9 +27,13 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from app.billing import metrics, providers, webhooks
-from app.billing.providers.base import BillingProvider, InvalidPayload, InvalidSignature
-from app.billing.settings import (
+from credit_billing import metrics, providers, webhooks
+from credit_billing.providers.base import (
+    BillingProvider,
+    InvalidPayload,
+    InvalidSignature,
+)
+from credit_billing.settings import (
     BILLING_PROVIDERS,
     BILLING_WEBHOOK_MAX_BODY_BYTES,
     BILLING_WEBHOOK_SECRETS,
@@ -53,8 +57,9 @@ def configured_providers() -> dict[str, BillingProvider]:
 
 def validate_configuration() -> None:
     """Called from the app's lifespan. Raises (so the process refuses to start) for an enabled provider that
-    no adapter is registered under or that has no signing secret."""
-    configured_providers()
+    no adapter is registered under or that has no signing secret. Also creates the webhook counter's series at 0 for the
+    providers it serves, so the alerts on it can see a first event (credit_billing/metrics.py)."""
+    metrics.initialise_webhook_series(configured_providers())
 
 
 def _count(provider: str, outcome: str) -> None:

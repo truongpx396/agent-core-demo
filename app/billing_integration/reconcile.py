@@ -69,7 +69,6 @@ from psycopg import errors as pg_errors
 
 from app.agent import gateway
 from app.agent.sql_store import get_connection
-from app.billing.display import printable
 from app.core import metrics
 from app.core.config import (
     CREDIT_RECONCILE_GATEWAY_MAX_PAGES,
@@ -78,6 +77,7 @@ from app.core.config import (
     CREDIT_RECONCILE_TOLERANCE_PCT,
     CREDIT_RECONCILE_TOLERANCE_USD,
 )
+from credit_billing.display import printable
 
 logger = logging.getLogger(__name__)
 

@@ -1,4 +1,4 @@
-.PHONY: help up up-app sandbox-up sandbox-build pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-inbox-sweep billing-export-worker budget-policy litellm-key test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
+.PHONY: test-billing-package help up up-app sandbox-up sandbox-build pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-inbox-sweep billing-export-worker budget-policy litellm-key test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
 
 # Pinned DefectDojo release — see `defectdojo-up`'s own comment for why this
 # is a plain git clone into ~/.cache (NOT vendored into this repo, same
@@ -10,6 +10,10 @@
 # verified directly both `defectdojo/defectdojo-django:3.3.100` and
 # `defectdojo/defectdojo-nginx:3.3.100` exist on Docker Hub, not assumed
 # from the compose file's own `:latest` default.
+# The billing package is found by path, not installed: the lock file is a machine-generated freeze of a real install and a path
+# dependency does not belong in it (spec 011 D20). Absolute, so a target that `cd`s into packages/billing still finds it.
+export PYTHONPATH := $(CURDIR)/packages/billing/src$(if $(PYTHONPATH),:$(PYTHONPATH))
+
 DEFECTDOJO_VERSION := 3.3.100
 DEFECTDOJO_DIR := $(HOME)/.cache/agent-core-demo-defectdojo
 
@@ -172,11 +176,11 @@ usage-events-carry-over:  ## One-time, idempotent: copy usage_ledger history old
 billing-export-worker:  ## Drain usage_export_outbox to the enabled providers that bill on usage, in a loop (see scripts/billing_export_worker.py; `ARGS=--once` for a single pass; set BILLING_PROVIDERS the same as the API and agent workers)
 	python -m scripts.billing_export_worker $(ARGS)
 
-billing-inbox-sweep:  ## Delete applied/ignored billing webhook inbox rows older than BILLING_INBOX_RETENTION_DAYS (see scripts/billing_inbox_sweep.py; never touches open or quarantined rows; wire to cron once your retention policy is decided)
-	python -m scripts.billing_inbox_sweep
+billing-inbox-sweep:  ## Delete applied/ignored billing webhook inbox rows older than BILLING_INBOX_RETENTION_DAYS (see packages/billing/src/credit_billing/cli/inbox_sweep.py; never touches open or quarantined rows; wire to cron once your retention policy is decided)
+	python -m credit_billing.cli.inbox_sweep
 
-credits:  ## Operator CLI for the credit wallet, e.g. `make credits ARGS="grant --tenant acme --amount 500 --by alice --reason 'pilot top-up'"`, `adjust` (signed) and `show` (balance, lots, entries); --by and --reason are required for a change (see scripts/credits.py)
-	python -m scripts.credits $(ARGS)
+credits:  ## Operator CLI for the credit wallet, e.g. `make credits ARGS="grant --tenant acme --amount 500 --by alice --reason 'pilot top-up'"`, `adjust` (signed) and `show` (balance, lots, entries); --by and --reason are required for a change (see packages/billing/src/credit_billing/cli/credits.py)
+	python -m credit_billing.cli.credits $(ARGS)
 
 credit-reconcile:  ## Compare usage events with the ledger, the gateway's spend log and the wallets over the last CREDIT_RECONCILE_LOOKBACK_DAYS; exit 0 agree / 1 drift / 2 could not finish. Needs LITELLM_MASTER_KEY (or ARGS=--no-gateway); ARGS="--days 7 --json" (see scripts/credit_reconcile.py)
 	python -m scripts.credit_reconcile $(ARGS)
@@ -184,14 +188,19 @@ credit-reconcile:  ## Compare usage events with the ledger, the gateway's spend 
 credit-reconcile-worker:  ## The same comparison as a worker: a pass every CREDIT_RECONCILE_INTERVAL_SECONDS, re-publishing the drift and balance gauges every minute for the dashboard and alerts (see scripts/credit_reconcile.py)
 	python -m scripts.credit_reconcile --loop $(ARGS)
 
-test:  ## Run the graph test suite in parallel (no live services needed — fake LLM, no Qdrant)
+test:  ## Run the graph test suite in parallel (no live services needed — fake LLM, no Qdrant), then the billing package's own tests (a separate process: both have a `tests` package)
 	pytest -n auto -q
+	cd packages/billing && pytest -q
+
+test-billing-package:  ## The billing package's own hermetic tests, alone, from its directory: the agent app is not on the path (spec 011)
+	cd packages/billing && pytest -q
 
 test-integration:  ## Real Postgres/Redis/Qdrant/ml-service/crawl4ai via testcontainers (no LLM) — needs Docker, no `make up` required (GRAPH_PATTERNS.md pattern 48/50)
 	# --dist=loadgroup: tests/integration/test_worker_scaling.py's own
 	# xdist_group marker needs this to actually take effect (plain `load`
 	# ignores it) — see that module's own comment for why.
 	pytest -n auto -m integration -q --dist=loadgroup
+	cd packages/billing && pytest -m integration -q
 
 test-live:  ## Real small Ollama model + ml-service + full app/agent-worker stack via testcontainers, incl. Playwright browser E2E and real crawl4ai renders — needs Docker (pattern 48/50)
 	playwright install --with-deps chromium
@@ -202,7 +211,7 @@ test-sandbox:  ## Real OpenSandbox MCP round trip (pattern 50) — needs `make s
 
 .PHONY: test-provider-sandbox
 test-provider-sandbox:  ## A payment provider's real SANDBOX (specs/010 T029): real Checkout requests and REAL signed webhook deliveries via `stripe listen` / `polar listen` (Stripe, Polar). Needs STRIPE_API_KEY (test-mode) and/or POLAR_ACCESS_TOKEN (POLAR_ENVIRONMENT=sandbox) in .env plus the provider's CLI; self-skips without them or beside your own `listen`, refuses a live key. Creates labelled objects in the sandbox. Deliberately manual — never CI
-	pytest -m provider_sandbox -q -s -p no:xdist
+	pytest -c packages/billing/pyproject.toml packages/billing/tests -m provider_sandbox -q -s -p no:xdist
 
 lint:  ## Static checks: ruff (style/correctness) — see pyproject.toml's [tool.ruff]
 	ruff check .

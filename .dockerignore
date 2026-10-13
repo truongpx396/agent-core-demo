@@ -9,3 +9,6 @@ checkpoints.sqlite3*
 .env
 .env.example
 *.md
+packages/*/tests/
+packages/*/docs/
+packages/*/observability/

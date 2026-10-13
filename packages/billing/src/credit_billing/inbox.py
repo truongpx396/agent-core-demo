@@ -17,8 +17,8 @@ spans tenants, because retention is a property of the table. Bounded: a run dele
 """
 import logging
 
-from app.billing.db import get_connection
-from app.billing.settings import BILLING_INBOX_MIN_RETENTION_DAYS
+from credit_billing.db import get_connection
+from credit_billing.settings import BILLING_INBOX_MIN_RETENTION_DAYS
 
 logger = logging.getLogger(__name__)
 

@@ -1,14 +1,14 @@
 """Registered billing-provider adapters, by the `{provider}` path segment of the webhook URL.
 
-Adding a provider is adding a module here and one line in `FACTORIES`; nothing else in `app/billing/`
+Adding a provider is adding a module here and one line in `FACTORIES`; nothing else in `packages/billing/src/credit_billing/`
 changes (SC-004). An adapter that has not passed `tests/billing/contract.py` must not be registered.
 """
 from collections.abc import Callable, Mapping
 
-from app.billing.providers.base import BillingProvider, Capability
-from app.billing.providers.fake import FakeProvider
-from app.billing.providers.polar import PolarProvider
-from app.billing.providers.stripe import StripeProvider
+from credit_billing.providers.base import BillingProvider, Capability
+from credit_billing.providers.fake import FakeProvider
+from credit_billing.providers.polar import PolarProvider
+from credit_billing.providers.stripe import StripeProvider
 
 FACTORIES: dict[str, Callable[[str], BillingProvider]] = {
     FakeProvider.name: FakeProvider,

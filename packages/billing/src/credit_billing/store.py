@@ -11,7 +11,7 @@ from decimal import Decimal
 
 from psycopg import AsyncConnection
 
-from app.billing.providers.base import CreditProduct
+from credit_billing.providers.base import CreditProduct
 
 
 @dataclass(frozen=True)

@@ -1,7 +1,7 @@
 """The billing core's own settings (specs/011-billing-module-boundary, contracts/billing-core-boundary.md).
 
 These ten fields used to live in `app/core/config.py::Settings`, which the billing code imported. That made
-`app/billing/` unable to import anywhere the agent's central settings were not: a billing module that
+`packages/billing/src/credit_billing/` unable to import anywhere the agent's central settings were not: a billing module that
 needs the whole host to be importable is a folder of a larger program, not a module another project could
 reuse. They are here now, with their validators and their comments, and the host's `Settings` INHERITS this
 class, so every field, default, bound, validator, error message and environment variable is exactly what it
@@ -26,7 +26,7 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # The webhook inbox keeps an event for at least this long before the retention sweep may delete it: longer
-# than any payment provider keeps redelivering one, so a sweep never races a retry (app/billing/inbox.py).
+# than any payment provider keeps redelivering one, so a sweep never races a retry (packages/billing/src/credit_billing/inbox.py).
 BILLING_INBOX_MIN_RETENTION_DAYS = 30
 
 
@@ -37,11 +37,11 @@ class BillingSettings(BaseSettings):
     # whole. The error still names the field and the rule; it just no longer repeats the value.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
-    # Money in (specs/010 PR 4, app/billing/webhooks.py, POST /billing/webhooks/{provider}). A provider is
+    # Money in (specs/010 PR 4, packages/billing/src/credit_billing/webhooks.py, POST /billing/webhooks/{provider}). A provider is
     # served only if it is NAMED here, and then it MUST have a signing secret: a webhook endpoint that cannot
     # verify a signature must not exist, so the process refuses to start rather than accept unauthenticated
     # payments. Empty (the default) means no provider and no webhook route to speak of: every request 404s.
-    # Names are the adapter's `name` (app/billing/providers/__init__.py), e.g. "stripe". "fake" is the in-repo
+    # Names are the adapter's `name` (packages/billing/src/credit_billing/providers/__init__.py), e.g. "stripe". "fake" is the in-repo
     # development and test adapter; do not enable it in production.
     billing_providers: str = ""
     # {"provider": "signing secret"} as JSON. SecretStr so the values never show in a repr or a log line.

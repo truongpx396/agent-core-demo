@@ -1,4 +1,4 @@
-"""Operator CLI for the credit wallet: grant, adjust, show (app/billing/credits.py; specs/010 T027; `make credits`).
+"""Operator CLI for the credit wallet: grant, adjust, show (credit_billing/credits.py; specs/010 T027; `make credits`, or `credit-billing` once the package is installed).
 
     # give a tenant credits (opens its wallet if it has none); a promo or subscription grant MUST expire
     make credits ARGS="grant --tenant acme --amount 500 --by alice --reason 'pilot top-up, ticket 4412'"
@@ -30,11 +30,9 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
-import app.billing_integration  # noqa: F401 - wires the billing core to this app's connection pool (app/billing_integration/__init__.py); a scan requires it of every module that imports app.billing
-from app.agent import sql_store
-from app.billing import credits
-from app.billing.display import printable
-from app.core.job_runtime import scheduled_job
+from credit_billing import credits, db
+from credit_billing.cli._runtime import scheduled_job, wired_pool
+from credit_billing.display import printable
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +146,7 @@ def entries_limit(requested: int) -> int:
 
 async def _show(args: argparse.Namespace) -> tuple[int, str]:
     entries = entries_limit(args.entries)
-    async with sql_store.get_connection() as conn:
+    async with db.get_connection() as conn:
         balance = await credits.account_balance_in(conn, args.tenant)
         if balance is None:
             return 1, f"{args.tenant!r} has no credit wallet (it is not on credit billing)."
@@ -211,10 +209,8 @@ async def execute(args: argparse.Namespace) -> tuple[int, str]:
 
 
 async def _run(args: argparse.Namespace) -> tuple[int, str]:
-    try:
+    async with wired_pool():
         return await execute(args)
-    finally:
-        await sql_store.close_pool()
 
 
 def main(argv: Sequence[str] | None = None) -> None:

@@ -63,7 +63,7 @@ from typing import Any
 
 import httpx
 
-from app.billing.providers.base import (
+from credit_billing.providers.base import (
     BillingCustomer,
     BillingEvent,
     Capability,
@@ -114,7 +114,7 @@ class PolarProvider:
         self._tolerance = tolerance_seconds
         self._transport = transport
         if access_token is None or environment is None:
-            from app.billing.settings import (  # read at construction, not import: tests re-point the settings
+            from credit_billing.settings import (  # read at construction, not import: tests re-point the settings
                 POLAR_ACCESS_TOKEN,
                 POLAR_ENVIRONMENT,
             )

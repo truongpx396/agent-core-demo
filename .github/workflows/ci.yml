@@ -140,6 +140,23 @@ jobs:
       - run: pip install -r requirements-lock.txt pytest-xdist==3.8.0
       - run: pytest -n auto -q
 
+  # The billing package, installed ALONE into a clean environment (spec 011 D20, FR-016): not the lock file, not the agent app. If its
+  # hermetic tests pass here, the package does not depend on anything it does not declare, which is the whole point of extracting it.
+  # (The repo's own `test` job above also imports it, by path; this is the job that proves it does not need the rest.)
+  billing-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pip install "./packages/billing[test]"
+      - name: The agent app is not importable from here
+        working-directory: packages/billing
+        run: python -c "import importlib.util, sys; sys.exit(1 if importlib.util.find_spec('app') else 0)"
+      - run: pytest -q
+        working-directory: packages/billing
+
   test-integration:
     # Real Postgres/Redis/Qdrant via testcontainers (tests/containers.py) —
     # no LLM, so this stays cheap; GH-hosted ubuntu-latest runners already
@@ -163,6 +180,10 @@ jobs:
       # up one of its tests. See that module's own comment for the real,
       # reproduced intermittent failure this fixes, not a theoretical one.
       - run: pytest -n auto -m integration -q --dist=loadgroup
+      # The billing package's own real-Postgres tests (a separate process: its `tests` package is not this repo's).
+      - run: pip install --no-deps ./packages/billing
+      - run: pytest -m integration -q
+        working-directory: packages/billing
 
   test-live:
     # Real small Ollama model + the full app/agent-worker stack, incl. a

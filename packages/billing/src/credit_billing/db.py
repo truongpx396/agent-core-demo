@@ -1,7 +1,7 @@
 """Where the billing core gets a database connection (specs/011-billing-module-boundary, contracts/billing-core-boundary.md).
 
 The core used to `from app.agent.sql_store import get_connection`, which tied it to the agent's pool: copy
-`app/billing/` into another project and it failed to import. It now asks for a connection through this module, and
+`packages/billing/src/credit_billing/` into another project and it failed to import. It now asks for a connection through this module, and
 the host (or a future service, or a test) tells it where connections come from with `configure(...)`. The core
 never opens a pool, never holds a connection string and never falls back to a default.
 
@@ -15,12 +15,12 @@ proves a clean exit does not look like one).
 
 **Unset means refused** (constitution I: unknown resolves to refusal). A process that reached the core without
 being wired gets `BillingNotConfigured`, never a connection to a database it was not told about. In the agent
-app the wiring is `app/billing_integration/__init__.py`, which every host module that imports `app.billing` also
+app the wiring is `app/billing_integration/__init__.py`, which every host module that imports `credit_billing` also
 imports (a scan enforces that), so no entry point can reach the core unwired. A caller that swallows the error
 degrades through the same counted path as any other wallet fault (`_charge` into `credit_debit`, the gate into
 `credit_read`), so an unwired process is loud in the alerts and not silent.
 
-**The name is the contract with the tests.** Core modules do `from app.billing.db import get_connection` and keep
+**The name is the contract with the tests.** Core modules do `from credit_billing.db import get_connection` and keep
 that module-level name, so `monkeypatch.setattr(credits, "get_connection", fake)` (the hermetic suite's guard and
 the real-Postgres tests) works as it always did.
 
@@ -58,7 +58,7 @@ async def get_connection() -> AsyncIterator[AsyncConnection]:
     if provider is None:
         raise BillingNotConfigured(
             "the billing core has no database connection provider: import app.billing_integration (the agent app's wiring), "
-            "or call app.billing.db.configure(connection=...) before using it"
+            "or call credit_billing.db.configure(connection=...) before using it"
         )
     async with provider() as conn:
         yield conn

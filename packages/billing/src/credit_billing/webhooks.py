@@ -48,10 +48,13 @@ from typing import Literal
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 
-from app.billing import credits, metrics, store
-from app.billing.db import get_connection
-from app.billing.providers.base import BillingEvent, CreditProduct, EventKind
-from app.billing.settings import BILLING_REFUND_HOLD_HOURS, BILLING_WEBHOOK_MAX_ATTEMPTS
+from credit_billing import credits, metrics, store
+from credit_billing.db import get_connection
+from credit_billing.providers.base import BillingEvent, CreditProduct, EventKind
+from credit_billing.settings import (
+    BILLING_REFUND_HOLD_HOURS,
+    BILLING_WEBHOOK_MAX_ATTEMPTS,
+)
 
 logger = logging.getLogger(__name__)
 
