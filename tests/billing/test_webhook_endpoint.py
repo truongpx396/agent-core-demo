@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.routers import billing as billing_router
+from app.billing import http as billing_router
 from app.billing import metrics, providers, webhooks
 from app.billing.providers.fake import FakeProvider
 from tests.billing.contract import NOW

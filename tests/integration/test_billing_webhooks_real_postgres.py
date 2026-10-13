@@ -31,8 +31,8 @@ from fastapi.testclient import TestClient
 from psycopg import errors as pg_errors
 
 from app.agent import budget_holds, budgets
-from app.api.routers import billing as billing_router
 from app.billing import credits, inbox, metrics, store, webhooks
+from app.billing import http as billing_router
 from app.billing.providers.base import BillingEvent, CreditProduct, EventKind
 from tests.billing.contract import HARNESSES, Delivery
 from tests.conftest import metric_value

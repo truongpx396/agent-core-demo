@@ -13,11 +13,17 @@ Four things are enforced, and each has a test of the scanner itself, because a g
      what an AST walk cannot, such as an import reached through `importlib`);
   3. the core refuses to run unwired, and its connection delegates the provider's own transaction;
   4. every host module that imports a core module which uses the database also imports `app.billing_integration`,
-     the package whose import wires the core to the host's pool, so no entry point can reach the core unwired.
+     the package whose import wires the core to the host's pool, so no entry point can reach the core unwired;
+  5. (PR B) nothing under `app/` or `scripts/` outside the two billing packages imports `app.billing` at all: the agent
+     app reaches the wallet only through `app/billing_integration/` (its `port.py`), and the two core operator scripts
+     that PR C moves into the package are the listed exceptions;
+  6. (PR B) no host file outside those packages holds an SQL string that names a core table, because an import scan cannot
+     see `SELECT ... FROM billing_customers` and that is how the host used to reach into the core.
 """
 import ast
 import json
 import os
+import re
 import subprocess
 import sys
 from contextlib import asynccontextmanager
@@ -280,10 +286,13 @@ def test_every_host_module_that_uses_the_core_also_wires_it():
 def test_the_wiring_scan_covers_the_modules_that_use_the_core():
     covered = {path.relative_to(REPO).as_posix() for path in _host_files()}
 
-    assert {"app/agent/usage_events.py", "app/agent/budgets.py", "app/api/routers/usage.py", "app/api/routers/billing.py",
-            "scripts/credits.py", "scripts/billing_inbox_sweep.py"} <= covered
-    users = [p for p in covered if "app.billing" in "\n".join(n for _, n in _imported((REPO / p).read_text(encoding="utf-8"), _package_of(REPO / p)))]
-    assert len(users) >= 8, f"the wiring scan sees too few users of the core ({users}); it may be looking in the wrong place"
+    assert {"app/agent/usage_events.py", "app/agent/budgets.py", "app/api/routers/usage.py", "app/api/main.py",
+            "scripts/credits.py", "scripts/billing_inbox_sweep.py", "scripts/billing_export_worker.py"} <= covered
+    # Since PR B the host reaches the core through app.billing_integration, so the only files outside the two packages that
+    # still import it directly are the core's own operator scripts (they move into the package in PR C). If the scan finds
+    # none, it is looking in the wrong place.
+    users = {p for p in covered if any(_is_core(n) for _, n in _imported((REPO / p).read_text(encoding="utf-8"), _package_of(REPO / p)))}
+    assert {"scripts/credits.py", "scripts/billing_inbox_sweep.py"} <= users, f"the wiring scan does not see the core's own scripts ({sorted(users)})"
 
 
 @pytest.mark.parametrize(
@@ -308,3 +317,160 @@ def test_the_wiring_scan_covers_the_modules_that_use_the_core():
 )
 def test_the_wiring_scanner_flags_exactly_the_unwired_users(source, flagged):
     assert _needs_the_wiring_import(source, "app.agent") is flagged, source
+
+
+# --- (PR B) the seam: the agent app reaches the core only through app.billing_integration -----------------------------
+
+# The core's own operator scripts. They are part of the core in everything but location, and move into the package in PR C;
+# until then they are the only files outside the two packages allowed to import it, and to read its tables.
+_CORE_OPERATOR_SCRIPTS = ("scripts/credits.py", "scripts/billing_inbox_sweep.py")
+
+# The one structural exception: the host's central `Settings` INHERITS the core's `BillingSettings` (so every billing variable is
+# defined once and the app's one settings object still holds it) and re-exports its constants. That is the only file that may
+# import the core, and only the settings module of it: it may not reach `credits` or anything else.
+_MAY_IMPORT_ONLY = {"app/core/config.py": "app.billing.settings"}
+
+
+def _seam_files() -> list[Path]:
+    return [path for path in _host_files() if path.relative_to(REPO).as_posix() not in _CORE_OPERATOR_SCRIPTS]
+
+
+def _allowed_direct_import(path: Path, name: str) -> bool:
+    only = _MAY_IMPORT_ONLY.get(path.relative_to(REPO).as_posix())
+    return only is not None and (name == only or name.startswith(only + "."))
+
+
+def test_nothing_outside_the_seam_imports_the_billing_core():
+    offenders = [
+        f"{path.relative_to(REPO)}:{line}  {name}"
+        for path in _seam_files()
+        for line, name in _imported(path.read_text(encoding="utf-8"), _package_of(path))
+        if _is_core(name) and not _allowed_direct_import(path, name)
+    ]
+
+    assert offenders == [], (
+        "these files import app.billing directly; the agent app reaches the wallet through app.billing_integration "
+        "(app/billing_integration/port.py for the wallet, http.py for the webhook route):\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_one_settings_exception_is_exactly_that_narrow():
+    """`app/core/config.py` may import the core's settings module and nothing else of the core."""
+    config = REPO / "app" / "core" / "config.py"
+
+    assert _allowed_direct_import(config, "app.billing.settings.STRIPE_API_KEY")
+    assert _allowed_direct_import(config, "app.billing.settings")
+    assert not _allowed_direct_import(config, "app.billing.credits")
+    assert not _allowed_direct_import(config, "app.billing.settingsx")  # the prefix trap
+    assert not _allowed_direct_import(REPO / "app" / "agent" / "usage_events.py", "app.billing.settings")
+
+
+def test_the_seam_scan_covers_the_files_that_used_to_import_the_core():
+    covered = {path.relative_to(REPO).as_posix() for path in _seam_files()}
+
+    assert {"app/agent/usage_events.py", "app/agent/budgets.py", "app/api/routers/usage.py", "app/api/main.py",
+            "scripts/billing_export_worker.py", "scripts/credit_reconcile.py"} <= covered
+    assert not covered & set(_CORE_OPERATOR_SCRIPTS), "the exemption list is not being applied"
+    assert all(not path.startswith(("app/billing/", "app/billing_integration/")) for path in covered)
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["from app.billing import credits", "import app.billing.credits", "from app.billing.port import WalletPort", "from app import billing"],
+)
+def test_the_seam_rule_recognises_a_direct_import_of_the_core(source):
+    assert any(_is_core(name) for _, name in _imported(source, "app.agent")), source
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["from app.billing_integration import port", "import app.billing_integration.export", "from app import billing_integration",
+     "from app.core.config import STRIPE_API_KEY"],
+)
+def test_the_seam_rule_allows_the_integration_package_and_the_hosts_own_config(source):
+    assert not any(_is_core(name) for _, name in _imported(source, "app.agent")), source
+
+
+# --- (PR B) SQL that names a core table -----------------------------------------------------------------------------
+
+_CORE_TABLES = (
+    "billing_customers", "credit_accounts", "credit_lots", "credit_transactions", "credit_entries",
+    "credit_products", "billing_webhook_events",
+)
+_TABLE = re.compile(r"\b(" + "|".join(_CORE_TABLES) + r")\b")
+# Uppercase on purpose: every statement in this repo is written that way, and a lowercase "from" next to a table name in an
+# error message or a log line is prose, not SQL.
+_SQL_KEYWORD = re.compile(r"\b(SELECT|INSERT|UPDATE|DELETE|FROM|JOIN|INTO)\b")
+
+
+def _sql_naming_a_core_table(source: str) -> list[tuple[int, str]]:
+    """(line, table) for every string literal (an f-string counts as one, docstrings excluded) that holds both a core table
+    name and an SQL keyword. Comments are not in the AST, so they are never scanned."""
+    tree = ast.parse(source)
+    docstrings = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+        and isinstance(node.body[0].value.value, str)
+    }
+    inside_an_fstring = {id(child) for node in ast.walk(tree) if isinstance(node, ast.JoinedStr) for child in ast.walk(node) if child is not node}
+    hits: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if id(node) in inside_an_fstring:
+            continue
+        if isinstance(node, ast.JoinedStr):
+            text = "".join(part.value for part in node.values if isinstance(part, ast.Constant) and isinstance(part.value, str))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
+            text = node.value
+        else:
+            continue
+        table = _TABLE.search(text)
+        if table and _SQL_KEYWORD.search(text):
+            hits.append((node.lineno, table.group(1)))
+    return hits
+
+
+def test_no_host_file_outside_the_seam_holds_sql_that_names_a_core_table():
+    offenders = [
+        f"{path.relative_to(REPO)}:{line}  {table}"
+        for path in _seam_files()
+        for line, table in _sql_naming_a_core_table(path.read_text(encoding="utf-8"))
+    ]
+
+    assert offenders == [], (
+        "a host file reads or writes a core table with raw SQL; put the statement in app/billing_integration/ (the one host "
+        "place allowed to name a core table) or behind the port:\n  " + "\n  ".join(offenders)
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'q = "SELECT 1 FROM billing_customers"',
+        'q = f"INSERT INTO credit_lots (id) VALUES ({x})"',
+        'q = ("DELETE FROM " "credit_entries WHERE 1 = 1")',  # adjacent literals are one string
+        'await conn.execute("UPDATE credit_accounts SET created_by = %s", (who,))',
+        'def f():\n    return "SELECT * FROM credit_products WHERE active"',
+    ],
+)
+def test_the_sql_scan_recognises_a_statement_that_names_a_core_table(source):
+    assert _sql_naming_a_core_table(source), source
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        '"""SELECT * FROM billing_customers is described here."""\nx = 1',  # a module docstring
+        'def f():\n    """Reads credit_lots: SELECT ... FROM credit_lots."""\n    return 1',  # a function docstring
+        'class C:\n    """FROM credit_entries"""\n    x = 1',
+        '# SELECT * FROM credit_lots\nx = 1',  # a comment
+        'log = "credit_lots drifted"',  # a table name with no SQL keyword
+        'q = "SELECT 1 FROM usage_events"',  # a host table
+        'log = "refused: nothing in credit_accounts, from the gate"',  # lowercase prose
+    ],
+)
+def test_the_sql_scan_ignores_prose_docstrings_comments_and_host_tables(source):
+    assert _sql_naming_a_core_table(source) == [], source
