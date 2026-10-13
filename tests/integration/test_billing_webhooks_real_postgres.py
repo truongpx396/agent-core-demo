@@ -358,12 +358,14 @@ class TestWhatCannotBeAppliedIsQuarantinedNotGuessedAt:
 
     async def test_an_unknown_event_type_is_recorded_as_ignored_with_what_it_was(self, world, harness):
         event_id = world.event_id()
+        delivery = harness.unknown_event_type(event_id)
+        (parsed,) = harness.provider.parse_webhook(delivery.headers, delivery.body)  # what THIS adapter calls the type it was sent
 
-        outcomes = await deliver(harness, harness.unknown_event_type(event_id))
+        outcomes = await deliver(harness, delivery)
 
-        assert outcomes == ["ignored"]
+        assert outcomes == ["ignored"] and parsed.raw_type
         status, _, reason, _, payload = await world.inbox_row(world.provider, event_id)
-        assert (status, reason) == ("ignored", "unhandled_type") and payload["raw_type"] == "invoice.something_new_in_2027"
+        assert (status, reason) == ("ignored", "unhandled_type") and payload["raw_type"] == parsed.raw_type
 
 
 class TestARefund:

@@ -224,11 +224,10 @@ class Settings(BaseSettings):
     billing_providers: str = ""
     # {"provider": "signing secret"} as JSON. SecretStr so the values never show in a repr or a log line.
     billing_webhook_secrets: dict[str, SecretStr] = Field(default_factory=dict)
-    # Credentials for the payment-provider adapters (specs/010 T029). The Stripe adapter reads `stripe_api_key` (to create a
-    # Checkout Session); the Polar adapter is NOT BUILT YET, so nothing reads the `polar_*` values today: they exist so that a
-    # real key is secret-wrapped (never in a repr or a log line), checked for the obvious mistake and listed in `.env.example`
-    # before anyone puts one in `.env`. Use SANDBOX credentials. A webhook signing secret is not here: it goes in
-    # `billing_webhook_secrets` above, per provider.
+    # Credentials for the payment-provider adapters (specs/010 T029). The Stripe adapter reads `stripe_api_key` and the Polar
+    # adapter `polar_access_token` / `polar_environment` (to create a Checkout); both are secret-wrapped (never in a repr or a
+    # log line) and checked for the obvious mistake at startup. Use SANDBOX credentials. A webhook signing secret is not here: it
+    # goes in `billing_webhook_secrets` above, per provider.
     # There is no "usage event name" setting on purpose: the billing model is prepaid packs (spec D16), so no adapter sends
     # usage to a provider and none needs the name of a Stripe Meter or a Polar event. If that ever changes it comes back
     # with the `USAGE_EXPORT` adapter that needs it, not before.
@@ -703,6 +702,8 @@ UNPRICED_MODEL_POLICY = settings.unpriced_model_policy
 USAGE_EVENT_RETENTION_DAYS = settings.usage_event_retention_days
 BUDGET_CHECK_FAILURE_POLICY = settings.budget_check_failure_policy
 STRIPE_API_KEY = settings.stripe_api_key.get_secret_value() if settings.stripe_api_key else ""
+POLAR_ACCESS_TOKEN = settings.polar_access_token.get_secret_value() if settings.polar_access_token else ""
+POLAR_ENVIRONMENT = settings.polar_environment
 CREDITS_PER_USD = settings.credits_per_usd
 MARKUP = settings.markup
 CREDITS_ENFORCEMENT = settings.credits_enforcement

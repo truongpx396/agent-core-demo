@@ -1,0 +1,22 @@
+{
+  "type": "refund.created",
+  "timestamp": "2026-10-08T14:13:39.866878Z",
+  "api_version": "2026-10",
+  "data": {
+    "created_at": "2026-10-08T14:13:39.866878Z",
+    "modified_at": null,
+    "id": "128b2f33-0c5c-4fd0-a6a3-a4506513270e",
+    "metadata": {},
+    "status": "succeeded",
+    "reason": "customer_request",
+    "amount": 1000,
+    "tax_amount": 0,
+    "currency": "usd",
+    "organization_id": "46cc757e-c389-40b8-843f-4e22d6029558",
+    "order_id": "6f03675a-1600-435a-8999-50d836f675cc",
+    "subscription_id": "f29d0da9-953f-48f1-a09f-76b5a170b338",
+    "customer_id": "d3ac94af-0f21-4db6-acad-4a268d116ece",
+    "revoke_benefits": false,
+    "dispute": null
+  }
+}

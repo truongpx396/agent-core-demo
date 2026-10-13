@@ -104,17 +104,17 @@ def test_an_unknown_polar_environment_is_refused(monkeypatch):
         Settings(_env_file=None)
 
 
-def test_the_warning_in_env_example_is_still_true_while_polar_has_no_adapter():
-    """`.env.example` tells the operator that `polar` must not go in BILLING_PROVIDERS because it has no adapter and an
-    unregistered name makes the API refuse to start. When the Polar adapter is registered this fails, which is the prompt
-    to rewrite that comment (and the settings' comment in config.py) instead of leaving it to mislead. (Stripe's adapter
-    landed first, so its warning is gone and `stripe` is the example the comment now gives of a name that works.)"""
-    assert set(providers.FACTORIES) == {"fake", "stripe"}
+def test_the_comment_in_env_example_names_the_adapters_that_exist_and_an_unbuilt_name_still_refuses_to_start():
+    """`.env.example` tells the operator which providers can go in BILLING_PROVIDERS. When an adapter is registered or removed
+    this fails, which is the prompt to rewrite that comment (and the settings' comment in config.py) instead of leaving it to
+    mislead. (Stripe's landed first, then Polar's; PayPal's is the one still unbuilt, so it is the example of a name that refuses.)"""
+    assert set(providers.FACTORIES) == {"fake", "stripe", "polar"}
     with pytest.raises(providers.UnknownProvider):
-        providers.build_configured(("polar",), {"polar": "whsec_x"})
-    assert providers.build_configured(("stripe",), {"stripe": "whsec_x"})["stripe"].name == "stripe"
+        providers.build_configured(("paypal",), {"paypal": "whsec_x"})
+    for name in ("stripe", "polar"):
+        assert providers.build_configured((name,), {name: "whsec_x"})[name].name == name
     example = (Path(__file__).resolve().parents[2] / ".env.example").read_text()
-    assert "POLAR adapter is NOT BUILT YET" in example and "STRIPE adapter is built" in example
+    assert "STRIPE and POLAR adapters are built" in example and "PAYPAL" in example
 
 
 def test_there_is_no_usage_event_name_setting_because_the_model_is_prepaid_packs():

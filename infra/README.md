@@ -378,6 +378,33 @@ psql -U langfuse -d appdata -c "INSERT INTO billing_customers (tenant, provider,
 6. **Prove the wiring** with the real sandbox: `make test-provider-sandbox` creates labelled test objects, starts `stripe listen`, and checks real signed deliveries (needs the
    `stripe` CLI logged in to the same sandbox).
 
+
+### Selling a credit pack with Polar (sandbox first)
+
+(specs/010 T029b. Same model as Stripe: Polar takes the money and signs a webhook; the wallet is the real-time gate; Polar is never told what was consumed.)
+
+1. **In the Polar sandbox** (sandbox.polar.sh, a separate account and organization from production), create a **one-time** Product with a fixed price. The **Product id (a UUID) is the catalog's
+   `product_ref`**. Create a Polar Customer for the tenant; its id is the `customer_ref`. The adapter lists and creates checkouts, so the Organization Access Token needs at least `checkouts:read` and `checkouts:write` (the scopes Polar's SDK lists for those calls; the sandbox run used a token with wider scopes, so the minimum is not verified).
+2. **The signing secret.** A webhook endpoint pointed at `https://<your host>/billing/webhooks/polar` shows one; locally, `polar listen localhost:8000/billing/webhooks/polar` forwards the
+   organization's events signed with `polar listen --print-secret` (a bare 32-character string, not `whsec_`-prefixed, in the sandbox). Either form works: the adapter tries both keys a secret can mean (Polar's
+   docs: a secret made before 2026-09-08 is used as its own UTF-8 bytes, a later one is Standard Webhooks with the base64 remainder decoded). Subscribe to `order.paid` and `order.refunded`; every other event is acknowledged and ignored.
+3. **`.env`** (API and workers alike): `BILLING_PROVIDERS=polar`, `BILLING_WEBHOOK_SECRETS={"polar":"..."}`, `POLAR_ACCESS_TOKEN`, and `POLAR_ENVIRONMENT=sandbox` (the default; `production` is a different API and a
+   different token). Without a token the adapter still verifies deliveries and refuses to create a checkout.
+4. **The catalog and the customer link are SQL today (disclosed: there is no CLI for them):**
+
+```
+psql -U langfuse -d appdata -c "INSERT INTO credit_products (provider, product_ref, credits) VALUES ('polar', '<polar product id>', 5000)"
+psql -U langfuse -d appdata -c "INSERT INTO billing_customers (tenant, provider, customer_ref) VALUES ('acme', 'polar', '<polar customer id>')"
+```
+
+   Unlike Stripe, an Order carries the product and the customer directly, so nothing travels through metadata. A purchase by a Polar customer that is not linked (a buyer who checks out without
+   being pre-linked may arrive as a customer this app has never heard of) or of a product that is not in the catalog is **quarantined, not guessed at** (`unlinked_customer`, `unknown_product`).
+5. **Nothing in the API starts a checkout yet.** `PolarProvider.create_checkout` works, and because Polar has no idempotency for it (a sent `Idempotency-Key` is ignored, verified) it first searches the
+   customer's newest 100 sessions for the product for the same attempt and only then creates one. Two concurrent calls with the same key can each create a session; only an unpaid session results.
+6. **What Polar does not tell you.** There is no dispute or chargeback event in Polar's webhooks, so `DISPUTE_OPENED`/`DISPUTE_CLOSED` are never produced and a chargeback is invisible to the wallet until
+   it shows up as a refund. A renewal's `order.paid` / `order.refunded` (any `billing_reason` but `purchase`) is ignored.
+7. **The real-sandbox test tier for Polar is the next change** (`make test-provider-sandbox` covers Stripe only for now). Until it lands, the adapter's signature handling rests on vectors that Polar's own SDK verifies and on one real Polar-signed delivery checked by hand.
+
 ### Dashboard and alerts
 
 "Credit Billing" in Grafana (`observability/grafana/dashboards/credit-billing.json`): credits outstanding and owed, grant and debit rates, export
