@@ -27,7 +27,7 @@ Constitution Principle VII applies. The default suite must stay hermetic and fas
 
 ## Real-backend tiers
 
-- Markers: `integration`, `llm`, `e2e`, `deepeval`, `crawl`, `sandbox`. Only mark a test with one
+- Markers: `integration`, `llm`, `e2e`, `deepeval`, `crawl`, `sandbox`, `provider_sandbox` (a payment provider's real sandbox over the internet, manual, never CI). Only mark a test with one
   of these if it genuinely needs the real service; a fake-able test belongs in the default tier.
 - Real services come from `tests/containers.py::ensure_postgres/redis/qdrant/ml_service/
   crawl4ai/ollama()`. Each starts its own testcontainer and the test self-skips (never fails) when

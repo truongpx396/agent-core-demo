@@ -389,7 +389,8 @@ Prod runs the same stack on its own droplet ([infra/README.md](infra/README.md))
 | Release gate | `make eval` | `make up`, `pull-models`, `ingest` | manual | Golden set, 5 repetitions per case, grounded-claims threshold |
 | Red team | `make promptfoo-redteam`, `make garak` | Ollama; red team also `GOOGLE_API_KEY` | manual | Adversarial prompts; raw-model jailbreak resistance |
 
-`make test-sandbox` (a real `opensandbox-mcp` round trip) is also manual. Run `make eval` and
+`make test-sandbox` (a real `opensandbox-mcp` round trip) and `make test-provider-sandbox` (a payment provider's real sandbox: real Checkout requests and real signed
+webhook deliveries through `stripe listen`; needs `STRIPE_API_KEY` and the `stripe` CLI, refuses a live-mode key) are also manual. Run `make eval` and
 `make promptfoo` after any prompt, model-alias or retrieval change.
 
 - **Advisory live tests.** Two browser tests need the 3B model to chain several tool calls (a skill, a subagent). They are marked `advisory` and run in their own non-blocking CI step, so a model that stops halfway shows in that step's log instead of failing the job. A failed browser test prints the page transcript (pattern 48).

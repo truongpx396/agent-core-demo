@@ -25,11 +25,13 @@ Every claim below is from Stripe's own documentation (read 2026-10-08) or from a
     least 24 hours; the first result (an error included) is replayed for the same key and the same parameters, and the same key with
     different parameters is an error.
 
-  * **Against a real sandbox, by hand** while writing this (the repeatable test tier is the follow-up PR): a delivery signed by `stripe listen`
-    carries `t`, `v1` AND `v0` and verifies here; the Checkout request below is accepted and returns the session shape the in-repo fake assumes.
-    One finding that no document states plainly: with MANAGED PAYMENTS on (the default for a new account, and for the sandbox used here) Stripe
-    refuses a Checkout line item whose Product has no `tax_code` ("the product tax code is missing", HTTP 400). That is catalog setup, not a
-    request this adapter can fix; set an eligible code on the Product behind each pack's Price.
+  * **Against a real sandbox** (`make test-provider-sandbox`, tests/provider_sandbox/test_stripe_sandbox.py): a real signed delivery
+    carries `t`, `v1` AND `v0` and verifies here; a real `checkout.session.completed` and the real `charge.refunded` for the same
+    payment normalize to a purchase and a refund that share one `payment_ref`; a partial refund is not reported as a full one; and
+    the Checkout request below is accepted and returns the session shape the in-repo fake assumes. One finding that no document
+    states plainly: with MANAGED PAYMENTS on (the default for a new account, and for the sandbox used here) Stripe refuses a Checkout
+    line item whose Product has no `tax_code` ("the product tax code is missing", HTTP 400). That is catalog setup, not a request
+    this adapter can fix; set an eligible code on the Product behind each pack's Price.
 
 ## How a purchase is tied to a refund and to a catalog entry
 
