@@ -1,8 +1,8 @@
 """The usage-export worker: drains `usage_export_outbox` to the providers that bill on usage
-(app/billing/export.py, postgres-init/23-usage-export-outbox.sql; `make billing-export-worker`).
+(app/billing_integration/export.py, postgres-init/23-usage-export-outbox.sql; `make billing-export-worker`).
 
 A long-lived loop, like the queue workers: one pass every `BILLING_EXPORT_INTERVAL_SECONDS`, each pass bounded (a batch, a
-call deadline, an attempt budget, an age limit; see app/billing/export.py). Several replicas are safe: each pass claims its
+call deadline, an attempt budget, an age limit; see app/billing_integration/export.py). Several replicas are safe: each pass claims its
 batch with `FOR UPDATE SKIP LOCKED`, and the provider is given the usage event's id as its own idempotency key.
 
 It serves only the providers that are enabled (`BILLING_PROVIDERS`) AND declare the USAGE_EXPORT capability. Set
@@ -18,7 +18,8 @@ import logging
 import signal
 
 from app.agent import sql_store
-from app.billing import export, providers
+from app.billing import providers
+from app.billing_integration import export
 from app.core.config import (
     BILLING_EXPORT_INTERVAL_SECONDS,
     BILLING_PROVIDERS,

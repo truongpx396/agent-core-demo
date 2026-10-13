@@ -114,7 +114,7 @@ class PolarProvider:
         self._tolerance = tolerance_seconds
         self._transport = transport
         if access_token is None or environment is None:
-            from app.core.config import (  # read at construction, not import: tests re-point the settings
+            from app.billing.settings import (  # read at construction, not import: tests re-point the settings
                 POLAR_ACCESS_TOKEN,
                 POLAR_ENVIRONMENT,
             )

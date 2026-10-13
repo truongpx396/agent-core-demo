@@ -95,6 +95,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Literal
 
+import app.billing_integration  # noqa: F401 - wires the billing core to this app's connection pool (app/billing_integration/__init__.py); a scan requires it of every module that imports app.billing
 from app.agent import budget_holds, budget_policies, spend
 from app.billing import credits
 from app.core import metrics

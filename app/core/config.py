@@ -5,20 +5,34 @@ created and its fields are also re-exported as module constants so existing
 imports (`from app.core.config import QDRANT_URL`) keep working.
 """
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import SettingsConfigDict
+
+# The billing core's own settings (specs/011-billing-module-boundary): ten fields, their validators and the eleven
+# constants below were defined in this file until the core had to stop importing it. `Settings` inherits the class, so
+# nothing about them changed, and the constants are re-exported here so no host importer had to.
+from app.billing.settings import (  # noqa: F401 - re-exports: the billing constants are imported from here by host modules and scripts
+    BILLING_INBOX_MIN_RETENTION_DAYS,
+    BILLING_INBOX_RETENTION_DAYS,
+    BILLING_PROVIDERS,
+    BILLING_REFUND_HOLD_HOURS,
+    BILLING_WEBHOOK_MAX_ATTEMPTS,
+    BILLING_WEBHOOK_MAX_BODY_BYTES,
+    BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE,
+    BILLING_WEBHOOK_SECRETS,
+    POLAR_ACCESS_TOKEN,
+    POLAR_ENVIRONMENT,
+    STRIPE_API_KEY,
+    BillingSettings,
+)
 
 # Also load .env into os.environ so third-party SDKs that read env vars
 # directly (e.g. the Langfuse client) pick up their keys.
 load_dotenv()
 
-
-# The webhook inbox keeps an event for at least this long before the retention sweep may delete it: longer
-# than any payment provider keeps redelivering one, so a sweep never races a retry (app/billing/inbox.py).
-BILLING_INBOX_MIN_RETENTION_DAYS = 30
 
 # A window something still reads must never lose spend: a monthly cap reads back 31 days, the reconciliation up to 35, the export
 # outbox gives up on an unsent event at 30. Retention below this would let the sweep delete spend that is still inside one
@@ -26,11 +40,12 @@ BILLING_INBOX_MIN_RETENTION_DAYS = 30
 USAGE_EVENT_MIN_RETENTION_DAYS = 35
 
 
-class Settings(BaseSettings):
+class Settings(BillingSettings):
     # `hide_input_in_errors`: a ValidationError normally prints the offending raw value (`input_value='...'`). This class
-    # holds API keys and webhook signing secrets, and a settings error is printed at import time, to a terminal or a
-    # container log, so a key pasted into the wrong variable (or a malformed BILLING_WEBHOOK_SECRETS) would be echoed
-    # whole. The error still names the field and the rule; it just no longer repeats the value.
+    # holds API keys and webhook signing secrets (the billing ones are inherited from BillingSettings, which sets the same
+    # option), and a settings error is printed at import time, to a terminal or a container log, so a key pasted into the
+    # wrong variable (or a malformed BILLING_WEBHOOK_SECRETS) would be echoed whole. The error still names the field and
+    # the rule; it just no longer repeats the value.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     # LLM proxy (OpenAI-compatible LiteLLM endpoint)
@@ -215,48 +230,11 @@ class Settings(BaseSettings):
     # be unavailable than serve a tenant it cannot confirm has credit. Only consulted when enforcing.
     credit_check_failure_policy: Literal["open", "closed"] = "open"
 
-    # Money in (specs/010 PR 4, app/billing/webhooks.py, POST /billing/webhooks/{provider}). A provider is
-    # served only if it is NAMED here, and then it MUST have a signing secret: a webhook endpoint that cannot
-    # verify a signature must not exist, so the process refuses to start rather than accept unauthenticated
-    # payments. Empty (the default) means no provider and no webhook route to speak of: every request 404s.
-    # Names are the adapter's `name` (app/billing/providers/__init__.py), e.g. "stripe". "fake" is the in-repo
-    # development and test adapter; do not enable it in production.
-    billing_providers: str = ""
-    # {"provider": "signing secret"} as JSON. SecretStr so the values never show in a repr or a log line.
-    billing_webhook_secrets: dict[str, SecretStr] = Field(default_factory=dict)
-    # Credentials for the payment-provider adapters (specs/010 T029). The Stripe adapter reads `stripe_api_key` and the Polar
-    # adapter `polar_access_token` / `polar_environment` (to create a Checkout); both are secret-wrapped (never in a repr or a
-    # log line) and checked for the obvious mistake at startup. Use SANDBOX credentials. A webhook signing secret is not here: it
-    # goes in `billing_webhook_secrets` above, per provider.
-    # There is no "usage event name" setting on purpose: the billing model is prepaid packs (spec D16), so no adapter sends
-    # usage to a provider and none needs the name of a Stripe Meter or a Polar event. If that ever changes it comes back
-    # with the `USAGE_EXPORT` adapter that needs it, not before.
-    #
-    # Stripe: a server-side key from the sandbox's API keys page. Stripe recommends a restricted key (`rk_`) over a secret
-    # key (`sk_`); a publishable key (`pk_`) cannot do anything on a server and is refused. A webhook-only deployment may leave
-    # it unset: the adapter then verifies deliveries but refuses to create a checkout.
-    stripe_api_key: SecretStr | None = None
-    # Polar: an Organization Access Token. Sandbox and production are separate accounts with separate tokens.
-    polar_access_token: SecretStr | None = None
-    # Which Polar API the adapter talks to. "sandbox" is the default, so nothing reaches production unless it is asked to.
-    polar_environment: Literal["sandbox", "production"] = "sandbox"
-    # A body larger than this is refused (413) BEFORE it is read: an unauthenticated endpoint must not buffer
-    # whatever it is sent. A real payment event is a few KB.
-    billing_webhook_max_body_bytes: int = Field(default=256 * 1024, ge=1024, le=10 * 1024 * 1024)
-    # Per source address, per minute, on the webhook route only. Generous on purpose: a provider redelivering a
-    # backlog must not be throttled into a longer outage, and the signature check, not this, is the defence.
-    billing_webhook_rate_limit_per_minute: int = Field(default=600, ge=1)
-    # How many times one event may fail to apply before it is quarantined (and alerted) instead of retried forever.
-    billing_webhook_max_attempts: int = Field(default=5, ge=1)
-    # A refund can arrive before the purchase it reverses. It is held (the provider is told to retry) until the
-    # purchase has been applied, but only this long, then quarantined: a wait on a counterparty needs a deadline.
-    billing_refund_hold_hours: int = Field(default=24, ge=1)
-    # How long scripts/billing_inbox_sweep.py keeps applied/ignored inbox rows. The floor is not a style choice
-    # (see BILLING_INBOX_MIN_RETENTION_DAYS). The wallet's own idempotency keys, not these rows, are what stop a
-    # late redelivery from granting twice, so the sweep is safe, but the rows are the audit trail of what was received.
-    billing_inbox_retention_days: int = Field(default=400, ge=BILLING_INBOX_MIN_RETENTION_DAYS)
+    # Money in (webhooks, provider credentials, the inbox's retention) is defined in app/billing/settings.py::BillingSettings,
+    # which this class inherits: the ten fields, their validators and their comments moved there when the billing core had to stop
+    # importing this file (specs/011-billing-module-boundary). Nothing about them changed, including every environment variable name.
 
-    # Money out (specs/010 PR 5, app/billing/export.py, `make billing-export-worker`): usage events of a tenant linked to a
+    # Money out (specs/010 PR 5, app/billing_integration/export.py, `make billing-export-worker`): usage events of a tenant linked to a
     # provider that bills on usage are exported through an outbox. All of it is bounded: a loop with no ceiling is how a
     # provider's outage becomes a flood of retries, or events the provider silently discards once they age out.
     billing_export_batch_size: int = Field(default=100, ge=1, le=1000)
@@ -276,7 +254,7 @@ class Settings(BaseSettings):
     # A call that times out may still have landed: it is retried with the same event id, which the provider dedupes.
     billing_export_call_timeout_seconds: int = Field(default=30, ge=1)
 
-    # Reconciliation (specs/010 PR 6, app/billing/reconcile.py, `make credit-reconcile`): the app's events against its own
+    # Reconciliation (specs/010 PR 6, app/billing_integration/reconcile.py, `make credit-reconcile`): the app's events against its own
     # ledger and the gateway's spend log. A difference is drift only above the LARGER of the two tolerances: the fixed one
     # stops a tenant that spent a cent from being reported over rounding, the percentage stops a busy tenant's rounding (the
     # ledger keeps six decimal places a turn, the event twelve a call) from being reported as a gap. SC-001's "stated tolerance".
@@ -308,43 +286,6 @@ class Settings(BaseSettings):
     def _backoff_cap_is_not_below_its_base(self) -> "Settings":
         if self.billing_export_backoff_cap_seconds < self.billing_export_backoff_base_seconds:
             raise ValueError("BILLING_EXPORT_BACKOFF_CAP_SECONDS must be at least BILLING_EXPORT_BACKOFF_BASE_SECONDS")
-        return self
-
-    @field_validator("billing_providers")
-    @classmethod
-    def _provider_names_are_path_safe(cls, value: str) -> str:
-        for name in (part.strip() for part in value.split(",") if part.strip()):
-            if not name.replace("_", "").replace("-", "").isalnum() or not name.islower():
-                raise ValueError(f"BILLING_PROVIDERS entry {name!r} must be lowercase letters, digits, '-' or '_'")
-        return value
-
-    @field_validator("stripe_api_key", "polar_access_token", mode="before")
-    @classmethod
-    def _a_blank_credential_is_unset(cls, value: Any) -> Any:
-        """`STRIPE_API_KEY=` left in `.env` with no value arrives as an empty string. That means "not set", not a key
-        that is empty. (Only a blank is touched here: a real value is never inspected before it is secret-wrapped.)"""
-        return None if isinstance(value, str) and not value.strip() else value
-
-    @field_validator("stripe_api_key")
-    @classmethod
-    def _stripe_key_is_a_server_side_key(cls, value: SecretStr | None) -> SecretStr | None:
-        """The mistake worth catching at startup is pasting the publishable key (`pk_`), which is the first one on Stripe's
-        API keys page and which cannot create anything on a server. The message never repeats the value."""
-        if value is not None and not value.get_secret_value().startswith(("sk_", "rk_")):
-            raise ValueError(
-                "STRIPE_API_KEY must be a secret (sk_) or restricted (rk_) key; a publishable key (pk_) cannot be used on a server"
-            )
-        return value
-
-    @model_validator(mode="after")
-    def _every_enabled_provider_has_a_secret(self) -> "Settings":
-        for name in (part.strip() for part in self.billing_providers.split(",") if part.strip()):
-            secret = self.billing_webhook_secrets.get(name)
-            if secret is None or not secret.get_secret_value().strip():
-                raise ValueError(
-                    f"BILLING_PROVIDERS enables {name!r} but BILLING_WEBHOOK_SECRETS has no secret for it: "
-                    "an endpoint that cannot verify a signature must not start"
-                )
         return self
 
     @field_validator("credits_per_usd", "markup")
@@ -701,20 +642,10 @@ PRICING_REFRESH_SECONDS = settings.pricing_refresh_seconds
 UNPRICED_MODEL_POLICY = settings.unpriced_model_policy
 USAGE_EVENT_RETENTION_DAYS = settings.usage_event_retention_days
 BUDGET_CHECK_FAILURE_POLICY = settings.budget_check_failure_policy
-STRIPE_API_KEY = settings.stripe_api_key.get_secret_value() if settings.stripe_api_key else ""
-POLAR_ACCESS_TOKEN = settings.polar_access_token.get_secret_value() if settings.polar_access_token else ""
-POLAR_ENVIRONMENT = settings.polar_environment
 CREDITS_PER_USD = settings.credits_per_usd
 MARKUP = settings.markup
 CREDITS_ENFORCEMENT = settings.credits_enforcement
 CREDIT_CHECK_FAILURE_POLICY = settings.credit_check_failure_policy
-BILLING_PROVIDERS = tuple(part.strip() for part in settings.billing_providers.split(",") if part.strip())
-BILLING_WEBHOOK_SECRETS = {name: secret.get_secret_value() for name, secret in settings.billing_webhook_secrets.items()}
-BILLING_WEBHOOK_MAX_BODY_BYTES = settings.billing_webhook_max_body_bytes
-BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE = settings.billing_webhook_rate_limit_per_minute
-BILLING_WEBHOOK_MAX_ATTEMPTS = settings.billing_webhook_max_attempts
-BILLING_REFUND_HOLD_HOURS = settings.billing_refund_hold_hours
-BILLING_INBOX_RETENTION_DAYS = settings.billing_inbox_retention_days
 BILLING_EXPORT_BATCH_SIZE = settings.billing_export_batch_size
 BILLING_EXPORT_INTERVAL_SECONDS = settings.billing_export_interval_seconds
 BILLING_EXPORT_MAX_ATTEMPTS = settings.billing_export_max_attempts

@@ -21,9 +21,9 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from app.billing import providers, webhooks
+import app.billing_integration  # noqa: F401 - wires the billing core to this app's connection pool (app/billing_integration/__init__.py); a scan requires it of every module that imports app.billing
+from app.billing import metrics, providers, webhooks
 from app.billing.providers.base import BillingProvider, InvalidPayload, InvalidSignature
-from app.core import metrics
 from app.core.config import (
     BILLING_PROVIDERS,
     BILLING_WEBHOOK_MAX_BODY_BYTES,
