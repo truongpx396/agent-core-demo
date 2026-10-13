@@ -54,6 +54,19 @@ class InvalidPayload(ValueError):
     """The delivery IS authentic but its body is not in a shape this adapter understands."""
 
 
+class CheckoutError(Exception):
+    """A provider would not (or could not) start a checkout. `retryable` says whether trying again with the SAME idempotency key can
+    help (a network failure, a rate limit, a provider fault) or the request itself is wrong and will be refused the same way.
+    The message names the status and the provider's error type/code, never the provider's own message text: a client error can
+    carry a key fragment or a URL."""
+
+    def __init__(self, message: str, *, retryable: bool, status: int | None = None, code: str | None = None):
+        super().__init__(message)
+        self.retryable = retryable
+        self.status = status
+        self.code = code
+
+
 @dataclass(frozen=True)
 class BillingEvent:
     """One provider event, normalized. Deliberately has no tenant (see the module docstring)."""
