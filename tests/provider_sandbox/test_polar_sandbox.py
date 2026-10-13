@@ -11,9 +11,9 @@ verifier; its payload fixtures come from `polar trigger --json`). This proves it
   * the events Polar's own `polar trigger` produces for every type the adapter handles or must ignore normalize as intended, a purchase
     and the refund that reverses it share one `payment_ref`, and a partial refund is not a full one.
 
-What is NOT proved here, and is said so in the PR: a real PAID order. Paying a Polar sandbox checkout takes a browser (a Stripe Elements
-card form), which this tier does not drive, so the purchase and refund events are Polar's SAMPLE events (a generator's payloads, signed by
-Polar's real delivery path), not those of an order a buyer paid.
+What this module does NOT do: pay a checkout (that takes a browser: a Stripe Elements card form), so the purchase and refund events here are
+Polar's SAMPLE events (a generator's payloads, signed by Polar's real delivery path). An order a buyer actually PAID, through a session this
+app's adapter created, is tests/provider_sandbox/test_polar_paid_checkout.py.
 
 Needs: POLAR_ACCESS_TOKEN (an Organization Access Token from sandbox.polar.sh; `POLAR_ENVIRONMENT` must be `sandbox` or the run FAILS) and
 the `polar` CLI logged in to the same organization. It creates labelled objects (`metadata.agent_core_demo_test=true`), archives the

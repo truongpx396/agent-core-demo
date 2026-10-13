@@ -8,12 +8,14 @@ that safe is not exercised by the tier itself (it skips without a key), so it is
   * a LIVE-mode (or any non-test) key, or a Polar deployment configured for production, makes it fail before a request is made, never
     skip and never create;
   * it will not run beside someone's own `stripe listen` / `polar listen`, whose app would receive the tier's sample events too;
-  * what it prints from the provider CLIs, which includes the webhook signing secrets, is redacted.
+  * what it prints from the provider CLIs, which includes the webhook signing secrets, is redacted;
+  * a rate-limited Polar token is reported as that, with how long to wait, not as an unexplained `HTTP 429 None field=None`.
 """
 import ast
 import tomllib
 from pathlib import Path
 
+import httpx
 import pytest
 
 from tests.provider_sandbox import conftest as tier
@@ -251,3 +253,38 @@ class TestTheGuardCoversTheWholeTier:
         monkeypatch.delenv(tier.SHARE_LISTENER, raising=False)
 
         tier.guard_module("tests.provider_sandbox.test_stripe_sandbox")  # does not skip
+
+
+class TestAPolarRateLimitIsNamedNotDecoded:
+    """Polar's sandbox allows 100 requests a minute per token and answers an excess with an EMPTY 429; one token that ran sixteen paid checkouts in
+    about 80 minutes was locked out for 3570 s. The helper's failure used to read `HTTP 429 None field=None`, and a fixture error that no summary line
+    counted looked like a mutant that survived."""
+
+    def refused(self, **headers) -> str:
+        with pytest.raises(AssertionError) as caught:
+            tier.PolarSandbox._check(httpx.Response(429, headers=headers), "POST /refunds/")
+        return str(caught.value)
+
+    def test_it_says_it_is_the_rate_limit_and_how_long_to_wait(self):
+        said = self.refused(**{"retry-after": "3570"})
+
+        assert "429" in said and "rate limit" in said and "3570" in said and "POST /refunds/" in said
+
+    def test_it_tells_the_operator_not_to_run_the_tier_again_until_then(self):
+        assert "Do not run the tier again" in self.refused(**{"retry-after": "60"})
+
+    def test_a_missing_retry_after_is_still_named(self):
+        said = self.refused()
+
+        assert "rate limit" in said and "unstated" in said
+
+    def test_other_failures_still_name_status_error_and_field(self):
+        response = httpx.Response(422, json={"error": "RequestValidationError", "detail": [{"loc": ["body", "order_id"]}]})
+
+        with pytest.raises(AssertionError) as caught:
+            tier.PolarSandbox._check(response, "POST /refunds/")
+
+        assert "HTTP 422" in str(caught.value) and "body" in str(caught.value) and "order_id" in str(caught.value)
+
+    def test_a_success_still_returns_its_body(self):
+        assert tier.PolarSandbox._check(httpx.Response(200, json={"id": "x"}), "GET /orders/") == {"id": "x"}
