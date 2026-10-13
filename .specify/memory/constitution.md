@@ -176,7 +176,7 @@ cannot be judged or safely changed later.
   Appdata access goes through `app/agent/sql_store.py`'s pooled `get_connection()`; the only
   other direct psycopg users are the checkpointer pool (`app/agent/runtime.py`) and the health
   probe (`app/api/health.py`). A self-contained package opens no pool of its own: it receives that
-  connection by injection from the host (`app/billing/db.py::configure`) and refuses (fails
+  connection by injection from the host (`credit_billing.db.configure`) and refuses (fails
   closed) when none was supplied.
 - **Schema changes**: add a new numbered `postgres-init/NN-*.sql` that continues the sequence.
   Prefer a new script over editing an applied one. State in the script's header how an existing
@@ -193,8 +193,8 @@ cannot be judged or safely changed later.
   handler MUST be safe under redelivery (Principle IV).
 - **Configuration**: tunables live in `app/core/config.py` `Settings` (pydantic-settings, read
   from `.env`) with a matching `.env.example` entry. A self-contained package may define its own
-  settings class (e.g. `app/billing/settings.py::BillingSettings`) that `Settings` inherits, so each
-  variable is defined once and keeps its name and its `.env.example` entry. Secrets (`.env`,
+  settings class (e.g. `credit_billing.settings.BillingSettings`) that `Settings` inherits, so
+  each variable is defined once and keeps its name and its `.env.example` entry. Secrets (`.env`,
   `CREDENTIALS.local.md`) MUST NOT be committed or echoed into logs, traces, or docs.
 - **Dependencies**: `requirements.txt` is the human-edited source and every non-obvious pin
   carries a reason comment; `requirements-lock.txt` is machine-generated and is what Docker and
@@ -202,18 +202,20 @@ cannot be judged or safely changed later.
 - **Observability**: structlog JSON logs correlated by `run_id`; metrics via
   `app/core/metrics.py` pushed over OTLP with explicit histogram buckets (a self-contained package
   defines its own counters on the OpenTelemetry API in its own module, e.g.
-  `app/billing/metrics.py`, and never imports the host's; the host process still installs the SDK
+  `credit_billing.metrics`, and never imports the host's; the host process still installs the SDK
   and the exporter); Langfuse tracing keyed by `thread_id`. Every node is wrapped by
   `_instrumented` at registration time in `build_graph`, never inside the node body.
 - **Self-contained packages**: a module built to be extracted from this repository (today
-  `app/billing/`, reached by the app through `app/billing_integration/`) follows these rules.
+  `packages/billing/`, imported as `credit_billing`, reached by the app through
+  `app/billing_integration/`) follows these rules.
   - It imports only itself and third-party libraries, never the host (`app.agent`, `app.core`,
     `app.api`, and so on). The host reaches it only through one integration package, and what the
     package needs from the host arrives by injection (its connection) or is defined in it (its
     settings, its metrics).
   - The boundary is enforced in both directions by a test that fails the build, not by convention
-    (`tests/billing/test_billing_core_boundary.py`); a package is not self-contained until such a
-    test exists.
+    (`tests/billing/test_billing_core_boundary.py` for the app's side,
+    `packages/billing/tests/test_boundary.py` for the package's); a package is not self-contained
+    until such a test exists.
   - Principles I, II and IV apply to it unchanged: tenant scoping inside its own queries, no
     module that defines or serves a tool may import it or its integration package, and its
     writes are idempotent at the target.
@@ -262,4 +264,4 @@ states the intent and the conflicting document MUST be corrected.
 - **Runtime guidance**: day-to-day development guidance for agents and contributors lives in
   `CLAUDE.md` and `.claude/rules/`; those files MUST NOT contradict this constitution.
 
-**Version**: 1.1.0 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-10-14
+**Version**: 1.1.1 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-10-14
