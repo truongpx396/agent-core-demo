@@ -329,7 +329,7 @@ class TestWhatItDoesNotUnderstand:
     @pytest.mark.parametrize(
         "event_type",
         ["order.created", "order.updated", "refund.created", "refund.updated", "checkout.created", "checkout.updated", "checkout.expired",
-         "subscription.created", "subscription.revoked", "customer.created", "benefit_grant.created", "product.updated"],
+         "subscription.created", "subscription.cycled", "subscription.revoked", "customer.created", "benefit_grant.created", "product.updated"],
     )
     def test_every_other_event_is_ignored_and_keeps_no_references(self, event_type):
         payload = order()

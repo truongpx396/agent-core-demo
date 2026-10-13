@@ -376,7 +376,8 @@ psql -U langfuse -d appdata -c "INSERT INTO billing_customers (tenant, provider,
 5. **Nothing in the API starts a checkout yet.** `StripeProvider.create_checkout` works (the sandbox test calls it) but no route calls it, so today a pack is bought only from
    code; a session made any other way (a Payment Link, the Dashboard) carries no `metadata.product_ref` and is quarantined as `unknown_product`.
 6. **Prove the wiring** with the real sandbox: `make test-provider-sandbox` creates labelled test objects, starts `stripe listen`, and checks real signed deliveries (needs the
-   `stripe` CLI logged in to the same sandbox).
+   `stripe` CLI logged in to the same sandbox). It **skips while you have your own `stripe listen` (or `polar listen`) running**: every trigger is delivered to every listening session of the
+   account, so your local app would receive the tier's events too. Stop yours, or set `PROVIDER_SANDBOX_SHARE_LISTENER=1` to accept that.
 
 
 ### Selling a credit pack with Polar (sandbox first)
@@ -403,7 +404,7 @@ psql -U langfuse -d appdata -c "INSERT INTO billing_customers (tenant, provider,
    customer's newest 100 sessions for the product for the same attempt and only then creates one. Two concurrent calls with the same key can each create a session; only an unpaid session results.
 6. **What Polar does not tell you.** There is no dispute or chargeback event in Polar's webhooks, so `DISPUTE_OPENED`/`DISPUTE_CLOSED` are never produced and a chargeback is invisible to the wallet until
    it shows up as a refund. A renewal's `order.paid` / `order.refunded` (any `billing_reason` but `purchase`) is ignored.
-7. **The real-sandbox test tier for Polar is the next change** (`make test-provider-sandbox` covers Stripe only for now). Until it lands, the adapter's signature handling rests on vectors that Polar's own SDK verifies and on one real Polar-signed delivery checked by hand.
+7. **Prove the wiring** with `make test-provider-sandbox` (see Stripe, step 6, for the listener caveat). The checkout half runs against the real API; the delivery half needs the `polar` CLI logged in to the same organization.
 
 ### Dashboard and alerts
 

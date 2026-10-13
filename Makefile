@@ -201,7 +201,7 @@ test-sandbox:  ## Real OpenSandbox MCP round trip (pattern 50) — needs `make s
 	pytest -m sandbox -q -s
 
 .PHONY: test-provider-sandbox
-test-provider-sandbox:  ## A payment provider's real SANDBOX (specs/010 T029): real Checkout requests and REAL signed webhook deliveries via `stripe listen`. Needs STRIPE_API_KEY (a test-mode key) in .env and the `stripe` CLI; self-skips without them, refuses a live key. Creates labelled objects in the sandbox. Deliberately manual — never CI
+test-provider-sandbox:  ## A payment provider's real SANDBOX (specs/010 T029): real Checkout requests and REAL signed webhook deliveries via `stripe listen` / `polar listen` (Stripe, Polar). Needs STRIPE_API_KEY (test-mode) and/or POLAR_ACCESS_TOKEN (POLAR_ENVIRONMENT=sandbox) in .env plus the provider's CLI; self-skips without them or beside your own `listen`, refuses a live key. Creates labelled objects in the sandbox. Deliberately manual — never CI
 	pytest -m provider_sandbox -q -s -p no:xdist
 
 lint:  ## Static checks: ruff (style/correctness) — see pyproject.toml's [tool.ruff]
