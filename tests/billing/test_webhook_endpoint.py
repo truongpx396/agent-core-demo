@@ -14,9 +14,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routers import billing as billing_router
-from app.billing import providers, webhooks
+from app.billing import metrics, providers, webhooks
 from app.billing.providers.fake import FakeProvider
-from app.core import metrics
 from tests.billing.contract import NOW
 from tests.conftest import metric_value
 

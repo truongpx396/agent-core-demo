@@ -10,8 +10,8 @@ from decimal import Decimal
 
 import pytest
 
-from app.billing import export
 from app.billing.providers.base import ExportFailure, ExportResult, UsageEvent
+from app.billing_integration import export
 
 BASE, CAP, MAX = 30, 3600, 5
 

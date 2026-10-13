@@ -8,8 +8,8 @@ from decimal import Decimal as D
 
 import pytest
 
-from app.billing import reconcile
-from app.billing.reconcile import Finding, Report, Tolerance, Window
+from app.billing_integration import reconcile
+from app.billing_integration.reconcile import Finding, Report, Tolerance, Window
 from app.core import metrics
 from scripts import credit_reconcile
 from tests.conftest import metric_value

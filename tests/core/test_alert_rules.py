@@ -23,7 +23,8 @@ def _rules() -> list[dict]:
 
 
 def _defined_metrics() -> set[str]:
-    source = (REPO / "app/core/metrics.py").read_text()
+    # The host defines most metrics; the billing core defines its own four (spec 011: it cannot import the host registry).
+    source = "\n".join((REPO / name).read_text() for name in ("app/core/metrics.py", "app/billing/metrics.py"))
     return set(re.findall(r'^\w+ = (?:Counter|Histogram|Gauge)\(\s*"([a-z_]+)"', source, re.MULTILINE))
 
 

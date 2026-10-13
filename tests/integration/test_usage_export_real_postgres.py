@@ -28,9 +28,10 @@ import pytest
 from psycopg import errors as pg_errors
 
 from app.agent import usage_events
-from app.billing import export, providers, store
+from app.billing import providers, store
 from app.billing.providers.base import ExportResult
 from app.billing.providers.fake import FakeProvider
+from app.billing_integration import export
 from app.core import metrics
 from tests.conftest import metric_value
 from tests.containers import ensure_postgres

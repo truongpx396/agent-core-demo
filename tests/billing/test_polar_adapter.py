@@ -737,8 +737,8 @@ class TestWhatItDeclares:
         assert providers.build("polar", NEW_SECRET).name == "polar"
 
     def test_the_token_and_the_environment_come_from_the_settings_when_they_are_not_passed(self, monkeypatch):
-        monkeypatch.setattr("app.core.config.POLAR_ACCESS_TOKEN", "polar_oat_from_settings")
-        monkeypatch.setattr("app.core.config.POLAR_ENVIRONMENT", "production")
+        monkeypatch.setattr("app.billing.settings.POLAR_ACCESS_TOKEN", "polar_oat_from_settings")
+        monkeypatch.setattr("app.billing.settings.POLAR_ENVIRONMENT", "production")
 
         from_settings = PolarProvider(NEW_SECRET)
 

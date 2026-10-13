@@ -474,7 +474,7 @@ class TestWhatItDeclares:
         assert providers.build("stripe", "whsec_x").name == "stripe"
 
     def test_the_api_key_comes_from_the_settings_when_it_is_not_passed(self, monkeypatch):
-        monkeypatch.setattr("app.core.config.STRIPE_API_KEY", "sk_test_from_settings")
+        monkeypatch.setattr("app.billing.settings.STRIPE_API_KEY", "sk_test_from_settings")
 
         assert StripeProvider(SECRET)._api_key == "sk_test_from_settings"
         assert StripeProvider(SECRET, api_key="explicit")._api_key == "explicit"

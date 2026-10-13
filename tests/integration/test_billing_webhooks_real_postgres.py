@@ -32,9 +32,8 @@ from psycopg import errors as pg_errors
 
 from app.agent import budget_holds, budgets
 from app.api.routers import billing as billing_router
-from app.billing import credits, inbox, store, webhooks
+from app.billing import credits, inbox, metrics, store, webhooks
 from app.billing.providers.base import BillingEvent, CreditProduct, EventKind
-from app.core import metrics
 from tests.billing.contract import HARNESSES, Delivery
 from tests.conftest import metric_value
 from tests.containers import ensure_postgres
