@@ -54,7 +54,10 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Literal
 
+from psycopg import AsyncConnection
+
 from app.agent.sql_store import get_connection
+from app.billing import providers as provider_registry
 from app.billing.providers.base import (
     BillingCustomer,
     BillingProvider,
@@ -74,6 +77,36 @@ from app.core.config import (
 logger = logging.getLogger(__name__)
 
 Status = Literal["sent", "pending", "failed"]
+
+
+# --- what the host's usage-event write and the export worker need from the provider registry and the customer link -----
+# They live here, not in `usage_events.py` or the worker, because this package is the one place on the host's side that may
+# know the core's table names and registry (spec 011 D19). Each does exactly what the code it replaced did.
+
+def usage_export_providers(names: tuple[str, ...]) -> tuple[str, ...]:
+    """Which of the enabled providers bill on usage. Read from the adapter CLASS, so it needs no secret and no instance: the
+    usage-event write asks it on the hot path, and "none" must cost nothing."""
+    return provider_registry.usage_export_providers(names)
+
+
+def configured_adapters(names: tuple[str, ...], secrets: Mapping[str, str]) -> dict[str, BillingProvider]:
+    """The adapters for the providers a process serves; raises for a name no adapter is registered under or one with no secret."""
+    return provider_registry.build_configured(names, secrets)
+
+
+async def enqueue_in(conn: AsyncConnection, event_id: str, tenant: str, exporters: Sequence[str]) -> None:
+    """Queues the usage event for every usage-billing provider in `exporters` this tenant is linked to, inside a savepoint on
+    the caller's connection so a fault undoes only the queuing. RAISES on a fault: the caller decides what a failed enqueue
+    means (`usage_events._enqueue_export` counts it and carries on, because the meter outranks the export). A tenant with no
+    such link inserts nothing: the SELECT is over `billing_customers`, so the outbox only ever holds events someone has a
+    customer to send them under."""
+    async with conn.transaction():
+        await conn.execute(
+            "INSERT INTO usage_export_outbox (provider, event_id, tenant) "
+            "SELECT c.provider, %(event_id)s, %(tenant)s FROM billing_customers c "
+            "WHERE c.tenant = %(tenant)s AND c.provider = ANY(%(providers)s) ON CONFLICT (provider, event_id) DO NOTHING",
+            {"event_id": event_id, "tenant": tenant, "providers": list(exporters)},
+        )
 
 
 @dataclass(frozen=True)

@@ -82,11 +82,11 @@ from decimal import ROUND_HALF_UP, Decimal
 from psycopg import AsyncConnection
 from psycopg import errors as pg_errors
 
-import app.billing_integration  # noqa: F401 - wires the billing core to this app's connection pool (app/billing_integration/__init__.py); a scan requires it of every module that imports app.billing
 from app.agent.model_resolver import resolve_model
 from app.agent.pricing import PricedCall
 from app.agent.sql_store import get_connection
-from app.billing import credits, providers
+from app.billing_integration import export
+from app.billing_integration import port as billing_port
 from app.core import metrics
 from app.core.config import (
     BILLING_PROVIDERS,
@@ -190,7 +190,7 @@ def _rating(priced: PricedCall) -> dict:
     if priced.cost_usd is not None:
         cost = Decimal(str(priced.cost_usd)).quantize(_COST_UNIT, rounding=ROUND_HALF_UP)
         rating["cost_usd"] = cost
-        rating["credits"] = credits.credits_for_cost(cost, CREDITS_PER_USD, MARKUP)
+        rating["credits"] = billing_port.credits_for_cost(cost, CREDITS_PER_USD, MARKUP)
     return rating
 
 
@@ -233,18 +233,13 @@ async def _insert(row: dict) -> bool:
 async def _enqueue_export(conn: AsyncConnection, row: dict) -> None:
     """Queues the event for every usage-billing provider this tenant is linked to (and this process has enabled), inside a
     savepoint so a fault undoes only the queuing. Never raises. A tenant with no such link inserts nothing: the SELECT is
-    over `billing_customers`, so the outbox only ever holds events someone has a customer to send them under."""
-    exporters = providers.usage_export_providers(BILLING_PROVIDERS)
+    over `billing_customers` (the statement lives in `app/billing_integration/export.py::enqueue_in`, the one place on the host's
+    side that may name a core table), so the outbox only ever holds events someone has a customer to send them under."""
+    exporters = export.usage_export_providers(BILLING_PROVIDERS)
     if not exporters:
         return
     try:
-        async with conn.transaction():
-            await conn.execute(
-                "INSERT INTO usage_export_outbox (provider, event_id, tenant) "
-                "SELECT c.provider, %(event_id)s, %(tenant)s FROM billing_customers c "
-                "WHERE c.tenant = %(tenant)s AND c.provider = ANY(%(providers)s) ON CONFLICT (provider, event_id) DO NOTHING",
-                {"event_id": row["event_id"], "tenant": row["tenant"], "providers": list(exporters)},
-            )
+        await export.enqueue_in(conn, row["event_id"], row["tenant"], exporters)
     except Exception as exc:  # noqa: BLE001 - a failure to queue must not lose the event it concerns; counted and alerted instead (UsageExportEnqueueFailing)
         _degraded("export_enqueue")
         logger.warning("usage_export_enqueue_failed", extra={"error_class": type(exc).__name__})
@@ -256,14 +251,13 @@ async def _charge(conn: AsyncConnection, row: dict) -> None:
     charge, because a lost event cannot be repaired and an uncharged one can). Never raises."""
     try:
         async with conn.transaction():
-            await credits.debit_in(
+            await billing_port.record_usage_in(
                 conn,
                 row["tenant"],
                 row["credits"],
-                idempotency_key=row["event_id"],
-                usage_event_id=row["event_id"],
-                reason=f"model call ({row['kind']})",
-                pricing=credits.Pricing(
+                event_id=row["event_id"],
+                kind=row["kind"],
+                pricing=billing_port.Pricing(
                     cost_usd=row["cost_usd"], credits_per_usd=row["credits_per_usd"], markup=row["markup"]
                 ),
             )
