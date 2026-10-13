@@ -14,6 +14,7 @@ Idempotent: a re-run before more rows age out deletes nothing.
 import asyncio
 import logging
 
+import app.billing_integration  # noqa: F401 - wires the billing core to this app's connection pool (app/billing_integration/__init__.py); a scan requires it of every module that imports app.billing
 from app.billing.inbox import SWEEP_BATCH_SIZE, SWEEP_MAX_BATCHES, sweep_old_rows
 from app.core.config import BILLING_INBOX_RETENTION_DAYS
 from app.core.job_runtime import scheduled_job

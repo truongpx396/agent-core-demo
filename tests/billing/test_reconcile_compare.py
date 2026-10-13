@@ -7,7 +7,7 @@ from decimal import Decimal as D
 import pytest
 
 from app.agent.gateway import end_user_id
-from app.billing.reconcile import (
+from app.billing_integration.reconcile import (
     Finding,
     Tolerance,
     Window,

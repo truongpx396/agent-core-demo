@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends
 
+import app.billing_integration  # noqa: F401 - wires the billing core to this app's connection pool (app/billing_integration/__init__.py); a scan requires it of every module that imports app.billing
 from app.agent import budgets, spend
 from app.api.deps import get_ctx
 from app.api.schemas import BudgetStatus, CreditBalance, UsageResponse

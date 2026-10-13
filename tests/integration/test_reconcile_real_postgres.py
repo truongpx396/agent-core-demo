@@ -22,8 +22,9 @@ import pytest
 from app.agent import usage_events
 from app.agent.gateway import end_user_id
 from app.agent.pricing import ModelPrice, PricedCall
-from app.billing import credits, reconcile
-from app.billing.reconcile import Tolerance, Window
+from app.billing import credits
+from app.billing_integration import reconcile
+from app.billing_integration.reconcile import Tolerance, Window
 from tests.billing.fake_gateway import FakeGateway, spend_row
 from tests.containers import ensure_postgres
 

@@ -47,8 +47,8 @@ from typing import Literal
 
 from psycopg import AsyncConnection
 
-from app.agent.sql_store import get_connection
-from app.core import metrics
+from app.billing import metrics
+from app.billing.db import get_connection
 
 logger = logging.getLogger(__name__)
 

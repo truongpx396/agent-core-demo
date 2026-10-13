@@ -82,6 +82,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from psycopg import AsyncConnection
 from psycopg import errors as pg_errors
 
+import app.billing_integration  # noqa: F401 - wires the billing core to this app's connection pool (app/billing_integration/__init__.py); a scan requires it of every module that imports app.billing
 from app.agent.model_resolver import resolve_model
 from app.agent.pricing import PricedCall
 from app.agent.sql_store import get_connection

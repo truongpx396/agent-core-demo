@@ -10,7 +10,11 @@ from decimal import Decimal as D
 import httpx
 import pytest
 
-from app.billing.reconcile import GATEWAY_PAGE_SIZE, Window, fetch_gateway_spend
+from app.billing_integration.reconcile import (
+    GATEWAY_PAGE_SIZE,
+    Window,
+    fetch_gateway_spend,
+)
 from tests.billing.fake_gateway import API_KEY, FakeGateway, spend_row
 
 START = datetime(2026, 10, 6, 0, 0, 0, tzinfo=UTC)

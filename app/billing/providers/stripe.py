@@ -117,7 +117,7 @@ class StripeProvider:
         self._transport = transport
         self._api_base = api_base
         if api_key is None:
-            from app.core.config import (
+            from app.billing.settings import (
                 STRIPE_API_KEY,  # read at construction, not import: tests re-point the settings
             )
 

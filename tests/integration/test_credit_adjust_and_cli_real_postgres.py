@@ -16,8 +16,7 @@ import psycopg
 import pytest
 
 from app.agent import sql_store
-from app.billing import credits
-from app.core import metrics
+from app.billing import credits, metrics
 from scripts import credits as cli
 from tests.conftest import metric_value
 from tests.containers import ensure_postgres

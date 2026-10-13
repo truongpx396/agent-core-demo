@@ -30,6 +30,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
+import app.billing_integration  # noqa: F401 - wires the billing core to this app's connection pool (app/billing_integration/__init__.py); a scan requires it of every module that imports app.billing
 from app.agent import sql_store
 from app.billing import credits
 from app.billing.display import printable

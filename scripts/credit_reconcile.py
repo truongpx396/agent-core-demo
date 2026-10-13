@@ -1,4 +1,4 @@
-"""Reconcile usage events against the ledger, the gateway's spend log and the wallets (app/billing/reconcile.py;
+"""Reconcile usage events against the ledger, the gateway's spend log and the wallets (app/billing_integration/reconcile.py;
 specs/010 T026; `make credit-reconcile`, `make credit-reconcile-worker`).
 
     # one pass over today and yesterday (UTC), printed; exit 0 = records agree, 1 = drift, 2 = could not finish
@@ -33,7 +33,7 @@ import httpx
 
 from app.agent import sql_store
 from app.agent.model_resolver import admin_base_url
-from app.billing import reconcile
+from app.billing_integration import reconcile
 from app.core.config import (
     CREDIT_RECONCILE_INTERVAL_SECONDS,
     CREDIT_RECONCILE_LOOKBACK_DAYS,

@@ -11,8 +11,8 @@ import pytest
 from psycopg import errors as pg_errors
 
 from app.agent.gateway import end_user_id
-from app.billing import reconcile
-from app.billing.reconcile import Report, Tolerance, Window
+from app.billing_integration import reconcile
+from app.billing_integration.reconcile import Report, Tolerance, Window
 from app.core import metrics
 from tests.billing.fake_gateway import FakeGateway, spend_row
 from tests.conftest import _METRIC_READER, metric_value

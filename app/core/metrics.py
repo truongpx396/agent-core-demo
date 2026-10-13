@@ -496,31 +496,12 @@ agent_unpriced_usage_total = Counter(
     ["model_alias"],
 )
 
-agent_credit_overdraft_total = Counter(
-    "agent_credit_overdraft_total",
-    "Debits larger than the tenant's available credits (app/billing/credits.py): the model call "
-    "had already happened, so the shortfall was booked as overdraft instead of refused. With "
-    "gating on this should stay near zero; sustained growth means usage is outrunning the wallet "
-    "(a missed top-up, or gating off).",
-)
-
 agent_credit_enforcement_refused_total = Counter(
     "agent_credit_enforcement_refused_total",
     "Turns refused before any model work because the tenant's wallet had no available credits "
     "(app/agent/budgets.py, ErrorCode.INSUFFICIENT_CREDITS). Normal operation for a prepaid tenant that "
     "has run out, so it is a rate to watch, not an alert. It has no tenant label (who is in the log line).",
 )
-
-agent_billing_webhook_total = Counter(
-    "agent_billing_webhook_total",
-    "Payment-provider webhook deliveries by outcome (POST /billing/webhooks/{provider}, app/billing/webhooks.py). "
-    "`quarantined` means a customer PAID and was granted nothing and nobody is retrying: it pages "
-    "(BillingWebhookQuarantined). `failed` means applying it raised and the provider will retry: it pages too "
-    "(BillingWebhookFailing), because a sustained database fault would otherwise surface only as a provider's "
-    "dashboard. `invalid_signature` is a forged or misconfigured delivery. `provider` is a configured adapter "
-    "name or `unknown` (never the caller's own string: an unauthenticated route must not mint label values).",
-    ["provider", "outcome"],
-)  # outcome: applied | duplicate | ignored | quarantined | retry | failed | invalid_signature | invalid_payload | unknown_provider | too_large
 
 agent_usage_export_total = Counter(
     "agent_usage_export_total",
@@ -541,22 +522,6 @@ agent_usage_export_oldest_pending_age_seconds = Gauge(
     "resolves on its own. The worker's own liveness is not alerted yet; Prometheus cannot tell a worker that never ran from one that died.",
     unit="s",
     labelnames=["provider"],
-)
-
-agent_credit_granted_total = Counter(
-    "agent_credit_granted_total",
-    "Credits added to wallets (app/billing/credits.py), by lot source: purchase | subscription | promo | manual | "
-    "adjustment. Counted when the grant is applied, inside the caller's transaction, so one that later rolls back "
-    "is over-counted: this is a rate for a dashboard, and the wallet's entries are the record.",
-    ["source"],
-)
-
-agent_credit_debited_total = Counter(
-    "agent_credit_debited_total",
-    "Credits taken from wallets, by transaction kind: debit (a model call) | clawback (a refund) | adjust (an "
-    "operator correction). Expiry is not here: it is credits that left unused, not credits used. Counted at apply "
-    "time like agent_credit_granted_total, with the same caveat.",
-    ["kind"],
 )
 
 agent_credit_outstanding = Gauge(
