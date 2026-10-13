@@ -174,6 +174,14 @@ class PolarSandbox:
 
     @staticmethod
     def _check(response: httpx.Response, what: str) -> dict:
+        if response.status_code == 429:
+            # Polar documents 100 requests a minute for the sandbox, per token, and answers with an EMPTY body. A token that ran sixteen
+            # paid checkouts in about 80 minutes was locked out for 3570 s (seen 2026-10-13; an earlier, shorter block had cleared by itself), and
+            # the bare status line used to read `HTTP 429 None field=None`: say what it is and how long to wait, since another run only makes it worse.
+            raise AssertionError(
+                f"Polar {what}: HTTP 429, the sandbox rate limit; retry after {response.headers.get('retry-after', 'an unstated time')} s. "
+                "Do not run the tier again until then"
+            )
         if response.status_code >= 300:
             body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
             detail = body.get("detail")
@@ -232,6 +240,7 @@ def polar_sandbox(polar_token):
         sandbox.get("/organizations/")
     except (httpx.HTTPError, AssertionError) as exc:
         sandbox.close()
-        pytest.skip(f"the Polar sandbox is not reachable with this token ({type(exc).__name__})")
+        why = str(exc) if isinstance(exc, AssertionError) else type(exc).__name__  # `_check` words are safe by construction
+        pytest.skip(f"the Polar sandbox is not reachable with this token ({why})")
     yield sandbox
     sandbox.close()
