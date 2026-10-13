@@ -1,4 +1,4 @@
-"""The export worker's decisions as pure functions (app/billing/export.py): how long a failed event waits, and what
+"""The export worker's decisions as pure functions (packages/billing/src/credit_billing/export.py): how long a failed event waits, and what
 becomes of each event given what the provider said. No database and no provider, so every rule has its own test.
 
 What the database and a real send then do with them (one delivery however many times it is retried, two workers never
@@ -10,8 +10,8 @@ from decimal import Decimal
 
 import pytest
 
-from app.billing.providers.base import ExportFailure, ExportResult, UsageEvent
 from app.billing_integration import export
+from credit_billing.providers.base import ExportFailure, ExportResult, UsageEvent
 
 BASE, CAP, MAX = 30, 3600, 5
 

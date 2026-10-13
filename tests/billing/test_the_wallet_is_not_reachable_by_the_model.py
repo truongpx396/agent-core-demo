@@ -5,7 +5,7 @@ never a tool call. A tool the model can choose is a tool a poisoned document can
 a wallet from one would be a write the approval gate exists to stop: the fix is that no such tool exists.
 
 This is structural rather than a list of names: a tool cannot reach the wallet without importing it, so
-no module that defines or serves agent tools may import `app.billing` at all, nor `app.billing_integration`
+no module that defines or serves agent tools may import `credit_billing` (the billing package) at all, nor `app.billing_integration`
 (the host's side of the same boundary: it wires the wallet to the pool and holds the reconciliation and export that
 read it; specs/011-billing-module-boundary). (`usage_events`, which
 is not a tool module, is where the wallet is debited, and `budgets`, which is not one either, is where it
@@ -27,20 +27,20 @@ TOOL_MODULES = [
 ]
 
 
-# `app.billing` is the wallet; `app.billing_integration` is the agent app's side of it. Neither may be reached from a tool.
-_WALLET_PACKAGES = (["app", "billing"], ["app", "billing_integration"])
+def _is_wallet(module: str) -> bool:
+    """`credit_billing` is the wallet (the package); `app.billing_integration` is the agent app's side of it. Neither may be
+    reached from a tool. The dot matters: `credit_billingx` is not the package."""
+    return any(module == name or module.startswith(name + ".") for name in ("credit_billing", "app.billing_integration"))
 
 
 def _imports_billing(path: Path) -> bool:
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-        if isinstance(node, ast.Import) and any(a.name.split(".")[0:2] in _WALLET_PACKAGES for a in node.names):
+        if isinstance(node, ast.Import) and any(_is_wallet(a.name) for a in node.names):
             return True
-        if isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            if module.split(".")[0:2] in _WALLET_PACKAGES or (
-                module == "app" and any(a.name in ("billing", "billing_integration") for a in node.names)
-            ):
-                return True
+        if isinstance(node, ast.ImportFrom) and (
+            _is_wallet(node.module or "") or (node.module == "app" and any(a.name == "billing_integration" for a in node.names))
+        ):
+            return True
     return False
 
 
@@ -61,9 +61,10 @@ def test_the_scan_actually_covers_the_tool_modules():
 def test_the_scanner_does_recognise_an_import_of_the_wallet(tmp_path):
     sample = tmp_path / "bad_tool.py"
     for source in (
-        "from app.billing import credits",
-        "import app.billing.credits",
-        "from app import billing",
+        "from credit_billing import credits",
+        "import credit_billing.credits",
+        "import credit_billing",
+        "from credit_billing.port import WalletPort",
         "import app.billing_integration",
         "from app.billing_integration import export",
         "from app.billing_integration.reconcile import Report",
@@ -71,5 +72,6 @@ def test_the_scanner_does_recognise_an_import_of_the_wallet(tmp_path):
     ):
         sample.write_text(source + "\n")
         assert _imports_billing(sample), source
-    sample.write_text("from app.agent import budget_holds\n")
-    assert not _imports_billing(sample)
+    for source in ("from app.agent import budget_holds", "from credit_billingx import y", "import app.billing", "from app import billing"):
+        sample.write_text(source + "\n")
+        assert not _imports_billing(sample), source  # `app.billing` no longer exists, so importing it is a bug elsewhere, not a wallet path

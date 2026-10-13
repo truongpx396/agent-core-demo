@@ -1,5 +1,5 @@
 """The parts of the wallet that need no database: exact amounts, the allocation plan, and every
-validation that must happen BEFORE any statement is sent (app/billing/credits.py).
+validation that must happen BEFORE any statement is sent (packages/billing/src/credit_billing/credits.py).
 
 What a wallet DOES (idempotency, locking, expiry, the schema's own guards) is real-Postgres behaviour and
 is proven in tests/integration/test_credits_real_postgres.py; a fake cursor would only echo back
@@ -10,7 +10,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.billing import credits
+from credit_billing import credits
 
 D = Decimal
 

@@ -19,13 +19,13 @@ import json
 from dataclasses import dataclass
 from typing import Protocol
 
-from app.billing.providers import FACTORIES
-from app.billing.providers.base import BillingProvider
-from app.billing.providers.fake import FakeProvider
-from app.billing.providers.polar import PolarProvider
-from app.billing.providers.stripe import StripeProvider
-from tests.billing.fake_polar_api import FakePolarApi
-from tests.billing.fake_stripe_api import FakeStripeApi
+from credit_billing.providers import FACTORIES
+from credit_billing.providers.base import BillingProvider
+from credit_billing.providers.fake import FakeProvider
+from credit_billing.providers.polar import PolarProvider
+from credit_billing.providers.stripe import StripeProvider
+from tests.fake_polar_api import FakePolarApi
+from tests.fake_stripe_api import FakeStripeApi
 
 Headers = dict[str, str]
 NOW = 1_760_000_000  # the harnesses' clock: a fixed instant, so a replay window is tested, not waited for
@@ -284,7 +284,7 @@ class PolarHarness:
         return self._signed(event_id, self._event("order.paid", order))
 
 
-# One entry per registered adapter. Adding an adapter to `app.billing.providers.FACTORIES` without adding its
+# One entry per registered adapter. Adding an adapter to `credit_billing.providers.FACTORIES` without adding its
 # harness here fails `test_every_registered_adapter_has_a_harness`.
 HARNESSES: dict[str, type] = {"fake": FakeHarness, "stripe": StripeHarness, "polar": PolarHarness}
 

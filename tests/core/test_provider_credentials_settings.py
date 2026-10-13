@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.billing import providers
 from app.core.config import Settings
+from credit_billing import providers
 
 _ENV = (
     "STRIPE_API_KEY", "POLAR_ACCESS_TOKEN", "POLAR_ENVIRONMENT",

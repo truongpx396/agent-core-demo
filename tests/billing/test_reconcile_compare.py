@@ -1,4 +1,4 @@
-"""The pure half of the reconciliation (app/billing/reconcile.py): who is allowed to differ by how much, which window is read, how a
+"""The pure half of the reconciliation (packages/billing/src/credit_billing/reconcile.py): who is allowed to differ by how much, which window is read, how a
 one-way gateway id becomes a tenant, and what counts as drift. No database and no gateway: the reading of each is in
 test_reconcile_gateway.py and tests/integration/test_reconcile_real_postgres.py."""
 from datetime import UTC, date, datetime, timedelta, timezone

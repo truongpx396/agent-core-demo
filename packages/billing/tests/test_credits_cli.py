@@ -6,9 +6,9 @@ from decimal import Decimal as D
 
 import pytest
 
-from app.billing import credits
-from app.billing.credits import Applied
-from scripts import credits as cli
+from credit_billing import credits
+from credit_billing.cli import credits as cli
+from credit_billing.credits import Applied
 
 
 def parse(*argv: str):

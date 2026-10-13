@@ -8,7 +8,7 @@ EXPECTED here on purpose: it is the one place the whole HTTP surface is listed.
 from fastapi.testclient import TestClient
 
 from app.api import main as api
-from app.billing import metrics
+from credit_billing import metrics
 from tests.conftest import metric_value
 
 EXPECTED = {

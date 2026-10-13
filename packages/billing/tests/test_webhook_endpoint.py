@@ -13,11 +13,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.billing import http as billing_router
-from app.billing import metrics, providers, webhooks
-from app.billing.providers.fake import FakeProvider
-from tests.billing.contract import NOW
+from credit_billing import http as billing_router
+from credit_billing import metrics, providers, webhooks
+from credit_billing.providers.fake import FakeProvider
 from tests.conftest import metric_value
+from tests.contract import NOW
 
 SECRET = "whsec_endpoint"
 

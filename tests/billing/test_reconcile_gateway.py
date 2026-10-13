@@ -1,4 +1,4 @@
-"""Reading the gateway's spend log (app/billing/reconcile.py::fetch_gateway_spend) against a stand-in built from LiteLLM's own source
+"""Reading the gateway's spend log (packages/billing/src/credit_billing/reconcile.py::fetch_gateway_spend) against a stand-in built from LiteLLM's own source
 (tests/billing/fake_gateway.py): the request it makes, the pages it walks, and every way the read can be untrustworthy.
 
 The rule these pin: a read that is not whole is NEVER compared. A truncated sum would show every tenant as under-metered and page

@@ -1,4 +1,4 @@
-"""The Polar adapter (app/billing/providers/polar.py, specs/010 T029b): what the shared contract suite cannot say about it.
+"""The Polar adapter (packages/billing/src/credit_billing/providers/polar.py, specs/010 T029b): what the shared contract suite cannot say about it.
 
 tests/billing/test_provider_contract.py holds every adapter to the same promises. This file is what is particular to Polar's wire
 formats: its Standard Webhooks signature and the two keys a secret can mean, its Order and event shapes, and a Checkout API that has no
@@ -24,8 +24,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from app.billing import providers
-from app.billing.providers.base import (
+from credit_billing import providers
+from credit_billing.providers.base import (
     BillingCustomer,
     Capability,
     CheckoutError,
@@ -34,8 +34,8 @@ from app.billing.providers.base import (
     InvalidPayload,
     InvalidSignature,
 )
-from app.billing.providers.polar import ATTEMPT_KEY, PolarProvider, _signing_keys
-from tests.billing.fake_polar_api import FakePolarApi
+from credit_billing.providers.polar import ATTEMPT_KEY, PolarProvider, _signing_keys
+from tests.fake_polar_api import FakePolarApi
 
 FIXTURES = Path(__file__).parent / "fixtures"
 T = 1_760_000_000
@@ -737,8 +737,8 @@ class TestWhatItDeclares:
         assert providers.build("polar", NEW_SECRET).name == "polar"
 
     def test_the_token_and_the_environment_come_from_the_settings_when_they_are_not_passed(self, monkeypatch):
-        monkeypatch.setattr("app.billing.settings.POLAR_ACCESS_TOKEN", "polar_oat_from_settings")
-        monkeypatch.setattr("app.billing.settings.POLAR_ENVIRONMENT", "production")
+        monkeypatch.setattr("credit_billing.settings.POLAR_ACCESS_TOKEN", "polar_oat_from_settings")
+        monkeypatch.setattr("credit_billing.settings.POLAR_ENVIRONMENT", "production")
 
         from_settings = PolarProvider(NEW_SECRET)
 

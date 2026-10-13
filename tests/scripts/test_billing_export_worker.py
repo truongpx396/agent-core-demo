@@ -1,9 +1,9 @@
 """The export worker's entry point (scripts/billing_export_worker.py): which providers it serves, that it refuses to idle
 when there is nothing to do, and that a misconfiguration stops it instead of exporting nothing quietly. The export logic
-itself is app/billing/export.py (pure rules: tests/billing/test_export_verdicts.py; the database: the integration tier)."""
+itself is packages/billing/src/credit_billing/export.py (pure rules: tests/billing/test_export_verdicts.py; the database: the integration tier)."""
 import pytest
 
-from app.billing import providers
+from credit_billing import providers
 from scripts import billing_export_worker as worker
 
 

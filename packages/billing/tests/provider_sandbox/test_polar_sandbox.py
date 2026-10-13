@@ -26,14 +26,14 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from app.billing.providers.base import (
+from credit_billing.providers.base import (
     BillingCustomer,
     CheckoutError,
     CreditProduct,
     EventKind,
     InvalidSignature,
 )
-from app.billing.providers.polar import ATTEMPT_KEY, PolarProvider
+from credit_billing.providers.polar import ATTEMPT_KEY, PolarProvider
 from tests.provider_sandbox.conftest import POLAR_SANDBOX_API
 from tests.provider_sandbox.polar_listener import PolarListener, redact
 

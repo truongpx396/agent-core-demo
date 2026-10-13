@@ -22,8 +22,9 @@ from tests.provider_sandbox import conftest as tier
 from tests.provider_sandbox.conftest import require_polar_sandbox, require_test_mode_key
 from tests.provider_sandbox.receiver import redact
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]  # packages/billing (the package's own pyproject.toml is the one that excludes the tier)
 TIER = ROOT / "tests" / "provider_sandbox"
+REPO_CI = ROOT.parents[1] / ".github" / "workflows" / "ci.yml"  # only present inside the monorepo checkout
 
 
 def test_the_default_run_excludes_the_tier():
@@ -41,7 +42,9 @@ def test_the_marker_is_registered_so_a_typo_cannot_silently_unmark_a_test():
 def test_no_ci_job_selects_the_tier():
     """CI selects tiers with `-m`; the tier must never appear in any of them. A secret-less CI run would only skip it, but a CI run WITH a
     key would create objects in someone's sandbox on every push."""
-    assert "provider_sandbox" not in (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    if not REPO_CI.exists():
+        pytest.skip("the package is not inside the monorepo checkout, so there is no CI file to check")
+    assert "provider_sandbox" not in REPO_CI.read_text()
 
 
 @pytest.mark.parametrize("path", sorted(TIER.glob("test_*.py")), ids=lambda p: p.name)

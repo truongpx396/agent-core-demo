@@ -1,4 +1,4 @@
-"""The reconciliation against a REAL Postgres (app/billing/reconcile.py; postgres-init/03, 19, 20, 21).
+"""The reconciliation against a REAL Postgres (packages/billing/src/credit_billing/reconcile.py; postgres-init/03, 19, 20, 21).
 
 Every query it makes is the thing under test: the per-tenant, per-UTC-day grouping, `ON` the tenant, the lookup of a debit by the
 event id, the `recorded_at >= created_at` rule that an event older than its wallet was rightly never charged. A fake cursor would only
@@ -22,9 +22,9 @@ import pytest
 from app.agent import usage_events
 from app.agent.gateway import end_user_id
 from app.agent.pricing import ModelPrice, PricedCall
-from app.billing import credits
 from app.billing_integration import reconcile
 from app.billing_integration.reconcile import Tolerance, Window
+from credit_billing import credits
 from tests.billing.fake_gateway import FakeGateway, spend_row
 from tests.containers import ensure_postgres
 

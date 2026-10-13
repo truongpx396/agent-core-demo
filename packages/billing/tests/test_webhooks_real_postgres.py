@@ -1,4 +1,4 @@
-"""Money in, against a REAL Postgres (postgres-init/20 and 22; app/billing/webhooks.py, store.py, inbox.py,
+"""Money in, against a REAL Postgres (postgres-init/20 and 22; packages/billing/src/credit_billing/webhooks.py, store.py, inbox.py,
 app/api/routers/billing.py): a payment provider's webhook becomes credits exactly once, or a visible refusal.
 
 Every guarantee here is database behaviour, so a fake would only echo back what was written (constitution VII:
@@ -30,19 +30,17 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from psycopg import errors as pg_errors
 
-from app.agent import budget_holds, budgets
-from app.billing import credits, inbox, metrics, store, webhooks
-from app.billing import http as billing_router
-from app.billing.providers.base import BillingEvent, CreditProduct, EventKind
-from tests.billing.contract import HARNESSES, Delivery
+from credit_billing import credits, inbox, metrics, store, webhooks
+from credit_billing import http as billing_router
+from credit_billing.providers.base import BillingEvent, CreditProduct, EventKind
 from tests.conftest import metric_value
 from tests.containers import ensure_postgres
-from tests.integration.schema_reapply import reapply
+from tests.contract import HARNESSES, Delivery
+from tests.schema_reapply import reapply
 
 pytestmark = pytest.mark.integration
 
 D = Decimal
-GATE = budgets.CreditGate(credits_per_usd=D("1000"), markup=D("1"), fail_policy="open")
 
 
 @pytest.fixture(scope="module")
@@ -57,7 +55,7 @@ def real_appdata(appdata_url, monkeypatch):
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:  # commits on a normal exit
             yield conn
 
-    for module in (webhooks, credits, inbox, budget_holds):
+    for module in (webhooks, credits, inbox):
         monkeypatch.setattr(module, "get_connection", get_connection)
     return get_connection
 
@@ -394,8 +392,9 @@ class TestARefund:
         assert outcomes == ["applied"]
         balance = await world.balance()
         assert (balance.available, balance.debt) == (D("-70.000000"), D("70.000000"))
-        gate = await budgets.check_allowance({"tenant": world.tenant, "principal": "p", "claims": {}}, limits=[], fail_policy="open", credit_gate=GATE)
-        assert gate.status == "insufficient_credits", "usage is refused while the tenant is in debt"
+        # What the agent app's gate refuses on is exactly `available - holds > 0` being false (app/agent/budgets.py::_credit_check); the gate itself
+        # is the host's and is proven against this same wallet in the repo's tests/integration/test_credit_charge_real_postgres.py.
+        assert balance.available <= 0, "usage is refused while the tenant is in debt: its available credits are not positive"
         assert metric_value(metrics.agent_credit_overdraft_total) == overdraft_before, "a refund after spend is the policy, not a wallet running dry"
         assert await credits.verify(world.tenant) == []
 
@@ -403,13 +402,12 @@ class TestARefund:
         await self.bought(world, harness, "100")
         await credits.debit(world.tenant, "70", idempotency_key=f"spent-{world.payment}")
         await setup_deliver(harness, harness.refund(world.event_id("refund"), customer=world.customer, payment=world.payment))
-        ctx = {"tenant": world.tenant, "principal": "p", "claims": {}}
-        assert (await budgets.check_allowance(ctx, limits=[], fail_policy="open", credit_gate=GATE)).status == "insufficient_credits"
+        assert (await world.balance()).available <= 0, "in debt: the host's gate would refuse"
 
         await setup_deliver(harness, harness.purchase(world.event_id("again"), customer=world.customer, product=world.product, payment=f"{world.payment}-2"))
 
         assert (await world.balance()).available == D("30.000000")
-        assert (await budgets.check_allowance(ctx, limits=[], fail_policy="open", credit_gate=GATE)).status == "ok"
+        assert (await world.balance()).available > 0, "repaid and positive again: the host's gate would serve"
 
     async def test_a_refund_delivered_twice_takes_the_credits_back_once(self, world, harness):
         await self.bought(world, harness)

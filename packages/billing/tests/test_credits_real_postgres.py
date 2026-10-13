@@ -1,4 +1,4 @@
-"""The credit wallet against a REAL Postgres (postgres-init/20-credit-wallet.sql, app/billing/credits.py).
+"""The credit wallet against a REAL Postgres (postgres-init/20-credit-wallet.sql, packages/billing/src/credit_billing/credits.py).
 
 A wallet is exactly the code a fake cursor cannot test: its guarantees ARE database behaviour.
 `UNIQUE (tenant, idempotency_key)` is what makes a replayed debit harmless, an advisory lock is what
@@ -20,7 +20,7 @@ import psycopg
 import pytest
 from psycopg import errors as pg_errors
 
-from app.billing import credits
+from credit_billing import credits
 from tests.containers import ensure_postgres
 
 pytestmark = pytest.mark.integration

@@ -38,8 +38,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.billing.providers.base import BillingCustomer, CreditProduct, EventKind
-from app.billing.providers.polar import PolarProvider
+from credit_billing.providers.base import BillingCustomer, CreditProduct, EventKind
+from credit_billing.providers.polar import PolarProvider
 from tests.provider_sandbox.polar_listener import PolarListener
 
 pytestmark = pytest.mark.provider_sandbox

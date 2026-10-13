@@ -1,4 +1,4 @@
-"""One reconciliation pass end to end (app/billing/reconcile.py::reconcile), with the database reads replaced by figures so every
+"""One reconciliation pass end to end (packages/billing/src/credit_billing/reconcile.py::reconcile), with the database reads replaced by figures so every
 disagreement is chosen by the test; the same pass against a real Postgres is tests/integration/test_reconcile_real_postgres.py.
 
 The headline (specs/010 T026): delete ONE usage event and the report names the tenant, the day and the amount."""

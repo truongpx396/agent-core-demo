@@ -10,8 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.agent import usage_events
-from app.billing import providers
 from app.core import metrics
+from credit_billing import providers
 from tests.conftest import metric_value
 
 _REAL_INSERT = usage_events._insert  # imported before any autouse fixture patches it

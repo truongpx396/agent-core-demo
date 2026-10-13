@@ -12,7 +12,7 @@ import uuid
 import httpx
 import pytest
 
-from app.core import config
+from credit_billing import settings as config
 
 LABEL = {"metadata[agent_core_demo_test]": "true"}  # every object this tier creates carries it, so a sandbox can be tidied by search
 

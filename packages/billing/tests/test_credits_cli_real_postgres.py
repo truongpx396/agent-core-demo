@@ -15,9 +15,8 @@ from decimal import Decimal
 import psycopg
 import pytest
 
-from app.agent import sql_store
-from app.billing import credits, metrics
-from scripts import credits as cli
+from credit_billing import credits, db, metrics
+from credit_billing.cli import credits as cli
 from tests.conftest import metric_value
 from tests.containers import ensure_postgres
 
@@ -39,7 +38,7 @@ def real_appdata(appdata_url, monkeypatch):
             yield conn
 
     monkeypatch.setattr(credits, "get_connection", get_connection)
-    monkeypatch.setattr(sql_store, "get_connection", get_connection)  # the CLI's `show` reads through it
+    monkeypatch.setattr(db, "get_connection", get_connection)  # the CLI's `show` reads through it
 
 
 def tenant_name() -> str:

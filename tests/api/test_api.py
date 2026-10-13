@@ -22,10 +22,10 @@ from app.api.routers import system as system_router
 from app.api.routers import usage as usage_router
 from app.api.routers.system import ui
 from app.api.schemas import CancelRequest, ChatRequest, ResumeRequest
-from app.billing import credits
 from app.core import metrics
 from app.ingestion import ingest_queue
 from app.job_queue import queue
+from credit_billing import credits
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
 from tests.job_queue.test_queue import FakeRedis

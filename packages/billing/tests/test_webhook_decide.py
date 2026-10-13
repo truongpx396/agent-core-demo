@@ -1,4 +1,4 @@
-"""The webhook policy as a pure function (app/billing/webhooks.py::decide): what happens to a verified event,
+"""The webhook policy as a pure function (packages/billing/src/credit_billing/webhooks.py::decide): what happens to a verified event,
 decided from the event and what the app already knows. No database, so every refusal reason has its own test.
 
 What the database then does with a decision (one grant under duplicate and concurrent delivery, the status and
@@ -10,8 +10,8 @@ from decimal import Decimal
 
 import pytest
 
-from app.billing import store, webhooks
-from app.billing.providers.base import BillingEvent, CreditProduct, EventKind
+from credit_billing import store, webhooks
+from credit_billing.providers.base import BillingEvent, CreditProduct, EventKind
 
 NOW = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
 D = Decimal

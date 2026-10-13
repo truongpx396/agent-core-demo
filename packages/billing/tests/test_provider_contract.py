@@ -11,7 +11,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.billing.providers.base import (
+from credit_billing.providers.base import (
     BillingCustomer,
     BillingEvent,
     Capability,
@@ -21,7 +21,7 @@ from app.billing.providers.base import (
     InvalidSignature,
     UsageEvent,
 )
-from tests.billing.contract import HARNESSES, Delivery, registered_without_a_harness
+from tests.contract import HARNESSES, Delivery, registered_without_a_harness
 
 
 @pytest.fixture(params=sorted(HARNESSES))

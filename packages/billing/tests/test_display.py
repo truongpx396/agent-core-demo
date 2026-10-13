@@ -1,7 +1,7 @@
-"""app/billing/display.py: provider- and token-supplied text is shown, never obeyed, on an operator's terminal."""
+"""packages/billing/src/credit_billing/display.py: provider- and token-supplied text is shown, never obeyed, on an operator's terminal."""
 import pytest
 
-from app.billing.display import printable
+from credit_billing.display import printable
 
 
 @pytest.mark.parametrize("text", ["acme", "pilot top-up, ticket 4412", "naïve café 日本", "", "a b"])

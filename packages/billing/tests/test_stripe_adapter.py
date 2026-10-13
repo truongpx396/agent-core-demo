@@ -1,4 +1,4 @@
-"""The Stripe adapter (app/billing/providers/stripe.py, specs/010 T029a): what the shared contract suite cannot say about it.
+"""The Stripe adapter (packages/billing/src/credit_billing/providers/stripe.py, specs/010 T029a): what the shared contract suite cannot say about it.
 
 tests/billing/test_provider_contract.py holds every adapter to the same promises (refuse a forgery, name no tenant, store no buyer
 details, echo what checkout set). This file is what is particular to Stripe's wire formats: its signature header, its event and object
@@ -16,8 +16,8 @@ import json
 import httpx
 import pytest
 
-from app.billing import providers
-from app.billing.providers.base import (
+from credit_billing import providers
+from credit_billing.providers.base import (
     BillingCustomer,
     Capability,
     CheckoutError,
@@ -26,8 +26,8 @@ from app.billing.providers.base import (
     InvalidPayload,
     InvalidSignature,
 )
-from app.billing.providers.stripe import StripeProvider
-from tests.billing.fake_stripe_api import FakeStripeApi
+from credit_billing.providers.stripe import StripeProvider
+from tests.fake_stripe_api import FakeStripeApi
 
 SECRET = "whsec_known_answer_not_a_real_secret"
 T = 1_760_000_000
@@ -474,7 +474,7 @@ class TestWhatItDeclares:
         assert providers.build("stripe", "whsec_x").name == "stripe"
 
     def test_the_api_key_comes_from_the_settings_when_it_is_not_passed(self, monkeypatch):
-        monkeypatch.setattr("app.billing.settings.STRIPE_API_KEY", "sk_test_from_settings")
+        monkeypatch.setattr("credit_billing.settings.STRIPE_API_KEY", "sk_test_from_settings")
 
         assert StripeProvider(SECRET)._api_key == "sk_test_from_settings"
         assert StripeProvider(SECRET, api_key="explicit")._api_key == "explicit"

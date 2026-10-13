@@ -1,5 +1,5 @@
 """Usage export against a REAL Postgres (postgres-init/23-usage-export-outbox.sql; app/agent/usage_events.py,
-app/billing/export.py): each usage event reaches a billing provider exactly once, or fails loudly.
+packages/billing/src/credit_billing/export.py): each usage event reaches a billing provider exactly once, or fails loudly.
 
 Every guarantee here is database behaviour, so a fake would only echo back what was written (constitution VII:
 reliance on a real constraint, lock or transaction is stated and tested at this tier, not assumed):
@@ -28,11 +28,11 @@ import pytest
 from psycopg import errors as pg_errors
 
 from app.agent import usage_events
-from app.billing import providers, store
-from app.billing.providers.base import ExportResult
-from app.billing.providers.fake import FakeProvider
 from app.billing_integration import export
 from app.core import metrics
+from credit_billing import providers, store
+from credit_billing.providers.base import ExportResult
+from credit_billing.providers.fake import FakeProvider
 from tests.conftest import metric_value
 from tests.containers import ensure_postgres
 from tests.integration.schema_reapply import reapply

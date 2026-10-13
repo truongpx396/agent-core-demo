@@ -24,14 +24,14 @@ from decimal import Decimal
 
 import pytest
 
-from app.billing.providers.base import (
+from credit_billing.providers.base import (
     BillingCustomer,
     CheckoutError,
     CreditProduct,
     EventKind,
     InvalidSignature,
 )
-from app.billing.providers.stripe import StripeProvider
+from credit_billing.providers.stripe import StripeProvider
 from tests.provider_sandbox.stripe_listener import StripeListener, redact
 
 pytestmark = pytest.mark.provider_sandbox

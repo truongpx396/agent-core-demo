@@ -188,7 +188,7 @@ def mock_semantic_cache(monkeypatch):
 @pytest.fixture(autouse=True)
 def mock_appdata_postgres(monkeypatch):
     from app.agent import budget_holds, sessions, spend, tool_idempotency
-    from app.billing import credits
+    from credit_billing import credits
 
     monkeypatch.setattr(budget_holds, "get_connection", _no_postgres_in_tests)
     # The spend read behind every dollar cap and GET /usage (specs/010 T030): it moved out of the retired usage_ledger module, so it

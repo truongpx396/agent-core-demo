@@ -24,8 +24,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.billing.providers.base import BillingCustomer, CreditProduct, EventKind
-from app.billing.providers.stripe import StripeProvider
+from credit_billing.providers.base import BillingCustomer, CreditProduct, EventKind
+from credit_billing.providers.stripe import StripeProvider
 from tests.provider_sandbox.stripe_listener import StripeListener
 
 pytestmark = pytest.mark.provider_sandbox
