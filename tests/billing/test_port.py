@@ -1,6 +1,6 @@
 """The billing port: the one seam between the agent app and the wallet (specs/011-billing-module-boundary, D18, D19).
 
-`app/billing/port.py` is the contract (`WalletPort`) and `app/billing_integration/port.py` is the module host code
+`packages/billing/src/credit_billing/port.py` is the contract (`WalletPort`) and `app/billing_integration/port.py` is the module host code
 imports. These tests prove what a seam is for, in four steps:
 
   1. the implementation that exists IS the contract, down to the signature, so a drift fails here and not in production;
@@ -21,10 +21,10 @@ import pytest
 
 from app.agent import budget_holds, budgets, spend, usage_events
 from app.api.routers import usage as usage_router
-from app.billing import credits
-from app.billing import port as core_port
 from app.billing_integration import port as billing_port
 from app.core import metrics
+from credit_billing import credits
+from credit_billing import port as core_port
 from tests.conftest import TEST_CTX, metric_value
 
 D = Decimal

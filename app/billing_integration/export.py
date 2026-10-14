@@ -57,13 +57,6 @@ from typing import Literal
 from psycopg import AsyncConnection
 
 from app.agent.sql_store import get_connection
-from app.billing import providers as provider_registry
-from app.billing.providers.base import (
-    BillingCustomer,
-    BillingProvider,
-    ExportResult,
-    UsageEvent,
-)
 from app.core import metrics
 from app.core.config import (
     BILLING_EXPORT_BACKOFF_BASE_SECONDS,
@@ -72,6 +65,13 @@ from app.core.config import (
     BILLING_EXPORT_CALL_TIMEOUT_SECONDS,
     BILLING_EXPORT_MAX_AGE_DAYS,
     BILLING_EXPORT_MAX_ATTEMPTS,
+)
+from credit_billing import providers as provider_registry
+from credit_billing.providers.base import (
+    BillingCustomer,
+    BillingProvider,
+    ExportResult,
+    UsageEvent,
 )
 
 logger = logging.getLogger(__name__)

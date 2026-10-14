@@ -80,6 +80,8 @@ jobs:
         env:
           PROMPTFOO_MODEL: qwen2.5:3b
       - run: pip install -r requirements-lock.txt
+      # make exports PYTHONPATH today, so this would work without it; the install is what keeps it working when a step stops going through make.
+      - run: pip install --no-deps ./packages/billing
       - run: make promptfoo-redteam
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}

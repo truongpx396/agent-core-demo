@@ -20,8 +20,8 @@ import pytest
 from app.agent import budget_holds, budgets, spend
 from app.agent import runtime as runtime_module
 from app.agent import runtime_stream as stream_module
-from app.billing import credits
 from app.core import errors, metrics
+from credit_billing import credits
 from tests.conftest import TEST_CTX, metric_value
 
 D = Decimal

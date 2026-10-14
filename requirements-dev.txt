@@ -1,6 +1,9 @@
 # Dev/CI-only tooling on top of the runtime deps — never installed in the
 # Docker image (see Dockerfile), which installs requirements-lock.txt alone.
 -r requirements.txt
+# The billing package, editable, so `uvicorn`/`python -m` work without PYTHONPATH (the Makefile and pytest find it by path; the lock file
+# deliberately does not list it). Spec 011 D20.
+-e ./packages/billing
 
 ruff==0.16.4
 mypy==2.3.1

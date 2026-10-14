@@ -21,7 +21,7 @@ import pytest
 from psycopg import errors as pg_errors
 
 from app.agent import usage_events_retention as retention
-from app.billing import credits
+from credit_billing import credits
 from tests.containers import ensure_postgres
 from tests.integration.usage_seed import purge_events, seed_event
 

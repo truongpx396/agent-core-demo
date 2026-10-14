@@ -9,6 +9,10 @@ var/
 *.sqlite3-shm
 *.sqlite3-wal
 
+# A pip install of a package under packages/ (spec 011) leaves its build tree and metadata beside the sources.
+packages/*/build/
+packages/*/src/*.egg-info/
+
 # Node (promptfoo — see promptfoo/ and package.json)
 node_modules/
 .promptfoo/

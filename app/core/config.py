@@ -14,7 +14,7 @@ from pydantic_settings import SettingsConfigDict
 # The billing core's own settings (specs/011-billing-module-boundary): ten fields, their validators and the eleven
 # constants below were defined in this file until the core had to stop importing it. `Settings` inherits the class, so
 # nothing about them changed, and the constants are re-exported here so no host importer had to.
-from app.billing.settings import (  # noqa: F401 - re-exports: the billing constants are imported from here by host modules and scripts
+from credit_billing.settings import (  # noqa: F401 - re-exports: the billing constants are imported from here by host modules and scripts
     BILLING_INBOX_MIN_RETENTION_DAYS,
     BILLING_INBOX_RETENTION_DAYS,
     BILLING_PROVIDERS,
@@ -206,7 +206,7 @@ class Settings(BillingSettings):
     # never fails a turn; it is counted and alerted (UsageEventWriteFailing).
     usage_events_enabled: bool = True
 
-    # Credit billing (specs/010-credit-billing-readiness, app/billing/credits.py). A call's price in
+    # Credit billing (specs/010-credit-billing-readiness, packages/billing/src/credit_billing/credits.py). A call's price in
     # credits is `round_half_up(cost_usd x CREDITS_PER_USD x MARKUP, 6)`, computed when its usage event
     # is written and stored on the event with the rate used, so changing either later never rewrites
     # what a past call was charged.
@@ -230,7 +230,7 @@ class Settings(BillingSettings):
     # be unavailable than serve a tenant it cannot confirm has credit. Only consulted when enforcing.
     credit_check_failure_policy: Literal["open", "closed"] = "open"
 
-    # Money in (webhooks, provider credentials, the inbox's retention) is defined in app/billing/settings.py::BillingSettings,
+    # Money in (webhooks, provider credentials, the inbox's retention) is defined in packages/billing/src/credit_billing/settings.py::BillingSettings,
     # which this class inherits: the ten fields, their validators and their comments moved there when the billing core had to stop
     # importing this file (specs/011-billing-module-boundary). Nothing about them changed, including every environment variable name.
 

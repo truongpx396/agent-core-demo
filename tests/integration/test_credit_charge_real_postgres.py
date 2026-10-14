@@ -1,5 +1,5 @@
 """Charging credits on a usage event, against a REAL Postgres
-(postgres-init/19, 20 and 21; app/agent/usage_events.py, app/billing/credits.py, app/agent/budgets.py).
+(postgres-init/19, 20 and 21; app/agent/usage_events.py, packages/billing/src/credit_billing/credits.py, app/agent/budgets.py).
 
 tests/billing/test_charge_on_event.py proves which statements run, on which connection and inside which
 savepoint, through a fake. A fake cannot show what the DATABASE does with them, and every guarantee here is
@@ -29,8 +29,8 @@ from psycopg import errors as pg_errors
 
 from app.agent import budget_holds, budgets, usage_events
 from app.agent.pricing import ModelPrice, PricedCall
-from app.billing import credits
 from app.core import metrics
+from credit_billing import credits
 from tests.conftest import metric_value
 from tests.containers import ensure_postgres
 from tests.integration.schema_reapply import reapply

@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "credit-billing"
+version = "0.1.0"
+description = "A self-contained prepaid-credit wallet for a SaaS: an append-only idempotent ledger, signed payment-webhook intake with Stripe and Polar adapters, and operator CLIs. It imports nothing from the application that hosts it."
+readme = "README.md"
+requires-python = ">=3.11"
+# Everything the core imports, and nothing else (tests/test_boundary.py fails the build if a module imports anything this
+# list, the standard library and the package itself do not cover). The webhook route needs FastAPI, so it is an extra; the
+# core's metrics use the OpenTelemetry API only, and the SDK and exporter an operator CLI uses to push them are an extra.
+dependencies = [
+    "psycopg[binary,pool]>=3.1,<4",
+    "pydantic>=2.5,<3",
+    "pydantic-settings>=2.0,<3",
+    "httpx>=0.27,<1",
+    "opentelemetry-api>=1.27,<2",
+]
+
+[project.optional-dependencies]
+http = ["fastapi>=0.110,<1"]
+otel = ["opentelemetry-sdk>=1.27,<2", "opentelemetry-exporter-otlp-proto-http>=1.27,<2"]
+test = [
+    "credit-billing[http,otel]",
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "pyyaml>=6",
+    "testcontainers[postgres]==4.9.0",
+]
+
+[project.scripts]
+credit-billing = "credit_billing.cli.credits:main"
+credit-billing-inbox-sweep = "credit_billing.cli.inbox_sweep:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+credit_billing = ["py.typed", "sql/*.sql"]
+
+[tool.pytest.ini_options]
+# Run from this directory. `pythonpath` makes the tests' own helpers (`tests.contract`, ...) importable; nothing here puts the
+# application that hosts the package on the path, which is the point (tests/test_boundary.py proves it is not needed).
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = '-m "not integration and not provider_sandbox"'
+markers = [
+    "integration: needs a real Postgres container (tests/containers.py), nothing else",
+    "provider_sandbox: talks to a payment provider's real SANDBOX over the internet with the operator's own test credentials (tests/provider_sandbox/, `make test-provider-sandbox`): manual, never CI, and never swept into another tier; self-skips when the credential is absent or another `listen` is running, and FAILS (creating nothing) on a live-mode Stripe key or a non-sandbox POLAR_ENVIRONMENT",
+]

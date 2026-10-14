@@ -1,6 +1,6 @@
 """The agent app's side of the billing boundary (specs/011-billing-module-boundary, contracts/billing-core-boundary.md).
 
-`app/billing/` is a module another project could reuse: it imports nothing from the agent app and is handed
+`packages/billing/src/credit_billing/` is a module another project could reuse: it imports nothing from the agent app and is handed
 what it needs. This package is where the agent app hands it those things, and where the code that only makes
 sense next to the agent lives:
 
@@ -8,11 +8,11 @@ sense next to the agent lives:
   * `export.py` drains an outbox built from those events to a provider that bills on usage.
 
 Both read `usage_events` (the agent's LLM-shaped meter, which its dollar caps also read) and the gateway, which
-a wallet-and-webhooks module has no business knowing about, so they were moved here from `app/billing/`
+a wallet-and-webhooks module has no business knowing about, so they were moved here from `packages/billing/src/credit_billing/`
 (spec D5, D15).
 
 **The wiring.** Importing this package tells the core where database connections come from: the agent's single
-pool, `app.agent.sql_store.get_connection`. Every host module that imports `app.billing` also imports this
+pool, `app.agent.sql_store.get_connection`. Every host module that imports `credit_billing` also imports this
 package (tests/billing/test_billing_core_boundary.py scans for a miss), so no entry point (the API, a queue
 worker, the chat CLI, a cron script) can reach the core unwired. The core refuses to run unwired
 (`BillingNotConfigured`), so a miss is a loud failure, not a silent default.
@@ -26,6 +26,6 @@ PR B of the same feature replaces the one-line imports of this package in the ho
 that imports it (spec 011 plan.md, "PR B").
 """
 from app.agent import sql_store
-from app.billing import db as billing_db
+from credit_billing import db as billing_db
 
 billing_db.configure(connection=sql_store.get_connection)

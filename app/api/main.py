@@ -29,7 +29,7 @@ Endpoints:
                               after a reload/session switch
 - POST /billing/webhooks/{provider} -> a payment provider's signed webhook (NOT behind the
                               tenant headers: authenticity is the signature; becomes credits
-                              exactly once, see app/billing/http.py)
+                              exactly once, see packages/billing/src/credit_billing/http.py)
 - GET  /usage             -> this caller's tenant usage/cost, including the
                               rolling-24h number budgets.check_tenant_daily checks
 - POST /ingest/upload     -> upload PDF/DOCX documents; each becomes its own
@@ -92,7 +92,7 @@ async def lifespan(app: FastAPI):
     # (see tests/api/test_api.py), so this is safe here.
     configure_telemetry("agent-core-api")
     # Refuses to start (raises) if a payment provider is enabled with no adapter or no signing secret: an
-    # endpoint that cannot verify a signature must not come up (app/billing/http.py).
+    # endpoint that cannot verify a signature must not come up (packages/billing/src/credit_billing/http.py).
     billing_http.validate_configuration()
     await init_graph_async()
     yield

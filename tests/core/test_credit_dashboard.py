@@ -18,7 +18,7 @@ def _panels() -> list[dict]:
 
 def _defined_metrics() -> set[str]:
     # The host defines most metrics; the billing core defines its own four (spec 011: it cannot import the host registry).
-    source = "\n".join((REPO / name).read_text() for name in ("app/core/metrics.py", "app/billing/metrics.py"))
+    source = "\n".join((REPO / name).read_text() for name in ("app/core/metrics.py", "packages/billing/src/credit_billing/metrics.py"))
     return set(re.findall(r'^\w+ = (?:Counter|Histogram|Gauge)\(\s*"([a-z_]+)"', source, re.MULTILINE))
 
 

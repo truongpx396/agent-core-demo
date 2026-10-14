@@ -17,8 +17,8 @@ from psycopg import errors as pg_errors
 
 from app.agent import pricing, usage_events
 from app.agent.pricing import ModelPrice, PricedCall
-from app.billing import credits
 from app.core import metrics
+from credit_billing import credits
 from tests.conftest import TEST_CTX, metric_value
 
 _REAL_INSERT = usage_events._insert  # imported before any autouse fixture patches it
@@ -115,7 +115,7 @@ def wallet(monkeypatch):
             raise spy.error
         return credits.Applied("applied")
 
-    monkeypatch.setattr(credits, "debit_in", debit_in)  # the in-process wallet (app/billing/port.py) resolves it at call time
+    monkeypatch.setattr(credits, "debit_in", debit_in)  # the in-process wallet (packages/billing/src/credit_billing/port.py) resolves it at call time
     return spy
 
 

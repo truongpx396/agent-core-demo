@@ -9,10 +9,12 @@ Read these before changing behavior; they hold the reasoning this file deliberat
   (tenant isolation, mandatory approval, exactly-once side effects) are NON-NEGOTIABLE.
 - `GRAPH_PATTERNS.md` — the agent core's numbered patterns (1-66 so far), each with the real bug
   that motivated it. "Extending Further" is the honest list of what is and isn't built. A
-  self-contained package (`app/billing/`, see the constitution's "Self-contained packages") may keep
+  self-contained package (`packages/billing/`, see the constitution's "Self-contained packages") may keep
   its own pattern file; a pattern that moves out leaves a one-line pointer here and its number is
   never reused.
 - `README.md` — architecture, make targets, testing tiers. `WORKER_CONCURRENCY.md` — worker sizing.
+  `BILLING_INTEGRATION.md` — how the app integrates the billing package; the package's own patterns
+  and docs are in `packages/billing/docs/`.
 
 ## Commands
 
@@ -21,7 +23,8 @@ The Makefile assumes an activated venv: `source .venv/bin/activate`.
 ```bash
 make lint            # ruff check .          (CI gate)
 make typecheck       # mypy over app/ scripts/ (CI gate)
-make test            # pytest -n auto -q — hermetic, no services needed (CI gate)
+make test            # pytest -n auto -q — hermetic, no services needed (CI gate); then the billing package's own tests
+make test-billing-package   # only the package's hermetic tests, from its directory (the app is not on the path)
 pytest tests/agent/test_tool_idempotency.py::test_name -q   # one test; marked tiers are skipped by default
 make test-integration  # real Postgres/Redis/Qdrant via testcontainers — needs Docker, not `make up`
 make test-live         # real Ollama + full stack + Playwright — needs Docker
@@ -51,6 +54,13 @@ they delete volumes or kill running processes.
   root (build context), `docker/` holds the auxiliary image builds.
 - `app/job_queue/` — Redis Streams queue and workers. `app/ingestion/` — chunking, crawl, upload.
 - `app/core/` — config, security (`SecurityCtx`), metrics, errors, scrubbing, resilience.
+- `packages/billing/` — the credit wallet, payment webhooks and operator CLIs as an independent package
+  (`credit_billing`, src layout, own pyproject/tests/schema/alerts/docs). It imports nothing from `app`;
+  the app reaches it only through `app/billing_integration/` (reconcile, export, the port); a test on
+  each side enforces it. Edit the package, not the copies: `postgres-init/20-` and `22-`, the two billing
+  alert rules in `observability/prometheus/alerts.yml` and its dashboard panels are guarded by
+  `tests/core/test_billing_package_copies.py`. Found by path (Makefile `PYTHONPATH`, pytest `pythonpath`);
+  not in the lock file.
 - `postgres-init/NN-*.sql` — numbered schema; auto-runs on a fresh volume only.
 - `skills/*/SKILL.md`, `subagents/*/AGENT.md` — the agent's own catalogs (not Claude Code's).
 - `observability/prometheus/alerts.yml` — alert rules over `app/core/metrics.py` metrics.
