@@ -340,6 +340,10 @@ omission, not a policy check, is what "sandboxed" means. Skills (`skills/*/SKILL
 
 `postgres-init/*.sql` runs automatically on a **fresh** volume only, in dev and prod. On an existing
 volume, apply each file you lack by hand, in order (`psql -U langfuse -d appdata -f postgres-init/NN-….sql`).
+The two billing scripts (`20-credit-wallet`, `22-billing`) belong to the billing package, which ships a tool for this: `make billing-migrate`
+applies them in order, records what it applied, is safe to re-run and to run twice at once, and `make billing-migrate-status ARGS=--check` exits 1 if
+either is pending (a deploy gate). **Run it before deploying a version that changes `20-credit-wallet`**: the wallet script gained
+`credit_transactions.request` (spec 012), and code that writes it against a database without the column fails every keyed wallet write.
 
 | File | Adds | If it isn't applied |
 |---|---|---|
@@ -351,7 +355,7 @@ volume, apply each file you lack by hand, in order (`psql -U langfuse -d appdata
 | `15-append-notes-as-rows` | `support_ticket_comments`, `crm_lead_notes` | Adding a comment or note fails. **Drops `support_tickets.notes` and `crm_leads.notes` with no data carried over** — copy first |
 | `16-tenant-budget-holds` | One budget hold per in-flight turn | The daily cap stops counting running turns; the reserve fails open |
 | `19-usage-events` | One immutable row per model call: the billing meter **and the spend the dollar caps and `GET /usage` sum** | No call is metered (`UsageEventTableMissing`) **and the caps' spend read fails**: under the default `BUDGET_CHECK_FAILURE_POLICY=open` every turn runs unchecked and `TenantAllowanceUnenforced` pages. Apply it **before** deploying the change that reads the caps from it, then run `make usage-events-carry-over` |
-| `20-credit-wallet` | The credit wallet: accounts, lots, transactions, entries | Nothing reads it unless `CREDITS_PER_USD` is set; then a charge fails and is counted (`CreditDebitFailing`) |
+| `20-credit-wallet` | The credit wallet: accounts, lots, transactions, entries (`transactions.request` stores what each idempotency key stood for) | Nothing reads it unless `CREDITS_PER_USD` is set; then a charge fails and is counted (`CreditDebitFailing`). **A database from before `transactions.request` must be migrated first** (`make billing-migrate`), or every keyed write fails |
 | `21-usage-event-credits` | `credits`, `credits_per_usd`, `markup` on `usage_events` | **Apply before setting `CREDITS_PER_USD`**, or every event write fails and is counted (`UsageEventTableMissing`) |
 | `22-billing` | The tenant link, the product catalog and the webhook inbox | No provider is enabled by default, so nothing reads them; with `BILLING_PROVIDERS` set, webhooks fail 5xx (the provider retries) and `BillingWebhookFailing` pages |
 | `23-usage-export-outbox` | The usage export outbox | Nothing writes it unless a provider that bills on usage is enabled; then queuing fails and is counted (`UsageExportEnqueueFailing`) while the event itself is kept |

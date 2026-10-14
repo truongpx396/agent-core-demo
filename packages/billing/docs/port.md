@@ -14,11 +14,11 @@ The port is **shaped as the service API** (D18) so that a network implementation
 | ○ | `grant(tenant, credits, *, key, source, …)` / `adjust(…)` | `key` | n/a | caller retries with the same key |
 | ○ | `checkout(tenant, product, *, key, …)` | `key` (provider-side idempotency) | n/a | caller retries |
 
-## Idempotency semantics (today, and the gap)
-Today a replayed key returns the existing transaction **without comparing parameters** (`ON CONFLICT (tenant, idempotency_key) DO NOTHING`, then `SELECT id`). For a debit keyed by a deterministic event id that is safe. A service API called by arbitrary clients must instead refuse a reused key with different parameters, as Stripe's does (research R7). That is a behaviour change and belongs to 012.
+## Idempotency semantics
+A key stands for ONE request (spec 012). The transaction stores a normalised description of the request (`credit_transactions.request`) and a reused key is compared with it: the same request returns the existing transaction (`status="duplicate"`) and changes nothing; a DIFFERENT request raises `IdempotencyConflict`, naming each field that differs, and changes nothing. That is what a service API called by arbitrary clients needs, and what Stripe's does (research R7): a remote implementation maps the exception to a 409-style response. Which fields identify a request is an explicit, validated choice per call (`compare=`; the default is every field and the kind is always compared); a transaction written before the column existed has no stored request and behaves as it always did.
 
 ## Errors
-`BillingNotConfigured` (no connection supplied), `InvalidSignature` and `InvalidPayload` (webhook), and the existing `ValueError`s for a negative or empty debit. A network implementation maps these to status codes; it adds no new meaning.
+`BillingNotConfigured` (no connection supplied), `InvalidSignature` and `InvalidPayload` (webhook), `IdempotencyConflict` (a `ValueError` subclass: a key reused for a different request), and the existing `ValueError`s for a negative or empty debit. A network implementation maps these to status codes; it adds no new meaning.
 
 ## Where the pieces live (D19)
 - **The contract** is `src/credit_billing/port.py`: `WalletPort`, the in-process implementation and the plain types. A network client would implement the same protocol.

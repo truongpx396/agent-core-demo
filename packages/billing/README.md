@@ -35,7 +35,7 @@ credit-billing-migrate             # apply what is pending or changed, in order,
 credit-billing-migrate --check     # exit 1 if anything is pending or changed: a deploy gate
 ```
 
-Safe to run again (a second run applies nothing), safe to run twice at once (each script is applied once), safe on a database the agent app initialised (re-applying an idempotent script changes no row, and then it is recorded), and it gives up with a clear error instead of waiting for ever when a table is busy (`--lock-timeout-seconds`, default 10). Exit status `0` done or current, `1` `--check` found work, `3` the database could not be reached, `4` a migration did not complete (nothing from that script was applied). It never runs by itself: call it from your deploy, or from your service's start-up with the same connection provider:
+Safe to run again (a second run applies nothing), safe to run twice at once (each script is applied once), safe on a database the agent app initialised (re-applying an idempotent script changes no row, and then it is recorded), and it gives up with a clear error instead of waiting for ever when a table is busy (`--lock-timeout-seconds`, default 10). Exit status `0` done or current, `1` `--check` found work, `3` the database could not be reached, `4` a migration did not complete (nothing from that script was applied). **Run it BEFORE deploying a version that stores the request** (spec 012): code that writes `credit_transactions.request` against a database without the column fails every keyed wallet write. `--check` is the gate for that. It never runs by itself: call it from your deploy, or from your service's start-up with the same connection provider:
 
 ```python
 from credit_billing import db, migrate
@@ -79,7 +79,9 @@ credit-billing-inbox-sweep           # drop applied/ignored webhook-inbox rows p
 
 The CLIs open their own pool from `APPDATA_DATABASE_URL` (default `postgresql://langfuse:langfuse@localhost:5432/appdata`) and push their metrics to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://localhost:4318`, blank turns it off; needs the `otel` extra). Every change names who and why; a retry is safe only with the same `--key`.
 
-Exit status: `0` done (or a duplicate of a change that already landed), `1` nothing changed (no such wallet), `2` invalid input, `3` the database could not be reached. An unreachable database fails in about ten seconds with one `error:` line naming host, port and database (never the user or password), so a cron job or an operator who mistyped the URL is told at once. Logs go to stderr as one JSON line per record (`timestamp`, `level`, `logger`, `event` plus the record's fields, so the operator audit line `credit_operator_action` carries action, tenant, actor, amount and key); a process that has already configured logging keeps its own setup.
+A key stands for one request: the same `--key` with something different (another amount, source, reason or expiry) is refused with exit status `2`, one line per differing field, and nothing changed. `--expires-in-days` is recomputed on every run, so for an exact retry give the first run's instant as `--expires-at 2026-11-13T07:20:11+00:00` (the conflict message prints it); the two cannot be combined.
+
+Exit status: `0` done (or a duplicate of a change that already landed), `1` nothing changed (no such wallet), `2` invalid input (including a reused key with a different request), `3` the database could not be reached. An unreachable database fails in about ten seconds with one `error:` line naming host, port and database (never the user or password), so a cron job or an operator who mistyped the URL is told at once. Logs go to stderr as one JSON line per record (`timestamp`, `level`, `logger`, `event` plus the record's fields, so the operator audit line `credit_operator_action` carries action, tenant, actor, amount and key); a process that has already configured logging keeps its own setup.
 
 ## What it emits and ships for operators
 
@@ -98,7 +100,7 @@ CI installs this package alone into a clean environment and runs the first comma
 
 ## What it is not (yet)
 
-Not a service: there is no HTTP API beyond the webhook route and no service authentication. Not a billing platform: no invoices, tax, subscriptions management or holds; **holds, API-grade idempotency, outbound notifications and a service-side event store are the next features** ([`docs/design-note.md`](docs/design-note.md), section 6). Usage-based billing to a provider is built but off (prepaid packs only). A reused idempotency key with different parameters currently returns the first result without comparing; that is safe for the application's debits (keyed by a deterministic event id) and is listed as a gap to close before exposing the port over a network.
+Not a service: there is no HTTP API beyond the webhook route and no service authentication. Not a billing platform: no invoices, tax, subscriptions management or holds; **holds, API-grade idempotency, outbound notifications and a service-side event store are the next features** ([`docs/design-note.md`](docs/design-note.md), section 6). Usage-based billing to a provider is built but off (prepaid packs only). A reused idempotency key with a different request is refused (`IdempotencyConflict`), not answered "already applied". One limit: a row written before the `request` column existed has no stored request and keeps the old behaviour for ever.
 
 ## Where to read more
 

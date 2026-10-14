@@ -275,14 +275,34 @@ class TestAWalletFaultNeverLosesTheEvent:
         ((event_id, rated, cost, rate, markup),) = await fetch(
             appdata_url, "SELECT event_id, credits, cost_usd, credits_per_usd, markup FROM usage_events WHERE tenant = %s", tenant
         )
-        applied = await credits.debit(
-            tenant, rated, idempotency_key=event_id, usage_event_id=event_id, actor="repair",
-            pricing=credits.Pricing(cost, rate, markup),
-        )
-        again = await credits.debit(tenant, rated, idempotency_key=event_id, actor="repair")
+        repair = dict(usage_event_id=event_id, actor="repair", pricing=credits.Pricing(cost, rate, markup))
+        applied = await credits.debit(tenant, rated, idempotency_key=event_id, **repair)
+        again = await credits.debit(tenant, rated, idempotency_key=event_id, **repair)  # the repair run twice: the SAME request
 
         assert applied.status == "applied" and again.status == "duplicate"
         assert (await credits.balance(tenant)).available == D("990.000000")
+
+    async def test_a_repair_that_asks_for_something_else_under_the_events_key_is_refused_not_absorbed(self, appdata_url, wallet_fault):
+        """Spec 012. This test used to replay the repair WITHOUT the usage event id and the pricing and still expect "duplicate": the old
+        wallet answered that to any request under a used key. That second call is a different request (it would not have recorded the
+        pricing the first one did), and it is now refused, naming what differs; the repair run the same way twice is the test above."""
+        tenant = tenant_name()
+        await fund(tenant, "1000")
+        wallet_fault.break_()
+        await call(tenant, "m1", cost_usd=0.01)
+        wallet_fault.heal()
+        ((event_id, rated, cost, rate, markup),) = await fetch(
+            appdata_url, "SELECT event_id, credits, cost_usd, credits_per_usd, markup FROM usage_events WHERE tenant = %s", tenant
+        )
+        await credits.debit(
+            tenant, rated, idempotency_key=event_id, usage_event_id=event_id, actor="repair", pricing=credits.Pricing(cost, rate, markup)
+        )
+
+        with pytest.raises(credits.IdempotencyConflict) as raised:
+            await credits.debit(tenant, rated, idempotency_key=event_id, actor="repair")
+
+        assert set(raised.value.differences) == {"usage_event_id", "cost_usd", "credits_per_usd", "markup"}
+        assert (await credits.balance(tenant)).available == D("990.000000"), "nothing was charged twice"
 
 
 class TestMigration21:

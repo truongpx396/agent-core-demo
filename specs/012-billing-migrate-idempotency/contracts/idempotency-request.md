@@ -66,8 +66,8 @@ class IdempotencyConflict(ValueError):
 | Caller | Key | `compare` | Why |
 |---|---|---|---|
 | Host charge via the port (`record_usage_in`) | usage event id | default (all) | everything is derived from the stored usage event, so a replay is identical; a difference is a bug or a changed price and must be loud. The host's `_charge` swallows and counts it like any wallet fault (`credit_debit_failed`, `error_class=IdempotencyConflict`). |
-| Webhook grant (`webhooks._apply`) | `{provider}:{event_id}` | `GRANT_FIELDS - {"expires_at"}` | the expiry is `now + product days` at processing time; a concurrent replay computes a later instant. A conflict on the remaining fields means the catalogue changed under the event: quarantined at once as `idempotency_conflict`. |
-| Webhook clawback | `clawback:{provider}:{payment_ref}` | `frozenset()` | the key names the payment. Two events describing one refund legitimately differ in `reason` and in the reclaimable amount; the second must remain a duplicate (`already_reversed`). |
+| Webhook grant (`webhooks._apply`) | `{provider}:{event_id}` | `GRANT_FIELDS - {"expires_at"}` | the expiry is `now + product days` at processing time, so any replay computes a later instant. The inbox claim and the payment's lot check normally answer a replay first, so this layer is defence in depth, and it must not fail on its own. A conflict on the remaining fields means the catalogue changed under the event: quarantined at once as `idempotency_conflict`. |
+| Webhook clawback | `clawback:{provider}:{payment_ref}` | `frozenset()` | the key names the payment. The amount an event asks for is what it read from the lot, and a debit can land between two events' reads, so two events for one refund can differ there; the second must remain a duplicate (`already_reversed`). |
 | Operator command | `--key` | default (all) | a person reads the conflict; `--expires-at` makes an expiry retry-exact |
 | Expiry sweep | `expire:{lot_id}` | default (`lot_id`) | nothing else varies |
 
