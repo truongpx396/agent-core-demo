@@ -9,6 +9,13 @@ existing tenant until an operator, or a verified purchase webhook, opens an acco
   * **Exactly once.** Every grant, debit and expiry carries an idempotency key, and
     `UNIQUE (tenant, idempotency_key)` on `credit_transactions` makes a replay insert nothing. A debit
     is keyed by the usage event that caused it, so a replayed model call cannot be charged twice.
+  * **A key stands for ONE request** (spec 012). The transaction stores a normalised description of the
+    request it was made for (`credit_transactions.request`), and a reused key is compared with it:
+    the same request is a harmless `duplicate`, a DIFFERENT request raises `IdempotencyConflict` naming
+    the fields that differ and changes nothing. Before this, a caller that asked for 600 credits under a key
+    that had granted 500 was told "already applied" and its 600 was lost without a trace. Which fields identify
+    a request is an explicit, validated choice per call (`compare=`); the default is every field. A row written
+    before the column existed has no stored request and behaves exactly as it always did.
   * **A serial outcome under concurrency.** Every write for one tenant first takes
     `pg_advisory_xact_lock(hash(tenant))`. The row locks on the lots already stop a lost update on a
     lot's `remaining`, and the tests show every other guarantee holds without the tenant lock. What
@@ -39,13 +46,14 @@ The `*_in` functions run inside the caller's transaction (`sql_store.get_connect
 debit can commit with the usage event that caused it; the plain ones open their own.
 """
 import logging
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 
 from psycopg import AsyncConnection
+from psycopg.types.json import Jsonb
 
 from credit_billing import metrics
 from credit_billing.db import get_connection
@@ -137,6 +145,82 @@ def plan_allocation(
     return takes, max(left, ZERO)
 
 
+# --- what a key stands for (spec 012, contracts/idempotency-request.md) ---------------------------------------------------------------
+# The fields that define a request, per operation. A reused key is compared over these (the kind is always compared as well). They are
+# named here, next to the writes they describe, so a caller that narrows the comparison does it by name and an unknown name is refused.
+GRANT_FIELDS = ("amount", "source", "provider", "external_ref", "expires_at", "reason", "actor")
+DEBIT_FIELDS = ("amount", "usage_event_id", "cost_usd", "credits_per_usd", "markup", "reason", "actor")
+EXPIRE_FIELDS = ("lot_id",)
+
+
+def _shown(value: str | None) -> str:
+    if value is None:
+        return "None"
+    return repr(value[:80]) + ("…" if len(value) > 80 else "")
+
+
+class IdempotencyConflict(ValueError):
+    """An idempotency key was reused for a DIFFERENT request. Nothing was written. `differences` maps each differing field to
+    (the value the key was first used with, the value now); the message truncates long values, the attribute does not.
+
+    A `ValueError` so that callers which already turn a bad argument into an error (the operator command) keep working."""
+
+    def __init__(self, key: str, tenant: str, differences: dict[str, tuple[str | None, str | None]]) -> None:
+        self.key, self.tenant, self.differences = key, tenant, differences
+        shown = "; ".join(f"{field}: {_shown(first)} -> {_shown(now)}" for field, (first, now) in differences.items())
+        super().__init__(
+            f"idempotency key {key!r} was already used for a different request ({shown}); nothing changed. "
+            "A retry must send exactly the same request; a different request needs a new key."
+        )
+
+
+def _decimal(value) -> str | None:
+    """A number as fixed-point text without an exponent or trailing zeros, so equal numbers are equal strings (0.0100 and 0.01 are
+    both '0.01'; 100 is '100', not '1E+2'). It is the value the CALLER passed, not what Postgres stored after rounding it."""
+    if value is None:
+        return None
+    return format((value if isinstance(value, Decimal) else Decimal(str(value))).normalize(), "f")
+
+
+def _instant(value: datetime | None) -> str | None:
+    return None if value is None else value.astimezone(UTC).isoformat(timespec="microseconds")
+
+
+def _grant_request(credits: Decimal, source: str, provider, external_ref, expires_at, reason, actor) -> dict[str, str | None]:
+    return {
+        "kind": "grant", "amount": format(credits, "f"), "source": source, "provider": provider, "external_ref": external_ref,
+        "expires_at": _instant(expires_at), "reason": reason, "actor": actor,
+    }
+
+
+def _debit_request(kind: str, credits: Decimal, usage_event_id, pricing: "Pricing | None", reason, actor) -> dict[str, str | None]:
+    return {
+        "kind": kind, "amount": format(credits, "f"), "usage_event_id": usage_event_id,
+        "cost_usd": _decimal(pricing.cost_usd) if pricing else None,
+        "credits_per_usd": _decimal(pricing.credits_per_usd) if pricing else None,
+        "markup": _decimal(pricing.markup) if pricing else None,
+        "reason": reason, "actor": actor,
+    }
+
+
+def _compared(compare: Collection[str] | None, vocabulary: Sequence[str]) -> list[str]:
+    """The fields a reused key is judged on, in a stable order, validated BEFORE anything is written. `None` is every field of the
+    operation. The kind is always compared, so naming it is allowed and changes nothing; any other unknown name is a bug at the call
+    site, refused here rather than silently comparing nothing."""
+    if compare is None:
+        return ["kind", *vocabulary]
+    unknown = sorted(set(compare) - set(vocabulary) - {"kind"})
+    if unknown:
+        raise ValueError(f"cannot compare {unknown}: the fields of this request are {list(vocabulary)}")
+    return ["kind", *(field for field in vocabulary if field in set(compare))]
+
+
+def _differences(stored: Mapping, new: Mapping, fields: Sequence[str]) -> dict[str, tuple[str | None, str | None]]:
+    """The compared fields on which the stored request and the new one differ. A field the stored request does not contain (a request
+    recorded by an older version with fewer keys) is skipped, so adding a field later never makes an old row conflict."""
+    return {field: (stored[field], new.get(field)) for field in fields if field in stored and stored[field] != new.get(field)}
+
+
 async def _one(cur) -> tuple:
     """The row a statement is certain to return (an INSERT ... RETURNING, an aggregate)."""
     row = await cur.fetchone()
@@ -157,29 +241,43 @@ async def _begin_transaction(
     *,
     actor: str,
     reason: str | None,
+    request: Mapping[str, str | None],
+    fields: Sequence[str],
     usage_event_id: str | None = None,
     pricing: Pricing | None = None,
 ) -> tuple[str | None, str | None]:
-    """Inserts the idempotency row. Returns (new_id, None), or (None, existing_id) for a replay."""
+    """Inserts the idempotency row, with the request the key stands for. Returns (new_id, None), or (None, existing_id) for a replay of
+    the SAME request. Raises IdempotencyConflict, having written nothing, for a replay of a DIFFERENT one.
+
+    The comparison reads the row by `(tenant, key)`: a conflict is only ever found in the caller's own tenant and can never quote
+    another tenant's request (constitution I). It compares the caller's values (`request`), not the stored columns, because the pricing
+    columns round on storage and an exact compare of those would raise a conflict on a request that is identical. A stored request of
+    NULL is a row written before the column existed: its original request is unknowable (the table is append-only, so it cannot be
+    backfilled), and it keeps the behaviour it always had, a plain duplicate."""
     cur = await conn.execute(
         "INSERT INTO credit_transactions "
-        "(tenant, kind, idempotency_key, usage_event_id, cost_usd, credits_per_usd, markup, reason, actor) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (tenant, idempotency_key) DO NOTHING RETURNING id",
+        "(tenant, kind, idempotency_key, usage_event_id, cost_usd, credits_per_usd, markup, reason, actor, request) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (tenant, idempotency_key) DO NOTHING RETURNING id",
         (
             tenant, kind, key, usage_event_id,
             pricing.cost_usd if pricing else None,
             pricing.credits_per_usd if pricing else None,
             pricing.markup if pricing else None,
-            reason, actor,
+            reason, actor, Jsonb(dict(request)),
         ),
     )
     row = await cur.fetchone()
     if row is not None:
         return str(row[0]), None
     cur = await conn.execute(
-        "SELECT id FROM credit_transactions WHERE tenant = %s AND idempotency_key = %s", (tenant, key)
+        "SELECT id, request FROM credit_transactions WHERE tenant = %s AND idempotency_key = %s", (tenant, key)
     )
-    (existing,) = await _one(cur)
+    existing, stored = await _one(cur)
+    if stored is not None:
+        differences = _differences(stored, request, fields)
+        if differences:
+            logger.warning("credit_idempotency_conflict", extra={"tenant": tenant, "key": key, "fields": sorted(differences)})
+            raise IdempotencyConflict(key, tenant, differences)
     return None, str(existing)
 
 
@@ -221,8 +319,14 @@ async def grant_in(
     expires_at: datetime | None = None,
     provider: str | None = None,
     external_ref: str | None = None,
+    compare: Collection[str] | None = None,
 ) -> Applied:
-    """Adds a lot. Opens the tenant's account if it has none. Any debt is repaid from it first."""
+    """Adds a lot. Opens the tenant's account if it has none. Any debt is repaid from it first.
+
+    A reused `idempotency_key` is judged on `compare` (names from GRANT_FIELDS; default all; the kind always): the same request is a
+    `duplicate`, a different one raises IdempotencyConflict. Narrow it only when the key names a fact and the other fields are
+    incidental, and say why at the call site (the webhook grant leaves out `expires_at`, which it computes as now + days)."""
+    fields = _compared(compare, GRANT_FIELDS)
     credits = credits_amount(amount)
     if not tenant:
         raise ValueError("a grant needs a tenant")
@@ -242,7 +346,10 @@ async def grant_in(
         "INSERT INTO credit_accounts (tenant, created_by) VALUES (%s, %s) ON CONFLICT (tenant) DO NOTHING",
         (tenant, actor),
     )
-    transaction_id, existing = await _begin_transaction(conn, tenant, "grant", idempotency_key, actor=actor, reason=reason)
+    transaction_id, existing = await _begin_transaction(
+        conn, tenant, "grant", idempotency_key, actor=actor, reason=reason, fields=fields,
+        request=_grant_request(credits, source, provider, external_ref, expires_at, reason, actor),
+    )
     if transaction_id is None:
         return Applied("duplicate", transaction_id=existing)
 
@@ -275,10 +382,13 @@ async def debit_in(
     reason: str | None = None,
     kind: str = "debit",
     pricing: Pricing | None = None,
+    compare: Collection[str] | None = None,
 ) -> Applied:
     """Consumes credits, earliest-expiring first. A no-op (`no_account`) for a tenant with no account.
 
-    Never fails because the balance is short: the shortfall is booked as overdraft (see module doc)."""
+    Never fails because the balance is short: the shortfall is booked as overdraft (see module doc). A reused `idempotency_key` is
+    judged on `compare` (names from DEBIT_FIELDS; default all; the kind always), as in `grant_in`."""
+    fields = _compared(compare, DEBIT_FIELDS)
     credits = credits_amount(amount)
     if credits < 0:
         raise ValueError(f"a debit cannot be negative, got {credits}")
@@ -296,7 +406,8 @@ async def debit_in(
         return Applied("no_account")
     await _lock(conn, tenant)
     transaction_id, existing = await _begin_transaction(
-        conn, tenant, kind, idempotency_key, actor=actor, reason=reason, usage_event_id=usage_event_id, pricing=pricing
+        conn, tenant, kind, idempotency_key, actor=actor, reason=reason, usage_event_id=usage_event_id, pricing=pricing,
+        fields=fields, request=_debit_request(kind, credits, usage_event_id, pricing, reason, actor),
     )
     if transaction_id is None:
         return Applied("duplicate", transaction_id=existing)
@@ -325,13 +436,22 @@ async def debit_in(
 
 
 async def clawback_in(
-    conn: AsyncConnection, tenant: str, amount, *, idempotency_key: str, actor: str, reason: str | None = None
+    conn: AsyncConnection,
+    tenant: str,
+    amount,
+    *,
+    idempotency_key: str,
+    actor: str,
+    reason: str | None = None,
+    compare: Collection[str] | None = None,
 ) -> Applied:
     """Takes back credits because the money behind them was returned (a refund, spec D6). The same path
     as a debit (earliest-expiring lot first), recorded as kind 'clawback', and like a debit it is NEVER
     refused for a short balance: credits already spent become debt on the overdraft lot, which refuses new
     usage at the gate until the next grant repays it. A no-op (`no_account`) for a tenant with no wallet."""
-    return await debit_in(conn, tenant, amount, idempotency_key=idempotency_key, actor=actor, reason=reason, kind="clawback")
+    return await debit_in(
+        conn, tenant, amount, idempotency_key=idempotency_key, actor=actor, reason=reason, kind="clawback", compare=compare
+    )
 
 
 async def adjust_in(
@@ -343,6 +463,7 @@ async def adjust_in(
     actor: str,
     reason: str,
     expires_at: datetime | None = None,
+    compare: Collection[str] | None = None,
 ) -> Applied:
     """A correction made by hand (`scripts/credits.py adjust`), signed: positive adds credits, negative takes them back.
 
@@ -359,11 +480,13 @@ async def adjust_in(
     if credits > 0:
         return await grant_in(
             conn, tenant, credits, source="adjustment", idempotency_key=idempotency_key, actor=actor, reason=reason,
-            expires_at=expires_at,
+            expires_at=expires_at, compare=compare,
         )
     if expires_at is not None:
         raise ValueError("a negative adjustment takes credits back; an expiry only applies to credits added")
-    return await debit_in(conn, tenant, -credits, idempotency_key=idempotency_key, actor=actor, reason=reason, kind="adjust")
+    return await debit_in(
+        conn, tenant, -credits, idempotency_key=idempotency_key, actor=actor, reason=reason, kind="adjust", compare=compare
+    )
 
 
 async def _expire_lot_in(conn: AsyncConnection, tenant: str, lot_id: str) -> bool:
@@ -377,7 +500,8 @@ async def _expire_lot_in(conn: AsyncConnection, tenant: str, lot_id: str) -> boo
     if row is None:
         return False
     transaction_id, _ = await _begin_transaction(
-        conn, tenant, "expire", f"expire:{lot_id}", actor="system", reason="lot reached its expiry"
+        conn, tenant, "expire", f"expire:{lot_id}", actor="system", reason="lot reached its expiry",
+        fields=["kind", *EXPIRE_FIELDS], request={"kind": "expire", "lot_id": lot_id},
     )
     if transaction_id is None:
         return False

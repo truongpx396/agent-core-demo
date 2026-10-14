@@ -17,7 +17,9 @@
 --                        beyond the balance as a negative `remaining` and is repaid first by the
 --                        next grant.
 --   credit_transactions  the idempotency unit. UNIQUE (tenant, idempotency_key): replaying a grant,
---                        debit or expiry with the same key inserts nothing.
+--                        debit or expiry with the same key inserts nothing. `request` records what the key
+--                        stood for (spec 012), so reusing it for a DIFFERENT request is refused, not
+--                        answered "already applied".
 --   credit_entries       the signed movements. THE TRUTH: a lot's `remaining` must always equal
 --                        the sum of its entries (credits.verify() reports any drift).
 --
@@ -87,6 +89,23 @@ CREATE TABLE IF NOT EXISTS credit_transactions (
     UNIQUE (tenant, idempotency_key),
     UNIQUE (id, tenant)
 );
+
+-- What the idempotency key stood for: a normalised description of the request (credit_billing/credits.py, spec 012), written
+-- once with the row. NULL means the row predates this column: its original request is unknowable, and the table is append-only
+-- (a trigger refuses UPDATE) so it is never backfilled; a reused key on such a row behaves as it always did, a plain duplicate.
+--
+-- Added behind a catalog check, NOT as `ADD COLUMN IF NOT EXISTS`: that statement takes an ACCESS EXCLUSIVE lock on the table
+-- even when the column is already there (measured: it waits behind any open reader), and this is the table every debit writes,
+-- so re-applying this script would stall the wallet. The check reads the catalog and takes no table lock.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_attribute
+        WHERE attrelid = to_regclass('credit_transactions') AND attname = 'request' AND NOT attisdropped
+    ) THEN
+        ALTER TABLE credit_transactions ADD COLUMN request JSONB;
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS credit_entries (
     id             BIGSERIAL PRIMARY KEY,

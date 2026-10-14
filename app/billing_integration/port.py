@@ -18,10 +18,17 @@ from decimal import Decimal
 
 from psycopg import AsyncConnection
 
-from credit_billing.port import Applied, Balance, InProcessWallet, Pricing, WalletPort
+from credit_billing.port import (
+    Applied,
+    Balance,
+    IdempotencyConflict,
+    InProcessWallet,
+    Pricing,
+    WalletPort,
+)
 from credit_billing.port import credits_for_cost as _credits_for_cost
 
-__all__ = ["Applied", "Balance", "Pricing", "account_balance", "credits_for_cost", "record_usage_in", "wallet"]
+__all__ = ["Applied", "Balance", "IdempotencyConflict", "Pricing", "account_balance", "credits_for_cost", "record_usage_in", "wallet"]
 
 wallet: WalletPort = InProcessWallet()
 
