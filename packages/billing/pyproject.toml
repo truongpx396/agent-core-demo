@@ -48,6 +48,6 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = '-m "not integration and not provider_sandbox"'
 markers = [
-    "integration: needs a real Postgres container (tests/containers.py), nothing else",
-    "provider_sandbox: talks to a payment provider's real SANDBOX over the internet with the operator's own test credentials (tests/provider_sandbox/, `make test-provider-sandbox`): manual, never CI, and never swept into another tier; self-skips when the credential is absent or another `listen` is running, and FAILS (creating nothing) on a live-mode Stripe key or a non-sandbox POLAR_ENVIRONMENT",
+    "integration: needs a real Postgres container (tests/containers.py), nothing else; lives in tests/integration/",
+    "provider_sandbox: talks to a payment provider's real SANDBOX over the internet with the operator's own test credentials (lives in tests/provider_sandbox/, `make test-provider-sandbox`): manual, never CI, and never swept into another tier; self-skips when the credential is absent or another `listen` is running, and FAILS (creating nothing) on a live-mode Stripe key or a non-sandbox POLAR_ENVIRONMENT",
 ]

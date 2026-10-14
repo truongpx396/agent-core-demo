@@ -2,7 +2,7 @@
 
 Four counters used to live in `app/core/metrics.py`, which the billing code imported. They are here now, with
 their names, labels and help text exactly as they were, so every dashboard panel and alert rule on them keeps
-working and `app/billing/` no longer needs the host's metrics module to be importable.
+working and the billing package no longer needs any host's metrics module to be importable.
 
 They are built on the OpenTelemetry **API** only. A library depends on the API and emits through whatever
 provider the process installed; the SDK, the exporter, the collector endpoint and `service.name` stay the
@@ -67,7 +67,7 @@ class Counter:
 
 agent_credit_overdraft_total = Counter(
     "agent_credit_overdraft_total",
-    "Debits larger than the tenant's available credits (app/billing/credits.py): the model call "
+    "Debits larger than the tenant's available credits (credit_billing/credits.py): the model call "
     "had already happened, so the shortfall was booked as overdraft instead of refused. With "
     "gating on this should stay near zero; sustained growth means usage is outrunning the wallet "
     "(a missed top-up, or gating off).",
@@ -75,7 +75,7 @@ agent_credit_overdraft_total = Counter(
 
 agent_billing_webhook_total = Counter(
     "agent_billing_webhook_total",
-    "Payment-provider webhook deliveries by outcome (POST /billing/webhooks/{provider}, app/billing/webhooks.py). "
+    "Payment-provider webhook deliveries by outcome (POST /billing/webhooks/{provider}, credit_billing/webhooks.py). "
     "`quarantined` means a customer PAID and was granted nothing and nobody is retrying: it pages "
     "(BillingWebhookQuarantined). `failed` means applying it raised and the provider will retry: it pages too "
     "(BillingWebhookFailing), because a sustained database fault would otherwise surface only as a provider's "
@@ -86,7 +86,7 @@ agent_billing_webhook_total = Counter(
 
 agent_credit_granted_total = Counter(
     "agent_credit_granted_total",
-    "Credits added to wallets (app/billing/credits.py), by lot source: purchase | subscription | promo | manual | "
+    "Credits added to wallets (credit_billing/credits.py), by lot source: purchase | subscription | promo | manual | "
     "adjustment. Counted when the grant is applied, inside the caller's transaction, so one that later rolls back "
     "is over-counted: this is a rate for a dashboard, and the wallet's entries are the record.",
     ["source"],

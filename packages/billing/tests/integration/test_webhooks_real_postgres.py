@@ -36,7 +36,7 @@ from credit_billing.providers.base import BillingEvent, CreditProduct, EventKind
 from tests.conftest import metric_value
 from tests.containers import ensure_postgres
 from tests.contract import HARNESSES, Delivery
-from tests.schema_reapply import reapply
+from tests.integration.schema_reapply import reapply
 
 pytestmark = pytest.mark.integration
 

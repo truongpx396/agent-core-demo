@@ -9,12 +9,18 @@ real cron once your retention policy is decided, e.g.
 
     45 3 * * 0 python -m credit_billing.cli.inbox_sweep        # or: credit-billing-inbox-sweep
 
-Idempotent: a re-run before more rows age out deletes nothing.
+Idempotent: a re-run before more rows age out deletes nothing. Exits 3 with a one-line `error:` when the database cannot be reached.
 """
 import asyncio
 import logging
+import sys
 
-from credit_billing.cli._runtime import scheduled_job, wired_pool
+from credit_billing.cli._runtime import (
+    EXIT_DATABASE_UNAVAILABLE,
+    DatabaseUnavailable,
+    scheduled_job,
+    wired_pool,
+)
 from credit_billing.inbox import SWEEP_BATCH_SIZE, SWEEP_MAX_BATCHES, sweep_old_rows
 from credit_billing.settings import BILLING_INBOX_RETENTION_DAYS
 
@@ -40,7 +46,11 @@ def describe(count: int) -> str:
 
 def main() -> None:
     with scheduled_job("agent-core-billing-inbox-sweep"):
-        print(describe(asyncio.run(run_sweep())))
+        try:
+            print(describe(asyncio.run(run_sweep())))
+        except DatabaseUnavailable as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            raise SystemExit(EXIT_DATABASE_UNAVAILABLE) from exc
 
 
 if __name__ == "__main__":

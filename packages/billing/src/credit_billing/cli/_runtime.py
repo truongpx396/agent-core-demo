@@ -9,28 +9,49 @@ variables the app uses, with the same names and defaults: `APPDATA_DATABASE_URL`
 works), and closes it afterwards. `pool.connection()` commits on a clean exit and rolls back on an exception, which is the
 contract `credit_billing.db` documents for a provider.
 
+**A database that cannot be reached fails fast and says so.** The pool retries a refused connection until its open timeout, and
+psycopg's default is 30 s of multi-line warnings ending in a raw `PoolTimeout` traceback. For a command an operator types, or a
+cron job nobody is watching, that is the wrong failure: the wait is `CONNECT_TIMEOUT_SECONDS`, and the error is
+`DatabaseUnavailable`, naming host, port and database (never the user or password) and the variable to check. Both CLIs turn it
+into one `error:` line and exit status `EXIT_DATABASE_UNAVAILABLE`.
+
 **The job bootstrap.** `scheduled_job()` is what `app/core/job_runtime.py::scheduled_job` is for the app: a CLI lives for
 seconds, the OpenTelemetry exporter pushes on a 15 s timer, so a job that finishes sooner would export NOTHING, and the
 counters that matter most from an unattended job are its failures (spec 008 B22). So the provider is flushed on the way
 out whether the body returned or raised, and a flush that fails never turns a finished job into a failed one. The SDK and
 the OTLP exporter are an optional extra (`credit-billing[otel]`): without them, or with a blank endpoint, metrics are
 simply not pushed and the CLI works the same. Logging is the standard library's, configured only if the process has not
-already configured it, so the CLI takes whatever a host application set up.
+already configured it, so the CLI takes whatever a host application set up. When the CLI does configure it, a record is one JSON
+line on stderr with the keys the agent app's logs have (`timestamp`, `level`, `logger`, `event`) plus every `extra=` field: the
+operator audit line (`credit_operator_action`: action, tenant, actor, amount, key) is only useful with its fields, and the
+standard library's default format prints the message alone and drops them.
 
 Imports nothing from `app` (tests/test_boundary.py).
 """
+import json
 import logging
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
+from datetime import UTC, datetime
 from typing import Any
 
+import psycopg
 from opentelemetry import metrics as metrics_api
-from psycopg_pool import AsyncConnectionPool
+from psycopg.conninfo import conninfo_to_dict
+from psycopg_pool import AsyncConnectionPool, PoolTimeout
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from credit_billing import db
 
 logger = logging.getLogger(__name__)
+
+# How long a CLI waits for its first connection. Generous for a connect (a healthy database answers in milliseconds, a distant one in
+# well under a second) and short enough that an operator who mistyped the URL, or a cron job whose database is down, is told within
+# seconds rather than half a minute.
+CONNECT_TIMEOUT_SECONDS = 10.0
+# The exit status both CLIs use when the database cannot be reached. `credit-billing` already uses 0 (done, or a duplicate), 1
+# (nothing changed / no wallet) and 2 (invalid input); a fourth, distinct value lets a caller tell "retry later" from "fix the command".
+EXIT_DATABASE_UNAVAILABLE = 3
 
 
 class RuntimeSettings(BaseSettings):
@@ -43,11 +64,32 @@ class RuntimeSettings(BaseSettings):
     otel_exporter_otlp_endpoint: str = "http://localhost:4318"
 
 
+class DatabaseUnavailable(RuntimeError):
+    """No connection could be opened within `CONNECT_TIMEOUT_SECONDS`. The message names where, never who: it carries no user or password."""
+
+
+def _where(url: str) -> str:
+    """`host:port/database` of a connection URL, without its credentials; a URL that does not parse is not echoed at all."""
+    try:
+        parts = conninfo_to_dict(url)
+    except psycopg.ProgrammingError:
+        return "the configured database"
+    return f"{parts.get('host') or '(default socket)'}:{parts.get('port') or '5432'}/{parts.get('dbname') or '?'}"
+
+
 @asynccontextmanager
 async def wired_pool(url: str | None = None) -> AsyncIterator[AsyncConnectionPool]:
-    """A pool for the length of the block, with the core wired to it."""
-    pool = AsyncConnectionPool(url or RuntimeSettings().appdata_database_url, min_size=1, max_size=10, open=False)
-    await pool.open(wait=True)
+    """A pool for the length of the block, with the core wired to it. Raises `DatabaseUnavailable` if it cannot connect in time."""
+    target = url or RuntimeSettings().appdata_database_url
+    pool = AsyncConnectionPool(target, min_size=1, max_size=10, open=False)
+    try:
+        await pool.open(wait=True, timeout=CONNECT_TIMEOUT_SECONDS)
+    except PoolTimeout as exc:
+        await pool.close()  # stop its connect-retry workers; otherwise they keep running behind the error
+        raise DatabaseUnavailable(
+            f"cannot open a connection to {_where(target)} within {CONNECT_TIMEOUT_SECONDS:g}s; "
+            "check APPDATA_DATABASE_URL (host, port, database, credentials) and that the server is up"
+        ) from exc
     db.configure(connection=pool.connection)
     try:
         yield pool
@@ -94,11 +136,43 @@ def _flush(provider: Any | None) -> None:
         logger.warning("telemetry_shutdown_failed", extra={"error_class": type(exc).__name__})
 
 
+# Every attribute a LogRecord has of its own; anything else on a record arrived through `extra=` and belongs in the log line.
+_RECORD_FIELDS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", None, None))) | {"message", "asctime"}
+
+
+class JsonFormatter(logging.Formatter):
+    """One JSON object per record: `timestamp` (UTC, ISO 8601), `level`, `logger`, `event`, every `extra=` field, and `exception`
+    when there is one. The four standard keys win over an extra of the same name; a value JSON cannot encode is written as its `str`."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        entry: dict[str, Any] = {key: value for key, value in vars(record).items() if key not in _RECORD_FIELDS}
+        entry.update(
+            timestamp=datetime.fromtimestamp(record.created, UTC).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+            level=record.levelname.lower(),
+            logger=record.name,
+            event=record.getMessage(),
+        )
+        if record.exc_info:
+            entry["exception"] = self.formatException(record.exc_info)
+        return json.dumps(entry, default=str)
+
+
+def _configure_logging() -> None:
+    """JSON lines on stderr at INFO, unless the process already configured logging (then it is left exactly as it is)."""
+    root = logging.getLogger()
+    if root.handlers:
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(JsonFormatter())
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+
+
 @contextmanager
 def scheduled_job(service_name: str) -> Iterator[None]:
     """Logging and telemetry up for the job's body, telemetry flushed after it whether it returned or raised.
     `service_name` is the OTel `service.name`, so each job's series is distinguishable on a dashboard."""
-    logging.basicConfig(level=logging.INFO)  # does nothing when the process already configured logging
+    _configure_logging()
     provider = _install_meter_provider(service_name)
     try:
         yield

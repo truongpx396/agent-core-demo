@@ -145,7 +145,7 @@ Re-planned on the merged tree on 2026-10-14 (decisions D20-D26, plan.md "PR C: d
 - [x] T048 [US3] (EDIT) `packages/billing/observability/alerts.yml` (the two rules, identical to the host's) and `credit-billing-core.json` (the four panels on the package's counters; panel 6 reduced to its core target), with `datasource` as in the host dashboard.
 - [x] T049 [US3] (DOCS) D25: patterns 52, 54, 65, 66 to `packages/billing/docs/PATTERNS.md` (verbatim, noting the old number), 53, 55, 56, 61 to `BILLING_INTEGRATION.md`, 59 and 60 rewritten generic in place with their billing specifics moved into the package file, one-line pointers under the original numbers; copy the provider-port contract, the data model, the port contract and the design note into `packages/billing/docs/`; write `packages/billing/README.md` (what it is, install, configure, wire, run the webhook route, the CLIs, the schema, the tests, how the agent app uses it); update the root `README.md` Payments row and the `infra/README.md` runbook paths, and `CLAUDE.md` ("Where things live", commands).
 - [x] T050 [US3] Verification: `make lint`, `make typecheck`, `make test` (both invocations), `make test-integration`, the package's integration tier, the clean-environment independence run, a local `docker build`, the before/after sets of test names, sha256 of every `postgres-init/*.sql` before and after, the surface diff, the scope probe against a real collector, and a mutation check on the new guards and drift tests.
-- [ ] T051 [US3] Open the PR `chore: billing becomes an independent package (spec 011 PR C)` with the usual body (failure mode, root cause, what changed, proof, decisions, what is not done, commit order), and watch CI to a result.
+- [x] T051 [US3] Open the PR `chore: billing becomes an independent package (spec 011 PR C)` with the usual body (failure mode, root cause, what changed, proof, decisions, what is not done, commit order), and watch CI to a result.
 
 ### PR C results (recorded 2026-10-14, before opening the PR)
 
@@ -177,13 +177,30 @@ Deviations and disclosures (also in the PR body):
 - **Found by CI, not by the local verification above:** the first push failed `test-integration` and `promptfoo` with `ModuleNotFoundError: No module named 'credit_billing'`. Those jobs install only `requirements-lock.txt`, and the package is not in it; pytest's `pythonpath` reaches the pytest process but not the uvicorn, agent-worker and `python -m` processes a test or step starts. Locally `make` exports `PYTHONPATH` and the dev venv has the package installed `-e`, so the CI shape was never exercised. Fixed by installing the package (`--no-deps`, as the Dockerfile does) before the app runs in `test-integration`, `test-live`, `promptfoo`, `deepeval` and `redteam`, with `tests/billing/test_ci_installs_the_package.py` failing on a workflow that does not (it flags exactly those five jobs on the previous workflows).
 - **A second CI-only failure sat behind the first:** with the import fixed, the package's own integration step (`pytest -m integration` in `packages/billing`, which CI had never reached) errored all 162 tests at setup with Docker `409 container ... is not running`. Its helper mounted a `tempfile.mkdtemp()` directory (mode `0700`, owned by the runner's user) at `/docker-entrypoint-initdb.d`; the image reads it as `postgres`, so on Linux the entrypoint exits 2 with `Permission denied` (reproduced with a throwaway volume: `0700` exits, `0755` starts). Docker Desktop on macOS hides ownership, so it passed locally. `write_init_dir()` now sets `0755`/`0644` and `test_containers_init_dir.py` pins the mode bits without Docker (fails on `0700`). Lesson for this PR: a green local run of a Docker-backed tier does not predict the Linux runner; the first CI run of each new step is part of the verification.
 
-**Checkpoint**: PR C merged. `packages/billing/` can be installed and tested alone.
+**Checkpoint**: PR C merged (#161, `3cb7204`). `packages/billing/` can be installed and tested alone.
+
+### Follow-up after PR C (recorded 2026-10-14, branch `test/billing-package-integration-dir`)
+
+What PR C's body listed as unverified was run, and what it found was fixed.
+
+| Item | Result |
+|---|---|
+| Provider sandbox tier (`make test-provider-sandbox`, once, to a log file, no listener running) | **61 passed, 3 skipped, exit 0, 2 min.** The first run of the whole tier in one process since the paid Polar order test landed. The 3 skips are Polar's own bug, unchanged (its API rejects the samples `polar trigger` builds for `subscription.created`, `subscription.cycled`, `product.updated`). No 429, no credential-shaped string in the log. |
+| Operator CLI against a real Postgres, as subprocesses (a throwaway container seeded with only the shipped scripts; the maintainer's own Postgres was not running) | `show` (no wallet: exit 1), `grant` (exit 0), the same `--key` again (reported duplicate, nothing changed), `show` (consistent), `credit-billing-inbox-sweep` (exit 0). |
+| Operator CLI against a database that is **not** there | **Defect, inherited from the host-era CLI.** It retried for 30 s, printed ~17 lines of psycopg warnings and died with a raw `PoolTimeout` traceback. Fixed: `CONNECT_TIMEOUT_SECONDS = 10`, `DatabaseUnavailable` (host, port, database; never the user or password), one `error:` line, exit status 3, pool closed. ~10 s, 5 stderr lines. |
+| The operator audit log line | **Defect, introduced by PR C and understated in its body.** `credit_operator_action` carries {action, tenant, actor, amount, key} as `extra=`; the stdlib default format printed the bare event name, so the fields were dropped (the ledger row still held who and why). Fixed: a stdlib `JsonFormatter` with the host's keys plus every extra and any exception, installed only when the process has not configured logging. |
+| `tests/integration/` | The three real-Postgres modules and their helper moved into `packages/billing/tests/integration/` (pure rename commit, then the one import). `test_tiers_are_separated.py` fails when a tier folder holds a module without its marker, a module outside it carries the marker, or a module uses `ensure_postgres` outside `integration/`. 6 of 6 mutants caught. |
+| Stale `app/billing/...` paths in 4 metric descriptions and 3 SQL header comments | Replaced with `credit_billing/...`. The SQL change is `--` comments only (checked line by line) and the host's `postgres-init/20-` and `22-` copies were updated to stay byte-equal. |
+
+Counts: package hermetic 641 passed + 13 skipped (PR C: 625), integration 162 and sandbox 64 unchanged; 16 new hermetic tests, 5 for the folder guard and 11 for the CLI; 18 of 18 mutants caught on the CLI changes plus a control that survived as it must.
+
+Still open, not hidden: a failed connect still prints the pool's own warnings (JSON, one line each) before the `error:` line; `psycopg.pool` retries until the timeout by design. A wrong password is reported as "cannot open a connection" because the pool cannot tell it from an unreachable server within the wait. The host app's `sql_store` pool has the same 30 s default but is a long-running server, not a command; it is untouched. The remaining items are the spec 012 gaps (idempotency-key parameter check, migration tool).
 
 ---
 
 ## Phase 5: Polish and cross-cutting
 
-- [ ] T052 Update the project memory (`billing-module-boundary`): the final state, the decisions D20-D26, the gotchas.
+- [x] T052 Update the project memory (`billing-module-boundary`): the final state, the decisions D20-D26, the gotchas.
 - [ ] T053 Open the follow-on specs the roadmap names (D17: 012 the wallet contract with holds and the service-side event store, 013 the service shell, 014 turnkey operation) only when asked; this feature does not start them.
 
 ---
