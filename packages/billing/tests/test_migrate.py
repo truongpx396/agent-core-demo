@@ -183,6 +183,16 @@ async def test_the_advisory_lock_is_taken_with_the_two_integer_keys_and_before_t
     assert kinds.index("advisory_lock") < kinds.index("create_record_table") < kinds.index("check") < kinds.index("script")
 
 
+async def test_the_lock_statement_is_the_two_integer_form_with_exactly_the_documented_keys(database):
+    """The single-bigint form is the wallet's per-tenant key space; this one must stay out of it (research R3)."""
+    fake = database(ledger=current_ledger())
+
+    await migrate.migrate()
+
+    locks = [(sql, params) for sql, params in fake.last.statements if kind(sql) == "advisory_lock"]
+    assert locks == [("SELECT pg_advisory_xact_lock(%s, %s)", migrate.LOCK_KEYS)]
+
+
 async def test_a_script_already_recorded_with_this_checksum_is_skipped_untouched(database):
     fake = database(ledger=current_ledger())
 
