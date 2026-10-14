@@ -10,6 +10,19 @@ They were written in `GRAPH_PATTERNS.md` and keep their ORIGINAL numbers (53, 55
 cross reference such as "pattern 58" points into `GRAPH_PATTERNS.md`; "pattern 52", "54", "65" and "66" are in `packages/billing/docs/PATTERNS.md`. A path such as
 `app/billing/credits.py` is now `packages/billing/src/credit_billing/credits.py`.
 
+## How the app finds the package
+
+The package is not in `requirements-lock.txt` (a machine-generated freeze of `requirements.txt`), so there are four ways the app finds it, and which one applies depends on what is running:
+
+| Running | Found through |
+|---|---|
+| `pytest` and `mypy` in this repo | the root `pyproject.toml`: pytest `pythonpath`, mypy `mypy_path`, ruff `src` |
+| anything started by `make` | the Makefile's `export PYTHONPATH` |
+| a developer's venv | `-e ./packages/billing` in `requirements-dev.txt` |
+| the Docker image, and any CI job that starts the app | `pip install --no-deps ./packages/billing` after the lock install |
+
+The first row is the trap: `pythonpath` is a setting of the pytest PROCESS, so a uvicorn, agent-worker or script process that a test (or a CI step) starts does not inherit it and dies on `from credit_billing.settings import ...` in `app/core/config.py`. That is how PR C went green locally (where `make` and the dev venv supply the package) and red in CI's `test-integration` and `promptfoo`. Every CI job that installs the lock file and runs the app therefore installs the package before it, and `tests/billing/test_ci_installs_the_package.py` reads the workflows and fails if one does not. `test` and `typecheck` are exempt on purpose, because they are the jobs that prove the first row is enough on its own.
+
 ## Patterns
 
 ### 53. Charge on the event, gate before the call, and let the meter outrank the charge

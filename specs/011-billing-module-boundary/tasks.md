@@ -174,6 +174,7 @@ Deviations and disclosures (also in the PR body):
 - The scope change forks the four billing series once at deploy; the new series are pre-created at 0 so the alerts can see their first sample.
 - Not verified: the operator CLIs against the maintainer's local Postgres (a read-only `show`). The CLIs are covered hermetically and by the package integration tier.
 - Still open (012): a reused idempotency key with different parameters returns the first result; there is no migration tool.
+- **Found by CI, not by the local verification above:** the first push failed `test-integration` and `promptfoo` with `ModuleNotFoundError: No module named 'credit_billing'`. Those jobs install only `requirements-lock.txt`, and the package is not in it; pytest's `pythonpath` reaches the pytest process but not the uvicorn, agent-worker and `python -m` processes a test or step starts. Locally `make` exports `PYTHONPATH` and the dev venv has the package installed `-e`, so the CI shape was never exercised. Fixed by installing the package (`--no-deps`, as the Dockerfile does) before the app runs in `test-integration`, `test-live`, `promptfoo`, `deepeval` and `redteam`, with `tests/billing/test_ci_installs_the_package.py` failing on a workflow that does not (it flags exactly those five jobs on the previous workflows).
 
 **Checkpoint**: PR C merged. `packages/billing/` can be installed and tested alone.
 

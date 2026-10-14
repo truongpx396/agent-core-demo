@@ -171,6 +171,13 @@ jobs:
           pip install -r requirements-lock.txt
           pytest-xdist==3.8.0
           "testcontainers[postgres,redis,ollama]==4.9.0"
+      # The billing package is installed the way the Docker image installs it (spec 011), BEFORE anything runs the app. pytest's `pythonpath`
+      # puts it on sys.path of the pytest process only; a uvicorn, agent-worker or script process this job starts does not inherit that, and
+      # the lock file does not carry the package (it is a freeze of requirements.txt). Without this step those processes die on
+      # `import credit_billing` (the first PR C run failed test-integration and promptfoo exactly so). The `test` and `typecheck` jobs
+      # deliberately do not install it: they are the ones that prove `pythonpath` and `mypy_path` are enough.
+      # tests/billing/test_ci_installs_the_package.py keeps this honest.
+      - run: pip install --no-deps ./packages/billing
       # --dist=loadgroup: tests/integration/test_worker_scaling.py's own
       # xdist_group marker needs this to actually take effect (plain `load`
       # ignores it) — forces its 3 heavy real-subprocess tests onto ONE
@@ -181,7 +188,6 @@ jobs:
       # reproduced intermittent failure this fixes, not a theoretical one.
       - run: pytest -n auto -m integration -q --dist=loadgroup
       # The billing package's own real-Postgres tests (a separate process: its `tests` package is not this repo's).
-      - run: pip install --no-deps ./packages/billing
       - run: pytest -m integration -q
         working-directory: packages/billing
 
@@ -208,6 +214,8 @@ jobs:
           pytest-xdist==3.8.0
           "testcontainers[postgres,redis,ollama]==4.9.0"
           pytest-playwright==0.7.1
+      # The billing package, as in test-integration (see the comment there): a process this job starts does not see pytest's `pythonpath`.
+      - run: pip install --no-deps ./packages/billing
       # For this job's OWN `e2e` browser tests (pytest-playwright driving
       # the built-in web UI) — unrelated to crawl4ai (self-provisioned via
       # testcontainers, see above), but this job still needs a real browser
@@ -352,6 +360,8 @@ jobs:
         env:
           PROMPTFOO_MODEL: qwen2.5:1.5b
       - run: pip install -r requirements-lock.txt
+      # The billing package, as in test-integration (see the comment there): a process this job starts does not see pytest's `pythonpath`.
+      - run: pip install --no-deps ./packages/billing
       # `npm install`, not `npm ci`: package-lock.json's optional-dependency
       # entries (native platform bindings — promptfoo transitively depends
       # on @libsql, which ships one binding package per OS/arch) are a
@@ -481,6 +491,8 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install -r requirements-lock.txt "testcontainers[postgres,redis,ollama]==4.9.0" ollama==0.6.2
+      # The billing package, as in test-integration (see the comment there): a process this job starts does not see pytest's `pythonpath`.
+      - run: pip install --no-deps ./packages/billing
       # deepeval==4.2.0 itself, `--no-deps`: the same click conflict
       # requirements-dev.txt's own comment already discloses for local dev
       # (deepeval declares `click<8.4.0`; huggingface-hub — a real
