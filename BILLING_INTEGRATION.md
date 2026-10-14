@@ -1,10 +1,27 @@
 # How the agent app integrates billing
 
-Patterns about the seam between the agent app and the billing package (`packages/billing/`, importable as `credit_billing`): charging a usage event in the same
-transaction, gating a turn on the balance, exporting usage to a provider, and reconciling the app's meter with the gateway and the wallets. They live in
-`app/billing_integration/` and in the app's call sites (`app/agent/usage_events.py`, `app/agent/budgets.py`). They are about the APPLICATION's side, so they are not in the
-package's own `docs/PATTERNS.md`, and they are not about the agent graph, so they are not in `GRAPH_PATTERNS.md` (constitution Principle VIII, "Self-contained packages";
-spec 011 D14).
+The seam between the agent app and the billing package (`packages/billing/`, importable as `credit_billing`). **Since spec 013 the seam is thin**: the agent
+records its own usage events (`app/agent/usage_events.py`, the table its spend caps read), and hands the package ONE plain value per model call
+(`billing_port.record_usage_in(conn, Usage(...))`, in the same transaction) and asks it ONE question per turn (`billing_port.admit(...)`, the credit gate in
+`app/agent/budgets.py`). Everything the entries below describe as happening on the app's side (rating a call in credits, the debit, the export outbox and its
+worker, the wallet check) is the package's now: see `packages/billing/docs/PATTERNS.md` pattern **B3** for the move and its reasons, `docs/port.md` for the
+contract, and the table below for where each mechanism lives. The agent keeps one check of its own, its events against the LLM gateway's spend log
+(`app/agent/usage_reconcile.py`, `make usage-reconcile`). What remains in `app/billing_integration/` is `port.py` (the one module host code imports) and `http.py` (the
+webhook route). A test scans the agent for any rate, markup, gate or export setting, and any package table, named outside that directory.
+
+Where each mechanism the entries below describe lives now:
+
+| Entry | Mechanism | Now |
+|---|---|---|
+| 53 | rating, the debit in the event's transaction, the savepoint | `credit_billing/usage.py::record_usage_in` (the agent calls it; it never raises) |
+| 53 | the credit gate, its holds in credits, its failure policy | `credit_billing/admission.py::admit` (the agent maps the answer in `app/agent/budgets.py`) |
+| 53 | `CREDITS_PER_USD`, `MARKUP`, `CREDITS_ENFORCEMENT`, `CREDIT_CHECK_FAILURE_POLICY` | `credit_billing/settings.py` (same variable names; `postgres-init/21` is gone: the credits live in `billing_usage_events`) |
+| 55 | the usage export outbox, its worker, backoff and age limit | `credit_billing/export.py`, `credit-billing-export-worker` (`make billing-export-worker`), `billing_export_outbox` (`25-`) |
+| 56 | wallet half of the reconciliation: was every usage charged? | `credit_billing/reconcile.py`, `credit-billing-reconcile` (`make credit-reconcile`) |
+| 56, 61 | gateway half: the events against the LLM gateway's spend log | `app/agent/usage_reconcile.py`, `make usage-reconcile`; `CREDIT_RECONCILE_*` became `USAGE_RECONCILE_*` (the old names still work); metrics `agent_usage_reconcile_*`; alerts `UsageReconcileDrift` and `UsageReconcileNotCompleting` |
+| 55 | retention that never deletes an unexported event | `credit_billing/retention.py`, `credit-billing-usage-sweep` |
+
+The entries themselves are kept as they were written, with their original paths: they are the record of why each mechanism is built the way it is.
 
 They were written in `GRAPH_PATTERNS.md` and keep their ORIGINAL numbers (53, 55, 56, 61) so earlier references resolve; a pattern number is never reused or shifted. A
 cross reference such as "pattern 58" points into `GRAPH_PATTERNS.md`; "pattern 52", "54", "65" and "66" are in `packages/billing/docs/PATTERNS.md`. A path such as

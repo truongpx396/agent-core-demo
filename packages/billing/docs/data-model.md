@@ -10,7 +10,19 @@ Money and credits are `NUMERIC`, never float. `cost_usd` keeps the existing `NUM
 
 ## Metering
 
-### `usage_events` — one row per model call, append-only
+> **Since spec 013 the package keeps its own record of billable usage** (`billing_usage_events`, below) and the agent's `usage_events` carries no billing column. The `usage_events` table described next is the AGENT's meter, read by its spend caps; its `credits`, `credits_per_usd` and `markup` columns and the `usage_export_outbox` section further down describe the design as built by specs 010 and 011. On a fresh volume the agent's table has no credit columns and there is no `usage_export_outbox`; an existing database keeps them, unused. The authoritative description of billing's own tables is the next two sections.
+
+### `billing_usage_events` — the package's record of one unit of usage, append-only (`24-billing-usage-events.sql`)
+
+`tenant`, `event_id` (the caller's own id; **`PRIMARY KEY (tenant, event_id)`, the table's only unique constraint**), `kind` (the caller's category, not a closed set), `occurred_at`, `recorded_at`, `cost_usd NUMERIC(18,12)` (**NULL when unpriced**), `credits NUMERIC(18,6)` (what the usage is worth at the rate in force; NULL when credits are off or the call is unpriced; a real 0 for a free call), `credits_per_usd`, `markup NUMERIC(18,6)` (the rate used, so a later rate change never rewrites history; the database refuses credits without a rate), `model`, `tokens` (descriptive: what a usage-billing provider is told). Index `(occurred_at)`: every read is by time (retention, the wallet check) or by key. **Invariant:** a trigger refuses `UPDATE` always and `DELETE` unless the transaction says it is the retention job (`SET LOCAL billing_usage_events.allow_delete = 'on'`).
+
+Written by `credit_billing.usage.record_usage_in` with `ON CONFLICT (tenant, event_id) DO NOTHING`, in the caller's transaction, followed by the wallet debit (keyed by the same event id) and the export row, each in a savepoint of its own. The credits are `round_half_up(cost x rate x markup, 6)` computed from the cost AS STORED (twelve places), so a row reproduces its own credits exactly. Nothing is written when there is no rate and no usage-billing provider.
+
+### `billing_export_outbox` — usage waiting to reach a provider (`25-billing-export-outbox.sql`)
+
+`provider`, `tenant`, `event_id`, `status` (`pending|sent|expired|failed`), `attempts`, `next_attempt_at`, `last_error_class`, `created_at`, `sent_at`; **`PRIMARY KEY (provider, tenant, event_id)`** and **`FOREIGN KEY (tenant, event_id) REFERENCES billing_usage_events`**. The composite key replaces the tenant-match trigger the agent's table needed (its event table had to keep a single unique constraint, so it could not be a composite foreign key target; this one's single constraint IS the pair), so an event cannot be exported under another tenant by construction. A trigger still makes `sent`/`expired`/`failed` terminal and a row's identity immutable. The status flow, the bounded retries, the age limit and the worker are exactly as in "Money out" below; only the names changed.
+
+### `usage_events` — the agent's meter: one row per model call, append-only
 
 | Column | Type | Notes |
 |---|---|---|
@@ -27,7 +39,7 @@ Money and credits are `NUMERIC`, never float. `cost_usd` keeps the existing `NUM
 | `occurred_at` | `TIMESTAMPTZ NOT NULL` | when the call happened (also the provider timestamp) |
 | `recorded_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | |
 
-The credit columns above (`credits`, `credits_per_usd`, `markup`) are **not** in the first migration: PR 1a creates the table without them (`postgres-init/19-usage-events.sql`) and PR 3 adds them with `ALTER TABLE` (`postgres-init/21-usage-event-credits.sql`, re-runnable), since nothing can charge credits before a wallet and a rate exist.
+The credit columns above (`credits`, `credits_per_usd`, `markup`) are **not in the agent's table any more** (spec 013); the paragraph below is the history of how they came to be, and the same semantics now live in `billing_usage_events`. They were **not** in the first migration: PR 1a creates the table without them (`postgres-init/19-usage-events.sql`) and PR 3 adds them with `ALTER TABLE` (`postgres-init/21-usage-event-credits.sql`, re-runnable), since nothing can charge credits before a wallet and a rate exist.
 
 **What `credits` means (decided in PR 3).** It is what the call is *worth* at the rate in force, whether or not the tenant has a wallet to charge: the same figure a usage-billing provider is sent. Whether a wallet was actually debited is the `credit_transactions` row whose `usage_event_id` and `idempotency_key` are this event's id. `credits` is NULL when credits are off (no rate) or the call is unpriced, and a real `0` for a free call; the database refuses credits without a rate (`usage_events_credits_have_a_rate`). The cost is rounded to the column's twelve places **before** it is multiplied, and that stored cost is what is multiplied, so `credits = credits_for_cost(cost_usd, credits_per_usd, markup)` holds for the row exactly and a reconciliation can recompute it. With no rate the credit columns are not mentioned at all (the original statement runs), so a deployment that has not applied the migration is unaffected.
 
@@ -125,7 +137,7 @@ received ──▶ applied            (a grant, clawback or no-op was committed 
 
 ## Money out
 
-### `usage_export_outbox`
+### `usage_export_outbox` (the agent's table until spec 013; now `billing_export_outbox`, above)
 
 `event_id FK`, `tenant`, `provider`, `status`, `attempts`, `next_attempt_at`, `last_error_class`, `created_at`, `sent_at`; `PRIMARY KEY (provider, event_id)`.
 Created in the same transaction as the event, **only** for a tenant linked to a provider that declares `USAGE_EXPORT`.
@@ -149,6 +161,8 @@ A worker claims rows with `FOR UPDATE SKIP LOCKED`, so replicas never double-sen
 the second layer, because a crash between "sent" and "marked sent" is the one window the first layer cannot see.
 
 ## Metrics (each degrade path counted; alerts for the paths that hide money)
+
+Since spec 013 the degraded paths billing counts are `billing_event_write` (**alert** `BillingEventWriteFailing`: a usage could not be recorded for billing, so it will never be charged or exported and no later check can find it), `credit_debit`, `export_enqueue` and `credit_read`; every metric name below is unchanged.
 
 `usage_event_write_failed_total` (**alert**: a lost event is lost revenue), `usage_event_unpriced_total`, `credit_debit_overdraft_total`,
 `credit_enforcement_refused_total`, plus two degrade paths on `agent_cost_governance_degraded_total` (**alerts**): `credit_debit` (`CreditDebitFailing`: the event was kept, its charge failed) and `credit_read` (`CreditGateUnenforced`: the gate could not read a wallet), `agent_billing_webhook_total{provider,outcome}` (`applied|duplicate|ignored|quarantined|retry|failed|invalid_signature|invalid_payload|unknown_provider|too_large`; `provider` is a configured adapter or the fixed `unknown`, never the caller's own string),

@@ -11,10 +11,10 @@ Enforced by `tests/billing/test_billing_core_boundary.py` (an AST walk over ever
 ## The three seams the core is given instead
 
 ### 1. Settings: `credit_billing.settings`
-`BillingSettings` (pydantic-settings; `env_file=".env"`, `extra="ignore"`, `hide_input_in_errors=True`) holds the ten core fields and their validators. The module exposes `settings` and the constants consumers import (`BILLING_PROVIDERS`, `BILLING_WEBHOOK_SECRETS`, `BILLING_WEBHOOK_MAX_BODY_BYTES`, `BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE`, `BILLING_WEBHOOK_MAX_ATTEMPTS`, `BILLING_REFUND_HOLD_HOURS`, `BILLING_INBOX_RETENTION_DAYS`, `BILLING_INBOX_MIN_RETENTION_DAYS`, `STRIPE_API_KEY`, `POLAR_ACCESS_TOKEN`, `POLAR_ENVIRONMENT`), computed exactly as `app/core/config.py` computed them.
+`BillingSettings` (pydantic-settings; `env_file=".env"`, `extra="ignore"`, `hide_input_in_errors=True`) holds every billing field and its validators: the ten of spec 011 (webhooks, credentials, inbox retention) and, since spec 013, the price and the gate (`CREDITS_PER_USD`, `MARKUP`, `CREDITS_ENFORCEMENT`, `CREDIT_CHECK_FAILURE_POLICY`), the export's bounds (`BILLING_EXPORT_*`), the wallet check's window (`CREDIT_RECONCILE_*`) and the usage events' retention. The module exposes `settings` and the constants consumers import (`BILLING_PROVIDERS`, `BILLING_WEBHOOK_SECRETS`, `CREDITS_PER_USD`, `MARKUP`, ..., `STRIPE_API_KEY`, `POLAR_ACCESS_TOKEN`, `POLAR_ENVIRONMENT`), computed exactly as the agent app's `config.py` computed them.
 - Env var names, defaults, bounds and error messages are unchanged. A rejected value is never repeated in the error.
 - Core modules import the constants by name, so a test can still re-point one with `monkeypatch.setattr(<module>, "NAME", value)`. The two adapters read theirs at construction, not at import.
-- The host's `Settings` inherits `BillingSettings` and `app/core/config.py` re-exports the constants, so no host importer changes.
+- The host's `Settings` inherits `BillingSettings`, so every variable is read from the same `.env`; `app/core/config.py` re-exports only the webhook route's rate limit (a host middleware reads it), and no other host module imports a billing constant.
 
 ### 2. Connection: `credit_billing.db`
 ```python
@@ -29,10 +29,10 @@ async def get_connection() -> AsyncIterator[AsyncConnection]   # raises BillingN
 - The `*_in(conn, …)` functions never commit, never begin an outermost transaction on a connection they were given (they use savepoints), and the core never checks out a second connection while holding one.
 
 ### 3. Metrics: `credit_billing.metrics`
-Four counters on the OpenTelemetry **API** only (`opentelemetry.metrics.get_meter`): the same names, labels and descriptions as before. The SDK, exporter, endpoint and `service.name` stay the process's concern, and instruments created before the SDK is installed are replayed once it is, so import order does not matter. The `Counter` wrapper keeps `.labels(**).inc()` and `.name`. The meter scope string is unchanged (research P6).
+Counters and gauges on the OpenTelemetry **API** only (`opentelemetry.metrics.get_meter`): the same names, labels and descriptions as before (spec 013 moved the usage export's, the wallet check's, the gate's and the degraded-path counter here under their old names). The SDK, exporter, endpoint and `service.name` stay the process's concern, and instruments created before the SDK is installed are replayed once it is, so import order does not matter. The `Counter` and `Gauge` wrappers keep `.labels(**).inc()` / `.set()` and `.name`. The meter scope string is unchanged (research P6).
 
 ## The host's side: `app.billing_integration`
-Importing the package calls `credit_billing.db.configure(connection=app.agent.sql_store.get_connection)`. It stores a function and opens nothing, so it is safe at import and idempotent. **Every host module that imports `credit_billing` also imports `app.billing_integration`** (enforced by a scan), so no entry point (API, worker, CLI, cron script) can reach the core unwired. It holds `reconcile` and `export`, which read the agent's usage events and the LiteLLM gateway and so are not part of the reusable core.
+Importing the package calls `credit_billing.db.configure(connection=app.agent.sql_store.get_connection)`. It stores a function and opens nothing, so it is safe at import and idempotent. **Every host module that imports `credit_billing` also imports `app.billing_integration`** (enforced by a scan), so no entry point (API, worker, CLI, cron script) can reach the core unwired. Since spec 013 it holds only the port and the webhook route: the export, the wallet reconciliation and the usage-event retention moved into the package, and the comparison of the agent's own events with the LiteLLM gateway (which a wallet package has no business knowing) is the agent's (`app/agent/usage_reconcile.py`).
 
 ## What does not change
 Every SQL statement, idempotency key, savepoint, metric name and label, env var, route, `make` target and alert name; the rule that no module serving an agent tool may import the wallet (the T013 test, now also covering `app.billing_integration`).
