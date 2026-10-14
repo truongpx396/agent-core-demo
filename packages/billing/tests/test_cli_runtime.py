@@ -9,6 +9,7 @@ import pytest
 
 from credit_billing import db
 from credit_billing.cli import _runtime
+from tests.conftest import SECRET
 
 
 class FakeProvider:
@@ -171,27 +172,6 @@ def test_the_database_url_and_collector_defaults_are_the_agent_apps(monkeypatch)
 
 
 # --- a database that cannot be reached ---------------------------------------------------------------------------------
-
-SECRET = "hunter2-do-not-print"
-
-
-@pytest.fixture
-def closed_port_url():
-    """A URL to a local port that nothing listens on: the connection is refused at once, as with a stopped database."""
-    import socket
-
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-    return f"postgresql://billing_user:{SECRET}@127.0.0.1:{port}/appdata"
-
-
-@pytest.fixture
-def fast_failure(monkeypatch):
-    """Shorten the wait so the test is quick, and keep the bootstrap away from any collector or global meter provider."""
-    monkeypatch.setattr(_runtime, "CONNECT_TIMEOUT_SECONDS", 0.5)
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-
 
 async def test_an_unreachable_database_raises_one_clear_error_that_never_carries_the_credentials(closed_port_url, fast_failure, monkeypatch):
     monkeypatch.setattr(db, "_provider", None)
