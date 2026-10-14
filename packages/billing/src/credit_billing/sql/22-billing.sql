@@ -30,7 +30,9 @@
 -- idempotency key, "{provider}:{event_id}" in credit_transactions (20), is a financial record kept for good,
 -- so an event redelivered after its inbox row was swept inserts a fresh row and then finds the grant already made.
 --
--- Applying it: the init scripts only run on a fresh volume. Against an existing one, apply by hand once:
+-- Applying it: the init scripts only run on a fresh volume. Against an existing database run
+--   credit-billing-migrate        (or `make billing-migrate`; `--status` shows what is applied, `--check` gates a deploy)
+-- which applies this script, records its checksum, and is safe to re-run and to run twice at once. By hand, once:
 --   psql -U langfuse -d appdata -f postgres-init/22-billing.sql
 -- Until then nothing breaks: no provider is configured by default (BILLING_PROVIDERS), so nothing reads these tables.
 \connect appdata

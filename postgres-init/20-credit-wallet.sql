@@ -31,8 +31,9 @@
 -- `usage_event_id` on a transaction is a plain reference, NOT a foreign key: usage events are
 -- trimmed by a retention job, and the wallet is a financial record that must outlive them.
 --
--- Applying it: the init scripts only run on a fresh volume. Against an existing one, apply by
--- hand once:
+-- Applying it: the init scripts only run on a fresh volume. Against an existing database run
+--   credit-billing-migrate        (or `make billing-migrate`; `--status` shows what is applied, `--check` gates a deploy)
+-- which applies this script, records its checksum, and is safe to re-run and to run twice at once. By hand, once:
 --   psql -U langfuse -d appdata -f postgres-init/20-credit-wallet.sql
 -- Until then nothing breaks: no code path reads these tables for a tenant with no account, and
 -- no tenant has one.

@@ -1,4 +1,4 @@
-.PHONY: test-billing-package help up up-app sandbox-up sandbox-build pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-inbox-sweep billing-export-worker budget-policy litellm-key test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
+.PHONY: test-billing-package help up up-app sandbox-up sandbox-build pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker budget-policy litellm-key test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
 
 # Pinned DefectDojo release — see `defectdojo-up`'s own comment for why this
 # is a plain git clone into ~/.cache (NOT vendored into this repo, same
@@ -175,6 +175,12 @@ usage-events-carry-over:  ## One-time, idempotent: copy usage_ledger history old
 
 billing-export-worker:  ## Drain usage_export_outbox to the enabled providers that bill on usage, in a loop (see scripts/billing_export_worker.py; `ARGS=--once` for a single pass; set BILLING_PROVIDERS the same as the API and agent workers)
 	python -m scripts.billing_export_worker $(ARGS)
+
+billing-migrate:  ## Apply the billing package's schema scripts to an existing database, in order, and record them (see packages/billing/src/credit_billing/cli/migrate.py; safe to re-run and to run twice at once; `ARGS=--lock-timeout-seconds=30` to wait longer)
+	python -m credit_billing.cli.migrate $(ARGS)
+
+billing-migrate-status:  ## Show which billing schema scripts are applied, pending or changed, and write nothing; `make billing-migrate-status ARGS=--check` exits 1 if any is not current (a deploy gate)
+	python -m credit_billing.cli.migrate --status $(ARGS)
 
 billing-inbox-sweep:  ## Delete applied/ignored billing webhook inbox rows older than BILLING_INBOX_RETENTION_DAYS (see packages/billing/src/credit_billing/cli/inbox_sweep.py; never touches open or quarantined rows; wire to cron once your retention policy is decided)
 	python -m credit_billing.cli.inbox_sweep

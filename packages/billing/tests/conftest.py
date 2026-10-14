@@ -8,6 +8,7 @@ API's proxy meter, are replayed onto this provider whichever module is imported 
 
 Assertions on a counter use before/after deltas, never absolute values: the counters are process-wide and shared by every test.
 """
+import pytest
 from opentelemetry import metrics as metrics_api
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
@@ -45,3 +46,29 @@ def has_series(counter, **labels) -> bool:
 def scopes_of(counter) -> set[str]:
     """The instrumentation-scope names the counter's data points were exported under."""
     return {scope for scope, points in _points(counter) if points}
+
+
+# --- shared by the tests of every operator command: a database that cannot be reached ----------------------------------
+
+SECRET = "hunter2-do-not-print"
+
+
+@pytest.fixture
+def closed_port_url():
+    """A URL to a local port that nothing listens on: the connection is refused at once, as with a stopped database. Carries a user and a
+    password (SECRET) so a test can prove neither reaches an error message."""
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    return f"postgresql://billing_user:{SECRET}@127.0.0.1:{port}/appdata"
+
+
+@pytest.fixture
+def fast_failure(monkeypatch):
+    """Shorten the connect wait so the test is quick, and keep the bootstrap away from any collector or global meter provider."""
+    from credit_billing.cli import _runtime
+
+    monkeypatch.setattr(_runtime, "CONNECT_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
