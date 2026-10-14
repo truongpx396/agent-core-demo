@@ -78,8 +78,8 @@ Four counters on the OpenTelemetry **API** (`credit_billing.metrics`: `agent_cre
 ```bash
 cd packages/billing
 pytest -q                          # hermetic: no services, no network
-pytest -m integration -q           # a real Postgres via testcontainers, seeded with ONLY the two scripts above (needs Docker)
-pytest -m provider_sandbox -q -s   # a provider's real SANDBOX with your own test credentials; manual, never CI, refuses a live key
+pytest -m integration -q           # tests/integration/: a real Postgres via testcontainers, seeded with ONLY the two scripts above (needs Docker)
+pytest -m provider_sandbox -q -s   # tests/provider_sandbox/: a provider's real SANDBOX with your own test credentials; manual, never CI, refuses a live key
 ```
 
 CI installs this package alone into a clean environment and runs the first command with the agent app asserted not importable.
