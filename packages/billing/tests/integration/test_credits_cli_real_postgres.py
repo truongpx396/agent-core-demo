@@ -7,6 +7,7 @@ key, wallet, ledger, `show`) is one test. The wallet's own rules are tests/integ
 
 Each test uses its own tenant: the container is shared across tests and xdist workers.
 """
+import asyncio
 import json
 import uuid
 from contextlib import asynccontextmanager
@@ -229,3 +230,49 @@ class TestTheCommandEndToEnd:
 
         assert [e["reason"] for e in json.loads(as_json)["entries"]] == ["reason-4", "reason-3"]
         assert len(json.loads(huge)["entries"]) == 5  # clamped to the maximum, which is above what exists
+
+
+class TestARetryAndAConflictThroughTheCommand:
+    """Spec 012, end to end through the real command: the same `--key` retried is a duplicate, a different request under it is invalid input
+    naming the field, and an absolute `--expires-at` is what makes an expiry retry exactly."""
+
+    async def test_the_same_command_with_the_same_key_is_a_duplicate_and_a_different_amount_is_refused_with_nothing_changed(self, appdata_url):
+        tenant = tenant_name()
+        base = ("grant", "--tenant", tenant, "--by", "alice", "--reason", "pilot", "--key", f"k-{tenant}")
+
+        first = await run(*base, "--amount", "500")
+        again = await run(*base, "--amount", "500")
+        different = await run(*base, "--amount", "600")
+
+        assert first[0] == 0 and "Grant applied" in first[1]
+        assert again[0] == 0 and "Already applied under key" in again[1]
+        assert different[0] == 2 and different[1].splitlines()[0] == f"error: idempotency key 'k-{tenant}' was already used for a different request:"
+        assert "  amount: '500.000000' -> '600.000000'" in different[1] and "nothing changed" in different[1]
+        assert (await credits.balance(tenant)).available == D("500")
+        assert await scalar(appdata_url, "SELECT count(*) FROM credit_transactions WHERE tenant = %s", tenant) == 1
+        await assert_consistent(appdata_url, tenant)
+
+    async def test_a_different_reason_is_refused_too_because_the_first_reason_is_what_was_recorded(self, appdata_url):
+        tenant = tenant_name()
+        base = ("grant", "--tenant", tenant, "--by", "alice", "--amount", "5", "--key", f"k-{tenant}")
+        await run(*base, "--reason", "ticket 4412")
+
+        code, text = await run(*base, "--reason", "ticket 4413")
+
+        assert code == 2 and "  reason: 'ticket 4412' -> 'ticket 4413'" in text
+        assert await scalar(appdata_url, "SELECT reason FROM credit_transactions WHERE tenant = %s", tenant) == "ticket 4412"
+
+    async def test_a_relative_expiry_retried_later_conflicts_and_the_hint_makes_the_exact_retry_a_duplicate(self, appdata_url):
+        tenant = tenant_name()
+        base = ("grant", "--tenant", tenant, "--by", "alice", "--reason", "launch", "--amount", "5", "--source", "promo", "--key", f"k-{tenant}")
+        assert (await run(*base, "--expires-in-days", "30"))[0] == 0
+        first_expiry = await scalar(appdata_url, "SELECT request->>'expires_at' FROM credit_transactions WHERE tenant = %s", tenant)
+        await asyncio.sleep(1.1)  # a real retry is later than the first run, so the recomputed instant is not the same one
+
+        code, text = await run(*base, "--expires-in-days", "30")
+
+        assert code == 2 and "  expires_at: " in text
+        assert text.splitlines()[-1] == f"to repeat the first request exactly, run it again with --key k-{tenant} --expires-at {first_expiry}"
+        exact = await run(*base, "--expires-at", first_expiry)
+        assert exact[0] == 0 and "Already applied under key" in exact[1], "the hint's exact instant repeats the first request"
+        assert await scalar(appdata_url, "SELECT count(*) FROM credit_lots WHERE tenant = %s", tenant) == 1

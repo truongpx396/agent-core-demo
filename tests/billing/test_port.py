@@ -14,6 +14,7 @@ What the wallet's SQL does is proven against a real Postgres elsewhere (tests/in
 runs the whole charge through this seam).
 """
 import inspect
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -201,6 +202,27 @@ class TestTheChargeGoesThroughThePort:
 
         assert conn.events == ["savepoint", "rolled back"]
         assert _degraded("credit_debit") == before + 1, "a failed debit is counted (alert CreditDebitFailing)"
+
+
+    async def test_a_reused_event_id_with_a_different_request_is_swallowed_counted_and_named_in_the_log_and_the_event_is_kept(self, stub, caplog):
+        """Spec 012: the wallet now refuses a replay whose request differs. The meter still outranks the charge, so the usage event is kept;
+        the fault is counted like any other wallet fault (alert CreditDebitFailing) and the log says WHICH kind it was."""
+        stub.error = billing_port.IdempotencyConflict("ev-9", "acme", {"amount": ("5.000000", "6.000000")})
+        conn = Connection()
+        before = _degraded("credit_debit")
+
+        with caplog.at_level(logging.WARNING):
+            await usage_events._charge(conn, dict(ROW))  # must not raise
+
+        assert conn.events == ["savepoint", "rolled back"], "only the debit's savepoint is undone"
+        assert _degraded("credit_debit") == before + 1
+        failed = next(r for r in caplog.records if r.getMessage() == "credit_debit_failed")
+        assert failed.error_class == "IdempotencyConflict"
+
+
+def test_the_conflict_error_is_one_class_whichever_module_it_is_reached_through():
+    assert billing_port.IdempotencyConflict is core_port.IdempotencyConflict is credits.IdempotencyConflict
+    assert issubclass(billing_port.IdempotencyConflict, ValueError)
 
 
 class TestTheGateGoesThroughThePort:
