@@ -33,6 +33,7 @@ test = [
 [project.scripts]
 credit-billing = "credit_billing.cli.credits:main"
 credit-billing-inbox-sweep = "credit_billing.cli.inbox_sweep:main"
+credit-billing-migrate = "credit_billing.cli.migrate:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
