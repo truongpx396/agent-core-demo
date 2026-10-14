@@ -9,6 +9,7 @@ The test SKIPS, never fails, when Docker is unreachable (the integration tier is
 """
 import atexit
 import functools
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -27,6 +28,26 @@ def _require_docker() -> None:
         pytest.skip(f"Docker is not reachable ({type(exc).__name__}): the package's real-Postgres tests need it")
 
 
+def write_init_dir() -> Path:
+    """The directory the container mounts at `/docker-entrypoint-initdb.d`: one line creating `appdata`, then the shipped scripts.
+
+    It is made readable by other users on purpose. `tempfile.mkdtemp` creates a directory `0700`, owned by whoever runs the tests, and the
+    image's entrypoint reads the directory as the `postgres` user. On macOS Docker Desktop that goes unnoticed (host ownership is mapped
+    away), but on a Linux runner the bind mount keeps the real owner, the entrypoint dies on `ls: cannot open directory
+    '/docker-entrypoint-initdb.d/': Permission denied`, the container exits with code 2, and every test errors at setup with Docker's
+    `409 container ... is not running`. That is how the first PR C run failed `test-integration`'s package step in CI after passing locally.
+    The repo's own helper never hit it because it mounts the checked-out `postgres-init/` directory, which is `0755`.
+    """
+    init = Path(tempfile.mkdtemp(prefix="credit-billing-init-"))
+    (init / "01-appdata.sql").write_text("CREATE DATABASE appdata OWNER langfuse;\n")
+    for name in schema.scripts():
+        (init / name).write_text(schema.read(name))
+    init.chmod(0o755)
+    for script in init.iterdir():
+        script.chmod(0o644)
+    return init
+
+
 @functools.lru_cache(maxsize=1)
 def ensure_postgres() -> dict[str, str]:
     """Real Postgres 16 with the shipped schema applied. One container per test process, stopped at exit."""
@@ -34,10 +55,8 @@ def ensure_postgres() -> dict[str, str]:
     import psycopg
     from testcontainers.postgres import PostgresContainer
 
-    init = Path(tempfile.mkdtemp(prefix="credit-billing-init-"))
-    (init / "01-appdata.sql").write_text("CREATE DATABASE appdata OWNER langfuse;\n")
-    for name in schema.scripts():
-        (init / name).write_text(schema.read(name))
+    init = write_init_dir()
+    atexit.register(shutil.rmtree, init, ignore_errors=True)  # registered first, so it runs after the container is stopped (atexit is LIFO)
 
     container = PostgresContainer(image="postgres:16", username="langfuse", password="langfuse", dbname="langfuse")
     container.with_volume_mapping(str(init), "/docker-entrypoint-initdb.d", mode="ro")
