@@ -195,3 +195,75 @@ class TestTheWalletsOwnRulesForAdjustments:
                 None, "acme", -5, idempotency_key="k", actor="a", reason="r", expires_at=datetime.now(UTC) + timedelta(days=1)  # type: ignore[arg-type]  # refused before the connection is used
             )
 
+
+
+class TestAbsoluteExpiryAndAConflict:
+    """Spec 012: `--expires-at` makes an expiry retry-exact, and a reused key with a different request is refused, naming each field."""
+
+    INSTANT = "2026-11-13T07:20:11+00:00"
+    BASE = ("--tenant", "acme", "--amount", "5", "--by", "a", "--reason", "r")
+
+    def test_an_absolute_instant_with_an_offset_or_a_trailing_z_is_accepted(self):
+        zoned = parse("grant", *self.BASE, "--expires-at", self.INSTANT).expires_at
+        z = parse("grant", *self.BASE, "--expires-at", "2026-11-13T07:20:11Z").expires_at
+
+        assert zoned == z == datetime(2026, 11, 13, 7, 20, 11, tzinfo=UTC)
+
+    @pytest.mark.parametrize("bad", ["2026-11-13T07:20:11", "2026-11-13", "tomorrow", "", "13/11/2026"])
+    def test_a_time_with_no_offset_or_that_is_not_iso_8601_is_invalid_input(self, bad, capsys):
+        """A guess about the zone is a lot that expires hours early or late, so it is refused, not read as local or UTC."""
+        with pytest.raises(SystemExit) as raised:
+            parse("grant", *self.BASE, "--expires-at", bad)
+
+        assert raised.value.code == 2 and "--expires-at" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("command", ["grant", "adjust"])
+    def test_an_absolute_and_a_relative_expiry_cannot_be_combined(self, command, capsys):
+        with pytest.raises(SystemExit) as raised:
+            parse(command, *self.BASE, "--expires-at", self.INSTANT, "--expires-in-days", "30")
+
+        assert raised.value.code == 2 and "not allowed with" in capsys.readouterr().err
+
+    async def test_the_instant_reaches_the_wallet_unchanged_for_a_grant_and_an_adjustment(self, wallet):
+        recorder = wallet(Applied("applied", "tx", D("5")))
+
+        await cli.execute(parse("grant", *self.BASE, "--source", "promo", "--expires-at", self.INSTANT))
+        await cli.execute(parse("adjust", *self.BASE, "--expires-at", self.INSTANT))
+
+        assert [call[3]["expires_at"] for call in recorder.calls] == [datetime(2026, 11, 13, 7, 20, 11, tzinfo=UTC)] * 2
+
+    async def test_a_conflict_is_invalid_input_one_line_per_field_and_says_nothing_changed(self, wallet):
+        wallet(credits.IdempotencyConflict("K1", "acme", {"amount": ("500.000000", "600.000000"), "reason": ("pilot", "other")}))
+
+        code, text = await cli.execute(parse("grant", *self.BASE, "--key", "K1"))
+
+        assert code == 2
+        assert text.splitlines() == [
+            "error: idempotency key 'K1' was already used for a different request:",
+            "  amount: '500.000000' -> '600.000000'",
+            "  reason: 'pilot' -> 'other'",
+            "nothing changed. A retry must send exactly the same request; a different request needs a new --key.",
+        ]
+
+    async def test_an_expiry_conflict_says_how_to_repeat_the_first_request_exactly(self, wallet):
+        first = "2026-11-13T07:20:11.123456+00:00"
+        wallet(credits.IdempotencyConflict("K2", "acme", {"expires_at": (first, "2026-11-13T07:31:40.654321+00:00")}))
+
+        code, text = await cli.execute(parse("grant", *self.BASE, "--source", "promo", "--expires-in-days", "30", "--key", "K2"))
+
+        assert code == 2
+        assert text.splitlines()[-1] == f"to repeat the first request exactly, run it again with --key K2 --expires-at {first}"
+
+    async def test_the_hint_is_only_given_when_the_expiry_is_what_differs(self, wallet):
+        wallet(credits.IdempotencyConflict("K3", "acme", {"amount": ("1.000000", "2.000000")}))
+
+        _, text = await cli.execute(parse("grant", *self.BASE, "--key", "K3"))
+
+        assert "--expires-at" not in text
+
+    async def test_text_from_elsewhere_is_shown_escaped_never_interpreted(self, wallet):
+        wallet(credits.IdempotencyConflict("K4", "acme", {"reason": ("ok\x1b[31mred", "plain")}))
+
+        _, text = await cli.execute(parse("grant", *self.BASE, "--key", "K4"))
+
+        assert "\x1b" not in text and "\\x1b" in text

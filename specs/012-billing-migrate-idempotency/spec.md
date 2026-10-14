@@ -39,10 +39,16 @@ The subtle part of (2) is **what counts as "the same request"**. Two callers in 
 a naive "compare everything" would turn working behaviour into failures:
 
 - A webhook **clawback** is keyed by the *payment* (`clawback:{provider}:{payment_ref}`). Two different provider events can describe the
-  same refund, with a different reason and a different reclaimable amount, and the designed outcome is that the second is a harmless
-  duplicate ("a payment is taken back at most once").
-- A webhook **grant** computes its expiry as *now + the product's days* at processing time. A concurrent replay of the same event computes
-  an expiry a few milliseconds later; comparing that instant would raise a conflict on a request that is, by every meaningful measure, identical.
+  same refund, and the amount each asks for is what the lot could still give back *when that event read it* (a debit can land between two
+  reads), so the second can ask for a different amount; the designed outcome is still that it is a harmless duplicate ("a payment is taken
+  back at most once").
+- A webhook **grant** computes its expiry as *now + the product's days* at processing time, so any replay computes a later instant. The
+  earlier layers (the inbox claim, and the payment's lot check) normally answer a replay before the wallet is reached, so a replay is rare
+  here and this layer is defence in depth. A defence layer must not fail on its own, and comparing that instant would turn a harmless
+  replay into a failure.
+
+Reading the code showed this is narrower than it first looks, so the claim was tested rather than assumed: tests that make the earlier layers
+miss, on purpose, fail with `failed` on the strict default and pass with the narrowing.
 
 So which fields identify a request must be an **explicit, validated choice per call**, with the strict full comparison as the default,
 and each of those two callers must say precisely what it compares and why.
@@ -100,7 +106,7 @@ one payment, and one webhook grant with a later expiry: both stay harmless dupli
 3. **Given** a key used for a grant, **When** the same key is used for a debit, **Then** it is refused, whatever else matches (the kind is always compared).
 4. **Given** two different provider events describing one refund, **When** both are processed, **Then** the first takes the credits back and the second is
    still reported as already reversed (a duplicate), although their reason and reclaimable amount differ.
-5. **Given** a webhook grant replayed concurrently, **When** the second attempt computes a later expiry, **Then** it is still a duplicate, not a conflict.
+5. **Given** a webhook grant that reaches the wallet a second time (the inbox row was swept and the payment's lot check missed it), **When** the second attempt computes a later expiry, **Then** it is still a duplicate, not a conflict.
 6. **Given** a webhook grant whose catalogue amount changed between two attempts under one provider event, **When** the second attempt runs, **Then** it
    is quarantined at once with a reason that says so (retrying cannot fix it), and the customer's first grant stands.
 7. **Given** a transaction written before this feature (no recorded request), **When** its key is reused, **Then** the behaviour is exactly today's: a duplicate.

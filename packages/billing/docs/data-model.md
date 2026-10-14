@@ -62,8 +62,12 @@ refuses any delete. A partial unique index allows **at most one `overdraft` lot 
 
 `id UUID PK`, `tenant`, `kind` (`grant`, `debit`, `expire`, `adjust`, `clawback`), `idempotency_key TEXT NOT NULL CHECK (<> '')`,
 `usage_event_id` (a plain reference, **not** a foreign key: events are trimmed by retention and the wallet is a financial record that must
-outlive them), `reason`, `actor NOT NULL`, `created_at`. **`UNIQUE (tenant, idempotency_key)`**: replaying any grant, debit or expiry with
-the same key inserts nothing. Append-only by trigger.
+outlive them), `reason`, `actor NOT NULL`, `created_at`, and **`request JSONB`** (nullable, spec 012): a normalised description of the
+request the key stood for, written once with the row. **`UNIQUE (tenant, idempotency_key)`**: replaying any grant, debit or expiry with
+the same key inserts nothing, and the stored `request` is what lets the wallet tell a replay of the SAME request (a duplicate) from a
+DIFFERENT request that reused the key (`IdempotencyConflict`, nothing written). `NULL` means the row predates the column; it is never
+backfilled (the table is append-only) and a reused key on it is a plain duplicate. The keys per operation and the normalisation are in
+`specs/012-billing-migrate-idempotency/contracts/idempotency-request.md`. Append-only by trigger.
 
 ### `credit_entries` — signed amounts, append-only
 

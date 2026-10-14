@@ -510,6 +510,92 @@ class TestARefund:
         assert (await world.inbox_row(world.provider, refund_id))[2] == "nothing_to_reclaim"
 
 
+class TestTheWalletsSecondLayerJudgesAKeyOnWhatItNames:
+    """Spec 012: the wallet refuses a reused idempotency key whose request differs. The webhook handler reaches the wallet only after two earlier
+    layers (the inbox claim, which serialises one event, and the payment's lot check, which ignores a payment already granted), so a replayed key
+    is rare here; these tests REACH the second layer on purpose, by making those two layers miss, and pin what each call site compares.
+
+    A webhook grant leaves out `expires_at` (it is `now + days` at processing time, so any replay computes a later instant). A webhook clawback
+    compares nothing but its kind (the key names the PAYMENT; the amount it reads depends on when it read the lot, and a debit can land between
+    two events' reads). With the strict default either would turn a harmless replay into a failure."""
+
+    @staticmethod
+    def purchase(world) -> BillingEvent:
+        return BillingEvent(world.provider, world.event_id("buy"), EventKind.CREDITS_PURCHASED, world.customer, world.product, world.payment, 2000, "usd", None, "x")
+
+    @staticmethod
+    def refund(world) -> BillingEvent:
+        return BillingEvent(world.provider, world.event_id("refund"), EventKind.PAYMENT_REFUNDED, world.customer, None, world.payment, 2000, "usd", None, "x")
+
+    @staticmethod
+    async def forget_the_inbox_row(world, event: BillingEvent) -> None:
+        """What the retention sweep does to an applied row once it is old enough."""
+        async with await world.connect() as conn:
+            await conn.execute("DELETE FROM billing_webhook_events WHERE provider = %s AND event_id = %s", (event.provider, event.event_id))
+
+    @staticmethod
+    def lot_check_misses(monkeypatch) -> None:
+        async def nothing(conn, tenant, provider, payment_ref):
+            return None
+
+        monkeypatch.setattr(webhooks.store, "granted_lot", nothing)
+
+    async def test_a_grant_replayed_with_a_later_expiry_is_still_one_grant(self, world, monkeypatch):
+        await world.link()
+        await world.stock("100", expires_after_days=30)
+        event = self.purchase(world)
+        assert await webhooks.process_event(event) == "applied"
+        first_expiry = await world.scalar("SELECT expires_at FROM credit_lots WHERE tenant = %s AND source = 'purchase'", world.tenant)
+        await self.forget_the_inbox_row(world, event)
+        self.lot_check_misses(monkeypatch)
+
+        outcome = await webhooks.process_event(event)
+
+        assert outcome == "applied", "the wallet answered 'duplicate' to the second grant; it is not a failure and not a conflict"
+        assert len(await world.lots()) == 1 and (await world.balance()).available == D("100.000000")
+        assert await world.scalar("SELECT expires_at FROM credit_lots WHERE tenant = %s AND source = 'purchase'", world.tenant) == first_expiry
+        assert await world.scalar("SELECT count(*) FROM credit_transactions WHERE tenant = %s AND idempotency_key = %s", world.tenant, f"{world.provider}:{event.event_id}") == 1
+
+    async def test_a_grant_whose_catalogue_amount_changed_between_two_attempts_is_quarantined_at_once_and_the_first_grant_stands(self, world, monkeypatch):
+        await world.link()
+        await world.stock("100", expires_after_days=30)
+        event = self.purchase(world)
+        assert await webhooks.process_event(event) == "applied"
+        await self.forget_the_inbox_row(world, event)
+        self.lot_check_misses(monkeypatch)
+        await world.stock("200", expires_after_days=30)  # the operator changed the pack's size in between
+        quarantined_before, failed_before = count("quarantined", world.provider), count("failed", world.provider)
+
+        outcome = await webhooks.process_event(event)
+
+        assert outcome == "quarantined", "retrying cannot fix it, so it is not 'failed' and not retried"
+        status, _, reason, attempts, _ = await world.inbox_row(world.provider, event.event_id)
+        assert (status, reason) == ("quarantined", "idempotency_conflict")
+        assert count("quarantined", world.provider) == quarantined_before + 1 and count("failed", world.provider) == failed_before
+        assert (await world.balance()).available == D("100.000000"), "the customer keeps the grant the first attempt made"
+        assert len(await world.lots()) == 1
+
+    async def test_a_refund_event_that_read_a_different_amount_than_the_one_that_took_the_payment_back_is_still_a_duplicate(self, world, monkeypatch):
+        """Two events describe one refund. The second read the lot when 20 credits more had been spent, so it would reclaim 80, not 100."""
+        await world.link()
+        await world.stock("100")
+        assert await webhooks.process_event(self.purchase(world)) == "applied"
+        assert await webhooks.process_event(self.refund(world)) == "applied"
+        assert (await world.balance()).available == D("0.000000")
+        lot_id = await world.scalar("SELECT id FROM credit_lots WHERE tenant = %s AND source = 'purchase'", world.tenant)
+
+        async def stale_read(conn, tenant, provider, payment_ref):
+            return store.GrantedLot(str(lot_id), D("100"), D("80"))
+
+        monkeypatch.setattr(webhooks.store, "granted_lot", stale_read)
+
+        outcome = await webhooks.process_event(self.refund(world))
+
+        assert outcome == "ignored", "the key names the payment: taken back once, whatever the second event read"
+        assert (await world.balance()).available == D("0.000000"), "nothing more was taken"
+        assert await world.scalar("SELECT count(*) FROM credit_transactions WHERE tenant = %s AND idempotency_key = %s", world.tenant, f"clawback:{world.provider}:{world.payment}") == 1
+
+
 class TestAFailureIsAtomicAndBounded:
     @pytest.fixture
     def wallet_fault(self, monkeypatch):

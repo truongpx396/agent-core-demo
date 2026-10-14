@@ -28,9 +28,9 @@ from typing import Protocol, runtime_checkable
 from psycopg import AsyncConnection
 
 from credit_billing import credits
-from credit_billing.credits import Applied, Balance, Pricing
+from credit_billing.credits import Applied, Balance, IdempotencyConflict, Pricing
 
-__all__ = ["Applied", "Balance", "InProcessWallet", "Pricing", "WalletPort", "credits_for_cost"]
+__all__ = ["Applied", "Balance", "IdempotencyConflict", "InProcessWallet", "Pricing", "WalletPort", "credits_for_cost"]
 
 
 @runtime_checkable
@@ -46,8 +46,9 @@ class WalletPort(Protocol):
         pricing: Pricing | None = None,
     ) -> Applied:
         """Debits `amount` credits from the tenant's wallet for the usage event `event_id`, on the caller's connection and
-        in the caller's transaction. A replay of the same `event_id` changes nothing and returns the original transaction.
-        A tenant with no wallet is a no-op (`no_account`). Never refuses for a short balance: the shortfall is booked as
+        in the caller's transaction. A replay of the same `event_id` with the same request changes nothing and returns the original
+        transaction; a replay with a DIFFERENT request (another amount, kind or pricing) raises `IdempotencyConflict` and changes
+        nothing (a remote implementation maps it to a conflict response). A tenant with no wallet is a no-op (`no_account`). Never refuses for a short balance: the shortfall is booked as
         overdraft (the model call already happened)."""
         ...
 

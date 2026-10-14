@@ -11,12 +11,9 @@ and re-applying DDL cannot deadlock with another test's writes (the repo's patte
 """
 import asyncio
 import os
-import re
 import subprocess
 import sys
 import time
-import uuid
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 import psycopg
@@ -25,65 +22,25 @@ import pytest
 import credit_billing
 from credit_billing import credits, migrate, schema
 from tests.containers import ensure_postgres
+from tests.integration.databases import (
+    NAMES,
+    WALLET_TABLES,
+    Throwaway,
+    create_database,
+    init_like_the_host,
+    open_connection,
+)
 
 pytestmark = pytest.mark.integration
-
-NAMES = ["20-credit-wallet.sql", "22-billing.sql"]
-WALLET_TABLES = ("credit_accounts", "credit_lots", "credit_transactions", "credit_entries")
-
 
 @pytest.fixture(scope="module")
 def container_url() -> str:
     return ensure_postgres()["appdata_database_url"]
 
 
-class Throwaway:
-    """One database, created for one test and dropped after it."""
-
-    def __init__(self, container_url: str) -> None:
-        self.name = f"migtest_{uuid.uuid4().hex[:10]}"
-        self._admin = re.sub(r"/appdata$", "/langfuse", container_url)
-        self.url = re.sub(r"/appdata$", f"/{self.name}", container_url)
-
-    async def create(self) -> "Throwaway":
-        async with await psycopg.AsyncConnection.connect(self._admin, autocommit=True) as conn:
-            await conn.execute(f"CREATE DATABASE {self.name}")
-        return self
-
-    async def drop(self) -> None:
-        async with await psycopg.AsyncConnection.connect(self._admin, autocommit=True) as conn:
-            await conn.execute(f"DROP DATABASE IF EXISTS {self.name} WITH (FORCE)")
-
-    @asynccontextmanager
-    async def connection(self):
-        async with await psycopg.AsyncConnection.connect(self.url) as conn:  # commits on a clean exit, rolls back on an exception
-            yield conn
-
-    async def scalar(self, sql, *params):
-        async with self.connection() as conn:
-            cur = await conn.execute(sql, params)
-            return (await cur.fetchone())[0]
-
-    async def rows(self, sql, *params):
-        async with self.connection() as conn:
-            cur = await conn.execute(sql, params)
-            return await cur.fetchall()
-
-    async def exists(self, table: str) -> bool:
-        return await self.scalar("SELECT to_regclass(%s::text) IS NOT NULL", table)
-
-    async def snapshot(self) -> dict[str, list]:
-        """Every row of the wallet tables, in a stable order: what must be identical after an adoption."""
-        return {table: await self.rows(f"SELECT * FROM {table} ORDER BY 1, 2") for table in WALLET_TABLES}
-
-
-async def _open(database: Throwaway) -> psycopg.AsyncConnection:
-    """A connection the test closes itself: one that holds a lock or a transaction open on purpose."""
-    return await psycopg.AsyncConnection.connect(database.url)
-
-
 async def make_database(container_url: str, monkeypatch) -> Throwaway:
-    database = await Throwaway(container_url).create()
+    """A throwaway database that the migration module is pointed at."""
+    database = await create_database(container_url)
     monkeypatch.setattr(migrate, "get_connection", database.connection)
     return database
 
@@ -93,13 +50,6 @@ async def database(container_url, monkeypatch):
     created = await make_database(container_url, monkeypatch)
     yield created
     await created.drop()
-
-
-async def init_like_the_host(database: Throwaway) -> None:
-    """What the container's init does on a fresh volume: run each shipped script, record nothing."""
-    for name in NAMES:
-        async with database.connection() as conn:
-            await conn.execute(schema.executable(name))
 
 
 def run_cli(database: Throwaway, tmp_path: Path, *args: str, url: str | None = None):
@@ -262,8 +212,8 @@ async def test_the_migration_lock_and_a_tenant_lock_are_different_key_spaces(dat
     documentation says is a separate key space, so no tenant name can ever block a migration or be blocked by one."""
     first, second = migrate.LOCK_KEYS
     as_one_bigint = (first << 32) | second
-    holder = await _open(database)
-    prober = await _open(database)
+    holder = await open_connection(database)
+    prober = await open_connection(database)
     try:
         await holder.execute("SELECT pg_advisory_xact_lock(%s)", (as_one_bigint,))
         cur = await prober.execute("SELECT pg_try_advisory_xact_lock(%s, %s)", (first, second))
@@ -288,7 +238,7 @@ async def test_a_table_held_by_another_session_stops_the_run_within_the_wait_and
     await migrate.migrate()
     async with database.connection() as conn:
         await conn.execute("UPDATE billing_schema_migrations SET checksum = 'stale' WHERE script = '20-credit-wallet.sql'")
-    holder = await _open(database)
+    holder = await open_connection(database)
     try:
         await holder.execute("LOCK TABLE credit_transactions IN ACCESS EXCLUSIVE MODE")  # held until rollback: the script's trigger DDL needs this table
 
@@ -315,7 +265,7 @@ async def test_a_table_held_by_another_session_stops_the_run_within_the_wait_and
 async def test_a_runner_waiting_for_another_gives_up_at_its_own_timeout_instead_of_waiting_for_ever(database):
     """The advisory lock wait is bounded too (research E1), not only the table locks."""
     first, second = migrate.LOCK_KEYS
-    holder = await _open(database)
+    holder = await open_connection(database)
     try:
         await holder.execute("SELECT pg_advisory_xact_lock(%s, %s)", (first, second))
 
@@ -380,7 +330,7 @@ async def test_the_command_as_a_process_exits_4_when_a_table_is_busy(database, t
     await migrate.migrate()
     async with database.connection() as conn:
         await conn.execute("UPDATE billing_schema_migrations SET checksum = 'stale' WHERE script = '20-credit-wallet.sql'")
-    holder = await _open(database)
+    holder = await open_connection(database)
     try:
         await holder.execute("LOCK TABLE credit_transactions IN ACCESS EXCLUSIVE MODE")
 
