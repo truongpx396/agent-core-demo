@@ -11,6 +11,7 @@ below are exact.
 """
 import asyncio
 import hashlib
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -19,7 +20,12 @@ import pytest
 
 from credit_billing import credits, migrate, schema
 from tests.containers import ensure_postgres
-from tests.integration.databases import Throwaway, create_database, init_like_the_host
+from tests.integration.databases import (
+    Throwaway,
+    create_database,
+    init_like_the_host,
+    open_connection,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -233,6 +239,24 @@ async def test_a_transaction_with_no_stored_request_is_a_plain_duplicate_whateve
 
     assert answer.status == "duplicate" and await wallet.snapshot() == before, "no comparison, no error, nothing written"
     assert await wallet.scalar("SELECT request IS NULL FROM credit_transactions WHERE idempotency_key = 'legacy'") is True
+
+
+async def test_reapplying_the_wallet_script_does_not_wait_behind_a_reader_of_the_hot_table(wallet):
+    """Why the column is added behind a catalog check: a plain `ADD COLUMN IF NOT EXISTS` takes ACCESS EXCLUSIVE on the table even when
+    the column is already there, so re-applying the script (which `migrate` does whenever its checksum changes) would wait behind any open
+    read of the table every debit writes. With a 500 ms lock timeout the plain form fails here; the guarded one does not wait at all."""
+    reader = await open_connection(wallet)
+    try:
+        await reader.execute("SELECT count(*) FROM credit_transactions")  # the read holds ACCESS SHARE until its transaction ends
+        started = time.monotonic()
+        async with wallet.connection() as conn:
+            await conn.execute("SET LOCAL lock_timeout = '500ms'")
+            await conn.execute(schema.executable("20-credit-wallet.sql"))
+
+        assert time.monotonic() - started < 3
+    finally:
+        await reader.rollback()
+        await reader.close()
 
 
 # --- a database created BEFORE the change gains the column through the tool ---------------------------------------------------------------------
