@@ -1,12 +1,14 @@
-# Alert rules over the billing package's own counters (credit_billing/metrics.py): the two a payment webhook can page on.
+# Alert rules over the billing package's own metrics (credit_billing/metrics.py): the payment webhook, the usage record, the wallet debit,
+# the usage export, the credit gate and the wallet reconciliation (spec 013 moved all of them here from the agent app).
 #
 # This is the CANONICAL copy for the package (spec 011 D22). The agent app's observability/prometheus/alerts.yml carries the same
-# two rules because Prometheus loads one file there, and a test in that repo (tests/core/test_billing_package_copies.py) fails if
+# rules because Prometheus loads one file there, and a test in that repo (tests/core/test_billing_package_copies.py) fails if
 # a rule's name, expression, `for`, labels or summary drift between the two. The descriptions differ on purpose: each says where
 # ITS deployment keeps the schema scripts. Another project loads this file as it is, with the same metric names.
 #
-# `increase(...)` cannot count the first sample of a series that did not exist before, so the package creates every series
-# these rules look at, at 0, when the process validates its configuration (credit_billing/metrics.py::initialise_webhook_series).
+# `increase(...)` cannot count the first sample of a series that did not exist before, so the package creates every webhook series
+# these rules look at, at 0, when the process validates its configuration (credit_billing/metrics.py::initialise_webhook_series), and the
+# reconciliation worker does the same for its outcomes when it starts.
 groups:
   - name: credit-billing
     rules:
@@ -39,3 +41,120 @@ groups:
             customers who paid are waiting for credits. Check the appdata Postgres and that
             the package's 20-credit-wallet.sql and 22-billing.sql (credit_billing/sql/) are applied. If the database itself is down
             no inbox row is written, so the provider's own delivery dashboard is the only other record.
+
+      - alert: BillingEventWriteFailing
+        expr: increase(agent_cost_governance_degraded_total{path="billing_event_write"}[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Usage is being used and its billing record is not being written"
+          description: >-
+            The package could not record a unit of usage for billing in the last 10m (or was handed one it refused as invalid: the log line
+            `billing_usage_rejected` names the field). The caller's own record and the request it belongs to succeeded, so nobody was told: that usage
+            is missing from the billing record, which is revenue lost the moment it is billed, and no later check can find it because
+            the wallet reconciliation only sees what was recorded. Check the appdata Postgres and that the package's schema scripts (`credit-billing-migrate`; `make billing-migrate` in the agent app) are applied
+            (`credit-billing-migrate --status`). Compare the caller's own meter with the upstream it pays (the agent app: `make usage-reconcile`)
+            to size the gap before it ages out of any provider's reporting window.
+
+      - alert: CreditDebitFailing
+        expr: increase(agent_cost_governance_degraded_total{path="credit_debit"}[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Usage is being recorded but a tenant's credits are not being charged"
+          description: >-
+            A usage event was recorded and the wallet debit for it failed in the last 10m. The caller succeeded and the event is kept (a lost
+            event cannot be repaired, an uncharged one can), so nobody was told: that tenant has had usage it was not charged for, and its
+            balance is higher than it should be. Check the appdata Postgres, and that the package's schema scripts (`credit-billing-migrate`; `make billing-migrate` in the agent app) are applied. The debit key IS the event id, so each
+            missed charge can be replayed from its event; `credit-billing-reconcile` lists them (`uncharged`).
+
+      - alert: UsageExportStuck
+        expr: max(agent_usage_export_oldest_pending_age_seconds) > 604800
+        labels:
+          severity: critical
+        annotations:
+          summary: "Usage events have been waiting to reach a billing provider for over 7 days"
+          description: >-
+            The oldest unsent usage event is more than 7 days old. That is deliberately well inside
+            BILLING_EXPORT_MAX_AGE_DAYS (default 30, at most 34, because Stripe rejects events older than 35
+            days): this is the warning while the events can still be sent, before UsageExportExpired says
+            they cannot. Look at `SELECT provider, status, count(*), min(created_at), max(last_error_class)
+            FROM billing_export_outbox GROUP BY 1, 2`. A provider outage, a revoked credential, or a stopped
+            `credit-billing-export-worker` all look like this. Disclosed (verified in spec 010 PR 6): if the worker itself
+            stops, the series DISAPPEARS within five minutes (a synchronous gauge is exported once per set and the
+            collector forgets a series that long after its last update) and this alert RESOLVES on its own while
+            events keep piling up. It cannot tell a dead worker from a healthy one with nothing to send, so also
+            check that `credit-billing-export-worker` is running.
+
+      - alert: UsageExportExpired
+        expr: increase(agent_usage_export_total{outcome="expired"}[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Usage events aged out unsent: that usage will never be billed through the provider"
+          description: >-
+            Events passed BILLING_EXPORT_MAX_AGE_DAYS without being delivered and were marked `expired`, so
+            the provider will never see them (its own window closes soon after). This is revenue that was
+            earned and not billed. The rows are kept (`status = 'expired'`) with their usage events: decide
+            whether to bill them another way. Find the cause first (see UsageExportStuck), or the next ones
+            will expire too.
+
+      - alert: UsageExportFailed
+        expr: increase(agent_usage_export_total{outcome="failed"}[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Usage events were given up on: the provider refused them, or the retry budget ran out"
+          description: >-
+            An event reached `failed`: a permanent refusal by the provider, BILLING_EXPORT_MAX_ATTEMPTS spent,
+            or the tenant's customer link is gone (`last_error_class` says which). Nothing retries a failed
+            event. Fix the cause, then re-queue deliberately (the rows are terminal by trigger, so that is a
+            new row, not an UPDATE).
+
+      - alert: UsageExportEnqueueFailing
+        expr: increase(agent_cost_governance_degraded_total{path="export_enqueue"}[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Usage events are being recorded but not queued for export"
+          description: >-
+            Queuing a usage event for export failed in the last 10m. The event itself was recorded (the record outranks
+            the export) so nothing is lost from the billing record, but that usage will never reach the provider unless it is
+            queued another way. Check the appdata Postgres and that the package's schema scripts (`credit-billing-migrate`; `make billing-migrate` in the agent app) are applied.
+
+      - alert: CreditReconcileDrift
+        expr: max(agent_credit_reconcile_max_drift_usd) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Usage worth credits was recorded but never charged"
+          description: >-
+            The last wallet reconciliation pass found a tenant-day with usage events worth credits that no debit was booked for. The gauge is
+            the largest such figure in USD and carries no tenant: run `credit-billing-reconcile` for the report, which names the tenant, the day
+            and the amount. It is an event the wallet failed to debit (see CreditDebitFailing). Disclosed: the gauge only exists while
+            `credit-billing-reconcile --loop` runs, so a stopped worker resolves this alert.
+
+      - alert: CreditReconcileNotCompleting
+        expr: increase(agent_credit_reconcile_total{outcome="failed"}[2h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A wallet reconciliation pass could not finish, so nothing was proven about the charges"
+          description: >-
+            The pass raised (the appdata Postgres was unreachable or the package's tables are missing); the log line `credit_reconcile_failed`
+            carries the error class. Until it completes, the check that every recorded usage was charged is not running.
+
+      - alert: CreditGateUnenforced
+        expr: increase(agent_cost_governance_degraded_total{path="credit_read"}[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "The credit gate could not read a wallet: tenants may be spending without credits"
+          description: >-
+            The wallet read behind CREDITS_ENFORCEMENT failed in the last 10m. Under
+            CREDIT_CHECK_FAILURE_POLICY=open (the default) every request it covered was served
+            without checking that the tenant has credits; under closed they were refused. Check the appdata Postgres and
+            that the package's schema scripts (`credit-billing-migrate`; `make billing-migrate` in the agent app) are applied. Usage in the window is still recorded and
+            debited (overdraft is booked, never refused), so the cost is a tenant running into
+            debt, not lost usage.

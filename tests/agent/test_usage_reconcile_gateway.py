@@ -1,5 +1,5 @@
-"""Reading the gateway's spend log (packages/billing/src/credit_billing/reconcile.py::fetch_gateway_spend) against a stand-in built from LiteLLM's own source
-(tests/billing/fake_gateway.py): the request it makes, the pages it walks, and every way the read can be untrustworthy.
+"""Reading the gateway's spend log (app/agent/usage_reconcile.py::fetch_gateway_spend) against a stand-in built from LiteLLM's own source
+(tests/agent/fake_gateway.py): the request it makes, the pages it walks, and every way the read can be untrustworthy.
 
 The rule these pin: a read that is not whole is NEVER compared. A truncated sum would show every tenant as under-metered and page
 someone for nothing, so an unsure read comes back `complete=False` with its reason, and a read that is plainly wrong raises."""
@@ -10,12 +10,12 @@ from decimal import Decimal as D
 import httpx
 import pytest
 
-from app.billing_integration.reconcile import (
+from app.agent.usage_reconcile import (
     GATEWAY_PAGE_SIZE,
     Window,
     fetch_gateway_spend,
 )
-from tests.billing.fake_gateway import API_KEY, FakeGateway, spend_row
+from tests.agent.fake_gateway import API_KEY, FakeGateway, spend_row
 
 START = datetime(2026, 10, 6, 0, 0, 0, tzinfo=UTC)
 WINDOW = Window(START, datetime(2026, 10, 7, 12, 0, 0, tzinfo=UTC))
@@ -144,7 +144,7 @@ class TestPaging:
         spend = await fetch(gateway, max_pages=2)
 
         assert not spend.complete
-        assert "CREDIT_RECONCILE_GATEWAY_MAX_PAGES" in spend.reason
+        assert "USAGE_RECONCILE_GATEWAY_MAX_PAGES" in spend.reason
         assert len(gateway.requests) == 2
 
 

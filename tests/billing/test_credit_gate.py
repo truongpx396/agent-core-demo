@@ -1,16 +1,13 @@
-"""The credit gate: may this tenant start another turn on its prepaid balance? (app/agent/budgets.py,
-specs/010 T016 and T017.)
+"""The credit gate as the agent app uses it: may this tenant start another turn on its prepaid balance? (app/agent/budgets.py, specs/010 T016 and
+T017; the decision moved into the billing package by specs/013.)
 
-The rule is a plain function of (ctx, limits, gate, wallet, holds), so each case below names exactly the
-balance, the holds, the rate and the failure policy it is about, with the wallet and the ledger faked.
-What the wallet's SQL does is proven against a real Postgres in
-tests/integration/test_credit_charge_real_postgres.py, which also runs the whole path (a tenant with no
-credits is refused with no model call; a grant lets the next turn through).
+The DECISION (who is gated, what counts as credit, holds in credits, the failure policy) is the package's and is proven there
+(packages/billing/tests/test_admission.py). What is proven HERE is the agent's side of it:
 
-Three things matter most and each has its own class:
-  * WHO is gated (only a tenant with a wallet; spec D8) and what counts as "has credit";
-  * that enforcement OFF changes nothing, down to the wallet never being read (SC-005);
-  * what happens when the wallet cannot be read (the failure policy, a decision, never a silent default).
+  * the agent maps each of the gate's four answers onto its own refusal, and a refusal by a dollar limit comes first (the order);
+  * with enforcement off the gate answers without reading a wallet, through the real package;
+  * the refusal carries its own error code and does not echo a balance;
+  * every entry point asks, so a tenant with no credits is refused before any model work, and a grant lets the next turn through.
 """
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -20,257 +17,192 @@ import pytest
 from app.agent import budget_holds, budgets, spend
 from app.agent import runtime as runtime_module
 from app.agent import runtime_stream as stream_module
+from app.billing_integration import port as billing_port
 from app.core import errors, metrics
-from credit_billing import credits
+from credit_billing import admission, credits
 from tests.conftest import TEST_CTX, metric_value
 
 D = Decimal
 NOW = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
 TENANT_DAY = budgets.BudgetLimit("tenant", "day", 10.0)
-GATE = budgets.CreditGate(credits_per_usd=D("1000"), markup=D("1"), fail_policy="open")
-CLOSED = budgets.CreditGate(credits_per_usd=D("1000"), markup=D("1"), fail_policy="closed")
 
 
-def _balance(available) -> credits.Balance:
-    available = D(str(available))
-    return credits.Balance(available=available, ledger=available, debt=max(-available, D(0)))
+class FakeGate:
+    """Implements the port's `admit` and records every question; the rest of the port is never reached by the gate."""
+
+    def __init__(self) -> None:
+        self.answer = billing_port.Admission("allowed")
+        self.asked: list[str] = []
+
+    async def record_usage_in(self, conn, usage):  # pragma: no cover - the gate never records usage
+        raise AssertionError("the gate must not record usage")
+
+    async def account_balance(self, tenant):  # pragma: no cover
+        raise AssertionError("the gate asks admit, never the balance")
+
+    async def credit_summary(self, tenant):  # pragma: no cover
+        raise AssertionError("the gate does not show a summary")
+
+    async def admit(self, tenant, *, reserved_usd):
+        self.asked.append(tenant)
+        return self.answer
 
 
 @pytest.fixture
 def world(monkeypatch):
-    """A ledger with no spend, no holds, and a wallet the test sets; every read is recorded."""
-    state = {"wallet": None, "wallet_error": None, "wallet_reads": [], "reserved_usd": 0.0, "hold_reads": 0, "spent": 0.0}
-
-    async def account_balance(tenant):
-        state["wallet_reads"].append(tenant)
-        if state["wallet_error"]:
-            raise state["wallet_error"]
-        return state["wallet"]
+    """A ledger with no spend and no holds, and a gate whose answer the test sets; every question is recorded."""
+    state = {"spent": 0.0, "gate": FakeGate()}
 
     async def usage_summary(tenant, principal=None, since=None):
         return {"total_cost_usd": state["spent"], "total_tokens": 0}
 
     async def in_flight_reservation(tenant):
-        state["hold_reads"] += 1
-        return state["reserved_usd"]
+        return 0.0
 
-    monkeypatch.setattr(credits, "account_balance", account_balance)
     monkeypatch.setattr(spend, "usage_summary", usage_summary)
     monkeypatch.setattr(budget_holds, "in_flight_reservation", in_flight_reservation)
+    monkeypatch.setattr(billing_port, "billing", state["gate"])
     return state
 
 
-async def _check(gate=GATE, ctx=TEST_CTX, fail_policy="open", limits=()):
-    """No dollar limits unless a test names them: the tenant's own limit also reads the in-flight holds,
-    which would blur a test's count of what the CREDIT gate read."""
-    return await budgets.check_allowance(ctx, limits=list(limits), fail_policy=fail_policy, now=NOW, credit_gate=gate)
+async def _check(ctx=TEST_CTX, fail_policy="open", limits=()):
+    """No dollar limits unless a test names them: the tenant's own limit also reads the in-flight holds, which would blur a test's count."""
+    return await budgets.check_allowance(ctx, limits=list(limits), fail_policy=fail_policy, now=NOW)
 
 
-def _refused_count() -> float:
-    return metric_value(metrics.agent_credit_enforcement_refused_total)
-
-
-def _degraded(path: str) -> float:
-    return metric_value(metrics.agent_cost_governance_degraded_total, path=path)
-
-
-class TestWhoIsGatedAndWhatCountsAsCredit:
-    async def test_a_tenant_with_no_wallet_is_never_gated(self, world):
-        """Spec D8: shipping the gate changes nothing for a tenant until a wallet is opened for it."""
-        world["wallet"] = None
-        before = _refused_count()
-
+class TestTheAgentMapsEachAnswerOntoItsOwnRefusal:
+    async def test_allowed_serves_the_turn(self, world):
         allowance = await _check()
 
-        assert allowance.status == "ok" and not allowance.refused
-        assert _refused_count() == before
-        assert world["hold_reads"] == 0, "a tenant with no wallet needs no hold arithmetic"
+        assert allowance.status == "ok" and not allowance.refused and not allowance.degraded
 
-    async def test_a_tenant_with_credits_is_served(self, world):
-        world["wallet"] = _balance(100)
-
-        assert (await _check()).status == "ok"
-
-    async def test_a_tenant_with_a_wallet_and_nothing_in_it_is_refused(self, world):
-        """Unlike a tenant with NO wallet: an account at zero is the prepaid customer who ran out."""
-        world["wallet"] = _balance(0)
-        before = _refused_count()
+    async def test_exhausted_refuses_before_any_model_work_with_the_figures_the_gate_gave(self, world):
+        world["gate"].answer = billing_port.Admission("exhausted", D("-25"), D("500"))
 
         allowance = await _check()
 
         assert allowance.status == "insufficient_credits" and allowance.refused
-        assert _refused_count() == before + 1
-        assert (allowance.available_credits, allowance.reserved_credits) == (D("0"), D("0"))
+        assert (allowance.available_credits, allowance.reserved_credits) == (D("-25"), D("500"))
 
-    async def test_a_tenant_in_debt_is_refused_until_it_is_repaid(self, world):
-        world["wallet"] = _balance(-25)
-
-        allowance = await _check()
-
-        assert allowance.status == "insufficient_credits" and allowance.available_credits == D("-25")
-
-    async def test_the_smallest_positive_balance_is_enough(self, world):
-        world["wallet"] = _balance("0.000001")
-
-        assert (await _check()).status == "ok"
-
-
-class TestHoldsAreInCredits:
-    async def test_in_flight_turns_are_converted_at_the_configured_rate(self, world):
-        """One turn in flight holds MAX_COST_USD_PER_TURN dollars; at 1000 credits per dollar, $0.50 is 500
-        credits, so a tenant with 100 cannot start a second concurrent turn that may spend 500."""
-        world["wallet"] = _balance(100)
-        world["reserved_usd"] = 0.50
+    async def test_unavailable_refuses_and_blames_no_ones_balance(self, world):
+        world["gate"].answer = billing_port.Admission("unavailable")
 
         allowance = await _check()
 
-        assert allowance.status == "insufficient_credits"
-        assert allowance.reserved_credits == D("500.000000")
+        assert allowance.status == "unavailable" and allowance.refused
+        assert budgets.refusal_envelope(allowance).code == errors.ErrorCode.BUDGET_CHECK_UNAVAILABLE
 
-    async def test_a_small_hold_leaves_the_tenant_able_to_start_a_turn(self, world):
-        world["wallet"] = _balance(100)
-        world["reserved_usd"] = 0.05  # 50 credits
+    async def test_degraded_serves_the_turn_and_marks_it_unverified(self, world):
+        world["gate"].answer = billing_port.Admission("degraded")
 
-        assert (await _check()).status == "ok"
+        allowance = await _check()
 
-    async def test_the_markup_applies_to_holds_as_it_does_to_charges(self, world):
-        """A hold that ignored the markup would let a marked-up tenant start turns it cannot pay for."""
-        world["wallet"] = _balance(100)
-        world["reserved_usd"] = 0.05  # 50 credits at cost, 75 with a 1.5x markup
-        marked_up = budgets.CreditGate(credits_per_usd=D("1000"), markup=D("1.5"), fail_policy="open")
+        assert allowance.status == "ok" and allowance.degraded is True
 
-        allowance = await _check(gate=marked_up)
+    async def test_the_ledger_policy_does_not_decide_the_wallets(self, world):
+        """The two can fail separately, so each has its own policy: an open ledger policy with a gate that says unavailable must refuse."""
+        world["gate"].answer = billing_port.Admission("unavailable")
 
-        assert allowance.status == "ok"
-        world["reserved_usd"] = 0.0667  # 66.7 credits at cost, 100.05 with the markup
-        assert (await _check(gate=marked_up)).status == "insufficient_credits"
-
-    async def test_a_balance_exactly_used_up_by_holds_is_not_positive_so_it_is_refused(self, world):
-        world["wallet"] = _balance(50)
-        world["reserved_usd"] = 0.05  # exactly 50 credits
-
-        assert (await _check()).status == "insufficient_credits"
+        assert (await _check(fail_policy="open")).status == "unavailable"
 
 
 class TestOrder:
-    async def test_a_dollar_limit_that_is_used_up_refuses_first_and_the_wallet_is_never_read(self, world):
-        """An operator's spend cap is what the caller is told about: buying credits would not help a tenant
-        the cap is stopping. It also means a refused turn pays for no extra read."""
+    async def test_a_dollar_limit_that_is_used_up_refuses_first_and_the_gate_is_never_asked(self, world):
+        """An operator's spend cap is what the caller is told about: buying credits would not help a tenant the cap is stopping. It also means a
+        refused turn pays for no extra read."""
         world["spent"] = 10.0
-        world["wallet"] = _balance(0)
+        world["gate"].answer = billing_port.Admission("exhausted", D("0"), D("0"))
 
         allowance = await _check(limits=[TENANT_DAY])
 
         assert allowance.status == "exceeded"
-        assert world["wallet_reads"] == []
+        assert world["gate"].asked == []
 
-    async def test_the_wallet_is_read_exactly_once_for_a_turn_the_limits_would_serve(self, world):
-        world["wallet"] = _balance(5)
-
+    async def test_the_gate_is_asked_exactly_once_for_a_turn_the_limits_would_serve(self, world):
         await _check()
 
-        assert world["wallet_reads"] == [TEST_CTX["tenant"]]
+        assert world["gate"].asked == [TEST_CTX["tenant"]]
 
-    async def test_the_wallet_read_is_scoped_to_the_callers_own_tenant(self, world):
-        world["wallet"] = _balance(5)
+    async def test_the_question_is_scoped_to_the_callers_own_tenant(self, world):
         other = {"tenant": "globex", "principal": "bob", "claims": {}}
 
         await _check(ctx=other)
 
-        assert world["wallet_reads"] == ["globex"]
+        assert world["gate"].asked == ["globex"]
 
-    async def test_an_unattributable_caller_is_not_gated_and_nothing_is_read(self, world):
+    async def test_an_unattributable_caller_is_not_gated_and_nothing_is_asked(self, world):
         """Same rule as every other limit: nothing to meter means nothing to refuse."""
         for ctx in (None, {"tenant": "", "principal": "", "claims": {}}):
             assert (await _check(ctx=ctx)).status == "ok"
 
-        assert world["wallet_reads"] == []
+        assert world["gate"].asked == []
+
+    async def test_a_degraded_pass_is_not_confused_with_a_refusal_by_another_limit(self, world):
+        world["gate"].answer = billing_port.Admission("degraded")
+        world["spent"] = 10.0  # the dollar limit refuses first
+
+        allowance = await _check(limits=[TENANT_DAY])
+
+        assert allowance.status == "exceeded" and world["gate"].asked == []
 
 
 class TestEnforcementOffChangesNothing:
-    """SC-005. Without a gate the wallet is not so much ignored as never reached."""
+    """Spec 010 SC-005, through the REAL package: with enforcement off the wallet is not so much ignored as never reached."""
 
-    async def test_a_tenant_with_no_credits_is_served_and_the_wallet_is_never_read(self, world):
-        world["wallet"] = _balance(0)
-        before = _refused_count()
+    @pytest.fixture
+    def real_gate(self, monkeypatch):
+        monkeypatch.setattr(billing_port, "billing", billing_port.InProcessBilling())
+        reads = []
 
-        allowance = await _check(gate=None)
+        async def account_balance(tenant):
+            reads.append(tenant)
+            return credits.Balance(D("0"), D("0"), D("0"))
+
+        monkeypatch.setattr(credits, "account_balance", account_balance)
+        monkeypatch.setattr(admission, "CREDITS_ENFORCEMENT", False)
+        monkeypatch.setattr(admission, "CREDITS_PER_USD", D("1000"))  # shadow mode: a rate, no gate
+        return reads
+
+    async def test_a_tenant_with_no_credits_is_served_and_the_wallet_is_never_read(self, world, real_gate):
+        before = metric_value(admission.metrics.agent_credit_enforcement_refused_total)
+
+        allowance = await _check()
 
         assert allowance.status == "ok" and not allowance.degraded
-        assert world["wallet_reads"] == [] and world["hold_reads"] == 0
-        assert _refused_count() == before
+        assert real_gate == []
+        assert metric_value(admission.metrics.agent_credit_enforcement_refused_total) == before
 
-    async def test_a_wallet_that_would_fail_to_read_cannot_affect_a_turn(self, world):
-        world["wallet_error"] = ConnectionError("wallet down")
-        before = _degraded("credit_read")
-
-        allowance = await _check(gate=None)
-
-        assert allowance.status == "ok" and not allowance.degraded
-        assert _degraded("credit_read") == before
-
-    async def test_the_runtime_builds_no_gate_when_enforcement_is_off(self, monkeypatch):
-        monkeypatch.setattr(runtime_module, "CREDITS_ENFORCEMENT", False)
-        monkeypatch.setattr(runtime_module, "CREDITS_PER_USD", D("1000"))  # shadow mode: a rate, no gate
-
-        assert runtime_module._credit_gate() is None
-
-    async def test_the_default_allowance_through_the_runtime_never_reads_the_wallet(self, world):
-        world["wallet"] = _balance(0)
-
+    async def test_the_default_allowance_through_the_runtime_never_reads_the_wallet(self, world, real_gate):
         assert await runtime_module._allowance_refusal(TEST_CTX) is None
-        assert world["wallet_reads"] == []
+        assert real_gate == []
+
+    async def test_with_enforcement_on_the_same_wallet_refuses(self, world, real_gate, monkeypatch):
+        monkeypatch.setattr(admission, "CREDITS_ENFORCEMENT", True)
+
+        allowance = await _check()
+
+        assert allowance.status == "insufficient_credits" and real_gate == [TEST_CTX["tenant"]]
 
 
-class TestWhenTheWalletCannotBeRead:
-    async def test_open_serves_the_turn_counts_it_and_marks_it_unverified(self, world):
-        world["wallet_error"] = ConnectionError("wallet unreachable")
-        before = _degraded("credit_read")
-
-        allowance = await _check(gate=GATE)
-
-        assert allowance.status == "ok" and allowance.degraded is True
-        assert _degraded("credit_read") == before + 1
-
-    async def test_closed_refuses_the_turn_as_unavailable_and_still_counts_it(self, world):
-        world["wallet_error"] = ConnectionError("wallet unreachable")
-        before = _degraded("credit_read")
-
-        allowance = await _check(gate=CLOSED)
-
-        assert allowance.status == "unavailable" and allowance.refused
-        assert _degraded("credit_read") == before + 1
-        envelope = budgets.refusal_envelope(allowance)
-        assert envelope.code == errors.ErrorCode.BUDGET_CHECK_UNAVAILABLE, "it blames no one's balance"
-
-    async def test_the_ledger_policy_does_not_decide_the_wallets(self, world):
-        """The two can fail separately, so each has its own policy: an open ledger policy with a closed
-        wallet policy must refuse."""
-        world["wallet_error"] = ConnectionError("down")
-
-        allowance = await _check(gate=CLOSED, fail_policy="open")
-
-        assert allowance.status == "unavailable"
-
-    async def test_a_degraded_pass_is_not_confused_with_a_refusal_by_another_limit(self, world):
-        world["wallet_error"] = ConnectionError("down")
-        world["spent"] = 10.0  # the dollar limit refuses first
-
-        allowance = await _check(gate=GATE, limits=[TENANT_DAY])
-
-        assert allowance.status == "exceeded" and world["wallet_reads"] == []
-
-    async def test_a_failed_hold_read_fails_open_to_no_holds_and_is_counted(self, world, monkeypatch):
-        """The hold read only closes a race between concurrent turns (as for the dollar limits), so it
-        fails open either way; the real function swallows its own error, so use it against a dead database."""
+class TestTheHoldReadFailsOpen:
+    async def test_a_failed_hold_read_is_counted_and_reads_as_no_holds_when_the_gate_asks_for_it(self, world, monkeypatch):
+        """The hold read only closes a race between concurrent turns (as for the dollar limits), so it fails open either way; the real function
+        swallows its own error, so use it against a dead database, through a gate that asks for it."""
         monkeypatch.setattr(budget_holds, "in_flight_reservation", _REAL_IN_FLIGHT)  # conftest's autouse mock refuses the connection
-        world["wallet"] = _balance(5)
-        before = _degraded("reservation")
+        seen = []
 
-        allowance = await _check(gate=CLOSED)
+        class AsksForHolds(FakeGate):
+            async def admit(self, tenant, *, reserved_usd):
+                seen.append(await reserved_usd())
+                return billing_port.Admission("allowed")
 
-        assert allowance.status == "ok"
-        assert _degraded("reservation") == before + 1
+        monkeypatch.setattr(billing_port, "billing", AsksForHolds())
+        before = metric_value(metrics.agent_cost_governance_degraded_total, path="reservation")
+
+        allowance = await _check()
+
+        assert allowance.status == "ok" and seen == [0.0]
+        assert metric_value(metrics.agent_cost_governance_degraded_total, path="reservation") == before + 1
 
 
 _REAL_IN_FLIGHT = budget_holds.in_flight_reservation
@@ -285,8 +217,7 @@ class TestTheRefusal:
         assert envelope.to_dict()["details"] == {"scope": "tenant"}
 
     def test_it_does_not_echo_a_balance(self):
-        """The balance is GET /usage's to report; an error that echoed it would put it in every log that
-        keeps error text."""
+        """The balance is GET /usage's to report; an error that echoed it would put it in every log that keeps error text."""
         envelope = budgets.refusal_envelope(
             budgets.Allowance("insufficient_credits", available_credits=D("-1234.5"), reserved_credits=D("987"))
         )
@@ -305,31 +236,16 @@ class TestTheRefusal:
 
 
 class TestTheRuntimeBinding:
-    async def test_enforcement_builds_a_gate_from_the_configured_rate_markup_and_policy(self, monkeypatch):
-        monkeypatch.setattr(runtime_module, "CREDITS_ENFORCEMENT", True)
-        monkeypatch.setattr(runtime_module, "CREDITS_PER_USD", D("250"))
-        monkeypatch.setattr(runtime_module, "MARKUP", D("1.2"))
-        monkeypatch.setattr(runtime_module, "CREDIT_CHECK_FAILURE_POLICY", "closed")
-
-        assert runtime_module._credit_gate() == budgets.CreditGate(D("250"), D("1.2"), "closed")
-
-    async def test_enforcement_without_a_rate_is_a_loud_error_never_a_silent_no_gate(self, monkeypatch):
-        """Settings refuse this at startup; this is for a caller that re-points the globals into a state
-        they forbid. Quietly skipping the gate would serve a tenant the operator meant to stop."""
-        monkeypatch.setattr(runtime_module, "CREDITS_ENFORCEMENT", True)
-        monkeypatch.setattr(runtime_module, "CREDITS_PER_USD", None)
-
-        with pytest.raises(RuntimeError, match="CREDITS_PER_USD"):
-            runtime_module._credit_gate()
-
-    async def test_the_refusal_every_entry_point_asks_for_carries_the_credit_code(self, world, monkeypatch):
-        monkeypatch.setattr(runtime_module, "CREDITS_ENFORCEMENT", True)
-        monkeypatch.setattr(runtime_module, "CREDITS_PER_USD", D("1000"))
-        world["wallet"] = _balance(0)
+    async def test_the_refusal_every_entry_point_asks_for_carries_the_credit_code(self, world):
+        world["gate"].answer = billing_port.Admission("exhausted", D("0"), D("0"))
 
         envelope = await runtime_module._allowance_refusal(TEST_CTX)
 
         assert envelope is not None and envelope.code == errors.ErrorCode.INSUFFICIENT_CREDITS
+
+    async def test_the_runtime_knows_no_rate_markup_or_policy_because_the_gate_is_not_its_business(self):
+        for name in ("CREDITS_PER_USD", "MARKUP", "CREDITS_ENFORCEMENT", "CREDIT_CHECK_FAILURE_POLICY", "_credit_gate"):
+            assert not hasattr(runtime_module, name), name
 
 
 class _GraphTouched(AssertionError):
@@ -337,14 +253,12 @@ class _GraphTouched(AssertionError):
 
 
 class TestEntryPointsRefuseBeforeAnyModelWork:
-    """A new turn and a resume both ask `_allowance_refusal`, so both refuse a tenant with no credits
-    before the graph is initialised, and neither takes a hold."""
+    """A new turn and a resume both ask `_allowance_refusal`, so both refuse a tenant with no credits before the graph is initialised, and neither
+    takes a hold."""
 
     @pytest.fixture(autouse=True)
-    def enforcing_with_an_empty_wallet(self, world, monkeypatch):
-        monkeypatch.setattr(runtime_module, "CREDITS_ENFORCEMENT", True)
-        monkeypatch.setattr(runtime_module, "CREDITS_PER_USD", D("1000"))
-        world["wallet"] = _balance(0)
+    def an_empty_wallet(self, world, monkeypatch):
+        world["gate"].answer = billing_port.Admission("exhausted", D("0"), D("0"))
         reserved = []
 
         async def boom(*args, **kwargs):
@@ -374,7 +288,7 @@ class TestEntryPointsRefuseBeforeAnyModelWork:
 
     async def test_a_grant_lets_the_next_turn_through_to_the_graph(self):
         """US3's independent test, hermetically: the same call, now with credits, reaches graph work."""
-        self.world["wallet"] = _balance(500)
+        self.world["gate"].answer = billing_port.Admission("allowed")
 
         with pytest.raises(_GraphTouched):
             [event async for event in stream_module.astream_events_turn("hi", "t1", TEST_CTX)]

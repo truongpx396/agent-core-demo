@@ -11,7 +11,7 @@ import psycopg
 
 from credit_billing import schema
 
-NAMES = ["20-credit-wallet.sql", "22-billing.sql"]
+NAMES = schema.scripts()  # every shipped script, in order
 WALLET_TABLES = ("credit_accounts", "credit_lots", "credit_transactions", "credit_entries")
 
 

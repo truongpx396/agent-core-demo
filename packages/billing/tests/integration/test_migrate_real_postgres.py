@@ -112,7 +112,7 @@ async def test_the_record_table_is_what_the_data_model_says(database):
 async def test_status_on_a_database_that_was_never_migrated_creates_nothing(database):
     status = await migrate.status()
 
-    assert [s.state for s in status.scripts] == ["pending", "pending"] and status.record_table_exists is False
+    assert [s.state for s in status.scripts] == ["pending"] * len(NAMES) and status.record_table_exists is False
     assert not await database.exists("billing_schema_migrations")
 
 
@@ -125,7 +125,7 @@ async def test_a_database_the_host_initialised_is_adopted_without_touching_a_sin
         await credits.debit_in(conn, "acme", 120, idempotency_key="u1", usage_event_id="u1", reason="model call")
     before = await database.snapshot()
     assert all(before[table] for table in WALLET_TABLES), "the snapshot has real rows to compare"
-    assert [s.state for s in (await migrate.status()).scripts] == ["pending", "pending"], "recorded nothing, so pending even though the schema exists"
+    assert [s.state for s in (await migrate.status()).scripts] == ["pending"] * len(NAMES), "recorded nothing, so pending even though the schema exists"
 
     result = await migrate.migrate()
 
@@ -153,6 +153,39 @@ async def test_the_billing_script_cannot_be_applied_before_the_wallet_script_so_
             await conn.execute(schema.executable("22-billing.sql"))
 
 
+async def test_the_export_outbox_cannot_be_applied_before_the_usage_events_it_references(database):
+    async with database.connection() as conn:
+        with pytest.raises(psycopg.errors.UndefinedTable, match="billing_usage_events"):
+            await conn.execute(schema.executable("25-billing-export-outbox.sql"))
+
+
+# --- a database from before the package owned the meter (spec 013) ---------------------------------------------------------
+
+async def test_a_database_that_has_only_the_wallet_and_the_inbox_is_brought_current_without_touching_a_row(database):
+    """The upgrade an existing deployment makes: its volume was initialised with 20 and 22 only. `credit-billing-migrate` adds the usage event store and
+    its outbox, leaves every wallet row exactly as it was, and the new code can then record usage against the old wallet."""
+    for name in ("20-credit-wallet.sql", "22-billing.sql"):
+        async with database.connection() as conn:
+            await conn.execute(schema.executable(name))
+    async with database.connection() as conn:
+        await credits.grant_in(conn, "acme", 500, source="purchase", idempotency_key="k1", actor="test")
+        await credits.debit_in(conn, "acme", 120, idempotency_key="u1", usage_event_id="u1", reason="model call")
+    before = await database.snapshot()
+    assert not await database.exists("billing_usage_events") and not await database.exists("billing_export_outbox")
+
+    result = await migrate.migrate()
+
+    assert result.applied == NAMES
+    assert await database.exists("billing_usage_events") and await database.exists("billing_export_outbox")
+    assert await database.snapshot() == before, "the wallet's rows are exactly as they were"
+    from credit_billing import usage
+
+    async with database.connection() as conn:
+        await conn.execute("SELECT 1")
+        recorded = await usage.record_usage_in(conn, usage.Usage("acme", "u2", "chat", 0.01))
+    assert recorded.status in ("recorded", "off"), "the new code runs against the upgraded database"
+
+
 # --- drift --------------------------------------------------------------------------------------------------------------------
 
 async def test_a_changed_checksum_is_reported_applied_again_and_restored_and_check_follows(database, tmp_path):
@@ -166,9 +199,9 @@ async def test_a_changed_checksum_is_reported_applied_again_and_restored_and_che
     result = await migrate.migrate()
     code_after, _, _ = run_cli(database, tmp_path, "--check")
 
-    assert states == {"20-credit-wallet.sql": "applied", "22-billing.sql": "changed"}
+    assert states == {name: "applied" for name in NAMES} | {"22-billing.sql": "changed"}
     assert code_before == 1 and "changed  22-billing.sql" in out_before
-    assert result.applied == ["22-billing.sql"] and result.skipped == ["20-credit-wallet.sql"]
+    assert result.applied == ["22-billing.sql"] and result.skipped == [n for n in NAMES if n != "22-billing.sql"]
     assert code_after == 0
     assert await database.scalar("SELECT checksum FROM billing_schema_migrations WHERE script = '22-billing.sql'") == migrate.shipped()[1].checksum
     assert await database.scalar("SELECT applied_at FROM billing_schema_migrations WHERE script = '20-credit-wallet.sql'") == wallet_applied_at, (
@@ -199,9 +232,9 @@ async def test_runners_started_together_apply_each_script_exactly_once(container
         database = await make_database(container_url, monkeypatch)
         try:
             results = await asyncio.wait_for(asyncio.gather(*[migrate.migrate() for _ in range(4)]), timeout=120)
-            assert sum(len(r.applied) for r in results) == 2, f"each of the two scripts was applied once in total, not {[r.applied for r in results]}"
-            assert sum(len(r.skipped) for r in results) == 6
-            assert await database.scalar("SELECT count(*) FROM billing_schema_migrations") == 2
+            assert sum(len(r.applied) for r in results) == len(NAMES), f"each script was applied once in total, not {[r.applied for r in results]}"
+            assert sum(len(r.skipped) for r in results) == 3 * len(NAMES)
+            assert await database.scalar("SELECT count(*) FROM billing_schema_migrations") == len(NAMES)
             assert (await migrate.status()).up_to_date
         finally:
             await database.drop()
@@ -301,18 +334,18 @@ async def test_a_script_that_fails_midway_is_rolled_back_whole_and_the_earlier_s
 
 async def test_the_command_as_a_process_reports_without_writing_then_applies_then_is_current(database, tmp_path):
     code, out, err = run_cli(database, tmp_path, "--status")
-    assert code == 0 and len([line for line in out.splitlines() if line.startswith("pending ")]) == 2 and "No migration record" in out, (out, err)
+    assert code == 0 and len([line for line in out.splitlines() if line.startswith("pending ")]) == len(NAMES) and "No migration record" in out, (out, err)
     assert not await database.exists("billing_schema_migrations"), "--status wrote nothing, not even the record table"
 
     code, out, err = run_cli(database, tmp_path, "--check")
     assert code == 1, (out, err)
 
     code, out, err = run_cli(database, tmp_path)
-    assert code == 0 and "2 applied, 0 already current." in out, (out, err)
+    assert code == 0 and f"{len(NAMES)} applied, 0 already current." in out, (out, err)
     assert await database.exists("billing_schema_migrations") and await database.exists("credit_transactions")
 
     code, out, _ = run_cli(database, tmp_path)
-    assert code == 0 and "0 applied, 2 already current." in out
+    assert code == 0 and f"0 applied, {len(NAMES)} already current." in out
     code, _, _ = run_cli(database, tmp_path, "--check")
     assert code == 0
 

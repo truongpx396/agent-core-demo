@@ -55,13 +55,15 @@ they delete volumes or kill running processes.
   root (build context), `docker/` holds the auxiliary image builds.
 - `app/job_queue/` — Redis Streams queue and workers. `app/ingestion/` — chunking, crawl, upload.
 - `app/core/` — config, security (`SecurityCtx`), metrics, errors, scrubbing, resilience.
-- `packages/billing/` — the credit wallet, payment webhooks and operator CLIs as an independent package
-  (`credit_billing`, src layout, own pyproject/tests/schema/alerts/docs). It imports nothing from `app`;
-  the app reaches it only through `app/billing_integration/` (reconcile, export, the port); a test on
-  each side enforces it. Edit the package, not the copies: `postgres-init/20-` and `22-`, the two billing
-  alert rules in `observability/prometheus/alerts.yml` and its dashboard panels are guarded by
+- `packages/billing/` — the credit wallet, payment webhooks, the billing half of a usage meter (rate, record,
+  debit, export), the credit gate and operator CLIs as an independent package (`credit_billing`, src layout,
+  own pyproject/tests/schema/alerts/docs). It imports nothing from `app`; the app reaches it only through
+  `app/billing_integration/port.py` and carries no billing logic of its own (it hands over six plain fields per
+  model call and asks one question per turn); a test on each side enforces it, and one scans the app for any
+  billing vocabulary. Edit the package, not the copies: `postgres-init/20-`, `22-`, `24-` and `25-`, the
+  package's alert rules in `observability/prometheus/alerts.yml` and its dashboard panels are guarded by
   `tests/core/test_billing_package_copies.py`. Found by path (Makefile `PYTHONPATH`, pytest `pythonpath`);
-  not in the lock file.
+  not in the lock file. The agent's own meter (`usage_events`, its caps, its gateway reconciliation) stays in `app/agent/`.
 - `postgres-init/NN-*.sql` — numbered schema; auto-runs on a fresh volume only.
 - `skills/*/SKILL.md`, `subagents/*/AGENT.md` — the agent's own catalogs (not Claude Code's).
 - `observability/prometheus/alerts.yml` — alert rules over `app/core/metrics.py` metrics.

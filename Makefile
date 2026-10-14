@@ -1,4 +1,4 @@
-.PHONY: test-billing-package help up up-app sandbox-up sandbox-build pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker budget-policy litellm-key test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
+.PHONY: test-billing-package help up up-app sandbox-up sandbox-build pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker billing-usage-sweep usage-reconcile usage-reconcile-worker budget-policy litellm-key test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
 
 # Pinned DefectDojo release — see `defectdojo-up`'s own comment for why this
 # is a plain git clone into ~/.cache (NOT vendored into this repo, same
@@ -167,14 +167,17 @@ budget-policy:  ## Operator CLI for per-tenant / per-person spend-limit override
 litellm-key:  ## Mint / inspect the app's scoped, budget-capped LiteLLM key, e.g. `LITELLM_MASTER_KEY=... make litellm-key ARGS="create --max-budget 600"` (see scripts/litellm_key.py)
 	python -m scripts.litellm_key $(ARGS)
 
-usage-events-sweep:  ## Delete usage events older than USAGE_EVENT_RETENTION_DAYS (floor 35), never one whose export never finished (see scripts/usage_events_sweep.py; the table the caps read, so wire to cron only once your retention policy is decided)
+usage-events-sweep:  ## Delete usage events older than USAGE_EVENT_RETENTION_DAYS (floor 35) (see scripts/usage_events_sweep.py; the table the caps read, so wire to cron only once your retention policy is decided)
 	python -m scripts.usage_events_sweep
 
 usage-events-carry-over:  ## One-time, idempotent: copy usage_ledger history older than the first usage event into usage_events, because the dollar caps sum the events and would otherwise forget the month so far. Run it before deploying that change and once after. ARGS=--dry-run counts and writes nothing; ARGS="--tenant acme" does one tenant (see scripts/usage_events_carry_over.py)
 	python -m scripts.usage_events_carry_over $(ARGS)
 
-billing-export-worker:  ## Drain usage_export_outbox to the enabled providers that bill on usage, in a loop (see scripts/billing_export_worker.py; `ARGS=--once` for a single pass; set BILLING_PROVIDERS the same as the API and agent workers)
-	python -m scripts.billing_export_worker $(ARGS)
+billing-export-worker:  ## Drain billing_export_outbox to the enabled providers that bill on usage, in a loop (the billing package's credit-billing-export-worker; `ARGS=--once` for a single pass; set BILLING_PROVIDERS the same as the API and agent workers)
+	python -m credit_billing.cli.export_worker $(ARGS)
+
+billing-usage-sweep:  ## Delete the billing package's usage events older than BILLING_USAGE_EVENT_RETENTION_DAYS (floor 35), never one whose export never finished (credit-billing-usage-sweep; wire to cron once your retention policy is decided)
+	python -m credit_billing.cli.usage_sweep
 
 billing-migrate:  ## Apply the billing package's schema scripts to an existing database, in order, and record them (see packages/billing/src/credit_billing/cli/migrate.py; safe to re-run and to run twice at once; `ARGS=--lock-timeout-seconds=30` to wait longer)
 	python -m credit_billing.cli.migrate $(ARGS)
@@ -188,11 +191,17 @@ billing-inbox-sweep:  ## Delete applied/ignored billing webhook inbox rows older
 credits:  ## Operator CLI for the credit wallet, e.g. `make credits ARGS="grant --tenant acme --amount 500 --by alice --reason 'pilot top-up'"`, `adjust` (signed) and `show` (balance, lots, entries); --by and --reason are required for a change (see packages/billing/src/credit_billing/cli/credits.py)
 	python -m credit_billing.cli.credits $(ARGS)
 
-credit-reconcile:  ## Compare usage events with the ledger, the gateway's spend log and the wallets over the last CREDIT_RECONCILE_LOOKBACK_DAYS; exit 0 agree / 1 drift / 2 could not finish. Needs LITELLM_MASTER_KEY (or ARGS=--no-gateway); ARGS="--days 7 --json" (see scripts/credit_reconcile.py)
-	python -m scripts.credit_reconcile $(ARGS)
+credit-reconcile:  ## Wallet check: was every recorded usage worth credits actually charged? Over the last CREDIT_RECONCILE_LOOKBACK_DAYS; exit 0 charged / 1 drift / 2 could not finish / 3 database unreachable (the billing package's credit-billing-reconcile; ARGS="--days 7 --json")
+	python -m credit_billing.cli.reconcile $(ARGS)
 
-credit-reconcile-worker:  ## The same comparison as a worker: a pass every CREDIT_RECONCILE_INTERVAL_SECONDS, re-publishing the drift and balance gauges every minute for the dashboard and alerts (see scripts/credit_reconcile.py)
-	python -m scripts.credit_reconcile --loop $(ARGS)
+credit-reconcile-worker:  ## The same check as a worker: a pass every CREDIT_RECONCILE_INTERVAL_SECONDS, re-publishing the drift and balance gauges every minute for the dashboard and alerts
+	python -m credit_billing.cli.reconcile --loop $(ARGS)
+
+usage-reconcile:  ## Meter check: do the usage events agree with the LLM gateway's spend log over the last USAGE_RECONCILE_LOOKBACK_DAYS? exit 0 agree / 1 drift / 2 could not finish. Needs LITELLM_MASTER_KEY; ARGS="--days 7 --json" (see scripts/usage_reconcile.py)
+	python -m scripts.usage_reconcile $(ARGS)
+
+usage-reconcile-worker:  ## The same comparison as a worker: a pass every USAGE_RECONCILE_INTERVAL_SECONDS, re-publishing the drift gauge every minute for the dashboard and alerts (see scripts/usage_reconcile.py)
+	python -m scripts.usage_reconcile --loop $(ARGS)
 
 test:  ## Run the graph test suite in parallel (no live services needed — fake LLM, no Qdrant), then the billing package's own tests (a separate process: both have a `tests` package)
 	pytest -n auto -q

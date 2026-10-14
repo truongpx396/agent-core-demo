@@ -1,16 +1,16 @@
-"""The export worker's decisions as pure functions (packages/billing/src/credit_billing/export.py): how long a failed event waits, and what
+"""The export worker's decisions as pure functions (credit_billing/export.py): how long a failed event waits, and what
 becomes of each event given what the provider said. No database and no provider, so every rule has its own test.
 
 What the database and a real send then do with them (one delivery however many times it is retried, two workers never
 double-sending, an event past the age limit expiring) is real-Postgres behaviour:
-tests/integration/test_usage_export_real_postgres.py.
+tests/integration/test_export_real_postgres.py.
 """
 from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
-from app.billing_integration import export
+from credit_billing import export
 from credit_billing.providers.base import ExportFailure, ExportResult, UsageEvent
 
 BASE, CAP, MAX = 30, 3600, 5

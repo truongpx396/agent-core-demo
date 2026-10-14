@@ -1,90 +1,104 @@
-"""The billing port: the contract between a host application and the billing core (specs/011-billing-module-boundary,
-contracts/billing-port.md, decisions D12, D18, D19).
+"""The billing port: the contract between a host application and the billing package (specs/011-billing-module-boundary,
+contracts/billing-port.md, decisions D12, D18, D19; widened by specs/013-billing-owns-the-meter).
 
-A host that uses the wallet needs two things from it and nothing else: to **charge a usage event** in its own
-transaction, and to **read a tenant's balance** (the gate before a turn, the usage endpoint). Those two are the whole
-protocol. They are written as the shape a service API would have (plain data types, an idempotency key on the write,
-a tenant on both), so a network implementation can satisfy the same protocol later without the host changing. The
-one thing that is not plain is the caller's `conn` on the write, and that is deliberate: today the debit is atomic with
-the usage event the caller just inserted, in the caller's transaction and inside the caller's savepoint, and that
-atomicity is what makes a replay unable to double-debit. A remote wallet cannot take a connection; what it takes
-instead (an at-least-once consume keyed by the event id) is the consistency change `design-note.md` describes.
+A host that bills needs four things from the package and nothing else:
 
-`InProcessWallet` is the implementation that exists. It adds nothing: each method is a call into `credits`, with the
-arguments the host used to pass directly, resolved at CALL time (so a test that patches `credits.debit_in` still sees
-its patch, and the hermetic suite's connection guard still applies). The host does not import this module. It imports
-`app.billing_integration.port`, which holds the implementation in use, so the choice of implementation is made in one
-place on the host's side and importing it wires the core to the host's pool.
+  * **record a unit of usage** in its own transaction (`record_usage_in`): the package rates it, keeps it, debits the wallet and queues it
+    for export, and never raises for an operational fault (`credit_billing/usage.py`);
+  * **ask whether a tenant may start more work** (`admit`): the credit gate (`credit_billing/admission.py`);
+  * **read a tenant's balance** (`account_balance`), for the gate's callers that need the figure;
+  * **read what to show a tenant** (`credit_summary`): the balance and whether the gate is enforcing, or None when credits are off or the
+    tenant has no wallet.
 
-What is deliberately not here: grants, adjustments and webhook intake (the core serves those itself: the operator CLI
-and `packages/billing/src/credit_billing/http.py`), checkout, holds, and rating. `credits_for_cost` is a pure function and stays one; moving
-rating behind the port is a later feature (O1, D15).
+They are written as the shape a service API would have (plain data types, an idempotency key on the write, a tenant on every call), so a
+network implementation can satisfy the same protocol later without the host changing. The one thing that is not plain is the caller's
+`conn` on the write, and that is deliberate: today the record, the debit and the export row are atomic with the host's own event, in the
+host's transaction and inside its savepoint, and that atomicity is what makes a replay unable to double-debit. A remote billing service
+cannot take a connection; what it takes instead (an at-least-once consume keyed by the event id) is the consistency change
+`design-note.md` describes.
 
-Imports nothing from `app` outside `credit_billing` (enforced by tests/billing/test_billing_core_boundary.py).
+`InProcessBilling` is the implementation that exists. It adds nothing: each method is a call into the module that does the work, resolved at
+CALL time (so a test that patches `usage.record_usage_in` or `credits.account_balance` still sees its patch, and the hermetic suite's
+connection guard still applies). The host does not import this module. It imports `app.billing_integration.port`, which holds the
+implementation in use, so the choice of implementation is made in one place on the host's side and importing it wires the package to the
+host's pool.
+
+What is deliberately not here: grants, adjustments and webhook intake (the package serves those itself: the operator CLI and
+`credit_billing/http.py`), checkout, and holds. `credits_for_cost` is a pure function and stays one.
+
+Imports nothing from `app` outside `credit_billing` (enforced by tests/test_boundary.py).
 """
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
 from psycopg import AsyncConnection
 
-from credit_billing import credits
+from credit_billing import admission, credits
+from credit_billing import usage as usage_module
+from credit_billing.admission import Admission
 from credit_billing.credits import Applied, Balance, IdempotencyConflict, Pricing
+from credit_billing.settings import CREDITS_ENFORCEMENT, CREDITS_PER_USD
+from credit_billing.usage import Recorded, Usage
 
-__all__ = ["Applied", "Balance", "IdempotencyConflict", "InProcessWallet", "Pricing", "WalletPort", "credits_for_cost"]
+__all__ = [
+    "Admission", "Applied", "Balance", "BillingPort", "CreditSummary", "IdempotencyConflict", "InProcessBilling", "Pricing", "Recorded",
+    "Usage", "credits_for_cost",
+]
+
+
+@dataclass(frozen=True)
+class CreditSummary:
+    """What a tenant is shown of its wallet: the balance, and whether running out refuses its requests."""
+
+    balance: Balance
+    enforced: bool
 
 
 @runtime_checkable
-class WalletPort(Protocol):
-    async def record_usage_in(
-        self,
-        conn: AsyncConnection,
-        tenant: str,
-        amount: Decimal,
-        *,
-        event_id: str,
-        kind: str,
-        pricing: Pricing | None = None,
-    ) -> Applied:
-        """Debits `amount` credits from the tenant's wallet for the usage event `event_id`, on the caller's connection and
-        in the caller's transaction. A replay of the same `event_id` with the same request changes nothing and returns the original
-        transaction; a replay with a DIFFERENT request (another amount, kind or pricing) raises `IdempotencyConflict` and changes
-        nothing (a remote implementation maps it to a conflict response). A tenant with no wallet is a no-op (`no_account`). Never refuses for a short balance: the shortfall is booked as
-        overdraft (the model call already happened)."""
+class BillingPort(Protocol):
+    async def record_usage_in(self, conn: AsyncConnection, usage: Usage) -> Recorded:
+        """Rates `usage`, records it under `(tenant, event_id)`, debits the tenant's wallet and queues it for export, on the caller's
+        connection and in the caller's transaction. A replay of the same `(tenant, event_id)` changes nothing. Never raises for an operational
+        fault (it is counted); with no rate and no usage-billing provider it does nothing. A tenant with no wallet is not debited. The
+        debit never refuses for a short balance: the shortfall is booked as overdraft (the work already happened)."""
         ...
 
     async def account_balance(self, tenant: str) -> Balance | None:
         """The tenant's balance, or None when the tenant has no wallet (so it is not on credit billing)."""
         ...
 
+    async def admit(self, tenant: str, *, reserved_usd: Callable[[], Awaitable[Decimal | float]]) -> Admission:
+        """Whether the tenant may start more work on its prepaid balance. Reads nothing when enforcement is off. `reserved_usd` is awaited
+        only for a tenant that has a wallet."""
+        ...
+
+    async def credit_summary(self, tenant: str) -> CreditSummary | None:
+        """The tenant's balance and whether the gate enforces, or None when credits are off or the tenant has no wallet. Raises when the
+        wallet cannot be read: an endpoint that shows it should say so rather than report a calm "no wallet"."""
+        ...
+
 
 def credits_for_cost(cost_usd, credits_per_usd, markup) -> Decimal:
-    """`round_half_up(cost_usd x credits_per_usd x markup, 6)`: a pure function, so it is the same on either side of a
-    network. Rating stays in the host's hands through spec 011 (O1)."""
+    """`round_half_up(cost_usd x credits_per_usd x markup, 6)`: a pure function, so it is the same on either side of a network."""
     return credits.credits_for_cost(cost_usd, credits_per_usd, markup)
 
 
-class InProcessWallet:
-    """The wallet in the same process, over the same database connection pool as the caller."""
+class InProcessBilling:
+    """Billing in the same process, over the same database connection pool as the caller."""
 
-    async def record_usage_in(
-        self,
-        conn: AsyncConnection,
-        tenant: str,
-        amount: Decimal,
-        *,
-        event_id: str,
-        kind: str,
-        pricing: Pricing | None = None,
-    ) -> Applied:
-        return await credits.debit_in(
-            conn,
-            tenant,
-            amount,
-            idempotency_key=event_id,
-            usage_event_id=event_id,
-            reason=f"model call ({kind})",
-            pricing=pricing,
-        )
+    async def record_usage_in(self, conn: AsyncConnection, usage: Usage) -> Recorded:
+        return await usage_module.record_usage_in(conn, usage)
 
     async def account_balance(self, tenant: str) -> Balance | None:
         return await credits.account_balance(tenant)
+
+    async def admit(self, tenant: str, *, reserved_usd: Callable[[], Awaitable[Decimal | float]]) -> Admission:
+        return await admission.admit(tenant, reserved_usd=reserved_usd)
+
+    async def credit_summary(self, tenant: str) -> CreditSummary | None:
+        if CREDITS_PER_USD is None:
+            return None
+        balance = await credits.account_balance(tenant)
+        return None if balance is None else CreditSummary(balance, CREDITS_ENFORCEMENT)

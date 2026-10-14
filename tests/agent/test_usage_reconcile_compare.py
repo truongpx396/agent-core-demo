@@ -1,13 +1,11 @@
-"""The pure half of the reconciliation (packages/billing/src/credit_billing/reconcile.py): who is allowed to differ by how much, which window is read, how a
+"""The pure half of the reconciliation (app/agent/usage_reconcile.py): who is allowed to differ by how much, which window is read, how a
 one-way gateway id becomes a tenant, and what counts as drift. No database and no gateway: the reading of each is in
 test_reconcile_gateway.py and tests/integration/test_reconcile_real_postgres.py."""
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal as D
 
-import pytest
-
 from app.agent.gateway import end_user_id
-from app.billing_integration.reconcile import (
+from app.agent.usage_reconcile import (
     Finding,
     Tolerance,
     Window,
@@ -148,8 +146,7 @@ def test_the_window_type_is_inclusive_at_both_ends_like_the_gateways_own_filter(
     assert not window.empty  # a single instant is a window, and the gateway reads `>=` start and `<=` end
 
 
-@pytest.mark.parametrize("kind", ["gateway", "uncharged"])
-def test_every_kind_of_finding_explains_itself_in_both_directions(kind):
-    meanings = {Finding(kind, "acme", DAY, D("0"), drift).meaning for drift in (D("1"), D("-1"))}
+def test_a_finding_explains_itself_in_both_directions():
+    meanings = {Finding("gateway", "acme", DAY, D("0"), drift).meaning for drift in (D("1"), D("-1"))}
 
-    assert all(meanings)
+    assert len(meanings) == 2 and all(meanings)

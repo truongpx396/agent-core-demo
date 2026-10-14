@@ -22,10 +22,11 @@ Whether to build that or adopt something is **not decided** (item 0).
 | Operator CLIs: `credit-billing` (grant, adjust, show), `credit-billing-inbox-sweep`; fast failure, exit statuses, audit log fields | `cli/` | 011 (#162) |
 | A migration tool: `credit-billing-migrate` | `migrate.py`, pattern B1 | 012 (#163) |
 | An idempotency conflict: a reused key with a different request is refused | `credits.py`, pattern B2 | 012 (#164) |
+| The billing half of a usage meter: rate, record, debit, queue for export in the caller's transaction, one call that cannot cost the caller its own record; the credit gate; the export worker, the wallet check and the usage-event retention as the package's own commands | `usage.py`, `admission.py`, `export.py`, `reconcile.py`, `retention.py`, `sql/24-`, `25-`, pattern B3 | 013 |
 
 ## Open work, in the order to take it
 
-Spec numbers are assigned by `/speckit-specify` when a feature is created (the next is **013**); the labels below are an order, not reserved numbers. Each item should go through the Spec Kit flow (specify, plan, tasks, implement) and ship as small, reviewable PRs.
+Spec numbers are assigned by `/speckit-specify` when a feature is created (the next is **014**); the labels below are an order, not reserved numbers. Each item should go through the Spec Kit flow (specify, plan, tasks, implement) and ship as small, reviewable PRs.
 
 ### 0. Decide: build it or adopt something (a decision, not code)
 
@@ -33,21 +34,21 @@ Never weighed. Lago and Flexprice are AGPL-3.0 (established, research R11 of spe
 
 ### 1. The pro-grade wallet contract, still in-process
 
-Three extensions a general service needs. They change the money path and the agent's gate, so each needs the same proof discipline as 012 (tests that fail without the change, a mutation check, existing suites passing unchanged).
+Two extensions a general service still needs (the third, the usage-event store, was built in process by spec 013). They change the money path and the agent's gate, so each needs the same proof discipline as 012 (tests that fail without the change, a mutation check, existing suites passing unchanged).
 
 - **Holds:** reserve, capture, release with a TTL sweep, so the agent's gate stops computing `wallet.available − reserved` itself (`budget_holds`, `app/agent/budgets.py`). New table and port operations. *Source: design note section 4; spec 011 D16.2, D18; research R4.*
-- **A service-side generic usage-event store with an idempotent `record_usage`:** (id, tenant, meter, quantity, time, dimensions), the debit atomic with the event; reconciliation of events against wallet entries and retention sweeps move into the service. The agent keeps its LLM-shaped local meter permanently (its caps need low-latency local reads); its export outbox (script 23) becomes the delivery path to the service's ingest endpoint. Two stores, one flow, no shared table. It will also need a stated policy for **late and backdated events** (a cut-off with a grace window, or a true-up next period; research R12), which nothing decides today. *Source: spec 011 D17; design note section 4; research R2, R8, R12.*
+- ~~**A service-side generic usage-event store with an idempotent `record_usage`**~~ *(done in process, spec 013: `billing_usage_events` keyed `(tenant, event_id)`, `record_usage_in` with the debit atomic with the event, the export outbox pointing at it, the wallet reconciliation and the retention sweep as package commands; the agent keeps its LLM-shaped meter for its caps and hands over six plain fields. Left for a service: the network form of the same call, an ingest endpoint that is the outbox's new destination, and the **late and backdated events** policy (a cut-off with a grace window, or a true-up next period; research R12), which nothing decides today. A usage whose billing write fails after the caller's own record is committed is counted and paged but cannot be found by any later check; closing that needs the caller's own reconciliation against its upstream, which the agent has and another project must write.)*
 - **Outbound notifications:** low balance, exhausted, refunded, so a SaaS does not poll. *Source: research R10.*
 
 ### 2. The service shell
 
-An HTTP API over the port, service-to-service authentication, an entry point and a container, health and readiness, and an HTTP client that implements `WalletPort`. It carries **the consistency change**: today the debit commits in the same Postgres transaction as the usage event; a remote wallet is an at-least-once consume keyed by the event id, the balance lags the meter, and holds (item 1) bound the over-spend window. It also decides when to run `migrate()` (never automatically today). *Source: `design-note.md` sections 3, 4, 6.*
+An HTTP API over the port, service-to-service authentication, an entry point and a container, health and readiness, and an HTTP client that implements `BillingPort`. It carries **the consistency change**: today the debit commits in the same Postgres transaction as the usage event; a remote wallet is an at-least-once consume keyed by the event id, the balance lags the meter, and holds (item 1) bound the over-spend window. It also decides when to run `migrate()` (never automatically today). *Source: `design-note.md` sections 3, 4, 6.*
 
 **A trigger is needed, not just a wish.** Without one of these, a service is a network hop on the path of every model call for nothing: a second product sharing one wallet and provider account; isolating the provider credentials and the unauthenticated webhook endpoint from processes that run model output; or billing needing its own deploy cadence, scaling or compliance scope (`design-note.md` section 1).
 
 ### 3. Turnkey operation
 
-The product catalog and customer link as configuration (today SQL with no CLI or route); a checkout route (nothing calls `create_checkout` yet); balance and ledger endpoints; a `check`/`track`-style client; a verified setup per provider; a check of cash collected against credits granted; a configurable spend priority. The field's shape for "quick to set up" is a three-call API (attach, check, track) with pricing as configuration (research R9). Rating (`credits_for_cost`, `CREDITS_PER_USD`, `MARKUP`) moves behind the port, and the metric names lose the `agent_` prefix (a dashboard and alert migration). *Source: spec 011 D16.4, D17, D18; design note sections 5, 6.*
+The product catalog and customer link as configuration (today SQL with no CLI or route); a checkout route (nothing calls `create_checkout` yet); balance and ledger endpoints; a `check`/`track`-style client; a verified setup per provider; a check of cash collected against credits granted; a configurable spend priority. The field's shape for "quick to set up" is a three-call API (attach, check, track) with pricing as configuration (research R9). A rate card behind the port (the caller still supplies the cost of its own unit of work), and the metric names lose the `agent_` prefix (a dashboard and alert migration). *Source: spec 011 D16.4, D17, D18; design note sections 5, 6.*
 
 ### Provider side (independent of 1-3)
 
@@ -69,6 +70,11 @@ The product catalog and customer link as configuration (today SQL with no CLI or
 | `compare=` (choosing which fields identify a request) is an escape hatch that can hide a real difference if misused | two call sites, each commented; an unknown name is refused | pattern B2 |
 | `reason` and `actor` are compared, so correcting a typo under a reused key needs a new key | it means the audit text just typed was not recorded | pattern B2 |
 | A wrong database password is reported as "cannot open a connection" | the pool cannot tell it from an unreachable server within the wait | `cli/_runtime.py` |
+| A billing write that fails after the caller's own record committed is **not recoverable by the package**: it is counted (`billing_event_write`) and paged, but the wallet check only sees what was recorded | the caller's record outranks billing, so billing cannot roll it back; the caller's own reconciliation with its upstream (the agent's `make usage-reconcile`) is the detector, and another project must write its own | pattern B3 |
+| `event_id` must be unique across tenants if a usage-billing provider is enabled | the provider deduplicates on the id alone while the package's key is `(tenant, event_id)`; a caller that derives ids from the tenant (the agent does) is safe | pattern B3 |
+| Events recorded before the cutover to the package's store (spec 013) are not in it, and unsent rows of the agent's old `usage_export_outbox` are not drained by the new worker | they were rated and charged by the old path; a usage-billing provider was never on by default, and the upgrade note says to drain first | pattern B3 |
+| `record_usage_in` called on a connection with no open transaction commits its own work | psycopg makes the outermost `transaction()` block the transaction; the contract says to call it after the caller's own statement | pattern B3 |
+| The gauges' once-a-minute heartbeat and the alert texts that say "a stopped worker resolves this alert" rest on **opentelemetry-sdk 1.44**, where a collected synchronous gauge is cleared. **1.45.1 re-exports the last value** (verified in a clean venv: first and second collection both return it) | the agent app's lock pins 1.44 and `tests/core/test_gauge_export.py` fails on a bump by design; the package depends on the API only, so an operator on 1.45 gets a gauge that keeps its last value (a stopped worker then leaves `CreditReconcileDrift`, `UsageReconcileDrift` or `UsageExportStuck` stale instead of resolved). The heartbeat is harmless either way. Found because the package's own CI job installs the newest allowed SDK and one hermetic test had assumed the clearing | `tests/core/test_gauge_export.py`, `packages/billing/tests/test_reconcile.py` |
 | The host's `sql_store` pool keeps psycopg's 30 s connect wait | it is a long-running server, not a command; untouched | spec 011 follow-up (#162) |
 
 ## Measurements nobody has made
@@ -78,7 +84,7 @@ The product catalog and customer link as configuration (today SQL with no CLI or
 
 ## How every follow-up starts
 
-- **Rules that do not bend:** tenant isolation, no model-callable path to a balance, exactly-once effects (constitution I, II, IV). The package imports nothing from the app; new package patterns are numbered **B3, B4, ...** in [PATTERNS.md](PATTERNS.md).
-- **A schema change reaches existing databases through `credit-billing-migrate` and needs a deploy order: migrate BEFORE the code that uses it** (the `request` column showed what the other order does: every keyed write fails). The host's `postgres-init/20-` and `22-` copies stay byte-equal to the package's.
+- **Rules that do not bend:** tenant isolation, no model-callable path to a balance, exactly-once effects (constitution I, II, IV). The package imports nothing from the app; new package patterns are numbered **B4, B5, ...** in [PATTERNS.md](PATTERNS.md).
+- **A schema change reaches existing databases through `credit-billing-migrate` and needs a deploy order: migrate BEFORE the code that uses it** (the `request` column showed what the other order does: every keyed write fails). The host's `postgres-init/20-`, `22-`, `24-` and `25-` copies stay byte-equal to the package's.
 - **Verify the way CI runs, not the way a Mac runs:** a subprocess does not inherit pytest's `pythonpath`; a bind mount keeps real file ownership on Linux; test the **installed** command, not the source tree; every job that starts the app installs the package first (`tests/billing/test_ci_installs_the_package.py`). PR #161's first CI run failed both ways.
 - **Real provider sandbox** (`make test-provider-sandbox`): only when asked, once, never in a loop (Polar rate-limits); a pytest fixture error prints the fixture's argument values, so redact any log before keeping it.

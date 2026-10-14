@@ -1,4 +1,4 @@
-"""The schema the package ships (spec 011 D20, D22): two idempotent scripts that travel inside the package.
+"""The schema the package ships (spec 011 D20, D22; spec 013): idempotent scripts that travel inside the package.
 
 What a script DOES against a real Postgres is proven by the integration tier (`pytest -m integration`), which seeds a container from
 exactly these files. These hermetic tests pin what must be true for another project to use them: they are shipped, in order,
@@ -15,11 +15,14 @@ from credit_billing import schema
 PACKAGE = Path(__file__).resolve().parents[1]
 
 
-def test_the_package_ships_exactly_the_wallet_and_the_billing_scripts_in_order():
-    assert schema.scripts() == ["20-credit-wallet.sql", "22-billing.sql"]
+SCRIPTS = ["20-credit-wallet.sql", "22-billing.sql", "24-billing-usage-events.sql", "25-billing-export-outbox.sql"]
 
 
-@pytest.mark.parametrize("name", ["20-credit-wallet.sql", "22-billing.sql"])
+def test_the_package_ships_exactly_the_wallet_the_billing_the_usage_events_and_the_export_outbox_scripts_in_order():
+    assert schema.scripts() == SCRIPTS
+
+
+@pytest.mark.parametrize("name", SCRIPTS)
 def test_each_script_is_non_empty_and_opens_with_the_psql_connect_it_documents(name):
     text = schema.read(name)
 
@@ -27,7 +30,7 @@ def test_each_script_is_non_empty_and_opens_with_the_psql_connect_it_documents(n
     assert "\\connect appdata" in text, "the scripts are written as init scripts for the `appdata` database (credit_billing/schema.py says so)"
 
 
-@pytest.mark.parametrize("name", ["20-credit-wallet.sql", "22-billing.sql"])
+@pytest.mark.parametrize("name", SCRIPTS)
 def test_every_table_is_created_idempotently_so_an_operator_can_re_run_a_script(name):
     creates = re.findall(r"CREATE TABLE\s+(?!IF NOT EXISTS)", schema.read(name))
 
@@ -41,6 +44,11 @@ def test_the_wallet_script_creates_the_ledger_and_the_billing_script_the_inbox()
         assert f"CREATE TABLE IF NOT EXISTS {table}" in wallet
     for table in ("billing_customers", "credit_products", "billing_webhook_events"):
         assert f"CREATE TABLE IF NOT EXISTS {table}" in billing
+
+
+def test_the_usage_scripts_create_the_event_store_and_its_outbox():
+    assert "CREATE TABLE IF NOT EXISTS billing_usage_events" in schema.read("24-billing-usage-events.sql")
+    assert "CREATE TABLE IF NOT EXISTS billing_export_outbox" in schema.read("25-billing-export-outbox.sql")
 
 
 def test_the_scripts_are_declared_as_package_data_so_an_install_carries_them():

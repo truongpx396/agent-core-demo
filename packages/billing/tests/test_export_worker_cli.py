@@ -1,10 +1,14 @@
-"""The export worker's entry point (scripts/billing_export_worker.py): which providers it serves, that it refuses to idle
+"""The export worker's entry point (credit_billing/cli/export_worker.py): which providers it serves, that it refuses to idle
 when there is nothing to do, and that a misconfiguration stops it instead of exporting nothing quietly. The export logic
-itself is packages/billing/src/credit_billing/export.py (pure rules: tests/billing/test_export_verdicts.py; the database: the integration tier)."""
+itself is credit_billing/export.py (pure rules: tests/test_export_verdicts.py; the database: the integration tier)."""
+from contextlib import asynccontextmanager
+
 import pytest
 
 from credit_billing import providers
-from scripts import billing_export_worker as worker
+from credit_billing.cli import export_worker as worker
+from credit_billing.cli._runtime import EXIT_DATABASE_UNAVAILABLE
+from tests.conftest import SECRET
 
 
 @pytest.fixture
@@ -58,11 +62,12 @@ async def test_once_runs_a_single_pass_and_reports_it(configured, capsys, monkey
         passes.append(sorted(adapters))
         return {"sent": 3, "retry": 1}
 
-    async def close_pool():
-        return None
+    @asynccontextmanager
+    async def pool():
+        yield None
 
     monkeypatch.setattr(worker.export, "run_once", run_once)
-    monkeypatch.setattr(worker.sql_store, "close_pool", close_pool)
+    monkeypatch.setattr(worker, "wired_pool", pool)
 
     assert await worker.run(once=True) == 0
     assert passes == [["fake"]]
@@ -71,3 +76,18 @@ async def test_once_runs_a_single_pass_and_reports_it(configured, capsys, monkey
 
 def test_a_quiet_pass_is_described_as_such():
     assert worker.describe({}) == "Nothing to export." and worker.describe({"sent": 0}) == "Nothing to export."
+
+
+def test_a_database_that_cannot_be_reached_is_one_line_and_exit_status_3_never_a_traceback_or_a_credential(
+    configured, closed_port_url, fast_failure, monkeypatch, capsys
+):
+    configured(("fake",))
+    monkeypatch.setenv("APPDATA_DATABASE_URL", closed_port_url)
+    monkeypatch.setattr("sys.argv", ["credit-billing-export-worker", "--once"])
+
+    with pytest.raises(SystemExit) as exited:
+        worker.main()
+
+    err = capsys.readouterr().err
+    assert exited.value.code == EXIT_DATABASE_UNAVAILABLE
+    assert err.startswith("error: cannot open a connection to 127.0.0.1:") and SECRET not in err and "Traceback" not in err

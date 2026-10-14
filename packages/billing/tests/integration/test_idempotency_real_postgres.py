@@ -304,7 +304,7 @@ async def test_a_database_made_from_the_old_script_is_upgraded_by_migrate_keepin
 
         # 3. the package is upgraded: the wallet script is now `changed`, and migrate applies it
         status = await migrate.status()
-        assert {s.name: s.state for s in status.scripts} == {"20-credit-wallet.sql": "changed", "22-billing.sql": "applied"}
+        assert {s.name: s.state for s in status.scripts} == {name: "applied" for name in schema.scripts()} | {"20-credit-wallet.sql": "changed"}
         result = await migrate.migrate()
 
         assert result.applied == ["20-credit-wallet.sql"] and (await migrate.status()).up_to_date

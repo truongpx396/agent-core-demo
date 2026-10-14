@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "credit-billing"
 version = "0.1.0"
-description = "A self-contained prepaid-credit wallet for a SaaS: an append-only idempotent ledger, signed payment-webhook intake with Stripe and Polar adapters, and operator CLIs. It imports nothing from the application that hosts it."
+description = "A self-contained prepaid-credit wallet for a SaaS: an append-only idempotent ledger, signed payment-webhook intake with Stripe and Polar adapters, a usage meter that rates, charges and exports, and operator CLIs. It imports nothing from the application that hosts it."
 readme = "README.md"
 requires-python = ">=3.11"
 # Everything the core imports, and nothing else (tests/test_boundary.py fails the build if a module imports anything this
@@ -34,6 +34,9 @@ test = [
 credit-billing = "credit_billing.cli.credits:main"
 credit-billing-inbox-sweep = "credit_billing.cli.inbox_sweep:main"
 credit-billing-migrate = "credit_billing.cli.migrate:main"
+credit-billing-export-worker = "credit_billing.cli.export_worker:main"
+credit-billing-reconcile = "credit_billing.cli.reconcile:main"
+credit-billing-usage-sweep = "credit_billing.cli.usage_sweep:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

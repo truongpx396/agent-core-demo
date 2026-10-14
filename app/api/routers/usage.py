@@ -8,8 +8,6 @@ from app.api.deps import get_ctx
 from app.api.schemas import BudgetStatus, CreditBalance, UsageResponse
 from app.billing_integration import port as billing_port
 from app.core.config import (
-    CREDITS_ENFORCEMENT,
-    CREDITS_PER_USD,
     MAX_COST_USD_PER_PRINCIPAL_PER_DAY,
     MAX_COST_USD_PER_PRINCIPAL_PER_MONTH,
     MAX_COST_USD_PER_TENANT_PER_DAY,
@@ -28,9 +26,9 @@ async def usage(ctx: SecurityCtx = Depends(get_ctx)) -> UsageResponse:
     that applies to this caller (the tenant's and their own, overrides included).
     Tenant-scoped only; no way to query another tenant's spend, or another person's.
 
-    `credits` is the tenant's wallet, present only when the deployment has credits on
-    (`CREDITS_PER_USD`) and the tenant has a wallet. Like the budget figures it does not fail open:
-    an endpoint that cannot read the wallet says so rather than report a calm "no wallet"."""
+    `credits` is the tenant's wallet, present only when the deployment has credits on and the tenant has
+    a wallet (the billing port decides; this endpoint only shows what it is given). Like the budget figures it
+    does not fail open: an endpoint that cannot read the wallet says so rather than report a calm "no wallet"."""
     all_time = await spend.usage_summary(ctx["tenant"])
     since = datetime.now(UTC) - timedelta(hours=24)
     last_24h = await spend.usage_summary(ctx["tenant"], since=since)
@@ -43,7 +41,7 @@ async def usage(ctx: SecurityCtx = Depends(get_ctx)) -> UsageResponse:
             principal_month=MAX_COST_USD_PER_PRINCIPAL_PER_MONTH,
         ),
     )
-    wallet = await billing_port.account_balance(ctx["tenant"]) if CREDITS_PER_USD is not None else None
+    wallet = await billing_port.credit_summary(ctx["tenant"])
     return UsageResponse(
         total_tokens=all_time["total_tokens"],
         total_cost_usd=all_time["total_cost_usd"],
@@ -62,7 +60,7 @@ async def usage(ctx: SecurityCtx = Depends(get_ctx)) -> UsageResponse:
         ],
         credits=(
             CreditBalance(
-                available=wallet.available, debt=wallet.debt, ledger=wallet.ledger, enforced=CREDITS_ENFORCEMENT
+                available=wallet.balance.available, debt=wallet.balance.debt, ledger=wallet.balance.ledger, enforced=wallet.enforced
             )
             if wallet is not None
             else None

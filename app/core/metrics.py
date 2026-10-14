@@ -496,56 +496,19 @@ agent_unpriced_usage_total = Counter(
     ["model_alias"],
 )
 
-agent_credit_enforcement_refused_total = Counter(
-    "agent_credit_enforcement_refused_total",
-    "Turns refused before any model work because the tenant's wallet had no available credits "
-    "(app/agent/budgets.py, ErrorCode.INSUFFICIENT_CREDITS). Normal operation for a prepaid tenant that "
-    "has run out, so it is a rate to watch, not an alert. It has no tenant label (who is in the log line).",
-)
-
-agent_usage_export_total = Counter(
-    "agent_usage_export_total",
-    "Usage events handled by the export worker (app/billing/export.py), by outcome. `expired` means an event aged past "
-    "BILLING_EXPORT_MAX_AGE_DAYS unsent (alert UsageExportExpired: usage the provider will never bill); `failed` means a "
-    "permanent refusal, the attempt budget spent, or no customer link (alert UsageExportFailed); `retry` is a retryable "
-    "failure that will back off and try again; `sent` includes a provider-reported duplicate, which is success.",
-    ["provider", "outcome"],
-)  # outcome: sent | retry | failed | expired
-
-agent_usage_export_oldest_pending_age_seconds = Gauge(
-    "agent_usage_export_oldest_pending_age_seconds",
-    "Age of the oldest usage event still waiting to be exported, per provider, set each worker pass (0 when nothing is "
-    "waiting). Alert UsageExportStuck at 7 days: well inside the age limit, so someone is told while the events are "
-    "still sendable. Disclosed (corrected in PR 6, which verified it): a synchronous gauge is exported ONCE per set (the SDK "
-    "clears it after collecting) and the collector's Prometheus exporter drops a series 5 minutes after its last update "
-    "(`metric_expiration`), so a dead worker does not leave a stale value behind: the series DISAPPEARS and UsageExportStuck "
-    "resolves on its own. The worker's own liveness is not alerted yet; Prometheus cannot tell a worker that never ran from one that died.",
-    unit="s",
-    labelnames=["provider"],
-)
-
-agent_credit_outstanding = Gauge(
-    "agent_credit_outstanding",
-    "Credits held across every wallet, set by each reconciliation pass (app/billing/reconcile.py): `available` is what "
-    "may still be consumed, `debt` is what overdraft lots owe (a positive number). Deliberately no tenant label: who "
-    "holds what is `make credits ARGS='show --tenant ...'`. Only as fresh as the last pass.",
-    labelnames=["state"],
-)
-
-agent_credit_reconcile_max_drift_usd = Gauge(
-    "agent_credit_reconcile_max_drift_usd",
-    "The largest per-tenant, per-day difference ABOVE tolerance between usage events and the gateway spend log "
-    "or the wallet, in USD, as of the last reconciliation pass (0 when everything agrees). No tenant label: the report "
-    "(`make credit-reconcile`) names them. Alert CreditReconcileDrift. The worker re-sets it every minute because the "
-    "collector forgets a series 5 minutes after its last update.",
+agent_usage_reconcile_max_drift_usd = Gauge(
+    "agent_usage_reconcile_max_drift_usd",
+    "The largest per-tenant, per-day difference ABOVE tolerance between the usage events and the LLM gateway's spend log, in USD, "
+    "as of the last reconciliation pass (0 when everything agrees). No tenant label: the report (`make usage-reconcile`) names them. "
+    "Alert UsageReconcileDrift. The worker re-sets it every minute because the collector forgets a series 5 minutes after its last update.",
     unit="USD",
 )
 
-agent_credit_reconcile_total = Counter(
-    "agent_credit_reconcile_total",
-    "Reconciliation passes by outcome: ok (everything agrees) | drift (something is above tolerance) | incomplete (the "
-    "gateway had more rows than CREDIT_RECONCILE_GATEWAY_MAX_PAGES, so that comparison was skipped) | failed (the pass "
-    "itself raised: the gateway or database was unreachable; alert CreditReconcileFailing).",
+agent_usage_reconcile_total = Counter(
+    "agent_usage_reconcile_total",
+    "Gateway reconciliation passes by outcome: ok (everything agrees) | drift (something is above tolerance) | incomplete (the "
+    "gateway had more rows than USAGE_RECONCILE_GATEWAY_MAX_PAGES, so that comparison was skipped) | failed (the pass "
+    "itself raised: the gateway or database was unreachable; alert UsageReconcileNotCompleting).",
     ["outcome"],
 )  # outcome: ok | drift | incomplete | failed
 
@@ -556,9 +519,7 @@ agent_cost_governance_degraded_total = Counter(
     ["path"],
 )  # path: price_lookup | ledger_read | policy_read | reservation | model_resolve
 # | usage_event_write | usage_event_table_missing | usage_event_identity | usage_missing (app/agent/usage_events.py)
-# | export_enqueue (app/agent/usage_events.py: the event was kept, queuing it for export failed)
-# | credit_debit (app/agent/usage_events.py: the event was kept, its debit failed) | credit_read (app/agent/budgets.py: the gate
-# could not read the wallet)
+# (the billing package counts its own paths on its own instrument of this name: credit_billing/metrics.py)
 
 agent_upload_rejected_total = Counter(
     "agent_upload_rejected_total",

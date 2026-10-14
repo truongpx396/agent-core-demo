@@ -148,24 +148,24 @@ async def test_the_events_sum_is_whole_after_the_carry_over(tenant, real_appdata
     assert in_a_recent_window == (10, Decimal("0.5")), "history stays in the window it was spent in"
 
 
-async def test_a_carried_row_is_never_rated_charged_or_queued_for_export(tenant, real_appdata):
+async def test_a_carried_row_is_history_and_never_reaches_billing(tenant, real_appdata):
+    """The carry-over writes the agent's own table directly and never calls the hand-off, so a carried row can neither bill anyone nor reach a
+    provider: billing has no record of it and the wallet has no debit for it."""
     async with real_appdata() as conn:
         await _ledger(conn, tenant, recorded_at=YEARS_AGO, cost=3.0)
         await seed_event(conn, tenant, occurred_at=NOW - timedelta(days=1))
     await carry.run(tenant=tenant)
 
     async with real_appdata() as conn:
-        cur = await conn.execute(
-            "SELECT credits, credits_per_usd, markup FROM usage_events WHERE tenant = %s AND event_id LIKE 'ledger:%%'", (tenant,)
-        )
-        ((credits, rate, markup),) = await cur.fetchall()
-        cur = await conn.execute("SELECT count(*) FROM usage_export_outbox WHERE tenant = %s", (tenant,))
-        queued = (await cur.fetchone())[0]
+        cur = await conn.execute("SELECT count(*) FROM usage_events WHERE tenant = %s AND event_id LIKE 'ledger:%%'", (tenant,))
+        carried = (await cur.fetchone())[0]
+        cur = await conn.execute("SELECT count(*) FROM billing_usage_events WHERE tenant = %s", (tenant,))
+        recorded = (await cur.fetchone())[0]
         cur = await conn.execute("SELECT count(*) FROM credit_transactions WHERE tenant = %s", (tenant,))
         debited = (await cur.fetchone())[0]
 
-    assert (credits, rate, markup) == (None, None, None)
-    assert queued == 0 and debited == 0
+    assert carried == 1
+    assert recorded == 0 and debited == 0
 
 
 async def test_a_tenant_filter_leaves_every_other_tenant_alone(tenant, real_appdata):
@@ -226,9 +226,6 @@ async def test_with_no_real_event_at_all_the_cutoff_is_now(real_appdata):
     is untouched. (Only the retention job may delete, and it must say so inside its own transaction.)"""
     async with real_appdata() as conn:
         await conn.execute("SET LOCAL usage_events.allow_delete = 'on'")
-        # Other tests leave export rows behind (the retention tests keep unfinished ones on purpose), and the foreign key from the
-        # outbox would refuse the delete below; clearing them is as undone by the rollback as the delete itself.
-        await conn.execute("DELETE FROM usage_export_outbox")
         await conn.execute("DELETE FROM usage_events WHERE event_id NOT LIKE 'ledger:%'")
 
         cutoff = await carry.cutoff_for(conn)
