@@ -1,5 +1,5 @@
 -- Money coming IN: the tenant link, the product catalog, and the webhook inbox
--- (app/billing/webhooks.py, app/billing/store.py; specs/010-credit-billing-readiness, T019).
+-- (credit_billing/webhooks.py, credit_billing/store.py; specs/010-credit-billing-readiness, T019).
 --
 -- A payment provider's webhook proves that a payment happened. It must never decide WHO is paid or HOW
 -- MUCH, because a webhook endpoint cannot carry the app's tenant identity and anyone who finds it can
@@ -22,7 +22,7 @@
 --     payment twice by flipping its status back. (`quarantined` may be re-opened by an operator, e.g. once
 --     the missing customer link exists.) What an event WAS (provider, id, payload, when received) never
 --     changes after it is written;
---   * `payload` holds only the NORMALIZED, whitelisted fields of an event (app/billing/providers/base.py,
+--   * `payload` holds only the NORMALIZED, whitelisted fields of an event (credit_billing/providers/base.py,
 --     BillingEvent.stored), never the provider's raw body, so a buyer's name, email or card details are
 --     never stored here (constitution VI).
 --

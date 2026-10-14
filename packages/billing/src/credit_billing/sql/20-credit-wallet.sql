@@ -1,4 +1,4 @@
--- The credit wallet (app/billing/credits.py): what a tenant may still consume, as an append-only
+-- The credit wallet (credit_billing/credits.py): what a tenant may still consume, as an append-only
 -- ledger of grants, debits and expiries. specs/010-credit-billing-readiness, data-model.md.
 --
 -- Why the app owns this and the payment provider does not: Stripe applies credit grants to an
