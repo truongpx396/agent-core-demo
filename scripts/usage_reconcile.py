@@ -1,23 +1,23 @@
-"""Reconcile usage events against the ledger, the gateway's spend log and the wallets (app/billing_integration/reconcile.py;
-specs/010 T026; `make credit-reconcile`, `make credit-reconcile-worker`).
+"""Reconcile the agent's usage events against the LLM gateway's spend log (app/agent/usage_reconcile.py; specs/010 T026, specs/013;
+`make usage-reconcile`, `make usage-reconcile-worker`). The wallet's own check (was every usage worth credits charged?) is the billing
+package's, `credit-billing-reconcile`.
 
     # one pass over today and yesterday (UTC), printed; exit 0 = records agree, 1 = drift, 2 = could not finish
-    make credit-reconcile
-    make credit-reconcile ARGS="--days 7 --json"
-    make credit-reconcile ARGS="--no-gateway"     # only the app's own records; no LITELLM_MASTER_KEY needed
+    make usage-reconcile
+    make usage-reconcile ARGS="--days 7 --json"
 
-    # a worker: a pass every CREDIT_RECONCILE_INTERVAL_SECONDS, publishing the figures the dashboard and the alerts read
-    make credit-reconcile-worker
+    # a worker: a pass every USAGE_RECONCILE_INTERVAL_SECONDS, publishing the figure the dashboard and the alerts read
+    make usage-reconcile-worker
 
-The gateway comparison reads LiteLLM's spend log with the gateway's admin key, taken from `LITELLM_MASTER_KEY` in the
+The comparison reads LiteLLM's spend log with the gateway's admin key, taken from `LITELLM_MASTER_KEY` in the
 environment (never an argument) and the gateway's address from `LITELLM_URL`, the same two things `scripts/litellm_key.py`
-reads. The worker REFUSES to start without them unless `--no-gateway` is given: a worker that quietly skipped the
-independent meter would report "ok" while proving less than its name says.
+reads. It REFUSES to start without them: a worker that quietly skipped the independent meter would report "ok" while
+proving less than its name says. (`--no-gateway` still exists for a dry run of the database read alone and reports the gateway as not compared.)
 
 Why a worker and not just cron: the figures reach Prometheus through an OpenTelemetry collector whose Prometheus exporter
 forgets a series five minutes after its last update, and a synchronous gauge is exported once per set. A pass every few hours
 would show the drift gauge for five minutes in each of them, so an alert on it could never stay firing. The worker re-sets the
-gauges from the last pass every minute. Cron with `make credit-reconcile` still works for the printed report and the exit
+gauges from the last pass every minute. Cron with `make usage-reconcile` still works for the printed report and the exit
 code, but it gives the alert nothing durable to hold on to (disclosed in infra/README.md).
 
 SIGTERM or SIGINT stops the worker after the pass in flight.
@@ -32,11 +32,11 @@ import signal
 import httpx
 
 from app.agent import sql_store
+from app.agent import usage_reconcile as reconcile
 from app.agent.model_resolver import admin_base_url
-from app.billing_integration import reconcile
 from app.core.config import (
-    CREDIT_RECONCILE_INTERVAL_SECONDS,
-    CREDIT_RECONCILE_LOOKBACK_DAYS,
+    USAGE_RECONCILE_INTERVAL_SECONDS,
+    USAGE_RECONCILE_LOOKBACK_DAYS,
 )
 from app.core.logging_config import configure_logging
 from app.core.telemetry import configure_telemetry, shutdown_telemetry
@@ -68,13 +68,13 @@ def exit_code(report: reconcile.Report | None) -> int:
 
 
 async def run_pass(client: httpx.AsyncClient | None, *, days: int) -> reconcile.Report | None:
-    """One pass, never raising: a failure is counted (`failed`, alert CreditReconcileNotCompleting) and logged by CLASS
+    """One pass, never raising: a failure is counted (`failed`, alert UsageReconcileNotCompleting) and logged by CLASS
     only, since an HTTP or database error's text can carry an address or a statement."""
     try:
         report = await reconcile.reconcile(reconcile.default_window(lookback_days=days), gateway_client=client)
     except Exception as exc:  # noqa: BLE001 - a pass that cannot run is the failure to report, not a reason to stop the worker
         reconcile.record_outcome("failed")
-        logger.warning("credit_reconcile_failed", extra={"error_class": type(exc).__name__})
+        logger.warning("usage_reconcile_failed", extra={"error_class": type(exc).__name__})
         return None
     reconcile.publish_gauges(report)
     reconcile.record_outcome(report.outcome)
@@ -96,8 +96,8 @@ async def run(*, loop: bool, days: int, as_json: bool, no_gateway: bool) -> int:
             if not loop:
                 return exit_code(report)
             waited = 0
-            while waited < CREDIT_RECONCILE_INTERVAL_SECONDS:
-                step = min(HEARTBEAT_SECONDS, CREDIT_RECONCILE_INTERVAL_SECONDS - waited)
+            while waited < USAGE_RECONCILE_INTERVAL_SECONDS:
+                step = min(HEARTBEAT_SECONDS, USAGE_RECONCILE_INTERVAL_SECONDS - waited)
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=step)
                     return 0  # stop was set during the wait: shutting down
@@ -113,7 +113,7 @@ async def run(*, loop: bool, days: int, as_json: bool, no_gateway: bool) -> int:
 
 def _describe(report: reconcile.Report | None, *, as_json: bool) -> str:
     if report is None:
-        return "Reconciliation failed: see the log (credit_reconcile_failed). Nothing was proven either way."
+        return "Reconciliation failed: see the log (usage_reconcile_failed). Nothing was proven either way."
     if as_json:
         return json.dumps(report.to_dict(), indent=2)
     return reconcile.render(report)
@@ -121,15 +121,15 @@ def _describe(report: reconcile.Report | None, *, as_json: bool) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--loop", action="store_true", help="run as a worker: a pass every CREDIT_RECONCILE_INTERVAL_SECONDS")
-    parser.add_argument("--days", type=int, default=CREDIT_RECONCILE_LOOKBACK_DAYS, help="whole UTC days to look back (default CREDIT_RECONCILE_LOOKBACK_DAYS)")
+    parser.add_argument("--loop", action="store_true", help="run as a worker: a pass every USAGE_RECONCILE_INTERVAL_SECONDS")
+    parser.add_argument("--days", type=int, default=USAGE_RECONCILE_LOOKBACK_DAYS, help="whole UTC days to look back (default USAGE_RECONCILE_LOOKBACK_DAYS)")
     parser.add_argument("--json", action="store_true", dest="as_json", help="print the report as JSON")
-    parser.add_argument("--no-gateway", action="store_true", help="skip the gateway comparison (compare the app's own records only)")
+    parser.add_argument("--no-gateway", action="store_true", help="skip the gateway comparison (a dry run of the database read)")
     args = parser.parse_args()
     if not 1 <= args.days <= 35:
         parser.error("--days must be between 1 and 35")
     configure_logging()
-    configure_telemetry("agent-core-credit-reconcile")
+    configure_telemetry("agent-core-usage-reconcile")
     try:
         raise SystemExit(asyncio.run(run(loop=args.loop, days=args.days, as_json=args.as_json, no_gateway=args.no_gateway)))
     finally:

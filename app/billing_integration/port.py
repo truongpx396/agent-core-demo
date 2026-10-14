@@ -1,56 +1,77 @@
-"""The one module host code imports to use the billing wallet (specs/011-billing-module-boundary, D19).
+"""The one module host code imports to use billing (specs/011-billing-module-boundary, D19; widened by specs/013-billing-owns-the-meter).
 
 Outside `packages/billing/src/credit_billing/` and `app/billing_integration/` nothing under `app/` or `scripts/` imports `credit_billing`
-(tests/billing/test_billing_core_boundary.py enforces it), so this is where the agent app meets the wallet:
+(tests/billing/test_billing_core_boundary.py enforces it), so this is where the agent app meets billing. The agent hands it plain facts and gets
+plain answers; rating, the wallet, the export and the gate's policy are all the package's:
 
-  * `wallet` is the implementation in use. Today it is `InProcessWallet`, a thin call into `packages/billing/src/credit_billing/credits.py`
-    over the same pool as the caller. A network client implementing the same `WalletPort` would be selected here, and
-    a test installs a stub here (`monkeypatch.setattr(billing_port, "wallet", stub)`): it is a module-level name read
-    at CALL time, which is the repo's idiom for a seam a test replaces.
-  * The functions below are what the host calls. They add nothing; they exist so call sites read as "the billing
-    port" and so the implementation is looked up on every call.
-  * Importing this module imports the `app.billing_integration` package first, and that wires the core to the agent's
-    connection pool. A host path that reaches the wallet through here cannot reach it unwired.
+  * `record_usage_in(conn, Usage(...))` is called once per metered model call, inside the transaction that records the agent's own usage event
+    (`app/agent/usage_events.py`). The package rates it, keeps its own record, debits the wallet and queues an export, and never raises for a
+    fault. With billing not configured it does nothing.
+  * `admit(tenant, reserved_usd=...)` asks the credit gate whether the tenant may start another turn (`app/agent/budgets.py`). With enforcement
+    off it reads nothing.
+  * `credit_summary(tenant)` is what `GET /usage` shows of the wallet, or None.
 
-`Pricing` and `Balance` are the plain data types of the contract, re-exported so a host module never needs the core.
+`billing` is the implementation in use. Today it is `InProcessBilling`, a thin call into the package over the same pool as the caller. A
+network client implementing the same `BillingPort` would be selected here, and a test installs a stub here
+(`monkeypatch.setattr(billing_port, "billing", stub)`): it is a module-level name read at CALL time, which is the repo's idiom for a seam a
+test replaces. The functions below add nothing; they exist so call sites read as "the billing port" and so the implementation is looked up on
+every call.
+
+Importing this module imports the `app.billing_integration` package first, and that wires the package to the agent's connection pool. A host
+path that reaches billing through here cannot reach it unwired.
+
+`Usage`, `Recorded`, `Admission`, `CreditSummary` and `Balance` are the plain data types of the contract, re-exported so a host module never
+needs the package.
 """
+import logging
+from collections.abc import Awaitable, Callable
 from decimal import Decimal
 
 from psycopg import AsyncConnection
 
+from credit_billing import metrics as billing_metrics
 from credit_billing.port import (
-    Applied,
+    Admission,
     Balance,
-    IdempotencyConflict,
-    InProcessWallet,
-    Pricing,
-    WalletPort,
+    BillingPort,
+    CreditSummary,
+    InProcessBilling,
+    Recorded,
+    Usage,
 )
-from credit_billing.port import credits_for_cost as _credits_for_cost
 
-__all__ = ["Applied", "Balance", "IdempotencyConflict", "Pricing", "account_balance", "credits_for_cost", "record_usage_in", "wallet"]
+__all__ = ["Admission", "Balance", "CreditSummary", "Recorded", "Usage", "account_balance", "admit", "billing", "credit_summary", "record_usage_in"]
 
-wallet: WalletPort = InProcessWallet()
+logger = logging.getLogger(__name__)
+
+billing: BillingPort = InProcessBilling()
 
 
-async def record_usage_in(
-    conn: AsyncConnection,
-    tenant: str,
-    amount: Decimal,
-    *,
-    event_id: str,
-    kind: str,
-    pricing: Pricing | None = None,
-) -> Applied:
-    """Debits the usage event's credits in the CALLER's transaction (see `packages/billing/src/credit_billing/port.py` for the contract)."""
-    return await wallet.record_usage_in(conn, tenant, amount, event_id=event_id, kind=kind, pricing=pricing)
+async def record_usage_in(conn: AsyncConnection, usage: Usage) -> Recorded:
+    """Records one unit of usage in the CALLER's transaction (see `packages/billing/src/credit_billing/port.py` for the contract).
+
+    The package never raises for an operational fault, and every way it can fail is counted. This wrapper is the second line, for a fault the
+    package did not foresee (a bug, a different implementation behind the port): the caller's own record is already written in the same
+    transaction, and an exception here would roll it back, so it is counted on the package's own path (`billing_event_write`, which pages) and
+    swallowed. A fault that left the transaction aborted surfaces at the caller's next statement or commit, exactly as it would have anyway."""
+    try:
+        return await billing.record_usage_in(conn, usage)
+    except Exception as exc:  # noqa: BLE001 - billing must never take down the caller's own record; counted and alerted instead (BillingEventWriteFailing)
+        billing_metrics.agent_cost_governance_degraded_total.labels(path="billing_event_write").inc()
+        logger.warning("billing_usage_hand_off_failed", extra={"error_class": type(exc).__name__})
+        return Recorded("failed")
 
 
 async def account_balance(tenant: str) -> Balance | None:
     """The tenant's balance, or None when it has no wallet."""
-    return await wallet.account_balance(tenant)
+    return await billing.account_balance(tenant)
 
 
-def credits_for_cost(cost_usd, credits_per_usd, markup) -> Decimal:
-    """Rating, a pure function (it stays in the host's hands through spec 011, O1)."""
-    return _credits_for_cost(cost_usd, credits_per_usd, markup)
+async def admit(tenant: str, *, reserved_usd: Callable[[], Awaitable[Decimal | float]]) -> Admission:
+    """Whether the tenant may start more work on its prepaid balance. Reads nothing when enforcement is off."""
+    return await billing.admit(tenant, reserved_usd=reserved_usd)
+
+
+async def credit_summary(tenant: str) -> CreditSummary | None:
+    """What to show a tenant of its wallet, or None when credits are off or it has no wallet. Raises when the wallet cannot be read."""
+    return await billing.credit_summary(tenant)

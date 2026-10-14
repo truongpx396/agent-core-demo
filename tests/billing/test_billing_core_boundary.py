@@ -10,7 +10,7 @@ exists. Two test files enforce that, one on each side of the line:
     the package.
 
 Each rule has a test of the scanner itself, because a guard that cannot fail proves nothing (the test that no module serving a tool
-may import the wallet is the model, and its third test is the same idea). Six things are enforced here:
+may import the wallet is the model, and its third test is the same idea). Seven things are enforced here:
 
   1. no file in the package imports `app` or `app.<anything>` (AST over every import node, nested ones included: the two
      provider adapters used to import the app's settings inside a constructor, which a scan of top-level imports does not see);
@@ -22,7 +22,10 @@ may import the wallet is the model, and its third test is the same idea). Six th
      `app/core/config.py` and only for its settings module (the app's `Settings` inherits the package's `BillingSettings`);
   5. no host file outside `app/billing_integration/` holds an SQL string that names a package table, because an import scan cannot
      see `SELECT ... FROM billing_customers` and that is how the app used to reach into the package;
-  6. the old `app/billing/` directory is gone, so nothing can quietly import a stale copy.
+  6. the old `app/billing/` directory is gone, so nothing can quietly import a stale copy;
+  7. (spec 013) the agent core carries no billing VOCABULARY: no identifier or string outside `app/billing_integration/` names a rate, a
+     markup, the gate's or the export's settings, or any package table. An import scan and an SQL scan cannot see a setting name or a
+     column, which is how the agent's own meter used to carry the rating, the debit and the export.
 """
 import ast
 import json
@@ -283,7 +286,7 @@ def test_the_seam_scan_covers_the_files_that_used_to_import_the_package():
     covered = {path.relative_to(REPO).as_posix() for path in _seam_files()}
 
     assert {"app/agent/usage_events.py", "app/agent/budgets.py", "app/api/routers/usage.py", "app/api/main.py",
-            "app/core/config.py", "scripts/billing_export_worker.py", "scripts/credit_reconcile.py"} <= covered
+            "app/core/config.py", "scripts/usage_reconcile.py", "app/agent/usage_reconcile.py"} <= covered
     assert all(not path.startswith("app/billing_integration/") for path in covered), "the seam itself is not scanned"
     users = {p for p in covered if any(_is_core(n) for _, n in _imported((REPO / p).read_text(encoding="utf-8"), _package_of(REPO / p)))}
     assert users == {"app/core/config.py"}, f"the only direct user of the package outside the seam is the settings inheritance ({sorted(users)})"
@@ -291,7 +294,7 @@ def test_the_seam_scan_covers_the_files_that_used_to_import_the_package():
 
 @pytest.mark.parametrize(
     "source",
-    ["from credit_billing import credits", "import credit_billing.credits", "from credit_billing.port import WalletPort"],
+    ["from credit_billing import credits", "import credit_billing.credits", "from credit_billing.port import BillingPort"],
 )
 def test_the_seam_rule_recognises_a_direct_import_of_the_package(source):
     assert any(_is_core(name) for _, name in _imported(source, "app.agent")), source
@@ -310,7 +313,7 @@ def test_the_seam_rule_allows_the_integration_package_and_the_hosts_own_config(s
 
 _CORE_TABLES = (
     "billing_customers", "credit_accounts", "credit_lots", "credit_transactions", "credit_entries",
-    "credit_products", "billing_webhook_events",
+    "credit_products", "billing_webhook_events", "billing_usage_events", "billing_export_outbox",
 )
 _TABLE = re.compile(r"\b(" + "|".join(_CORE_TABLES) + r")\b")
 # Uppercase on purpose: every statement in this repo is written that way, and a lowercase "from" next to a table name in an
@@ -389,3 +392,96 @@ def test_the_sql_scan_recognises_a_statement_that_names_a_package_table(source):
 )
 def test_the_sql_scan_ignores_prose_docstrings_comments_and_host_tables(source):
     assert _sql_naming_a_core_table(source) == [], source
+
+
+# --- the agent core carries no billing vocabulary (spec 013) ---------------------------------------------------------
+
+# Names a billing concern owns. Matched against identifiers, attribute names, keyword arguments and string literals (docstrings and comments are
+# prose and are not scanned): the rate and markup, the gate's and the export's settings, rating, and every table the package owns.
+_BILLING_VOCABULARY = re.compile(
+    r"(?i)\b(credits_per_usd|markup|credits_enforcement|credit_check_failure_policy|billing_export\w*|credits_for_cost|usage_export\w*|"
+    + "|".join(_CORE_TABLES)
+    + r")\b"
+)
+
+
+def _billing_words_in(source: str) -> list[tuple[int, str]]:
+    """(line, word) for every identifier, attribute, keyword argument or non-docstring string literal that names a billing concern."""
+    tree = ast.parse(source)
+    docstrings = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+        and isinstance(node.body[0].value.value, str)
+    }
+    hits: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            text = node.id
+        elif isinstance(node, ast.Attribute):
+            text = node.attr
+        elif isinstance(node, ast.keyword) and node.arg:
+            text = node.arg
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            text = node.name
+        elif isinstance(node, ast.arg):
+            text = node.arg
+        elif isinstance(node, ast.alias):
+            text = node.name.split(".")[-1]
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
+            text = node.value
+        else:
+            continue
+        match = _BILLING_VOCABULARY.search(text)
+        if match:
+            hits.append((getattr(node, "lineno", 0), match.group(1)))
+    return hits
+
+
+def test_the_agent_core_names_no_rate_markup_gate_setting_export_or_package_table():
+    offenders = [
+        f"{path.relative_to(REPO)}:{line}  {word}"
+        for path in _seam_files()
+        for line, word in _billing_words_in(path.read_text(encoding="utf-8"))
+    ]
+
+    assert offenders == [], (
+        "billing vocabulary leaked back into the agent core; it belongs to the package (spec 013), reached through "
+        "app/billing_integration/port.py:\n  " + "\n  ".join(offenders)
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "x = CREDITS_PER_USD",
+        "from app.core.config import MARKUP",
+        "def f(credits_per_usd): ...",
+        "row = {'credits_per_usd': 1}",
+        "q = 'INSERT INTO usage_export_outbox VALUES (1)'",
+        "settings.billing_export_batch_size",
+        "billing.credits_for_cost(1, 2, 3)",
+        "f(markup=1)",
+        "q = 'SELECT 1 FROM billing_usage_events'",
+    ],
+)
+def test_the_vocabulary_scan_recognises_each_way_a_billing_word_gets_into_code(source):
+    assert _billing_words_in(source), source
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        '"""Rated with CREDITS_PER_USD and the MARKUP, by the billing package."""\nx = 1',  # a module docstring
+        "def f():\n    \"\"\"Uses markup.\"\"\"\n    return 1",  # a function docstring
+        "# CREDITS_PER_USD is the package's\nx = 1",  # a comment
+        "code = 'insufficient_credits'",  # the API's refusal vocabulary is the contract with clients and stays
+        "available_credits = 1",
+        "from app.billing_integration import port as billing_port",
+    ],
+)
+def test_the_vocabulary_scan_ignores_prose_and_the_apis_own_refusal_vocabulary(source):
+    assert _billing_words_in(source) == [], source

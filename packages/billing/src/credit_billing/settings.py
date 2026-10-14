@@ -14,12 +14,16 @@ host module that did `from app.core.config import BILLING_PROVIDERS` is untouche
 the same names from here and keeps them as module-level names, which is what lets a test re-point one with
 `monkeypatch.setattr(webhooks, "BILLING_REFUND_HOLD_HOURS", ...)`.
 
-What stays in the host's `Settings`: the price of a credit and whether to gate on it (`credits_per_usd`,
-`markup`, `credits_enforcement`, `credit_check_failure_policy`), and everything for the export and
-reconciliation adapters. They are host policy about the agent's meter, and no validator here reads them.
+Spec 013 moved the rest of billing's variables here, with their validators, defaults and environment names unchanged: the price of
+a credit and whether to gate on it (`credits_per_usd`, `markup`, `credits_enforcement`, `credit_check_failure_policy`), the usage
+export worker's bounds (`billing_export_*`), the wallet reconciliation's window (`credit_reconcile_*`) and the retention of the
+package's own usage events. They used to be host policy about the agent's meter; the package now owns the meter's billing half, so a
+project that installs it needs them. What stays in the host's `Settings` is what is about the host's own meter: the caps, the
+retention of the agent's `usage_events`, and the gateway reconciliation's tolerance and page ceiling.
 
 This module imports nothing from `app` (enforced by tests/billing/test_billing_core_boundary.py).
 """
+from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -28,6 +32,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # The webhook inbox keeps an event for at least this long before the retention sweep may delete it: longer
 # than any payment provider keeps redelivering one, so a sweep never races a retry (packages/billing/src/credit_billing/inbox.py).
 BILLING_INBOX_MIN_RETENTION_DAYS = 30
+# The package's usage events are read by the wallet reconciliation (up to 35 days back) and exported to a provider that rejects events
+# older than 35 days (the outbox gives up at 30), so a sweep below this could delete usage that is still inside a window something reads.
+BILLING_USAGE_EVENT_MIN_RETENTION_DAYS = 35
 
 
 class BillingSettings(BaseSettings):
@@ -78,6 +85,57 @@ class BillingSettings(BaseSettings):
     # late redelivery from granting twice, so the sweep is safe, but the rows are the audit trail of what was received.
     billing_inbox_retention_days: int = Field(default=400, ge=BILLING_INBOX_MIN_RETENTION_DAYS)
 
+    # --- usage: rating, the gate, export, reconciliation, retention (specs/010, moved here by specs/013) -------------------------
+    # A unit of usage's price in credits is `round_half_up(cost_usd x CREDITS_PER_USD x MARKUP, 6)`, computed when it is recorded
+    # (credit_billing/usage.py) and stored on the event with the rate used, so changing either later never rewrites what a past
+    # call was charged.
+    #
+    # `credits_per_usd` has NO shipped default, on purpose: a price is a product decision and a default would put an accidental one
+    # live. Unset means credits are off for the whole deployment: nothing is rated, debited, gated or shown, and every tenant behaves
+    # exactly as before. Set, a tenant WITH a wallet (a `credit_accounts` row) is debited per recorded usage; a tenant without one is
+    # untouched. `markup` is a multiplier on cost (1 = at cost, 1.5 = cost + 50%).
+    credits_per_usd: Decimal | None = Field(default=None, gt=0)
+    markup: Decimal = Field(default=Decimal("1"), gt=0)
+    # Whether a tenant WITH a wallet whose available credits (balance minus the caller's in-flight holds) are not positive is refused
+    # by `admit` (credit_billing/admission.py). Off by default: with a rate set and this off the wallet is still debited ("shadow
+    # mode"), so an operator can watch balances move before anyone is refused. Needs CREDITS_PER_USD (a gate with no price is meaningless).
+    credits_enforcement: bool = False
+    # What the gate does when it cannot READ the wallet. "open" serves the caller and counts it (alert CreditGateUnenforced): a wallet
+    # outage must not also take every request down. "closed" refuses it as unavailable, for a deployment that would rather be unavailable
+    # than serve a tenant it cannot confirm has credit. Only consulted when enforcing.
+    credit_check_failure_policy: Literal["open", "closed"] = "open"
+
+    # Money out (credit_billing/export.py, `credit-billing-export-worker`): usage events of a tenant linked to a provider that bills on
+    # usage are exported through an outbox. All of it is bounded: a loop with no ceiling is how a provider's outage becomes a flood of
+    # retries, or events the provider silently discards once they age out.
+    billing_export_batch_size: int = Field(default=100, ge=1, le=1000)
+    billing_export_interval_seconds: int = Field(default=30, ge=1)
+    # Retryable failures of one event before it is given up on (`failed`, alert UsageExportFailed).
+    billing_export_max_attempts: int = Field(default=10, ge=1)
+    # After the k-th failed attempt an event waits min(base * 2**(k-1), cap) before the next: exponential, so a provider that is down is
+    # not hammered, and capped, so a long outage still retries within hours rather than days.
+    billing_export_backoff_base_seconds: int = Field(default=30, ge=1)
+    billing_export_backoff_cap_seconds: int = Field(default=6 * 3600, ge=1)
+    # An event still unsent after this many days is `expired`, counted and alerted, never silently dropped. The ceiling is a provider fact,
+    # not a style choice: Stripe accepts a meter event only if its timestamp is within the past 35 days (research R1), so the age limit
+    # must close BEFORE the provider's own window does or a "retry" is a silent discard.
+    billing_export_max_age_days: int = Field(default=30, ge=1, le=34)
+    # The deadline for ONE call to a provider. The worker holds the batch's row locks while it waits, so a wait with no ceiling would hold
+    # them (and every other worker's view of those rows) for as long as a provider chooses to hang. A call that times out may still have
+    # landed: it is retried with the same event id, which the provider dedupes.
+    billing_export_call_timeout_seconds: int = Field(default=30, ge=1)
+
+    # The wallet reconciliation (credit_billing/reconcile.py, `credit-billing-reconcile`): was every recorded usage worth credits actually
+    # debited? The newest minutes are left out (a debit may still be in flight in another transaction); the lookback is short on purpose
+    # (a run that re-reads a year is a load, and a gap older than this was already reported by every run since it appeared).
+    credit_reconcile_settle_seconds: int = Field(default=900, ge=0)
+    credit_reconcile_lookback_days: int = Field(default=2, ge=1, le=35)
+    credit_reconcile_interval_seconds: int = Field(default=6 * 3600, ge=60)
+
+    # How long `credit-billing-usage-sweep` keeps the package's usage events (an event whose export never finished is kept whatever its age,
+    # and the wallet's debits are never touched). The floor is not a style choice (see BILLING_USAGE_EVENT_MIN_RETENTION_DAYS).
+    billing_usage_event_retention_days: int = Field(default=400, ge=BILLING_USAGE_EVENT_MIN_RETENTION_DAYS)
+
     @field_validator("billing_providers")
     @classmethod
     def _provider_names_are_path_safe(cls, value: str) -> str:
@@ -85,6 +143,27 @@ class BillingSettings(BaseSettings):
             if not name.replace("_", "").replace("-", "").isalnum() or not name.islower():
                 raise ValueError(f"BILLING_PROVIDERS entry {name!r} must be lowercase letters, digits, '-' or '_'")
         return value
+
+    @field_validator("credits_per_usd", "markup")
+    @classmethod
+    def _six_places_at_most(cls, value: Decimal | None) -> Decimal | None:
+        """The columns that record these on each event are NUMERIC(18,6): a rate with more places would be stored rounded, and the row
+        would no longer reproduce the credits it was charged."""
+        if value is not None and value != value.quantize(Decimal("0.000001")):
+            raise ValueError("at most 6 decimal places (the event row stores the rate as NUMERIC(18,6))")
+        return value
+
+    @model_validator(mode="after")
+    def _enforcement_needs_a_rate(self) -> "BillingSettings":
+        if self.credits_enforcement and self.credits_per_usd is None:
+            raise ValueError("CREDITS_ENFORCEMENT=true needs CREDITS_PER_USD: a gate with no price is meaningless")
+        return self
+
+    @model_validator(mode="after")
+    def _backoff_cap_is_not_below_its_base(self) -> "BillingSettings":
+        if self.billing_export_backoff_cap_seconds < self.billing_export_backoff_base_seconds:
+            raise ValueError("BILLING_EXPORT_BACKOFF_CAP_SECONDS must be at least BILLING_EXPORT_BACKOFF_BASE_SECONDS")
+        return self
 
     @field_validator("stripe_api_key", "polar_access_token", mode="before")
     @classmethod
@@ -129,3 +208,18 @@ BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE = settings.billing_webhook_rate_limit_per_
 BILLING_WEBHOOK_MAX_ATTEMPTS = settings.billing_webhook_max_attempts
 BILLING_REFUND_HOLD_HOURS = settings.billing_refund_hold_hours
 BILLING_INBOX_RETENTION_DAYS = settings.billing_inbox_retention_days
+CREDITS_PER_USD = settings.credits_per_usd
+MARKUP = settings.markup
+CREDITS_ENFORCEMENT = settings.credits_enforcement
+CREDIT_CHECK_FAILURE_POLICY = settings.credit_check_failure_policy
+BILLING_EXPORT_BATCH_SIZE = settings.billing_export_batch_size
+BILLING_EXPORT_INTERVAL_SECONDS = settings.billing_export_interval_seconds
+BILLING_EXPORT_MAX_ATTEMPTS = settings.billing_export_max_attempts
+BILLING_EXPORT_BACKOFF_BASE_SECONDS = settings.billing_export_backoff_base_seconds
+BILLING_EXPORT_BACKOFF_CAP_SECONDS = settings.billing_export_backoff_cap_seconds
+BILLING_EXPORT_MAX_AGE_DAYS = settings.billing_export_max_age_days
+BILLING_EXPORT_CALL_TIMEOUT_SECONDS = settings.billing_export_call_timeout_seconds
+CREDIT_RECONCILE_SETTLE_SECONDS = settings.credit_reconcile_settle_seconds
+CREDIT_RECONCILE_LOOKBACK_DAYS = settings.credit_reconcile_lookback_days
+CREDIT_RECONCILE_INTERVAL_SECONDS = settings.credit_reconcile_interval_seconds
+BILLING_USAGE_EVENT_RETENTION_DAYS = settings.billing_usage_event_retention_days

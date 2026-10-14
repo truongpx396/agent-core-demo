@@ -4,7 +4,8 @@
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import BILLING_INBOX_MIN_RETENTION_DAYS, Settings
+from app.core.config import Settings
+from credit_billing.settings import BILLING_INBOX_MIN_RETENTION_DAYS
 
 _ENV = (
     "BILLING_PROVIDERS", "BILLING_WEBHOOK_SECRETS", "BILLING_WEBHOOK_MAX_BODY_BYTES",
@@ -90,38 +91,3 @@ def test_a_provider_name_that_is_not_a_safe_path_segment_is_rejected(monkeypatch
 def test_a_bound_that_would_disable_a_guard_is_rejected(field, value):
     with pytest.raises(ValidationError):
         Settings(_env_file=None, **{field: value})
-
-
-class TestTheExportBounds:
-    """Every loop in the export path has a ceiling, and the ceilings cannot be configured away."""
-
-    def test_the_defaults_leave_the_age_limit_inside_stripes_35_day_window(self):
-        settings = Settings(_env_file=None)
-
-        assert settings.billing_export_max_age_days == 30 and settings.billing_export_max_age_days < 35
-
-    @pytest.mark.parametrize("days", [35, 90])
-    def test_an_age_limit_at_or_past_the_providers_window_is_rejected(self, days):
-        """Retrying past the window is not a delay, it is a silent discard by the provider."""
-        with pytest.raises(ValidationError):
-            Settings(_env_file=None, billing_export_max_age_days=days)
-
-    @pytest.mark.parametrize(
-        "field",
-        [
-            "billing_export_batch_size", "billing_export_interval_seconds", "billing_export_max_attempts",
-            "billing_export_backoff_base_seconds", "billing_export_backoff_cap_seconds",
-            "billing_export_call_timeout_seconds", "billing_export_max_age_days",
-        ],
-    )
-    def test_a_zero_ceiling_is_rejected_not_read_as_unbounded(self, field):
-        with pytest.raises(ValidationError):
-            Settings(_env_file=None, **{field: 0})
-
-    def test_a_backoff_cap_below_its_base_is_rejected(self):
-        with pytest.raises(ValidationError, match="CAP"):
-            Settings(_env_file=None, billing_export_backoff_base_seconds=60, billing_export_backoff_cap_seconds=30)
-
-    def test_a_batch_cannot_be_made_unboundedly_large(self):
-        with pytest.raises(ValidationError):
-            Settings(_env_file=None, billing_export_batch_size=10**6)

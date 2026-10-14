@@ -58,6 +58,7 @@ def test_every_degrade_path_that_hides_committed_money_has_an_alert():
         ("CreditDebitFailing", "credit_debit"),
         ("CreditGateUnenforced", "credit_read"),
         ("UsageEventWriteFailing", "usage_event_write"),
+        ("BillingEventWriteFailing", "billing_event_write"),
     ):
         assert alert in rules, f"{alert}: the {path} path hides committed money and has no alert"
         assert f'path="{path}"' in rules[alert], f"{alert} does not watch {path}"
@@ -85,8 +86,10 @@ def test_a_reconciliation_that_finds_drift_or_cannot_finish_has_an_alert():
     rules = {rule["alert"]: rule["expr"] for rule in _rules()}
 
     for alert, needle in (
+        ("UsageReconcileDrift", "agent_usage_reconcile_max_drift_usd"),
+        ("UsageReconcileNotCompleting", 'outcome=~"failed|incomplete"'),
         ("CreditReconcileDrift", "agent_credit_reconcile_max_drift_usd"),
-        ("CreditReconcileNotCompleting", 'outcome=~"failed|incomplete"'),
+        ("CreditReconcileNotCompleting", 'outcome="failed"'),
     ):
         assert alert in rules, f"{alert}: nothing alerts on {needle}"
         assert needle in rules[alert], f"{alert} does not watch {needle}"

@@ -1,21 +1,16 @@
-"""Do the numbers agree? Usage events against the gateway's spend log and the wallet (specs/010 US6, T026, T030c).
+"""Does the meter agree with the LLM gateway? The agent's usage events against the gateway's spend log (specs/010 US6, T026, T030c; the wallet
+half of this module moved to the billing package with specs/013).
 
-Independent records of the same spending exist, and each can drift from the others for a reason nobody sees
-until a customer does:
+Two independent records of the same spending exist, and each can drift from the other for a reason nobody sees until a customer does:
 
-  * `usage_events`: one row per model call, the billing meter AND the spend the dollar caps sum (postgres-init/19);
+  * `usage_events`: one row per model call, the meter AND the spend the dollar caps sum (postgres-init/19);
   * the gateway's own spend log (LiteLLM, `end_user` = `gateway.end_user_id(tenant)`): what the provider was actually
     asked to spend. It is written by another process from the request itself, which is what makes it an independent
     second meter (research G5) and the only detector for a call whose event was never written (spec 010 plan: "a model
     call that returns just before a crash is not recorded; the reconciliation is the detector, not a prevention").
 
-The per-turn `usage_ledger` used to be a second record compared here ("events above the ledger" meant a turn's ledger write had failed).
-It is no longer: the dollar caps sum the events themselves (T030b), so a lost event now shows as a loose cap and as a gateway
-difference, and the ledger is being retired (T030c), so a comparison against it would only report that retirement as drift.
-
-and, for a tenant with a wallet, a further question: was every event that was worth credits actually debited? The charge
-runs in a savepoint so that a wallet fault never loses the meter (D11); the price of that is that an event can exist
-uncharged, and "nothing repairs an uncharged event yet" was the gap D11 promised this module would at least NAME.
+The per-turn `usage_ledger` used to be a second record compared here. It is no longer: the dollar caps sum the events themselves (T030b), so a
+lost event now shows as a loose cap and as a gateway difference.
 
 ## What it reports
 
@@ -25,7 +20,7 @@ an operator can go straight to "acme, 2026-10-06, $0.76 of spend the gateway saw
 
 ## What is deliberately not a finding
 
-  * **The newest minutes** (`CREDIT_RECONCILE_SETTLE_SECONDS`): the gateway writes its spend log in batches, so the newest
+  * **The newest minutes** (`USAGE_RECONCILE_SETTLE_SECONDS`): the gateway writes its spend log in batches, so the newest
     calls are in the events and not yet in the log.
   * **Embeddings.** They are not metered and carry no identity (research G2), so the gateway attributes them to nobody.
     That spend lands in `unattributed_usd`, which is reported but is not drift: it is a known, separate gap.
@@ -45,7 +40,7 @@ straddle, not a loss.
 from it). The sort has no tie-breaker, so a row could in principle move between pages; rows are therefore de-duplicated by
 `request_id`, and when the response's own `total` is below the cap it must equal the rows collected or the read is declared
 INCOMPLETE. An incomplete read is never compared: a truncated sum would show every tenant as under-metered and page someone
-for nothing. The ceiling is `CREDIT_RECONCILE_GATEWAY_MAX_PAGES`.
+for nothing. The ceiling is `USAGE_RECONCILE_GATEWAY_MAX_PAGES`.
 
 ## What a pass costs (disclosed)
 
@@ -53,7 +48,7 @@ The events are read by TIME, and the table's index leads with the tenant (`usage
 the table (checked with EXPLAIN: a sequential scan). A time-only index would
 make it cheap and would tax the insert of every model call for the benefit of a job that runs a few times a day, so it was not added.
 Acceptable for a few passes a day at moderate volume; if a pass becomes slow, that index (or a partition by day) is the fix, and
-`CREDIT_RECONCILE_LOOKBACK_DAYS` is the lever until then.
+`USAGE_RECONCILE_LOOKBACK_DAYS` is the lever until then.
 
 Needs the gateway's admin key (`LITELLM_MASTER_KEY`, read from the environment by the caller, never stored here): spend logs are
 an admin view. A narrower key is a follow-up.
@@ -65,19 +60,17 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import httpx
-from psycopg import errors as pg_errors
 
 from app.agent import gateway
 from app.agent.sql_store import get_connection
 from app.core import metrics
 from app.core.config import (
-    CREDIT_RECONCILE_GATEWAY_MAX_PAGES,
-    CREDIT_RECONCILE_LOOKBACK_DAYS,
-    CREDIT_RECONCILE_SETTLE_SECONDS,
-    CREDIT_RECONCILE_TOLERANCE_PCT,
-    CREDIT_RECONCILE_TOLERANCE_USD,
+    USAGE_RECONCILE_GATEWAY_MAX_PAGES,
+    USAGE_RECONCILE_LOOKBACK_DAYS,
+    USAGE_RECONCILE_SETTLE_SECONDS,
+    USAGE_RECONCILE_TOLERANCE_PCT,
+    USAGE_RECONCILE_TOLERANCE_USD,
 )
-from credit_billing.display import printable
 
 logger = logging.getLogger(__name__)
 
@@ -90,14 +83,21 @@ _GATEWAY_TOTAL_CAP = 10_000  # `SPEND_LOGS_PAGINATION_COUNT_CAP` in LiteLLM: a `
 Key = tuple[str, date]
 
 
+def printable(value: object) -> str:
+    """Text from the database, made safe to print on an operator's terminal: anything not printable is shown as its escape (`\\x1b`), which is
+    visible and inert. A tenant name comes from an identity token and an operator's terminal obeys escape sequences."""
+    text = "" if value is None else str(value)
+    return text if text.isprintable() else text.encode("unicode_escape").decode("ascii")
+
+
 @dataclass(frozen=True)
 class Tolerance:
     """A difference is drift only above `max(usd, pct% of the larger figure)`. Both, because each alone is wrong: a fixed
     amount flags a busy tenant's rounding (the gateway and the events round differently), a
     percentage flags a cent of noise on a tenant that spent three."""
 
-    usd: Decimal = CREDIT_RECONCILE_TOLERANCE_USD
-    pct: Decimal = CREDIT_RECONCILE_TOLERANCE_PCT
+    usd: Decimal = USAGE_RECONCILE_TOLERANCE_USD
+    pct: Decimal = USAGE_RECONCILE_TOLERANCE_PCT
 
     def allows(self, a: Decimal, b: Decimal) -> bool:
         return abs(a - b) <= max(self.usd, max(abs(a), abs(b)) * self.pct / 100)
@@ -118,8 +118,8 @@ class Window:
 def default_window(
     now: datetime | None = None,
     *,
-    lookback_days: int = CREDIT_RECONCILE_LOOKBACK_DAYS,
-    settle_seconds: int = CREDIT_RECONCILE_SETTLE_SECONDS,
+    lookback_days: int = USAGE_RECONCILE_LOOKBACK_DAYS,
+    settle_seconds: int = USAGE_RECONCILE_SETTLE_SECONDS,
 ) -> Window:
     """Whole UTC days back to midnight, up to `settle_seconds` ago, at whole seconds (the gateway's date format has no
     fraction, so an end with one would be read differently by the two sides)."""
@@ -131,10 +131,9 @@ def default_window(
 
 @dataclass(frozen=True)
 class Finding:
-    """One tenant-day where two records disagree. `expected` is the meter's figure (the events), `actual` the other record's;
-    for `uncharged` the expected figure is nothing debited and the actual one is what those events cost."""
+    """One tenant-day where two records disagree. `expected` is the meter's figure (the events), `actual` the gateway's."""
 
-    kind: str  # gateway | uncharged
+    kind: str  # gateway
     tenant: str
     day: date
     expected: Decimal
@@ -148,13 +147,11 @@ class Finding:
     @property
     def meaning(self) -> str:
         above = self.drift > 0
-        if self.kind == "gateway":
-            return (
-                "the gateway spent more than the events record: a call whose event was never written, or spend the app does not meter"
-                if above
-                else "the events record more than the gateway spent: events with no call behind them, or spend the gateway lost"
-            )
-        return "events worth credits that no debit was ever booked for (the wallet failed after the meter kept the event: CreditDebitFailing)"
+        return (
+            "the gateway spent more than the events record: a call whose event was never written, or spend the app does not meter"
+            if above
+            else "the events record more than the gateway spent: events with no call behind them, or spend the gateway lost"
+        )
 
 
 @dataclass(frozen=True)
@@ -176,8 +173,6 @@ class Report:
     unattributed_usd: Decimal = ZERO
     skipped: list[str] = field(default_factory=list)
     incomplete: bool = False  # the gateway read could not be trusted to be whole, so that comparison did not run
-    outstanding_live: Decimal | None = None
-    outstanding_debt: Decimal | None = None
 
     @property
     def max_drift_usd(self) -> Decimal:
@@ -272,7 +267,7 @@ def _gateway_date(moment: datetime) -> str:
     return moment.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
 
-async def fetch_gateway_spend(client: httpx.AsyncClient, window: Window, *, max_pages: int = CREDIT_RECONCILE_GATEWAY_MAX_PAGES) -> GatewaySpend:
+async def fetch_gateway_spend(client: httpx.AsyncClient, window: Window, *, max_pages: int = USAGE_RECONCILE_GATEWAY_MAX_PAGES) -> GatewaySpend:
     """Every spend-log row in the window, summed by end user and UTC day (see the module doc for the endpoint's verified
     behaviour). Raises on an HTTP error or a response that is not the documented shape; returns `complete=False`, with
     the reason, when the read cannot be trusted to be whole."""
@@ -304,7 +299,7 @@ async def fetch_gateway_spend(client: httpx.AsyncClient, window: Window, *, max_
             if total is not None and total < _GATEWAY_TOTAL_CAP and total != len(seen):
                 return GatewaySpend(sums, len(seen), False, f"it reported {total} rows and {len(seen)} were read: the log changed while it was being read")
             return GatewaySpend(sums, len(seen), True)
-    return GatewaySpend(sums, len(seen), False, f"more than {max_pages * GATEWAY_PAGE_SIZE} rows (CREDIT_RECONCILE_GATEWAY_MAX_PAGES)")
+    return GatewaySpend(sums, len(seen), False, f"more than {max_pages * GATEWAY_PAGE_SIZE} rows (USAGE_RECONCILE_GATEWAY_MAX_PAGES)")
 
 
 async def events_by_tenant_day(window: Window) -> tuple[dict[Key, Decimal], dict[Key, int], int]:
@@ -325,50 +320,13 @@ async def events_by_tenant_day(window: Window) -> tuple[dict[Key, Decimal], dict
     )
 
 
-async def wallet_tenants() -> set[str]:
-    """Every tenant with a wallet. With the tenants that have events in the window it is the set of names the
-    gateway's one-way ids are mapped back to; a small table, so it costs nothing next to the window scans. Empty when the
-    wallet tables do not exist (postgres-init/20): credit billing is not in use."""
+async def known_tenants() -> set[str]:
+    """Every tenant that has ever had a usage event. With the tenants that have events in the window it is the set of names the gateway's
+    one-way ids are mapped back to: a tenant with no event in the window but gateway spend in it is the shape a lost meter takes. The
+    table's index leads with the tenant, so this is an index-only scan; a few passes a day cost nothing next to the window scan."""
     async with get_connection() as conn:
-        try:
-            async with conn.transaction():
-                cur = await conn.execute("SELECT tenant FROM credit_accounts")
-                return {row[0] for row in await cur.fetchall()}
-        except pg_errors.UndefinedTable:
-            return set()
-
-
-async def uncharged_by_tenant_day(window: Window) -> tuple[dict[Key, Decimal], dict[Key, str]]:
-    """Events worth credits, for a tenant that had a wallet when they were recorded, with no debit booked. The debit's
-    idempotency key IS the event id (`usage_events._charge`), so absence is a lookup on the unique `(tenant, idempotency_key)`
-    index. An event recorded before the account existed was rightly never charged, hence `recorded_at >= created_at`."""
-    async with get_connection() as conn:
-        cur = await conn.execute(
-            "SELECT e.tenant, (e.occurred_at AT TIME ZONE 'UTC')::date, COALESCE(SUM(e.cost_usd), 0), COUNT(*), SUM(e.credits) "
-            "FROM usage_events e JOIN credit_accounts a ON a.tenant = e.tenant "
-            "WHERE e.occurred_at >= %s AND e.occurred_at <= %s AND e.credits > 0 AND e.recorded_at >= a.created_at "
-            "AND NOT EXISTS (SELECT 1 FROM credit_transactions t WHERE t.tenant = e.tenant AND t.idempotency_key = e.event_id) "
-            "GROUP BY 1, 2",
-            (window.start, window.end),
-        )
-        rows = await cur.fetchall()
-    return (
-        {(t, d): Decimal(usd) for t, d, usd, _, _ in rows},
-        {(t, d): f"{count} event(s) worth {credits} credits were never debited" for t, d, _, count, credits in rows},
-    )
-
-
-async def wallet_totals(tenant: str | None = None) -> tuple[Decimal, Decimal]:
-    """(credits still usable, credits owed on overdraft lots), across every wallet, or one tenant's when named."""
-    async with get_connection() as conn:
-        cur = await conn.execute(
-            "SELECT COALESCE(SUM(remaining) FILTER (WHERE source <> 'overdraft' AND (expires_at IS NULL OR expires_at > now())), 0), "
-            "COALESCE(-SUM(remaining) FILTER (WHERE source = 'overdraft'), 0) FROM credit_lots WHERE (%(tenant)s::text IS NULL OR tenant = %(tenant)s)",
-            {"tenant": tenant},
-        )
-        row = await cur.fetchone()
-    assert row is not None  # an aggregate always returns a row
-    return Decimal(row[0]), Decimal(row[1])
+        cur = await conn.execute("SELECT DISTINCT tenant FROM usage_events")
+        return {row[0] for row in await cur.fetchall()}
 
 
 async def reconcile(
@@ -376,18 +334,18 @@ async def reconcile(
     *,
     gateway_client: httpx.AsyncClient | None = None,
     tolerance: Tolerance | None = None,
-    max_pages: int = CREDIT_RECONCILE_GATEWAY_MAX_PAGES,
+    max_pages: int = USAGE_RECONCILE_GATEWAY_MAX_PAGES,
 ) -> Report:
     """One pass. Raises when the events cannot be read or the gateway answers wrongly: a pass that did not
-    run is a failure to report, never an all-clear. A comparison that cannot run for a stated reason (no wallet tables, an
-    incomplete gateway read) is listed in `skipped` instead, and the others still run."""
+    run is a failure to report, never an all-clear. A comparison that cannot run for a stated reason (an incomplete gateway read, or none
+    requested) is listed in `skipped` instead."""
     window = window or default_window()
     report = Report(window, tolerance or Tolerance())
     if window.empty:
         report.skipped.append("window: it is empty (the settle period reaches back past the start of the day)")
         return report
     events, unpriced, report.events = await events_by_tenant_day(window)
-    tenants = {tenant for tenant, _ in events} | await wallet_tenants()
+    tenants = {tenant for tenant, _ in events} | await known_tenants()
     report.tenants = len(tenants)
 
     if gateway_client is None:
@@ -403,41 +361,30 @@ async def reconcile(
             notes = {key: f"{count} unpriced event(s) in the meter's figure" for key, count in unpriced.items()}
             report.findings += compare("gateway", events, attributed, report.tolerance, notes)
 
-    try:
-        uncharged, uncharged_notes = await uncharged_by_tenant_day(window)
-        # Compared as "nothing debited" (expected 0) against what those events cost, with no tolerance: a debit
-        # is booked or it is not, and a rounding allowance would hide a whole tenant-day of cheap calls.
-        report.findings += compare("uncharged", {}, uncharged, Tolerance(ZERO, ZERO), uncharged_notes)
-        report.outstanding_live, report.outstanding_debt = await wallet_totals()
-    except (pg_errors.UndefinedTable, pg_errors.UndefinedColumn):
-        report.skipped.append("wallet: not checked, its tables or the usage_events.credits column are missing (postgres-init/20 and 21)")
     report.findings.sort(key=lambda f: (-abs(f.drift), f.kind, f.tenant, f.day))
     return report
 
 
 def publish_gauges(report: Report) -> None:
-    """The report's point-in-time figures as gauges. Separate from `record_outcome` because the worker calls it again every
+    """The report's point-in-time figure as a gauge. Separate from `record_outcome` because the worker calls it again every
     minute: a synchronous gauge is exported once per set and the collector forgets a series five minutes after its last
     update, so a pass every few hours would otherwise be visible to Prometheus (and the alert) for five minutes of each."""
-    metrics.agent_credit_reconcile_max_drift_usd.set(float(report.max_drift_usd))
-    if report.outstanding_live is not None and report.outstanding_debt is not None:
-        metrics.agent_credit_outstanding.labels(state="available").set(float(report.outstanding_live))
-        metrics.agent_credit_outstanding.labels(state="debt").set(float(report.outstanding_debt))
+    metrics.agent_usage_reconcile_max_drift_usd.set(float(report.max_drift_usd))
 
 
 OUTCOMES = ("ok", "drift", "incomplete", "failed")
 
 
 def record_outcome(outcome: str) -> None:
-    metrics.agent_credit_reconcile_total.labels(outcome=outcome).inc()
+    metrics.agent_usage_reconcile_total.labels(outcome=outcome).inc()
 
 
 def prime_outcomes() -> None:
     """Creates every outcome's series at zero when the worker starts. Prometheus' `increase()` does not count a series' first
     sample, so without this the FIRST failed pass of a freshly started worker (the likeliest: a wrong key, an unreachable
-    gateway) would appear as a series born at 1 and CreditReconcileNotCompleting would never see it."""
+    gateway) would appear as a series born at 1 and UsageReconcileNotCompleting would never see it."""
     for outcome in OUTCOMES:
-        metrics.agent_credit_reconcile_total.labels(outcome=outcome).inc(0)
+        metrics.agent_usage_reconcile_total.labels(outcome=outcome).inc(0)
 
 
 def render(report: Report) -> str:
@@ -449,8 +396,6 @@ def render(report: Report) -> str:
         f"  {report.tenants} tenant(s), {report.events} usage event(s), "
         + ("gateway not read" if report.gateway_rows is None else f"{report.gateway_rows} gateway row(s)"),
     ]
-    if report.outstanding_live is not None:
-        lines.append(f"  credits outstanding: {report.outstanding_live} usable, {report.outstanding_debt} owed")
     if report.unattributed_usd:
         lines.append(f"  gateway spend with no tenant of this app: ${usd(report.unattributed_usd)} (embeddings and other callers; not drift)")
     lines += [f"  skipped: {reason}" for reason in report.skipped]

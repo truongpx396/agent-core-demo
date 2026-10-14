@@ -15,7 +15,7 @@ from psycopg import errors as pg_errors
 
 from credit_billing import migrate, schema
 
-NAMES = ["20-credit-wallet.sql", "22-billing.sql"]
+NAMES = ["20-credit-wallet.sql", "22-billing.sql", "24-billing-usage-events.sql", "25-billing-export-outbox.sql"]
 SHIPPED = {script.name: script.checksum for script in migrate.shipped()}
 WHEN = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 
@@ -112,7 +112,7 @@ def current_ledger() -> dict:
 
 # --- what is shipped ---------------------------------------------------------------------------------------------------
 
-def test_shipped_lists_the_two_scripts_in_order_with_the_sha256_of_their_bytes():
+def test_shipped_lists_every_script_in_order_with_the_sha256_of_their_bytes():
     scripts = migrate.shipped()
 
     assert [script.name for script in scripts] == NAMES
@@ -148,8 +148,8 @@ async def test_a_pending_script_is_applied_in_its_own_transaction_in_exactly_thi
     result = await migrate.migrate()
 
     assert result.applied == NAMES and result.skipped == []
-    assert fake.transactions == [EXPECTED_ORDER, EXPECTED_ORDER], "one transaction per script, each with the same fixed order"
-    assert fake.connections == 2
+    assert fake.transactions == [EXPECTED_ORDER] * len(NAMES), "one transaction per script, each with the same fixed order"
+    assert fake.connections == len(NAMES)
     assert set(fake.ledger) == set(NAMES)
     assert {name: checksum for name, (checksum, _) in fake.ledger.items()} == SHIPPED
 
@@ -211,7 +211,7 @@ async def test_a_script_whose_recorded_checksum_differs_is_applied_again_and_re_
 
     result = await migrate.migrate()
 
-    assert result.applied == ["22-billing.sql"] and result.skipped == ["20-credit-wallet.sql"]
+    assert result.applied == ["22-billing.sql"] and result.skipped == [n for n in NAMES if n != "22-billing.sql"]
     assert fake.ledger["22-billing.sql"][0] == SHIPPED["22-billing.sql"]
 
 
@@ -354,7 +354,10 @@ async def test_status_classifies_applied_changed_pending_and_unknown(database):
 
     status = await migrate.status()
 
-    assert [(s.name, s.state) for s in status.scripts] == [("20-credit-wallet.sql", "applied"), ("22-billing.sql", "changed")]
+    assert [(s.name, s.state) for s in status.scripts] == [
+        ("20-credit-wallet.sql", "applied"), ("22-billing.sql", "changed"),
+        ("24-billing-usage-events.sql", "pending"), ("25-billing-export-outbox.sql", "pending"),
+    ]
     assert status.scripts[0].applied_at == WHEN and status.scripts[1].recorded_checksum == "f" * 64
     assert status.scripts[1].checksum == SHIPPED["22-billing.sql"]
     assert status.unknown == ["99-from-a-newer-version.sql"]
@@ -375,4 +378,4 @@ async def test_one_pending_script_means_not_up_to_date(database):
 
     status = await migrate.status()
 
-    assert [s.state for s in status.scripts] == ["applied", "pending"] and status.up_to_date is False
+    assert [s.state for s in status.scripts] == ["applied", "pending", "pending", "pending"] and status.up_to_date is False

@@ -8,24 +8,15 @@ from decimal import Decimal
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import SettingsConfigDict
 
-# The billing core's own settings (specs/011-billing-module-boundary): ten fields, their validators and the eleven
-# constants below were defined in this file until the core had to stop importing it. `Settings` inherits the class, so
-# nothing about them changed, and the constants are re-exported here so no host importer had to.
-from credit_billing.settings import (  # noqa: F401 - re-exports: the billing constants are imported from here by host modules and scripts
-    BILLING_INBOX_MIN_RETENTION_DAYS,
-    BILLING_INBOX_RETENTION_DAYS,
-    BILLING_PROVIDERS,
-    BILLING_REFUND_HOLD_HOURS,
-    BILLING_WEBHOOK_MAX_ATTEMPTS,
-    BILLING_WEBHOOK_MAX_BODY_BYTES,
+# The billing package's own settings (specs/011-billing-module-boundary, specs/013-billing-owns-the-meter): every billing variable (providers,
+# webhooks, credentials, the rate, the gate, the export, the wallet reconciliation) is defined in the package, with its validators. `Settings`
+# inherits the class, so the environment variables, defaults and bounds are exactly what they were. The agent app itself reads only the webhook
+# route's rate limit from here (a host middleware, `app/api/rate_limit.py`); everything else billing is read by the package.
+from credit_billing.settings import (  # noqa: F401 - re-export: the host's webhook rate-limit middleware reads the limit from here
     BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE,
-    BILLING_WEBHOOK_SECRETS,
-    POLAR_ACCESS_TOKEN,
-    POLAR_ENVIRONMENT,
-    STRIPE_API_KEY,
     BillingSettings,
 )
 
@@ -46,7 +37,8 @@ class Settings(BillingSettings):
     # option), and a settings error is printed at import time, to a terminal or a container log, so a key pasted into the
     # wrong variable (or a malformed BILLING_WEBHOOK_SECRETS) would be echoed whole. The error still names the field and
     # the rule; it just no longer repeats the value.
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
+    # `populate_by_name`: a field with an alias (the reconciliation's, below) can still be set by its own name, as every other field is.
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True, populate_by_name=True)
 
     # LLM proxy (OpenAI-compatible LiteLLM endpoint)
     openai_api_base: str = "http://localhost:4000/v1"
@@ -198,79 +190,43 @@ class Settings(BillingSettings):
     budget_check_failure_policy: Literal["open", "closed"] = "open"
 
     # Per-call usage events (app/agent/usage_events.py, postgres-init/19-usage-events.sql): the
-    # meter a credit or usage-billing product is built on, AND (specs/010 T030) the spend the dollar
-    # caps and GET /usage sum. It used to be an emergency kill switch; with the caps reading the same
+    # meter of every model call, which is (specs/010 T030) the spend the dollar caps and GET /usage sum. It used to be an emergency kill switch; with the caps reading the same
     # rows, switching the writes off would make every cap read $0 and stop enforcing without a sound, so
     # `false` is refused at startup (`_usage_events_are_the_spend_the_caps_read`). The field remains so
     # that the refusal can say why, instead of an old `.env` line being quietly ignored. A failed write
     # never fails a turn; it is counted and alerted (UsageEventWriteFailing).
     usage_events_enabled: bool = True
 
-    # Credit billing (specs/010-credit-billing-readiness, packages/billing/src/credit_billing/credits.py). A call's price in
-    # credits is `round_half_up(cost_usd x CREDITS_PER_USD x MARKUP, 6)`, computed when its usage event
-    # is written and stored on the event with the rate used, so changing either later never rewrites
-    # what a past call was charged.
-    #
-    # `credits_per_usd` has NO shipped default, on purpose: a price is a product decision (spec O1)
-    # and a default would put an accidental one live. Unset means credits are off for the whole
-    # deployment: nothing is rated, debited, gated or shown, and every tenant behaves exactly as before.
-    # Set, a tenant WITH a wallet (a `credit_accounts` row) is debited per call; a tenant without one is
-    # untouched. `markup` is a multiplier on cost (1 = at cost, 1.5 = cost + 50%).
-    credits_per_usd: Decimal | None = Field(default=None, gt=0)
-    markup: Decimal = Field(default=Decimal("1"), gt=0)
-    # Whether a tenant WITH a wallet whose available credits (balance minus in-flight holds) are not
-    # positive is refused before any model work (ErrorCode.INSUFFICIENT_CREDITS). Off by default: with
-    # a rate set and this off the wallet is still debited ("shadow mode"), so an operator can watch
-    # balances move before anyone is refused. Needs CREDITS_PER_USD (a gate with no price is meaningless).
-    credits_enforcement: bool = False
-    # What the credit gate does when it cannot READ the wallet, the same decision as
-    # BUDGET_CHECK_FAILURE_POLICY and made separately because the two can fail separately. "open" serves
-    # the turn and counts it (alert CreditGateUnenforced): a wallet outage must not also take every turn
-    # down. "closed" refuses it (ErrorCode.BUDGET_CHECK_UNAVAILABLE), for a deployment that would rather
-    # be unavailable than serve a tenant it cannot confirm has credit. Only consulted when enforcing.
-    credit_check_failure_policy: Literal["open", "closed"] = "open"
-
-    # Money in (webhooks, provider credentials, the inbox's retention) is defined in packages/billing/src/credit_billing/settings.py::BillingSettings,
-    # which this class inherits: the ten fields, their validators and their comments moved there when the billing core had to stop
-    # importing this file (specs/011-billing-module-boundary). Nothing about them changed, including every environment variable name.
-
-    # Money out (specs/010 PR 5, app/billing_integration/export.py, `make billing-export-worker`): usage events of a tenant linked to a
-    # provider that bills on usage are exported through an outbox. All of it is bounded: a loop with no ceiling is how a
-    # provider's outage becomes a flood of retries, or events the provider silently discards once they age out.
-    billing_export_batch_size: int = Field(default=100, ge=1, le=1000)
-    billing_export_interval_seconds: int = Field(default=30, ge=1)
-    # Retryable failures of one event before it is given up on (`failed`, alert UsageExportFailed).
-    billing_export_max_attempts: int = Field(default=10, ge=1)
-    # After the k-th failed attempt an event waits min(base * 2**(k-1), cap) before the next: exponential, so a provider
-    # that is down is not hammered, and capped, so a long outage still retries within hours rather than days.
-    billing_export_backoff_base_seconds: int = Field(default=30, ge=1)
-    billing_export_backoff_cap_seconds: int = Field(default=6 * 3600, ge=1)
-    # An event still unsent after this many days is `expired`, counted and alerted, never silently dropped. The ceiling is
-    # a provider fact, not a style choice: Stripe accepts a meter event only if its timestamp is within the past 35 days
-    # (research R1), so the age limit must close BEFORE the provider's own window does or a "retry" is a silent discard.
-    billing_export_max_age_days: int = Field(default=30, ge=1, le=34)
-    # The deadline for ONE call to a provider. The worker holds the batch's row locks while it waits, so a wait with no
-    # ceiling would hold them (and every other worker's view of those rows) for as long as a provider chooses to hang.
-    # A call that times out may still have landed: it is retried with the same event id, which the provider dedupes.
-    billing_export_call_timeout_seconds: int = Field(default=30, ge=1)
-
-    # Reconciliation (specs/010 PR 6, app/billing_integration/reconcile.py, `make credit-reconcile`): the app's events against its own
-    # ledger and the gateway's spend log. A difference is drift only above the LARGER of the two tolerances: the fixed one
-    # stops a tenant that spent a cent from being reported over rounding, the percentage stops a busy tenant's rounding (the
-    # ledger keeps six decimal places a turn, the event twelve a call) from being reported as a gap. SC-001's "stated tolerance".
-    credit_reconcile_tolerance_usd: Decimal = Field(default=Decimal("0.01"), ge=0)
-    credit_reconcile_tolerance_pct: Decimal = Field(default=Decimal("1"), ge=0, le=100)
-    # The newest minutes are left out: a turn still running has written its events and not yet its ledger row, and the
-    # gateway writes its spend log in batches, so comparing the very latest traffic reports drift that is only latency.
-    # Keep it above request_timeout_seconds plus the gateway's batch interval.
-    credit_reconcile_settle_seconds: int = Field(default=900, ge=0)
-    # How many whole UTC days back each run looks. Short on purpose: a run that re-reads a year of spend logs every few hours
-    # is a load on the gateway database, and a gap older than this was already reported by every run since it appeared.
-    credit_reconcile_lookback_days: int = Field(default=2, ge=1, le=35)
-    credit_reconcile_interval_seconds: int = Field(default=6 * 3600, ge=60)
-    # The ceiling on gateway pages (1000 rows each) read per run. A window with more spend-log rows than this is reported as
-    # INCOMPLETE rather than compared as if it were whole: a truncated sum would show every tenant as under-metered.
-    credit_reconcile_gateway_max_pages: int = Field(default=200, ge=1)
+    # Reconciliation of the meter with the LLM gateway (specs/010 PR 6, app/agent/usage_reconcile.py, `make usage-reconcile`): the app's events against the
+    # gateway's spend log. A difference is drift only above the LARGER of the two tolerances: the fixed one stops a tenant that spent a cent
+    # from being reported over rounding, the percentage stops a busy tenant's rounding (the gateway and the events round differently) from
+    # being reported as a gap. SC-001's "stated tolerance". They were `CREDIT_RECONCILE_*` while the same job also checked the wallet; the wallet
+    # check is the billing package's now (`credit-billing-reconcile`, which keeps those names for its own window), and these accept the old
+    # names so an existing `.env` keeps working.
+    usage_reconcile_tolerance_usd: Decimal = Field(
+        default=Decimal("0.01"), ge=0, validation_alias=AliasChoices("USAGE_RECONCILE_TOLERANCE_USD", "CREDIT_RECONCILE_TOLERANCE_USD")
+    )
+    usage_reconcile_tolerance_pct: Decimal = Field(
+        default=Decimal("1"), ge=0, le=100, validation_alias=AliasChoices("USAGE_RECONCILE_TOLERANCE_PCT", "CREDIT_RECONCILE_TOLERANCE_PCT")
+    )
+    # The newest minutes are left out: the gateway writes its spend log in batches, so comparing the very latest traffic reports drift that is
+    # only latency. Keep it above request_timeout_seconds plus the gateway's batch interval.
+    usage_reconcile_settle_seconds: int = Field(
+        default=900, ge=0, validation_alias=AliasChoices("USAGE_RECONCILE_SETTLE_SECONDS", "CREDIT_RECONCILE_SETTLE_SECONDS")
+    )
+    # How many whole UTC days back each run looks. Short on purpose: a run that re-reads a year of spend logs every few hours is a load on the
+    # gateway database, and a gap older than this was already reported by every run since it appeared.
+    usage_reconcile_lookback_days: int = Field(
+        default=2, ge=1, le=35, validation_alias=AliasChoices("USAGE_RECONCILE_LOOKBACK_DAYS", "CREDIT_RECONCILE_LOOKBACK_DAYS")
+    )
+    usage_reconcile_interval_seconds: int = Field(
+        default=6 * 3600, ge=60, validation_alias=AliasChoices("USAGE_RECONCILE_INTERVAL_SECONDS", "CREDIT_RECONCILE_INTERVAL_SECONDS")
+    )
+    # The ceiling on gateway pages (1000 rows each) read per run. A window with more spend-log rows than this is reported as INCOMPLETE rather
+    # than compared as if it were whole: a truncated sum would show every tenant as under-metered.
+    usage_reconcile_gateway_max_pages: int = Field(
+        default=200, ge=1, validation_alias=AliasChoices("USAGE_RECONCILE_GATEWAY_MAX_PAGES", "CREDIT_RECONCILE_GATEWAY_MAX_PAGES")
+    )
 
     @model_validator(mode="after")
     def _usage_events_are_the_spend_the_caps_read(self) -> "Settings":
@@ -280,27 +236,6 @@ class Settings(BillingSettings):
                 "(specs/010 T030), so with none written every cap would read $0 and silently stop enforcing. "
                 "Remove the line; to relieve a hurting write path, fix the database, not the meter"
             )
-        return self
-
-    @model_validator(mode="after")
-    def _backoff_cap_is_not_below_its_base(self) -> "Settings":
-        if self.billing_export_backoff_cap_seconds < self.billing_export_backoff_base_seconds:
-            raise ValueError("BILLING_EXPORT_BACKOFF_CAP_SECONDS must be at least BILLING_EXPORT_BACKOFF_BASE_SECONDS")
-        return self
-
-    @field_validator("credits_per_usd", "markup")
-    @classmethod
-    def _six_places_at_most(cls, value: Decimal | None) -> Decimal | None:
-        """The columns that record these on each event are NUMERIC(18,6): a rate with more places would
-        be stored rounded, and the row would no longer reproduce the credits it was charged."""
-        if value is not None and value != value.quantize(Decimal("0.000001")):
-            raise ValueError("at most 6 decimal places (the event row stores the rate as NUMERIC(18,6))")
-        return value
-
-    @model_validator(mode="after")
-    def _enforcement_needs_a_rate(self) -> "Settings":
-        if self.credits_enforcement and self.credits_per_usd is None:
-            raise ValueError("CREDITS_ENFORCEMENT=true needs CREDITS_PER_USD: a gate with no price is meaningless")
         return self
 
     # How long usage EVENTS are kept by scripts/usage_events_sweep.py (spec D7; nothing trimmed them, and the caps and the
@@ -642,23 +577,12 @@ PRICING_REFRESH_SECONDS = settings.pricing_refresh_seconds
 UNPRICED_MODEL_POLICY = settings.unpriced_model_policy
 USAGE_EVENT_RETENTION_DAYS = settings.usage_event_retention_days
 BUDGET_CHECK_FAILURE_POLICY = settings.budget_check_failure_policy
-CREDITS_PER_USD = settings.credits_per_usd
-MARKUP = settings.markup
-CREDITS_ENFORCEMENT = settings.credits_enforcement
-CREDIT_CHECK_FAILURE_POLICY = settings.credit_check_failure_policy
-BILLING_EXPORT_BATCH_SIZE = settings.billing_export_batch_size
-BILLING_EXPORT_INTERVAL_SECONDS = settings.billing_export_interval_seconds
-BILLING_EXPORT_MAX_ATTEMPTS = settings.billing_export_max_attempts
-BILLING_EXPORT_BACKOFF_BASE_SECONDS = settings.billing_export_backoff_base_seconds
-BILLING_EXPORT_BACKOFF_CAP_SECONDS = settings.billing_export_backoff_cap_seconds
-BILLING_EXPORT_MAX_AGE_DAYS = settings.billing_export_max_age_days
-BILLING_EXPORT_CALL_TIMEOUT_SECONDS = settings.billing_export_call_timeout_seconds
-CREDIT_RECONCILE_TOLERANCE_USD = settings.credit_reconcile_tolerance_usd
-CREDIT_RECONCILE_TOLERANCE_PCT = settings.credit_reconcile_tolerance_pct
-CREDIT_RECONCILE_SETTLE_SECONDS = settings.credit_reconcile_settle_seconds
-CREDIT_RECONCILE_LOOKBACK_DAYS = settings.credit_reconcile_lookback_days
-CREDIT_RECONCILE_INTERVAL_SECONDS = settings.credit_reconcile_interval_seconds
-CREDIT_RECONCILE_GATEWAY_MAX_PAGES = settings.credit_reconcile_gateway_max_pages
+USAGE_RECONCILE_TOLERANCE_USD = settings.usage_reconcile_tolerance_usd
+USAGE_RECONCILE_TOLERANCE_PCT = settings.usage_reconcile_tolerance_pct
+USAGE_RECONCILE_SETTLE_SECONDS = settings.usage_reconcile_settle_seconds
+USAGE_RECONCILE_LOOKBACK_DAYS = settings.usage_reconcile_lookback_days
+USAGE_RECONCILE_INTERVAL_SECONDS = settings.usage_reconcile_interval_seconds
+USAGE_RECONCILE_GATEWAY_MAX_PAGES = settings.usage_reconcile_gateway_max_pages
 BUDGET_POLICY_REFRESH_SECONDS = settings.budget_policy_refresh_seconds
 REQUEST_TIMEOUT_SECONDS = settings.request_timeout_seconds
 SUBAGENT_TIMEOUT_SECONDS = settings.subagent_timeout_seconds

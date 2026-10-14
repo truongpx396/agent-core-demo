@@ -56,7 +56,7 @@ async def test_the_timeout_is_shorter_than_postgres_deadlock_check(appdata_url):
     assert schema_reapply.LOCK_TIMEOUT_MS < deadlock_timeout_ms
 
 
-@pytest.mark.parametrize("script", ["21-usage-event-credits.sql", "22-billing.sql", "23-usage-export-outbox.sql"])
+@pytest.mark.parametrize("script", ["22-billing.sql", "24-billing-usage-events.sql", "25-billing-export-outbox.sql"])
 async def test_each_migration_can_be_reapplied(appdata_url, script):
     assert await asyncio.wait_for(schema_reapply.reapply(appdata_url, script), BOUND_SECONDS) >= 1
 
@@ -90,7 +90,7 @@ async def test_a_lock_cycle_with_another_transaction_never_makes_that_transactio
 async def test_two_reapplies_at_once_both_finish(appdata_url):
     first, second = await asyncio.wait_for(
         asyncio.gather(
-            schema_reapply.reapply(appdata_url, "22-billing.sql"), schema_reapply.reapply(appdata_url, "23-usage-export-outbox.sql")
+            schema_reapply.reapply(appdata_url, "22-billing.sql"), schema_reapply.reapply(appdata_url, "25-billing-export-outbox.sql")
         ),
         BOUND_SECONDS,
     )

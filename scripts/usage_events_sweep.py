@@ -3,9 +3,8 @@
 
 Nothing ever trimmed that table (spec D7 promised a job and none was built), and since specs/010 T030b the dollar caps and the
 reconciliation read it. This deletes events older than `USAGE_EVENT_RETENTION_DAYS` (400 by default; the setting enforces a floor
-of 35 days so a calendar-month cap or a reconciliation window can never lose spend that is still inside it). It never deletes an
-event whose export to a billing provider did not finish: those are counted and reported, not removed. The wallet's debits are
-never touched.
+of 35 days so a calendar-month cap or a reconciliation window can never lose spend that is still inside it). Billing keeps its own record
+of a call with its own retention (`credit-billing-usage-sweep`); nothing here touches it.
 
 Same "fixed pipeline, not an agent turn" shape as the sweeps before it (scripts/billing_inbox_sweep.py), and like them it is deliberately NOT run by
 anything automatically: this is the table spend is read from, so wire it to real cron once your retention policy is decided, e.g.
@@ -36,25 +35,17 @@ async def run_sweep(older_than_days: int = USAGE_EVENT_RETENTION_DAYS) -> SweepR
     result = await sweep_old_events(older_than_days=older_than_days)
     logger.info(
         "usage_events_swept",
-        extra={"deleted": result.deleted, "outbox_cleared": result.outbox_cleared, "held_back": result.held_back, "older_than_days": older_than_days},
+        extra={"deleted": result.deleted, "older_than_days": older_than_days},
     )
     return result
 
 
 def describe(result: SweepResult) -> str:
-    """What the operator sees on stdout. A run that deleted its full ceiling probably left rows behind, and events kept because
-    their export never finished are something a person should look at, so both are said."""
+    """What the operator sees on stdout. A run that deleted its full ceiling probably left rows behind, so that is said."""
     lines = ["Nothing to sweep."] if not result.deleted else [f"Deleted {result.deleted} usage event(s)."]
-    if result.outbox_cleared:
-        lines.append(f"Cleared {result.outbox_cleared} finished export row(s) with them.")
     if not result.complete:
         lines.append(
             f"That is this run's ceiling ({SWEEP_MAX_BATCHES * SWEEP_BATCH_SIZE} events), so older events may remain: run it again."
-        )
-    if result.held_back:
-        lines.append(
-            f"KEPT {result.held_back} old event(s) whose export never finished (pending, failed or expired): "
-            "resolve them (see the runbook) rather than waiting for a sweep to hide them."
         )
     return " ".join(lines)
 

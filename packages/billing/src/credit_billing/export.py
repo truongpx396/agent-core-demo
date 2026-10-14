@@ -1,10 +1,10 @@
 """Money out: usage events reach a usage-billing provider exactly once, or fail loudly
-(specs/010-credit-billing-readiness, T023-T025; postgres-init/23-usage-export-outbox.sql).
+(specs/010-credit-billing-readiness, T023-T025; moved into the package by specs/013; sql/25-billing-export-outbox.sql).
 
 ## The shape
 
-A tenant linked to a provider that bills on usage (it declares `USAGE_EXPORT`) gets one `usage_export_outbox` row per
-usage event, written in the event's own transaction (`usage_events._insert`). This module drains that table. It is the
+A tenant linked to a provider that bills on usage (it declares `USAGE_EXPORT`) gets one `billing_export_outbox` row per
+usage event, written in the event's own transaction (`credit_billing/usage.py`). This module drains that table. It is the
 only code that sends usage to a provider, and it is built for the three facts research R1 established:
 
   1. Providers deduplicate by a caller-supplied id (Stripe `identifier`, Polar `external_id`), so the usage event's
@@ -19,7 +19,7 @@ only code that sends usage to a provider, and it is built for the three facts re
 
 | Duplicate arrives as | Caught by |
 |---|---|
-| a replayed usage event queued twice | `PRIMARY KEY (provider, event_id)` + `ON CONFLICT DO NOTHING`, in the event's transaction |
+| a replayed usage event queued twice | `PRIMARY KEY (provider, tenant, event_id)` + `ON CONFLICT DO NOTHING`, in the event's transaction |
 | two workers claiming the same row | `FOR UPDATE SKIP LOCKED`: each takes a disjoint batch |
 | a crash between "sent" and "marked sent" | the provider's own idempotency key (the event id): the resend is reported as a duplicate, which is success. **This is the one window the database cannot see.** |
 | a call that timed out but landed | the same: it is retried with the same id |
@@ -45,6 +45,11 @@ link left to send under -> `failed`, not retried for 30 days to no purpose. `exp
     never queued, and nothing back-fills it yet (the reconciliation, PR 6, compares events with the gateway and the
     ledger, and is where this would be found).
   * The adapters are written later, so the call deadline and the response mapping are proven against the `fake` only.
+  * The outbox is keyed `(provider, tenant, event_id)` but the provider is given the event id alone as its idempotency key, so a caller
+    must keep event ids unique across the tenants of one instance, or the provider will treat the second tenant's event as a duplicate
+    of the first's and the revenue is lost with no error anywhere.
+
+Imports nothing from `app` (enforced by tests/test_boundary.py).
 """
 import asyncio
 import logging
@@ -54,11 +59,15 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Literal
 
-from psycopg import AsyncConnection
-
-from app.agent.sql_store import get_connection
-from app.core import metrics
-from app.core.config import (
+from credit_billing import metrics
+from credit_billing.db import get_connection
+from credit_billing.providers.base import (
+    BillingCustomer,
+    BillingProvider,
+    ExportResult,
+    UsageEvent,
+)
+from credit_billing.settings import (
     BILLING_EXPORT_BACKOFF_BASE_SECONDS,
     BILLING_EXPORT_BACKOFF_CAP_SECONDS,
     BILLING_EXPORT_BATCH_SIZE,
@@ -66,47 +75,10 @@ from app.core.config import (
     BILLING_EXPORT_MAX_AGE_DAYS,
     BILLING_EXPORT_MAX_ATTEMPTS,
 )
-from credit_billing import providers as provider_registry
-from credit_billing.providers.base import (
-    BillingCustomer,
-    BillingProvider,
-    ExportResult,
-    UsageEvent,
-)
 
 logger = logging.getLogger(__name__)
 
 Status = Literal["sent", "pending", "failed"]
-
-
-# --- what the host's usage-event write and the export worker need from the provider registry and the customer link -----
-# They live here, not in `usage_events.py` or the worker, because this package is the one place on the host's side that may
-# know the core's table names and registry (spec 011 D19). Each does exactly what the code it replaced did.
-
-def usage_export_providers(names: tuple[str, ...]) -> tuple[str, ...]:
-    """Which of the enabled providers bill on usage. Read from the adapter CLASS, so it needs no secret and no instance: the
-    usage-event write asks it on the hot path, and "none" must cost nothing."""
-    return provider_registry.usage_export_providers(names)
-
-
-def configured_adapters(names: tuple[str, ...], secrets: Mapping[str, str]) -> dict[str, BillingProvider]:
-    """The adapters for the providers a process serves; raises for a name no adapter is registered under or one with no secret."""
-    return provider_registry.build_configured(names, secrets)
-
-
-async def enqueue_in(conn: AsyncConnection, event_id: str, tenant: str, exporters: Sequence[str]) -> None:
-    """Queues the usage event for every usage-billing provider in `exporters` this tenant is linked to, inside a savepoint on
-    the caller's connection so a fault undoes only the queuing. RAISES on a fault: the caller decides what a failed enqueue
-    means (`usage_events._enqueue_export` counts it and carries on, because the meter outranks the export). A tenant with no
-    such link inserts nothing: the SELECT is over `billing_customers`, so the outbox only ever holds events someone has a
-    customer to send them under."""
-    async with conn.transaction():
-        await conn.execute(
-            "INSERT INTO usage_export_outbox (provider, event_id, tenant) "
-            "SELECT c.provider, %(event_id)s, %(tenant)s FROM billing_customers c "
-            "WHERE c.tenant = %(tenant)s AND c.provider = ANY(%(providers)s) ON CONFLICT (provider, event_id) DO NOTHING",
-            {"event_id": event_id, "tenant": tenant, "providers": list(exporters)},
-        )
 
 
 @dataclass(frozen=True)
@@ -204,11 +176,12 @@ async def _expire(max_age_days: int, names: Sequence[str]) -> dict[str, int]:
     async with get_connection() as conn:
         cur = await conn.execute(
             "WITH due AS ("
-            "SELECT o.provider, o.event_id FROM usage_export_outbox o JOIN usage_events e ON e.event_id = o.event_id AND e.tenant = o.tenant "
+            "SELECT o.provider, o.tenant, o.event_id FROM billing_export_outbox o "
+            "JOIN billing_usage_events e ON e.event_id = o.event_id AND e.tenant = o.tenant "
             "WHERE o.status = 'pending' AND o.provider = ANY(%s) AND e.occurred_at < now() - make_interval(days => %s) "
             "FOR UPDATE OF o SKIP LOCKED) "
-            "UPDATE usage_export_outbox o SET status = 'expired', last_error_class = 'max_age' "
-            "FROM due WHERE o.provider = due.provider AND o.event_id = due.event_id RETURNING o.provider",
+            "UPDATE billing_export_outbox o SET status = 'expired', last_error_class = 'max_age' "
+            "FROM due WHERE o.provider = due.provider AND o.tenant = due.tenant AND o.event_id = due.event_id RETURNING o.provider",
             (list(names), max_age_days),
         )
         counts: dict[str, int] = defaultdict(int)
@@ -223,9 +196,8 @@ async def _drain(
     counts: dict[str, int] = defaultdict(int)
     async with get_connection() as conn:  # ONE transaction: claim, send, record. A crash anywhere leaves the rows pending.
         cur = await conn.execute(
-            "SELECT o.event_id, o.tenant, o.attempts, e.occurred_at, e.credits, e.cost_usd, COALESCE(e.resolved_model, e.model_alias), "
-            "e.total_tokens, c.customer_ref "
-            "FROM usage_export_outbox o JOIN usage_events e ON e.event_id = o.event_id AND e.tenant = o.tenant "
+            "SELECT o.event_id, o.tenant, o.attempts, e.occurred_at, e.credits, e.cost_usd, e.model, e.tokens, c.customer_ref "
+            "FROM billing_export_outbox o JOIN billing_usage_events e ON e.event_id = o.event_id AND e.tenant = o.tenant "
             "LEFT JOIN billing_customers c ON c.tenant = o.tenant AND c.provider = o.provider "
             "WHERE o.provider = %s AND o.status = 'pending' AND o.next_attempt_at <= now() "
             "ORDER BY o.next_attempt_at, o.created_at LIMIT %s FOR UPDATE OF o SKIP LOCKED",
@@ -233,7 +205,7 @@ async def _drain(
         )
         groups: dict[tuple[str, str | None], list[Due]] = defaultdict(list)
         for event_id, tenant, attempts, occurred_at, credits, cost_usd, model, tokens, customer_ref in await cur.fetchall():
-            usage = UsageEvent(event_id, occurred_at, _decimal(credits), _decimal(cost_usd), model, tokens)
+            usage = UsageEvent(event_id, occurred_at, _decimal(credits), _decimal(cost_usd), model, tokens or 0)
             groups[(tenant, customer_ref)].append(Due(event_id, tenant, attempts, customer_ref, usage))
 
         decided: dict[str, Verdict] = {}
@@ -244,8 +216,9 @@ async def _drain(
             result, error = await _send(adapter, BillingCustomer(tenant, name, customer_ref), batch, call_timeout)
             decided.update(verdicts(batch, result, error, max_attempts=max_attempts, base=base, cap=cap))
 
+        owner = {due.event_id: due.tenant for batch in groups.values() for due in batch}
         for event_id, verdict in decided.items():
-            await _record(conn, name, event_id, verdict)
+            await _record(conn, name, owner[event_id], event_id, verdict)
             counts["retry" if verdict.status == "pending" else verdict.status] += 1
     return dict(counts)
 
@@ -263,19 +236,25 @@ async def _send(
         return None, exc
 
 
-async def _record(conn, provider: str, event_id: str, verdict: Verdict) -> None:
+async def _record(conn, provider: str, tenant: str, event_id: str, verdict: Verdict) -> None:
     if verdict.status == "sent":
-        sql = "UPDATE usage_export_outbox SET status = 'sent', attempts = attempts + 1, sent_at = now(), last_error_class = NULL WHERE provider = %s AND event_id = %s"
-        params: tuple = (provider, event_id)
+        sql = (
+            "UPDATE billing_export_outbox SET status = 'sent', attempts = attempts + 1, sent_at = now(), last_error_class = NULL "
+            "WHERE provider = %s AND tenant = %s AND event_id = %s"
+        )
+        params: tuple = (provider, tenant, event_id)
     elif verdict.status == "failed":
-        sql = "UPDATE usage_export_outbox SET status = 'failed', attempts = attempts + 1, last_error_class = %s WHERE provider = %s AND event_id = %s"
-        params = (verdict.error, provider, event_id)
+        sql = (
+            "UPDATE billing_export_outbox SET status = 'failed', attempts = attempts + 1, last_error_class = %s "
+            "WHERE provider = %s AND tenant = %s AND event_id = %s"
+        )
+        params = (verdict.error, provider, tenant, event_id)
     else:
         sql = (
-            "UPDATE usage_export_outbox SET attempts = attempts + 1, next_attempt_at = now() + make_interval(secs => %s), "
-            "last_error_class = %s WHERE provider = %s AND event_id = %s"
+            "UPDATE billing_export_outbox SET attempts = attempts + 1, next_attempt_at = now() + make_interval(secs => %s), "
+            "last_error_class = %s WHERE provider = %s AND tenant = %s AND event_id = %s"
         )
-        params = (verdict.delay_seconds, verdict.error, provider, event_id)
+        params = (verdict.delay_seconds, verdict.error, provider, tenant, event_id)
     await conn.execute(sql, params)
 
 
@@ -283,7 +262,7 @@ async def _set_age_gauge(provider: str) -> None:
     """How old the oldest still-pending event is, so UsageExportStuck can say so while there is still time to send it."""
     async with get_connection() as conn:
         cur = await conn.execute(
-            "SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0) FROM usage_export_outbox WHERE provider = %s AND status = 'pending'",
+            "SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0) FROM billing_export_outbox WHERE provider = %s AND status = 'pending'",
             (provider,),
         )
         (age,) = await cur.fetchone()

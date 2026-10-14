@@ -12,8 +12,8 @@ and checked, first.
     unmistakable, so `WHERE event_id LIKE 'ledger:%'` finds exactly the history;
   * `kind = 'chat'`, tokens and cost as the ledger row has them (it never kept an input/output split, so those are 0),
     and `occurred_at = recorded_at` = the ledger row's own time, so it falls in the window it was spent in;
-  * **never rated, never charged, never queued for export.** It is history, not a model call: this is plain SQL outside
-    the paths that debit a wallet or fill the outbox, so a carried row can neither bill anyone nor reach a provider.
+  * **never handed to billing.** It is history, not a model call: this is plain SQL that never makes the hand-off a real call
+    makes (`usage_events._insert`), so a carried row can neither bill anyone nor reach a provider.
 
 ## The cutoff, and why a row is not copied twice
 
@@ -34,7 +34,7 @@ one tenant, to check a single one before the full run (the cutoff stays the same
   * Rows are copied in batches that commit on their own, up to a ceiling per run (`MAX_BATCHES`); hitting it is reported
     and a re-run continues where it stopped (rows already carried are not selected again).
   * If the events were ever switched off for a while after the first one was written, the ledger rows of that stretch
-    sit AFTER the cutoff and are not carried. `make credit-reconcile` names such a tenant-day (events below the ledger).
+    sit AFTER the cutoff and are not carried. `make usage-reconcile` names such a tenant-day (events below the gateway).
 """
 import argparse
 import asyncio

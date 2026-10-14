@@ -1,8 +1,13 @@
-"""The billing core's own counters (specs/011-billing-module-boundary, contracts/billing-core-boundary.md).
+"""The billing core's own counters and gauges (specs/011-billing-module-boundary, contracts/billing-core-boundary.md).
 
 Four counters used to live in `app/core/metrics.py`, which the billing code imported. They are here now, with
 their names, labels and help text exactly as they were, so every dashboard panel and alert rule on them keeps
-working and the billing package no longer needs any host's metrics module to be importable.
+working and the billing package no longer needs any host's metrics module to be importable. Spec 013 moved the rest of what the package
+now owns the same way: the usage export's counter and age gauge, the wallet reconciliation's counter and gauges, the credit gate's
+refusal counter, and `agent_cost_governance_degraded_total` for the paths billing counts (`billing_event_write`, `credit_debit`,
+`export_enqueue`, `credit_read`). Names, labels and help are unchanged, so no alert or panel changed; the host keeps its own
+instrument of that last name for the paths it counts, and the two are told apart only by the scope label, which `sum by` and the
+alerts' `increase(...{path=...})` ignore.
 
 They are built on the OpenTelemetry **API** only. A library depends on the API and emits through whatever
 provider the process installed; the SDK, the exporter, the collector endpoint and `service.name` stay the
@@ -30,6 +35,7 @@ in the scope would fork every series again at every release.
 Imports nothing from `app` (enforced by tests/billing/test_billing_core_boundary.py).
 """
 from collections.abc import Iterable, Mapping
+from typing import Any
 
 from opentelemetry import metrics as metrics_api
 
@@ -63,6 +69,35 @@ class Counter:
 
     def inc(self, amount: float = 1) -> None:
         self._instrument.add(amount)
+
+
+class _BoundGauge:
+    __slots__ = ("_instrument", "_attributes")
+
+    # `Any`: this OpenTelemetry release exposes the synchronous Gauge only under a private name (`_Gauge`), while
+    # `Meter.create_gauge` that returns it is public; naming the private class here would break on the next release.
+    def __init__(self, instrument: Any, attributes: Mapping[str, str]):
+        self._instrument = instrument
+        self._attributes = attributes
+
+    def set(self, value: float) -> None:
+        self._instrument.set(value, attributes=self._attributes)
+
+
+class Gauge:
+    """prometheus_client.Gauge-shaped wrapper around an OTel synchronous Gauge: the LAST value set wins, which is what a
+    "how old is the oldest unsent thing right now" reading needs and a Counter cannot say."""
+
+    def __init__(self, name: str, description: str = "", unit: str = "", labelnames=()):
+        self.name = name
+        self._instrument = _meter.create_gauge(name, description=description, unit=unit)
+        self._labelnames = tuple(labelnames)
+
+    def labels(self, **kwargs: str) -> _BoundGauge:
+        return _BoundGauge(self._instrument, kwargs)
+
+    def set(self, value: float) -> None:
+        self._instrument.set(value)
 
 
 agent_credit_overdraft_total = Counter(
@@ -120,3 +155,70 @@ def initialise_webhook_series(providers: Iterable[str]) -> None:
                 agent_billing_webhook_total.labels(provider=provider, outcome=outcome).inc(0)
     for outcome in _NO_PROVIDER_OUTCOMES:
         agent_billing_webhook_total.labels(provider="unknown", outcome=outcome).inc(0)
+
+
+agent_credit_enforcement_refused_total = Counter(
+    "agent_credit_enforcement_refused_total",
+    "Requests refused before any work because the tenant's wallet had no available credits (credit_billing/admission.py). "
+    "Normal operation for a prepaid tenant that has run out, so it is a rate to watch, not an alert. It has no tenant label "
+    "(who is in the log line).",
+)
+
+agent_usage_export_total = Counter(
+    "agent_usage_export_total",
+    "Usage events handled by the export worker (credit_billing/export.py), by outcome. `expired` means an event aged past "
+    "BILLING_EXPORT_MAX_AGE_DAYS unsent (alert UsageExportExpired: usage the provider will never bill); `failed` means a "
+    "permanent refusal, the attempt budget spent, or no customer link (alert UsageExportFailed); `retry` is a retryable "
+    "failure that will back off and try again; `sent` includes a provider-reported duplicate, which is success.",
+    ["provider", "outcome"],
+)  # outcome: sent | retry | failed | expired
+
+agent_usage_export_oldest_pending_age_seconds = Gauge(
+    "agent_usage_export_oldest_pending_age_seconds",
+    "Age of the oldest usage event still waiting to be exported, per provider, set each worker pass (0 when nothing is "
+    "waiting). Alert UsageExportStuck at 7 days: well inside the age limit, so someone is told while the events are "
+    "still sendable. Disclosed (verified in spec 010 PR 6): a synchronous gauge is exported ONCE per set (the SDK "
+    "clears it after collecting) and the collector's Prometheus exporter drops a series 5 minutes after its last update "
+    "(`metric_expiration`), so a dead worker does not leave a stale value behind: the series DISAPPEARS and UsageExportStuck "
+    "resolves on its own. The worker's own liveness is not alerted yet; Prometheus cannot tell a worker that never ran from one that died.",
+    unit="s",
+    labelnames=["provider"],
+)
+
+agent_credit_outstanding = Gauge(
+    "agent_credit_outstanding",
+    "Credits held across every wallet, set by each reconciliation pass (credit_billing/reconcile.py): `available` is what "
+    "may still be consumed, `debt` is what overdraft lots owe (a positive number). Deliberately no tenant label: who "
+    "holds what is `credit-billing show --tenant ...`. Only as fresh as the last pass.",
+    labelnames=["state"],
+)
+
+agent_credit_reconcile_max_drift_usd = Gauge(
+    "agent_credit_reconcile_max_drift_usd",
+    "The largest per-tenant, per-day figure, in USD, of usage events worth credits that no debit was booked for, as of the last "
+    "wallet reconciliation pass (0 when everything is charged). No tenant label: the report (`credit-billing-reconcile`) names "
+    "them. Alert CreditReconcileDrift. The worker re-sets it every minute because the collector forgets a series 5 minutes after "
+    "its last update.",
+    unit="USD",
+)
+
+agent_credit_reconcile_total = Counter(
+    "agent_credit_reconcile_total",
+    "Wallet reconciliation passes by outcome: ok (every event worth credits was charged) | drift (some were not) | failed (the "
+    "pass itself raised: the database was unreachable; alert CreditReconcileNotCompleting).",
+    ["outcome"],
+)  # outcome: ok | drift | failed
+
+agent_cost_governance_degraded_total = Counter(
+    "agent_cost_governance_degraded_total",
+    "Cost-governance paths that failed and carried on instead of failing the caller (spec 008 A1). The billing package counts "
+    "`billing_event_write` (the usage event could not be recorded for billing: lost revenue, alert BillingEventWriteFailing), "
+    "`credit_debit` (the event was kept, its debit failed: alert CreditDebitFailing), `export_enqueue` (the event was kept, queuing "
+    "it for export failed: alert UsageExportEnqueueFailing) and `credit_read` (the gate could not read a wallet: alert "
+    "CreditGateUnenforced).",
+    ["path"],
+)  # path: billing_event_write | credit_debit | export_enqueue | credit_read
+
+# Every `path` label value the package can count; tests/test_metrics.py fails if the code can emit one that is not listed here.
+DEGRADED_PATHS = ("billing_event_write", "credit_debit", "export_enqueue", "credit_read")
+RECONCILE_OUTCOMES = ("ok", "drift", "failed")

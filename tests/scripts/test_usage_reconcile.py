@@ -1,4 +1,4 @@
-"""The reconciliation command and worker (scripts/credit_reconcile.py): its exit codes, what a failed pass does, the refusal to run without the
+"""The reconciliation command and worker (scripts/usage_reconcile.py): its exit codes, what a failed pass does, the refusal to run without the
 gateway's key, and the heartbeat that keeps the drift gauge alive between passes (see tests/core/test_gauge_export.py for why)."""
 import asyncio
 import os
@@ -8,10 +8,10 @@ from decimal import Decimal as D
 
 import pytest
 
-from app.billing_integration import reconcile
-from app.billing_integration.reconcile import Finding, Report, Tolerance, Window
+from app.agent import usage_reconcile as reconcile
+from app.agent.usage_reconcile import Finding, Report, Tolerance, Window
 from app.core import metrics
-from scripts import credit_reconcile
+from scripts import usage_reconcile
 from tests.conftest import metric_value
 
 WINDOW = Window(datetime(2026, 10, 6, tzinfo=UTC), datetime(2026, 10, 6, 18, tzinfo=UTC))
@@ -21,12 +21,12 @@ INCOMPLETE = Report(WINDOW, Tolerance(), incomplete=True)
 
 
 def count(outcome: str) -> float:
-    return metric_value(metrics.agent_credit_reconcile_total, outcome=outcome)
+    return metric_value(metrics.agent_usage_reconcile_total, outcome=outcome)
 
 
 @pytest.mark.parametrize(("report", "code"), [(OK, 0), (DRIFT, 1), (INCOMPLETE, 2), (None, 2)])
 def test_the_exit_code_separates_agreement_from_drift_from_a_pass_that_proved_nothing(report, code):
-    assert credit_reconcile.exit_code(report) == code
+    assert usage_reconcile.exit_code(report) == code
 
 
 class TestOnePass:
@@ -37,10 +37,10 @@ class TestOnePass:
         monkeypatch.setattr(reconcile, "reconcile", fake)
         before = count("drift")
 
-        report = await credit_reconcile.run_pass(None, days=2)
+        report = await usage_reconcile.run_pass(None, days=2)
 
         # The gauge first: ANY read collects every instrument, and collecting clears a synchronous gauge (test_gauge_export.py).
-        assert metric_value(metrics.agent_credit_reconcile_max_drift_usd) == 0.5
+        assert metric_value(metrics.agent_usage_reconcile_max_drift_usd) == 0.5
         assert report is DRIFT and count("drift") - before == 1
 
     async def test_a_pass_that_raises_is_counted_failed_and_logged_by_class_never_by_message(self, monkeypatch, caplog):
@@ -51,10 +51,10 @@ class TestOnePass:
         before = count("failed")
 
         with caplog.at_level("WARNING"):
-            report = await credit_reconcile.run_pass(None, days=2)
+            report = await usage_reconcile.run_pass(None, days=2)
 
         assert report is None and count("failed") - before == 1
-        (record,) = [r for r in caplog.records if r.getMessage() == "credit_reconcile_failed"]
+        (record,) = [r for r in caplog.records if r.getMessage() == "usage_reconcile_failed"]
         assert record.error_class == "RuntimeError"  # type: ignore[attr-defined]  # `extra` fields are set as record attributes
         assert "hunter2" not in caplog.text and "hunter2" not in str(record.__dict__)
 
@@ -67,7 +67,7 @@ class TestOnePass:
         monkeypatch.setattr(reconcile, "reconcile", boom)
         monkeypatch.setattr(reconcile, "publish_gauges", published.append)
 
-        assert await credit_reconcile.run_pass(None, days=2) is None
+        assert await usage_reconcile.run_pass(None, days=2) is None
         assert published == []  # a "0" here would say everything agrees, from a pass that proved nothing
 
 
@@ -80,7 +80,7 @@ class TestFirstFailureIsVisible:
                 outcome = labels["outcome"]
                 return type("Bound", (), {"inc": lambda _self, amount=1: added.append((outcome, amount))})()
 
-        monkeypatch.setattr(metrics, "agent_credit_reconcile_total", Recorder())
+        monkeypatch.setattr(metrics, "agent_usage_reconcile_total", Recorder())
 
         reconcile.prime_outcomes()
 
@@ -110,18 +110,18 @@ class TestTheGatewayKey:
         monkeypatch.delenv("LITELLM_MASTER_KEY", raising=False)
 
         with pytest.raises(SystemExit, match="LITELLM_MASTER_KEY"):
-            credit_reconcile.gateway_client(no_gateway=False)
+            usage_reconcile.gateway_client(no_gateway=False)
 
     def test_no_gateway_is_the_one_way_to_run_without_it(self, monkeypatch):
         monkeypatch.delenv("LITELLM_MASTER_KEY", raising=False)
 
-        assert credit_reconcile.gateway_client(no_gateway=True) is None
+        assert usage_reconcile.gateway_client(no_gateway=True) is None
 
     async def test_the_key_and_address_come_from_the_environment(self, monkeypatch):
         monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-from-env")
         monkeypatch.setenv("LITELLM_URL", "http://gateway.internal:4000")
 
-        client = credit_reconcile.gateway_client(no_gateway=False)
+        client = usage_reconcile.gateway_client(no_gateway=False)
 
         assert client is not None
         assert client.headers["authorization"] == "Bearer sk-from-env"
@@ -137,14 +137,14 @@ class TestTheWorker:
             passes.append(days)
             return DRIFT
 
-        monkeypatch.setattr(credit_reconcile, "run_pass", fake_pass)
+        monkeypatch.setattr(usage_reconcile, "run_pass", fake_pass)
         monkeypatch.setattr(reconcile, "publish_gauges", lambda report: heartbeats.append(report))
-        monkeypatch.setattr(credit_reconcile, "HEARTBEAT_SECONDS", 0.02)
-        monkeypatch.setattr(credit_reconcile, "CREDIT_RECONCILE_INTERVAL_SECONDS", 0.1)
-        monkeypatch.setattr(credit_reconcile, "gateway_client", lambda **kw: None)
+        monkeypatch.setattr(usage_reconcile, "HEARTBEAT_SECONDS", 0.02)
+        monkeypatch.setattr(usage_reconcile, "USAGE_RECONCILE_INTERVAL_SECONDS", 0.1)
+        monkeypatch.setattr(usage_reconcile, "gateway_client", lambda **kw: None)
         asyncio.get_running_loop().call_later(0.35, os.kill, os.getpid(), signal.SIGTERM)
 
-        code = await credit_reconcile.run(loop=True, days=3, as_json=False, no_gateway=True)
+        code = await usage_reconcile.run(loop=True, days=3, as_json=False, no_gateway=True)
 
         assert code == 0
         assert len(passes) >= 2 and set(passes) == {3}
@@ -156,14 +156,14 @@ class TestTheWorker:
         async def failing_pass(client, *, days):
             passes.append(1)
 
-        monkeypatch.setattr(credit_reconcile, "run_pass", failing_pass)
+        monkeypatch.setattr(usage_reconcile, "run_pass", failing_pass)
         monkeypatch.setattr(reconcile, "publish_gauges", lambda report: heartbeats.append(report))
-        monkeypatch.setattr(credit_reconcile, "HEARTBEAT_SECONDS", 0.02)
-        monkeypatch.setattr(credit_reconcile, "CREDIT_RECONCILE_INTERVAL_SECONDS", 0.06)
-        monkeypatch.setattr(credit_reconcile, "gateway_client", lambda **kw: None)
+        monkeypatch.setattr(usage_reconcile, "HEARTBEAT_SECONDS", 0.02)
+        monkeypatch.setattr(usage_reconcile, "USAGE_RECONCILE_INTERVAL_SECONDS", 0.06)
+        monkeypatch.setattr(usage_reconcile, "gateway_client", lambda **kw: None)
         asyncio.get_running_loop().call_later(0.25, os.kill, os.getpid(), signal.SIGTERM)
 
-        await credit_reconcile.run(loop=True, days=2, as_json=False, no_gateway=True)
+        await usage_reconcile.run(loop=True, days=2, as_json=False, no_gateway=True)
 
         assert len(passes) >= 2 and heartbeats == []
 
@@ -171,9 +171,9 @@ class TestTheWorker:
         async def fake_pass(client, *, days):
             return DRIFT
 
-        monkeypatch.setattr(credit_reconcile, "run_pass", fake_pass)
+        monkeypatch.setattr(usage_reconcile, "run_pass", fake_pass)
 
-        code = await credit_reconcile.run(loop=False, days=2, as_json=True, no_gateway=True)
+        code = await usage_reconcile.run(loop=False, days=2, as_json=True, no_gateway=True)
 
         assert code == 1
         assert '"outcome": "drift"' in capsys.readouterr().out
@@ -182,7 +182,7 @@ class TestTheWorker:
         async def fake_pass(client, *, days):
             return None
 
-        monkeypatch.setattr(credit_reconcile, "run_pass", fake_pass)
+        monkeypatch.setattr(usage_reconcile, "run_pass", fake_pass)
 
-        assert await credit_reconcile.run(loop=False, days=2, as_json=False, no_gateway=True) == 2
+        assert await usage_reconcile.run(loop=False, days=2, as_json=False, no_gateway=True) == 2
         assert "Nothing was proven either way" in capsys.readouterr().out

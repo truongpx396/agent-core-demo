@@ -1,22 +1,23 @@
-"""The billing port: the one seam between the agent app and the wallet (specs/011-billing-module-boundary, D18, D19).
+"""The billing port seen from the agent app: the one seam between the agent and billing (specs/011-billing-module-boundary, D18, D19; specs/013).
 
-`packages/billing/src/credit_billing/port.py` is the contract (`WalletPort`) and `app/billing_integration/port.py` is the module host code
-imports. These tests prove what a seam is for, in four steps:
+`packages/billing/src/credit_billing/port.py` is the contract (`BillingPort`) and `app/billing_integration/port.py` is the module host code
+imports. The package's own tests prove its implementation is the contract and adds nothing (packages/billing/tests/test_port.py). These prove the
+agent's side, in three steps:
 
-  1. the implementation that exists IS the contract, down to the signature, so a drift fails here and not in production;
-  2. it adds nothing: each call reaches `credits` with exactly the arguments the host used to pass directly;
-  3. a DIFFERENT implementation of the protocol, installed where the host looks, drives the charge, the gate and
+  1. what the agent calls has the contract's exact signature, so a drift fails here and not in production;
+  2. a DIFFERENT implementation of the protocol, installed where the host looks, drives the hand-off of a usage event, the credit gate and
      `GET /usage` while the real wallet is rigged to fail the test if it is touched, so the seam is real and complete;
-  4. the failure behaviour a host depends on (a wallet fault never loses the usage event; an unreadable wallet follows
-     `CREDIT_CHECK_FAILURE_POLICY`) is a property of the host's call sites, not of the in-process implementation.
+  3. a fault behind the seam never costs the agent its own record.
 
-What the wallet's SQL does is proven against a real Postgres elsewhere (tests/integration/test_credit_charge_real_postgres.py
-runs the whole charge through this seam).
+What billing then DOES with a usage event (rating, the wallet, the export) is the package's: packages/billing/tests/. The whole path against a
+real Postgres is tests/integration/test_billing_hand_off_real_postgres.py.
 """
 import inspect
 import logging
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,15 +25,15 @@ from app.agent import budget_holds, budgets, spend, usage_events
 from app.api.routers import usage as usage_router
 from app.billing_integration import port as billing_port
 from app.core import metrics
-from credit_billing import credits
+from credit_billing import admission, credits, usage
+from credit_billing import metrics as billing_metrics
 from credit_billing import port as core_port
 from tests.conftest import TEST_CTX, metric_value
 
 D = Decimal
 NOW = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
-GATE = budgets.CreditGate(credits_per_usd=D("1000"), markup=D("1"), fail_policy="open")
-CLOSED = budgets.CreditGate(credits_per_usd=D("1000"), markup=D("1"), fail_policy="closed")
-OPERATIONS = ("record_usage_in", "account_balance")
+OPERATIONS = ("record_usage_in", "account_balance", "admit", "credit_summary")
+_REAL_INSERT = usage_events._insert  # imported before any autouse fixture patches it
 
 
 def _shape(function) -> tuple:
@@ -44,185 +45,153 @@ def _shape(function) -> tuple:
     )
 
 
-# --- 1. the implementation is the contract -------------------------------------------------------------------------
-
-def test_the_contract_names_exactly_the_two_operations_the_host_uses():
-    """A third operation arriving by accident would widen what every future implementation (a network client) must offer."""
-    public = {name for name, member in vars(core_port.WalletPort).items() if not name.startswith("_") and callable(member)}
-
-    assert public == set(OPERATIONS)
-
-
-def test_the_in_process_wallet_is_an_implementation_of_the_contract():
-    assert isinstance(core_port.InProcessWallet(), core_port.WalletPort)
-
-
-@pytest.mark.parametrize("name", OPERATIONS)
-def test_the_in_process_wallet_has_the_contracts_exact_signature(name):
-    assert _shape(getattr(core_port.InProcessWallet, name)) == _shape(getattr(core_port.WalletPort, name))
-
+# --- 1. the agent calls the contract ---------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", OPERATIONS)
 def test_what_the_host_calls_has_the_contracts_exact_signature(name):
-    assert _shape(getattr(billing_port, name)) == _shape(getattr(core_port.WalletPort, name))
+    assert _shape(getattr(billing_port, name)) == _shape(getattr(core_port.BillingPort, name))
 
 
-def test_rating_is_the_same_function_on_both_sides_of_the_seam():
-    for cost, rate, markup in [(D("0.0000004"), D("1000"), D("1")), (D("0.0123"), D("1000"), D("1.5")), (0.0123, D("1000"), D("1")), (D("0"), D("1"), D("1"))]:
-        assert billing_port.credits_for_cost(cost, rate, markup) == credits.credits_for_cost(cost, rate, markup)
-        assert core_port.credits_for_cost(cost, rate, markup) == credits.credits_for_cost(cost, rate, markup)
+def test_the_host_reaches_the_package_only_through_the_data_types_the_port_re_exports():
+    for name in ("Usage", "Recorded", "Admission", "CreditSummary", "Balance"):
+        assert getattr(billing_port, name) is getattr(core_port, name)
 
 
-# --- 2. it adds nothing --------------------------------------------------------------------------------------------
+# --- 2. a different implementation drives the whole host path ------------------------------------------------------
 
-async def test_record_usage_in_reaches_debit_in_with_exactly_the_arguments_the_host_used_to_pass(monkeypatch):
-    seen = {}
-
-    async def debit_in(conn, tenant, amount, **kwargs):
-        seen.update(conn=conn, tenant=tenant, amount=amount, kwargs=kwargs)
-        return credits.Applied("applied", "tx-1", D("10"))
-
-    monkeypatch.setattr(credits, "debit_in", debit_in)
-    pricing = credits.Pricing(cost_usd=D("0.01"), credits_per_usd=D("1000"), markup=D("1"))
-
-    applied = await billing_port.record_usage_in("THE-CONNECTION", "acme", D("10"), event_id="ev-1", kind="chat", pricing=pricing)
-
-    assert seen == {
-        "conn": "THE-CONNECTION",
-        "tenant": "acme",
-        "amount": D("10"),
-        "kwargs": {"idempotency_key": "ev-1", "usage_event_id": "ev-1", "reason": "model call (chat)", "pricing": pricing},
-    }, "the event id is the idempotency key AND the lineage id, the reason names the call's kind, the pricing rides along"
-    assert applied == credits.Applied("applied", "tx-1", D("10"))
-
-
-async def test_account_balance_reaches_the_wallet_and_passes_a_missing_wallet_through_as_none(monkeypatch):
-    reads = []
-    balance = credits.Balance(available=D("3"), ledger=D("3"), debt=D("0"))
-
-    async def account_balance(tenant):
-        reads.append(tenant)
-        return None if tenant == "nobody" else balance
-
-    monkeypatch.setattr(credits, "account_balance", account_balance)
-
-    assert await billing_port.account_balance("acme") == balance
-    assert await billing_port.account_balance("nobody") is None, "no wallet is None, never a zero balance (spec D8)"
-    assert reads == ["acme", "nobody"]
-
-
-# --- 3. a different implementation drives the whole host path ------------------------------------------------------
-
-class StubWallet:
-    """Implements `WalletPort` and nothing else. Records what it was asked; can be told to fail."""
+class StubBilling:
+    """Implements `BillingPort` and nothing else. Records what it was asked; can be told to fail."""
 
     def __init__(self) -> None:
-        self.writes: list[tuple] = []
+        self.records: list[tuple] = []
         self.reads: list[str] = []
-        self.balance: credits.Balance | None = None
+        self.admissions: list[tuple] = []
+        self.answer = billing_port.Admission("allowed")
+        self.summary: billing_port.CreditSummary | None = None
         self.error: Exception | None = None
 
-    async def record_usage_in(self, conn, tenant, amount, *, event_id, kind, pricing=None):
-        self.writes.append((conn, tenant, amount, event_id, kind, pricing))
+    async def record_usage_in(self, conn, usage):
+        self.records.append((conn, usage))
         if self.error:
             raise self.error
-        return credits.Applied("applied")
+        return billing_port.Recorded("recorded")
 
     async def account_balance(self, tenant):
         self.reads.append(tenant)
+        return None
+
+    async def admit(self, tenant, *, reserved_usd):
+        self.admissions.append((tenant, reserved_usd))
         if self.error:
             raise self.error
-        return self.balance
+        return self.answer
+
+    async def credit_summary(self, tenant):
+        self.reads.append(tenant)
+        if self.error:
+            raise self.error
+        return self.summary
 
 
 class Connection:
-    """Just enough connection for `_charge`: a savepoint that records how it ended."""
+    """Just enough connection for the agent's insert: the statement it ran and whether a row was written."""
 
-    def __init__(self) -> None:
-        self.events: list[str] = []
+    def __init__(self, rowcount: int = 1) -> None:
+        self.rowcount = rowcount
+        self.statements: list[tuple] = []
 
-    def transaction(self):
-        events = self.events
-
-        class Savepoint:
-            async def __aenter__(self):
-                events.append("savepoint")
-                return self
-
-            async def __aexit__(self, exc_type, exc, tb):
-                events.append("rolled back" if exc_type else "released")
-                return False
-
-        return Savepoint()
+    async def execute(self, sql, params=None):
+        self.statements.append((sql, params))
+        return SimpleNamespace(rowcount=self.rowcount)
 
 
 @pytest.fixture
 def stub(monkeypatch):
-    """The stub installed where the host looks, with the REAL wallet rigged to fail the test if anything reaches it."""
-    def real_wallet_touched(*args, **kwargs):
-        raise AssertionError("the real wallet was reached: the host did not go through the port")
+    """The stub installed where the host looks, with the REAL package rigged to fail the test if anything reaches it."""
 
-    monkeypatch.setattr(credits, "debit_in", real_wallet_touched)
-    monkeypatch.setattr(credits, "account_balance", real_wallet_touched)
-    wallet = StubWallet()
-    assert isinstance(wallet, core_port.WalletPort), "the stub must itself satisfy the contract"
-    monkeypatch.setattr(billing_port, "wallet", wallet)
-    return wallet
+    def real_billing_touched(*args, **kwargs):
+        raise AssertionError("the real billing package was reached: the host did not go through the port")
+
+    monkeypatch.setattr(usage, "record_usage_in", real_billing_touched)
+    monkeypatch.setattr(admission, "admit", real_billing_touched)
+    monkeypatch.setattr(credits, "account_balance", real_billing_touched)
+    billing = StubBilling()
+    assert isinstance(billing, core_port.BillingPort), "the stub must itself satisfy the contract"
+    monkeypatch.setattr(billing_port, "billing", billing)
+    return billing
 
 
 ROW = {
-    "tenant": "acme", "credits": D("5"), "event_id": "ev-9", "kind": "chat",
-    "cost_usd": D("0.005"), "credits_per_usd": D("1000"), "markup": D("1"),
+    "event_id": "ev-9", "tenant": "acme", "principal": "alice", "thread_id": "t", "kind": "chat", "model_alias": "chat",
+    "resolved_model": "gpt-resolved", "input_tokens": 100, "output_tokens": 50, "cached_input_tokens": 0, "total_tokens": 150,
+    "cost_usd": 0.0123, "price_input_per_token": 0.0001, "price_output_per_token": 0.0002,
 }
 
 
-def _degraded(path: str) -> float:
-    return metric_value(metrics.agent_cost_governance_degraded_total, path=path)
+@pytest.fixture
+def connection(monkeypatch):
+    handed_out: list[Connection] = []
+    config = SimpleNamespace(rowcount=1)
+
+    @asynccontextmanager
+    async def get_connection():
+        conn = Connection(config.rowcount)
+        handed_out.append(conn)
+        yield conn
+
+    monkeypatch.setattr(usage_events, "get_connection", get_connection)
+    return SimpleNamespace(handed_out=handed_out, config=config)
 
 
-class TestTheChargeGoesThroughThePort:
-    async def test_the_usage_events_charge_reaches_the_installed_wallet_inside_its_savepoint(self, stub):
-        conn = Connection()
+class TestTheUsageEventIsHandedOverThroughThePort:
+    async def test_a_new_event_hands_billing_plain_facts_on_the_connection_it_was_inserted_on(self, stub, connection):
+        assert await _REAL_INSERT(dict(ROW)) is True
 
-        await usage_events._charge(conn, dict(ROW))
-
-        (written,) = stub.writes
-        assert written == (
-            conn, "acme", D("5"), "ev-9", "chat",
-            credits.Pricing(cost_usd=D("0.005"), credits_per_usd=D("1000"), markup=D("1")),
+        (conn,) = connection.handed_out
+        ((handed_conn, handed),) = stub.records
+        assert handed_conn is conn, "the same connection is the same transaction: the two commit or roll back together"
+        assert handed == billing_port.Usage(
+            tenant="acme", event_id="ev-9", kind="chat", cost_usd=0.0123, model="gpt-resolved", tokens=150
         )
-        assert conn.events == ["savepoint", "released"], "the debit runs on the event's own connection, inside a savepoint"
+        assert [sql.split()[0] for sql, _ in conn.statements] == ["INSERT"], "the agent's own insert is the only statement it runs"
 
-    async def test_a_wallet_that_fails_is_swallowed_counted_and_only_its_savepoint_is_undone(self, stub):
-        stub.error = RuntimeError("the wallet is down")
-        conn = Connection()
-        before = _degraded("credit_debit")
+    async def test_the_model_is_the_resolved_one_and_falls_back_to_the_alias(self, stub, connection):
+        await _REAL_INSERT(dict(ROW, resolved_model=None))
 
-        await usage_events._charge(conn, dict(ROW))  # must not raise: the meter outranks the charge
+        assert stub.records[0][1].model == "chat"
 
-        assert conn.events == ["savepoint", "rolled back"]
-        assert _degraded("credit_debit") == before + 1, "a failed debit is counted (alert CreditDebitFailing)"
+    async def test_an_unpriced_call_is_handed_over_as_unknown_never_zero(self, stub, connection):
+        await _REAL_INSERT(dict(ROW, cost_usd=None))
+
+        assert stub.records[0][1].cost_usd is None
+
+    async def test_a_duplicate_event_hands_billing_nothing(self, stub, connection):
+        connection.config.rowcount = 0  # ON CONFLICT DO NOTHING: the event was already there
+
+        assert await _REAL_INSERT(dict(ROW)) is False
+
+        assert stub.records == []
+
+    async def test_the_agents_insert_names_no_billing_column(self, stub, connection):
+        await _REAL_INSERT(dict(ROW))
+
+        sql = connection.handed_out[0].statements[0][0]
+        assert "credits" not in sql and "markup" not in sql and "outbox" not in sql
 
 
-    async def test_a_reused_event_id_with_a_different_request_is_swallowed_counted_and_named_in_the_log_and_the_event_is_kept(self, stub, caplog):
-        """Spec 012: the wallet now refuses a replay whose request differs. The meter still outranks the charge, so the usage event is kept;
-        the fault is counted like any other wallet fault (alert CreditDebitFailing) and the log says WHICH kind it was."""
-        stub.error = billing_port.IdempotencyConflict("ev-9", "acme", {"amount": ("5.000000", "6.000000")})
-        conn = Connection()
-        before = _degraded("credit_debit")
+class TestAFaultBehindThePortNeverCostsTheAgentItsOwnRecord:
+    async def test_an_implementation_that_raises_is_swallowed_counted_and_the_event_still_stands(self, stub, connection, caplog):
+        stub.error = RuntimeError("the billing service is down")
+        before = metric_value(billing_metrics.agent_cost_governance_degraded_total, path="billing_event_write")
+        write_before = metric_value(metrics.agent_cost_governance_degraded_total, path="usage_event_write")
 
         with caplog.at_level(logging.WARNING):
-            await usage_events._charge(conn, dict(ROW))  # must not raise
+            assert await _REAL_INSERT(dict(ROW)) is True, "the agent's event was written; only the hand-off failed"
 
-        assert conn.events == ["savepoint", "rolled back"], "only the debit's savepoint is undone"
-        assert _degraded("credit_debit") == before + 1
-        failed = next(r for r in caplog.records if r.getMessage() == "credit_debit_failed")
-        assert failed.error_class == "IdempotencyConflict"
-
-
-def test_the_conflict_error_is_one_class_whichever_module_it_is_reached_through():
-    assert billing_port.IdempotencyConflict is core_port.IdempotencyConflict is credits.IdempotencyConflict
-    assert issubclass(billing_port.IdempotencyConflict, ValueError)
+        assert metric_value(billing_metrics.agent_cost_governance_degraded_total, path="billing_event_write") == before + 1
+        assert metric_value(metrics.agent_cost_governance_degraded_total, path="usage_event_write") == write_before, "this is not a lost agent event"
+        failed = next(r for r in caplog.records if r.getMessage() == "billing_usage_hand_off_failed")
+        assert failed.error_class == "RuntimeError"
 
 
 class TestTheGateGoesThroughThePort:
@@ -233,36 +202,52 @@ class TestTheGateGoesThroughThePort:
 
         monkeypatch.setattr(budget_holds, "in_flight_reservation", nothing_in_flight)
 
-    async def _check(self, gate=GATE):
-        return await budgets.check_allowance(TEST_CTX, limits=[], fail_policy="open", now=NOW, credit_gate=gate)
+    async def _check(self):
+        return await budgets.check_allowance(TEST_CTX, limits=[], fail_policy="open", now=NOW)
 
-    async def test_a_tenant_with_credit_is_served_and_the_wallet_read_is_the_stubs(self, stub):
-        stub.balance = credits.Balance(available=D("100"), ledger=D("100"), debt=D("0"))
+    async def test_an_allowed_answer_serves_the_turn_and_only_the_callers_own_tenant_is_asked_about(self, stub):
+        allowance = await self._check()
+
+        assert allowance.status == "ok" and not allowance.degraded
+        assert [tenant for tenant, _ in stub.admissions] == [TEST_CTX["tenant"]]
+
+    async def test_an_exhausted_answer_refuses_with_the_figures_it_carried(self, stub):
+        stub.answer = billing_port.Admission("exhausted", D("-3"), D("500"))
 
         allowance = await self._check()
 
-        assert allowance.status == "ok"
-        assert stub.reads == [TEST_CTX["tenant"]], "only the caller's own tenant is read"
+        assert allowance.status == "insufficient_credits" and allowance.refused
+        assert (allowance.available_credits, allowance.reserved_credits) == (D("-3"), D("500"))
 
-    async def test_a_tenant_with_a_wallet_and_nothing_in_it_is_refused(self, stub):
-        stub.balance = credits.Balance(available=D("0"), ledger=D("0"), debt=D("0"))
+    async def test_an_unavailable_answer_refuses_as_unavailable_which_blames_no_ones_balance(self, stub):
+        stub.answer = billing_port.Admission("unavailable")
 
-        assert (await self._check()).refused
+        allowance = await self._check()
 
-    async def test_a_tenant_with_no_wallet_is_never_gated(self, stub):
-        stub.balance = None
+        assert allowance.status == "unavailable" and allowance.refused
+        assert budgets.refusal_envelope(allowance).code.value == "budget_check_unavailable"
 
-        assert (await self._check()).status == "ok"
+    async def test_a_degraded_answer_serves_the_turn_and_marks_it_unverified(self, stub):
+        stub.answer = billing_port.Admission("degraded")
 
-    async def test_an_unreadable_wallet_follows_the_failure_policy_the_deployment_chose(self, stub):
-        stub.error = RuntimeError("the wallet is down")
-        before = _degraded("credit_read")
+        allowance = await self._check()
 
-        served = await self._check(GATE)  # open: serve the turn, counted
-        refused = await self._check(CLOSED)  # closed: refuse it, counted
+        assert allowance.status == "ok" and allowance.degraded is True
 
-        assert served.status == "ok" and refused.status == "unavailable"
-        assert _degraded("credit_read") == before + 2
+    async def test_the_holds_are_handed_over_lazily_so_a_gate_that_does_not_need_them_never_pays_for_the_read(self, stub, monkeypatch):
+        reads = []
+
+        async def in_flight(tenant):
+            reads.append(tenant)
+            return 0.25
+
+        monkeypatch.setattr(budget_holds, "in_flight_reservation", in_flight)
+
+        await self._check()
+        assert reads == [], "the gate did not call the reader, so nothing was read"
+
+        _, reserved_usd = stub.admissions[0]
+        assert await reserved_usd() == 0.25 and reads == [TEST_CTX["tenant"]]
 
 
 class TestTheUsageEndpointGoesThroughThePort:
@@ -272,9 +257,7 @@ class TestTheUsageEndpointGoesThroughThePort:
 
         monkeypatch.setattr(spend, "usage_summary", usage_summary)
         monkeypatch.setattr(usage_router, "MAX_COST_USD_PER_TENANT_PER_DAY", 20.0)
-        monkeypatch.setattr(usage_router, "CREDITS_PER_USD", D("1000"))
-        monkeypatch.setattr(usage_router, "CREDITS_ENFORCEMENT", True)
-        stub.balance = credits.Balance(available=D("12.5"), ledger=D("12.5"), debt=D("0"))
+        stub.summary = billing_port.CreditSummary(credits.Balance(D("12.5"), D("12.5"), D("0")), enforced=True)
 
         result = await usage_router.usage(ctx=TEST_CTX)
 

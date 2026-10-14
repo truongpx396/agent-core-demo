@@ -80,3 +80,38 @@ def test_every_outcome_the_code_can_emit_is_one_the_series_are_created_for():
 @pytest.mark.parametrize("outcome", ["quarantined", "failed"])
 def test_the_two_alerted_outcomes_are_among_them(outcome):
     assert outcome in metrics.WEBHOOK_OUTCOMES
+
+
+# --- the paths and outcomes spec 013 moved into the package ------------------------------------------------------------
+
+def _paths_counted_in(module) -> set[str]:
+    """Every literal `path` a module passes to `agent_cost_governance_degraded_total.labels(path=...)` or to its own `_degrade(...)` helper."""
+    found: set[str] = set()
+    for call in ast.walk(ast.parse(Path(module.__file__).read_text(encoding="utf-8"))):
+        if not isinstance(call, ast.Call):
+            continue
+        if getattr(call.func, "id", "") == "_degrade" and call.args and isinstance(call.args[0], ast.Constant):
+            found.add(call.args[0].value)
+        if getattr(call.func, "attr", "") == "labels":
+            found |= {kw.value.value for kw in call.keywords if kw.arg == "path" and isinstance(kw.value, ast.Constant)}
+    return found
+
+
+def test_every_degraded_path_the_code_can_count_is_one_the_alerts_were_written_for():
+    """A new path nobody alerts on would be a silent failure: add it to DEGRADED_PATHS and give it an alert in observability/alerts.yml."""
+    from credit_billing import admission, usage
+
+    assert _paths_counted_in(usage) | _paths_counted_in(admission) == set(metrics.DEGRADED_PATHS)
+
+
+def test_every_reconcile_outcome_the_code_records_is_one_the_priming_creates():
+    from credit_billing import reconcile
+    from credit_billing.cli import reconcile as cli
+
+    recorded = {
+        call.args[0].value
+        for call in ast.walk(ast.parse(Path(cli.__file__).read_text(encoding="utf-8")))
+        if isinstance(call, ast.Call) and getattr(call.func, "attr", "") == "record_outcome" and isinstance(call.args[0], ast.Constant)
+    }
+
+    assert recorded <= set(reconcile.OUTCOMES) and "failed" in recorded

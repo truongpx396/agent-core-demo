@@ -1,21 +1,21 @@
-"""One reconciliation pass end to end (packages/billing/src/credit_billing/reconcile.py::reconcile), with the database reads replaced by figures so every
-disagreement is chosen by the test; the same pass against a real Postgres is tests/integration/test_reconcile_real_postgres.py.
+"""One reconciliation pass end to end (app/agent/usage_reconcile.py::reconcile), with the database reads replaced by figures so every
+disagreement is chosen by the test; the same pass against a real Postgres is tests/integration/test_usage_reconcile_real_postgres.py.
 
-The headline (specs/010 T026): delete ONE usage event and the report names the tenant, the day and the amount."""
+The headline (specs/010 T026): delete ONE usage event and the report names the tenant, the day and the amount. (The wallet half, was every
+usage worth credits charged?, is the billing package's: packages/billing/tests/test_reconcile.py.)"""
 import json
 from datetime import UTC, date, datetime
 from decimal import Decimal as D
 
 import httpx
 import pytest
-from psycopg import errors as pg_errors
 
+from app.agent import usage_reconcile as reconcile
 from app.agent.gateway import end_user_id
-from app.billing_integration import reconcile
-from app.billing_integration.reconcile import Report, Tolerance, Window
+from app.agent.usage_reconcile import Report, Tolerance, Window
 from app.core import metrics
-from tests.billing.fake_gateway import FakeGateway, spend_row
-from tests.conftest import _METRIC_READER, metric_value
+from tests.agent.fake_gateway import FakeGateway, spend_row
+from tests.conftest import metric_value
 
 DAY = date(2026, 10, 6)
 WINDOW = Window(datetime(2026, 10, 6, tzinfo=UTC), datetime(2026, 10, 6, 18, 0, tzinfo=UTC))
@@ -25,8 +25,8 @@ STRICT = Tolerance(usd=D("0.001"), pct=D("0"))
 
 @pytest.fixture
 def sources(monkeypatch):
-    """The records and the wallet, as a test sets them: events and uncharged by (tenant, day)."""
-    state = {"events": {}, "unpriced": {}, "uncharged": {}, "tenants": {"acme"}, "wallet": (D("0"), D("0"))}
+    """The records, as a test sets them: events by (tenant, day) and the tenants the database knows."""
+    state = {"events": {}, "unpriced": {}, "tenants": {"acme"}}
 
     async def events(window):
         return dict(state["events"]), dict(state["unpriced"]), len(state["events"])
@@ -34,16 +34,8 @@ def sources(monkeypatch):
     async def tenants():
         return set(state["tenants"])
 
-    async def uncharged(window):
-        return dict(state["uncharged"]), {key: f"{n} event(s) never debited" for key, n in state["uncharged"].items()}
-
-    async def wallet():
-        return state["wallet"]
-
     monkeypatch.setattr(reconcile, "events_by_tenant_day", events)
-    monkeypatch.setattr(reconcile, "wallet_tenants", tenants)
-    monkeypatch.setattr(reconcile, "uncharged_by_tenant_day", uncharged)
-    monkeypatch.setattr(reconcile, "wallet_totals", wallet)
+    monkeypatch.setattr(reconcile, "known_tenants", tenants)
     return state
 
 
@@ -93,7 +85,7 @@ class TestADeletedEvent:
         assert "a call whose event was never written" in text
 
     async def test_a_tenant_whose_every_event_is_gone_is_still_named_from_the_gateway_alone(self, sources):
-        sources["tenants"] = {"acme"}  # a tenant the database still knows by its wallet (credit_accounts)
+        sources["tenants"] = {"acme"}  # a tenant the database still knows by its earlier events
 
         report = await run(gateway_saw(2.0))
 
@@ -117,24 +109,6 @@ class TestEveryComparisonStandsOnItsOwn:
         (finding,) = report.findings
         assert finding.kind == "gateway" and finding.drift == D("-1.0")
         assert report.max_drift_usd == D("1.0")  # the size of the gap, whichever side is larger: a signed maximum would read it as zero
-
-    async def test_an_uncharged_event_is_named_and_counts_toward_the_largest_drift(self, sources):
-        sources["events"] = {("acme", DAY): D("0.25")}
-        sources["uncharged"] = {("acme", DAY): D("0.25")}
-
-        report = await run(gateway_saw(0.25))
-
-        (finding,) = report.findings
-        assert (finding.kind, finding.tenant, finding.actual) == ("uncharged", "acme", D("0.25"))
-        assert "never debited" in finding.note and report.max_drift_usd == D("0.25")
-
-    async def test_an_uncharged_event_is_exact_with_no_tolerance_to_hide_a_day_of_cheap_calls_in(self, sources):
-        sources["events"] = {("acme", DAY): D("0.000004")}
-        sources["uncharged"] = {("acme", DAY): D("0.000004")}
-
-        report = await run(gateway_saw(0.000004), tolerance=Tolerance(usd=D("1"), pct=D("50")))
-
-        assert [f.kind for f in report.findings] == ["uncharged"]
 
     async def test_an_unpriced_event_is_named_beside_the_gateway_gap_it_explains(self, sources):
         sources["events"] = {("acme", DAY): D("0")}
@@ -173,24 +147,11 @@ class TestWhatItCannotCompareIsSaidNotSkippedSilently:
         assert report.outcome == "ok" and report.gateway_rows is None
         assert "gateway: not compared (not requested)" in report.skipped
 
-    @pytest.mark.parametrize("error", [pg_errors.UndefinedTable, pg_errors.UndefinedColumn])
-    async def test_a_deployment_without_the_wallet_tables_still_gets_the_other_comparisons(self, sources, monkeypatch, error):
-        async def missing(window):
-            raise error("relation or column does not exist")
-
-        monkeypatch.setattr(reconcile, "uncharged_by_tenant_day", missing)
-        sources["events"] = {("acme", DAY): D("1.0")}
-
-        report = await run(gateway_saw(3.0))
-
-        assert [f.kind for f in report.findings] == ["gateway"]
-        assert any(s.startswith("wallet: not checked") for s in report.skipped)
-
     async def test_an_empty_window_reads_nothing_and_says_why(self, monkeypatch):
         async def never(*args, **kwargs):
             raise AssertionError("an empty window must not touch the database")
 
-        for name in ("events_by_tenant_day", "wallet_tenants"):
+        for name in ("events_by_tenant_day", "known_tenants"):
             monkeypatch.setattr(reconcile, name, never)
 
         report = await reconcile.reconcile(Window(WINDOW.end, WINDOW.start))
@@ -206,46 +167,23 @@ class TestWhatItCannotCompareIsSaidNotSkippedSilently:
                 await reconcile.reconcile(WINDOW, gateway_client=client, tolerance=STRICT)
 
 
-def snapshot(gauge) -> dict[str, float]:
-    """Every `state` point the gauge holds right now, from one collection."""
-    data = _METRIC_READER.get_metrics_data()
-    found: dict[str, float] = {}
-    for resource_metrics in data.resource_metrics if data else []:
-        for scope_metrics in resource_metrics.scope_metrics:
-            for metric in scope_metrics.metrics:
-                if metric.name == gauge.name:
-                    found |= {point.attributes["state"]: point.value for point in metric.data.data_points}
-    return found
-
-
 class TestWhatItPublishes:
     def test_the_gauge_carries_the_largest_drift_and_returns_to_zero_when_it_is_fixed(self):
         drifted = Report(WINDOW, STRICT, findings=[reconcile.Finding("gateway", "acme", DAY, D("0"), D("0.5"))])
 
         reconcile.publish_gauges(drifted)
-        assert metric_value(metrics.agent_credit_reconcile_max_drift_usd) == 0.5
+        assert metric_value(metrics.agent_usage_reconcile_max_drift_usd) == 0.5
 
         reconcile.publish_gauges(Report(WINDOW, STRICT))
-        assert metric_value(metrics.agent_credit_reconcile_max_drift_usd) == 0
-
-    def test_the_outstanding_credits_are_published_only_when_the_wallet_was_read(self):
-        reconcile.publish_gauges(Report(WINDOW, STRICT, outstanding_live=D("1250.5"), outstanding_debt=D("40")))
-
-        # ONE snapshot: collecting clears a synchronous gauge, so two reads would find the second series already gone.
-        assert snapshot(metrics.agent_credit_outstanding) == {"available": 1250.5, "debt": 40}
-
-    def test_a_pass_that_could_not_read_the_wallet_leaves_the_balance_gauges_alone(self):
-        reconcile.publish_gauges(Report(WINDOW, STRICT))
-
-        assert snapshot(metrics.agent_credit_outstanding) == {}
+        assert metric_value(metrics.agent_usage_reconcile_max_drift_usd) == 0
 
     def test_each_outcome_is_counted_under_its_own_label(self):
-        before = {o: metric_value(metrics.agent_credit_reconcile_total, outcome=o) for o in ("ok", "drift", "incomplete", "failed")}
+        before = {o: metric_value(metrics.agent_usage_reconcile_total, outcome=o) for o in ("ok", "drift", "incomplete", "failed")}
 
         for outcome in ("ok", "drift", "incomplete", "failed", "failed"):
             reconcile.record_outcome(outcome)
 
-        assert {o: metric_value(metrics.agent_credit_reconcile_total, outcome=o) - before[o] for o in before} == {
+        assert {o: metric_value(metrics.agent_usage_reconcile_total, outcome=o) - before[o] for o in before} == {
             "ok": 1, "drift": 1, "incomplete": 1, "failed": 2,
         }
 

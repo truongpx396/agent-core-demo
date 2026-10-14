@@ -1,19 +1,17 @@
-"""Usage export against a REAL Postgres (postgres-init/23-usage-export-outbox.sql; app/agent/usage_events.py,
-packages/billing/src/credit_billing/export.py): each usage event reaches a billing provider exactly once, or fails loudly.
+"""Usage export against a REAL Postgres (sql/24-billing-usage-events.sql and 25-billing-export-outbox.sql; credit_billing/export.py; moved from the agent
+app with the code by specs/013): each usage event reaches a billing provider exactly once, or fails loudly.
 
-Every guarantee here is database behaviour, so a fake would only echo back what was written (constitution VII:
-reliance on a real constraint, lock or transaction is stated and tested at this tier, not assumed):
+Every guarantee here is database behaviour, so a fake would only echo back what was written (constitution VII: reliance on a real constraint,
+lock or transaction is stated and tested at this tier, not assumed):
 
-  * the outbox row commits WITH its usage event (one transaction), only for a tenant linked to a provider that bills on
-    usage, and a replay queues nothing twice;
   * `FOR UPDATE SKIP LOCKED` means two workers running at once take disjoint batches: no event is sent twice;
   * a crash between "the provider accepted it" and "marked sent" re-sends the event, and the provider's idempotency key (the
     event id) is what makes that harmless: the one window the database cannot see, shown to be survivable;
   * an event past the age limit is `expired`, counted, and never sent: given up on BEFORE the provider's own window closes;
-  * the rows are guarded by the schema: finished is terminal, identity is immutable, an event cannot be exported under another
-    tenant, and an event with an outbox row cannot be deleted out from under it;
-  * `usage_events` keeps exactly ONE unique constraint, because a second breaks the `ON CONFLICT (event_id)` duplicate story
-    under concurrency (found by this file's own 20-writers test failing 3 runs in 40).
+  * the rows are guarded by the schema: finished is terminal, identity is immutable, and an event cannot be exported under another tenant.
+
+(That the outbox row commits WITH its usage event, only for a tenant linked to a provider that bills on usage, and that a replay queues nothing
+twice, is tests/integration/test_usage_real_postgres.py: the recording is `credit_billing/usage.py`'s.)
 
 Each test uses its own tenant, customer AND PROVIDER NAME (the outbox is shared across tests and the worker drains every due
 row of a provider, so a shared name would let one test send another's rows).
@@ -27,10 +25,7 @@ import psycopg
 import pytest
 from psycopg import errors as pg_errors
 
-from app.agent import usage_events
-from app.billing_integration import export
-from app.core import metrics
-from credit_billing import providers, store
+from credit_billing import export, metrics, store
 from credit_billing.providers.base import ExportResult
 from credit_billing.providers.fake import FakeProvider
 from tests.conftest import metric_value
@@ -38,8 +33,6 @@ from tests.containers import ensure_postgres
 from tests.integration.schema_reapply import reapply
 
 pytestmark = pytest.mark.integration
-
-_REAL_INSERT = usage_events._insert
 
 
 @pytest.fixture(scope="module")
@@ -54,9 +47,7 @@ def real_appdata(appdata_url, monkeypatch):
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:  # commits on a normal exit
             yield conn
 
-    for module in (usage_events, export):
-        monkeypatch.setattr(module, "get_connection", get_connection)
-    monkeypatch.setattr(usage_events, "_insert", _REAL_INSERT)  # the autouse sink replaced it
+    monkeypatch.setattr(export, "get_connection", get_connection)
 
 
 class World:
@@ -74,21 +65,21 @@ class World:
             await store.link_customer(conn, self.tenant, self.provider, self.customer)
 
     async def event(self, *, age_days: int = 0, tenant: str | None = None) -> str:
-        """A usage event written directly (so its age can be set); the real write path is exercised in TestQueuedWithTheEvent."""
+        """A usage event written directly (so its age can be set); the real write path is tests/integration/test_usage_real_postgres.py."""
         event_id = f"ev-{uuid.uuid4().hex[:12]}"
         async with await psycopg.AsyncConnection.connect(self.url) as conn:
             await conn.execute(
-                "INSERT INTO usage_events (event_id, tenant, principal, thread_id, kind, model_alias, total_tokens, cost_usd, credits, "
-                "credits_per_usd, markup, occurred_at) VALUES (%s, %s, 'p', 't', 'chat', 'chat', 150, 0.01, 10, 1000, 1, now() - make_interval(days => %s))",
-                (event_id, tenant or self.tenant, age_days),
+                "INSERT INTO billing_usage_events (tenant, event_id, kind, model, tokens, cost_usd, credits, credits_per_usd, markup, occurred_at) "
+                "VALUES (%s, %s, 'chat', 'chat', 150, 0.01, 10, 1000, 1, now() - make_interval(days => %s))",
+                (tenant or self.tenant, event_id, age_days),
             )
         return event_id
 
     async def queue(self, event_id: str, *, tenant: str | None = None, created_days_ago: int = 0) -> None:
         async with await psycopg.AsyncConnection.connect(self.url) as conn:
             await conn.execute(
-                "INSERT INTO usage_export_outbox (provider, event_id, tenant, created_at) VALUES (%s, %s, %s, now() - make_interval(days => %s))",
-                (self.provider, event_id, tenant or self.tenant, created_days_ago),
+                "INSERT INTO billing_export_outbox (provider, tenant, event_id, created_at) VALUES (%s, %s, %s, now() - make_interval(days => %s))",
+                (self.provider, tenant or self.tenant, event_id, created_days_ago),
             )
 
     async def ready(self, n: int = 1, **kwargs) -> list[str]:
@@ -102,7 +93,7 @@ class World:
     async def rows(self) -> dict[str, tuple]:
         async with await psycopg.AsyncConnection.connect(self.url) as conn:
             cur = await conn.execute(
-                "SELECT event_id, status, attempts, last_error_class, sent_at, next_attempt_at FROM usage_export_outbox WHERE provider = %s",
+                "SELECT event_id, status, attempts, last_error_class, sent_at, next_attempt_at FROM billing_export_outbox WHERE provider = %s",
                 (self.provider,),
             )
             return {row[0]: row[1:] for row in await cur.fetchall()}
@@ -119,80 +110,6 @@ class World:
 @pytest.fixture
 def world(appdata_url) -> World:
     return World(appdata_url)
-
-
-class TestQueuedWithTheEvent:
-    """The outbox row is written by the real `usage_events._insert`, in the event's own transaction."""
-
-    @pytest.fixture(autouse=True)
-    def exporting(self, world, monkeypatch):
-        monkeypatch.setattr(providers, "usage_export_providers", lambda names: (world.provider,))
-        monkeypatch.setattr(usage_events, "BILLING_PROVIDERS", (world.provider,))
-
-    def row(self, tenant: str, event_id: str | None = None) -> dict:
-        return {
-            "event_id": event_id or f"ev-{uuid.uuid4().hex[:12]}", "tenant": tenant, "principal": "alice", "thread_id": "t", "kind": "chat",
-            "model_alias": "chat", "resolved_model": None, "input_tokens": 100, "output_tokens": 50, "cached_input_tokens": 0,
-            "total_tokens": 150, "cost_usd": 0.01, "price_input_per_token": 0.0001, "price_output_per_token": 0.0002,
-        }
-
-    async def test_a_linked_tenants_event_is_queued_for_its_provider_in_the_same_transaction(self, world):
-        await world.link()
-        row = self.row(world.tenant)
-
-        assert await usage_events._insert(row) is True
-
-        assert set(await world.rows()) == {row["event_id"]}
-        assert (await world.rows())[row["event_id"]][0] == "pending"
-
-    async def test_a_tenant_with_no_link_gets_its_event_and_no_outbox_row(self, world):
-        row = self.row(world.tenant)
-
-        assert await usage_events._insert(row) is True
-
-        assert await world.rows() == {}
-
-    async def test_a_tenant_linked_to_a_different_provider_is_not_queued_for_this_one(self, world, appdata_url):
-        other = World(appdata_url)
-        await other.link()  # linked to ITS provider, not world's
-        row = self.row(other.tenant)
-
-        await usage_events._insert(row)
-
-        assert await world.rows() == {} and await other.rows() == {}, "the writing process only exports for providers it has enabled"
-
-    async def test_a_replayed_event_queues_nothing_twice(self, world):
-        await world.link()
-        row = self.row(world.tenant)
-
-        results = [await usage_events._insert(row) for _ in range(3)]
-
-        assert results == [True, False, False]
-        assert len(await world.rows()) == 1
-
-    async def test_twenty_concurrent_writers_of_one_event_queue_it_once(self, world):
-        await world.link()
-        row = self.row(world.tenant)
-
-        results = await asyncio.gather(*[usage_events._insert(row) for _ in range(20)])
-
-        assert results.count(True) == 1 and len(await world.rows()) == 1
-
-    async def test_a_failure_to_queue_keeps_the_event_and_is_counted(self, world, appdata_url, monkeypatch):
-        """A REAL database error inside the savepoint (the provider list is adapted to an integer array, so the comparison with
-        a text column is refused by Postgres), with nothing shared renamed or dropped: other workers use this table too."""
-        await world.link()
-        row = self.row(world.tenant)
-        monkeypatch.setattr(providers, "usage_export_providers", lambda names: (123,))
-        before = metric_value(metrics.agent_cost_governance_degraded_total, path="export_enqueue")
-
-        assert await usage_events._insert(row) is True, "the event was written; only its queuing failed"
-
-        assert metric_value(metrics.agent_cost_governance_degraded_total, path="export_enqueue") == before + 1
-        async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
-            cur = await conn.execute("SELECT count(*) FROM usage_events WHERE event_id = %s", (row["event_id"],))
-            assert (await cur.fetchone())[0] == 1, "the event stands"
-        assert await world.rows() == {}
 
 
 class TestOneDeliveryHoweverManyAttempts:
@@ -394,35 +311,22 @@ class TestTheSchemaGuards:
 
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
             with pytest.raises(pg_errors.RaiseException, match="finished"):
-                await conn.execute("UPDATE usage_export_outbox SET status = 'pending', sent_at = NULL WHERE provider = %s AND event_id = %s", (world.provider, event_id))
+                await conn.execute("UPDATE billing_export_outbox SET status = 'pending', sent_at = NULL WHERE provider = %s AND event_id = %s", (world.provider, event_id))
 
     async def test_what_a_row_is_never_changes(self, world, appdata_url):
         (event_id,) = await world.ready()
 
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
             with pytest.raises(pg_errors.RaiseException, match="never changes"):
-                await conn.execute("UPDATE usage_export_outbox SET tenant = 'someone-else' WHERE provider = %s AND event_id = %s", (world.provider, event_id))
+                await conn.execute("UPDATE billing_export_outbox SET tenant = 'someone-else' WHERE provider = %s AND event_id = %s", (world.provider, event_id))
 
-    async def test_an_event_cannot_be_queued_under_another_tenant(self, world, appdata_url):
-        """A bug cannot export one tenant's usage under another's name (a trigger: see the migration for why not a composite key)."""
+    async def test_an_event_cannot_be_queued_under_another_tenant(self, world):
+        """A bug cannot export one tenant's usage under another's name: the foreign key is on (tenant, event_id), so there is no such event."""
         await world.link()
         mine = await world.event()
 
-        with pytest.raises(pg_errors.RaiseException, match="own tenant"):
+        with pytest.raises(pg_errors.ForeignKeyViolation):
             await world.queue(mine, tenant="someone-else")
-
-    async def test_usage_events_keeps_exactly_one_unique_constraint_its_primary_key(self, appdata_url):
-        """A second one breaks `ON CONFLICT (event_id) DO NOTHING` under concurrency: two writers of one event can collide on the
-        non-arbiter index and get a UniqueViolation instead of a no-op (it surfaced here as a flaky 20-writers test, 3 in 40).
-        This pins the cause, deterministically, so nobody has to find it by a race again."""
-        async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
-            cur = await conn.execute(
-                "SELECT i.relname FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid "
-                "WHERE x.indrelid = 'usage_events'::regclass AND x.indisunique ORDER BY 1"
-            )
-            unique_indexes = [row[0] for row in await cur.fetchall()]
-
-        assert unique_indexes == ["usage_events_pkey"], f"usage_events has another unique index: {unique_indexes}"
 
     async def test_the_same_event_is_queued_once_per_provider(self, world):
         (event_id,) = await world.ready()
@@ -430,15 +334,5 @@ class TestTheSchemaGuards:
         with pytest.raises(pg_errors.UniqueViolation):
             await world.queue(event_id)
 
-    async def test_an_event_with_an_outbox_row_cannot_be_deleted_even_by_the_retention_job(self, world, appdata_url):
-        """The guard behind spec D7: nothing may trim a usage event that has not been exported. (A finished outbox row has
-        to be cleared first, on purpose.)"""
-        (event_id,) = await world.ready()
-
-        async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
-            await conn.execute("SELECT set_config('usage_events.allow_delete', 'on', true)")
-            with pytest.raises(pg_errors.ForeignKeyViolation):
-                await conn.execute("DELETE FROM usage_events WHERE event_id = %s", (event_id,))
-
     async def test_the_script_can_be_applied_twice(self, world, appdata_url):
-        await reapply(appdata_url, "23-usage-export-outbox.sql")  # no exception (see tests/integration/schema_reapply.py)
+        await reapply(appdata_url, "25-billing-export-outbox.sql")  # no exception (see tests/integration/schema_reapply.py)
