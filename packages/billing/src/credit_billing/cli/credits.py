@@ -19,6 +19,9 @@ PRINTED. Run the same command again with `--key <that key>` and a change that al
 changes nothing; run it again WITHOUT the key and it is, deliberately, a second change.
 
 Credits are exact decimals with at most six places. An amount is never read as a float.
+
+Exit status: 0 done (or a duplicate of a change that already landed), 1 nothing changed (no such wallet), 2 invalid input, 3 the
+database could not be reached (within a few seconds, with a one-line `error:` naming host, port and database, never the password).
 """
 import argparse
 import asyncio
@@ -31,7 +34,12 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
 from credit_billing import credits, db
-from credit_billing.cli._runtime import scheduled_job, wired_pool
+from credit_billing.cli._runtime import (
+    EXIT_DATABASE_UNAVAILABLE,
+    DatabaseUnavailable,
+    scheduled_job,
+    wired_pool,
+)
 from credit_billing.display import printable
 
 logger = logging.getLogger(__name__)
@@ -209,8 +217,11 @@ async def execute(args: argparse.Namespace) -> tuple[int, str]:
 
 
 async def _run(args: argparse.Namespace) -> tuple[int, str]:
-    async with wired_pool():
-        return await execute(args)
+    try:
+        async with wired_pool():
+            return await execute(args)
+    except DatabaseUnavailable as exc:
+        return EXIT_DATABASE_UNAVAILABLE, f"error: {exc}"
 
 
 def main(argv: Sequence[str] | None = None) -> None:

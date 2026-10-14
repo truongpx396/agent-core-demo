@@ -123,7 +123,7 @@ class FakePool:
         self.url, self.kwargs, self.events = url, kwargs, []
         FakePool.instances.append(self)
 
-    async def open(self, wait=False):
+    async def open(self, wait=False, timeout=30.0):
         self.events.append("open")
 
     async def close(self):
@@ -168,3 +168,183 @@ def test_the_database_url_and_collector_defaults_are_the_agent_apps(monkeypatch)
 
     assert settings.appdata_database_url == "postgresql://langfuse:langfuse@localhost:5432/appdata"
     assert settings.otel_exporter_otlp_endpoint == "http://localhost:4318"
+
+
+# --- a database that cannot be reached ---------------------------------------------------------------------------------
+
+SECRET = "hunter2-do-not-print"
+
+
+@pytest.fixture
+def closed_port_url():
+    """A URL to a local port that nothing listens on: the connection is refused at once, as with a stopped database."""
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    return f"postgresql://billing_user:{SECRET}@127.0.0.1:{port}/appdata"
+
+
+@pytest.fixture
+def fast_failure(monkeypatch):
+    """Shorten the wait so the test is quick, and keep the bootstrap away from any collector or global meter provider."""
+    monkeypatch.setattr(_runtime, "CONNECT_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+
+
+async def test_an_unreachable_database_raises_one_clear_error_that_never_carries_the_credentials(closed_port_url, fast_failure, monkeypatch):
+    monkeypatch.setattr(db, "_provider", None)
+
+    with pytest.raises(_runtime.DatabaseUnavailable) as raised:
+        async with _runtime.wired_pool(closed_port_url):
+            raise AssertionError("the block must not run: there is no database")
+
+    message = str(raised.value)
+    assert "127.0.0.1" in message and "/appdata" in message and "APPDATA_DATABASE_URL" in message
+    assert SECRET not in message and "billing_user" not in message, "the error is printed to a terminal or a log"
+    assert db._provider is None, "the core was never wired to a pool that does not work"
+
+
+async def test_the_error_is_raised_in_about_the_configured_wait_not_psycopgs_thirty_seconds(closed_port_url, fast_failure):
+    import time
+
+    started = time.monotonic()
+    with pytest.raises(_runtime.DatabaseUnavailable):
+        async with _runtime.wired_pool(closed_port_url):
+            pass
+
+    assert time.monotonic() - started < 5, "the wait is CONNECT_TIMEOUT_SECONDS, plus the time to stop the pool"
+
+
+def test_the_default_wait_is_short_enough_for_an_operator_and_a_cron_job():
+    assert _runtime.CONNECT_TIMEOUT_SECONDS <= 15, "psycopg's own default is 30 s"
+
+
+def test_a_url_that_does_not_parse_is_not_echoed():
+    assert _runtime._where("not a url :: with a secret") == "the configured database"
+    assert _runtime._where("postgresql://u:p@db.internal:6543/ledger") == "db.internal:6543/ledger"
+    assert _runtime._where("postgresql://u:p@/ledger") == "(default socket):5432/ledger"
+
+
+def test_credit_billing_exits_3_with_one_error_line_and_no_traceback(closed_port_url, fast_failure, monkeypatch, capsys):
+    from credit_billing.cli import credits as credits_cli
+
+    monkeypatch.setenv("APPDATA_DATABASE_URL", closed_port_url)
+
+    with pytest.raises(SystemExit) as exited:
+        credits_cli.main(["show", "--tenant", "acme"])
+
+    captured = capsys.readouterr()
+    assert exited.value.code == _runtime.EXIT_DATABASE_UNAVAILABLE == 3
+    assert captured.err.startswith("error: cannot open a connection to 127.0.0.1:")
+    assert "Traceback" not in captured.err and SECRET not in captured.err + captured.out
+    assert captured.out == "", "nothing is printed as a result when nothing could be read"
+
+
+def test_the_inbox_sweep_exits_3_with_one_error_line_and_no_traceback(closed_port_url, fast_failure, monkeypatch, capsys):
+    from credit_billing.cli import inbox_sweep
+
+    monkeypatch.setenv("APPDATA_DATABASE_URL", closed_port_url)
+
+    with pytest.raises(SystemExit) as exited:
+        inbox_sweep.main()
+
+    captured = capsys.readouterr()
+    assert exited.value.code == 3
+    assert captured.err.startswith("error: cannot open a connection to 127.0.0.1:")
+    assert "Traceback" not in captured.err and SECRET not in captured.err + captured.out
+
+
+async def test_a_pool_that_never_connected_is_still_closed_and_the_core_stays_unwired(monkeypatch):
+    """Its connect-retry workers must be stopped, or they keep running behind the error."""
+    from psycopg_pool import PoolTimeout
+
+    class NeverConnects(FakePool):
+        async def open(self, wait=False, timeout=30.0):
+            self.events.append(("open", wait, timeout))
+            raise PoolTimeout("pool initialization incomplete")
+
+    FakePool.instances.clear()
+    monkeypatch.setattr(_runtime, "AsyncConnectionPool", NeverConnects)
+    monkeypatch.setattr(db, "_provider", None)
+
+    with pytest.raises(_runtime.DatabaseUnavailable):
+        async with _runtime.wired_pool("postgresql://u:p@h/appdata"):
+            pass
+
+    assert FakePool.instances[0].events == [("open", True, _runtime.CONNECT_TIMEOUT_SECONDS), "close"]
+    assert db._provider is None
+
+
+# --- the log line keeps its fields -------------------------------------------------------------------------------------
+
+def _record(message="credit_operator_action", level=20, exc_info=None, **extra):
+    import logging
+
+    record = logging.LogRecord("credit_billing.cli.credits", level, __file__, 1, message, None, exc_info)
+    for key, value in extra.items():
+        setattr(record, key, value)
+    return record
+
+
+def test_a_record_is_one_json_line_with_the_keys_the_agent_apps_logs_have_and_every_extra():
+    import json
+    from decimal import Decimal
+
+    line = _runtime.JsonFormatter().format(
+        _record(action="grant", tenant="acme", actor="operator:alice", amount=Decimal("500"), key="k-1")
+    )
+
+    entry = json.loads(line)
+    assert "\n" not in line
+    assert entry["event"] == "credit_operator_action" and entry["level"] == "info" and entry["logger"] == "credit_billing.cli.credits"
+    assert entry["timestamp"].endswith("Z") and "T" in entry["timestamp"]
+    assert (entry["action"], entry["tenant"], entry["actor"], entry["key"]) == ("grant", "acme", "operator:alice", "k-1")
+    assert entry["amount"] == "500", "a Decimal is written as its str, never as a lossy float"
+
+
+def test_an_extra_cannot_overwrite_a_standard_key():
+    import json
+
+    entry = json.loads(_runtime.JsonFormatter().format(_record(level=40, event="forged", level_name="x", logger="forged", timestamp="forged")))
+
+    assert entry["event"] == "credit_operator_action" and entry["level"] == "error" and entry["logger"] == "credit_billing.cli.credits"
+    assert entry["timestamp"] != "forged"
+
+
+def test_an_exception_is_carried_in_the_line_not_dropped():
+    import json
+    import sys
+
+    try:
+        raise ValueError("the reason")
+    except ValueError:
+        record = _record("job_failed", level=40, exc_info=sys.exc_info())
+
+    entry = json.loads(_runtime.JsonFormatter().format(record))
+
+    assert "ValueError: the reason" in entry["exception"] and entry["level"] == "error"
+
+
+def test_the_job_bootstrap_installs_the_json_formatter_unless_logging_is_already_configured(installed, monkeypatch):
+    import logging
+
+    root = logging.getLogger()
+    keep_handlers, keep_level = list(root.handlers), root.level
+    installed(None)
+    try:
+        root.handlers[:] = []
+        with _runtime.scheduled_job("a-cli"):
+            pass
+        assert len(root.handlers) == 1 and isinstance(root.handlers[0].formatter, _runtime.JsonFormatter)
+        assert root.level == logging.INFO
+
+        already = logging.NullHandler()
+        root.handlers[:] = [already]
+        with _runtime.scheduled_job("a-cli"):
+            pass
+        assert root.handlers == [already], "a process that configured logging keeps exactly what it set up"
+    finally:
+        root.handlers[:] = keep_handlers
+        root.setLevel(keep_level)
