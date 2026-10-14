@@ -18,9 +18,16 @@ changes nothing, so it asks for neither.
 PRINTED. Run the same command again with `--key <that key>` and a change that already landed is reported as a duplicate and
 changes nothing; run it again WITHOUT the key and it is, deliberately, a second change.
 
+**A key stands for one request.** Run it again with the same `--key` but something different (another amount, source, reason, expiry)
+and it is refused, naming each field that differs, with exit status 2 and nothing changed: answering "already applied" would hide that
+what you just typed was never recorded. `--expires-in-days` is recomputed on every run, so a retry a minute later differs by a minute;
+give the first run's exact instant as `--expires-at 2026-11-13T07:20:11+00:00` (printed in the conflict message) to retry exactly.
+`--expires-at` and `--expires-in-days` cannot be combined.
+
 Credits are exact decimals with at most six places. An amount is never read as a float.
 
-Exit status: 0 done (or a duplicate of a change that already landed), 1 nothing changed (no such wallet), 2 invalid input, 3 the
+Exit status: 0 done (or a duplicate of a change that already landed), 1 nothing changed (no such wallet), 2 invalid input (including a
+reused key with a different request), 3 the
 database could not be reached (within a few seconds, with a one-line `error:` naming host, port and database, never the password).
 """
 import argparse
@@ -77,6 +84,18 @@ def _reason(text: str) -> str:
     return reason
 
 
+def _instant(text: str) -> datetime:
+    """`--expires-at`: an ISO 8601 instant that says which zone it is in. A time without an offset is refused rather than read as local or
+    UTC, because a guess here is a lot that expires hours early or late."""
+    try:
+        value = datetime.fromisoformat(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not an ISO 8601 time, for example 2026-11-13T07:20:11+00:00") from None
+    if value.tzinfo is None:
+        raise argparse.ArgumentTypeError(f"{text!r} has no UTC offset: write it as 2026-11-13T07:20:11+00:00 (or with a trailing Z)")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="credits", description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -91,12 +110,16 @@ def build_parser() -> argparse.ArgumentParser:
     audited(grant)
     grant.add_argument("--amount", required=True, type=_amount, help="credits to add, above zero, up to 6 decimal places")
     grant.add_argument("--source", choices=GRANT_CHOICES, default="manual", help="what the credits are (default manual); promo and subscription must expire")
-    grant.add_argument("--expires-in-days", type=int, help="the lot expires this many days from now")
+    when = grant.add_mutually_exclusive_group()
+    when.add_argument("--expires-in-days", type=int, help="the lot expires this many days from now (recomputed on every run: use --expires-at to retry exactly)")
+    when.add_argument("--expires-at", type=_instant, help="the lot expires at this instant, ISO 8601 with a UTC offset, e.g. 2026-11-13T07:20:11+00:00")
 
     adjust = sub.add_parser("adjust", help="a signed correction: positive adds credits, negative takes them back")
     audited(adjust)
     adjust.add_argument("--amount", required=True, type=_amount, help="credits, signed and not zero (write a negative one as --amount=-5)")
-    adjust.add_argument("--expires-in-days", type=int, help="positive adjustments only: the credits added expire this many days from now")
+    adjust_when = adjust.add_mutually_exclusive_group()
+    adjust_when.add_argument("--expires-in-days", type=int, help="positive adjustments only: the credits added expire this many days from now")
+    adjust_when.add_argument("--expires-at", type=_instant, help="positive adjustments only: the credits added expire at this instant (ISO 8601 with a UTC offset)")
 
     show = sub.add_parser("show", help="a tenant's balance, lots and newest ledger entries (read-only)")
     show.add_argument("--tenant", required=True)
@@ -105,7 +128,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _expiry(days: int | None) -> datetime | None:
+def _expiry(args: argparse.Namespace) -> datetime | None:
+    if args.expires_at is not None:
+        return args.expires_at
+    days = args.expires_in_days
     if days is None:
         return None
     if days < 1:
@@ -128,11 +154,23 @@ def _outcome(verb: str, applied: credits.Applied, args: argparse.Namespace, key:
     return 0, f"{verb.capitalize()} applied: {_n(applied.amount)} credits, tenant {args.tenant!r}, transaction {applied.transaction_id}{note}.\nIdempotency key: {key}"
 
 
+def _conflict_message(conflict: credits.IdempotencyConflict) -> str:
+    """One line per field that differs, then what to do. Values are shown through `printable`: a reason or a reference may have come from
+    somewhere other than this terminal, and text is data, never something to interpret."""
+    lines = [f"error: idempotency key {printable(conflict.key)!r} was already used for a different request:"]
+    lines += [f"  {field}: {printable(first)!r} -> {printable(now)!r}" for field, (first, now) in conflict.differences.items()]
+    lines.append("nothing changed. A retry must send exactly the same request; a different request needs a new --key.")
+    first_expiry = conflict.differences.get("expires_at", (None, None))[0]
+    if first_expiry:
+        lines.append(f"to repeat the first request exactly, run it again with --key {printable(conflict.key)} --expires-at {printable(first_expiry)}")
+    return "\n".join(lines)
+
+
 async def _change(args: argparse.Namespace) -> tuple[int, str]:
     key = args.key or f"cli:{uuid.uuid4()}"
     actor = f"operator:{args.by}"
     try:
-        expires_at = _expiry(args.expires_in_days)
+        expires_at = _expiry(args)
         if args.command == "grant":
             applied = await credits.grant(
                 args.tenant, args.amount, source=args.source, idempotency_key=key, actor=actor, reason=args.reason, expires_at=expires_at
@@ -141,6 +179,8 @@ async def _change(args: argparse.Namespace) -> tuple[int, str]:
             applied = await credits.adjust(
                 args.tenant, args.amount, idempotency_key=key, actor=actor, reason=args.reason, expires_at=expires_at
             )
+    except credits.IdempotencyConflict as exc:
+        return 2, _conflict_message(exc)
     except ValueError as exc:
         return 2, f"error: {exc}"
     return _outcome(args.command, applied, args, key)

@@ -14,9 +14,9 @@ counts (`BillingEvent` has no field for either).
 | the same event delivered twice | inbox `PRIMARY KEY (provider, event_id)`: the second delivery finds a terminal row |
 | the same event delivered twice AT ONCE | the same key: the second INSERT blocks on the first's transaction, then finds its row |
 | a crash between "granted" and "marked applied" | impossible by construction: the grant and the status change are ONE transaction |
-| the inbox row swept, then the event redelivered | the grant's own key `"{provider}:{event_id}"` in `credit_transactions`, kept for good |
+| the inbox row swept, then the event redelivered | the grant's own key `"{provider}:{event_id}"` in `credit_transactions`, kept for good. The wallet compares what the key stood for (every field but the expiry, which is `now + days` and so always differs on a replay): the same grant is a duplicate; a DIFFERENT one (the catalogue changed in between) is quarantined as `idempotency_conflict`, never granted twice and never silently dropped |
 | one payment described by two DIFFERENT events | the app checks for an existing grant of that `(tenant, provider, payment_ref)` and ignores the second; the unique index in 22 is the backstop for a race |
-| a refund described by two different events | the clawback is keyed by the PAYMENT, `clawback:{provider}:{payment_ref}`, so a payment is taken back at most once |
+| a refund described by two different events | the clawback is keyed by the PAYMENT, `clawback:{provider}:{payment_ref}`, so a payment is taken back at most once. Only the kind is compared on a reused key: the amount an event reads depends on when it read the lot, so two events for one refund can differ there and must stay a duplicate |
 
 ## What can happen to an event, and what the caller is told
 
@@ -25,7 +25,7 @@ counts (`BillingEvent` has no field for either).
 | `applied` | `applied` | 2xx (stop retrying) | yes |
 | `duplicate` | unchanged | 2xx | yes |
 | `ignored` | `ignored` | 2xx | yes |
-| `quarantined` | `quarantined` | 2xx: retrying cannot fix it (an unlinked customer stays unlinked) | yes, and ALERTED |
+| `quarantined` | `quarantined` | 2xx: retrying cannot fix it (an unlinked customer stays unlinked; a replayed grant whose request changed is `idempotency_conflict`) | yes, and ALERTED |
 | `retry` | `received` | 5xx: a refund whose purchase has not arrived yet, bounded by `BILLING_REFUND_HOLD_HOURS` | yes |
 | `failed` | `failed` | 5xx: it will be retried, `BILLING_WEBHOOK_MAX_ATTEMPTS` times, then quarantined | yes, and ALERTED |
 
@@ -195,18 +195,33 @@ async def _apply(
     if plan.action == "grant":
         assert tenant is not None and product is not None and event.payment_ref is not None  # decide() guarantees it
         expires_at = datetime.now(UTC) + timedelta(days=product.expires_after_days) if product.expires_after_days else None
-        await credits.grant_in(
-            conn,
-            tenant,
-            product.credits,
-            source="subscription" if event.kind is EventKind.SUBSCRIPTION_PERIOD_STARTED else "purchase",
-            idempotency_key=f"{event.provider}:{event.event_id}",
-            actor=f"webhook:{event.provider}",
-            reason=event.kind.value,
-            expires_at=expires_at,
-            provider=event.provider,
-            external_ref=event.payment_ref,
-        )
+        try:
+            await credits.grant_in(
+                conn,
+                tenant,
+                product.credits,
+                source="subscription" if event.kind is EventKind.SUBSCRIPTION_PERIOD_STARTED else "purchase",
+                idempotency_key=f"{event.provider}:{event.event_id}",
+                actor=f"webhook:{event.provider}",
+                reason=event.kind.value,
+                expires_at=expires_at,
+                provider=event.provider,
+                external_ref=event.payment_ref,
+                # Everything but the expiry. The expiry is `now + days` computed HERE, so any replay would compute a later instant: it is
+                # not part of what the provider's event asked for, and comparing it would turn a harmless replay into a failure. What the
+                # event asked for (how much, which source, which payment) is compared. Reaching a replay at all means both earlier
+                # layers missed (the inbox claim and the payment's lot check), so this is defence in depth that must never fail on its own.
+                compare=frozenset(credits.GRANT_FIELDS) - {"expires_at"},
+            )
+        except credits.IdempotencyConflict as exc:
+            # The same provider event now asks for something different from what it was granted (the catalogue changed between two
+            # attempts). Retrying cannot fix it and a second grant would be wrong, so it is a quarantine for a person, not a `failed`.
+            logger.warning(
+                "billing_webhook_conflict",
+                extra={"provider": event.provider, "event_id": event.event_id, "fields": sorted(exc.differences)},
+            )
+            await _finish(conn, event, "quarantined", tenant, "idempotency_conflict")
+            return _quarantined(event, "idempotency_conflict")
         await _finish(conn, event, "applied", tenant, None)
         return "applied"
 
@@ -219,6 +234,9 @@ async def _apply(
             idempotency_key=f"clawback:{event.provider}:{event.payment_ref}",
             actor=f"webhook:{event.provider}",
             reason=event.kind.value,
+            # Only the kind. The key names the PAYMENT: two events describing one refund must stay a duplicate even when the amount they
+            # read differs (a debit can land between their reads of the lot) or, if another event kind ever maps here, their reason does.
+            compare=frozenset(),
         )
         if applied.status == "duplicate":
             await _finish(conn, event, "ignored", tenant, "already_reversed")
