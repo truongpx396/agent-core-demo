@@ -75,7 +75,7 @@ specs/012-billing-migrate-idempotency/
 packages/billing/
 ├── pyproject.toml                           # PR A: console script credit-billing-migrate
 ├── README.md                                # PR A, PR B: the command, the exit statuses, the conflict
-├── docs/PATTERNS.md                         # PR A: pattern 67; PR B: pattern 68
+├── docs/PATTERNS.md                         # PR A: pattern B1; PR B: pattern B2
 ├── docs/design-note.md, docs/port.md        # PR A: section 6 prerequisite 1 done; PR B: the conflict in the contract
 ├── src/credit_billing/
 │   ├── migrate.py                           # PR A  NEW  ~230 lines: shipped(), statements(), status(), migrate(), errors
@@ -154,7 +154,7 @@ Uses `wired_pool()` and `scheduled_job("agent-core-billing-migrate")` from `cli/
 - `sql/20-credit-wallet.sql` and `22-billing.sql` header comments: "Applying it … apply by hand" now names `credit-billing-migrate` (comments only; the host copies updated in the same commit; the drift test keeps them equal).
 - `pyproject.toml`: `credit-billing-migrate = "credit_billing.cli.migrate:main"`.
 - `Makefile`: `billing-migrate` and `billing-migrate-status` targets (same style as `billing-inbox-sweep`).
-- `docs/design-note.md` section 6 item 1 marked done; `README.md` "What it is not (yet)" no longer lists the migration tool; `docs/PATTERNS.md` pattern 67.
+- `docs/design-note.md` section 6 item 1 marked done; `README.md` "What it is not (yet)" no longer lists the migration tool; `docs/PATTERNS.md` pattern B1.
 
 ### Test matrix (PR A)
 
@@ -214,7 +214,7 @@ A plain `ADD COLUMN IF NOT EXISTS` takes `ACCESS EXCLUSIVE` on every re-apply ev
 
 ### Edits and tasks at plan level
 
-`credits.py` (vocabulary, `IdempotencyConflict`, `_begin_transaction`, `compare=` plumbing); `webhooks.py` (two `compare=` arguments with comments; catch `IdempotencyConflict` in `_apply` → quarantine `idempotency_conflict` at once); `cli/credits.py` (`--expires-at`, exclusive group, conflict message with the hint); `port.py` and `app/billing_integration/port.py` (re-export, docstring); `sql/20-credit-wallet.sql` and the host copy; fixtures: the script as it was before the column, for the upgrade test; `docs/PATTERNS.md` pattern 68, `docs/port.md`, `docs/data-model.md`, `README.md`. Tests: hermetic (normalisation, vocabulary, validation, compare, exception text, plumbing); integration (each field of each operation conflicts, an identical retry is a duplicate, legacy rows, the upgrade through `migrate()`, concurrent differing requests, the webhook clawback and grant callers, the operator command end to end); mutation (10 mutants: compare skipped, `kind` not compared, a field dropped from the vocabulary, `NULL` request raising, `compare=` not validated, webhook clawback strict, webhook grant comparing the expiry, conflict not quarantined, exception not a `ValueError`, request stored after the check).
+`credits.py` (vocabulary, `IdempotencyConflict`, `_begin_transaction`, `compare=` plumbing); `webhooks.py` (two `compare=` arguments with comments; catch `IdempotencyConflict` in `_apply` → quarantine `idempotency_conflict` at once); `cli/credits.py` (`--expires-at`, exclusive group, conflict message with the hint); `port.py` and `app/billing_integration/port.py` (re-export, docstring); `sql/20-credit-wallet.sql` and the host copy; fixtures: the script as it was before the column, for the upgrade test; `docs/PATTERNS.md` pattern B2, `docs/port.md`, `docs/data-model.md`, `README.md`. Tests: hermetic (normalisation, vocabulary, validation, compare, exception text, plumbing); integration (each field of each operation conflicts, an identical retry is a duplicate, legacy rows, the upgrade through `migrate()`, concurrent differing requests, the webhook clawback and grant callers, the operator command end to end); mutation (10 mutants: compare skipped, `kind` not compared, a field dropped from the vocabulary, `NULL` request raising, `compare=` not validated, webhook clawback strict, webhook grant comparing the expiry, conflict not quarantined, exception not a `ValueError`, request stored after the check).
 
 ### Size (PR B)
 

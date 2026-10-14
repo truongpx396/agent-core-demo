@@ -27,13 +27,23 @@ db.configure(connection=my_pool.connection)    # an async context manager yieldi
 
 The provider **owns the transaction**: one `async with` is one transaction, committed on a clean exit and rolled back when the block raises (psycopg_pool's `pool.connection` does exactly this). Without it the package **refuses** (`BillingNotConfigured`) instead of guessing.
 
-**Schema.** Apply the two scripts to the database you passed above, once (there is no migration tool yet; they are idempotent and each header says how to apply it to an existing database):
+**Schema.** The package ships two idempotent scripts and a tool that applies them to the database you passed above:
+
+```bash
+credit-billing-migrate --status    # what is applied, pending or changed; writes nothing
+credit-billing-migrate             # apply what is pending or changed, in order, and record it
+credit-billing-migrate --check     # exit 1 if anything is pending or changed: a deploy gate
+```
+
+Safe to run again (a second run applies nothing), safe to run twice at once (each script is applied once), safe on a database the agent app initialised (re-applying an idempotent script changes no row, and then it is recorded), and it gives up with a clear error instead of waiting for ever when a table is busy (`--lock-timeout-seconds`, default 10). Exit status `0` done or current, `1` `--check` found work, `3` the database could not be reached, `4` a migration did not complete (nothing from that script was applied). It never runs by itself: call it from your deploy, or from your service's start-up with the same connection provider:
 
 ```python
-from credit_billing import schema
-for name in schema.scripts():          # ["20-credit-wallet.sql", "22-billing.sql"], in order
-    sql = schema.read(name)            # they open with psql's `\connect appdata`: drop that line if you apply the text yourself
+from credit_billing import db, migrate
+db.configure(connection=pool.connection)
+await migrate.migrate()            # a Result(applied=[...], skipped=[...]); MigrationLockTimeout / MigrationFailed on trouble
 ```
+
+The scripts are *repeatable*: they are idempotent and are edited in place, so a changed checksum means "apply again". They open with psql's `\connect appdata`, a meta-command no driver can run, so `schema.executable(name)` returns the text without that one line (and refuses any other psql meta-command). `22-billing.sql` references tables from `20-credit-wallet.sql`: the numeric order is a dependency.
 
 **Settings** (environment variables or a `.env`; the names are unchanged from the agent app): `BILLING_PROVIDERS` (comma-separated, e.g. `stripe`), `BILLING_WEBHOOK_SECRETS` (JSON, `{"stripe": "whsec_..."}`), `STRIPE_API_KEY`, `POLAR_ACCESS_TOKEN`, `POLAR_ENVIRONMENT`, `BILLING_WEBHOOK_MAX_BODY_BYTES`, `BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE`, `BILLING_WEBHOOK_MAX_ATTEMPTS`, `BILLING_REFUND_HOLD_HOURS`, `BILLING_INBOX_RETENTION_DAYS`. A rejected value is never echoed in the error.
 
@@ -88,7 +98,7 @@ CI installs this package alone into a clean environment and runs the first comma
 
 ## What it is not (yet)
 
-Not a service: there is no HTTP API beyond the webhook route, no service authentication, no migration tool. Not a billing platform: no invoices, tax, subscriptions management or holds; **holds, API-grade idempotency, outbound notifications and a service-side event store are the next features** ([`docs/design-note.md`](docs/design-note.md), section 6). Usage-based billing to a provider is built but off (prepaid packs only). A reused idempotency key with different parameters currently returns the first result without comparing; that is safe for the application's debits (keyed by a deterministic event id) and is listed as a gap to close before exposing the port over a network.
+Not a service: there is no HTTP API beyond the webhook route and no service authentication. Not a billing platform: no invoices, tax, subscriptions management or holds; **holds, API-grade idempotency, outbound notifications and a service-side event store are the next features** ([`docs/design-note.md`](docs/design-note.md), section 6). Usage-based billing to a provider is built but off (prepaid packs only). A reused idempotency key with different parameters currently returns the first result without comparing; that is safe for the application's debits (keyed by a deterministic event id) and is listed as a gap to close before exposing the port over a network.
 
 ## Where to read more
 

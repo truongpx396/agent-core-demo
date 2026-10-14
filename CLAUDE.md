@@ -25,6 +25,7 @@ make lint            # ruff check .          (CI gate)
 make typecheck       # mypy over app/ scripts/ (CI gate)
 make test            # pytest -n auto -q — hermetic, no services needed (CI gate); then the billing package's own tests
 make test-billing-package   # only the package's hermetic tests, from its directory (the app is not on the path)
+make billing-migrate        # apply the billing package's schema scripts to an existing database (billing-migrate-status: read-only)
 pytest tests/agent/test_tool_idempotency.py::test_name -q   # one test; marked tiers are skipped by default
 make test-integration  # real Postgres/Redis/Qdrant via testcontainers — needs Docker, not `make up`
 make test-live         # real Ollama + full stack + Playwright — needs Docker
