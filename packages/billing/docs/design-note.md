@@ -48,22 +48,24 @@ Today the debit is in the same Postgres transaction as the usage event: the even
 | Coupling | Why it stays | Removed by |
 |---|---|---|
 | `tenant` is the opaque key everywhere; `usage_event_id` and the `agent_` metric prefix name the agent's concepts | renaming changes the schema and every dashboard (D3, D4) | a service feature, with a migration |
-| Rating (`credits_for_cost`, `Pricing`, `CREDITS_PER_USD`, `MARKUP`) is the host's | its signature is on the debit path (O1) | 013/014 |
-| `app/billing_integration/export.py` and `reconcile.py` read core tables (`billing_customers`, `credit_*`) and the agent's `usage_events` | they are the two consumers of the agent's meter; D5 | 012/013 moves wallet-side reconciliation into the service |
-| `app/core/config.py` imports `credit_billing.settings` (the host's `Settings` inherits `BillingSettings`) | one definition of every billing variable | PR C, when the package ships its own settings |
-| `scripts/credits.py` and `scripts/billing_inbox_sweep.py` import the core directly and run on the agent's `scheduled_job` bootstrap | they are the core's own operator CLIs | PR C moves them and gives the package its own bootstrap (D11) |
-| the webhook rate limit is a host middleware on `/billing/webhooks/` (`app/api/rate_limit.py`) reading a core setting | the limiter is a host concern | PR C documents it; a service brings its own |
-| the OTel meter scope string is still `app.core.metrics` | the collector turns scope into a label and does not merge series (research P6) | PR C, with the label sets pre-created at 0 |
+| Rating (`credits_for_cost`, `Pricing`, `CREDITS_PER_USD`, `MARKUP`) is the host's | its signature is on the debit path (O1) | the turnkey feature (`ROADMAP.md`, item 3) |
+| `app/billing_integration/export.py` and `reconcile.py` read core tables (`billing_customers`, `credit_*`) and the agent's `usage_events` | they are the two consumers of the agent's meter; D5 | the usage-event-store feature moves wallet-side reconciliation into the service (`ROADMAP.md`, item 1) |
+| `app/core/config.py` imports `credit_billing.settings` (the host's `Settings` inherits `BillingSettings`) | one definition of every billing variable | **done in PR C**: the package defines `BillingSettings`; the host still inherits it on purpose, so each variable has one definition |
+| `scripts/credits.py` and `scripts/billing_inbox_sweep.py` import the core directly and run on the agent's `scheduled_job` bootstrap | they are the core's own operator CLIs | **done in PR C**: they live in `credit_billing/cli/` with their own bootstrap (D11) |
+| the webhook rate limit is a host middleware on `/billing/webhooks/` (`app/api/rate_limit.py`) reading a core setting | the limiter is a host concern | **documented in PR C** (the package README); a service brings its own |
+| the OTel meter scope string was `app.core.metrics` | the collector turns scope into a label and does not merge series (research P6) | **done in PR C**: the scope is `credit_billing`, with the webhook label sets pre-created at 0 |
 
 ## 6. What has to be built before any of it
 
+*The living version of this list, with the known limits of what is built, is [`ROADMAP.md`](ROADMAP.md). Spec numbers are assigned when a feature is created (spec 012 took the number planned for the wallet contract, so the next is 013); the numbers below are the original plan's labels, kept as an order.*
+
 1. **A migration tool.** *(Done: spec 012 PR A, `credit-billing-migrate` and `credit_billing.migrate`.)* Schema scripts used to run only on a fresh volume (`postgres-init/NN-*.sql`) or by hand once. A service that owns its schema, deploys on its own cadence and runs against a database that already has data needs real migrations, and now has the first kind: the shipped idempotent scripts are applied in order, recorded with a checksum, serialised across runners and bounded in every wait (pattern B1). Immutable one-way versioned migrations, for a change that cannot be written idempotently or needs a backfill, are the next step and are not built.
-2. **A service shell** (spec 013): an HTTP API over the port, service-to-service authentication, an entry point and a container, health and readiness, and an HTTP client that implements `WalletPort`.
+2. **A service shell** (planned as 013): an HTTP API over the port, service-to-service authentication, an entry point and a container, health and readiness, and an HTTP client that implements `WalletPort`.
 3. **The four extensions a general service needs** (spec D16, research R4, R7, R10): holds; ~~a conflict error when an idempotency key is reused with different parameters~~ *(done: spec 012 PR B, `IdempotencyConflict`, pattern B2)*; the service-side event store with an idempotent `record_usage`; outbound notifications (low balance, exhausted, refunded) so a SaaS does not poll. Three of the four remain open.
-4. **Turnkey operation** (spec 014): the catalog and customer link as configuration, checkout, balance and ledger endpoints, a `check`/`track`-style client, a verified setup per provider.
+4. **Turnkey operation** (planned as 014): the catalog and customer link as configuration, checkout, balance and ledger endpoints, a `check`/`track`-style client, a verified setup per provider.
 
 ## 7. What this note does not establish
 
 - Throughput or latency of a remote wallet: no measurement exists, and the vendor numbers in `research.md` are claims.
 - Whether Postgres row locks per tenant are enough at a service's scale. Autumn reports they were not for a very hot customer (research R5, vendor's own report); this repo has no load number for the wallet either.
-- Build versus adopt: Lago and Flexprice are AGPL, Autumn and OpenMeter are open source, and Stripe routes LLM token billing through Metronome (research R11). It was not weighed here.
+- Build versus adopt: Lago and Flexprice are AGPL-3.0 (established), Autumn and OpenMeter exist as open-source projects whose licences were not checked, and Stripe routes LLM token billing through Metronome (research R11). It was not weighed here.
