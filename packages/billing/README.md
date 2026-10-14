@@ -69,6 +69,8 @@ credit-billing-inbox-sweep           # drop applied/ignored webhook-inbox rows p
 
 The CLIs open their own pool from `APPDATA_DATABASE_URL` (default `postgresql://langfuse:langfuse@localhost:5432/appdata`) and push their metrics to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://localhost:4318`, blank turns it off; needs the `otel` extra). Every change names who and why; a retry is safe only with the same `--key`.
 
+Exit status: `0` done (or a duplicate of a change that already landed), `1` nothing changed (no such wallet), `2` invalid input, `3` the database could not be reached. An unreachable database fails in about ten seconds with one `error:` line naming host, port and database (never the user or password), so a cron job or an operator who mistyped the URL is told at once. Logs go to stderr as one JSON line per record (`timestamp`, `level`, `logger`, `event` plus the record's fields, so the operator audit line `credit_operator_action` carries action, tenant, actor, amount and key); a process that has already configured logging keeps its own setup.
+
 ## What it emits and ships for operators
 
 Four counters on the OpenTelemetry **API** (`credit_billing.metrics`: `agent_credit_granted_total`, `agent_credit_debited_total`, `agent_credit_overdraft_total`, `agent_billing_webhook_total`); your process installs the SDK and exporter. The scope is `credit_billing`. [`observability/alerts.yml`](observability/alerts.yml) has the two webhook alerts (`BillingWebhookQuarantined`, `BillingWebhookFailing`) and [`observability/credit-billing-core.json`](observability/credit-billing-core.json) a Grafana dashboard on those counters (it assumes a Prometheus datasource with uid `prometheus`).
