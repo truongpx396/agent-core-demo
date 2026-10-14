@@ -47,7 +47,7 @@ RUN pip install --no-cache-dir -r requirements-lock.txt
 # The billing package (spec 011): installed from its own directory, NOT through the lock file, which is a machine-generated freeze of a
 # real install of requirements.txt. --no-deps because everything it needs is already in the lock above.
 COPY packages/billing/ ./packages/billing/
-RUN pip install --no-cache-dir --no-deps ./packages/billing
+RUN pip install --no-cache-dir --no-deps ./packages/billing && rm -rf ./packages
 
 # fastembed/huggingface_hub cache their downloaded BM25/rerank models under
 # $HOME on first use — set BEFORE the final chown, so anything written as
