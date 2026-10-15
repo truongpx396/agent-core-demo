@@ -44,12 +44,9 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.agent.graph.build import build_graph
-from app.agent.graph.core import (
-    STATE_SCHEMA_VERSION,
-    SYSTEM_PROMPT,
-    GraphDeps,
-)
+from app.agent.graph.core import SYSTEM_PROMPT, GraphDeps
 from app.agent.graph.hitl import resumability_error_async
+from app.agent.graph.state import STATE_SCHEMA_VERSION
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
 from app.core import metrics
@@ -620,7 +617,7 @@ class TestResumabilityError:
             # not the other way around.
             graph, config = await self._paused_graph_and_config()
             monkeypatch.setattr(
-                "app.agent.graph.core.STATE_SCHEMA_VERSION", STATE_SCHEMA_VERSION + 1
+                "app.agent.graph.hitl.STATE_SCHEMA_VERSION", STATE_SCHEMA_VERSION + 1
             )
             return await resumability_error_async(graph, config)
 

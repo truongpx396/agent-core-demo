@@ -10,7 +10,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.agent.cost import metering
 from app.agent.graph import core as graph_module
-from app.agent.graph.core import State
+from app.agent.graph.state import State
 from app.core import gateway
 
 logger = logging.getLogger(__name__)

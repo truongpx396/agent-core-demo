@@ -315,10 +315,10 @@ async def run_subagent_impl(
     # own module level — importing either back here at module level would
     # close a real import cycle. Only needed at call time regardless.
     from app.agent.graph.build_subagent import build_subagent_graph
-    from app.agent.graph.core import (
+    from app.agent.graph.core import GraphDeps
+    from app.agent.graph.state import (
         MAX_SUBAGENT_ITERATIONS,
         MAX_SUBAGENT_TOKENS_PER_RUN,
-        GraphDeps,
     )
     from app.agent.manifest import AgentManifest
 

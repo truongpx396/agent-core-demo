@@ -14,9 +14,9 @@ from langchain_core.runnables import RunnableConfig
 
 from app.agent.cost import metering
 from app.agent.graph import core as graph_module
-from app.agent.graph.core import State
 from app.agent.graph.messages import is_retry_artifact, is_user_message
 from app.agent.graph.skill_guards import pending_skill_required_tool
+from app.agent.graph.state import State
 from app.agent.graph.tool_guards import current_turn_messages
 from app.core.untrusted import frame_untrusted
 

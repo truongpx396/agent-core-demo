@@ -12,13 +12,14 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from app.agent.graph.core import State, default_search
+from app.agent.graph.core import default_search
 from app.agent.graph.messages import (
     human_text,
     last_human_message,
     previous_human_message,
     retrieval_query,
 )
+from app.agent.graph.state import State
 from app.core import metrics
 
 if TYPE_CHECKING:

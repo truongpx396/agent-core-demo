@@ -28,16 +28,15 @@ from app.agent.graph.compaction import (
     _trim_history,
     make_compact_history_node,
 )
-from app.agent.graph.core import (
+from app.agent.graph.core import GraphDeps, validate_input
+from app.agent.graph.routing import should_continue
+from app.agent.graph.state import (
     MAX_ITERATIONS,
     MAX_SUBAGENT_TOKENS_PER_RUN,
     MAX_TOKENS_PER_TURN,
     MAX_TOOL_CALLS_PER_TURN,
-    GraphDeps,
-    _concat_or_reset,
-    validate_input,
+    concat_or_reset,
 )
-from app.agent.graph.routing import should_continue
 from app.agent.graph.tool_guards import too_many_tool_calls
 from app.agent.runtime import core as agent_module
 from app.core import metrics, tool_runtime
@@ -183,7 +182,7 @@ class TestPerTurnResetThroughTheGraph:
 
 
 class TestConcatOrResetReducer:
-    """`State.subagent_spend`'s reducer (app/agent/graph/core.py::_concat_or_reset). The
+    """`State.subagent_spend`'s reducer (app/agent/graph/core.py::concat_or_reset). The
     concurrency case here is the hermetic twin of
     tests/agent/runtime/test_concurrent_turns.py::TestSubagentCallUnderConcurrency
     (an `integration`-tier test, so not run by `make test`): it proves that
@@ -191,17 +190,17 @@ class TestConcatOrResetReducer:
     exists for."""
 
     def test_concatenates_updates(self):
-        assert _concat_or_reset([(1, 0.1)], [(2, 0.2)]) == [(1, 0.1), (2, 0.2)]
+        assert concat_or_reset([(1, 0.1)], [(2, 0.2)]) == [(1, 0.1), (2, 0.2)]
 
     def test_a_missing_current_value_counts_as_empty(self):
-        assert _concat_or_reset(None, [(1, 0.1)]) == [(1, 0.1)]
+        assert concat_or_reset(None, [(1, 0.1)]) == [(1, 0.1)]
 
     def test_none_is_the_reset_marker_and_is_never_stored(self):
-        assert _concat_or_reset([(1, 0.1), (2, 0.2)], None) == []
+        assert concat_or_reset([(1, 0.1), (2, 0.2)], None) == []
 
     def test_does_not_mutate_its_inputs(self):
         current = [(1, 0.1)]
-        _concat_or_reset(current, [(2, 0.2)])
+        concat_or_reset(current, [(2, 0.2)])
         assert current == [(1, 0.1)]
 
     async def test_two_parallel_writers_in_one_superstep_both_land_and_a_later_reset_clears_them(self):
@@ -211,7 +210,7 @@ class TestConcatOrResetReducer:
         from langgraph.graph import END, START, StateGraph
 
         class S(TypedDict):
-            spend: Annotated[list[tuple[int, float]], _concat_or_reset]
+            spend: Annotated[list[tuple[int, float]], concat_or_reset]
 
         def left(state: S) -> dict:
             return {"spend": [(1, 0.1)]}

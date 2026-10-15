@@ -8,9 +8,10 @@ change.
 """
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-from app.agent.graph.core import MIN_ANSWER_LENGTH, SYSTEM_PROMPT, State
+from app.agent.graph.core import SYSTEM_PROMPT
 from app.agent.graph.messages import RETRY_ARTIFACT_KEY
 from app.agent.graph.routing import check_output
+from app.agent.graph.state import MIN_ANSWER_LENGTH, State
 from app.agent.graph.tool_guards import reject_tool_calls
 from app.core import metrics
 

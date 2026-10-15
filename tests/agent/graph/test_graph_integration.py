@@ -30,14 +30,13 @@ from langgraph.types import Command
 
 from app.agent.graph.build import build_graph
 from app.agent.graph.compaction import _estimate_tokens
-from app.agent.graph.core import (
-    AGENT_RETRY_POLICY,
+from app.agent.graph.core import AGENT_RETRY_POLICY, GraphDeps
+from app.agent.graph.state import (
     MAX_HISTORY_SUMMARY_CHARS,
     MAX_ITERATIONS,
     MAX_REPEATED_ACTIONS,
     MAX_TOKENS_PER_TURN,
     MAX_TOOL_CALLS_PER_TURN,
-    GraphDeps,
 )
 from app.agent.manifest import AgentManifest
 from app.agent.runtime import core as runtime_module

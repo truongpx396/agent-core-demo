@@ -17,8 +17,8 @@ from typing import cast
 
 from langchain_core.messages import AIMessage, ToolMessage
 
-from app.agent.graph.core import MAX_TOOL_CALLS_PER_TURN, State
 from app.agent.graph.messages import is_user_message
+from app.agent.graph.state import MAX_TOOL_CALLS_PER_TURN, State
 from app.agent.tools.builtin import TOOLS
 from app.core import metrics
 

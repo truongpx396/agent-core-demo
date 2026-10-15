@@ -14,9 +14,10 @@ from typing import TYPE_CHECKING, Literal
 
 from langchain_core.messages import AIMessage
 
-from app.agent.graph.core import State, default_cache_get, default_cache_set
+from app.agent.graph.core import default_cache_get, default_cache_set
 from app.agent.graph.loop_guards import tool_capability
 from app.agent.graph.messages import human_text, last_human_message
+from app.agent.graph.state import State
 from app.agent.graph.tool_guards import current_turn_messages
 from app.agent.tools.builtin import TOOL_CAPABILITIES
 

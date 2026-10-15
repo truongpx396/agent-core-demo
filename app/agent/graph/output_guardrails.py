@@ -11,8 +11,8 @@ plus the citation checks (`retry_reason`). Split out of
 """
 import re
 
-from app.agent.graph.core import MIN_ANSWER_LENGTH
 from app.agent.graph.skill_guards import pending_skill_required_tool
+from app.agent.graph.state import MIN_ANSWER_LENGTH
 from app.agent.graph.tool_guards import current_turn_messages
 
 # Real bug, found live via Langfuse: qwen2.5:3b narrated tool intent

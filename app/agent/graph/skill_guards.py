@@ -21,7 +21,7 @@ from typing import cast
 
 from langchain_core.messages import AIMessage, ToolMessage
 
-from app.agent.graph.core import State
+from app.agent.graph.state import State
 from app.agent.graph.tool_guards import reject_tool_calls
 from app.core import metrics
 

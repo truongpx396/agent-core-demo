@@ -29,8 +29,8 @@ from langchain_core.runnables import RunnableConfig
 
 from app.agent.cost import metering
 from app.agent.graph import core as graph_module
-from app.agent.graph.core import HISTORY_TOKEN_CEILING, HISTORY_TOKEN_FLOOR, State
 from app.agent.graph.messages import human_text, is_retry_artifact, is_user_message
+from app.agent.graph.state import HISTORY_TOKEN_CEILING, HISTORY_TOKEN_FLOOR, State
 from app.core import gateway, metrics
 
 logger = logging.getLogger(__name__)

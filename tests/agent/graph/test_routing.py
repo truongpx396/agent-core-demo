@@ -8,10 +8,6 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent.graph.cache import route_after_cache
 from app.agent.graph.core import (
-    MAX_CONSECUTIVE_SAME_RETRY_REASON,
-    MAX_HISTORY_SUMMARY_CHARS,
-    MAX_ITERATIONS,
-    MAX_REPEATED_ACTIONS,
     route_after_compaction,
     route_after_moderation,
     route_after_validation,
@@ -26,6 +22,12 @@ from app.agent.graph.loop_guards import (
 )
 from app.agent.graph.routing import route_after_check, should_continue
 from app.agent.graph.skill_guards import pending_skill_required_tool
+from app.agent.graph.state import (
+    MAX_CONSECUTIVE_SAME_RETRY_REASON,
+    MAX_HISTORY_SUMMARY_CHARS,
+    MAX_ITERATIONS,
+    MAX_REPEATED_ACTIONS,
+)
 from app.agent.graph.tool_guards import reject_tool_calls
 from tests.conftest import TEST_CTX
 

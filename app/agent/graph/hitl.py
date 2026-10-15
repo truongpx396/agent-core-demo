@@ -18,7 +18,7 @@ from typing import Literal, cast
 from langchain_core.messages import AIMessage
 
 from app.agent.graph import core as graph_module
-from app.agent.graph.core import State
+from app.agent.graph.state import STATE_SCHEMA_VERSION, State
 from app.agent.graph.tool_guards import reject_tool_calls
 from app.core import metrics
 
@@ -51,13 +51,13 @@ def _resumability_error_from_state(state) -> str | None:
             "it's still actively running (not yet paused at an approval gate)."
         )
     paused_schema = state.values.get("state_schema_version")
-    if paused_schema != graph_module.STATE_SCHEMA_VERSION:
+    if paused_schema != STATE_SCHEMA_VERSION:
         metrics.agent_checkpoint_issue_total.labels(
             reason="checkpoint_incompatible"
         ).inc()
         return (
             f"checkpoint_incompatible: paused under state_schema_version "
-            f"{paused_schema!r}, this build is {graph_module.STATE_SCHEMA_VERSION!r} — "
+            f"{paused_schema!r}, this build is {STATE_SCHEMA_VERSION!r} — "
             "refusing to resume into a possibly different topology."
         )
     return None

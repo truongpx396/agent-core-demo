@@ -43,7 +43,7 @@ from psycopg_pool import AsyncConnectionPool
 from app.agent.cost import budgets, pricing
 from app.agent.graph.build import build_graph
 from app.agent.graph.compaction import COMPACTION_MARKER_KEY
-from app.agent.graph.core import MAX_ITERATIONS
+from app.agent.graph.state import MAX_ITERATIONS
 from app.core.config import (
     BUDGET_CHECK_FAILURE_POLICY,
     CHAT_MODEL,

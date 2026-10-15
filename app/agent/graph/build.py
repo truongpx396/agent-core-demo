@@ -20,10 +20,7 @@ from app.agent.graph.cache import (
 from app.agent.graph.compaction import make_compact_history_node
 from app.agent.graph.core import (
     AGENT_RETRY_POLICY,
-    HISTORY_TOKEN_CEILING,
-    HISTORY_TOKEN_FLOOR,
     GraphDeps,
-    State,
     assemble_shared_graph_parts,
     context_window_exceeded,
     moderate_input,
@@ -44,6 +41,7 @@ from app.agent.graph.retry import (
 )
 from app.agent.graph.routing import route_after_check
 from app.agent.graph.skill_guards import use_skill_without_search
+from app.agent.graph.state import HISTORY_TOKEN_CEILING, HISTORY_TOKEN_FLOOR, State
 from app.agent.graph.tool_guards import too_many_tool_calls
 from app.agent.graph.utils import friendly_tool_error, instrumented
 

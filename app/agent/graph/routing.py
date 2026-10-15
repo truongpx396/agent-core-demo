@@ -32,15 +32,7 @@ from app.agent.graph.citations import (
     find_used_citations,
     insert_missing_citation_markers,
 )
-from app.agent.graph.core import (
-    MAX_CONSECUTIVE_SAME_RETRY_REASON,
-    MAX_ITERATIONS,
-    MAX_REPEATED_ACTIONS,
-    MAX_TOKENS_PER_TURN,
-    MAX_TOOL_CALLS_PER_TURN,
-    SYSTEM_PROMPT,
-    State,
-)
+from app.agent.graph.core import SYSTEM_PROMPT
 from app.agent.graph.loop_guards import (
     consecutive_repeat_count,
     mandatory_gate_reason,
@@ -53,6 +45,14 @@ from app.agent.graph.output_guardrails import (
     reveals_system_prompt,
     skipped_required_sandbox_after_skill,
     strip_fabricated_reference_footer,
+)
+from app.agent.graph.state import (
+    MAX_CONSECUTIVE_SAME_RETRY_REASON,
+    MAX_ITERATIONS,
+    MAX_REPEATED_ACTIONS,
+    MAX_TOKENS_PER_TURN,
+    MAX_TOOL_CALLS_PER_TURN,
+    State,
 )
 from app.agent.graph.tool_guards import (
     DEFAULT_VALID_TOOL_NAMES,

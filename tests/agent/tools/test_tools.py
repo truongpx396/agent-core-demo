@@ -1082,7 +1082,7 @@ class TestRunSubagentImpl:
         build_graph(max_iterations=MAX_SUBAGENT_ITERATIONS) genuinely binds
         the nested run to its OWN, smaller ceiling rather than the parent's
         MAX_ITERATIONS (10 > MAX_SUBAGENT_ITERATIONS's 6)."""
-        from app.agent.graph.core import MAX_SUBAGENT_ITERATIONS
+        from app.agent.graph.state import MAX_SUBAGENT_ITERATIONS
 
         responses = [
             AIMessage(
