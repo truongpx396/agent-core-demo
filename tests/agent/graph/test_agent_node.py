@@ -467,3 +467,20 @@ async def test_agent_keeps_this_turns_retry_artifacts_because_the_retry_needs_th
     }
     await make_agent_node(fake_llm)(state)
     assert [m.content for m in fake_llm.seen_messages] == ["hours?", "ok", "That answer was too short"]
+
+
+async def test_agent_without_the_citation_reminder_still_passes_the_framed_context():
+    """A nested subagent is told to use no `[n]` markers; the tail reminder demanding one on every
+    sentence contradicted that. The retrieved text itself still goes in, as framed data."""
+    fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
+    state = {
+        "messages": [HumanMessage(content="what is a checkpointer?")],
+        "context": "[1] checkpointers persist graph state.",
+        "context_anchor_index": 0,
+    }
+    await make_agent_node(fake_llm, citation_reminder=False)(state)
+
+    sent = [str(m.content) for m in fake_llm.seen_messages]
+    assert any("checkpointers persist graph state" in text for text in sent)
+    assert not any("bracket marker" in text for text in sent)
+    assert fake_llm.seen_messages[-1].content == "what is a checkpointer?"

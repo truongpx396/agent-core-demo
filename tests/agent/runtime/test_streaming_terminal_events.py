@@ -761,3 +761,56 @@ class TestSubagentEventsDontLeakIntoTheMainStream:
             e for e in events if e["type"] == "tool_end" and e["tool"] == "run_subagent"
         )
         assert "subagent" not in top_level_end
+
+
+def test_a_semantic_cache_hit_is_counted_as_a_success_not_a_rejection():
+    """A cache hit never reaches `agent`, so `iterations` stays 0, which `_turn_outcome` read as
+    "the turn never got past validation"."""
+    assert stream_module._turn_outcome({"cache_hit": True, "iterations": 0}) == "success"
+    assert stream_module._turn_outcome({"cache_hit": False, "iterations": 0}) == "rejected"
+
+
+class _ScriptedEventsGraph:
+    """Just enough graph for `_run_graph_stream`: replays crafted `astream_events` events, then
+    reports a finished turn whose last message is `final_text`."""
+
+    def __init__(self, events, final_text="The parent's own answer."):
+        self._events, self._final_text = events, final_text
+
+    async def astream_events(self, graph_input, config=None, version=None):
+        for event in self._events:
+            yield event
+
+    async def aget_state(self, cfg):
+        values = {"messages": [AIMessage(content=self._final_text)], "iterations": 1}
+        return SimpleNamespace(next=(), tasks=(), values=values)
+
+
+def _chain_end(name, *, subagent=None, output=None):
+    return {
+        "event": "on_chain_end",
+        "name": name,
+        "metadata": {"subagent_name": subagent} if subagent else {},
+        "data": {"output": output or {"messages": [AIMessage(content="replacement text")]}},
+    }
+
+
+async def _event_types(events):
+    graph = _ScriptedEventsGraph(events)
+    return [e["type"] async for e in stream_module._run_graph_stream(graph, {}, {}, None)]
+
+
+async def test_a_nested_subagents_chain_ends_never_reach_the_parents_stream():
+    """The nested graph shares the node names below with the parent's, and its events arrive on
+    the parent's stream: acting on them cleared the parent's answer and replaced it."""
+    for name in ("retry_output", "check_output", "retry_exhausted", "compact_history"):
+        assert await _event_types([_chain_end(name, subagent="researcher")]) == ["token", "done"]
+
+
+async def test_the_same_chain_ends_still_act_when_they_are_the_parents_own():
+    """The control for the test above: it proves the guard is on `subagent_name`, not that these
+    branches stopped working."""
+    assert await _event_types([_chain_end("retry_output")]) == ["retry", "token", "done"]
+    assert await _event_types([_chain_end("check_output")]) == ["retry", "token", "done"]
+    assert await _event_types([_chain_end("retry_exhausted")]) == ["retry", "token", "done"]
+    assert await _event_types([_chain_end("compact_history")]) == ["compacted", "token", "done"]

@@ -172,8 +172,9 @@ A `SecurityCtx` (`tenant`, `principal`, `claims`) is stamped once by `validate_i
 - **Gap:** validate-then-fetch leaves a narrow DNS-rebinding race, and a hung resolver still holds a task and a thread.
 
 ### 25. Input moderation before any spend
-`moderate_input` + `route_after_moderation` + `reject_moderation` (`app/core/moderation.py`) run right after `validate_input`'s checks, before the cache, retrieval or any LLM call. Two layers, cheapest first: (1) a regex screen for known injection/jailbreak phrasings plus a small denylist; (2) an ML classifier, Meta's Llama Prompt Guard 2 (22M) served by `ml-service`'s `/prompt-guard`, which catches paraphrases the patterns miss (`ML_INJECTION_THRESHOLD` 0.5; ~25–100 ms).
+`moderate_input` + `route_after_moderation` + `reject_moderation` (`app/core/moderation.py`) run right after `validate_input`'s checks, before the cache, compaction, retrieval or any LLM call. Two layers, cheapest first: (1) a regex screen for known injection/jailbreak phrasings plus a small denylist; (2) an ML classifier, Meta's Llama Prompt Guard 2 (22M) served by `ml-service`'s `/prompt-guard`, which catches paraphrases the patterns miss (`ML_INJECTION_THRESHOLD` 0.5; ~25–100 ms).
 - A real hit at either layer fails **closed**; a failure of the check *itself* (a regex bug, `ml-service` unreachable) fails **open**, recorded as `outcome="error"`. The two are deliberately not conflated.
+- **Bug:** compaction (an LLM call) ran right after `validate_input`, i.e. BEFORE moderation and the cache, so a moderated-out turn on a long thread and a cache-hit turn each still paid for a summarization, which broke the "before any spend" in the title. The order is now `validate_input → moderate_input → check_semantic_cache → (miss) compact_history → retrieve_context`. Test: `test_graph_integration.py::test_compaction_runs_only_after_moderation_and_a_cache_miss` (it reads the order of node starts off the event stream, which is what a router test can't see).
 - **Gap:** the threshold is the model's natural boundary, not recalibrated on live traffic. Moderation screens words, not pixels (44).
 - **Use when:** any input surface reachable by someone not fully trusted.
 
@@ -236,7 +237,8 @@ A third outcome for a paused interrupt, not a repurposed rejection: `route_after
 `scripts/eval.py` has two release gates. (1) Each case runs `EVAL_REPETITIONS` (5) times and passes only if `REPETITION_PASS_THRESHOLD` (80%) of repetitions pass: a stochastic system graded once is a coin flip. (2) A grounded-claims gate over the whole golden set (≥95% of citation markers real), computed from the runtime's own `used_citations`/`ungrounded_claims_count`, never a model's opinion of itself. Tokens, cost and grounding are summed across repetitions; latency is averaged. The thresholds are demo defaults; the structure generalizes.
 
 ### 41. Bounded history summarization
-`compact_history` summarizes exactly the discarded messages with one LLM call, folding the result into a cumulative `state["history_summary"]` that is never reset per turn. `agent()` front-loads the summary at the same anchor retrieved context uses, with a short "don't restate this" reminder at the tail (a small model was seen regurgitating the injected summary). A separate field, because `add_messages` has no insert-at-position.
+`compact_history` runs once per turn that reaches the model, after moderation and a semantic-cache miss and before retrieval (25), and summarizes exactly the discarded messages with one LLM call, folding the result into a cumulative `state["history_summary"]` that is never reset per turn. `agent()` front-loads the summary at the same anchor retrieved context uses, with a short "don't restate this" reminder at the tail (a small model was seen regurgitating the injected summary). A separate field, because `add_messages` has no insert-at-position.
+- A cache hit skips it, so a long run of hits defers compaction to the next miss; that is the turn that needs the room.
 - If the summary itself passes `MAX_HISTORY_SUMMARY_CHARS`, `route_after_compaction` routes to `context_window_exceeded`: a named dead end, not silent truncation. A summarization failure still applies the trim and skips updating the summary.
 
 ### 42. Telegram channel
@@ -265,11 +267,13 @@ A catalog of `SKILL.md` packages (YAML frontmatter + markdown, one directory und
 - Skills are a shared bundled catalog (no `SecurityCtx`, like `calculator`); a tenant-authored catalog is a larger extension not attempted. Domains scope skills with an optional `domains:` field.
 
 ### 46. Subagents: scoped, isolated delegation
-`run_subagent(subagent_name, task)` starts a separate nested run: a fresh `build_graph()` with its own messages, prompt and budget. Skills add instructions to the same context; this doesn't. One tool with a closed enum built from `subagents/<name>/AGENT.md` (`app/agent/tools/subagent_catalog.py`).
+`run_subagent(subagent_name, task)` starts a separate nested run: a fresh `build_subagent_graph()` with its own messages, prompt and budget. Skills add instructions to the same context; this doesn't. One tool with a closed enum built from `subagents/<name>/AGENT.md` (`app/agent/tools/subagent_catalog.py`).
 - **Read-only tools only,** enforced at catalog-build time (others are dropped with a warning), so `run_subagent` is a plain `read_only` tool needing no gate special case. The nested graph runs synchronously on a throwaway `MemorySaver` inside one tool call; nobody could resume it hours later, so a write-capable subagent would mean a deadlocked gate or a bypass of pattern 15.
 - **No recursion:** `run_subagent` is stripped from every subagent's tools.
 - **Isolation:** fresh messages (its own prompt, the task as the only `HumanMessage`), inherited `SecurityCtx`, its own budget (`MAX_SUBAGENT_ITERATIONS=6`, `MAX_SUBAGENT_TOKENS_PER_RUN=4000`) via pattern 23's `functools.partial`, and a leaner `build_subagent_graph()` without 5 of 21 nodes (cache, follow-ups, compaction). Graphs are cached by `(domain, subagent_name)`.
 - **Spend:** nested spend folds into the parent's budget through the `subagent_spend` reducer `_concat_or_reset`, which concatenates and treats `None` as a reset (pattern 10's bug). Parent callbacks thread into the nested run, and its reasoning tokens never reach the client's stream.
+- **Citations are the parent's alone:** a subagent's retrieval cites ITS sources, which mean nothing to the parent (its `[1]` is a different document), so its prompt says to use no `[n]` markers and the nested graph is built with `enforce_citations=False`: no tail "every sentence must end with its marker" reminder, and `check_output` neither flags nor inserts markers (every other check still applies). `_run_subagent_impl` strips any marker that slips through; a literal `[0]` in a subagent's answer goes with it.
+- **Bug:** the nested graph reused `agent` and `check_output` unchanged. The subagent got both "no bracket markers" (its prompt) and "every sentence must end with one" (the reminder), its own `check_output` inserted a `[1]` anyway, and that `check_output`'s `on_chain_end` reached the PARENT's stream: the client saw `retry`, then the subagent's text as a token, then `done`, so the subagent's words were shown as the answer. `_run_graph_stream` now ignores every `on_chain_end` tagged with `metadata.subagent_name`. Tests: `test_subagents.py::test_a_subagent_never_emits_citation_markers_or_events_into_the_parents_stream`, `test_streaming_terminal_events.py::test_a_nested_subagents_chain_ends_never_reach_the_parents_stream`.
 - **Gap:** a new subagent needs a process restart.
 
 ### 47. Example domains as a load-bearing proof
@@ -304,7 +308,7 @@ crawl4ai (`app/ingestion/web_crawler.py`) renders JS-heavy pages. OpenSandbox, c
 - **Wrapped narrow:** handing a 3B model OpenSandbox's ~19 tools made it hallucinate a `sandbox_id`, and three prompt fixes didn't help. `app/domains/sandbox_session.py` now does lookup and creation in code and exposes four flat tools (`run_command_in_sandbox`, `run_python_in_sandbox`, `read_sandbox_file`, `write_sandbox_file`). `run_python_in_sandbox` takes the script as a plain argument, not a shell string, because the model kept breaking `python -c '...'` quoting.
 - **Check the structure before blaming the model:** a skill-based math question never reached `skill_search` despite three prompt fixes. The cause was list position (those tools were last); moving them first fixed every domain.
 - **`check_output` gained two retry reasons:** `fabricated_tool_output` (an invented tool result with no real `tool_calls`; ranked first) and `skipped_required_tool`.
-- **Bug:** two simultaneous tool calls sometimes arrived glued into one `tool_calls` entry. Fixed with `parallel_tool_calls=False` on `bind_tools()`.
+- **Bug:** two simultaneous tool calls sometimes arrived glued into one `tool_calls` entry. `parallel_tool_calls=False` was tried first and was a no-op (since removed); the fix is the LiteLLM chunk-index patch (`deploy/litellm/patches/sitecustomize.py`), as `graph/utils.py::_make_llm` explains.
 - **Bug: tenants could share a sandbox.** Telegram ids (`telegram:123`) broke sandbox metadata (`:` is forbidden), and the first fix rewrote the id many-to-one without naming the tenant, so two tenants' conversations could share a sandbox and read each other's files (Principle I). Now tenant and raw conversation id are tagged as separate SHA-256 prefixes, lookups filter on both and re-check returned tags, and `tenant` is a required keyword argument on every sandbox helper. Old-tag sandboxes expire on their TTL.
 - **Misdiagnoses traced to the real request:** a 405 was a port clash with open-webui (both on 8080); a timeout was the SDK reaching a Docker-internal IP, fixed with `use_server_proxy=True` in `scripts/opensandbox_mcp_bridge.py`.
 - **Third-party bugs, documented:** `read_sandbox_file` 404s right after a write (use `cat` via `run_command_in_sandbox`); a non-root image needs an explicit `WORKDIR`.
@@ -324,35 +328,44 @@ These are not patterns of the graph, so they live elsewhere. Their numbers are k
 ```
 START
   ↓
-validate_input  ← resets iterations/total_tokens/run_id/cancelled/approved,
-  ↓                stamps SecurityCtx from config["configurable"]["ctx"]
-route_after_validation?  ← valid ctx? last HumanMessage non-empty?
+validate_input  ← resets per-turn fields (iterations, total_tokens, run_id, cancelled/approved, the retrieved
+  ↓                context and its anchor, every check_output result); stamps SecurityCtx from
+  ↓                config["configurable"]["ctx"]
+route_after_validation?  ← valid ctx? last user message (not retry feedback, pattern 5) non-empty?
   ├─→ reject_context  (no valid tenant+principal — checked FIRST, pattern 17) → END
   ├─→ reject_input    (AIMessage explaining the problem) → END
-  └─→ compact_history  ← trims past HISTORY_TOKEN_CEILING down to FLOOR and folds the
-       │                  dropped turns into history_summary (pattern 41); no-op in budget
+  └─→ moderate_input  ← regex screen + Prompt Guard classifier (pattern 25); first spend-adjacent
+       │                 step, so nothing below runs for a refused input; fails closed on a hit,
+       │                 open on the check's own failure
        ↓
-      route_after_compaction?  ← history_summary over MAX_HISTORY_SUMMARY_CHARS?
-       ├─→ context_window_exceeded  (a named dead end, not silent truncation) → END
-       └─→ moderate_input  ← regex screen + Prompt Guard classifier (pattern 25);
-            │                 fails closed on a hit, open on the check's own failure
+      route_after_moderation?
+       ├─→ reject_moderation ("I can't help with that request.") → END
+       └─→ check_semantic_cache  ← tenant+principal cosine-KNN in Redis (pattern 22);
+            │                       degrades to a miss on any failure
             ↓
-           route_after_moderation?
-            ├─→ reject_moderation ("I can't help with that request.") → END
-            └─→ check_semantic_cache  ← tenant+principal cosine-KNN in Redis (pattern 22);
-                 │                       degrades to a miss on any failure
+           route_after_cache?
+            ├─→ check_output   (HIT: cached answer as a final AIMessage; no compaction, no retrieval, no LLM)
+            └─→ compact_history  ← MISS, the first point the turn is known to need the model: trims past
+                 │                  HISTORY_TOKEN_CEILING down to FLOOR and folds the dropped turns into
+                 │                  history_summary with one LLM call (pattern 41); no-op in budget
                  ↓
-                route_after_cache?
-                 ├─→ check_output   (HIT: cached answer as a final AIMessage, no retrieval, no LLM)
-                 └─→ retrieve_context  ← MISS: hybrid dense+BM25, RRF, rerank, numbered citations
+                route_after_compaction?  ← history_summary over MAX_HISTORY_SUMMARY_CHARS?
+                 ├─→ context_window_exceeded  (a named dead end, not silent truncation) → END
+                 └─→ retrieve_context  ← hybrid dense+BM25, RRF, rerank, numbered citations
                       │                  (pattern 20) + this principal's memories; degrades on failure
                       ↓
                      agent  ← LLM call with context as an untrusted <retrieved_document>
-                     │        SystemMessage; retried on transient failure (AGENT_RETRY_POLICY);
-                     │        may call ask_clarification (pattern 27)
+                      │       SystemMessage; retried on transient failure (AGENT_RETRY_POLICY);
+                      │       may call ask_clarification (pattern 27)
                       ↓
-                     should_continue?
-                      ├─→ too_many_tool_calls  (> MAX_TOOL_CALLS_PER_TURN) → agent, with ToolMessage rejections
+                     should_continue?  ← the iteration/token/cost caps are checked first, whatever the model said
+                      ├─→ no_answer  (MAX_ITERATIONS, MAX_TOKENS_PER_TURN, MAX_COST_USD_PER_TURN (35) or
+                      │               MAX_REPEATED_ACTIONS identical batches (34)): answers any tool calls
+                      │               pending on the message that tripped it, replaces untrusted text → END
+                      ├─→ too_many_tool_calls       (> MAX_TOOL_CALLS_PER_TURN) → agent
+                      ├─→ invalid_tool_call         (a name not in THIS domain's tools) → agent
+                      ├─→ use_skill_without_search  (use_skill before skill_search) → agent
+                      │     (each of those three answers every pending call with a ToolMessage rejection)
                       ├─→ human_approval  (require_approval, OR any non-read_only call — mandatory, pattern 15)
                       │    ↓
                       │   route_after_approval?  ← interrupt() paused here
@@ -365,8 +378,12 @@ route_after_validation?  ← valid ctx? last HumanMessage non-empty?
                       └─→ check_output  ← cache hits and misses both rejoin here; computes
                            │               used_citations and ungrounded_claims_count (20, 39)
                            ↓
-                          route_after_check?  ← answer too short, fabricated, or skipped a required tool?
-                           ├─→ retry_output  ← corrective HumanMessage → agent
+                          route_after_check?  ← leaked prompt, too short, fabricated, skipped a required
+                           │                    tool, deferred, uncited or misattributed?
+                           ├─→ retry_output  ← tags the rejected answer + a corrective HumanMessage as retry
+                           │                    artifacts (pattern 5) → agent
+                           ├─→ retry_exhausted  (the SAME reason MAX_CONSECUTIVE_SAME_RETRY_REASON times in
+                           │                     a row: replaces an untrusted answer with a fallback) → END
                            └─→ suggest_followups  ← only for a GROUNDED answer (used_citations
                                 │                     non-empty); skipped on a hit (pattern 27)
                                 ↓
@@ -375,20 +392,21 @@ route_after_validation?  ← valid ctx? last HumanMessage non-empty?
                                END
 ```
 
-`should_continue` also ends the run early (→ `__end__`, skipping `check_output`) on the iteration cap,
-`MAX_TOKENS_PER_TURN`, `MAX_COST_USD_PER_TURN` (35) or `MAX_REPEATED_ACTIONS` identical batches (34).
-They aren't drawn as branches, but each is an independently tested exit.
+A nested `run_subagent` run (46) uses `build_subagent_graph()`: the same graph without `check_semantic_cache`,
+`write_semantic_cache`, `suggest_followups`, `compact_history` and `context_window_exceeded`, so
+`validate_input` goes straight to `moderate_input` and a passing `check_output` ends the run.
 
-**21 nodes:** `validate_input`, `reject_input`, `reject_context`, `compact_history`,
-`context_window_exceeded`, `moderate_input`, `reject_moderation`, `check_semantic_cache`,
-`retrieve_context`, `agent`, `tools`, `human_approval`, `too_many_tool_calls`, `invalid_tool_call`,
-`use_skill_without_search`, `check_output`, `retry_output`, `retry_exhausted`, `no_answer`,
-`suggest_followups`, `write_semantic_cache`.
+**21 nodes:** `validate_input`, `reject_input`, `reject_context`, `moderate_input`, `reject_moderation`,
+`check_semantic_cache`, `compact_history`, `context_window_exceeded`, `retrieve_context`, `agent`, `tools`,
+`human_approval`, `too_many_tool_calls`, `invalid_tool_call`, `use_skill_without_search`, `check_output`,
+`retry_output`, `retry_exhausted`, `no_answer`, `suggest_followups`, `write_semantic_cache`.
 
-**State fields beyond `messages`:** `context`, `citations`, `used_citations`, `ungrounded_claims_count`,
-`cache_hit`, `moderation_blocked`, `followups`, `history_summary`, `iterations`, `total_tokens`,
-`total_cost_usd`, `run_id`, `graph_version`, `state_schema_version`, `ctx`, `require_approval`,
-`approved`, `cancelled`, `subagent_spend`.
+**State fields beyond `messages`:** `context`, `context_anchor_index`, `iterations`, `total_tokens`,
+`total_cost_usd`, `subagent_spend`, `require_approval`, `approved`, `cancelled`, `run_id`, `graph_version`,
+`state_schema_version`, `ctx`, `citations`, `used_citations`, `ungrounded_claims_count`,
+`likely_uncited_citations`, `likely_misattributed_citations`, `deferred_instead_of_acting`,
+`fabricated_tool_output`, `skipped_required_tool`, `leaks_system_prompt`, `last_retry_reason`,
+`retry_reason_repeat_count`, `cache_hit`, `moderation_blocked`, `followups`, `history_summary`.
 
 ## Extending Further
 

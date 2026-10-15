@@ -2,13 +2,25 @@
 (GRAPH_PATTERNS.md pattern 46). All isolated to `tmp_path`; nothing here
 touches the real `subagents/` directory shipped with the app.
 """
-import pytest
+import re
+from pathlib import Path
 
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import tool
+
+from app.agent.graph import core as graph
+from app.agent.graph.build import build_graph
+from app.agent.graph.core import GraphDeps
+from app.agent.manifest import AgentManifest
+from app.agent.runtime import stream as stream_module
 from app.agent.tools.subagent_catalog import (
     SubagentLoadError,
     _parse_subagent_file,
     load_subagents,
 )
+from tests.agent.fakes import Domain, call, cfg, scripted_llm
 
 
 def _write_subagent(tmp_path, slug, content):
@@ -139,3 +151,59 @@ class TestLoadSubagents:
 
         assert len(catalog) == 1
         assert catalog["researcher"].path.parent.name == "aaa-first"
+
+
+FACT = "Ecorp support hours are nine to five Monday through Friday Pacific time."
+
+
+async def test_a_subagent_never_emits_citation_markers_or_events_into_the_parents_stream(monkeypatch):
+    """Real bug: the nested graph's own `check_output` inserted a `[1]` into the subagent's answer
+    (its sources, meaningless to the parent), the subagent received contradictory citation rules
+    (its prompt said "no bracket markers", the tail reminder said "every sentence must end with
+    one"), and the nested `check_output`'s `on_chain_end` reached the PARENT's stream: the client
+    saw `retry`, then the subagent's text as a token, then `done` (GRAPH_PATTERNS.md pattern 46)."""
+    from app.agent.tools import run_subagent as subagent_tools
+    from app.agent.tools.subagent_catalog import SubagentRecord
+
+    async def nested_search(query, ctx):
+        citation = {"marker": "[1]", "doc_id": "d1", "title": "hours", "text": FACT, "score": 5.0}
+        return f"[1] {FACT}", [citation]
+
+    monkeypatch.setattr(graph, "_default_search", nested_search)  # the nested graph's retrieval
+    record = SubagentRecord("researcher", "d", "You research.", (), None, None, Path("x"))
+    nested_inputs, answers = [], []
+
+    @tool
+    async def delegate(task: str, config: RunnableConfig) -> str:
+        """Delegate a lookup."""
+        result = await subagent_tools._run_subagent_impl(
+            "researcher", task, config,
+            registry={"researcher": (record, ())}, tools_by_name={},
+            llm=scripted_llm(lambda _m: AIMessage(content=FACT), nested_inputs),
+        )
+        answers.append(result.answer)
+        return result.answer
+
+    def parent(messages):
+        if not any(isinstance(m, ToolMessage) for m in messages):
+            return call("delegate", {"task": "find support hours"}, "d1")
+        return AIMessage(content="The parent's own final answer text.")
+
+    async def parent_search(query, ctx):
+        return "", []
+
+    g = build_graph(
+        GraphDeps(llm=scripted_llm(parent), search_docs=parent_search),
+        manifest=AgentManifest("t", "You help."),
+        domain=Domain([delegate], {"delegate": "read_only"}),
+    )
+    events = [
+        e async for e in stream_module._run_graph_stream(
+            g, {"messages": [HumanMessage(content="hours?")]}, cfg(), None
+        )
+    ]
+    assert "retry" not in [e["type"] for e in events]
+    shown = "".join(e["content"] for e in events if e["type"] == "token")
+    assert shown == "The parent's own final answer text."
+    assert not re.search(r"\[\d+\]", answers[0])
+    assert not any("bracket marker" in str(m.content) for m in nested_inputs[0])

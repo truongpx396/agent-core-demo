@@ -258,13 +258,19 @@ AGENT_RETRY_POLICY = RetryPolicy(max_attempts=3, retry_on=_retry_agent_on)
 STATE_SCHEMA_VERSION = 1
 
 
+@functools.cache
 def _graph_version() -> str:
     """Identifies the build that wrote a checkpoint, for resumability_error's
     cross-restart check. `GRAPH_VERSION` (env var) is what a real deployment
     sets at build/deploy time; the git SHA is a dev-time convenience
     fallback; "unknown" if neither is available. Never raises — this is
     metadata, not a safety budget, so it fails open the same way
-    MAX_TOKENS_PER_TURN's usage_metadata lookup does."""
+    MAX_TOKENS_PER_TURN's usage_metadata lookup does.
+
+    Cached for the process: the build doesn't change under a running
+    process, and `validate_input` calls this every turn. Uncached, a
+    deployment that sets no `GRAPH_VERSION` forked `git` on every turn (and
+    paid a failed exec when the image has no git)."""
     version = os.environ.get("GRAPH_VERSION")
     if version:
         return version
@@ -398,7 +404,8 @@ class State(TypedDict):
     # it actually succeeds in getting the prompt recited back. Read by
     # route_after_check to trigger a retry.
     last_retry_reason: str | None  # Set by check_output — short code
-    # ("leaked_prompt"/"too_short"/"deferred"/"uncited"/"misattributed")
+    # ("leaked_prompt"/"too_short"/"fabricated"/"skipped_tool"/"deferred"/
+    # "uncited"/"misattributed", in `_retry_reason`'s priority order)
     # naming this round's rejection reason, or None. Compared against the
     # PRIOR round's value by check_output to compute
     # retry_reason_repeat_count below — never reset mid-turn elsewhere.
@@ -440,8 +447,8 @@ class State(TypedDict):
 # runs exactly once per turn, which is what resetting iterations/
 # total_tokens/run_id here requires (otherwise they'd persist across turns
 # and MAX_ITERATIONS would fire on an arbitrary future turn). History
-# trimming/summarization stays out of this node (compact_history, one node
-# later) since it needs an LLM call and this stays a plain, dependency-free
+# trimming/summarization stays out of this node (compact_history, which runs
+# after moderation and a cache miss) since it needs an LLM call and this stays a plain, dependency-free
 # function of state/config.
 #
 # `ctx` is read from config["configurable"]["ctx"] (never state or message
@@ -493,23 +500,27 @@ def validate_input(state: State, config: RunnableConfig) -> dict:
 
 def route_after_validation(
     state: State,
-) -> Literal["compact_history", "reject_input", "reject_context"]:
+) -> Literal["moderate_input", "reject_input", "reject_context"]:
     """Checks ctx first, then the message. A missing/malformed ctx routes
     to reject_context (a system-level failure), kept distinct from
     reject_input's "you typed nothing" so an infra problem doesn't read as
     a user error in the transcript or in agent_requests_total's outcome
     label (see runtime/stream.py::_turn_outcome).
 
-    Valid path goes to compact_history, not moderate_input directly —
-    history trimming/summarization runs on every valid turn regardless of
-    what moderate_input decides about THIS turn's input.
+    A valid turn goes straight to moderate_input, and compaction runs
+    LATER, only on a semantic-cache miss (route_after_cache). Compaction is
+    an LLM call (a summary of the trimmed turns), so it follows pattern
+    25's "moderation before any spend": a screened-out turn and a cache-hit
+    turn must not pay for a summarization. The cost of that order is that
+    history only compacts on turns that reach the model; a long run of
+    cache hits defers it to the next miss, which is when it is needed.
     """
     if not valid_ctx(state.get("ctx")):
         return "reject_context"
     last_human = _last_human_message(state["messages"])
     if not _human_has_content(last_human):
         return "reject_input"
-    return "compact_history"
+    return "moderate_input"
 
 
 # --- Node: input moderation (GRAPH_PATTERNS.md pattern 25) — runs BEFORE
@@ -576,7 +587,7 @@ def reject_context(state: State) -> dict:
 
 def route_after_compaction(
     state: State,
-) -> Literal["moderate_input", "context_window_exceeded"]:
+) -> Literal["retrieve_context", "context_window_exceeded"]:
     """AR-015a's edge case as a NAMED terminal state, not silent
     truncation or an ever-growing prompt: if compact_history's updated
     `history_summary` is still over MAX_HISTORY_SUMMARY_CHARS, end the
@@ -585,7 +596,7 @@ def route_after_compaction(
     if len(state.get("history_summary") or "") > MAX_HISTORY_SUMMARY_CHARS:
         metrics.agent_context_window_exceeded_total.inc()
         return "context_window_exceeded"
-    return "moderate_input"
+    return "retrieve_context"
 
 
 def context_window_exceeded(state: State) -> dict:
@@ -676,6 +687,7 @@ class _SharedGraphParts:
     retrieve_context: Callable
     domain_should_continue: Callable
     domain_check_output: Callable
+    domain_invalid_tool_call: Callable
 
 
 def _assemble_shared_graph_parts(
@@ -685,6 +697,7 @@ def _assemble_shared_graph_parts(
     max_iterations: int | None,
     max_tokens_per_turn: int | None,
     max_cost_usd_per_turn: float | None,
+    enforce_citations: bool = True,
 ) -> _SharedGraphParts:
     """Setup shared by `build_graph()`/`build_subagent_graph()` before they
     diverge on topology: resolves `deps`/`manifest`/`domain` defaults,
@@ -695,6 +708,12 @@ def _assemble_shared_graph_parts(
     actual topology (which nodes exist, how they're wired) — "one
     pipeline, not two that can drift" (pattern 46). Each caller builds
     whatever else it additionally needs from `.llm_client`/`.deps`.
+
+    `enforce_citations=False` (only `build_subagent_graph`) drops the two
+    places a graph pushes `[n]` markers on the model: the tail "every sentence
+    must end with its marker" reminder in `agent`, and `check_output`'s
+    uncited/misattributed findings and marker insertion. A nested run's
+    sources are not the parent's, so its prompt says to use none.
     """
     # Deferred: graph/routing.py and graph/utils.py both import State/
     # constants back from THIS module at their own top level, so importing
@@ -704,6 +723,7 @@ def _assemble_shared_graph_parts(
     from app.agent.graph.agent_node import make_agent_node
     from app.agent.graph.retrieval import make_retrieve_context_node
     from app.agent.graph.routing import check_output, should_continue
+    from app.agent.graph.tool_guards import invalid_tool_call
     from app.agent.graph.utils import _make_llm
     from app.agent.manifest import DEFAULT_DOMAIN_PLUGIN, DEFAULT_MANIFEST
 
@@ -719,7 +739,12 @@ def _assemble_shared_graph_parts(
     domain_valid_tool_names = frozenset(t.name for t in domain_tools)
 
     llm_client = deps.llm or _make_llm(domain_tools)
-    agent = make_agent_node(llm_client, model_alias=deps.model_alias, kind=deps.meter_kind)
+    agent = make_agent_node(
+        llm_client,
+        model_alias=deps.model_alias,
+        kind=deps.meter_kind,
+        citation_reminder=enforce_citations,
+    )
     retrieve_context = make_retrieve_context_node(deps.search_docs or _default_search)
     # A plain module-level function (not a factory) bound to this domain's
     # capability mapping via functools.partial — see should_continue's own
@@ -737,7 +762,14 @@ def _assemble_shared_graph_parts(
     # own system_prompt, not the bare Ecorp SYSTEM_PROMPT, so
     # _leaks_system_prompt checks an answer against the prompt it was
     # ACTUALLY seeded with.
-    domain_check_output = functools.partial(check_output, system_prompt=manifest.system_prompt)
+    domain_check_output = functools.partial(
+        check_output, system_prompt=manifest.system_prompt, enforce_citations=enforce_citations
+    )
+    # Same shape again: name the bad tools against the set should_continue routed with, not
+    # Ecorp's (see invalid_tool_call).
+    domain_invalid_tool_call = functools.partial(
+        invalid_tool_call, valid_tool_names=domain_valid_tool_names
+    )
 
     return _SharedGraphParts(
         deps=deps,
@@ -749,6 +781,7 @@ def _assemble_shared_graph_parts(
         retrieve_context=retrieve_context,
         domain_should_continue=domain_should_continue,
         domain_check_output=domain_check_output,
+        domain_invalid_tool_call=domain_invalid_tool_call,
     )
 
 

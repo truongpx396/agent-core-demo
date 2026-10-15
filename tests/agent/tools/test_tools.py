@@ -1154,24 +1154,18 @@ class TestRunSubagentImpl:
         assert "did not produce a final answer" in result.answer
         assert narration not in result.answer
 
-    async def test_an_uncited_answer_gets_auto_corrected_and_returns_the_real_content(
+    async def test_an_uncited_subagent_answer_is_returned_as_is_with_no_marker_inserted(
         self, monkeypatch
     ):
-        """An answer that's correct but missing its citation marker is an
-        attribution nitpick, not a reason to discard it — check_output's
-        own citation auto-correction (_insert_missing_citation_markers)
-        now fixes this directly on round 1 rather than needing
-        retry_exhausted's trust after repeated identical rounds (see
-        test_graph_integration.py's
-        test_uncited_but_correct_answer_gets_auto_corrected_on_the_first_
-        round for the top-level-turn equivalent), so the subagent's own
-        outcome check correctly sees real, cited, non-empty content and
-        reports outcome="completed" with the actual (now-corrected)
-        answer, not a budget_exceeded apology the parent agent would have
-        to work around for no reason. Only ONE fake LLM response queued:
-        if this still needed a second round, _RecordingFakeLLM's inner
-        GenericFakeChatModel would raise on its exhausted iterator,
-        failing this test loudly rather than silently passing."""
+        """A subagent's answer is NOT judged or repaired by `[n]` markers. Its retrieval cites
+        ITS sources, which mean nothing to the parent (its `[1]` is a different document), and
+        its prompt says to use none. This used to assert the opposite: the nested `check_output`
+        mechanically inserted `[1]` into the text handed back to the parent (pattern 46).
+
+        The answer is still correct, non-empty content, so the run is "completed", not a
+        budget_exceeded apology. Only ONE fake LLM response queued: if this still needed a second
+        round, _RecordingFakeLLM's inner GenericFakeChatModel would raise on its exhausted
+        iterator, failing this test loudly rather than silently passing."""
         from app.agent.graph import core as graph_module
 
         source_text = "The sky is blue due to Rayleigh scattering."
@@ -1189,8 +1183,20 @@ class TestRunSubagentImpl:
             "researcher", "why is the sky blue?", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
-        assert result.answer == "The sky is blue due to Rayleigh scattering [1]."
+        assert result.answer == "The sky is blue due to Rayleigh scattering."
         assert "did not produce a final answer" not in result.answer
+
+    async def test_a_marker_the_subagent_wrote_anyway_is_stripped_from_its_answer(self):
+        """Its prompt says to use no `[n]` markers; if the model writes one regardless, it names
+        a source only the subagent saw, and the parent's citation checks would read it as theirs."""
+        fake_llm = _RecordingFakeLLM(AIMessage(content="Support is open nine to five [1], Monday to Friday [2]."))
+        registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
+
+        result = await _run_subagent_impl(
+            "researcher", "support hours?", _subagent_cfg(), registry=registry, llm=fake_llm
+        )
+
+        assert result.answer == "Support is open nine to five, Monday to Friday."
 
     async def test_timeout_raises_and_is_recorded(self, monkeypatch):
         class _SlowLLM:

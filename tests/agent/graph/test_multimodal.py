@@ -84,14 +84,14 @@ class TestHumanHasContent:
 class TestRouteAfterValidationWithImages:
     def test_image_only_message_is_valid_input(self):
         state = {"messages": [_multimodal("", "https://example.com/cat.png")], "ctx": TEST_CTX}
-        assert route_after_validation(state) == "compact_history"
+        assert route_after_validation(state) == "moderate_input"
 
     def test_text_and_image_message_is_valid_input(self):
         state = {
             "messages": [_multimodal("what is this?", "https://example.com/cat.png")],
             "ctx": TEST_CTX,
         }
-        assert route_after_validation(state) == "compact_history"
+        assert route_after_validation(state) == "moderate_input"
 
 
 class TestModerateInputScreensTextOnly:

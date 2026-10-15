@@ -44,7 +44,7 @@ from app.agent.graph.retry import (
 )
 from app.agent.graph.routing import route_after_check
 from app.agent.graph.skill_guards import use_skill_without_search
-from app.agent.graph.tool_guards import invalid_tool_call, too_many_tool_calls
+from app.agent.graph.tool_guards import too_many_tool_calls
 from app.agent.graph.utils import _friendly_tool_error, _instrumented
 
 if TYPE_CHECKING:
@@ -197,7 +197,7 @@ def build_graph(
     )
     builder.add_node(
         "invalid_tool_call",
-        _instrumented("invalid_tool_call")(invalid_tool_call),
+        _instrumented("invalid_tool_call")(parts.domain_invalid_tool_call),
     )
     builder.add_node(
         "use_skill_without_search",
