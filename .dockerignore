@@ -11,4 +11,5 @@ checkpoints.sqlite3*
 *.md
 packages/*/tests/
 packages/*/docs/
+packages/*/specs/
 packages/*/observability/
