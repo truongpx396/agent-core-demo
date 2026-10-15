@@ -45,9 +45,10 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
 from app.agent.graph.build import build_graph
-from app.agent.runtime.core import ensure_seeded_async
+from app.agent.runtime.core import DEFAULT_DOMAIN, ensure_seeded_async
 from app.core.config import DEFAULT_TENANT
 from app.core.security import SecurityCtx
+from app.domains.registry import resolve_domain
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "eval_runs"
 
@@ -381,7 +382,8 @@ def main() -> None:
 
     previous = None if args.no_compare else load_previous_run()
 
-    graph = build_graph()  # real LLM, real Qdrant/embeddings — needs `make up` + `make ingest`
+    manifest, domain = resolve_domain(DEFAULT_DOMAIN)  # the golden set is Ecorp's
+    graph = build_graph(manifest, domain)  # real LLM, real Qdrant/embeddings — needs `make up` + `make ingest`
 
     # run_case/_run_case_once are async (graph nodes are async def) —
     # asyncio.run is the one sync/async bridge point in this otherwise-sync

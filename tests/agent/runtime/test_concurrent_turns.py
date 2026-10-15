@@ -87,7 +87,6 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langchain_core.outputs import ChatGeneration, ChatResult
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from app.agent.graph.build import build_graph
 from app.agent.graph.core import GraphDeps
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
@@ -99,6 +98,7 @@ from app.retrieval import embeddings as embeddings_module
 from app.retrieval import qdrant_store, semantic_cache
 from tests.conftest import metric_value as _count
 from tests.containers import ensure_postgres, ensure_qdrant, ensure_redis
+from tests.ecorp import build_graph
 
 pytestmark = pytest.mark.integration
 

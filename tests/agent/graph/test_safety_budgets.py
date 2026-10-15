@@ -19,7 +19,6 @@ from langchain_core.messages import (
     SystemMessage,
 )
 
-from app.agent.graph.build import build_graph
 from app.agent.graph.compaction import (
     COMPACTION_MARKER_KEY,
     _estimate_tokens,
@@ -29,7 +28,6 @@ from app.agent.graph.compaction import (
     make_compact_history_node,
 )
 from app.agent.graph.core import GraphDeps, validate_input
-from app.agent.graph.routing import should_continue
 from app.agent.graph.state import (
     MAX_ITERATIONS,
     MAX_SUBAGENT_TOKENS_PER_RUN,
@@ -42,6 +40,7 @@ from app.agent.runtime import core as agent_module
 from app.core import metrics, tool_runtime
 from app.core.config import MAX_COST_USD_PER_TURN, MAX_SUBAGENT_COST_USD_PER_RUN
 from tests.conftest import TEST_CTX, metric_value
+from tests.ecorp import build_graph, should_continue
 
 
 def _tool_call_message(name, args, call_id="call_1"):

@@ -43,10 +43,10 @@ if TYPE_CHECKING:
 # --- Build a leaner graph for a NESTED subagent run (app/agent/tools/builtin.py::
 # run_subagent, GRAPH_PATTERNS.md pattern 46) ---
 def build_subagent_graph(
+    manifest: "AgentManifest",
+    domain: "DomainPlugin",
     deps: GraphDeps | None = None,
     checkpointer=None,
-    manifest: "AgentManifest | None" = None,
-    domain: "DomainPlugin | None" = None,
     max_iterations: int | None = None,
     max_tokens_per_turn: int | None = None,
     max_cost_usd_per_turn: float | None = None,

@@ -8,7 +8,6 @@ change.
 """
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-from app.agent.graph.core import SYSTEM_PROMPT
 from app.agent.graph.messages import RETRY_ARTIFACT_KEY
 from app.agent.graph.routing import check_output
 from app.agent.graph.state import MIN_ANSWER_LENGTH, State
@@ -232,7 +231,7 @@ def make_retry_exhausted_node(emit_message: bool = True):
 # filling in prose here would make that check wrongly see real text and
 # report the run as completed. ---
 def make_no_answer_fallback_node(
-    emit_message: bool = True, system_prompt: str = SYSTEM_PROMPT, enforce_citations: bool = True
+    emit_message: bool = True, *, system_prompt: str, enforce_citations: bool = True
 ):
     def no_answer_fallback(state: State) -> dict:
         last = state["messages"][-1]

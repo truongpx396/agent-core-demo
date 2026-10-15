@@ -1,63 +1,53 @@
-"""LangGraph tools the agent can call.
+"""The tools more than one domain shares, and the retrieval machinery behind them.
 
 - `search_docs`: tenant-scoped retrieval from Qdrant, optional topic filter.
-- `calculator`: a third tool so the agent must *choose* which to call.
-- `add_note`: writes a new note into the Qdrant knowledge base — a
-  *mutating* tool (see `TOOL_CAPABILITIES` below).
-- `remember`: the only way a memory gets written — also mutating. Recall
-  is automatic (folded into retrieve_context); writing never is.
-- `skill_search`/`use_skill`: progressive disclosure over a bundled catalog
-  of `SKILL.md` packages (`app/agent/tools/skill_catalog.py`, GRAPH_PATTERNS.md pattern
-  45). `skill_search` hybrid-searches a small Qdrant collection of skill
-  name/description metadata; `use_skill` loads one matched skill's full
-  body from disk by exact name. Bundled app capability, not tenant data —
-  no `SecurityCtx` involved.
-- `run_subagent`: delegates a self-contained task to a fresh, ISOLATED
-  nested agent run — a genuinely separate `graph.invoke()`, unlike
-  `use_skill` which loads more instructions into THIS agent's context.
-  Backed by `AGENT.md` packages (`app/agent/tools/subagent_catalog.py`, GRAPH_PATTERNS.md
-  pattern 46). Every subagent is restricted to `read_only` tools (enforced
-  at catalog-build time, see `_resolve_subagent_tools`), so `run_subagent`
-  needs no mandatory `human_approval` gating.
+- `calculator`: a second tool so the agent must *choose* which to call.
+- `ask_clarification`: an ordinary read-only tool whose result the model relays
+  verbatim (GRAPH_PATTERNS.md pattern 27).
+- `skill_search`/`use_skill` (`make_skill_tools(domain)`): progressive disclosure
+  over a bundled catalog of `SKILL.md` packages (`app/agent/tools/skill_catalog.py`,
+  GRAPH_PATTERNS.md pattern 45). `skill_search` hybrid-searches a small Qdrant
+  collection of skill name/description metadata; `use_skill` loads one matched
+  skill's full body from disk by exact name. Bundled app capability, not tenant
+  data — no `SecurityCtx` involved.
+- `gather_context`: the automatic pre-fetch (documents plus this principal's
+  memories, one continuously-numbered citation sequence).
+- `skill_tools_first`: the bound-tool ordering every domain uses (pattern 50).
 
-All tools declare an explicit Pydantic `args_schema` — the JSON schema the
-LLM sees, constraining what it can send and rejecting bad arguments loudly.
-`add_note`/`remember` lean on this harder: their args are a fixed, closed
-set, never a free-form or model-generated write target (see
-GRAPH_PATTERNS.md's "fixed tools, never generated queries").
+`run_subagent` (`app/agent/tools/run_subagent_domain.py`) delegates a self-contained
+task to a fresh, ISOLATED nested agent run — unlike `use_skill`, which loads more
+instructions into THIS agent's context. Every subagent is restricted to `read_only`
+tools, so it needs no mandatory `human_approval` gating (pattern 46).
+
+A domain's own tools live in `app/domains/<name>/tools.py` (the Ecorp ones, `add_note`,
+`remember` and `query_employees`, in `app/domains/ecorp/`).
+
+All tools declare an explicit Pydantic `args_schema` — the JSON schema the LLM sees,
+constraining what it can send and rejecting bad arguments loudly.
 
 ## Tenant isolation (app/core/security.py)
 
-`search_docs`, `add_note`, and `remember` receive `config: RunnableConfig`
-(auto-injected by `ToolNode`, auto-excluded from the LLM-visible schema) to
-read `SecurityCtx` from `config["configurable"]["ctx"]`. Each calls
-`ctx_or_refuse` first and fails closed if `ctx` is missing/malformed,
-rather than running an unscoped query or untenanted write.
+`search_docs` receives `config: RunnableConfig` (auto-injected by `ToolNode`,
+auto-excluded from the LLM-visible schema) to read `SecurityCtx` from
+`config["configurable"]["ctx"]`. It calls `ctx_or_refuse` first and fails closed if
+`ctx` is missing/malformed, rather than running an unscoped query.
 
 ## Cross-session memory
 
-Memory is written only by `remember` — nothing extracts facts from turn
-text automatically, since whatever writes memory decides what gets
-replayed into every future prompt. Recall is automatic (`default_search`
-in app/agent/graph/core.py, alongside document retrieval) and re-filtered
-against *current* ctx every call (`Policy.lower(ctx, "memories")`, scoped
-to `tenant` AND `owner`), never trusted from a prior snapshot. A recalled
-memory is framed like a retrieved document — untrusted, delimited content
-— because a poisoned memory keeps recurring every turn until removed
-(`qdrant_store.delete_by_filter`; deliberately not agent-facing).
+Recall is automatic: `gather_context` folds this principal's memories into the
+pre-fetch, re-filtered against *current* ctx every call
+(`Policy.lower(ctx, "memories")`, scoped to `tenant` AND `owner`), never trusted from a
+prior snapshot. The only writer is Ecorp's `remember` (`app/domains/ecorp/`).
 """
 import ast
-import asyncio
 import logging
 import operator
-import uuid
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
 from enum import Enum
-from typing import Annotated, Literal
+from typing import Literal
 
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool, InjectedToolCallId, tool
+from langchain_core.tools import BaseTool, tool
 
 # `ChatOpenAI` isn't constructed in THIS file anymore (moved to
 # tools/run_subagent.py's `run_subagent_impl` fallback) — kept as a deliberate
@@ -74,10 +64,8 @@ from app.core.config import (
     SKILLS_SEARCH_TOP_K,
 )
 from app.core.security import DEFAULT_POLICY, SecurityCtx, valid_ctx
-from app.core.tool_idempotency import idempotent
 from app.core.tool_runtime import NO_CTX_REFUSAL, arun_with_timeout, ctx_or_refuse
 from app.retrieval import qdrant_store
-from app.retrieval.embeddings import embed_sparse, embed_text
 
 logger = logging.getLogger(__name__)
 
@@ -90,38 +78,6 @@ _OPS: dict[type, Callable[..., float]] = {
     ast.Pow: operator.pow,
     ast.USub: operator.neg,
 }
-
-# Length budget for add_note/remember: bounds the BM25 sparse-embedding cost
-# per write (embed_sparse has no internal truncation, unlike the ml-service
-# ONNX models — see _sparse_vector_or_none) and keeps a note/memory citable
-# in a prompt without ballooning it.
-_MAX_NOTE_TITLE_CHARS = 200
-_MAX_NOTE_CONTENT_CHARS = 4000
-_MAX_MEMORY_CONTENT_CHARS = 2000
-
-# Fixed, arbitrary namespace for uuid5's content-addressed point ids below —
-# same "any constant works, it just must never change once chosen" rule as
-# app/ingestion/ingestor.py's own _POINT_ID_NAMESPACE (a distinct constant,
-# not reused, so the two id spaces can never collide even on an identical
-# tool_call_id/content coincidence).
-_TOOL_POINT_ID_NAMESPACE = uuid.UUID("3a9e5f2c-8b1d-4c6a-9e3f-2d7b6a1c8f0e")
-
-
-def _tool_call_point_id(tool_call_id: str) -> str:
-    """A Qdrant point id derived from `tool_call_id` alone, not a random
-    draw — closes the same duplicate-write gap `idempotent()`'s own
-    tool_call_dedup claim narrowly accepts as a race (see that module's
-    docstring): if `add_note`/`remember`'s `fn()` runs twice for the SAME
-    tool_call_id (the accepted crash-window race, or any future caller
-    that reopens it), `qdrant_store.upsert`'s upsert-by-id semantics
-    silently overwrite the first point instead of creating a second one.
-    Unlike `ingestor.py::_content_point_id`, no content hash is folded in
-    here — a tool_call_id is already a fresh, unique id per LLM decision
-    (see app/core/tool_idempotency.py's own docstring), so there's nothing else
-    worth keying on.
-    """
-    return uuid.uuid5(_TOOL_POINT_ID_NAMESPACE, tool_call_id).hex
-
 
 # Real bug (Langfuse trace ed435567): the model cited [3] on every sentence
 # of an answer unrelated to what [3] said. hybrid_search's RRF/dense
@@ -242,26 +198,6 @@ def _citation_records(hits: list, offset: int = 0) -> list[dict]:
     return records
 
 
-async def _sparse_vector_or_none(text: str) -> tuple[list[int], list[float]] | None:
-    """Best-effort BM25 sparse vector for a write path: if the sparse model
-    fails to load/embed, the write still succeeds dense-only
-    (`qdrant_store.build_point` treats `sparse_vector=None` as dense-only)
-    rather than blocking a write on a hybrid-search quality concern — same
-    degrade-don't-block posture as hybrid_search's read side.
-
-    `embed_sparse` is local ONNX/CPU compute (`app/retrieval/embeddings.py`),
-    so it's dispatched via `asyncio.to_thread` here too, same as
-    `qdrant_store.py::hybrid_search`'s read-side call — a bare sync call
-    would otherwise block every OTHER turn sharing this process's event
-    loop for the embed's duration, and (worse) a `arun_with_timeout`
-    caller has no `await` point during a bare sync call for its
-    `asyncio.wait_for` timeout to actually cancel."""
-    try:
-        return await asyncio.to_thread(embed_sparse, text)
-    except Exception:  # noqa: BLE001 - degrade to dense-only, never block the write
-        return None
-
-
 async def _document_hits(
     ctx: SecurityCtx,
     query: str,
@@ -373,159 +309,6 @@ async def ask_clarification(question: str, options: list[str]) -> str:
     return await arun_with_timeout(_ask_clarification_impl, question, options)
 
 
-class AddNoteArgs(BaseModel):
-    title: str = Field(..., max_length=_MAX_NOTE_TITLE_CHARS, description="Short title for the note.")
-    content: str = Field(..., max_length=_MAX_NOTE_CONTENT_CHARS, description="The note's text.")
-    topic: Topic = Field(
-        ..., description="Must be one of: langgraph, qdrant, company."
-    )
-    # Injected by ToolNode, never shown to the LLM — must be declared on
-    # the args_schema itself (LangChain's InjectedToolCallId detection
-    # scans args_schema fields, unlike `config: RunnableConfig` which scans
-    # the raw function signature). Lets add_note run through
-    # tool_idempotency.idempotent(): a reclaimed, retried job re-invoking
-    # this exact tool call (same id) gets the first call's own result back
-    # instead of writing a second, duplicate note.
-    tool_call_id: Annotated[str, InjectedToolCallId]
-
-    @field_validator("title", "content")
-    @classmethod
-    def _not_blank(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("must not be empty")
-        return v
-
-
-async def _add_note_impl(
-    title: str, content: str, topic: Topic, ctx: SecurityCtx, tool_call_id: str
-) -> str:
-    """Embed and upsert one new point into the knowledge base.
-
-    Fixed, single-purpose write: the only variables are the three typed
-    fields above (plus `ctx`, never model-visible). The point id is derived
-    from `tool_call_id` (`_tool_call_point_id`), not a random draw — this
-    can still only ever *add* a point (never overwrite or target an
-    existing one by guessing its id, since a caller never controls
-    `tool_call_id`), but a genuine re-run under the SAME tool_call_id now
-    upserts onto the same point instead of duplicating it.
-    """
-    text = f"{title}: {content}"
-    point = qdrant_store.build_point(
-        point_id=_tool_call_point_id(tool_call_id),
-        dense_vector=await embed_text(text),
-        sparse_vector=await _sparse_vector_or_none(text),
-        payload={
-            "text": text,
-            "topic": topic.value,
-            "title": title,
-            "kind": "document",
-            "tenant": ctx["tenant"],
-        },
-    )
-    await qdrant_store.upsert([point])
-    return f"Note '{title}' added to the {topic.value} knowledge base."
-
-
-@tool(args_schema=AddNoteArgs)
-async def add_note(
-    title: str,
-    content: str,
-    topic: Topic,
-    config: RunnableConfig,
-    tool_call_id: Annotated[str, InjectedToolCallId],
-) -> str:
-    """Add a new note to the knowledge base so future searches can find it.
-
-    This WRITES to the knowledge base — unlike search_docs/calculator, this
-    changes what other users and future turns will see. It is declared
-    "mutating" in TOOL_CAPABILITIES, which means app/agent/graph/core.py's
-    should_continue routes it through human_approval every time, regardless
-    of whether the caller opted into require_approval.
-    """
-    ctx = ctx_or_refuse(config, "write_note")
-    if ctx is None:
-        return NO_CTX_REFUSAL
-    return await idempotent(
-        tool_call_id=tool_call_id,
-        ctx=ctx,
-        config=config,
-        tool_name="add_note",
-        fn=lambda: arun_with_timeout(_add_note_impl, title, content, topic, ctx, tool_call_id),
-    )
-
-
-class RememberArgs(BaseModel):
-    content: str = Field(
-        ...,
-        max_length=_MAX_MEMORY_CONTENT_CHARS,
-        description="The fact to remember about this conversation/user.",
-    )
-    # See AddNoteArgs's own tool_call_id field for why this is here.
-    tool_call_id: Annotated[str, InjectedToolCallId]
-
-    @field_validator("content")
-    @classmethod
-    def _not_blank(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("content must not be empty")
-        return v
-
-
-async def _remember_impl(content: str, ctx: SecurityCtx, tool_call_id: str) -> str:
-    """Embed and upsert one memory, owned by ctx["principal"] within
-    ctx["tenant"] — the only place a memory gets written (see module
-    docstring's "Cross-session memory" section).
-
-    `created_at` (UTC, ISO 8601) is what `Policy.lower`'s retention filter
-    (app/core/security.py, GRAPH_PATTERNS.md pattern 33) and
-    `app/retrieval/memory.py::delete_memories` both read — stamped once, here,
-    never caller-supplied. The point id is `tool_call_id`-derived
-    (`_tool_call_point_id`, same reasoning as `_add_note_impl`'s own docstring),
-    not a random draw, so a genuine re-run under the same tool_call_id
-    upserts onto the same memory instead of duplicating it.
-    """
-    point = qdrant_store.build_point(
-        point_id=_tool_call_point_id(tool_call_id),
-        dense_vector=await embed_text(content),
-        sparse_vector=await _sparse_vector_or_none(content),
-        payload={
-            "text": content,
-            "kind": "memory",
-            "tenant": ctx["tenant"],
-            "owner": ctx["principal"],
-            "created_at": datetime.now(UTC).isoformat(),
-        },
-    )
-    await qdrant_store.upsert([point])
-    return "Remembered."
-
-
-@tool(args_schema=RememberArgs)
-async def remember(
-    content: str, config: RunnableConfig, tool_call_id: Annotated[str, InjectedToolCallId]
-) -> str:
-    """Save a fact about this user/conversation for future turns and
-    sessions to recall — e.g. a stated preference or a piece of context
-    they'll likely reference again.
-
-    This WRITES a persistent, cross-session memory — declared "mutating"
-    in TOOL_CAPABILITIES, so it's gated behind human_approval every time,
-    same as add_note. Only use this for something worth remembering
-    long-term, not for information already answerable from the current
-    conversation.
-    """
-    ctx = ctx_or_refuse(config, "write_memory")
-    if ctx is None:
-        return NO_CTX_REFUSAL
-    return await idempotent(
-        tool_call_id=tool_call_id,
-        ctx=ctx,
-        config=config,
-        tool_name="remember",
-        fn=lambda: arun_with_timeout(_remember_impl, content, ctx, tool_call_id),
-    )
-
-
 async def gather_context(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]]:
     """Documents + this principal's memories, hybrid-searched and combined
     into ONE continuously-numbered citation sequence — called by
@@ -552,76 +335,6 @@ async def gather_context(ctx: SecurityCtx | None, query: str) -> tuple[str, list
     if not all_hits:
         return "", []
     return _format_cited_context(all_hits), _citation_records(all_hits)
-
-
-class Department(str, Enum):
-    """The only departments that exist — same closed-vocabulary approach
-    as `Topic`, and for the same reason: `query_employees` narrows to
-    exactly what's askable, never a free-form filter the model writes."""
-
-    engineering = "Engineering"
-    support = "Support"
-    sales = "Sales"
-
-
-class QueryEmployeesArgs(BaseModel):
-    department: Department | None = Field(
-        default=None, description="Optional filter. One of: Engineering, Support, Sales."
-    )
-    name_contains: str | None = Field(
-        default=None, description="Optional case-insensitive substring match on name."
-    )
-
-
-async def query_employees_impl(
-    department: Department | None, name_contains: str | None, ctx: SecurityCtx
-) -> str:
-    from app.core import sql_store
-
-    cap = TOOL_RESULT_CAPS["query_employees"]
-    rows = await sql_store.query_employees(
-        tenant=ctx["tenant"],
-        department=department.value if isinstance(department, Department) else department,
-        name_contains=name_contains,
-        limit=cap + 1,  # +1: enough to detect "more than cap exist" without a second query
-    )
-    if not rows:
-        return "No matching employees found."
-
-    truncated = len(rows) > cap
-    rows = rows[:cap]
-    lines = [
-        f"- {r['name']} — {r['title']}, {r['department']} (hired {r['hired_on']})"
-        for r in rows
-    ]
-    if truncated:
-        # Marked, never silently shortened — see TOOL_RESULT_CAPS's comment.
-        lines.append(f"[truncated: showing the first {cap} matches; more exist]")
-    return "\n".join(lines)
-
-
-@tool(args_schema=QueryEmployeesArgs)
-async def query_employees(
-    config: RunnableConfig,
-    department: Department | None = None,
-    name_contains: str | None = None,
-) -> str:
-    """Look up Ecorp employees, optionally filtered by department or
-    name. Call this directly, immediately, the moment a question needs a
-    staff/roster answer — it is read-only public staff-directory
-    information, never requires confirmation first, and there is nothing
-    to ask permission for. A fixed, structured-data query — not a database
-    the model can ask arbitrary questions of; department and name_contains
-    are the only two ways to narrow the result set. NOT for a general
-    company-facts question (hours, policies, procedures) just because it
-    mentions a department-sounding word — "support hours" asks about
-    business hours, not who's on the Support team; that belongs to
-    search_docs instead. This tool only answers "who works here", never
-    "what are the hours/policies"."""
-    ctx = ctx_or_refuse(config, "query_structured_data")
-    if ctx is None:
-        return NO_CTX_REFUSAL
-    return await arun_with_timeout(query_employees_impl, department, name_contains, ctx)
 
 
 class SkillSearchArgs(BaseModel):
@@ -741,7 +454,6 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
     return skill_search, use_skill
 
 
-skill_search, use_skill = make_skill_tools("ecorp")
 
 
 def skill_tools_first(
@@ -782,20 +494,6 @@ def skill_tools_first(
     return promoted + list(action_tools) + rest
 
 
-TOOLS = [
-    # skill_search/use_skill lead intentionally — see skill_tools_first's
-    # docstring (list position affects tool selection for the small local
-    # model). Done inline here since there's no separate "reused tools" list.
-    skill_search,
-    use_skill,
-    search_docs,
-    calculator,
-    add_note,
-    remember,
-    query_employees,
-    ask_clarification,
-]
-
 # --- Tool capability declarations -------------------------------------------
 # Each tool declares its exposure "leg": read_only (safe immediately),
 # mutating (writes persisted state), or outward (reaches outside the
@@ -804,39 +502,20 @@ TOOLS = [
 # not the opt-in require_approval gate) — a RAG agent's context is untrusted
 # on essentially every turn (GRAPH_PATTERNS.md pattern 12), so mutating or
 # reaching outward on top of that is never worth gambling unsupervised. A
-# tool absent from this mapping defaults to "outward" — fail closed.
+# tool absent from a domain's mapping defaults to "outward" — fail closed.
+#
+# This mapping covers only the tools shared by more than one domain. A domain
+# merges it with the tiers of its own tools (app/domains/<name>/tools.py).
 ToolCapability = Literal["read_only", "mutating", "outward"]
 
-TOOL_CAPABILITIES: dict[str, ToolCapability] = {
+SHARED_TOOL_CAPABILITIES: dict[str, ToolCapability] = {
     "search_docs": "read_only",
     "calculator": "read_only",
-    "query_employees": "read_only",
     "ask_clarification": "read_only",
     "skill_search": "read_only",
     "use_skill": "read_only",
-    "add_note": "mutating",
-    "remember": "mutating",
     # Honest, static declaration: run_subagent (GRAPH_PATTERNS.md pattern 46)
     # can only delegate to subagents whose tool subset is entirely read_only
     # (enforced structurally at catalog-build time) — as safe as search_docs.
     "run_subagent": "read_only",
 }
-
-# --- Tool result-size declarations -------------------------------------------
-# Per-tool cap (query_employees has no inherent row limit) rather than one
-# global constant, since the right cap is a property of the tool. A capped
-# result is always MARKED as truncated (see query_employees_impl) — never
-# silently shortened.
-TOOL_RESULT_CAPS: dict[str, int] = {
-    "query_employees": 20,
-}
-
-# Deliberate, load-bearing side-effecting import — not an unused import to
-# clean up. tools/run_subagent.py builds the Ecorp-level `run_subagent` tool and
-# inserts it into THIS module's `TOOLS` list as part of its own top-level
-# execution. Placed at the very end, after TOOLS/TOOL_CAPABILITIES are fully
-# defined, so importing `app.agent.tools.builtin` from anywhere always triggers this
-# too, regardless of import order. No import cycle: tools/run_subagent.py's own
-# top-level imports from this module are already defined by this point.
-from app.agent.tools import run_subagent as subagent_tools  # noqa: E402, F401
-

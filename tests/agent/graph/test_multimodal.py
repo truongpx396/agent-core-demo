@@ -22,6 +22,7 @@ from app.agent.graph.core import route_after_validation
 from app.agent.graph.messages import human_has_content, human_text
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
+from tests import ecorp
 from tests.conftest import TEST_CTX
 
 
@@ -166,7 +167,7 @@ class TestSemanticCacheAndRetrievalUseTextOnly:
         async def fake_cache_set(ctx, query, answer, citations):
             captured["query"] = query
 
-        write_semantic_cache = graph_cache.make_write_semantic_cache_node(fake_cache_set)
+        write_semantic_cache = ecorp.make_write_semantic_cache_node(fake_cache_set)
         state = {
             "messages": [
                 _multimodal("describe this photo", "https://example.com/x.png"),
@@ -243,8 +244,8 @@ class TestAstreamEventsTurnBuildsMultimodalContent:
         this test only cares about the content SHAPE reaching the LLM."""
         import uuid
 
-        from app.agent.graph.build import build_graph
         from app.agent.graph.core import GraphDeps
+        from tests.ecorp import build_graph
 
         llm = _RecordingFakeLLM(
             AIMessage(content="A cat sitting on a windowsill, sufficiently long.")

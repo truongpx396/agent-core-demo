@@ -32,7 +32,6 @@ from app.agent.graph.citations import (
     find_used_citations,
     insert_missing_citation_markers,
 )
-from app.agent.graph.core import SYSTEM_PROMPT
 from app.agent.graph.loop_guards import (
     consecutive_repeat_count,
     mandatory_gate_reason,
@@ -55,10 +54,8 @@ from app.agent.graph.state import (
     State,
 )
 from app.agent.graph.tool_guards import (
-    DEFAULT_VALID_TOOL_NAMES,
     invalid_tool_call_names,
 )
-from app.agent.tools.builtin import TOOL_CAPABILITIES
 from app.core import metrics
 from app.core.config import MAX_COST_USD_PER_TURN
 
@@ -66,8 +63,8 @@ from app.core.config import MAX_COST_USD_PER_TURN
 # --- Edge fn: after agent, route to tools / output check / abort ---
 def should_continue(
     state: State,
-    tool_capabilities: Mapping[str, str] = TOOL_CAPABILITIES,
-    valid_tool_names: frozenset[str] = DEFAULT_VALID_TOOL_NAMES,
+    tool_capabilities: Mapping[str, str],
+    valid_tool_names: frozenset[str],
     max_iterations: int = MAX_ITERATIONS,
     max_tokens: int = MAX_TOKENS_PER_TURN,
     max_cost_usd: float = MAX_COST_USD_PER_TURN,
@@ -96,14 +93,15 @@ def should_continue(
     - `require_approval` on state — opt-in (default False), see
       `chat.py`'s `--hitl` mode.
     - Any pending tool_call whose declared capability (`tool_capabilities`,
-      default `app/agent/tools/builtin.py::TOOL_CAPABILITIES`) isn't "read_only" — mandatory,
+      the calling domain's own mapping) isn't "read_only" — mandatory,
       never skippable via `require_approval=False`. An *undeclared* tool is
       treated as "outward," so forgetting to register a capability fails
       toward extra caution.
 
-    `tool_capabilities`/`valid_tool_names` default to the Ecorp domain's
-    mapping so existing direct callers are unaffected; `build_graph` binds
-    a domain's own values via `functools.partial` (pattern 23).
+    `tool_capabilities`/`valid_tool_names` are the calling domain's own;
+    `build_graph` binds them via `functools.partial` (pattern 23). There is no
+    shared default: "a registered tool" and its tier only mean something
+    relative to one domain.
     `max_iterations`/`max_tokens`/`max_cost_usd` default to this module's
     own constants, added so a NESTED subagent run (pattern 46) can bind its
     own smaller MAX_SUBAGENT_* ceiling the same way, independent of the
@@ -165,13 +163,10 @@ def should_continue(
 # (count_ungrounded_claims). Recomputed from scratch every call, so a
 # retry_output round doesn't leave stale values from the rejected answer.
 #
-# `system_prompt` defaults to module-level SYSTEM_PROMPT (Ecorp's) so
-# `graph.check_output(state)` stays directly callable as tests already
-# call it — same shape as should_continue's own defaults. build_graph
-# binds the correct per-domain prompt via functools.partial. ---
-def check_output(
-    state: State, system_prompt: str = SYSTEM_PROMPT, enforce_citations: bool = True
-) -> dict:
+# `system_prompt` is the calling domain's own, bound by build_graph via
+# functools.partial, so `reveals_system_prompt` checks an answer against the prompt
+# it was ACTUALLY seeded with. ---
+def check_output(state: State, system_prompt: str, enforce_citations: bool = True) -> dict:
     """`enforce_citations=False` (a nested subagent run, bound by
     `build_subagent_graph`) turns the two citation checks off: no uncited or
     misattributed finding, and no `[n]` marker is ever inserted. A subagent is

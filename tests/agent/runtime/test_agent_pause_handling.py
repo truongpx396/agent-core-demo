@@ -16,7 +16,6 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from app.agent.graph.build import build_graph
 from app.agent.graph.core import GraphDeps
 from app.agent.graph.hitl import paused_approval_async
 from app.agent.runtime import core as agent_module
@@ -24,6 +23,7 @@ from app.agent.runtime import stream as stream_module
 from app.core import metrics
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
+from tests.ecorp import build_graph
 
 
 class TestAstreamEventsTurnUnattended:

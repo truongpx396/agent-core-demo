@@ -23,7 +23,6 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from app.agent.graph.agent_node import make_agent_node
-from app.agent.graph.build import build_graph
 from app.agent.graph.compaction import _estimate_tokens, make_compact_history_node
 from app.agent.graph.core import AGENT_RETRY_POLICY, GraphDeps
 from app.agent.graph.followups import make_suggest_followups_node
@@ -32,6 +31,7 @@ from app.core import gateway, metrics
 from app.core.errors import ErrorCode
 from tests.agent.graph.test_graph_integration import _config
 from tests.conftest import TEST_CTX, metric_value
+from tests.ecorp import build_graph
 
 # What LiteLLM really sends for a key past its budget. Captured from ghcr.io/berriai/litellm:main-stable
 # (2026-10): HTTP 429, body as below. The type is the same on older LiteLLM code paths that answered 400,

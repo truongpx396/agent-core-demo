@@ -17,16 +17,14 @@ from collections.abc import Mapping
 from langchain_core.messages import AIMessage
 
 from app.agent.graph.tool_guards import current_turn_messages
-from app.agent.tools.builtin import TOOL_CAPABILITIES
 
 
-def tool_capability(name: str, tool_capabilities: Mapping[str, str] = TOOL_CAPABILITIES) -> str:
+def tool_capability(name: str, tool_capabilities: Mapping[str, str]) -> str:
     """A tool absent from `tool_capabilities` defaults to "outward" — fail
     closed, so a new tool without a capability entry is gated rather than
     trusted. The only place this default is applied; elsewhere just reads
-    the mapping. Defaults to `app/agent/tools/builtin.py`'s TOOL_CAPABILITIES
-    (Ecorp) so existing callers work unchanged; `build_graph` passes a
-    domain's own mapping instead (GRAPH_PATTERNS.md pattern 23)."""
+    the mapping. `tool_capabilities` is the calling domain's own mapping, bound
+    by `build_graph` (GRAPH_PATTERNS.md pattern 23); there is no shared default."""
     return tool_capabilities.get(name, "outward")
 
 
@@ -72,9 +70,7 @@ def consecutive_repeat_count(messages: list) -> int:
     return count
 
 
-def mandatory_gate_reason(
-    tool_calls: list, tool_capabilities: Mapping[str, str] = TOOL_CAPABILITIES
-) -> str | None:
+def mandatory_gate_reason(tool_calls: list, tool_capabilities: Mapping[str, str]) -> str | None:
     """None if every call in this batch is read_only; otherwise the more
     severe capability present ("outward" — including any undeclared tool —
     over "mutating"), used only to label the metric in should_continue.

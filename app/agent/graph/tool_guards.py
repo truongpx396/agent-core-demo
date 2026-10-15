@@ -2,14 +2,14 @@
 to agent for a self-correcting retry: `too_many_tool_calls` (over the
 per-turn cap), `invalid_tool_call` (hallucinated/non-existent tool name),
 and shared machinery — `reject_tool_calls`, `current_turn_messages`,
-`invalid_tool_call_names`/`DEFAULT_VALID_TOOL_NAMES`. Split out of
+`invalid_tool_call_names`. Split out of
 `app/agent/graph/core.py` for file size.
 
 `use_skill_without_search` — a third node with this same shape — lives in
 `graph/skill_guards.py` instead (grouped with the rest of the skill-misuse
 family) and imports `reject_tool_calls` from here.
 
-`current_turn_messages`/`invalid_tool_call_names`/`DEFAULT_VALID_TOOL_NAMES`
+`current_turn_messages`/`invalid_tool_call_names`
 are also used by `graph/routing.py`, and `current_turn_messages` by
 `app/agent/graph/core.py`'s `make_agent_node` (deferred import to avoid a cycle).
 """
@@ -19,7 +19,6 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 from app.agent.graph.messages import is_user_message
 from app.agent.graph.state import MAX_TOOL_CALLS_PER_TURN, State
-from app.agent.tools.builtin import TOOLS
 from app.core import metrics
 
 
@@ -51,19 +50,14 @@ def current_turn_messages(messages: list) -> list:
     return messages[last_human_index:] if last_human_index is not None else messages
 
 
-DEFAULT_VALID_TOOL_NAMES = frozenset(t.name for t in TOOLS)
-
-
-def invalid_tool_call_names(
-    tool_calls: list, valid_tool_names: frozenset[str] = DEFAULT_VALID_TOOL_NAMES
-) -> list[str]:
+def invalid_tool_call_names(tool_calls: list, valid_tool_names: frozenset[str]) -> list[str]:
     """Names in this batch that aren't a registered tool at all — stricter
     than `tool_capability`'s "outward" default (which still assumes a
     real, just undeclared, tool). Guards against the model emitting a
     malformed/hallucinated tool call (seen with Ollama's native
-    tool-calling on small models, e.g. qwen2.5:3b). `valid_tool_names`
-    defaults to app/agent/tools/builtin.py's TOOLS (Ecorp); `build_graph` passes a
-    domain's own tool set instead."""
+    tool-calling on small models, e.g. qwen2.5:3b). `valid_tool_names` is the
+    calling domain's own tool set, bound by `build_graph`: there is no shared default,
+    because "a registered tool" only means something relative to one domain."""
     return [tc["name"] for tc in tool_calls if tc["name"] not in valid_tool_names]
 
 # --- Node: safety budget — abort a turn where the LLM asked for more tool
@@ -89,9 +83,7 @@ def too_many_tool_calls(state: State) -> dict:
 # `functools.partial`, like `check_output`'s `system_prompt`): judged against
 # Ecorp's list instead, a support domain's real `create_ticket` was named to
 # the model as a tool that doesn't exist. ---
-def invalid_tool_call(
-    state: State, valid_tool_names: frozenset[str] = DEFAULT_VALID_TOOL_NAMES
-) -> dict:
+def invalid_tool_call(state: State, valid_tool_names: frozenset[str]) -> dict:
     last_ai = cast(AIMessage, state["messages"][-1])
     tool_calls = last_ai.tool_calls or []
     metrics.agent_invalid_tool_call_total.inc()

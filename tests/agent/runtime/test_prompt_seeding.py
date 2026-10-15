@@ -11,11 +11,11 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.memory import MemorySaver
 
-from app.agent.graph.build import build_graph
 from app.agent.graph.core import GraphDeps
 from app.agent.manifest import AgentManifest
 from app.agent.runtime import core as runtime_module
 from tests.agent.fakes import cfg
+from tests.ecorp import build_graph
 
 
 async def _seed_and_ask(saver, thread, prompt, question):

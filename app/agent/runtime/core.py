@@ -57,6 +57,7 @@ from app.core.config import (
 )
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.security import SecurityCtx
+from app.domains.registry import resolve_domain
 
 if TYPE_CHECKING:
     from app.agent.manifest import AgentManifest, DomainPlugin
@@ -84,6 +85,7 @@ _checkpointer_pool = None  # keeps AsyncConnectionPool alive for the process
 # lifetime (GC'ing it closes every pooled connection under the saver); also lets
 # close_checkpointer_pool() shut it down explicitly on graceful shutdown.
 _seeded: set[str] = set()
+DEFAULT_DOMAIN = "ecorp"  # the domain a process serves when its caller names none
 
 # LangGraph's own graph-step cap — coarser than MAX_ITERATIONS (an agent-node
 # count): each turn also runs several fixed pre/post-loop nodes, and each
@@ -223,15 +225,12 @@ async def _open_checkpointer():
 
 
 def _resolve_domain_name(manifest: "AgentManifest | None") -> str:
-    """`manifest.name` if given, else build_graph()'s own fallback
-    (DEFAULT_MANIFEST, "ecorp") — mirrors build_graph()'s substitution exactly
-    so `_domain_name` always names whichever manifest the graph was actually
-    built with."""
+    """`manifest.name` if given, else the process default's ("ecorp") — mirrors
+    init_graph_async's substitution exactly so `_domain_name` always names whichever
+    manifest the graph was actually built with."""
     if manifest is not None:
         return manifest.name
-    from app.agent.manifest import DEFAULT_MANIFEST
-
-    return DEFAULT_MANIFEST.name
+    return resolve_domain(DEFAULT_DOMAIN)[0].name
 
 
 async def close_checkpointer_pool() -> None:
@@ -255,8 +254,9 @@ async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "Dom
     ignored — the singleton doesn't change domain mid-process).
 
     `manifest`/`domain` (app/agent/manifest.py) thread straight into
-    `build_graph()` and default to `None` (build_graph()'s own Ecorp
-    default), so existing callers are unaffected. This is what lets a new
+    `build_graph()` and default to `None`, meaning the process default domain
+    (`DEFAULT_DOMAIN`, "ecorp", resolved through `app/domains/registry.py` like
+    any other), so existing callers are unaffected. This is what lets a new
     process boot the same durable-checkpointer machinery against a
     different domain — see app/channels/telegram.py, which resolves
     AGENT_DOMAIN via app/domains/registry.py before priming the singleton.
@@ -268,8 +268,11 @@ async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "Dom
     async with _graph_lock:
         if _graph is None:  # re-check: another caller may have finished while this one waited for the lock
             _domain_name = _resolve_domain_name(manifest)
+            default_manifest, default_domain = resolve_domain(DEFAULT_DOMAIN)
             saver = await _open_checkpointer()
-            _graph = build_graph(checkpointer=saver, manifest=manifest, domain=domain)
+            _graph = build_graph(
+                manifest or default_manifest, domain or default_domain, checkpointer=saver
+            )
     return _graph
 
 

@@ -14,12 +14,11 @@ from typing import TYPE_CHECKING, Literal
 
 from langchain_core.messages import AIMessage
 
-from app.agent.graph.core import default_cache_get, default_cache_set
+from app.agent.graph.core import default_cache_get
 from app.agent.graph.loop_guards import tool_capability
 from app.agent.graph.messages import human_text, last_human_message
 from app.agent.graph.state import State
 from app.agent.graph.tool_guards import current_turn_messages
-from app.agent.tools.builtin import TOOL_CAPABILITIES
 
 if TYPE_CHECKING:
     from app.core.security import SecurityCtx
@@ -84,10 +83,8 @@ def _turn_acted(state: State, tool_capabilities: Mapping[str, str]) -> bool:
 
 # --- Node: semantic cache write-through (GRAPH_PATTERNS.md pattern 22) ---
 def make_write_semantic_cache_node(
-    cache_set: Callable[
-        ["SecurityCtx | None", str, str, list[dict]], Awaitable[None]
-    ] = default_cache_set,
-    tool_capabilities: Mapping[str, str] = TOOL_CAPABILITIES,
+    cache_set: Callable[["SecurityCtx | None", str, str, list[dict]], Awaitable[None]],
+    tool_capabilities: Mapping[str, str],
 ):
     """Factory, same rationale as make_check_semantic_cache_node.
     `tool_capabilities` is the calling domain's own tier map (`build_graph`

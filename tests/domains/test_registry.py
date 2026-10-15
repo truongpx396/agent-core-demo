@@ -1,7 +1,7 @@
 """Tests for app/domains/registry.py."""
 import pytest
 
-from app.agent.manifest import DEFAULT_MANIFEST
+from app.domains.ecorp.domain import ECORP_MANIFEST
 from app.domains.ops.domain import OPS_MANIFEST
 from app.domains.registry import resolve_domain
 from app.domains.sales.domain import SALES_MANIFEST
@@ -11,7 +11,7 @@ from app.domains.support.domain import SUPPORT_MANIFEST
 @pytest.mark.parametrize(
     "name,expected_manifest",
     [
-        ("ecorp", DEFAULT_MANIFEST),
+        ("ecorp", ECORP_MANIFEST),
         ("support", SUPPORT_MANIFEST),
         ("ops", OPS_MANIFEST),
         ("sales", SALES_MANIFEST),

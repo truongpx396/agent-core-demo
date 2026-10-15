@@ -19,11 +19,11 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from app.agent.graph.build import build_graph
 from app.agent.graph.core import GraphDeps
 from app.domains.sales import store
 from app.domains.sales.domain import SALES_DOMAIN_PLUGIN, SALES_MANIFEST
 from tests.conftest import TEST_CTX
+from tests.ecorp import ECORP_DOMAIN_PLUGIN, build_graph
 
 _CORE_SALES_TOOLS = {
     "search_docs",
@@ -98,8 +98,8 @@ class TestDomainScopedSubagent:
     closure-built tool, and its menu offers only the bundled subagent(s)
     declared `domains: [sales]` (subagents/lead-researcher/AGENT.md)."""
 
-    def test_is_not_the_ecorp_level_run_subagent_object(self):
-        from app.agent.tools.run_subagent import run_subagent as ecorp_run_subagent
+    def test_is_not_the_ecorp_domains_run_subagent_object(self):
+        ecorp_run_subagent = {t.name: t for t in ECORP_DOMAIN_PLUGIN.tools()}["run_subagent"]
 
         g = _build()
         domain_run_subagent = g.nodes["tools"].bound.tools_by_name["run_subagent"]

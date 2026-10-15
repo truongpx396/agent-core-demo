@@ -43,16 +43,17 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-from app.agent.graph.build import build_graph
-from app.agent.graph.core import SYSTEM_PROMPT, GraphDeps
+from app.agent.graph.core import GraphDeps
 from app.agent.graph.hitl import resumability_error_async
 from app.agent.graph.state import STATE_SCHEMA_VERSION
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
 from app.core import metrics
+from app.domains.ecorp.domain import ECORP_SYSTEM_PROMPT as SYSTEM_PROMPT
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
 from tests.containers import ensure_postgres
+from tests.ecorp import build_graph
 
 # Real Postgres, no LLM — exactly `test-integration`'s scope
 # (.github/workflows/ci.yml). A genuine gap this closes, not a stylistic

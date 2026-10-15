@@ -21,43 +21,52 @@ from app.agent.tools import run_subagent as subagent_tools
 from app.agent.tools import skill_catalog as skills_module
 from app.agent.tools import subagent_catalog as subagents_module
 from app.agent.tools.builtin import (
-    TOOL_CAPABILITIES,
-    TOOLS,
-    AddNoteArgs,
     AskClarificationArgs,
-    RememberArgs,
     Topic,
     _filter_skill_hits_by_domain,
     _skill_visible_to_domain,
-    add_note,
     ask_clarification,
     gather_context,
     make_skill_tools,
-    query_employees,
-    remember,
     search_docs,
-    skill_search,
     skill_tools_first,
-    use_skill,
 )
 from app.agent.tools.run_subagent import (
-    _ALL_TOOL_NAMES,
-    SubagentName,
     SubagentResult,
     _resolve_subagent_tools,
     _subagent_declared_for_domain,
     _SubagentDomainPlugin,
     build_subagent_registry,
-    run_subagent,
-    run_subagent_impl,
 )
 from app.agent.tools.run_subagent_domain import make_domain_subagent_tool
 from app.agent.tools.skill_catalog import SkillRecord
 from app.agent.tools.subagent_catalog import SubagentRecord
 from app.core import metrics, sql_store, tool_runtime
 from app.core.config import SKILLS_COLLECTION
+from app.domains.ecorp import store as ecorp_store
+from app.domains.ecorp.tools import (
+    AddNoteArgs,
+    RememberArgs,
+    add_note,
+    query_employees,
+    remember,
+)
 from app.retrieval import qdrant_store
 from tests.conftest import TEST_CTX, metric_value
+from tests.ecorp import (
+    ECORP_DOMAIN_PLUGIN,
+    ECORP_TOOL_CAPABILITIES,
+    build_subagent_graph,
+    run_subagent_impl,
+)
+
+# Ecorp's tool universe, as the model is offered it (the default domain these tests exercise).
+TOOLS = ECORP_DOMAIN_PLUGIN.tools()
+TOOL_CAPABILITIES = ECORP_TOOL_CAPABILITIES
+_ALL_TOOL_NAMES = frozenset(t.name for t in TOOLS if t.name != "run_subagent")
+_ecorp_tools = {t.name: t for t in TOOLS}
+skill_search, use_skill, run_subagent = (_ecorp_tools[n] for n in ("skill_search", "use_skill", "run_subagent"))
+SubagentName = run_subagent.args_schema.model_fields["subagent_name"].annotation  # type: ignore[union-attr]
 
 _OTHER_TENANT_CTX = {"tenant": "other-co", "principal": "test-user", "claims": {}}
 
@@ -98,14 +107,14 @@ class TestAddNoteImpl:
         async def fake_upsert(points):
             captured["points"] = points
 
-        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
-        monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1, 2], [0.5, 0.5]))
+        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_sparse", lambda text: ([1, 2], [0.5, 0.5]))
         # `tools.qdrant_store` is the same module object as the `qdrant_store`
         # imported above (app/agent/tools/builtin.py does `from app.retrieval import qdrant_store`) —
         # this patches the one `.upsert` attribute both names resolve to.
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        result = await tools._add_note_impl(
+        result = await ecorp_store.add_note_impl(
             "Refunds", "30-day window.", Topic.company, TEST_CTX, "call-1"
         )
 
@@ -131,19 +140,19 @@ class TestAddNoteImpl:
         async def fake_embed_text(text):
             return [0.1]
 
-        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
 
         def failing_sparse(text):
             raise RuntimeError("model not loaded")
 
-        monkeypatch.setattr(tools, "embed_sparse", failing_sparse)
+        monkeypatch.setattr(ecorp_store, "embed_sparse", failing_sparse)
 
         async def fake_upsert(points):
             captured.update(points=points)
 
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        await tools._add_note_impl(
+        await ecorp_store.add_note_impl(
             "Refunds", "30-day window.", Topic.company, TEST_CTX, "call-1"
         )
 
@@ -163,12 +172,12 @@ class TestAddNoteImpl:
         async def fake_upsert(points):
             seen_ids.append(points[0].id)
 
-        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
-        monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1], [1.0]))
+        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_sparse", lambda text: ([1], [1.0]))
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        await tools._add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
-        await tools._add_note_impl("B", "two", Topic.qdrant, TEST_CTX, "call-2")
+        await ecorp_store.add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
+        await ecorp_store.add_note_impl("B", "two", Topic.qdrant, TEST_CTX, "call-2")
 
         assert len(seen_ids) == 2
         assert seen_ids[0] != seen_ids[1]
@@ -186,12 +195,12 @@ class TestAddNoteImpl:
         async def fake_upsert(points):
             seen_ids.append(points[0].id)
 
-        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
-        monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1], [1.0]))
+        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_sparse", lambda text: ([1], [1.0]))
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        await tools._add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
-        await tools._add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
+        await ecorp_store.add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
+        await ecorp_store.add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
 
         assert len(seen_ids) == 2
         assert seen_ids[0] == seen_ids[1]
@@ -207,8 +216,8 @@ class TestAddNoteImpl:
         async def fake_upsert(points):
             pass
 
-        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
-        monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1], [1.0]))
+        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_sparse", lambda text: ([1], [1.0]))
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
         # No dedup-store mocking needed here: tests/conftest.py's
         # mock_appdata_postgres fixture already forces
@@ -384,10 +393,10 @@ class TestRememberImpl:
         async def fake_upsert(points):
             captured.update(points=points)
 
-        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        result = await tools._remember_impl("likes dark roast coffee", TEST_CTX, "call-1")
+        result = await ecorp_store.remember_impl("likes dark roast coffee", TEST_CTX, "call-1")
 
         point = captured["points"][0]
         assert point.payload["kind"] == "memory"
@@ -510,10 +519,10 @@ class TestQueryEmployees:
 
         await query_employees.ainvoke({}, config=_cfg())
 
-        assert captured["limit"] == tools.TOOL_RESULT_CAPS["query_employees"] + 1
+        assert captured["limit"] == ecorp_store.TOOL_RESULT_CAPS["query_employees"] + 1
 
     async def test_result_beyond_the_cap_is_marked_truncated_not_silently_dropped(self, monkeypatch):
-        cap = tools.TOOL_RESULT_CAPS["query_employees"]
+        cap = ecorp_store.TOOL_RESULT_CAPS["query_employees"]
         rows = [
             {"name": f"Employee {i}", "department": "Engineering", "title": "Engineer", "hired_on": "2021-01-01"}
             for i in range(cap + 1)  # sql_store.query_employees(limit=cap+1) returning cap+1 rows means "more exist"
@@ -529,7 +538,7 @@ class TestQueryEmployees:
         assert result.count("Employee") == cap  # exactly `cap` rows shown, not cap + 1
 
     async def test_result_at_or_under_the_cap_is_not_marked_truncated(self, monkeypatch):
-        cap = tools.TOOL_RESULT_CAPS["query_employees"]
+        cap = ecorp_store.TOOL_RESULT_CAPS["query_employees"]
         rows = [
             {"name": f"Employee {i}", "department": "Engineering", "title": "Engineer", "hired_on": "2021-01-01"}
             for i in range(cap)  # exactly at the cap, not over it
@@ -977,11 +986,10 @@ class TestBuildSubagentGraphTopology:
     run_subagent_impl's own behavior tests below."""
 
     def test_drops_exactly_the_five_overhead_nodes(self):
-        from app.agent.graph import build_subagent as graph_build_subagent
         from app.agent.graph import core as graph_module
 
         fake_llm = _RecordingFakeLLM(AIMessage(content="unused"))
-        compiled = graph_build_subagent.build_subagent_graph(deps=graph_module.GraphDeps(llm=fake_llm))
+        compiled = build_subagent_graph(deps=graph_module.GraphDeps(llm=fake_llm))
         nodes = set(compiled.get_graph().nodes) - {"__start__", "__end__"}
 
         dropped = {
@@ -994,11 +1002,10 @@ class TestBuildSubagentGraphTopology:
         assert dropped.isdisjoint(nodes)
 
     def test_keeps_every_safety_and_agent_loop_node(self):
-        from app.agent.graph import build_subagent as graph_build_subagent
         from app.agent.graph import core as graph_module
 
         fake_llm = _RecordingFakeLLM(AIMessage(content="unused"))
-        compiled = graph_build_subagent.build_subagent_graph(deps=graph_module.GraphDeps(llm=fake_llm))
+        compiled = build_subagent_graph(deps=graph_module.GraphDeps(llm=fake_llm))
         nodes = set(compiled.get_graph().nodes) - {"__start__", "__end__"}
 
         kept = {
@@ -1024,7 +1031,7 @@ class TestBuildSubagentGraphTopology:
 
 class TestRunSubagentImpl:
     async def test_refuses_without_ctx(self):
-        result = await run_subagent_impl("researcher", "do something", {"configurable": {}})
+        result = await run_subagent_impl("researcher", "do something", {"configurable": {}}, registry={})
         assert "Refused" in result.answer
 
     async def test_unknown_subagent_name_is_a_clear_message_not_an_exception(self):
@@ -1490,14 +1497,12 @@ class TestRunSubagentTool:
 
     def test_schema_lists_available_subagents_by_name_and_description(self):
         schema = run_subagent.args_schema.model_json_schema()
-        assert "researcher" in schema["$defs"]["SubagentName"]["enum"]
+        assert "researcher" in schema["$defs"]["SubagentName_ecorp"]["enum"]
         assert "Look up Ecorp facts" in schema["properties"]["subagent_name"]["description"]
 
     def test_blank_task_rejected(self):
-        from app.agent.tools.run_subagent import RunSubagentArgs
-
         with pytest.raises(ValueError):
-            RunSubagentArgs(
+            run_subagent.args_schema(
                 subagent_name=SubagentName.researcher, task="   ", tool_call_id="test-call-id"
             )
 

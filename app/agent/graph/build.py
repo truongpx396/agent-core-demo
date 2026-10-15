@@ -51,10 +51,10 @@ if TYPE_CHECKING:
 
 # --- Build the graph ---
 def build_graph(
+    manifest: "AgentManifest",
+    domain: "DomainPlugin",
     deps: GraphDeps | None = None,
     checkpointer=None,
-    manifest: "AgentManifest | None" = None,
-    domain: "DomainPlugin | None" = None,
     max_iterations: int | None = None,
     max_tokens_per_turn: int | None = None,
     max_cost_usd_per_turn: float | None = None,
@@ -75,12 +75,10 @@ def build_graph(
     app/agent/runtime/core.py's init_graph_async() passes a durable AsyncPostgresSaver
     instead for the CLI/API singleton.
 
-    `manifest`/`domain` (pattern 23, app/agent/manifest.py) let this SAME
-    function serve a different domain (system prompt, tools, capability
-    mapping, policy) with no branching in this function. Default to
-    `DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN`, imported here (not at module
-    level) to avoid a circular import — see manifest.py's docstring before
-    hoisting it. `deps.search_docs`/`cache_get`/`cache_set` remain the
+    `manifest`/`domain` (pattern 23, app/agent/manifest.py) are required: they let this SAME
+    function serve any domain (system prompt, tools, capability mapping, policy) with no
+    branching in this function, and none of them is the default. Ecorp is one more entry in
+    `app/domains/registry.py`. `deps.search_docs`/`cache_get`/`cache_set` remain the
     override points for a domain needing a different corpus or cache.
 
     `max_iterations`/`max_tokens_per_turn`/`max_cost_usd_per_turn` default

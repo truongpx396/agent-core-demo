@@ -30,7 +30,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agent.graph.agent_node import make_agent_node
-from app.agent.graph.core import SYSTEM_PROMPT
+from app.domains.ecorp.domain import ECORP_SYSTEM_PROMPT as SYSTEM_PROMPT
 
 CTX_A = {"tenant": "ecorp-corp", "principal": "alice", "claims": {"role": "admin"}}
 CTX_B = {"tenant": "globex-inc", "principal": "bob", "claims": {"role": "viewer"}}

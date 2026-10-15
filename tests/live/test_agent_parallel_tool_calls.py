@@ -28,9 +28,9 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
 from app.agent.graph import core as graph_module
-from app.agent.graph.build import build_graph
 from app.agent.graph.core import GraphDeps
 from tests.conftest import TEST_CTX
+from tests.ecorp import build_graph
 from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.llm
@@ -51,7 +51,7 @@ def _stub_add_note_io(monkeypatch):
     is about — stub it the same way tests/agent/graph/test_graph_integration.py's
     TestMandatoryCapabilityGate does, so a real APPROVED add_note call can
     actually run inside ToolNode without needing a live Qdrant."""
-    from app.agent.tools import builtin as tools_module
+    from app.domains.ecorp import store as ecorp_store
     from app.retrieval import qdrant_store
 
     async def fake_embed_text(text):
@@ -60,7 +60,7 @@ def _stub_add_note_io(monkeypatch):
     async def fake_upsert(points):
         return None
 
-    monkeypatch.setattr(tools_module, "embed_text", fake_embed_text)
+    monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
     monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
 

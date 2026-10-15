@@ -30,11 +30,11 @@ from psycopg import errors as pg_errors
 
 from app.agent.cost import metering, pricing, usage_events
 from app.agent.graph.agent_node import make_agent_node
-from app.agent.graph.build import build_graph
 from app.agent.graph.core import GraphDeps
 from app.core import metrics
 from tests.agent.graph.test_graph_integration import _config
 from tests.conftest import TEST_CTX, metric_value
+from tests.ecorp import build_graph
 
 _REAL_INSERT = usage_events._insert  # imported before any autouse fixture patches it
 
@@ -265,8 +265,8 @@ class TestWhatAnEventRecords:
         node built by hand: a delegated run's spend must be separable from the parent's."""
         from pathlib import Path
 
-        from app.agent.tools.run_subagent import run_subagent_impl
         from app.agent.tools.subagent_catalog import SubagentRecord
+        from tests.ecorp import run_subagent_impl
 
         record = SubagentRecord(
             name="researcher", description="d", system_prompt="You are a test subagent.",

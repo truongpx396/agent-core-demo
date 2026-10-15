@@ -17,15 +17,22 @@ async code from a plain `def test_...`.
 """
 from dataclasses import dataclass
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.types import Command
 
-from app.agent.graph.build import build_graph
+from app.agent.graph import build as app_build
 from app.agent.graph.core import GraphDeps
-from app.agent.manifest import DEFAULT_DOMAIN_PLUGIN, DEFAULT_MANIFEST, AgentManifest
+from app.agent.manifest import AgentManifest
 from app.core.security import Policy, SecurityCtx, valid_ctx
+from tests.ecorp import (
+    ECORP_DOMAIN_PLUGIN,
+    ECORP_MANIFEST,
+    ECORP_TOOL_CAPABILITIES,
+    build_graph,
+)
 
 WIDGET_CTX: SecurityCtx = {"tenant": "widgetco", "principal": "support-agent", "claims": {}}
 
@@ -91,23 +98,27 @@ def _config():
     return {"configurable": {"thread_id": "widget-thread", "ctx": WIDGET_CTX}}
 
 
-class TestDefaultsToTheEcorpDomain:
-    """build_graph() with no manifest/domain argument at all must keep
-    behaving exactly as it did before pattern 23 existed — the whole point
-    of a default is that nobody who doesn't care about multi-domain has to
-    change anything."""
+class TestEcorpIsJustAnotherDomain:
+    """Ecorp has no standing in the graph. `build_graph` takes the manifest and the domain plugin
+    like any other caller, and Ecorp's are one more entry in `app/domains/registry.py`."""
 
-    def test_default_manifest_is_the_ecorp_domain(self):
-        assert DEFAULT_MANIFEST.name == "ecorp"
+    def test_the_ecorp_manifest_names_the_ecorp_domain(self):
+        assert ECORP_MANIFEST.name == "ecorp"
 
-    def test_default_domain_plugin_exposes_ecorps_existing_tools(self):
-        names = {t.name for t in DEFAULT_DOMAIN_PLUGIN.tools()}
+    def test_the_ecorp_domain_plugin_exposes_ecorps_tools(self):
+        names = {t.name for t in ECORP_DOMAIN_PLUGIN.tools()}
         assert "search_docs" in names
         assert "query_employees" in names
 
-    def test_compiled_graph_carries_the_default_manifest(self):
+    def test_compiled_graph_carries_the_manifest_it_was_built_with(self):
         g = build_graph(GraphDeps(llm=None))
-        assert g.manifest is DEFAULT_MANIFEST
+        assert g.manifest is ECORP_MANIFEST
+
+    def test_build_graph_has_no_default_domain(self):
+        """The generic builder must not quietly fall back to one domain's prompt and tools: that
+        was how Ecorp's leaked into every module that merely wanted "the graph"."""
+        with pytest.raises(TypeError):
+            app_build.build_graph(deps=GraphDeps(llm=None))  # type: ignore[call-arg]
 
 
 class TestSecondDomainProvesReuse:
@@ -126,7 +137,7 @@ class TestSecondDomainProvesReuse:
             GraphDeps(llm=None), manifest=WIDGET_MANIFEST, domain=WIDGET_DOMAIN
         )
         assert g.manifest is WIDGET_MANIFEST
-        assert g.manifest.system_prompt != DEFAULT_MANIFEST.system_prompt
+        assert g.manifest.system_prompt != ECORP_MANIFEST.system_prompt
 
     async def test_mandatory_capability_gate_pauses_for_the_widget_domains_own_tool(self):
         """The load-bearing behavioral proof: should_continue's mandatory
@@ -193,12 +204,10 @@ class TestSecondDomainProvesReuse:
         module-level state the OTHER domain reads — proves the two
         domains' capability mappings are genuinely independent dicts, not
         accidentally the same object with one mutated in place."""
-        from app.agent.tools.builtin import TOOL_CAPABILITIES
-
         build_graph(GraphDeps(llm=None), manifest=WIDGET_MANIFEST, domain=WIDGET_DOMAIN)
 
-        assert "open_ticket" not in TOOL_CAPABILITIES
-        assert TOOL_CAPABILITIES["search_docs"] == "read_only"
+        assert "open_ticket" not in ECORP_TOOL_CAPABILITIES
+        assert ECORP_TOOL_CAPABILITIES["search_docs"] == "read_only"
 
     async def test_check_output_leak_detection_uses_this_domains_own_system_prompt(self):
         """check_output (app/agent/graph/routing.py's reveals_system_prompt) is bound

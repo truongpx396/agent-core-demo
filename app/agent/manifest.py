@@ -1,36 +1,27 @@
-"""Config-first multi-domain composition layer (pattern 23): the ONE
-`app/agent/graph/core.py` StateGraph topology is adapted to a new domain by
-swapping an `AgentManifest` (config) plus a `DomainPlugin` (tools/
-capabilities/policy), never by forking `build_graph()` or branching on a
-domain name.
+"""Config-first multi-domain composition layer (pattern 23): the ONE StateGraph topology
+(`app/agent/graph/build.py`) is adapted to a domain by swapping an `AgentManifest` (config)
+plus a `DomainPlugin` (tools/capabilities/policy), never by forking `build_graph()` or
+branching on a domain name.
 
-- `AgentManifest` — the YAML/JSON-able part: name, system prompt, which
-  of the plugin's tools this deployment exposes.
-- `DomainPlugin` — the CODE a manifest can't express: tool
-  implementations, capability declarations (read_only/mutating/outward,
-  see `app/agent/tools/builtin.py::TOOL_CAPABILITIES`), and the `Policy` they enforce
-  internally. `build_graph()` never calls `.policy()` itself — enforcement
-  lives at the tool-implementation boundary (pattern 17); it exists so a
-  plugin can assert/expose its own Policy.
+- `AgentManifest` — the YAML/JSON-able part: name, system prompt, which of the plugin's tools
+  this deployment exposes.
+- `DomainPlugin` — the CODE a manifest can't express: tool implementations, capability
+  declarations (read_only/mutating/outward, see `app/agent/tools/builtin.py::SHARED_TOOL_CAPABILITIES`
+  and each domain's `tools.py`), and the `Policy` they enforce internally. `build_graph()` never
+  calls `.policy()` itself — enforcement lives at the tool-implementation boundary (pattern 17);
+  it exists so a plugin can assert/expose its own Policy.
 
-`DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN` wrap the existing Ecorp setup
-unchanged — proof the single-domain app was always just the default
-domain. See `tests/agent/test_manifest.py` for a second domain proving the
-same graph runs with different tools/prompt/Policy.
-
-Import direction: this module imports `graph.SYSTEM_PROMPT` at load time;
-`app/agent/graph/core.py` imports this module back only INSIDE `build_graph()`'s body
-(never at its own module level), so the cycle never closes. Don't move
-that import to `app/agent/graph/core.py`'s top without re-checking this.
+This module is a leaf: it defines the two types and nothing else. The concrete domains are in
+`app/domains/<name>/domain.py` and are looked up by name in `app/domains/registry.py`; Ecorp is
+one of them, with no special standing in the graph. See `tests/agent/test_manifest.py` for a second
+domain proving the same graph runs with different tools/prompt/Policy.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Protocol
 
-from app.agent.graph.core import SYSTEM_PROMPT
-from app.agent.tools.builtin import TOOL_CAPABILITIES, TOOLS
-from app.core.security import DEFAULT_POLICY, Policy
+from app.core.security import Policy
 
 
 class DomainPlugin(Protocol):
@@ -45,7 +36,7 @@ class DomainPlugin(Protocol):
 
     def tool_capabilities(self) -> dict[str, str]:
         """Maps each tool name to `"read_only" | "mutating" | "outward"` —
-        see `app/agent/tools/builtin.py::TOOL_CAPABILITIES`'s docstring for the mandatory
+        see `app/agent/tools/builtin.py::SHARED_TOOL_CAPABILITIES`'s comment for the mandatory
         human_approval gate this feeds (`should_continue`, unchanged
         regardless of domain)."""
         ...
@@ -61,7 +52,7 @@ class AgentManifest:
     """The CONFIG half of a domain. Frozen so a manifest can't be mutated
     out from under a graph already built with it — the same "stamped once,
     read-only from there on" discipline `State["ctx"]` already follows
-    (see `app/agent/graph/core.py`'s `State` docstring).
+    (see `app/agent/graph/state.py`'s `State` docstring).
     """
 
     name: str
@@ -71,26 +62,3 @@ class AgentManifest:
     # offers" — a plugin author doesn't have to enumerate every tool name
     # twice just to expose all of them.
     allowed_tools: tuple[str, ...] = ()
-
-
-@dataclass
-class _EcorpDomainPlugin:
-    """Wraps this app's existing tools/capabilities/policy, unchanged."""
-
-    def tools(self) -> list:
-        return list(TOOLS)
-
-    def tool_capabilities(self) -> dict[str, str]:
-        return dict(TOOL_CAPABILITIES)
-
-    def policy(self) -> Policy:
-        return DEFAULT_POLICY
-
-
-DEFAULT_DOMAIN_PLUGIN: DomainPlugin = _EcorpDomainPlugin()
-
-DEFAULT_MANIFEST = AgentManifest(
-    name="ecorp",
-    system_prompt=SYSTEM_PROMPT,
-    allowed_tools=tuple(t.name for t in TOOLS),
-)

@@ -27,8 +27,8 @@ Run with: `make mcp-serve` (stdio transport).
 """
 from mcp.server.fastmcp import FastMCP
 
-from app.agent.tools.builtin import Department, query_employees_impl
 from app.core.security import DEFAULT_POLICY, SecurityCtx
+from app.domains.ecorp.store import Department, query_employees_impl
 
 mcp = FastMCP(
     name="ecorp-structured-data",

@@ -29,7 +29,6 @@ from langgraph.errors import GraphBubbleUp
 from pydantic import SecretStr
 
 from app.agent.graph import core as graph_module
-from app.agent.tools.builtin import TOOLS
 from app.core.tool_idempotency import MutatingToolTimedOut
 
 logger = logging.getLogger(__name__)
@@ -172,7 +171,7 @@ def friendly_tool_error(error: Exception) -> str:
     return f"Tool failed ({type(error).__name__}: {error}). Try a different approach."
 
 
-def make_llm(tools: list = TOOLS):
+def make_llm(tools: list):
     return ChatOpenAI(
         model=graph_module.CHAT_MODEL,
         base_url=graph_module.OPENAI_API_BASE,

@@ -33,10 +33,10 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from app.agent.graph import core as graph_module
-from app.agent.graph.build import build_graph
 from app.agent.graph.core import GraphDeps
 from app.agent.tools import builtin as tools_module
 from tests.conftest import TEST_CTX
+from tests.ecorp import build_graph
 from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.llm

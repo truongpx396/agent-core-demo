@@ -16,11 +16,9 @@ from app.agent.graph.hitl import route_after_approval
 from app.agent.graph.loop_guards import (
     _tool_call_fingerprint,
     consecutive_repeat_count,
-    mandatory_gate_reason,
-    tool_capability,
     use_skill_called_without_search,
 )
-from app.agent.graph.routing import route_after_check, should_continue
+from app.agent.graph.routing import route_after_check
 from app.agent.graph.skill_guards import pending_skill_required_tool
 from app.agent.graph.state import (
     MAX_CONSECUTIVE_SAME_RETRY_REASON,
@@ -30,6 +28,7 @@ from app.agent.graph.state import (
 )
 from app.agent.graph.tool_guards import reject_tool_calls
 from tests.conftest import TEST_CTX
+from tests.ecorp import mandatory_gate_reason, should_continue, tool_capability
 
 
 def _tool_call(name, call_id="1"):

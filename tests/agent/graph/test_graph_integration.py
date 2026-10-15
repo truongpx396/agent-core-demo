@@ -28,7 +28,6 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command
 
-from app.agent.graph.build import build_graph
 from app.agent.graph.compaction import _estimate_tokens
 from app.agent.graph.core import AGENT_RETRY_POLICY, GraphDeps
 from app.agent.graph.state import (
@@ -43,6 +42,7 @@ from app.agent.runtime import core as runtime_module
 from app.agent.runtime import stream as stream_module
 from tests.agent.fakes import Domain, call, cfg, orphan_tool_call_ids, queue_llm
 from tests.conftest import TEST_CTX
+from tests.ecorp import build_graph
 
 
 def _config():
@@ -770,7 +770,7 @@ class TestMandatoryCapabilityGate:
         # (embedding + Qdrant upsert) the same way test_tools.py does, so
         # this stays a hermetic graph test rather than needing live
         # services just because the *approved* path runs a real tool.
-        from app.agent.tools import builtin as tools
+        from app.domains.ecorp import store as ecorp_store
         from app.retrieval import qdrant_store
 
         async def fake_embed_text(text):
@@ -779,7 +779,7 @@ class TestMandatoryCapabilityGate:
         async def fake_upsert(points):
             return None
 
-        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
         llm = _fake_llm(
