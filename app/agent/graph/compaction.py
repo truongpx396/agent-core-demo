@@ -30,7 +30,7 @@ from langchain_core.runnables import RunnableConfig
 from app.agent.cost import metering
 from app.agent.graph import core as graph_module
 from app.agent.graph.core import HISTORY_TOKEN_CEILING, HISTORY_TOKEN_FLOOR, State
-from app.agent.graph.messages import _human_text
+from app.agent.graph.messages import _human_text, _is_retry_artifact, _is_user_message
 from app.core import gateway, metrics
 
 logger = logging.getLogger(__name__)
@@ -75,7 +75,7 @@ def _messages_to_trim(
     id is left alone rather than guessed at, since RemoveMessage deletes
     by id.
     """
-    turn_starts = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
+    turn_starts = [i for i, m in enumerate(messages) if _is_user_message(m)]
     if len(turn_starts) <= 1:
         return []  # nothing to drop without losing the current turn itself
     non_system = [m for m in messages if not isinstance(m, SystemMessage)]
@@ -113,6 +113,8 @@ def _format_turns_for_summary(messages: list[BaseMessage]) -> str:
     role_names = {"human": "User", "ai": "Assistant", "tool": "Tool"}
     lines = []
     for m in messages:
+        if _is_retry_artifact(m):
+            continue  # a rejected answer and the feedback it drew, not part of the conversation
         content = _human_text(m) if isinstance(m, HumanMessage) else (getattr(m, "content", "") or "")
         if content:
             lines.append(f"{role_names.get(m.type, m.type)}: {content}")
@@ -193,7 +195,7 @@ def make_compact_history_node(
 
         removals = [RemoveMessage(id=cast(str, m.id)) for m in to_summarize]
         metrics.agent_history_compacted_total.inc()
-        turns_dropped = sum(1 for m in to_summarize if isinstance(m, HumanMessage))
+        turns_dropped = sum(1 for m in to_summarize if _is_user_message(m))
 
         prior_summary = state.get("history_summary") or ""
         try:

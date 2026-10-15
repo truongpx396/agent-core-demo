@@ -13,6 +13,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from app.agent.graph.agent_node import make_agent_node
+from app.agent.graph.messages import RETRY_ARTIFACT_KEY
 
 
 class _RecordingFakeLLM:
@@ -424,3 +425,45 @@ async def test_agent_skips_the_sandbox_reminder_when_no_skill_mentions_the_tool(
     await agent(state)
 
     assert not any(isinstance(m, SystemMessage) for m in fake_llm.seen_messages)
+
+
+_ARTIFACT = {RETRY_ARTIFACT_KEY: True}
+
+
+async def test_agent_drops_an_earlier_turns_retry_artifacts_and_keeps_the_context_anchor_on_the_question():
+    """Replayed to the model, an earlier turn's retry feedback reads as something the person said.
+    Dropping those messages shifts indexes, so the context must still land right before THIS
+    turn's question (the anchor is re-located by identity, not trusted by index)."""
+    fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
+    question = HumanMessage(content="and what about refunds?", id="h2")
+    state = {
+        "messages": [
+            HumanMessage(content="hours?", id="h1"),
+            AIMessage(content="ok", id="a1", additional_kwargs=_ARTIFACT),
+            HumanMessage(content="That answer was too short", id="fb", additional_kwargs=_ARTIFACT),
+            AIMessage(content="Support is open nine to five.", id="a1b"),
+            question,
+        ],
+        "context": "doc: refunds take thirty days.",
+        "context_anchor_index": 4,
+    }
+    await make_agent_node(fake_llm)(state)
+
+    seen = fake_llm.seen_messages
+    assert [m.content for m in seen if isinstance(m, HumanMessage)] == ["hours?", "and what about refunds?"]
+    assert "ok" not in [m.content for m in seen]
+    question_at = next(i for i, m in enumerate(seen) if m is question)
+    assert "refunds take thirty days" in seen[question_at - 1].content
+
+
+async def test_agent_keeps_this_turns_retry_artifacts_because_the_retry_needs_them():
+    fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="A fuller answer to the question.")]))
+    state = {
+        "messages": [
+            HumanMessage(content="hours?", id="h1"),
+            AIMessage(content="ok", id="a1", additional_kwargs=_ARTIFACT),
+            HumanMessage(content="That answer was too short", id="fb", additional_kwargs=_ARTIFACT),
+        ],
+    }
+    await make_agent_node(fake_llm)(state)
+    assert [m.content for m in fake_llm.seen_messages] == ["hours?", "ok", "That answer was too short"]

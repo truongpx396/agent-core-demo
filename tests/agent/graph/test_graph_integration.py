@@ -25,6 +25,7 @@ import uuid
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import tool
 from langgraph.types import Command
 
 from app.agent.graph.build import build_graph
@@ -38,6 +39,10 @@ from app.agent.graph.core import (
     MAX_TOOL_CALLS_PER_TURN,
     GraphDeps,
 )
+from app.agent.manifest import AgentManifest
+from app.agent.runtime import core as runtime_module
+from app.agent.runtime import stream as stream_module
+from tests.agent.fakes import Domain, call, cfg, orphan_tool_call_ids, queue_llm
 from tests.conftest import TEST_CTX
 
 
@@ -258,6 +263,19 @@ class TestNoProgressDetection:
         )
 
         assert result["iterations"] < MAX_ITERATIONS
+
+    async def test_a_safety_net_exit_leaves_no_unanswered_tool_call_in_the_thread(self):
+        """Real bug: every no_answer exit that fired while the last AIMessage was asking for
+        tools left that call with no ToolMessage in the persisted thread, and the next LLM
+        call on it is rejected by OpenAI-style APIs (GRAPH_PATTERNS.md pattern 10)."""
+        llm = GenericFakeChatModel(
+            messages=iter([call("calculator", {"expression": "1+1"}, f"c{i}") for i in range(MAX_ITERATIONS)])
+        )
+        g = build_graph(GraphDeps(llm=llm))
+        result = await g.ainvoke({"messages": [HumanMessage(content="keep trying")]}, config=cfg())
+        assert orphan_tool_call_ids(result["messages"]) == []
+        assert isinstance(result["messages"][-1], AIMessage)
+        assert result["messages"][-1].content  # the user still gets the fallback text
 
     async def test_alternating_different_calls_never_trips_it(self):
         """A model genuinely making progress (different calls each time)
@@ -1185,3 +1203,81 @@ class TestCostCeilingPath:
         )
 
         assert result["total_cost_usd"] == 0.0
+
+
+class TestRetryFeedbackIsNotConversation:
+    """Real bug: `retry_output` appended its corrective feedback as a plain HumanMessage, and
+    everything that looks for "the user's message" or "this turn" looks for the last
+    HumanMessage (GRAPH_PATTERNS.md pattern 5)."""
+
+    async def test_retry_feedback_is_never_treated_as_something_the_user_said(self, monkeypatch):
+        cache_keys, search_queries, seen = [], [], []
+
+        async def cache_get(ctx, query):
+            return None
+
+        async def cache_set(ctx, query, answer, citations):
+            cache_keys.append(query)
+
+        async def search(query, ctx):
+            search_queries.append(query)
+            return "", []
+
+        llm = queue_llm(
+            AIMessage(content="ok"),  # under MIN_ANSWER_LENGTH -> retry_output
+            AIMessage(content="Our refund window is thirty days from purchase."),
+            AIMessage(content="Refunds over thirty days need a manager's sign-off."),
+            seen=seen,
+        )
+        g = build_graph(GraphDeps(llm=llm, cache_get=cache_get, cache_set=cache_set, search_docs=search))
+        thread = str(uuid.uuid4())
+        await g.ainvoke({"messages": [HumanMessage(content="What is the refund policy for orders?")]}, config=cfg(thread))
+        await g.ainvoke({"messages": [HumanMessage(content="more detail pls")]}, config=cfg(thread))
+
+        async def _graph():
+            return g
+
+        monkeypatch.setattr(runtime_module, "init_graph_async", _graph)
+        replay = await stream_module.get_session_messages(thread)
+
+        assert cache_keys[0] == "What is the refund policy for orders?"
+        assert search_queries[1] == "What is the refund policy for orders? more detail pls"
+        assert [m["text"] for m in replay if m["role"] == "user"] == [
+            "What is the refund policy for orders?",
+            "more detail pls",
+        ]
+        assert [m["text"] for m in replay if m["role"] == "assistant"] == [
+            "Our refund window is thirty days from purchase.",
+            "Refunds over thirty days need a manager's sign-off.",
+        ]
+        turn_two_input = " ".join(str(m.content) for m in seen[2])
+        assert "That answer was too short" not in turn_two_input
+
+    async def test_a_turn_that_acted_is_not_cached_even_after_a_retry_round(self):
+        writes = []
+
+        async def cache_get(ctx, query):
+            return None
+
+        async def cache_set(ctx, query, answer, citations):
+            writes.append(query)
+
+        @tool
+        async def bump(amount: int) -> str:
+            """Increase the counter."""
+            return "Counter increased."
+
+        llm = queue_llm(
+            call("bump", {"amount": 1}, "b1"),
+            AIMessage(content="ok"),  # too short -> retry_output
+            AIMessage(content="I increased the counter by one, as you asked."),
+        )
+        g = build_graph(
+            GraphDeps(llm=llm, cache_get=cache_get, cache_set=cache_set),
+            manifest=AgentManifest("t", "You help."),
+            domain=Domain([bump], {"bump": "mutating"}),
+        )
+        config = cfg()
+        await g.ainvoke({"messages": [HumanMessage(content="bump the counter by one")]}, config=config)
+        await g.ainvoke(Command(resume=True), config=config)  # approve the mutating call
+        assert writes == []

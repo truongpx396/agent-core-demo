@@ -419,7 +419,7 @@ class State(TypedDict):
     # lifetime. NOT reset per-turn (unlike citations/followups) — it
     # accumulates like the checkpointed message list itself. Injected by
     # agent() as an early SystemMessage (pattern 41).
-    context_anchor_index: int  # Set by retrieve_context, alongside
+    context_anchor_index: int | None  # Set by retrieve_context, alongside
     # `context` — the index, in THAT MOMENT's state["messages"], of the
     # human message that opened this turn. Only appends happen after this
     # point for the rest of the turn, so the index stays valid throughout
@@ -427,7 +427,11 @@ class State(TypedDict):
     # this fixed position on every call to splice history_summary/context
     # right before the turn's question, rather than at the current tail —
     # see agent()'s own docstring for why a SHIFTING position broke
-    # prefix-cache reuse.
+    # prefix-cache reuse. `None` = unset: validate_input resets it (and
+    # `context`) every turn, so a turn that never reaches retrieve_context —
+    # a semantic-cache hit that then fails check_output — can't splice the
+    # PREVIOUS turn's context at the previous turn's index. agent() appends
+    # at the tail when it is missing.
 
 
 # --- Node: validate input. Fixed entry point for every graph.invoke() call
@@ -466,6 +470,10 @@ def validate_input(state: State, config: RunnableConfig) -> dict:
         # reject_context) must never leak a PRIOR turn's citations into
         # the streamed `citations` SSE event.
         "citations": [],
+        # Same reason: `context` and its anchor are set only by retrieve_context, which a
+        # cache-hit turn never reaches, so they'd otherwise carry over from the last turn.
+        "context": "",
+        "context_anchor_index": None,
         "used_citations": [],
         "ungrounded_claims_count": 0,
         "likely_uncited_citations": [],

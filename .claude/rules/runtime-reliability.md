@@ -29,6 +29,7 @@ session; `GRAPH_PATTERNS.md` has the full story under the pattern number given.
 - Anything that rejects or skips pending tool calls (HITL rejection, over-budget batch) MUST emit
   one `ToolMessage` per pending `tool_call`, or the next LLM call fails (patterns 8, 10).
 - History trimming is turn-aware: never split a `tool_call` from its `ToolMessage` (pattern 13).
+- `retry_output`'s feedback is a `HumanMessage` tagged `RETRY_ARTIFACT_KEY` (as is the answer it rejected), not something the person said. Find the user's message or the turn start with `_is_user_message`, never a bare `isinstance(m, HumanMessage)`; never tag an `AIMessage` that has `tool_calls` (pattern 5).
 - `validate_input` resets `iterations`/`total_tokens` every turn but NOT on a HITL resume.
 - A breaking `State` / topology change bumps `STATE_SCHEMA_VERSION`; a differing build SHA alone
   is not a break (`resumability_error_async`, pattern 16).

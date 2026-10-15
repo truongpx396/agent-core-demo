@@ -15,9 +15,10 @@ are also used by `graph/routing.py`, and `_current_turn_messages` by
 """
 from typing import cast
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 
 from app.agent.graph.core import MAX_TOOL_CALLS_PER_TURN, State
+from app.agent.graph.messages import _is_user_message
 from app.agent.tools.builtin import TOOLS
 from app.core import metrics
 
@@ -26,18 +27,25 @@ def _reject_tool_calls(tool_calls: list, reason: str) -> list[ToolMessage]:
     """Every pending tool_call needs a matching ToolMessage, or the next LLM
     call fails OpenAI's tool-response validation — shared by
     human_approval's rejection path and too_many_tool_calls below, which
-    both need to abort a batch of tool calls without running them."""
-    return [ToolMessage(content=reason, tool_call_id=tc["id"]) for tc in tool_calls]
+    both need to abort a batch of tool calls without running them.
+
+    Each rejection carries the tool's `name`, like a real result does:
+    `_pending_skill_required_tool` counts a required tool as dealt with only when a ToolMessage
+    NAMES it, so a call the person rejected (or any batch aborted here) used to leave the tool
+    "pending", and the agent kept being told to call what had just been declined."""
+    return [ToolMessage(content=reason, tool_call_id=tc["id"], name=tc["name"]) for tc in tool_calls]
 
 
 def _current_turn_messages(messages: list) -> list:
-    """Messages in the CURRENT turn only — from the most recent
-    HumanMessage (inclusive) onward, never spanning into a prior turn.
+    """Messages in the CURRENT turn only — from the most recent message the
+    person sent (inclusive; `retry_output`'s feedback is a HumanMessage too but
+    not a turn start, see `_is_user_message`) onward, never spanning into a
+    prior turn.
     Shared by graph/routing.py's `_current_turn_tool_call_batches`
     (pattern 34) and `_skipped_required_sandbox_after_skill`, each
     filtering it differently afterward."""
     last_human_index = next(
-        (i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)),
+        (i for i in range(len(messages) - 1, -1, -1) if _is_user_message(messages[i])),
         None,
     )
     return messages[last_human_index:] if last_human_index is not None else messages

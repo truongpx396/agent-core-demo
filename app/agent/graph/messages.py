@@ -1,19 +1,42 @@
 """Human-message helpers with no dependency on `State` or node logic:
-locating the last/previous `HumanMessage` (`_last_human_message`,
-`_previous_human_message`), building retrieval query text for a vague
-follow-up (`_retrieval_query`), and normalizing a `HumanMessage`'s
-content — plain string or multimodal content list (pattern 44) — to its
-text portion (`_human_text`, `_human_has_content`). Split out of
-`app/agent/graph/core.py` for file size.
+telling the person's own messages from the graph's retry artifacts
+(`RETRY_ARTIFACT_KEY`, `_is_user_message`), locating the last/previous
+user message (`_last_human_message`, `_previous_human_message`), building
+retrieval query text for a vague follow-up (`_retrieval_query`), and
+normalizing a `HumanMessage`'s content — plain string or multimodal content
+list (pattern 44) — to its text portion (`_human_text`,
+`_human_has_content`). Split out of `app/agent/graph/core.py` for file size.
 
 `_human_text`/`_human_has_content` are also unit-tested directly by
 `tests/agent/graph/test_multimodal.py`.
 """
+from typing import TypeGuard
+
 from langchain_core.messages import BaseMessage, HumanMessage
+
+# Tags a message the graph wrote into the thread to drive a retry, so the
+# readers below can tell it from conversation. `retry_output` appends its
+# corrective feedback as a HumanMessage (the only role a model will treat as
+# an instruction to act on), and tags the rejected answer it answers. Both
+# stay in the thread through the retry loop, because the retry needs them;
+# everything that looks for "the user's message" or "this turn" skips them,
+# and the agent node drops earlier turns' ones before it calls the model.
+# See GRAPH_PATTERNS.md pattern 5. Never set on an AIMessage with tool_calls:
+# dropping that one later would orphan its ToolMessages.
+RETRY_ARTIFACT_KEY = "retry_artifact"
+
+
+def _is_retry_artifact(message: BaseMessage) -> bool:
+    return bool((getattr(message, "additional_kwargs", None) or {}).get(RETRY_ARTIFACT_KEY))
+
+
+def _is_user_message(message: BaseMessage) -> TypeGuard[HumanMessage]:
+    """A HumanMessage the person sent, not retry feedback the graph wrote."""
+    return isinstance(message, HumanMessage) and not _is_retry_artifact(message)
 
 
 def _last_human_message(messages: list[BaseMessage]) -> HumanMessage | None:
-    return next((m for m in reversed(messages) if isinstance(m, HumanMessage)), None)
+    return next((m for m in reversed(messages) if _is_user_message(m)), None)
 
 
 def _previous_human_message(messages: list[BaseMessage], before_index: int) -> HumanMessage | None:
@@ -23,7 +46,7 @@ def _previous_human_message(messages: list[BaseMessage], before_index: int) -> H
     `messages[:before_index]` is everything before THIS turn. None on the
     first turn."""
     return next(
-        (m for m in reversed(messages[:before_index]) if isinstance(m, HumanMessage)),
+        (m for m in reversed(messages[:before_index]) if _is_user_message(m)),
         None,
     )
 

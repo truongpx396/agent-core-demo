@@ -37,6 +37,7 @@ from app.agent.graph.hitl import (
     paused_approval_async,
     resumability_error_async,
 )
+from app.agent.graph.messages import _is_retry_artifact
 from app.agent.runtime import core as runtime_module
 from app.core import gateway, metrics, tracing
 from app.core.config import (
@@ -915,8 +916,11 @@ async def get_session_messages(thread_id: str) -> list[dict]:
 
     Returns `[{"role": "user"|"assistant"|"system", "text": str}, ...]` —
     a replay of what the user actually saw, not a full forensic trace
-    (that's Langfuse): `SystemMessage`s and `ToolMessage`s are omitted, and
-    a tool-calling `AIMessage` with no text of its own is skipped. One
+    (that's Langfuse): `SystemMessage`s and `ToolMessage`s are omitted,
+    a tool-calling `AIMessage` with no text of its own is skipped, and so is a
+    retry artifact (`messages.RETRY_ARTIFACT_KEY`: the corrective feedback
+    `retry_output` wrote and the answer it rejected, or an untrusted answer a
+    fallback replaced) — neither was something the person said or was shown. One
     exception: a compact_history breadcrumb (tagged via
     `COMPACTION_MARKER_KEY`) comes back as `role: "system"` so a replay
     shows that older turns were cut, not just silently missing.
@@ -925,6 +929,8 @@ async def get_session_messages(thread_id: str) -> list[dict]:
     state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
     messages = []
     for m in state.values.get("messages", []):
+        if _is_retry_artifact(m):
+            continue  # retry feedback and the answer it rejected were never part of the conversation
         if isinstance(m, HumanMessage):
             role = "user"
         elif isinstance(m, AIMessage):

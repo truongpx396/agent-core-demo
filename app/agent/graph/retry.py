@@ -6,11 +6,29 @@ loop — MAX_CONSECUTIVE_SAME_RETRY_REASON), and `make_no_answer_fallback_node`
 no-progress). Split out of `app/agent/graph/core.py` for file size; no behavior
 change.
 """
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from app.agent.graph.core import MIN_ANSWER_LENGTH, SYSTEM_PROMPT, State
+from app.agent.graph.messages import RETRY_ARTIFACT_KEY
 from app.agent.graph.routing import check_output
+from app.agent.graph.tool_guards import _reject_tool_calls
 from app.core import metrics
+
+
+def _as_retry_artifact(message: BaseMessage | None) -> list[BaseMessage]:
+    """`message` re-tagged as a retry artifact, to put in a node's return value, or `[]` when it
+    can't safely be: only a plain answer (an AIMessage with no `tool_calls`) that already has an
+    id. The copy keeps that id, so `add_messages` REPLACES the message in the thread rather than
+    appending a second one. An AIMessage with `tool_calls` is never tagged, because the readers
+    that skip artifacts would then drop it and orphan its ToolMessages; a message with no id
+    (a hand-built test state, never a checkpointed one) would be appended as a duplicate."""
+    if not isinstance(message, AIMessage) or message.tool_calls or message.id is None:
+        return []
+    return [
+        message.model_copy(
+            update={"additional_kwargs": {**message.additional_kwargs, RETRY_ARTIFACT_KEY: True}}
+        )
+    ]
 
 
 def retry_output(state: State) -> dict:
@@ -105,7 +123,16 @@ def retry_output(state: State) -> dict:
             "marker to a sentence that source's own text genuinely supports, "
             "and drop the marker from any sentence it doesn't."
         )
-    return {"messages": [HumanMessage(content=feedback)]}
+    # Both messages are tagged so that nothing downstream mistakes them for conversation: the
+    # feedback is not something the person said, and the rejected answer is not one they were
+    # given (pattern 5). The agent node still sees them for the rest of THIS turn, which is
+    # what makes the retry work.
+    return {
+        "messages": [
+            *_as_retry_artifact(last),
+            HumanMessage(content=feedback, additional_kwargs={RETRY_ARTIFACT_KEY: True}),
+        ]
+    }
 
 
 # Reasons where a repeatedly-rejected answer is still SAFE to show
@@ -177,7 +204,8 @@ def make_retry_exhausted_node(emit_message: bool = True):
             # produced (outcome="budget_exceeded").
             content = ""
         return {
-            "messages": [AIMessage(content=content)],
+            # The answer being replaced was judged untrustworthy; leave it out of the transcript.
+            "messages": [*_as_retry_artifact(last), AIMessage(content=content)],
             "used_citations": [],
             "ungrounded_claims_count": 0,
         }
@@ -201,9 +229,20 @@ def make_retry_exhausted_node(emit_message: bool = True):
 # report the run as completed. ---
 def make_no_answer_fallback_node(emit_message: bool = True, system_prompt: str = SYSTEM_PROMPT):
     def no_answer_fallback(state: State) -> dict:
-        if not emit_message:
-            return {}
         last = state["messages"][-1]
+        # A safety net can trip on the very round whose AIMessage is asking for tools. Those calls
+        # will never run, and a call with no ToolMessage fails the next LLM call on this thread
+        # (OpenAI-style APIs reject it), so each one is answered here — also for a subagent
+        # (emit_message=False), whose thread is discarded but whose graph must not end on a
+        # malformed history either. `run_subagent` still reads the last AIMessage, which stays
+        # the empty tool-call one, so it still reports "budget_exceeded".
+        pending_calls = (last.tool_calls or []) if isinstance(last, AIMessage) else []
+        rejections = _reject_tool_calls(
+            pending_calls,
+            "Not run: this turn reached a safety limit before this call could run.",
+        )
+        if not emit_message:
+            return {"messages": rejections} if rejections else {}
         content = getattr(last, "content", "") or ""
         # Freshly runs check_output's OWN validity logic on THIS content,
         # not a stale state["last_retry_reason"] — should_continue routed
@@ -217,17 +256,25 @@ def make_no_answer_fallback_node(emit_message: bool = True, system_prompt: str =
         # fresh here means every current AND future check_output check
         # automatically applies.
         fresh = check_output(state, system_prompt=system_prompt)
+        # Text written alongside a tool request is the model narrating what it is about to do, not
+        # a final answer, so it is never shown even when it would pass check_output.
         trustworthy = (
-            fresh["last_retry_reason"] is None
-            or fresh["last_retry_reason"] in _TRUST_CONTENT_RETRY_REASONS
-        ) and isinstance(content, str) and bool(content.strip())
+            not pending_calls
+            and (
+                fresh["last_retry_reason"] is None
+                or fresh["last_retry_reason"] in _TRUST_CONTENT_RETRY_REASONS
+            )
+            and isinstance(content, str)
+            and bool(content.strip())
+        )
         updates: dict = {
             "used_citations": fresh["used_citations"],
             "ungrounded_claims_count": fresh["ungrounded_claims_count"],
         }
         if not trustworthy:
             content = _no_answer_message(fresh["last_retry_reason"])
-            updates["messages"] = [AIMessage(content=content)]
+            # The untrusted answer being replaced stays in the thread, but as an artifact.
+            updates["messages"] = [*rejections, *_as_retry_artifact(last), AIMessage(content=content)]
         elif "messages" in fresh:
             # check_output may have mechanically inserted a missing
             # citation marker into this content
