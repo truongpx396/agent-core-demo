@@ -7,14 +7,15 @@ unmodified graph. Python 3.13.
 Read these before changing behavior; they hold the reasoning this file deliberately omits:
 - `.specify/memory/constitution.md` — the non-negotiable rules. Principles I, II and IV
   (tenant isolation, mandatory approval, exactly-once side effects) are NON-NEGOTIABLE.
-- `GRAPH_PATTERNS.md` — the agent core's numbered patterns (1-66 so far), each with the real bug
-  that motivated it. "Extending Further" is the honest list of what is and isn't built. A
-  self-contained package (`packages/billing/`, see the constitution's "Self-contained packages") may keep
-  its own pattern file; a pattern that moves out leaves a one-line pointer here and its number is
-  never reused.
+- `GRAPH_PATTERNS.md` — the graph's numbered patterns (1-66 so far; 49 live there), each with the real bug
+  that motivated it. "Extending Further" is the honest list of what is and isn't built. A pattern that is
+  not about the graph moves out, leaves its number in a table here, and the number is never reused:
+  the spend meter and caps are in `COST_GOVERNANCE.md`, two repository lessons in `ENGINEERING_PATTERNS.md`,
+  and the billing package keeps its own (`packages/billing/docs/PATTERNS.md`, see the constitution's
+  "Self-contained packages").
 - `README.md` — architecture, make targets, testing tiers. `WORKER_CONCURRENCY.md` — worker sizing.
-  `BILLING_INTEGRATION.md` — how the app integrates the billing package; the package's own patterns
-  and docs are in `packages/billing/docs/`.
+  `BILLING_INTEGRATION.md` — the app's side of the billing seam; everything else about billing (patterns,
+  runbook, roadmap, specs) is in `packages/billing/`.
 
 ## Commands
 
