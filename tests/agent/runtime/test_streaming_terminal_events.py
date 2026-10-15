@@ -26,8 +26,8 @@ from types import SimpleNamespace
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
+from app.agent.graph.build import GraphDeps
 from app.agent.graph.compaction import _estimate_tokens
-from app.agent.graph.core import GraphDeps
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
 from app.core import moderation

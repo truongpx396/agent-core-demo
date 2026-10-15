@@ -1,53 +1,29 @@
-"""Enhanced LangGraph agent demonstrating practical patterns beyond a basic
-LLM+tools loop: input validation/moderation, pre-fetched RAG context framed
-as untrusted data (`<retrieved_document>` delimiters + a system rule that
-delimited text is data, never instructions), bounded history (see
-HISTORY_TOKEN_CEILING/_FLOOR, never splitting a tool_call/ToolMessage
-pair), an output quality gate with retry, per-node reliability policies
-(retrieve_context degrades, agent gets AGENT_RETRY_POLICY, tool exceptions
-become a message instead of crashing), opt-in human-in-the-loop
-(app/channels/chat.py's `--hitl`), built-in parallel tool execution via
-ToolNode, per-node telemetry (instrumented), multi-tenant isolation via
-SecurityCtx (stamped once by validate_input, fails closed at
-reject_context, every downstream read/write pre-filtered by it), and
-cross-session memory (automatic recall, explicit-only write via
-`remember`). See GRAPH_PATTERNS.md for the full pattern catalog.
+"""The turn-entry gating nodes and the per-node reliability policy.
 
-Nodes/routing functions live at module level (not nested in build_graph)
-so they're unit-testable directly, without compiling a graph or calling a
-real LLM. `agent`/`retrieve_context` are the exception — they need an
-injected client, so they're built by factories (make_agent_node,
-make_retrieve_context_node); see GraphDeps/build_graph.
+`validate_input` stamps the turn (`ctx` from config, the per-turn resets) and is the one entry point
+of every `graph.invoke()`; `route_after_validation` fails closed on a bad `ctx` (`reject_context`)
+before looking at the message (`reject_input`). `moderate_input` / `route_after_moderation` /
+`reject_moderation` screen the text before anything that spends (pattern 25). `route_after_compaction`
+/ `context_window_exceeded` end a turn whose history summary outgrew its budget. `AGENT_RETRY_POLICY`
+is the retry policy for the one node that talks to the model (pattern 7).
 
-`State`, `STATE_SCHEMA_VERSION` and the safety-budget constants live in the
-leaf module `graph/state.py`. This file holds `SYSTEM_PROMPT`, the
-turn-entry gating nodes (validate_input/moderate_input/reject_*/
-context_window_exceeded), the swappable defaults `default_search`/
-`default_cache_get`/`default_cache_set` (kept here because
-tests/conftest.py monkeypatches them on this module, and graph/build.py
-reads them via `graph_module.X`), and `GraphDeps`/
-`assemble_shared_graph_parts` (the composition root build_graph()/
-build_subagent_graph() both use). Everything else was split out purely for
-file size (no behavior change):
-- graph/messages.py — human-message text helpers
-- graph/compaction.py — token estimation, history trimming, make_compact_history_node
-- graph/cache.py — semantic-cache node pair
-- graph/retrieval.py — make_retrieve_context_node
-- graph/agent_node.py — make_agent_node
-- graph/followups.py — make_suggest_followups_node
-- graph/retry.py — retry_output, make_retry_exhausted_node, make_no_answer_fallback_node
-- graph/routing.py — should_continue, check_output, route_after_check (+ its own sibling splits)
-- graph/hitl.py / graph/skill_guards.py / graph/tool_guards.py / graph/utils.py /
-  graph/build.py / graph/build_subagent.py — pre-existing splits (see each one's docstring)
+Nodes and routers live at module level (not nested in build_graph) so they're unit-testable directly,
+without compiling a graph or calling a real LLM. Where things are:
+- `graph/state.py` — `State`, `STATE_SCHEMA_VERSION` and the safety-budget constants (a leaf)
+- `graph/build.py` — `GraphDeps`, `GraphProfile` and `build_graph`, the composition root
+- `graph/routing.py` — `should_continue`, `check_output`, `route_after_check`
+- `graph/agent_node.py`, `retrieval.py`, `cache.py`, `compaction.py`, `followups.py`, `retry.py`,
+  `hitl.py` — one node (or node family) each
+- `graph/tool_guards.py`, `loop_guards.py`, `skill_guards.py`, `output_guardrails.py`,
+  `citations.py` — the checks the gates are built from
+- `graph/messages.py`, `graph/utils.py` — helpers with no node logic
 """
 import functools
 import logging
 import os
 import subprocess
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
@@ -65,8 +41,6 @@ from app.agent.graph.messages import (
 )
 from app.agent.graph.state import (
     MAX_HISTORY_SUMMARY_CHARS,
-    MAX_ITERATIONS,
-    MAX_TOKENS_PER_TURN,
     STATE_SCHEMA_VERSION,
     State,
 )
@@ -81,12 +55,10 @@ from app.core.config import (  # noqa: F401
     OPENAI_API_BASE,
     OPENAI_API_KEY,
 )
-from app.core.security import SecurityCtx, valid_ctx
-from app.retrieval import semantic_cache
+from app.core.security import valid_ctx
 
 if TYPE_CHECKING:
-    from app.agent.manifest import AgentManifest, DomainPlugin
-from app.agent.tools import builtin as tools
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -309,170 +281,3 @@ def context_window_exceeded(state: State) -> dict:
             )
         ]
     }
-
-
-async def default_cache_get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
-    return await semantic_cache.get(ctx, query)
-
-
-async def default_cache_set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict]) -> None:
-    await semantic_cache.set(ctx, query, answer, citations)
-
-
-async def default_search(query: str, ctx: SecurityCtx | None) -> tuple[str, list[dict]]:
-    """Thin wrapper over `tools.gather_context` matching the
-    `Callable[[str, SecurityCtx | None], Awaitable[tuple[str, list[dict]]]]`
-    shape `make_retrieve_context_node` expects, so tests can pass a plain
-    fake function to the factory.
-
-    `ctx` flows straight through — the same value search_docs/remember read
-    from config when the *model* calls them as tools, so pre-fetched and
-    on-demand retrieval are policy-enforced identically. Hybrid search
-    (dense+sparse RRF, cross-encoder reranked) and cross-session memory
-    recall both live inside `gather_context` (see app/agent/tools/builtin.py, pattern 20).
-
-    async: gather_context awaits real I/O (the reranker is an HTTP call to
-    ml-service, not local ONNX compute).
-    """
-    return await tools.gather_context(ctx, query)
-
-
-@dataclass
-class GraphDeps:
-    """Bundle of the graph's swappable external clients, built once at the
-    composition root (build_graph) and threaded into the node factories
-    that need them — see make_agent_node, make_retrieve_context_node.
-    Unset fields fall back to the real clients inside build_graph(); tests
-    set individual fields to inject fakes instead of monkeypatching module
-    globals (see tests/agent/graph/test_agent_node.py, tests/agent/graph/test_nodes.py).
-    """
-
-    llm: Any = None
-    # The LiteLLM alias `llm` is bound to, used only to price its calls
-    # (app/agent/cost/pricing.py). None = the global chat alias; a delegated run whose
-    # specialist declares its own model sets it so its calls are priced by that
-    # model, not by the parent's.
-    model_alias: str | None = None
-    # The usage-event `kind` this client's calls are recorded under (app/agent/cost/usage_events.py).
-    # "chat" for the main loop; a delegated run sets "subagent" so its spend is separable.
-    meter_kind: str = "chat"
-    search_docs: (
-        Callable[[str, "SecurityCtx | None"], Awaitable[tuple[str, list[dict]]]] | None
-    ) = None
-    cache_get: (
-        Callable[["SecurityCtx | None", str], Awaitable[tuple[str, list[dict]] | None]] | None
-    ) = None
-    cache_set: (
-        Callable[["SecurityCtx | None", str, str, list[dict]], Awaitable[None]] | None
-    ) = None
-
-
-@dataclass(frozen=True)
-class _SharedGraphParts:
-    """What `build_graph()` and `build_subagent_graph()` both need before
-    they diverge — see `assemble_shared_graph_parts`'s own docstring."""
-
-    deps: GraphDeps
-    manifest: "AgentManifest"
-    domain_tools: list
-    tool_capabilities: Mapping[str, str]
-    llm_client: Any
-    agent: Callable
-    retrieve_context: Callable
-    domain_should_continue: Callable
-    domain_check_output: Callable
-    domain_invalid_tool_call: Callable
-
-
-def assemble_shared_graph_parts(
-    deps: GraphDeps | None,
-    manifest: "AgentManifest",
-    domain: "DomainPlugin",
-    max_iterations: int | None,
-    max_tokens_per_turn: int | None,
-    max_cost_usd_per_turn: float | None,
-    enforce_citations: bool = True,
-) -> _SharedGraphParts:
-    """Setup shared by `build_graph()`/`build_subagent_graph()` before they
-    diverge on topology: resolves `deps`/`manifest`/`domain` defaults,
-    computes the domain's tool set/capabilities, builds the LLM client, the
-    `agent`/`retrieve_context` closures, and the `should_continue`/
-    `check_output` partials bound to this domain's capability mapping and
-    budget ceiling. Factored out so both builders duplicate only their
-    actual topology (which nodes exist, how they're wired) — "one
-    pipeline, not two that can drift" (pattern 46). Each caller builds
-    whatever else it additionally needs from `.llm_client`/`.deps`.
-
-    `enforce_citations=False` (only `build_subagent_graph`) drops the two
-    places a graph pushes `[n]` markers on the model: the tail "every sentence
-    must end with its marker" reminder in `agent`, and `check_output`'s
-    uncited/misattributed findings and marker insertion. A nested run's
-    sources are not the parent's, so its prompt says to use none.
-    """
-    # Deferred: graph/routing.py and graph/utils.py both import State/
-    # constants back from THIS module at their own top level, so importing
-    # them here at module level would close a real cycle. Only needed at
-    # call time. make_agent_node/make_retrieve_context_node don't strictly
-    # need deferring either, but kept together for one single import block.
-    from app.agent.graph.agent_node import make_agent_node
-    from app.agent.graph.retrieval import make_retrieve_context_node
-    from app.agent.graph.routing import check_output, should_continue
-    from app.agent.graph.tool_guards import invalid_tool_call
-    from app.agent.graph.utils import make_llm
-
-    deps = deps or GraphDeps()
-
-    domain_tools = domain.tools()
-    if manifest.allowed_tools:
-        allowed = set(manifest.allowed_tools)
-        domain_tools = [t for t in domain_tools if t.name in allowed]
-    domain_tool_capabilities = domain.tool_capabilities()
-    domain_valid_tool_names = frozenset(t.name for t in domain_tools)
-
-    llm_client = deps.llm or make_llm(domain_tools)
-    agent = make_agent_node(
-        llm_client,
-        model_alias=deps.model_alias,
-        kind=deps.meter_kind,
-        citation_reminder=enforce_citations,
-    )
-    retrieve_context = make_retrieve_context_node(deps.search_docs or default_search)
-    # A plain module-level function (not a factory) bound to this domain's
-    # capability mapping via functools.partial — see should_continue's own
-    # docstring for why it stays a directly-callable module-level function
-    # rather than becoming a fifth factory in this file.
-    domain_should_continue = functools.partial(
-        should_continue,
-        tool_capabilities=domain_tool_capabilities,
-        valid_tool_names=domain_valid_tool_names,
-        max_iterations=max_iterations if max_iterations is not None else MAX_ITERATIONS,
-        max_tokens=max_tokens_per_turn if max_tokens_per_turn is not None else MAX_TOKENS_PER_TURN,
-        max_cost_usd=max_cost_usd_per_turn if max_cost_usd_per_turn is not None else MAX_COST_USD_PER_TURN,
-    )
-    # Same "plain function, not a factory" shape — bound to THIS domain's
-    # own system_prompt, not the bare Ecorp SYSTEM_PROMPT, so
-    # reveals_system_prompt checks an answer against the prompt it was
-    # ACTUALLY seeded with.
-    domain_check_output = functools.partial(
-        check_output, system_prompt=manifest.system_prompt, enforce_citations=enforce_citations
-    )
-    # Same shape again: name the bad tools against the set should_continue routed with, not
-    # Ecorp's (see invalid_tool_call).
-    domain_invalid_tool_call = functools.partial(
-        invalid_tool_call, valid_tool_names=domain_valid_tool_names
-    )
-
-    return _SharedGraphParts(
-        deps=deps,
-        manifest=manifest,
-        domain_tools=domain_tools,
-        tool_capabilities=domain_tool_capabilities,
-        llm_client=llm_client,
-        agent=agent,
-        retrieve_context=retrieve_context,
-        domain_should_continue=domain_should_continue,
-        domain_check_output=domain_check_output,
-        domain_invalid_tool_call=domain_invalid_tool_call,
-    )
-
-

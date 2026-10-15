@@ -18,6 +18,7 @@ from app.agent.graph.loop_guards import (
     consecutive_repeat_count,
     use_skill_called_without_search,
 )
+from app.agent.graph.messages import reject_tool_calls
 from app.agent.graph.routing import route_after_check
 from app.agent.graph.skill_guards import pending_skill_required_tool
 from app.agent.graph.state import (
@@ -26,9 +27,14 @@ from app.agent.graph.state import (
     MAX_ITERATIONS,
     MAX_REPEATED_ACTIONS,
 )
-from app.agent.graph.tool_guards import reject_tool_calls
+from app.agent.graph.tool_guards import batch_problem
 from tests.conftest import TEST_CTX
-from tests.ecorp import mandatory_gate_reason, should_continue, tool_capability
+from tests.ecorp import (
+    ECORP_TOOL_NAMES,
+    mandatory_gate_reason,
+    should_continue,
+    tool_capability,
+)
 
 
 def _tool_call(name, call_id="1"):
@@ -422,20 +428,19 @@ class TestShouldContinueInvalidToolCall:
     TestShouldContinueMandatoryGate's "registered but undeclared capability"
     case above) is a more severe condition — the model itself emitted a
     malformed/hallucinated call, not a real dispatchable tool with unknown
-    risk. Routes to invalid_tool_call, checked BEFORE the mandatory
+    risk. Routes to the tool-batch guard (as `invalid_tool_call`), checked BEFORE the mandatory
     capability gate, so it never reaches human_approval with a name nobody
     could meaningfully approve."""
 
-    def test_name_absent_from_valid_tool_names_routes_to_invalid_tool_call(self):
+    def test_name_absent_from_valid_tool_names_routes_to_the_batch_guard_as_invalid(self):
         state = {
             "iterations": 1,
             "require_approval": False,
             "messages": [_tool_call("search_docscalculatoradd_note")],
         }
-        assert (
-            should_continue(state, valid_tool_names=frozenset({"search_docs", "calculator"}))
-            == "invalid_tool_call"
-        )
+        names = frozenset({"search_docs", "calculator"})
+        assert should_continue(state, valid_tool_names=names) == "tool_batch_guard"
+        assert batch_problem(state["messages"][-1].tool_calls, state["messages"], names) == "invalid_tool_call"
 
     def test_checked_before_the_mandatory_capability_gate(self):
         """Even a name that WOULD otherwise be mutating/outward (fails
@@ -446,10 +451,7 @@ class TestShouldContinueInvalidToolCall:
             "require_approval": False,
             "messages": [_tool_call("add_note_but_typo")],
         }
-        assert (
-            should_continue(state, valid_tool_names=frozenset({"add_note"}))
-            == "invalid_tool_call"
-        )
+        assert should_continue(state, valid_tool_names=frozenset({"add_note"})) == "tool_batch_guard"
 
     def test_registered_name_is_unaffected(self):
         state = {
@@ -523,7 +525,7 @@ class TestUseSkillCalledWithoutSearch:
 
 
 class TestShouldContinueUseSkillWithoutSearch:
-    def test_routes_to_use_skill_without_search(self):
+    def test_routes_to_the_batch_guard_as_use_skill_without_search(self):
         state = {
             "iterations": 1,
             "require_approval": False,
@@ -535,7 +537,8 @@ class TestShouldContinueUseSkillWithoutSearch:
                 ),
             ],
         }
-        assert should_continue(state) == "use_skill_without_search"
+        assert should_continue(state) == "tool_batch_guard"
+        assert batch_problem(state["messages"][-1].tool_calls, state["messages"], ECORP_TOOL_NAMES) == "use_skill_without_search"
 
     def test_checked_before_human_approval_even_when_require_approval_is_set(self):
         """use_skill is read_only (never reaches human_approval on its own
@@ -553,7 +556,7 @@ class TestShouldContinueUseSkillWithoutSearch:
                 ),
             ],
         }
-        assert should_continue(state) == "use_skill_without_search"
+        assert should_continue(state) == "tool_batch_guard"
 
     def test_use_skill_after_a_real_search_routes_normally(self):
         state = {

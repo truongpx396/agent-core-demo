@@ -2,33 +2,29 @@
 `make_check_semantic_cache_node`/`route_after_cache` (read side — a hit
 short-circuits to a final answer, no LLM call, no retrieval) and
 `make_write_semantic_cache_node` (write-through side, skipped on a hit).
-Split out of `app/agent/graph/core.py` for file size (see graph/retrieval.py
-for the sibling split).
 
-`default_cache_get`/`default_cache_set` stay in `app/agent/graph/core.py` itself
-(imported here) because `tests/conftest.py` and `graph/build.py`
-monkeypatch/read them as `graph.<name>` — moving them would break that.
+The cache read/write callables are injected (`GraphDeps.cache_get`/`cache_set`, defaulting to
+`graph/build.py`'s `default_cache_get`/`default_cache_set`), so this module imports nothing from the
+composition root.
 """
 from collections.abc import Awaitable, Callable, Mapping
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from langchain_core.messages import AIMessage
 
-from app.agent.graph.core import default_cache_get
 from app.agent.graph.loop_guards import tool_capability
-from app.agent.graph.messages import human_text, last_human_message
+from app.agent.graph.messages import (
+    current_turn_messages,
+    human_text,
+    last_human_message,
+)
 from app.agent.graph.state import State
-from app.agent.graph.tool_guards import current_turn_messages
-
-if TYPE_CHECKING:
-    from app.core.security import SecurityCtx
+from app.core.security import SecurityCtx
 
 
 # --- Node: semantic cache lookup (GRAPH_PATTERNS.md pattern 22) ---
 def make_check_semantic_cache_node(
-    cache_get: Callable[
-        ["SecurityCtx | None", str], Awaitable[tuple[str, list[dict]] | None]
-    ] = default_cache_get,
+    cache_get: Callable[["SecurityCtx | None", str], Awaitable[tuple[str, list[dict]] | None]],
 ):
     """Factory, same rationale as make_retrieve_context_node: needs an
     injected client so tests can fake it (see tests/agent/graph/test_nodes.py) instead

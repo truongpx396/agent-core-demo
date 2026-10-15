@@ -986,7 +986,7 @@ class TestBuildSubagentGraphTopology:
     run_subagent_impl's own behavior tests below."""
 
     def test_drops_exactly_the_five_overhead_nodes(self):
-        from app.agent.graph import core as graph_module
+        from app.agent.graph import build as graph_module
 
         fake_llm = _RecordingFakeLLM(AIMessage(content="unused"))
         compiled = build_subagent_graph(deps=graph_module.GraphDeps(llm=fake_llm))
@@ -1002,7 +1002,7 @@ class TestBuildSubagentGraphTopology:
         assert dropped.isdisjoint(nodes)
 
     def test_keeps_every_safety_and_agent_loop_node(self):
-        from app.agent.graph import core as graph_module
+        from app.agent.graph import build as graph_module
 
         fake_llm = _RecordingFakeLLM(AIMessage(content="unused"))
         compiled = build_subagent_graph(deps=graph_module.GraphDeps(llm=fake_llm))
@@ -1018,9 +1018,7 @@ class TestBuildSubagentGraphTopology:
             "agent",
             "tools",
             "human_approval",
-            "too_many_tool_calls",
-            "invalid_tool_call",
-            "use_skill_without_search",
+            "tool_batch_guard",
             "check_output",
             "retry_output",
             "retry_exhausted",
@@ -1182,7 +1180,7 @@ class TestRunSubagentImpl:
         budget_exceeded apology. Only ONE fake LLM response queued: if this still needed a second
         round, _RecordingFakeLLM's inner GenericFakeChatModel would raise on its exhausted
         iterator, failing this test loudly rather than silently passing."""
-        from app.agent.graph import core as graph_module
+        from app.agent.graph import build as graph_module
 
         source_text = "The sky is blue due to Rayleigh scattering."
 
@@ -1264,7 +1262,7 @@ class TestRunSubagentImpl:
         near-identical phrasing, or vice versa. build_subagent_graph()
         doesn't wire check_semantic_cache/write_semantic_cache as nodes at
         all, so their underlying default functions must never be called."""
-        from app.agent.graph import core as graph_module
+        from app.agent.graph import build as graph_module
 
         cache_get_calls: list = []
         cache_set_calls: list = []
@@ -1393,17 +1391,16 @@ class TestSubagentGraphCache:
         subagent_tools.reset_subagent_graph_cache()
 
     async def test_use_cache_reuses_the_compiled_graph_across_calls(self, monkeypatch):
-        from app.agent.graph import build_subagent as graph_build_subagent
 
         build_calls = []
-        real_build_subagent_graph = graph_build_subagent.build_subagent_graph
+        real_build_subagent_graph = subagent_tools.build_subagent_graph
 
         def counting_build_subagent_graph(*args, **kwargs):
             build_calls.append(1)
             return real_build_subagent_graph(*args, **kwargs)
 
         monkeypatch.setattr(
-            graph_build_subagent, "build_subagent_graph", counting_build_subagent_graph
+            subagent_tools, "build_subagent_graph", counting_build_subagent_graph
         )
 
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
@@ -1446,12 +1443,11 @@ class TestSubagentGraphCache:
         assert never_used_llm.calls == []
 
     async def test_different_domains_get_independent_cache_entries(self, monkeypatch):
-        from app.agent.graph import build_subagent as graph_build_subagent
 
         build_calls = []
-        real_build_subagent_graph = graph_build_subagent.build_subagent_graph
+        real_build_subagent_graph = subagent_tools.build_subagent_graph
         monkeypatch.setattr(
-            graph_build_subagent,
+            subagent_tools,
             "build_subagent_graph",
             lambda *a, **k: (build_calls.append(1), real_build_subagent_graph(*a, **k))[1],
         )

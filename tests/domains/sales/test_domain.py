@@ -19,7 +19,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from app.agent.graph.core import GraphDeps
+from app.agent.graph.build import GraphDeps
 from app.domains.sales import store
 from app.domains.sales.domain import SALES_DOMAIN_PLUGIN, SALES_MANIFEST
 from tests.conftest import TEST_CTX
@@ -72,22 +72,22 @@ class TestSandboxing:
 
     def test_tool_node_knows_at_least_the_core_sales_domains_tools(self):
         g = _build()
-        assert _CORE_SALES_TOOLS <= set(g.nodes["tools"].bound.tools_by_name)
+        assert _CORE_SALES_TOOLS <= set(g.tools_by_name)
 
     def test_sandbox_tools_are_always_present_as_a_fixed_set(self):
         g = _build()
-        assert _SANDBOX_TOOLS <= set(g.nodes["tools"].bound.tools_by_name)
+        assert _SANDBOX_TOOLS <= set(g.tools_by_name)
 
     def test_every_sandbox_tool_present_is_declared_outward(self):
         g = _build()
-        present = _SANDBOX_TOOLS & set(g.nodes["tools"].bound.tools_by_name)
+        present = _SANDBOX_TOOLS & set(g.tools_by_name)
         capabilities = SALES_DOMAIN_PLUGIN.tool_capabilities()
         for name in present:
             assert capabilities.get(name) == "outward", name
 
     def test_ecorp_only_tools_are_absent(self):
         g = _build()
-        names = set(g.nodes["tools"].bound.tools_by_name)
+        names = set(g.tools_by_name)
         for excluded in ("calculator", "add_note", "remember", "query_employees"):
             assert excluded not in names
 
@@ -102,12 +102,12 @@ class TestDomainScopedSubagent:
         ecorp_run_subagent = {t.name: t for t in ECORP_DOMAIN_PLUGIN.tools()}["run_subagent"]
 
         g = _build()
-        domain_run_subagent = g.nodes["tools"].bound.tools_by_name["run_subagent"]
+        domain_run_subagent = g.tools_by_name["run_subagent"]
         assert domain_run_subagent is not ecorp_run_subagent
 
     def test_menu_offers_only_the_sales_domains_own_subagent(self):
         g = _build()
-        domain_run_subagent = g.nodes["tools"].bound.tools_by_name["run_subagent"]
+        domain_run_subagent = g.tools_by_name["run_subagent"]
         schema = domain_run_subagent.args_schema.model_json_schema()
         enum_def = next(iter(schema["$defs"].values()))
         assert enum_def["enum"] == ["lead-researcher"]

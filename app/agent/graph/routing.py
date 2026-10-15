@@ -35,7 +35,6 @@ from app.agent.graph.citations import (
 from app.agent.graph.loop_guards import (
     consecutive_repeat_count,
     mandatory_gate_reason,
-    use_skill_called_without_search,
 )
 from app.agent.graph.output_guardrails import (
     defers_instead_of_acting,
@@ -50,12 +49,9 @@ from app.agent.graph.state import (
     MAX_ITERATIONS,
     MAX_REPEATED_ACTIONS,
     MAX_TOKENS_PER_TURN,
-    MAX_TOOL_CALLS_PER_TURN,
     State,
 )
-from app.agent.graph.tool_guards import (
-    invalid_tool_call_names,
-)
+from app.agent.graph.tool_guards import batch_problem
 from app.core import metrics
 from app.core.config import MAX_COST_USD_PER_TURN
 
@@ -71,9 +67,7 @@ def should_continue(
 ) -> Literal[
     "tools",
     "human_approval",
-    "too_many_tool_calls",
-    "invalid_tool_call",
-    "use_skill_without_search",
+    "tool_batch_guard",
     "check_output",
     "no_answer",
 ]:
@@ -81,13 +75,12 @@ def should_continue(
 
     Checked in order: iteration/token/cost caps (turn-wide safety nets,
     checked first regardless of what the LLM said) -> is this a tool call
-    -> too many tool calls at once -> any invalid tool name
-    (`invalid_tool_call_names`) -> `use_skill` called without
-    `skill_search` first (`use_skill_called_without_search`) -> human
-    approval. The invalid-name and use_skill checks run BEFORE
-    human_approval deliberately: neither is a real tool call a human could
-    meaningfully approve, so both loop back to `agent` for a
-    self-correcting retry instead of surfacing garbage for review.
+    -> a malformed batch (`batch_problem`: too many calls, a name that isn't
+    one of this domain's tools, or `use_skill` before `skill_search`) ->
+    human approval. The batch check runs BEFORE human_approval deliberately:
+    none of those is a real tool call a human could meaningfully approve, so
+    they all go to `tool_batch_guard`, which answers every call and loops back
+    to `agent` for a self-correcting retry instead of surfacing garbage for review.
 
     Two independent reasons route to `human_approval`, only one optional:
     - `require_approval` on state — opt-in (default False), see
@@ -138,12 +131,8 @@ def should_continue(
     if result != "tools":
         return "check_output"
     tool_calls = cast(AIMessage, state["messages"][-1]).tool_calls or []
-    if len(tool_calls) > MAX_TOOL_CALLS_PER_TURN:
-        return "too_many_tool_calls"
-    if invalid_tool_call_names(tool_calls, valid_tool_names):
-        return "invalid_tool_call"
-    if use_skill_called_without_search(tool_calls, state["messages"]):
-        return "use_skill_without_search"
+    if batch_problem(tool_calls, state["messages"], valid_tool_names):
+        return "tool_batch_guard"
     if consecutive_repeat_count(state["messages"]) >= MAX_REPEATED_ACTIONS:
         # Checked independently of MAX_ITERATIONS — a run looping on one
         # identical action would otherwise just exhaust the iteration cap,

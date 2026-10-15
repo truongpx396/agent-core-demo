@@ -24,6 +24,9 @@ from langchain_core.runnables import RunnableConfig
 from pydantic import SecretStr
 
 from app.agent.cost import pricing
+from app.agent.graph.build import GraphDeps, build_subagent_graph
+from app.agent.graph.state import MAX_SUBAGENT_ITERATIONS, MAX_SUBAGENT_TOKENS_PER_RUN
+from app.agent.manifest import AgentManifest
 from app.agent.tools import builtin as tools_module
 from app.agent.tools import subagent_catalog as subagents_module
 from app.agent.tools.builtin import logger
@@ -281,18 +284,6 @@ async def run_subagent_impl(
             0.0,
         )
     nested_tools = [tools_by_name[name] for name in resolved_tool_names if name in tools_by_name]
-
-    # Deferred imports: app/agent/graph/core.py imports app/agent/tools/builtin.py at module level
-    # for TOOL_CAPABILITIES/TOOLS, and manifest.py imports app/agent/graph/core.py at its
-    # own module level — importing either back here at module level would
-    # close a real import cycle. Only needed at call time regardless.
-    from app.agent.graph.build_subagent import build_subagent_graph
-    from app.agent.graph.core import GraphDeps
-    from app.agent.graph.state import (
-        MAX_SUBAGENT_ITERATIONS,
-        MAX_SUBAGENT_TOKENS_PER_RUN,
-    )
-    from app.agent.manifest import AgentManifest
 
     # Computed fresh every call regardless of caching below — cheap, fully
     # determined by record.system_prompt, no need to cache separately.

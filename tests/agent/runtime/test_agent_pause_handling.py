@@ -16,7 +16,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from app.agent.graph.core import GraphDeps
+from app.agent.graph.build import GraphDeps
 from app.agent.graph.hitl import paused_approval_async
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module

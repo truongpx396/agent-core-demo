@@ -244,7 +244,7 @@ class TestAstreamEventsTurnBuildsMultimodalContent:
         this test only cares about the content SHAPE reaching the LLM."""
         import uuid
 
-        from app.agent.graph.core import GraphDeps
+        from app.agent.graph.build import GraphDeps
         from tests.ecorp import build_graph
 
         llm = _RecordingFakeLLM(

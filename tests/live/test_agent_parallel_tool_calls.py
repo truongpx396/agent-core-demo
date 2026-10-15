@@ -28,7 +28,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
 from app.agent.graph import core as graph_module
-from app.agent.graph.core import GraphDeps
+from app.agent.graph.build import GraphDeps
 from tests.conftest import TEST_CTX
 from tests.ecorp import build_graph
 from tests.seeding import seed_thread

@@ -18,8 +18,8 @@ from typing import Literal, cast
 from langchain_core.messages import AIMessage
 
 from app.agent.graph import core as graph_module
+from app.agent.graph.messages import reject_tool_calls
 from app.agent.graph.state import STATE_SCHEMA_VERSION, State
-from app.agent.graph.tool_guards import reject_tool_calls
 from app.core import metrics
 
 

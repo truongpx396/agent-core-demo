@@ -10,8 +10,8 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
-from app.agent.graph import core as graph
-from app.agent.graph.core import GraphDeps
+from app.agent.graph import build as graph
+from app.agent.graph.build import GraphDeps
 from app.agent.manifest import AgentManifest
 from app.agent.runtime import stream as stream_module
 from app.agent.tools.subagent_catalog import (

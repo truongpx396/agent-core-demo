@@ -30,7 +30,7 @@ from psycopg import errors as pg_errors
 
 from app.agent.cost import metering, pricing, usage_events
 from app.agent.graph.agent_node import make_agent_node
-from app.agent.graph.core import GraphDeps
+from app.agent.graph.build import GraphDeps
 from app.core import metrics
 from tests.agent.graph.test_graph_integration import _config
 from tests.conftest import TEST_CTX, metric_value

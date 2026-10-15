@@ -24,7 +24,7 @@ from langchain_core.tools import tool
 from langgraph.types import Command
 
 from app.agent.graph import build as app_build
-from app.agent.graph.core import GraphDeps
+from app.agent.graph.build import GraphDeps
 from app.agent.manifest import AgentManifest
 from app.core.security import Policy, SecurityCtx, valid_ctx
 from tests.ecorp import (
@@ -130,7 +130,7 @@ class TestSecondDomainProvesReuse:
         g = build_graph(
             GraphDeps(llm=None), manifest=WIDGET_MANIFEST, domain=WIDGET_DOMAIN
         )
-        assert set(g.nodes["tools"].bound.tools_by_name) == {"open_ticket"}
+        assert set(g.tools_by_name) == {"open_ticket"}
 
     def test_compiled_graph_carries_the_widget_manifest(self):
         g = build_graph(

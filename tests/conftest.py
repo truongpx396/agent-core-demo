@@ -97,7 +97,7 @@ from opentelemetry import metrics as metrics_api
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
-from app.agent.graph import core as graph
+from app.agent.graph import build as graph_build
 from app.core import moderation
 
 TEST_CTX = {"tenant": "ecorp", "principal": "test-user", "claims": {}}
@@ -150,9 +150,9 @@ async def _no_op_search(query, ctx=None):
 @pytest.fixture(autouse=True)
 def mock_search_docs(monkeypatch):
     # `default_search` is `async def` now (awaits `tools.gather_context`,
-    # which awaits the reranker's HTTP call — see app/agent/graph/core.py) — the
+    # which awaits the reranker's HTTP call — see app/agent/graph/build.py) — the
     # fake needs to be awaitable too, not a plain lambda.
-    monkeypatch.setattr(graph, "default_search", _no_op_search)
+    monkeypatch.setattr(graph_build, "default_search", _no_op_search)
 
 
 async def _benign_ml_score(text: str) -> float:
@@ -182,8 +182,8 @@ def mock_semantic_cache(monkeypatch):
     async def fake_cache_set(ctx, query, answer, citations):
         return None
 
-    monkeypatch.setattr(graph, "default_cache_get", fake_cache_get)
-    monkeypatch.setattr(graph, "default_cache_set", fake_cache_set)
+    monkeypatch.setattr(graph_build, "default_cache_get", fake_cache_get)
+    monkeypatch.setattr(graph_build, "default_cache_set", fake_cache_set)
 
 
 @pytest.fixture(autouse=True)

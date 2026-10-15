@@ -1,18 +1,22 @@
-"""Human-message helpers with no dependency on `State` or node logic:
-telling the person's own messages from the graph's retry artifacts
-(`RETRY_ARTIFACT_KEY`, `is_user_message`), locating the last/previous
-user message (`last_human_message`, `previous_human_message`), building
-retrieval query text for a vague follow-up (`retrieval_query`), and
-normalizing a `HumanMessage`'s content — plain string or multimodal content
-list (pattern 44) — to its text portion (`human_text`,
-`human_has_content`). Split out of `app/agent/graph/core.py` for file size.
+"""Message helpers with no dependency on `State` or node logic — a leaf module.
+
+- Telling the person's own messages from the graph's retry artifacts
+  (`RETRY_ARTIFACT_KEY`, `is_user_message`), and locating the last/previous user
+  message (`last_human_message`, `previous_human_message`).
+- Where the current turn starts (`current_turn_messages`).
+- Answering a tool batch that will not run (`reject_tool_calls`).
+- Building retrieval query text for a vague follow-up (`retrieval_query`, with the crude
+  word-overlap helper `content_words` it and the citation checks share).
+- Normalizing a `HumanMessage`'s content — plain string or multimodal content list
+  (pattern 44) — to its text portion (`human_text`, `human_has_content`).
 
 `human_text`/`human_has_content` are also unit-tested directly by
 `tests/agent/graph/test_multimodal.py`.
 """
+import re
 from typing import TypeGuard
 
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 
 # Tags a message the graph wrote into the thread to drive a retry, so the
 # readers below can tell it from conversation. `retry_output` appends its
@@ -75,12 +79,6 @@ def retrieval_query(current_text: str, previous_human: HumanMessage | None) -> s
     back, not the whole history — a rarer multi-vague-follow-up chain
     isn't chased, and reaching further risks a stale topic.
     """
-    # Deferred: graph/utils.py imports app.agent.graph.core at its own top
-    # level, and app/agent/graph/core.py re-exports names from THIS module at its top
-    # level — importing graph_utils back here at module level would close
-    # a real cycle.
-    from app.agent.graph.utils import content_words
-
     if previous_human is not None and len(content_words(current_text)) <= _VAGUE_QUERY_MAX_CONTENT_WORDS:
         return f"{human_text(previous_human)} {current_text}"
     return current_text
@@ -120,3 +118,48 @@ def human_has_content(message: BaseMessage | None) -> bool:
     if human_text(message).strip():
         return True
     return any(isinstance(part, dict) and part.get("type") == "image_url" for part in content)
+
+
+def current_turn_messages(messages: list) -> list:
+    """Messages in the CURRENT turn only — from the most recent message the
+    person sent (inclusive; `retry_output`'s feedback is a HumanMessage too but
+    not a turn start, see `is_user_message`) onward, never spanning into a
+    prior turn.
+    Shared by graph/routing.py's `_current_turn_tool_call_batches`
+    (pattern 34) and `skipped_required_sandbox_after_skill`, each
+    filtering it differently afterward."""
+    last_human_index = next(
+        (i for i in range(len(messages) - 1, -1, -1) if is_user_message(messages[i])),
+        None,
+    )
+    return messages[last_human_index:] if last_human_index is not None else messages
+
+
+def reject_tool_calls(tool_calls: list, reason: str) -> list[ToolMessage]:
+    """Every pending tool_call needs a matching ToolMessage, or the next LLM
+    call fails OpenAI's tool-response validation — shared by
+    human_approval's rejection path and too_many_tool_calls below, which
+    both need to abort a batch of tool calls without running them.
+
+    Each rejection carries the tool's `name`, like a real result does:
+    `pending_skill_required_tool` counts a required tool as dealt with only when a ToolMessage
+    NAMES it, so a call the person rejected (or any batch aborted here) used to leave the tool
+    "pending", and the agent kept being told to call what had just been declined."""
+    return [ToolMessage(content=reason, tool_call_id=tc["id"], name=tc["name"]) for tc in tool_calls]
+
+
+# A small, deliberately crude stopword list — good enough to stop common
+# words from inflating an overlap ratio, without pulling in an NLP
+# dependency for what's fundamentally a coarse, directional heuristic.
+_STOPWORDS = frozenset(
+    "a an the is are was were and or of to in for on at by with from that "
+    "this it its be as you your can will if not into their his her they "
+    "he she we".split()
+)
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def content_words(text: str) -> set[str]:
+    return {
+        w for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS and len(w) > 2
+    }

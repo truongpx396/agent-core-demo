@@ -23,8 +23,9 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from app.agent.graph.agent_node import make_agent_node
+from app.agent.graph.build import GraphDeps
 from app.agent.graph.compaction import _estimate_tokens, make_compact_history_node
-from app.agent.graph.core import AGENT_RETRY_POLICY, GraphDeps
+from app.agent.graph.core import AGENT_RETRY_POLICY
 from app.agent.graph.followups import make_suggest_followups_node
 from app.agent.runtime import stream as stream_module
 from app.core import gateway, metrics

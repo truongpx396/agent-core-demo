@@ -11,7 +11,7 @@ change.
 """
 import re
 
-from app.agent.graph.utils import content_words
+from app.agent.graph.messages import content_words
 
 _CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
 

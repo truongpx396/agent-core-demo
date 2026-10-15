@@ -16,7 +16,7 @@ from collections.abc import Mapping
 
 from langchain_core.messages import AIMessage
 
-from app.agent.graph.tool_guards import current_turn_messages
+from app.agent.graph.messages import current_turn_messages
 
 
 def tool_capability(name: str, tool_capabilities: Mapping[str, str]) -> str:

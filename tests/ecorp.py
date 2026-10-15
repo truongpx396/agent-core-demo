@@ -10,7 +10,6 @@ A test that is about a different domain passes its own manifest/domain/arguments
 always wins over the default here.
 """
 from app.agent.graph import build as _build
-from app.agent.graph import build_subagent as _build_subagent
 from app.agent.graph import cache as _cache
 from app.agent.graph import loop_guards as _loop_guards
 from app.agent.graph import retry as _retry
@@ -53,7 +52,7 @@ def build_graph(deps=None, checkpointer=None, manifest=None, domain=None, **kwar
 
 
 def build_subagent_graph(deps=None, checkpointer=None, manifest=None, domain=None, **kwargs):
-    return _build_subagent.build_subagent_graph(
+    return _build.build_subagent_graph(
         manifest or ECORP_MANIFEST, domain or ECORP_DOMAIN_PLUGIN, deps, checkpointer, **kwargs
     )
 

@@ -19,6 +19,7 @@ from langchain_core.messages import (
     SystemMessage,
 )
 
+from app.agent.graph.build import GraphDeps
 from app.agent.graph.compaction import (
     COMPACTION_MARKER_KEY,
     _estimate_tokens,
@@ -27,7 +28,7 @@ from app.agent.graph.compaction import (
     _trim_history,
     make_compact_history_node,
 )
-from app.agent.graph.core import GraphDeps, validate_input
+from app.agent.graph.core import validate_input
 from app.agent.graph.state import (
     MAX_ITERATIONS,
     MAX_SUBAGENT_TOKENS_PER_RUN,
@@ -35,12 +36,12 @@ from app.agent.graph.state import (
     MAX_TOOL_CALLS_PER_TURN,
     concat_or_reset,
 )
-from app.agent.graph.tool_guards import too_many_tool_calls
+from app.agent.graph.tool_guards import batch_problem, tool_batch_guard
 from app.agent.runtime import core as agent_module
 from app.core import metrics, tool_runtime
 from app.core.config import MAX_COST_USD_PER_TURN, MAX_SUBAGENT_COST_USD_PER_RUN
 from tests.conftest import TEST_CTX, metric_value
-from tests.ecorp import build_graph, should_continue
+from tests.ecorp import ECORP_TOOL_NAMES, build_graph, should_continue
 
 
 def _tool_call_message(name, args, call_id="call_1"):
@@ -467,13 +468,14 @@ class TestToolCallBudget:
         }
         assert should_continue(state) == "tools"
 
-    def test_exceeding_budget_routes_to_too_many_tool_calls(self):
+    def test_exceeding_budget_routes_to_the_tool_batch_guard_as_too_many_tool_calls(self):
         calls = [
             {"name": "calculator", "args": {"expression": "1+1"}, "id": f"c{i}"}
             for i in range(MAX_TOOL_CALLS_PER_TURN + 1)
         ]
         state = {"iterations": 1, "messages": [AIMessage(content="", tool_calls=calls)]}
-        assert should_continue(state) == "too_many_tool_calls"
+        assert should_continue(state) == "tool_batch_guard"
+        assert batch_problem(calls, state["messages"], ECORP_TOOL_NAMES) == "too_many_tool_calls"
 
     def test_at_exactly_the_limit_still_routes_normally(self):
         calls = [
@@ -489,7 +491,7 @@ class TestToolCallBudget:
             for i in range(MAX_TOOL_CALLS_PER_TURN + 2)
         ]
         ai = AIMessage(content="", tool_calls=calls)
-        result = too_many_tool_calls({"messages": [ai]})
+        result = tool_batch_guard({"messages": [ai]}, ECORP_TOOL_NAMES)
         assert len(result["messages"]) == len(calls)
         for msg, call in zip(result["messages"], calls, strict=True):
             assert msg.tool_call_id == call["id"]

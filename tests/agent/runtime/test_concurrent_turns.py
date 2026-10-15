@@ -87,7 +87,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langchain_core.outputs import ChatGeneration, ChatResult
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from app.agent.graph.core import GraphDeps
+from app.agent.graph.build import GraphDeps
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
 from app.agent.tools import builtin as tools_module

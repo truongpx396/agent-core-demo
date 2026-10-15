@@ -21,7 +21,6 @@ import time). Same fix as `graph/hitl.py`'s `graph_module.interrupt`/
 import asyncio
 import functools
 import logging
-import re
 import time
 
 from langchain_openai import ChatOpenAI
@@ -209,20 +208,3 @@ def make_llm(tools: list):
     # verified live (tests/live/test_agent_parallel_tool_calls.py). A batch
     # needing approval is approved/rejected as ONE decision covering every
     # call, trading round trips for granularity, not visibility.
-
-
-# A small, deliberately crude stopword list — good enough to stop common
-# words from inflating an overlap ratio, without pulling in an NLP
-# dependency for what's fundamentally a coarse, directional heuristic.
-_STOPWORDS = frozenset(
-    "a an the is are was were and or of to in for on at by with from that "
-    "this it its be as you your can will if not into their his her they "
-    "he she we".split()
-)
-_WORD_RE = re.compile(r"[a-z0-9]+")
-
-
-def content_words(text: str) -> set[str]:
-    return {
-        w for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS and len(w) > 2
-    }

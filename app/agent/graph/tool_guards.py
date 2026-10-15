@@ -1,97 +1,92 @@
-"""Guardrail cluster for rejecting a bad tool-call batch and looping back
-to agent for a self-correcting retry: `too_many_tool_calls` (over the
-per-turn cap), `invalid_tool_call` (hallucinated/non-existent tool name),
-and shared machinery — `reject_tool_calls`, `current_turn_messages`,
-`invalid_tool_call_names`. Split out of
-`app/agent/graph/core.py` for file size.
+"""The tool-batch guard: one node that turns a batch of tool calls the model should not have
+made into a self-correcting retry, instead of running or surfacing it.
 
-`use_skill_without_search` — a third node with this same shape — lives in
-`graph/skill_guards.py` instead (grouped with the rest of the skill-misuse
-family) and imports `reject_tool_calls` from here.
+Three problems, checked in this order by `batch_problem` (which `should_continue` routes on and
+`tool_batch_guard` re-derives, so there is one definition of each):
 
-`current_turn_messages`/`invalid_tool_call_names`
-are also used by `graph/routing.py`, and `current_turn_messages` by
-`app/agent/graph/core.py`'s `make_agent_node` (deferred import to avoid a cycle).
+- `too_many_tool_calls` — more calls in one response than MAX_TOOL_CALLS_PER_TURN (a confused
+  model fanning out into dozens of searches).
+- `invalid_tool_call` — a name that is not one of THIS domain's tools (a hallucinated or
+  malformed call, seen with Ollama's native tool-calling on small models, e.g. qwen2.5:3b). A
+  human at `human_approval` couldn't meaningfully approve a name that doesn't exist.
+- `use_skill_without_search` — `use_skill` before `skill_search` this turn. SYSTEM_PROMPT
+  requires searching first so the model uses a skill's real name; without it, the model guessed
+  a name that doesn't exist and narrated the "not found" failure into the final answer (Langfuse
+  `197ab4e1`, 2026-09-09).
+
+All three answer every pending call with a `ToolMessage` (`reject_tool_calls`) and loop back to
+`agent`. Each keeps its own counter in `app/core/metrics.py`.
 """
-from typing import cast
+from typing import Literal, cast
 
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage
 
-from app.agent.graph.messages import is_user_message
+from app.agent.graph.loop_guards import use_skill_called_without_search
+from app.agent.graph.messages import reject_tool_calls
 from app.agent.graph.state import MAX_TOOL_CALLS_PER_TURN, State
 from app.core import metrics
 
-
-def reject_tool_calls(tool_calls: list, reason: str) -> list[ToolMessage]:
-    """Every pending tool_call needs a matching ToolMessage, or the next LLM
-    call fails OpenAI's tool-response validation — shared by
-    human_approval's rejection path and too_many_tool_calls below, which
-    both need to abort a batch of tool calls without running them.
-
-    Each rejection carries the tool's `name`, like a real result does:
-    `pending_skill_required_tool` counts a required tool as dealt with only when a ToolMessage
-    NAMES it, so a call the person rejected (or any batch aborted here) used to leave the tool
-    "pending", and the agent kept being told to call what had just been declined."""
-    return [ToolMessage(content=reason, tool_call_id=tc["id"], name=tc["name"]) for tc in tool_calls]
-
-
-def current_turn_messages(messages: list) -> list:
-    """Messages in the CURRENT turn only — from the most recent message the
-    person sent (inclusive; `retry_output`'s feedback is a HumanMessage too but
-    not a turn start, see `is_user_message`) onward, never spanning into a
-    prior turn.
-    Shared by graph/routing.py's `_current_turn_tool_call_batches`
-    (pattern 34) and `skipped_required_sandbox_after_skill`, each
-    filtering it differently afterward."""
-    last_human_index = next(
-        (i for i in range(len(messages) - 1, -1, -1) if is_user_message(messages[i])),
-        None,
-    )
-    return messages[last_human_index:] if last_human_index is not None else messages
+BatchProblem = Literal["too_many_tool_calls", "invalid_tool_call", "use_skill_without_search"]
 
 
 def invalid_tool_call_names(tool_calls: list, valid_tool_names: frozenset[str]) -> list[str]:
-    """Names in this batch that aren't a registered tool at all — stricter
-    than `tool_capability`'s "outward" default (which still assumes a
-    real, just undeclared, tool). Guards against the model emitting a
-    malformed/hallucinated tool call (seen with Ollama's native
-    tool-calling on small models, e.g. qwen2.5:3b). `valid_tool_names` is the
-    calling domain's own tool set, bound by `build_graph`: there is no shared default,
-    because "a registered tool" only means something relative to one domain."""
+    """Names in this batch that aren't a registered tool at all — stricter than
+    `tool_capability`'s "outward" default (which still assumes a real, just undeclared, tool).
+    `valid_tool_names` is the calling domain's own tool set, bound by `build_graph`: there is no
+    shared default, because "a registered tool" only means something relative to one domain."""
     return [tc["name"] for tc in tool_calls if tc["name"] not in valid_tool_names]
 
-# --- Node: safety budget — abort a turn where the LLM asked for more tool
-# calls at once than MAX_TOOL_CALLS_PER_TURN allows (e.g. a confused model
-# fanning out into dozens of searches), instead of running all of them. ---
-def too_many_tool_calls(state: State) -> dict:
-    last_ai = cast(AIMessage, state["messages"][-1])
-    tool_calls = last_ai.tool_calls or []
-    metrics.agent_tool_budget_exceeded_total.inc()
-    rejections = reject_tool_calls(
-        tool_calls,
-        f"Too many tool calls requested at once (limit: {MAX_TOOL_CALLS_PER_TURN}). "
-        "Please make fewer, more targeted tool calls.",
-    )
-    return {"messages": rejections}
+
+def batch_problem(
+    tool_calls: list, messages: list, valid_tool_names: frozenset[str]
+) -> BatchProblem | None:
+    """The first problem with this batch, in the priority order above, or None."""
+    if len(tool_calls) > MAX_TOOL_CALLS_PER_TURN:
+        return "too_many_tool_calls"
+    if invalid_tool_call_names(tool_calls, valid_tool_names):
+        return "invalid_tool_call"
+    if use_skill_called_without_search(tool_calls, messages):
+        return "use_skill_without_search"
+    return None
 
 
-# --- Node: abort a batch containing a non-existent tool name, instead of
-# dispatching it or surfacing it to a human at human_approval (who couldn't
-# meaningfully approve/reject a name that doesn't exist). Same reject+retry
-# shape as too_many_tool_calls. `valid_tool_names` must be the SAME set
-# should_continue routed on (`build_graph` binds the domain's own via
-# `functools.partial`, like `check_output`'s `system_prompt`): judged against
-# Ecorp's list instead, a support domain's real `create_ticket` was named to
-# the model as a tool that doesn't exist. ---
-def invalid_tool_call(state: State, valid_tool_names: frozenset[str]) -> dict:
+def _rejection_reason(
+    problem: BatchProblem, tool_calls: list, valid_tool_names: frozenset[str]
+) -> str:
+    if problem == "too_many_tool_calls":
+        return (
+            f"Too many tool calls requested at once (limit: {MAX_TOOL_CALLS_PER_TURN}). "
+            "Please make fewer, more targeted tool calls."
+        )
+    if problem == "invalid_tool_call":
+        bad_names = sorted(set(invalid_tool_call_names(tool_calls, valid_tool_names)))
+        names_text = ", ".join(repr(n) for n in bad_names) if bad_names else "one of them"
+        return (
+            f"I tried to call a tool that doesn't exist ({names_text}). Let me try again "
+            "using only the tools actually available to me."
+        )
+    return (
+        "You called use_skill without calling skill_search first this turn. "
+        "Call skill_search now to find the exact name of a matching skill — "
+        "if nothing matches well, don't guess a name; just answer directly "
+        "using what you already have."
+    )
+
+
+_COUNTERS = {
+    "too_many_tool_calls": metrics.agent_tool_budget_exceeded_total,
+    "invalid_tool_call": metrics.agent_invalid_tool_call_total,
+    "use_skill_without_search": metrics.agent_use_skill_without_search_total,
+}
+
+
+def tool_batch_guard(state: State, valid_tool_names: frozenset[str]) -> dict:
+    """Reject the pending batch without running it. `valid_tool_names` is bound per domain by
+    `build_graph` (`functools.partial`), the same set `should_continue` routed with."""
     last_ai = cast(AIMessage, state["messages"][-1])
     tool_calls = last_ai.tool_calls or []
-    metrics.agent_invalid_tool_call_total.inc()
-    bad_names = sorted(set(invalid_tool_call_names(tool_calls, valid_tool_names)))
-    names_text = ", ".join(repr(n) for n in bad_names) if bad_names else "one of them"
-    rejections = reject_tool_calls(
-        tool_calls,
-        f"I tried to call a tool that doesn't exist ({names_text}). Let me try again "
-        "using only the tools actually available to me.",
-    )
-    return {"messages": rejections}
+    problem = batch_problem(tool_calls, state["messages"], valid_tool_names)
+    if problem is None:  # should_continue only routes here for a real problem
+        return {}
+    _COUNTERS[problem].inc()
+    return {"messages": reject_tool_calls(tool_calls, _rejection_reason(problem, tool_calls, valid_tool_names))}

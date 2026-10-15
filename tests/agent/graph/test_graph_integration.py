@@ -28,8 +28,9 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command
 
+from app.agent.graph.build import GraphDeps
 from app.agent.graph.compaction import _estimate_tokens
-from app.agent.graph.core import AGENT_RETRY_POLICY, GraphDeps
+from app.agent.graph.core import AGENT_RETRY_POLICY
 from app.agent.graph.state import (
     MAX_HISTORY_SUMMARY_CHARS,
     MAX_ITERATIONS,
@@ -843,7 +844,7 @@ class TestReliabilityPolicy:
         for name in (
             "retrieve_context",
             "check_output",
-            "too_many_tool_calls",
+            "tool_batch_guard",
             "check_semantic_cache",
             "write_semantic_cache",
             "moderate_input",
