@@ -28,28 +28,21 @@ built — because a subagent's declared `tools:` only make sense against ONE
 specific tool universe, and an untagged subagent exposed to every domain
 would mostly resolve to nothing useful there.
 """
-import logging
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-
+from app.agent.tools import frontmatter as fm
 from app.core.config import SUBAGENTS_DIR
-
-logger = logging.getLogger(__name__)
-
-_FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?\n)---\s*\n?", re.DOTALL)
 
 
 class SubagentLoadError(ValueError):
     """An AGENT.md file doesn't match the required shape (frontmatter with
     non-empty `name`/`description`, an optional `tools` list of strings, an
     optional `model` string, an optional `domains` list of strings, plus a
-    non-empty body). Raised by `_parse_subagent_file`; `load_subagents`
-    catches this per-file and skips the offending file rather than letting
-    one bad subagent take down the whole catalog (GRAPH_PATTERNS.md pattern
-    10's degrade-gracefully posture, same as `app/agent/tools/skill_catalog.py::SkillLoadError`)."""
+    non-empty body). Raised by `_parse_subagent_file`; `load_subagents` skips
+    the offending file rather than letting one bad subagent take down the whole
+    catalog (GRAPH_PATTERNS.md pattern 10's degrade-gracefully posture, same as
+    `app/agent/tools/skill_catalog.py::SkillLoadError`)."""
 
 
 @dataclass(frozen=True)
@@ -58,99 +51,32 @@ class SubagentRecord:
     description: str
     system_prompt: str
     tools: tuple[str, ...] | None  # None = "inherit the domain's read_only
-    # tools" (resolved by app/agent/tools/builtin.py, not here — see module docstring).
+    # tools" (resolved by app/agent/tools/run_subagent.py, not here — see module docstring).
     model: str | None  # None = use the parent's own CHAT_MODEL alias.
     domains: tuple[str, ...] | None  # None = defaults applied by
-    # app/agent/tools/builtin.py, not here — see module docstring.
+    # app/agent/tools/run_subagent.py, not here — see module docstring.
     path: Path
 
 
 def _parse_subagent_file(path: Path) -> SubagentRecord:
-    text = path.read_text(encoding="utf-8")
-    match = _FRONTMATTER_RE.match(text)
-    if not match:
-        raise SubagentLoadError(
-            f"{path}: missing YAML frontmatter (expected a leading '---' block)."
-        )
-    try:
-        frontmatter = yaml.safe_load(match.group(1)) or {}
-    except yaml.YAMLError as exc:
-        raise SubagentLoadError(f"{path}: invalid YAML frontmatter: {exc}") from exc
-    if not isinstance(frontmatter, dict):
-        raise SubagentLoadError(f"{path}: frontmatter must be a YAML mapping.")
-
-    name = frontmatter.get("name")
-    description = frontmatter.get("description")
-    if not isinstance(name, str) or not name.strip():
-        raise SubagentLoadError(f"{path}: frontmatter must set a non-empty 'name'.")
-    if not isinstance(description, str) or not description.strip():
-        raise SubagentLoadError(f"{path}: frontmatter must set a non-empty 'description'.")
-
-    raw_tools = frontmatter.get("tools")
-    tools: tuple[str, ...] | None
-    if raw_tools is None:
-        tools = None
-    elif isinstance(raw_tools, list) and all(isinstance(t, str) and t.strip() for t in raw_tools):
-        tools = tuple(raw_tools)
-    else:
-        raise SubagentLoadError(f"{path}: 'tools', if set, must be a list of non-empty strings.")
-
-    model = frontmatter.get("model")
-    if model is not None and (not isinstance(model, str) or not model.strip()):
-        raise SubagentLoadError(f"{path}: 'model', if set, must be a non-empty string.")
-
-    raw_domains = frontmatter.get("domains")
-    domains: tuple[str, ...] | None
-    if raw_domains is None:
-        domains = None
-    elif isinstance(raw_domains, list) and all(
-        isinstance(d, str) and d.strip() for d in raw_domains
-    ):
-        domains = tuple(raw_domains)
-    else:
-        raise SubagentLoadError(f"{path}: 'domains', if set, must be a list of non-empty strings.")
-
-    body = text[match.end() :].strip()
-    if not body:
-        raise SubagentLoadError(f"{path}: subagent body (markdown after frontmatter) must not be empty.")
-
+    frontmatter, body = fm.split_file(path, SubagentLoadError)
     return SubagentRecord(
-        name=name.strip(),
-        description=description.strip(),
-        system_prompt=body,
-        tools=tools,
-        model=model.strip() if model else None,
-        domains=domains,
+        name=fm.required_text(frontmatter, "name", path, SubagentLoadError),
+        description=fm.required_text(frontmatter, "description", path, SubagentLoadError),
+        system_prompt=fm.required_body(body, path, "subagent", SubagentLoadError),
+        tools=fm.optional_string_list(frontmatter, "tools", path, SubagentLoadError),
+        model=fm.optional_text(frontmatter, "model", path, SubagentLoadError),
+        domains=fm.optional_string_list(frontmatter, "domains", path, SubagentLoadError),
         path=path,
     )
 
 
 def load_subagents(subagents_dir: str | Path | None = None) -> dict[str, SubagentRecord]:
     """Scans `subagents_dir/*/AGENT.md` (default `SUBAGENTS_DIR`) and returns
-    `{name: SubagentRecord}`. A malformed file is logged and skipped — never
-    raised past this function — so one bad subagent can't take the whole
-    catalog down. A duplicate `name` across two directories keeps whichever
-    was parsed first (directory order) and logs a warning, same posture as
-    `app/agent/tools/skill_catalog.py::load_skills`."""
+    `{name: SubagentRecord}`; see `frontmatter.load_catalog` for how a malformed file
+    or a duplicate name is handled (same posture as `skill_catalog.load_skills`)."""
     root = Path(subagents_dir) if subagents_dir is not None else Path(SUBAGENTS_DIR)
-    if not root.is_dir():
-        return {}
-
-    subagents: dict[str, SubagentRecord] = {}
-    for agent_md in sorted(root.glob("*/AGENT.md")):
-        try:
-            record = _parse_subagent_file(agent_md)
-        except SubagentLoadError as exc:
-            logger.warning("skipping invalid subagent file", extra={"error": str(exc)})
-            continue
-        if record.name in subagents:
-            logger.warning(
-                "duplicate subagent name; keeping the first one found",
-                extra={"subagent_name": record.name, "path": str(agent_md)},
-            )
-            continue
-        subagents[record.name] = record
-    return subagents
+    return fm.load_catalog(root, "AGENT.md", _parse_subagent_file, SubagentLoadError, "subagent")
 
 
 _subagents_cache: dict[str, SubagentRecord] | None = None
