@@ -256,6 +256,48 @@ class TestAStreamClosedBeforeItsTerminalEventStillFinishesTheTrace:
         assert metric_value(metrics.agent_requests_total, outcome="abandoned") == abandoned
 
 
+class TestClosingTheStreamStopsTheGraphRun:
+    """`astream_events` runs the graph in a task of its own, and that task stops only when the
+    generator is closed. `_run_graph_stream` does not close the LangGraph iterator itself: it is
+    finalised by the event loop's hook a loop turn after the stream is closed (measured: about a
+    millisecond, with no further model output in between). That is accepted, and this pins what
+    matters about it: a consumer that leaves must not leave the run behind it, still calling the
+    model and its tools, until it finishes on its own."""
+
+    async def test_the_model_stops_shortly_after_the_stream_is_closed(self, monkeypatch):
+        chunks = []
+        stopped = asyncio.Event()
+
+        class _SlowModel(GenericFakeChatModel):
+            async def _astream(self, *args, **kwargs):
+                try:
+                    async for chunk in super()._astream(*args, **kwargs):
+                        chunks.append(chunk)
+                        yield chunk
+                        await asyncio.sleep(0.05)
+                finally:
+                    stopped.set()
+
+        words = " ".join(f"w{i}" for i in range(80))  # about four seconds if nothing stops it
+        graph_obj = build_graph(GraphDeps(llm=_SlowModel(messages=iter([AIMessage(content=words)]))))
+
+        async def fake_init_graph_async():
+            return graph_obj
+
+        monkeypatch.setattr(agent_module, "init_graph_async", fake_init_graph_async)
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (None, []))
+
+        stream = stream_module.astream_events_turn("what is a checkpointer?", str(uuid.uuid4()), TEST_CTX)
+        async for event in stream:
+            if event["type"] == "token":
+                break
+        chunks_at_close = len(chunks)
+        await stream.aclose()
+
+        await asyncio.wait_for(stopped.wait(), timeout=2)
+        assert len(chunks) <= chunks_at_close + 1, "the model kept producing output after the consumer left"
+
+
 class TestTheTurnTraceIsNeverLeftWithoutAnOutput:
     """`_turn_trace` is the net under `_run_graph_stream`: a failure between opening the trace and
     starting the stream, or any exit the stream did not handle, used to leave a trace with an input

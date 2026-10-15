@@ -48,6 +48,19 @@ def test_a_worker_pool_that_answers_nothing_has_an_alert():
     assert rules["WorkerUnreachable"]["labels"]["severity"] in {"warning", "critical"}
 
 
+def test_a_turn_whose_consumer_vanished_has_an_alert():
+    """An abandoned turn is acked and not retried (process_request always acks), so the person gets
+    a generic error at best and nothing at worst while any write the turn made stays committed. The
+    outcome is recorded by `_run_graph_stream`'s GeneratorExit branch; without a rule it is a series
+    on a dashboard nobody is watching."""
+    rules = {rule["alert"]: rule for rule in _rules()}
+
+    assert "TurnsAbandoned" in rules, "turns that die with their consumer page nobody"
+    assert 'outcome="abandoned"' in rules["TurnsAbandoned"]["expr"]
+    assert "agent_requests_total" in rules["TurnsAbandoned"]["expr"]
+    assert rules["TurnsAbandoned"]["labels"]["severity"] in {"warning", "critical"}
+
+
 def test_every_degrade_path_that_hides_committed_money_has_an_alert():
     """A metric nobody alerts on is still silent. These are the credit paths where money is committed or
     unverified and no human would otherwise know (constitution V): an event kept whose charge failed, a gate

@@ -22,6 +22,25 @@ groups:
             {{ $value | humanizePercentage }} of agent turns ended in
             outcome="error" over the last 5m (agent_requests_total).
 
+      - alert: TurnsAbandoned
+        expr: increase(agent_requests_total{outcome="abandoned"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent turns are being abandoned mid-run"
+          description: >-
+            agent_requests_total{outcome="abandoned"} increased — a turn's event
+            stream was closed before it reached a terminal event, i.e. the worker
+            stopped consuming it (publishing to the results stream failed, usually
+            Redis, or its task was cancelled while publishing). The job is acked and
+            is NOT retried: the person gets a generic error if the results stream
+            still answers and nothing if it does not, and any write the turn had
+            already made stays committed. One is enough on purpose: a graceful
+            worker shutdown awaits its in-flight turns, so a deploy does not
+            produce these. Check Redis, then the worker logs for
+            agent_worker_turn_failed.
+
       - alert: HighTurnLatencyP95
         expr: |
           histogram_quantile(0.95, sum(rate(agent_latency_seconds_bucket[5m])) by (le)) > 30
