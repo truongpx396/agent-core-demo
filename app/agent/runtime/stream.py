@@ -281,6 +281,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
     used_citations: list[dict] = []
     ungrounded_claims_count = 0
     followups: list[str] = []
+    synthetic_token = ""
     try:
         async for event in _iterate_with_timeout(
             graph.astream_events(graph_input, config=cfg, version="v2"),
@@ -428,15 +429,18 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
         # whichever `yield` the generator is suspended on. That is what a cancelled or failed
         # consumer leaves behind (the worker's `publish_result` raising mid-loop, a task
         # cancelled while it is awaiting the publish): the cancellation lands in the CONSUMER's
-        # frame, not here, so the branch above never sees it and the trace would keep its input
-        # and nothing else. Only the trace is finished here, by a plain non-blocking update. No
-        # terminal event is possible (a generator being closed must not yield), and the turn's
-        # metrics are not recorded for an abandoned stream (disclosed in pattern 36).
+        # frame, not here, so the branch above never sees it. The trace is finished with what
+        # had streamed, and the turn is counted under its own outcome, "abandoned", not
+        # "cancelled": nobody asked for a stop (`agent_streaming_cancellation_total` is the
+        # POST /chat/cancel counter and stays out of it). No terminal event is possible, since a
+        # generator being closed must not yield; awaiting is allowed, and
+        # `_record_unfinished_turn` is bounded by its own timeout and never raises.
         if trace:
             trace.update(
                 output="".join(final_answer) + " [abandoned: stream closed before the turn finished]",
                 level="WARNING",
             )
+        await _record_unfinished_turn(graph, cfg, start, "abandoned")
         raise
     except Exception as exc:  # noqa: BLE001
         if trace:
@@ -510,10 +514,16 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                     # Langfuse trace blank despite the client getting the
                     # real text (a second real bug).
                     final_answer.append(skipped_text)
-                    yield {"type": "token", "content": skipped_text}
+                    synthetic_token = skipped_text
             if trace:
                 trace.update(output="".join(final_answer))
             await _record_turn_metrics(time.monotonic() - start, _turn_outcome(state.values), state.values)
+            # Yielded only now, after the turn is recorded: this clause is not covered by the
+            # `except` branches above, so a consumer that closed the stream at this yield used
+            # to leave a finished turn with a blank trace and no metrics. The client still gets
+            # the same events in the same order.
+            if synthetic_token:
+                yield {"type": "token", "content": synthetic_token}
             terminal_event = {"type": "done"}
     # No per-turn flush: the shared client's own background consumer sends
     # events as they arrive and app/core/tracing.py flushes it at process exit.

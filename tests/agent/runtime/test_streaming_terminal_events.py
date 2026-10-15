@@ -30,8 +30,8 @@ from app.agent.graph.build import GraphDeps
 from app.agent.graph.compaction import _estimate_tokens
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
-from app.core import moderation
-from tests.conftest import TEST_CTX
+from app.core import metrics, moderation
+from tests.conftest import TEST_CTX, metric_value
 from tests.ecorp import build_graph
 
 
@@ -192,6 +192,66 @@ class TestAStreamClosedBeforeItsTerminalEventStillFinishesTheTrace:
         assert update["level"] == "WARNING"
         assert update["output"].startswith(first_token)
         assert "[abandoned: stream closed before the turn finished]" in update["output"]
+
+    async def test_closing_the_stream_early_counts_the_turn_as_abandoned_not_cancelled(self, monkeypatch):
+        """The turn's outcome used to be recorded on every exit but this one, so a run
+        whose consumer vanished left no trace in `agent_requests_total` at all. It is counted under
+        its own outcome: nobody asked for a stop, so it is not "cancelled", and the POST /chat/cancel
+        counter stays where it was."""
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (_FakeTrace(), []))
+        llm = GenericFakeChatModel(
+            messages=iter([AIMessage(content="A normal answer that streams in several tokens.")])
+        )
+        graph_obj = build_graph(GraphDeps(llm=llm))
+
+        async def fake_init_graph_async():
+            return graph_obj
+
+        monkeypatch.setattr(agent_module, "init_graph_async", fake_init_graph_async)
+        abandoned = metric_value(metrics.agent_requests_total, outcome="abandoned")
+        cancelled = metric_value(metrics.agent_requests_total, outcome="cancelled")
+        streaming_cancellations = metric_value(metrics.agent_streaming_cancellation_total)
+
+        stream = stream_module.astream_events_turn("what is a checkpointer?", str(uuid.uuid4()), TEST_CTX)
+        async for event in stream:
+            if event["type"] == "token":
+                break
+        await stream.aclose()
+
+        assert metric_value(metrics.agent_requests_total, outcome="abandoned") == abandoned + 1
+        assert metric_value(metrics.agent_requests_total, outcome="cancelled") == cancelled
+        assert metric_value(metrics.agent_streaming_cancellation_total) == streaming_cancellations
+
+    async def test_closing_the_stream_at_a_synthetic_answer_still_records_the_finished_turn(self, monkeypatch):
+        """A turn that never called the model (here a semantic-cache hit) streams its answer as ONE
+        synthetic token. That token used to be yielded BEFORE the trace output and the turn's
+        metrics were written, and that part of the generator is covered by no `except` branch, so
+        a consumer that closed the stream at it left a finished turn with a blank trace and no
+        outcome. The turn is recorded first now; the client still gets the same events."""
+        fake_trace = _FakeTrace()
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (fake_trace, []))
+
+        async def fake_cache_get(ctx, query):
+            return "A cached answer, not freshly generated.", [{"marker": "[1]", "text": "..."}]
+
+        graph_obj = build_graph(GraphDeps(llm=GenericFakeChatModel(messages=iter([])), cache_get=fake_cache_get))
+
+        async def fake_init_graph_async():
+            return graph_obj
+
+        monkeypatch.setattr(agent_module, "init_graph_async", fake_init_graph_async)
+        success = metric_value(metrics.agent_requests_total, outcome="success")
+        abandoned = metric_value(metrics.agent_requests_total, outcome="abandoned")
+
+        stream = stream_module.astream_events_turn("what is a checkpointer?", str(uuid.uuid4()), TEST_CTX)
+        async for event in stream:
+            if event["type"] == "token":
+                break
+        await stream.aclose()
+
+        assert fake_trace.updates == [{"output": "A cached answer, not freshly generated."}]
+        assert metric_value(metrics.agent_requests_total, outcome="success") == success + 1
+        assert metric_value(metrics.agent_requests_total, outcome="abandoned") == abandoned
 
 
 class TestFollowupsEventIsSurfaced:
