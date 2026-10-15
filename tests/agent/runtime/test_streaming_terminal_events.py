@@ -19,10 +19,12 @@ a monkeypatched `init_graph_async` (bypassing the real durable
 checkpointer — already covered separately by tests/agent/runtime/test_durable_checkpoint.py)
 since only the EVENT SHAPE is under test here.
 """
+import asyncio
 import json
 import uuid
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
@@ -252,6 +254,76 @@ class TestAStreamClosedBeforeItsTerminalEventStillFinishesTheTrace:
         assert fake_trace.updates == [{"output": "A cached answer, not freshly generated."}]
         assert metric_value(metrics.agent_requests_total, outcome="success") == success + 1
         assert metric_value(metrics.agent_requests_total, outcome="abandoned") == abandoned
+
+
+class TestTheTurnTraceIsNeverLeftWithoutAnOutput:
+    """`_turn_trace` is the net under `_run_graph_stream`: a failure between opening the trace and
+    starting the stream, or any exit the stream did not handle, used to leave a trace with an input
+    and nothing else, which looks in Langfuse like a turn still running."""
+
+    async def test_a_failure_before_the_stream_starts_finishes_the_trace_as_an_error(self, monkeypatch):
+        fake_trace = _FakeTrace()
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (fake_trace, []))
+
+        def broken_input(text, images):
+            raise RuntimeError("could not decode the attached image")
+
+        monkeypatch.setattr(stream_module, "_build_human_content", broken_input)
+        graph_obj = build_graph(GraphDeps(llm=GenericFakeChatModel(messages=iter([]))))
+
+        async def fake_init_graph_async():
+            return graph_obj
+
+        monkeypatch.setattr(agent_module, "init_graph_async", fake_init_graph_async)
+
+        with pytest.raises(RuntimeError, match="could not decode"):
+            async for _ in stream_module.astream_events_turn("hi", str(uuid.uuid4()), TEST_CTX):
+                pass
+
+        assert fake_trace.updates == [{"output": "error: could not decode the attached image", "level": "ERROR"}]
+
+    def test_each_kind_of_exit_gets_its_own_output_and_level(self, monkeypatch):
+        cases = [
+            (ValueError("boom"), "error: boom", "ERROR"),
+            (GeneratorExit(), "[abandoned: stream closed before the turn finished]", "WARNING"),
+            (asyncio.CancelledError(), "[cancelled: task cancelled]", "WARNING"),
+        ]
+        for exc, output, level in cases:
+            fake_trace = _FakeTrace()
+            monkeypatch.setattr(stream_module, "_open_trace", lambda *a, _t=fake_trace, **k: (_t, []))
+            with pytest.raises(type(exc)):
+                with stream_module._turn_trace("n", "s", "in"):
+                    raise exc
+            assert fake_trace.updates == [{"output": output, "level": level}], type(exc).__name__
+
+    def test_a_trace_the_stream_already_finished_is_not_overwritten(self, monkeypatch):
+        fake_trace = _FakeTrace()
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (fake_trace, []))
+
+        with pytest.raises(GeneratorExit):
+            with stream_module._turn_trace("n", "s", "in") as (trace, _callbacks):
+                trace.update(output="partial answer [abandoned: stream closed before the turn finished]", level="WARNING")
+                raise GeneratorExit
+
+        assert len(fake_trace.updates) == 1
+
+    def test_a_clean_exit_adds_nothing(self, monkeypatch):
+        fake_trace = _FakeTrace()
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (fake_trace, []))
+
+        with stream_module._turn_trace("n", "s", "in"):
+            pass
+
+        assert fake_trace.updates == []
+
+    def test_without_langfuse_updates_are_a_no_op_not_an_error(self, monkeypatch):
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (None, ["metrics-callback"]))
+
+        with pytest.raises(ValueError):
+            with stream_module._turn_trace("n", "s", "in") as (trace, callbacks):
+                assert callbacks == ["metrics-callback"]
+                trace.update(output="anything", level="WARNING")
+                raise ValueError("boom")
 
 
 class TestFollowupsEventIsSurfaced:
