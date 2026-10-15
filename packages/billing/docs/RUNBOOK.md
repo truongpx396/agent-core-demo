@@ -125,6 +125,14 @@ psql -U langfuse -d appdata -c "INSERT INTO billing_customers (tenant, provider,
 7. **Prove the wiring** with `make test-provider-sandbox` (see Stripe, step 6, for the listener caveat). The checkout half runs against the real API; the delivery half needs the `polar` CLI logged in to the same organization.
 
 
+## Upgrading from the app's own billing (spec 013)
+
+Spec 013 moved the billing half of the meter out of the agent app and into this package. For a database that ran the app's own billing, the order is: `make billing-migrate` first, then deploy.
+
+- The agent's old `usage_events.credits*` columns and its `usage_export_outbox` table stay in an existing database, unused; a fresh volume no longer creates them (`21-` and `23-` are gone). Usage before the cutover is not copied into the package's record.
+- **If a usage-billing provider was ever enabled**, drain the old outbox BEFORE deploying (with the old version's `make billing-export-worker ARGS=--once`, until `SELECT status, count(*) FROM usage_export_outbox GROUP BY 1` shows nothing `pending`), because `credit-billing-export-worker` reads `billing_export_outbox` only and the new version no longer contains the old worker.
+- `make usage-reconcile` replaces the gateway half of what `make credit-reconcile` used to do (`CREDIT_RECONCILE_*` is still accepted for it as `USAGE_RECONCILE_*`); `make credit-reconcile` is now the wallet check alone.
+
 ## Dashboard and alerts
 
 "Credit Billing" in Grafana (`observability/grafana/dashboards/credit-billing.json` in the app, `observability/credit-billing-core.json` in the package): credits outstanding and owed, grant and debit rates, export
