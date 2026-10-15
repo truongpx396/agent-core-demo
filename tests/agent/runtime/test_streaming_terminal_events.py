@@ -157,6 +157,43 @@ class TestTraceOutputMatchesWhatTheClientActuallySaw:
         assert fake_trace.updates == [{"output": "A normal, freshly generated answer."}]
 
 
+class TestAStreamClosedBeforeItsTerminalEventStillFinishesTheTrace:
+    """The consumer can stop iterating before the turn ends: the queue worker's `publish_result`
+    raises mid-loop, or its task is cancelled while it awaits the publish. Either way the
+    cancellation lands in the CONSUMER's frame, so the stream's own `CancelledError` branch never
+    runs; the generator is later closed with `GeneratorExit` at the `yield` it was suspended on.
+    That used to match no `except` clause, so the trace kept its input and never got an output or
+    a level, indistinguishable in Langfuse from a turn still in flight."""
+
+    async def test_closing_the_stream_early_records_what_streamed_and_a_warning(self, monkeypatch):
+        fake_trace = _FakeTrace()
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (fake_trace, []))
+        llm = GenericFakeChatModel(
+            messages=iter([AIMessage(content="A normal answer that streams in several tokens.")])
+        )
+        graph_obj = build_graph(GraphDeps(llm=llm))
+
+        async def fake_init_graph_async():
+            return graph_obj
+
+        monkeypatch.setattr(agent_module, "init_graph_async", fake_init_graph_async)
+
+        stream = stream_module.astream_events_turn("what is a checkpointer?", str(uuid.uuid4()), TEST_CTX)
+        first_token = None
+        async for event in stream:
+            if event["type"] == "token":
+                first_token = event["content"]
+                break
+        await stream.aclose()
+
+        assert first_token
+        assert len(fake_trace.updates) == 1
+        update = fake_trace.updates[0]
+        assert update["level"] == "WARNING"
+        assert update["output"].startswith(first_token)
+        assert "[abandoned: stream closed before the turn finished]" in update["output"]
+
+
 class TestFollowupsEventIsSurfaced:
     """suggest_followups (pattern 27) computes real follow-up questions
     into state["followups"], but this streaming path never sent them to

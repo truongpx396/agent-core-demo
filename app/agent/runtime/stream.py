@@ -24,6 +24,7 @@ own globals. Tests patch `app.agent.runtime.stream._open_trace` directly.
 import asyncio
 import logging
 import time
+from contextlib import aclosing
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
@@ -422,6 +423,21 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
         await _record_unfinished_turn(graph, cfg, start, "cancelled")
         metrics.agent_streaming_cancellation_total.inc()
         raise
+    except GeneratorExit:
+        # The consumer stopped iterating before a terminal event: `aclose()` throws this at
+        # whichever `yield` the generator is suspended on. That is what a cancelled or failed
+        # consumer leaves behind (the worker's `publish_result` raising mid-loop, a task
+        # cancelled while it is awaiting the publish): the cancellation lands in the CONSUMER's
+        # frame, not here, so the branch above never sees it and the trace would keep its input
+        # and nothing else. Only the trace is finished here, by a plain non-blocking update. No
+        # terminal event is possible (a generator being closed must not yield), and the turn's
+        # metrics are not recorded for an abandoned stream (disclosed in pattern 36).
+        if trace:
+            trace.update(
+                output="".join(final_answer) + " [abandoned: stream closed before the turn finished]",
+                level="WARNING",
+            )
+        raise
     except Exception as exc:  # noqa: BLE001
         if trace:
             trace.update(output=f"error: {exc}", level="ERROR")
@@ -613,8 +629,15 @@ async def astream_events_turn(
             "messages": [HumanMessage(content=_build_human_content(text, images))],
             "require_approval": require_approval,
         }
-        async for event in _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=cancel_check):
-            yield event
+        # `aclosing`, here and at the two other call sites: a bare `async for` over a generator does
+        # not close it when the OUTER generator is closed, so the inner one would be finalised
+        # later, by the event loop's own hook (or never, at loop teardown), and its `GeneratorExit`
+        # handling (the trace) would run late. This closes it in the same `aclose()`.
+        async with aclosing(
+            _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=cancel_check)
+        ) as events:
+            async for event in events:
+                yield event
     finally:
         _release_turn_budget_in_background(ctx, budget_hold)
 
@@ -794,10 +817,11 @@ async def astream_events_resume(
             "callbacks": callbacks,
             "recursion_limit": runtime_module.RECURSION_LIMIT,
         }
-        async for event in _run_graph_stream(
-            graph, Command(resume=approved), cfg, trace, cancel_check=cancel_check
-        ):
-            yield event
+        async with aclosing(
+            _run_graph_stream(graph, Command(resume=approved), cfg, trace, cancel_check=cancel_check)
+        ) as events:
+            async for event in events:
+                yield event
     finally:
         _release_turn_budget_in_background(ctx, budget_hold)
 
@@ -886,8 +910,9 @@ async def _continue_turn_events(thread_id: str, ctx: SecurityCtx, cancel_check):
         "callbacks": callbacks,
         "recursion_limit": runtime_module.RECURSION_LIMIT,
     }
-    async for event in _run_graph_stream(graph, None, cfg, trace, cancel_check=cancel_check):
-        yield event
+    async with aclosing(_run_graph_stream(graph, None, cfg, trace, cancel_check=cancel_check)) as events:
+        async for event in events:
+            yield event
 
 
 async def cancel_run(thread_id: str, ctx: SecurityCtx) -> bool:
