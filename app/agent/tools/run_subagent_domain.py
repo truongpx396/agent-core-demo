@@ -1,10 +1,7 @@
-"""`make_domain_subagent_tool` — builds a per-domain `run_subagent` tool
-(the domain equivalent of `app/agent/tools/run_subagent.py`'s own Ecorp-level
-construction). Split out of `tools/run_subagent.py` purely for file size — see
-that module's own docstring for the rest of the `run_subagent` machinery
-(`run_subagent_impl`, `build_subagent_registry`, the compiled-graph
-cache) this function calls into. No behavior change from the pre-split
-single-file version.
+"""`make_domain_subagent_tool`: builds a domain's `run_subagent` tool. Every domain, Ecorp
+included, calls it once at import. The menu, the read-only tool resolution and the nested run itself
+(`build_subagent_registry`, `run_subagent_impl`, the compiled-graph cache) are in
+`app/agent/tools/run_subagent.py`.
 """
 from collections.abc import Mapping
 from enum import Enum
@@ -98,8 +95,7 @@ def make_domain_subagent_tool(
         # imported name — tests/agent/tools/test_tools.py does
         # monkeypatch.setattr(subagent_tools, "run_subagent_impl", ...), and
         # a bare name would bind to the original function permanently at
-        # import time, silently defeating the monkeypatch (same fix as
-        # graph/hitl.py's `graph_module.interrupt`).
+        # import time, silently defeating the monkeypatch.
         result = await subagent_tools_module.run_subagent_impl(
             subagent_name.value,
             task,

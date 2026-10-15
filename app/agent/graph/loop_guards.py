@@ -1,15 +1,10 @@
-"""`should_continue`'s private helper cluster: tool-call fingerprinting
-and per-turn repeat/loop detection (`_tool_call_fingerprint`,
-`_current_turn_tool_call_batches`, `consecutive_repeat_count`), the
-mandatory human-approval capability gate (`tool_capability`,
-`mandatory_gate_reason`), and the use_skill-without-search guardrail
-(`use_skill_called_without_search`). Split out of `graph/routing.py` for
-file size (see sibling splits `graph/citations.py`/
-`graph/output_guardrails.py`, the two private helper clusters behind
-`check_output`); no behavior change.
+"""`should_continue`'s helpers: tool-call fingerprinting and per-turn repeat/loop detection
+(`_tool_call_fingerprint`, `_current_turn_tool_call_batches`, `consecutive_repeat_count`), the
+mandatory human-approval capability gate (`tool_capability`, `mandatory_gate_reason`), and the
+use_skill-without-search check (`use_skill_called_without_search`, which `graph/tool_guards.py`
+folds into `batch_problem`).
 
-These are also directly unit-tested by `tests/agent/graph/test_routing.py`,
-imported from here now rather than from `graph_routing`.
+Directly unit-tested by `tests/agent/graph/test_routing.py`.
 """
 import json
 from collections.abc import Mapping

@@ -33,8 +33,11 @@ session; `GRAPH_PATTERNS.md` has the full story under the pattern number given.
 - `validate_input` resets `iterations`/`total_tokens` every turn but NOT on a HITL resume.
 - A breaking `State` / topology change bumps `STATE_SCHEMA_VERSION`; a differing build SHA alone
   is not a break (`resumability_error_async`, pattern 16).
-- `build_graph` and `build_subagent_graph` share `assemble_shared_graph_parts`. A new node must
-  be considered for both; the subagent graph deliberately omits cache/follow-up/compaction nodes.
+- `build_graph` is the one builder; `build_subagent_graph` is it with `SUBAGENT_PROFILE`, which
+  deliberately omits the cache/follow-up/compaction nodes. A new node is registered in `build_graph`;
+  decide which `GraphProfile` flags it belongs behind. Nothing a node imports may import `graph/build.py`.
+- A new output check is one `OutputCheck` entry in `graph/output_checks.py` (its position is its priority),
+  not a `State` flag.
 - Every graph caller is async. `AsyncPostgresSaver`'s lock is bound to the loop that opened it:
   open it through `init_graph_async` on the calling loop. `MemorySaver` is for tests/subagents.
 - Don't reorder the bound tool list: `skill_search`/`use_skill` sit first on purpose (pattern 50).

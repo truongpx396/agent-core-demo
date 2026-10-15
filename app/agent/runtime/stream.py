@@ -13,8 +13,7 @@ Reads `init_graph_async`/`ensure_seeded_async`/`upsert_session`/
 `monkeypatch.setattr` these onto the live `app.agent.runtime.core` module
 object, and a bare imported name would bind to the original function at
 this module's own import time, permanently — the monkeypatch would
-silently never take effect (same fix as `graph/agent_node.py`'s
-`graph_module.CHAT_MODEL`). Applied uniformly even to names nothing
+silently never take effect. Applied uniformly even to names nothing
 patches today, so it doesn't need a per-name judgment call later.
 
 `_open_trace` stays a bare reference here: unlike the names above, both it

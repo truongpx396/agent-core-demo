@@ -1,7 +1,5 @@
-"""`make_suggest_followups_node` — suggests 2-3 follow-up questions from a
-grounded final answer (GRAPH_PATTERNS.md pattern 27). Split out of
-`app/agent/graph/core.py` purely for file size — see that module's own
-docstring. No behavior change from the pre-split single-file version.
+"""`make_suggest_followups_node` — suggests 2-3 follow-up questions from a grounded final answer
+(GRAPH_PATTERNS.md pattern 27).
 """
 import logging
 

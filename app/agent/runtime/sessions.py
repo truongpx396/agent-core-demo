@@ -48,7 +48,7 @@ async def upsert_session(
     ctx: SecurityCtx | None, thread_id: str, title: str | None = None, domain: str = "ecorp"
 ) -> None:
     """Best-effort write-through at the start of every turn
-    (`app/agent/runtime/core.py::astream_events_turn`, right after seeding) — NOT gated
+    (`app/agent/runtime/stream.py::astream_events_turn`, right after seeding) — NOT gated
     on the turn completing, unlike the turn metrics, so a
     rejected/moderated/short-circuited turn still shows up in the session
     list.

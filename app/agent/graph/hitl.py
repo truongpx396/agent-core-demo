@@ -19,10 +19,7 @@ from app.core import metrics
 
 def _resumability_error_from_state(state) -> str | None:
     """The actual check, factored out of graph/config-fetching so
-    `resumability_error_async` stays a thin `aget_state` wrapper. (A sync
-    counterpart was removed alongside its only caller, `scripts/hitl_demo.py`
-    — see app/agent/runtime/core.py's module docstring.) See `resumability_error_async`
-    for the two failure modes this distinguishes.
+    `resumability_error_async` stays a thin `aget_state` wrapper. See `resumability_error_async` for the two failure modes this distinguishes.
 
     `state.next` ALONE does not mean "paused" — verified against a real
     race: it's truthy for any checkpoint written mid-run, not just one
@@ -64,10 +61,7 @@ async def resumability_error_async(graph, config: dict) -> str | None:
 
     ASYNC ONLY — the only caller, `astream_events_resume`, runs directly on
     the checkpointer's own event loop, where only `graph.aget_state` (not
-    the sync accessor) is safe to call. A sync counterpart existed for
-    `scripts/hitl_demo.py`'s plain invoke-driven loop and was removed with
-    that script.
-
+    the sync accessor) is safe to call. 
     Two failure modes (mirroring the intel-agent names in GRAPH_PATTERNS.md):
 
     - **checkpoint_lost** — no paused run for this thread (`state.next` is

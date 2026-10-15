@@ -7,7 +7,7 @@ any MCP server reachable over stdio.
 ## Capability enforcement for tools this app didn't author (AR-004b)
 
 Every tool declares a capability (`read_only`/`mutating`/`outward` —
-`app/agent/tools/builtin.py::TOOL_CAPABILITIES`) that `should_continue` uses to
+`app/agent/tools/builtin.py::SHARED_TOOL_CAPABILITIES`) that `should_continue` uses to
 gate human approval. A remote MCP tool's self-reported `ToolAnnotations`
 (`readOnlyHint`, etc.) are HINTS per the MCP spec, not verified
 guarantees — a malicious or unmaintained server could claim

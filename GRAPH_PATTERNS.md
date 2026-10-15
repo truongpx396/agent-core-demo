@@ -36,6 +36,7 @@ Flow control lives in explicit state (`iterations`, `context`, …), which is wh
 
 ### 5. Output gate with a real retry
 `check_output` + `route_after_check` + `retry_output`. A suspiciously short answer routes to `retry_output`, which appends a corrective `HumanMessage` and loops to `agent`. `MAX_ITERATIONS` bounds the retries. Pattern 50 adds two retry reasons from live findings.
+- **One registry, not a flag per check:** each reason is an `OutputCheck` in `graph/output_checks.py` (code, detect, feedback, metric, whether a repeatedly-rejected answer is still safe to show, fallback text), in one ordered tuple whose order IS the priority. `check_output` runs them all and records what fired in `State.output_findings` (`{code: detail}`); `last_retry_reason` is the first key. `retry_output`, `retry_exhausted` and `no_answer` read feedback, trust and fallback from the same entry. A new check is one entry. Leak, fabrication, deferral and misattribution are judged on what the model wrote, before the mechanical citation repair; length and "still uncited" on what is shown.
 - **Retry artifacts:** the feedback is a `HumanMessage` only because that is the role a model acts on; it is not something the person said. `retry_output` tags it, and the answer it rejected, with `additional_kwargs[RETRY_ARTIFACT_KEY]` (`graph/messages.py`). `is_user_message` is how every reader finds "the user's message" or "this turn"; `get_session_messages` and `_format_turns_for_summary` skip artifacts; the agent node drops earlier turns' artifacts before a call but keeps this turn's, because the retry needs them. `retry_exhausted` and `no_answer` tag the untrusted answer they replace the same way. An `AIMessage` with `tool_calls` is never tagged: dropping it would orphan its `ToolMessage`s.
 - **Bug:** the feedback was saved as a plain `HumanMessage`, and everything that looks for the last `HumanMessage` found it. After one retry round the semantic cache was keyed by the feedback text instead of the question, a vague follow-up ("more detail pls") searched on the feedback plus itself, the transcript replay showed the feedback as a user message beside the rejected answer, and `_turn_acted` only saw the messages after the feedback, so a turn that ran an approved write and then retried **was written to the semantic cache** (under the feedback text, so a replay was unlikely, but the guarantee in 22 that a cached answer never replays a write no longer held). Tests: `test_graph_integration.py::TestRetryFeedbackIsNotConversation`.
 
@@ -102,12 +103,12 @@ Retrieved text is wrapped in `<retrieved_document>` delimiters, and `SYSTEM_PROM
 - **Turn-aware:** a turn runs from a message the person sent to the next (not from `retry_output`'s feedback, which is a `HumanMessage` too, 5), so a `tool_call`/`ToolMessage` pair is never split (an orphan fails the next LLM call). The system prompt and latest turn are never dropped. Dropped turns are folded into a summary (41).
 
 ### 14. Node telemetry
-`build_graph` wraps every node (never inside the node) in `instrumented`, which logs `node_started` then `node_completed`/`node_failed`/`node_paused` with the node name, a per-turn `run_id` and `duration_ms`. `human_approval`'s `GraphInterrupt` is a normal pause, logged as `node_paused` and re-raised untouched.
+`build_graph` wraps every node (never inside the node), the `tools` node included, in `instrumented`, which logs `node_started` then `node_completed`/`node_failed`/`node_paused` with the node name, a per-turn `run_id` and `duration_ms`. `human_approval`'s `GraphInterrupt` is a normal pause, logged as `node_paused` and re-raised untouched.
 - **Never logged:** message content or the `state` dict, so this can't become an unscrubbed second copy of prompt text outside Langfuse.
 - `run_id` is the join key across a request's logs and metrics; Promtail ships the JSON to Loki.
 
 ### 15. Tool capability declarations: a mandatory gate
-Every tool declares `read_only`, `mutating` or `outward` in `TOOL_CAPABILITIES` (`app/agent/tools/builtin.py`). `should_continue` checks every pending batch: any non-`read_only` call routes through `human_approval` **unconditionally**. A tool missing from the mapping defaults to `outward` (fail closed). No flag turns this off.
+Every tool declares `read_only`, `mutating` or `outward`: the shared tools in `SHARED_TOOL_CAPABILITIES` (`app/agent/tools/builtin.py`), merged with each domain's own (`app/domains/<name>/tools.py`). `should_continue` checks every pending batch: any non-`read_only` call routes through `human_approval` **unconditionally**. A tool missing from the mapping defaults to `outward` (fail closed). No flag turns this off.
 - **Why mandatory:** a RAG agent already carries untrusted content on nearly every turn (12); adding write capability is one gamble from a document steering a real write.
 - **`add_note` is the worked example** of the companion rule: a write tool is a fixed, typed, closed-vocabulary operation, and its point id is derived by code (a fresh UUID, later `tool_call_id`-derived, see Extending Further), never supplied by the model, so it can only append.
 - **Use when:** the moment a second tool exists. Retrofitting after several writers accumulate means auditing them all at once.
@@ -130,7 +131,7 @@ A `SecurityCtx` (`tenant`, `principal`, `claims`) is stamped once by `validate_i
 ### 18. Cross-session memory
 `remember` is the only way a memory is written (`mutating`, gated like `add_note`). Recall is automatic, folded into retrieval: the model decides to *write*, never to *read*.
 - **Why writing is opt-in:** whatever writes memory decides what replays into every future prompt, so an autonomous write would be a privileged side channel.
-- **Re-filtered every call:** `recall_memories` applies `Policy.lower` fresh, scoped to tenant **and** owner, never cached.
+- **Re-filtered every call:** the memory leg of `gather_context` applies `Policy.lower` fresh, scoped to tenant **and** owner, never cached.
 - **Framed like a retrieved document, and more so:** a poisoned document affects one answer; a poisoned memory replays every turn until removed.
 - **Not built:** an LLM-facing forget tool. `delete_by_filter` supports a data-subject-request script, not the model.
 
@@ -140,7 +141,7 @@ A `SecurityCtx` (`tenant`, `principal`, `claims`) is stamped once by `validate_i
 - **Use when:** more than one principal's traffic shares a deployment behind a provider that discounts a stable prefix.
 
 ### 20. Hybrid retrieval, rerank and cited answers
-`search_docs`/`recall_memories`/`retrieve_context` run `hybrid_search()` (`qdrant_store.py`): two Qdrant legs (dense via LiteLLM, BM25 sparse via in-process `fastembed`) fused server-side with RRF, then reranked by a cross-encoder that runs in the `ml-service` container (it was a measured concurrency bottleneck in-process). Every hit is numbered `[1]`, `[2]`, …; `check_output` scans the final answer for the markers it actually contains (`find_used_citations`) and writes only those to state, **never trusting the model's claim about what it cited**.
+`search_docs`/`gather_context`/`retrieve_context` run `hybrid_search()` (`qdrant_store.py`): two Qdrant legs (dense via LiteLLM, BM25 sparse via in-process `fastembed`) fused server-side with RRF, then reranked by a cross-encoder that runs in the `ml-service` container (it was a measured concurrency bottleneck in-process). Every hit is numbered `[1]`, `[2]`, …; `check_output` scans the final answer for the markers it actually contains (`find_used_citations`) and writes only those to state, **never trusting the model's claim about what it cited**.
 - **Two degradation layers:** sparse failure falls back to dense-only (`agent_retrieval_degraded_total{stage="sparse"}`); reranker failure returns the RRF order (`stage="rerank"`). The answer is still fully cited.
 - Citations are computed by intersecting the answer's markers with what retrieval offered, so a hallucinated or forgotten marker resolves correctly.
 - **Use when:** retrieval quality matters and an answer needs an audit trail.
@@ -157,10 +158,10 @@ A `SecurityCtx` (`tenant`, `principal`, `claims`) is stamped once by `validate_i
 - **Use when:** near-duplicate questions repeat across sessions.
 
 ### 23. Config-first multi-domain composition
-`build_graph(manifest=…, domain=…)` keeps its topology and adapts to a domain through an `AgentManifest` (config: name, system prompt, exposed tools) and a `DomainPlugin` (code: tool implementations, capabilities, policy). There is no `if domain == "…"` in `app/agent/graph/core.py`; `DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN` wrap the Ecorp setup.
-- **Port-swapping, not parameterization:** `should_continue` needs a domain's capability map but LangGraph calls it with only `state`, so it is bound with `functools.partial(should_continue, tool_capabilities=…)` once per build (with a default, so existing callers are unaffected).
+`build_graph(manifest, domain)` keeps its topology and adapts to a domain through an `AgentManifest` (config: name, system prompt, exposed tools) and a `DomainPlugin` (code: tool implementations, capabilities, policy). There is no `if domain == "…"` in the graph, and no default domain: both arguments are required. Ecorp is one more entry in `app/domains/registry.py`, with the same shape as support, ops and sales (`app/domains/ecorp/`: `store.py` + `tools.py` + `domain.py`); the process default (`DEFAULT_DOMAIN`, `app/agent/runtime/core.py`) is a registry lookup.
+- **Port-swapping, not parameterization:** `should_continue` needs a domain's capability map but LangGraph calls it with only `state`, so it is bound with `functools.partial(should_continue, tool_capabilities=…)` once per build (no default: a tool set, tier map and prompt only mean something relative to one domain).
 - **The load-bearing test:** `tests/agent/test_manifest.py` builds a domain with a different `Policy` and one Ecorp-unknown tool, proves the unmodified gate treats it as `mutating` using that domain's map, and checks Ecorp's tools are absent from its `ToolNode`.
-- **Gotcha:** `manifest.py` needs `app/agent/graph/core.py`'s `SYSTEM_PROMPT` and `build_graph()` needs `manifest.py`'s defaults; a deferred import inside `build_graph()` breaks the cycle.
+- **Bug (structural):** Ecorp's prompt and tools were welded into the generic graph, and `build_graph`, `should_continue`, `check_output`, `invalid_tool_call` and `make_llm` each defaulted to "Ecorp" when a caller named nothing. That default forced the deferred imports (graph → manifest → builtin → `run_subagent` → graph) and let any module that merely wanted "the graph" pick up one domain's tools. Ecorp moved out, the defaults went, and `graph/build.py` is the only module that imports every node; nothing a node imports imports it back. Tests bind the generic functions to Ecorp in one place (`tests/ecorp.py`).
 - **Not done:** several domains from one process (see 47).
 
 ### 24. General-purpose ingestor with parent-child chunking
@@ -227,7 +228,7 @@ A third outcome for a paused interrupt, not a repurposed rejection: `route_after
 
 ### 38. Resolved model recording
 `model_resolver.resolve_model` asks LiteLLM's `GET /model/info` which concrete model serves an alias like `chat`, because neither the response body nor LangChain metadata carries it. Cached per process, degrades to `None`, recorded as `resolved_model` on each usage event. A silent gateway remap of the model behind an alias is otherwise invisible.
-- **Bug:** the first version was a synchronous `httpx.get` on the event loop at the end of every turn. A slow LiteLLM froze every other turn and health check on that worker (a 0.5 s answer stalled a heartbeat for 0.56 s), and during an outage every turn paid a fresh 5 s timeout. It is now `async` and remembers a failure for `FAILED_LOOKUP_RETRY_SECONDS` (60) per alias. The regression test runs the real resolver against a deliberately slow local server with a heartbeat, which a mock can't do. `tests/conftest.py::mock_model_resolver` (autouse) keeps the default suite off the network.
+- **Bug:** the first version was a synchronous `httpx.get` on the event loop at the end of every turn. A slow LiteLLM froze every other turn and health check on that worker (a 0.5 s answer stalled a heartbeat for 0.56 s), and during an outage every turn paid a fresh 5 s timeout. It is now `async` and remembers a failure for `FAILED_LOOKUP_RETRY_SECONDS` (60) per alias. The regression test runs the real resolver against a deliberately slow local server with a heartbeat, which a mock can't do. `tests/conftest.py::mock_model_pricing` (autouse) keeps the default suite off the network.
 - **Gap:** concurrent first lookups during an outage can each make one request before the failure is remembered.
 
 ### 39. Ungrounded-claims count
@@ -270,7 +271,7 @@ A catalog of `SKILL.md` packages (YAML frontmatter + markdown, one directory und
 `run_subagent(subagent_name, task)` starts a separate nested run: a fresh `build_subagent_graph()` with its own messages, prompt and budget. Skills add instructions to the same context; this doesn't. One tool with a closed enum built from `subagents/<name>/AGENT.md` (`app/agent/tools/subagent_catalog.py`).
 - **Read-only tools only,** enforced at catalog-build time (others are dropped with a warning), so `run_subagent` is a plain `read_only` tool needing no gate special case. The nested graph runs synchronously on a throwaway `MemorySaver` inside one tool call; nobody could resume it hours later, so a write-capable subagent would mean a deadlocked gate or a bypass of pattern 15.
 - **No recursion:** `run_subagent` is stripped from every subagent's tools.
-- **Isolation:** fresh messages (its own prompt, the task as the only `HumanMessage`), inherited `SecurityCtx`, its own budget (`MAX_SUBAGENT_ITERATIONS=6`, `MAX_SUBAGENT_TOKENS_PER_RUN=4000`) via pattern 23's `functools.partial`, and a leaner `build_subagent_graph()` without 5 of 21 nodes (cache, follow-ups, compaction). Graphs are cached by `(domain, subagent_name)`.
+- **Isolation:** fresh messages (its own prompt, the task as the only `HumanMessage`), inherited `SecurityCtx`, its own budget (`MAX_SUBAGENT_ITERATIONS=6`, `MAX_SUBAGENT_TOKENS_PER_RUN=4000`) via pattern 23's `functools.partial`, and `build_graph` with `SUBAGENT_PROFILE` (`build_subagent_graph()`), which leaves out 5 nodes (cache read/write, follow-ups, compaction and its dead end). Graphs are cached by `(domain, subagent_name)`.
 - **Spend:** nested spend folds into the parent's budget through the `subagent_spend` reducer `concat_or_reset`, which concatenates and treats `None` as a reset (pattern 10's bug). Parent callbacks thread into the nested run, and its reasoning tokens never reach the client's stream.
 - **Citations are the parent's alone:** a subagent's retrieval cites ITS sources, which mean nothing to the parent (its `[1]` is a different document), so its prompt says to use no `[n]` markers and the nested graph is built with `enforce_citations=False`: no tail "every sentence must end with its marker" reminder, and `check_output` neither flags nor inserts markers (every other check still applies). `run_subagent_impl` strips any marker that slips through; a literal `[0]` in a subagent's answer goes with it.
 - **Bug:** the nested graph reused `agent` and `check_output` unchanged. The subagent got both "no bracket markers" (its prompt) and "every sentence must end with one" (the reminder), its own `check_output` inserted a `[1]` anyway, and that `check_output`'s `on_chain_end` reached the PARENT's stream: the client saw `retry`, then the subagent's text as a token, then `done`, so the subagent's words were shown as the answer. `_run_graph_stream` now ignores every `on_chain_end` tagged with `metadata.subagent_name`. Tests: `test_subagents.py::test_a_subagent_never_emits_citation_markers_or_events_into_the_parents_stream`, `test_streaming_terminal_events.py::test_a_nested_subagents_chain_ends_never_reach_the_parents_stream`.
@@ -307,7 +308,7 @@ Every queued job once went onto one `agent:requests` stream, so the web UI reach
 crawl4ai (`app/ingestion/web_crawler.py`) renders JS-heavy pages. OpenSandbox, consumed over MCP through pattern 28's unmodified `load_remote_tools`, runs code in isolation. Both go through the shared SSRF guard (`app/core/url_safety.py`), and every tool is `outward`, so the approval gate always fires.
 - **Wrapped narrow:** handing a 3B model OpenSandbox's ~19 tools made it hallucinate a `sandbox_id`, and three prompt fixes didn't help. `app/domains/sandbox_session.py` now does lookup and creation in code and exposes four flat tools (`run_command_in_sandbox`, `run_python_in_sandbox`, `read_sandbox_file`, `write_sandbox_file`). `run_python_in_sandbox` takes the script as a plain argument, not a shell string, because the model kept breaking `python -c '...'` quoting.
 - **Check the structure before blaming the model:** a skill-based math question never reached `skill_search` despite three prompt fixes. The cause was list position (those tools were last); moving them first fixed every domain.
-- **`check_output` gained two retry reasons:** `fabricated_tool_output` (an invented tool result with no real `tool_calls`; ranked first) and `skipped_required_tool`.
+- **`check_output` gained two retry reasons:** `fabricated` (an invented tool result with no real `tool_calls`; ranked first) and `skipped_tool`. The tool a skill may demand is restricted to the ones the calling domain actually has.
 - **Bug:** two simultaneous tool calls sometimes arrived glued into one `tool_calls` entry. `parallel_tool_calls=False` was tried first and was a no-op (since removed); the fix is the LiteLLM chunk-index patch (`deploy/litellm/patches/sitecustomize.py`), as `graph/utils.py::make_llm` explains.
 - **Bug: tenants could share a sandbox.** Telegram ids (`telegram:123`) broke sandbox metadata (`:` is forbidden), and the first fix rewrote the id many-to-one without naming the tenant, so two tenants' conversations could share a sandbox and read each other's files (Principle I). Now tenant and raw conversation id are tagged as separate SHA-256 prefixes, lookups filter on both and re-check returned tags, and `tenant` is a required keyword argument on every sandbox helper. Old-tag sandboxes expire on their TTL.
 - **Misdiagnoses traced to the real request:** a 405 was a port clash with open-webui (both on 8080); a timeout was the SDK reaching a Docker-internal IP, fixed with `use_server_proxy=True` in `scripts/opensandbox_mcp_bridge.py`.
@@ -362,10 +363,9 @@ route_after_validation?  ← valid ctx? last user message (not retry feedback, p
                       ├─→ no_answer  (MAX_ITERATIONS, MAX_TOKENS_PER_TURN, MAX_COST_USD_PER_TURN (35) or
                       │               MAX_REPEATED_ACTIONS identical batches (34)): answers any tool calls
                       │               pending on the message that tripped it, replaces untrusted text → END
-                      ├─→ too_many_tool_calls       (> MAX_TOOL_CALLS_PER_TURN) → agent
-                      ├─→ invalid_tool_call         (a name not in THIS domain's tools) → agent
-                      ├─→ use_skill_without_search  (use_skill before skill_search) → agent
-                      │     (each of those three answers every pending call with a ToolMessage rejection)
+                      ├─→ tool_batch_guard  (too many calls in one response, a name that isn't one of THIS
+                      │                      domain's tools, or use_skill before skill_search: answers every
+                      │                      pending call with a ToolMessage rejection) → agent
                       ├─→ human_approval  (require_approval, OR any non-read_only call — mandatory, pattern 15)
                       │    ↓
                       │   route_after_approval?  ← interrupt() paused here
@@ -392,21 +392,19 @@ route_after_validation?  ← valid ctx? last user message (not retry feedback, p
                                END
 ```
 
-A nested `run_subagent` run (46) uses `build_subagent_graph()`: the same graph without `check_semantic_cache`,
+A nested `run_subagent` run (46) is `build_graph` with `SUBAGENT_PROFILE`: the same graph without `check_semantic_cache`,
 `write_semantic_cache`, `suggest_followups`, `compact_history` and `context_window_exceeded`, so
 `validate_input` goes straight to `moderate_input` and a passing `check_output` ends the run.
 
-**21 nodes:** `validate_input`, `reject_input`, `reject_context`, `moderate_input`, `reject_moderation`,
+**19 nodes:** `validate_input`, `reject_input`, `reject_context`, `moderate_input`, `reject_moderation`,
 `check_semantic_cache`, `compact_history`, `context_window_exceeded`, `retrieve_context`, `agent`, `tools`,
-`human_approval`, `too_many_tool_calls`, `invalid_tool_call`, `use_skill_without_search`, `check_output`,
+`human_approval`, `tool_batch_guard`, `check_output`,
 `retry_output`, `retry_exhausted`, `no_answer`, `suggest_followups`, `write_semantic_cache`.
 
 **State fields beyond `messages`:** `context`, `context_anchor_index`, `iterations`, `total_tokens`,
 `total_cost_usd`, `subagent_spend`, `require_approval`, `approved`, `cancelled`, `run_id`, `graph_version`,
 `state_schema_version`, `ctx`, `citations`, `used_citations`, `ungrounded_claims_count`,
-`likely_uncited_citations`, `likely_misattributed_citations`, `deferred_instead_of_acting`,
-`fabricated_tool_output`, `skipped_required_tool`, `leaks_system_prompt`, `last_retry_reason`,
-`retry_reason_repeat_count`, `cache_hit`, `moderation_blocked`, `followups`, `history_summary`.
+`output_findings`, `last_retry_reason`, `retry_reason_repeat_count`, `cache_hit`, `moderation_blocked`, `followups`, `history_summary`.
 
 ## Extending Further
 

@@ -1,13 +1,9 @@
-"""Citation-grounding helpers used exclusively by `check_output`
-(`app/agent/graph/routing.py`): which offered citations the answer
+"""Citation-grounding helpers used exclusively by `check_output` (`app/agent/graph/routing.py`) and
+the registry's two citation checks (`graph/output_checks.py`): which offered citations the answer
 actually used (`find_used_citations`), which cited markers were invented
-(`count_ungrounded_claims`), and two directional "used without
-attributing" checks plus their shared sentence-matching machinery
-(`_uncited_citation_matches`, `find_likely_uncited`,
+(`count_ungrounded_claims`), and two directional "used without attributing" checks plus their shared
+sentence-matching machinery (`_uncited_citation_matches`, `find_likely_uncited`,
 `insert_missing_citation_markers`, `find_likely_misattributed`).
-Split out of `app/agent/graph/routing.py` for file size (see sibling
-splits `graph/loop_guards.py`/`graph/output_guardrails.py`); no behavior
-change.
 """
 import re
 

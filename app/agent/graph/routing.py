@@ -1,23 +1,11 @@
-"""The two conditional-edge gate functions — `should_continue` (after
-`agent`: tool call, final answer, or safety budget?) and `check_output`
-(is the final answer good enough to end on?) — plus `route_after_check`,
-which routes on check_output's result. Split out of app/agent/graph/core.py purely for
-file size; `State` and the other routing functions stay there since
-they're tied to nodes that stay there too. No behavior change.
+"""The two conditional-edge gate functions — `should_continue` (after `agent`: tool call, final
+answer, or safety budget?) and `check_output` (is the final answer good enough to end on?) — plus
+`route_after_check`, which routes on check_output's result.
 
-Each gate's own helpers live in further sibling splits:
-graph/loop_guards.py (should_continue's tool-call fingerprinting/repeat
-detection, mandatory-approval gate, use_skill-without-search check) and
-graph/citations.py/graph_output_guardrails.py (check_output's citation-
-grounding checks and deferral/fabrication/prompt-leak heuristics).
-should_continue/check_output/route_after_check themselves stay at this
-original import path so every existing caller/test is unaffected.
-
-A few helpers that LOOK like they belong here stayed in their own sibling
-files instead (`invalid_tool_call_names`, `current_turn_messages`,
-`pending_skill_required_tool`, `content_words`) — each is also called
-directly by a node function still in app/agent/graph/core.py, so moving them here would
-force app/agent/graph/core.py to import back from this module, a real circular import.
+Their helpers: `graph/loop_guards.py` (tool-call fingerprinting and repeat detection, the
+mandatory-approval gate), `graph/tool_guards.py` (`batch_problem`, the malformed-batch check),
+`graph/output_checks.py` (the registry `check_output` runs) with `graph/citations.py` and
+`graph/output_guardrails.py` (the heuristics behind its checks).
 """
 from collections.abc import Mapping
 from typing import Literal, cast

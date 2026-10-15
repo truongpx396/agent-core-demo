@@ -1,19 +1,14 @@
-"""Token estimation and history trimming/compaction: `_estimate_tokens`
-(tiktoken-based approximate budget check), `_messages_to_trim`/
-`_trim_history` (which whole turns fall outside the kept window),
-`_format_turns_for_summary`/`make_compact_history_node` (folding trimmed
-turns into a running `history_summary` instead of discarding them,
-AR-015a), and `COMPACTION_MARKER_KEY`/`_compaction_marker_message` (the
-permanent breadcrumb left in `state["messages"]` when compaction does
-something). Split out of `app/agent/graph/core.py` for file size (see
-`app/agent/graph/messages.py` for the sibling split providing
-`human_text`); no behavior change.
+"""Token estimation and history trimming/compaction: `_estimate_tokens` (tiktoken-based approximate
+budget check), `_messages_to_trim`/`_trim_history` (which whole turns fall outside the kept window),
+`_format_turns_for_summary`/`make_compact_history_node` (folding trimmed turns into a running
+`history_summary` instead of discarding them, AR-015a), and `COMPACTION_MARKER_KEY`/
+`_compaction_marker_message` (the permanent breadcrumb left in `state["messages"]` when compaction
+does something).
 
-Pure one-directional dependency on `app/agent/graph/core.py` (for
-`HISTORY_TOKEN_CEILING`/`HISTORY_TOKEN_FLOOR`) — nothing in `app/agent/graph/core.py`
-imports back from here; `make_compact_history_node` is wired in by
-`graph/build.py`, and `COMPACTION_MARKER_KEY` is read by
-`runtime/stream.py::get_session_messages`.
+Depends only on `graph/state.py` (for `HISTORY_TOKEN_CEILING`/`HISTORY_TOKEN_FLOOR`) and
+`graph/messages.py`; `make_compact_history_node` is wired in by `graph/build.py`, and
+`COMPACTION_MARKER_KEY` is read by `runtime/stream.py::get_session_messages` and
+`runtime/core.py::ensure_seeded_async`.
 """
 import logging
 from typing import cast

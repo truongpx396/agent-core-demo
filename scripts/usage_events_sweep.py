@@ -6,7 +6,7 @@ reconciliation read it. This deletes events older than `USAGE_EVENT_RETENTION_DA
 of 35 days so a calendar-month cap or a reconciliation window can never lose spend that is still inside it). Billing keeps its own record
 of a call with its own retention (`credit-billing-usage-sweep`); nothing here touches it.
 
-Same "fixed pipeline, not an agent turn" shape as the sweeps before it (scripts/billing_inbox_sweep.py), and like them it is deliberately NOT run by
+Same "fixed pipeline, not an agent turn" shape as the sweeps before it (`python -m credit_billing.cli.inbox_sweep`), and like them it is deliberately NOT run by
 anything automatically: this is the table spend is read from, so wire it to real cron once your retention policy is decided, e.g.
 
     30 3 * * 0 cd /path/to/agent-core-demo && python -m scripts.usage_events_sweep

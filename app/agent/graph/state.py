@@ -68,7 +68,7 @@ MAX_CONSECUTIVE_SAME_RETRY_REASON = 2  # check_output's own convergence
 # on a DIFFERENT reason (that's slow progress through distinct issues, not
 # a stuck loop) — see route_after_check/retry_exhausted.
 
-# Budgets for a NESTED subagent run (app/agent/tools/builtin.py::run_subagent,
+# Budgets for a NESTED subagent run (app/agent/tools/run_subagent_domain.py::make_domain_subagent_tool,
 # pattern 46) — separate from the constants above; a subagent's own
 # should_continue is bound to THESE via functools.partial, independent of
 # the parent turn's remaining budget. Hardcoded (not Settings-backed) as a

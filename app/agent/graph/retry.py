@@ -1,10 +1,8 @@
-"""Retry/give-up node family: `retry_output` (send the agent back with
-corrective feedback naming the SPECIFIC rejection reason),
-`make_retry_exhausted_node` (route_after_check giving up on a stuck retry
-loop — MAX_CONSECUTIVE_SAME_RETRY_REASON), and `make_no_answer_fallback_node`
-(should_continue's own four safety-net exits — max iterations/tokens/cost,
-no-progress). Split out of `app/agent/graph/core.py` for file size; no behavior
-change.
+"""Retry/give-up node family: `retry_output` (send the agent back with corrective feedback naming
+the SPECIFIC rejection reason), `make_retry_exhausted_node` (route_after_check giving up on a stuck
+retry loop — MAX_CONSECUTIVE_SAME_RETRY_REASON), and `make_no_answer_fallback_node` (should_continue's
+own four safety-net exits — max iterations/tokens/cost, no-progress). The reasons, their feedback and
+their fallback text are the registry in `graph/output_checks.py`.
 """
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
