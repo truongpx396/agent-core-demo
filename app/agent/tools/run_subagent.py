@@ -26,6 +26,7 @@ file) preserves the guarantee that importing `app/agent/tools/builtin.py` still 
 module to load and append `run_subagent` onto the same shared `TOOLS` list,
 regardless of import order.
 """
+import re
 import time
 import uuid
 from collections.abc import Mapping
@@ -171,6 +172,8 @@ def _build_subagent_registry(
 
 
 _SUBAGENT_REGISTRY = _build_subagent_registry(_ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="ecorp")
+
+_CITATION_MARKER_RE = re.compile(r"\s*\[\d+\]")
 
 _CITATION_MARKER_WARNING = (
     "Do not use '[n]'-style bracket citation markers in your final answer — "
@@ -426,7 +429,11 @@ async def _run_subagent_impl(
     content = final_ai.content if final_ai is not None else ""
     if not isinstance(content, str):
         content = str(content)
-    content = content.strip()
+    # Any `[n]` marker names the SUBAGENT's own retrieved sources, which mean nothing to the
+    # parent (its `[1]` is a different document), and the parent's citation checks would read
+    # it as theirs. Its prompt says to use none; this removes any that slipped through. The
+    # price is that a literal `[0]` in a subagent's answer (an array index) goes too.
+    content = _CITATION_MARKER_RE.sub("", content).strip()
     # A missing/empty final answer means should_continue's "__end__" fired
     # from one of its safety-net checks (max iterations/tokens/cost, no-
     # progress — pattern 10) before reaching check_output. Rather than

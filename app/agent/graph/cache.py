@@ -62,8 +62,11 @@ def make_check_semantic_cache_node(
     return check_semantic_cache
 
 
-def route_after_cache(state: State) -> Literal["retrieve_context", "check_output"]:
-    return "check_output" if state.get("cache_hit") else "retrieve_context"
+def route_after_cache(state: State) -> Literal["compact_history", "check_output"]:
+    """A hit is already an answer and goes straight to check_output. A miss is the first point
+    a turn is known to need the model, so it is where history compaction (an LLM call) runs,
+    before retrieval: after moderation and the cache, never before them (pattern 25)."""
+    return "check_output" if state.get("cache_hit") else "compact_history"
 
 
 def _turn_acted(state: State, tool_capabilities: Mapping[str, str]) -> bool:

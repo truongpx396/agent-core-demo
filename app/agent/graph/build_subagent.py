@@ -33,7 +33,7 @@ from app.agent.graph.retry import (
 )
 from app.agent.graph.routing import route_after_check
 from app.agent.graph.skill_guards import use_skill_without_search
-from app.agent.graph.tool_guards import invalid_tool_call, too_many_tool_calls
+from app.agent.graph.tool_guards import too_many_tool_calls
 from app.agent.graph.utils import _friendly_tool_error, _instrumented
 
 if TYPE_CHECKING:
@@ -87,8 +87,17 @@ def build_subagent_graph(
     `history_token_ceiling`/`history_token_floor` — meaningless since
     `compact_history` isn't part of this topology.
     """
+    # enforce_citations=False: a subagent's retrieval cites ITS sources, which mean nothing to
+    # the parent, so its prompt says to use no `[n]` markers; the graph must not demand them
+    # (tail reminder) or insert them (check_output) either.
     parts = _assemble_shared_graph_parts(
-        deps, manifest, domain, max_iterations, max_tokens_per_turn, max_cost_usd_per_turn
+        deps,
+        manifest,
+        domain,
+        max_iterations,
+        max_tokens_per_turn,
+        max_cost_usd_per_turn,
+        enforce_citations=False,
     )
     manifest = parts.manifest
 
@@ -117,7 +126,7 @@ def build_subagent_graph(
     )
     builder.add_node(
         "invalid_tool_call",
-        _instrumented("invalid_tool_call")(invalid_tool_call),
+        _instrumented("invalid_tool_call")(parts.domain_invalid_tool_call),
     )
     builder.add_node(
         "use_skill_without_search",
@@ -132,19 +141,18 @@ def build_subagent_graph(
     builder.add_node(
         "no_answer",
         _instrumented("no_answer")(
-            make_no_answer_fallback_node(emit_no_answer_message, system_prompt=manifest.system_prompt)
+            make_no_answer_fallback_node(
+                emit_no_answer_message, system_prompt=manifest.system_prompt, enforce_citations=False
+            )
         ),
     )
 
     builder.add_edge(START, "validate_input")
-    # route_after_validation's "compact_history" branch has nowhere to go
-    # here (not a node in this topology) — remapped straight to
-    # moderate_input, the node that would come right after it anyway.
     builder.add_conditional_edges(
         "validate_input",
         route_after_validation,
         {
-            "compact_history": "moderate_input",
+            "moderate_input": "moderate_input",
             "reject_input": "reject_input",
             "reject_context": "reject_context",
         },

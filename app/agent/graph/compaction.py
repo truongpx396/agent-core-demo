@@ -161,7 +161,9 @@ def make_compact_history_node(
     needs an LLM client to turn discarded turns into a running summary
     (AR-015a) instead of just discarding them.
 
-    Runs once per turn, right after validate_input, but kept as its own
+    Runs once per turn that reaches the model: after validate_input,
+    moderation and a semantic-cache miss, right before retrieve_context
+    (a screened-out or cache-hit turn pays for no summary). Kept as its own
     node since it needs an LLM call and validate_input stays a plain,
     dependency-free function.
 

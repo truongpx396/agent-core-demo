@@ -136,6 +136,10 @@ def _text_content(content) -> str:
 
 
 def _turn_outcome(state: dict) -> str:
+    # A semantic-cache hit is an answer served, not a refusal: it goes straight to check_output
+    # and never reaches `agent`, so `iterations` stays 0 for it too.
+    if state.get("cache_hit"):
+        return "success"
     # validate_input resets iterations to 0 every turn; it only stays 0 if
     # the turn never reached `agent` at all, i.e. the reject_input path.
     return "rejected" if state.get("iterations", 0) == 0 else "success"
@@ -253,6 +257,9 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
             already-streamed content stands as the final answer; firing
             "retry" unconditionally there would blank a good answer with
             nothing to follow it.
+      (A nested `run_subagent` graph shares these node names and its events arrive on
+        this stream too; every `on_chain_end` tagged with `metadata.subagent_name` is
+        ignored, so none of the above can be fired by a subagent's own turn.)
       {"type": "compacted"} — NOT terminal; `compact_history` (pattern 41)
         already trimmed context before `agent` ran, so there's nothing to
         clear — purely informational (lets a UI show "summarizing older
@@ -300,8 +307,8 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 #
                 # `not subagent_name` guards a second source of the same
                 # problem: app/agent/tools/run_subagent.py::_run_subagent_impl threads this turn's
-                # callbacks into a NESTED graph invoke() (built via the same
-                # build_graph(), so it also has a node named "agent") for
+                # callbacks into a NESTED graph invoke() (built via
+                # build_subagent_graph(), so it also has a node named "agent") for
                 # correct child-span tracing — without this guard its
                 # internal reasoning tokens would leak into the main answer
                 # stream, indistinguishable from it. `parent_ids` can't
@@ -334,6 +341,15 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 if subagent_name:
                     payload["subagent"] = subagent_name
                 yield payload
+
+            elif kind == "on_chain_end" and event.get("metadata", {}).get("subagent_name"):
+                # A nested run_subagent graph shares the node names below (check_output,
+                # retry_output, ...), and its events arrive on THIS stream. They describe the
+                # subagent's own turn: acting on them cleared the parent's answer, yielded
+                # `retry` and then the subagent's text as a token, which the client showed as
+                # the answer. Only tool_start/tool_end are surfaced from a nested run (tagged
+                # with `subagent` above), so the chain ends are ignored here.
+                pass
 
             elif kind == "on_chain_end" and event["name"] == "retry_output":
                 # check_output rejected the answer; discard what's streamed

@@ -73,12 +73,15 @@ def retry_output(state: State) -> dict:
     elif state.get("fabricated_tool_output"):
         # Names the problem as FABRICATION specifically (not just "call a
         # tool") — the model needs to be told its belief it already ran
-        # this is false before it'll call the real tool.
+        # this is false before it'll call the real tool. Names NO tool: this
+        # is shared by every domain, and Ecorp has no run_command_in_sandbox
+        # to be told to call (skipped_required_tool below does name its tool,
+        # because state carries it).
         feedback = (
             "That answer showed a script and its output as if a real tool "
             "had run it, but no tool was actually called — that output was "
-            "invented, not computed. Call run_command_in_sandbox for real "
-            "this time, and only report the number it actually returns."
+            "invented, not computed. Call the tool that actually computes "
+            "this, for real this time, and only report the result it returns."
         )
     elif state.get("skipped_required_tool"):
         # Distinct from fabricated (no fake tool-output claim) and deferred
@@ -227,7 +230,9 @@ def make_retry_exhausted_node(emit_message: bool = True):
 # AIMessage" check on its own terms to report outcome="budget_exceeded" —
 # filling in prose here would make that check wrongly see real text and
 # report the run as completed. ---
-def make_no_answer_fallback_node(emit_message: bool = True, system_prompt: str = SYSTEM_PROMPT):
+def make_no_answer_fallback_node(
+    emit_message: bool = True, system_prompt: str = SYSTEM_PROMPT, enforce_citations: bool = True
+):
     def no_answer_fallback(state: State) -> dict:
         last = state["messages"][-1]
         # A safety net can trip on the very round whose AIMessage is asking for tools. Those calls
@@ -255,7 +260,7 @@ def make_no_answer_fallback_node(emit_message: bool = True, system_prompt: str =
         # this way (Langfuse trace `633eee2b`, 2026-09-08). Recomputing
         # fresh here means every current AND future check_output check
         # automatically applies.
-        fresh = check_output(state, system_prompt=system_prompt)
+        fresh = check_output(state, system_prompt=system_prompt, enforce_citations=enforce_citations)
         # Text written alongside a tool request is the model narrating what it is about to do, not
         # a final answer, so it is never shown even when it would pass check_output.
         trustworthy = (

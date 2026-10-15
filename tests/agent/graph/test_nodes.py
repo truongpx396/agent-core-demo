@@ -10,6 +10,8 @@ this repo's established pattern for exercising async code from a plain
 stays plain sync — nothing to await — so those calls are unchanged.
 """
 
+from types import SimpleNamespace
+
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent.graph import cache as graph_cache
@@ -1293,6 +1295,15 @@ def test_retry_output_too_short_feedback_also_nudges_toward_tool_use():
     assert "empty response" in msg.content.lower()
 
 
+def test_retry_output_fabrication_feedback_names_no_specific_tool():
+    """The feedback is shared by every domain, and Ecorp has no `run_command_in_sandbox` for it to
+    be told to call (the skipped-required-tool feedback names its tool because state carries it)."""
+    state = {"messages": [AIMessage(content="x" * 200, id="a1")], "fabricated_tool_output": True}
+    feedback = graph_retry.retry_output(state)["messages"][-1].content
+    assert "invented, not computed" in feedback
+    assert "run_command_in_sandbox" not in feedback
+
+
 def test_retry_output_names_the_missing_citation_marker():
     state = {
         "messages": [AIMessage(content="A sufficiently detailed but uncited answer.")],
@@ -1753,3 +1764,51 @@ class TestRetryExhaustedArtifacts:
     def test_a_trusted_answer_is_left_alone(self):
         state = {"messages": [AIMessage(content="A correct answer.", id="a1")], "last_retry_reason": "uncited"}
         assert graph_retry.make_retry_exhausted_node()(state) == {}
+
+
+def test_the_build_version_is_resolved_once_per_process_not_every_turn(monkeypatch):
+    """`validate_input` runs every turn, and with no GRAPH_VERSION set each call forked `git`."""
+    monkeypatch.delenv("GRAPH_VERSION", raising=False)
+    calls = []
+    monkeypatch.setattr(graph.subprocess, "run", lambda *a, **k: calls.append(1) or SimpleNamespace(stdout="abc1234\n"))
+    getattr(graph._graph_version, "cache_clear", lambda: None)()
+    graph._graph_version()
+    graph._graph_version()
+    assert len(calls) == 1
+
+
+class TestCheckOutputWithoutCitationEnforcement:
+    """`enforce_citations=False` is what a nested subagent run uses (pattern 46): its `[n]` markers
+    would name its own sources, so its prompt says to use none."""
+
+    _CITATIONS = [
+        {
+            "marker": "[1]",
+            "text": "Checkpointers persist state across process restarts by writing to a durable backend.",
+        }
+    ]
+
+    def _state(self, content):
+        return {"messages": [AIMessage(content=content)], "citations": self._CITATIONS}
+
+    def test_an_uncited_answer_is_neither_flagged_nor_given_a_marker(self):
+        content = "Checkpointers persist state across restarts."
+        enforced = graph_routing.check_output(self._state(content))
+        assert enforced["messages"][0].content.endswith("[1].")  # the default does insert one
+
+        relaxed = graph_routing.check_output(self._state(content), enforce_citations=False)
+        assert "messages" not in relaxed
+        assert relaxed["last_retry_reason"] is None
+        assert relaxed["likely_uncited_citations"] == [] and relaxed["likely_misattributed_citations"] == []
+
+    def test_a_misattributed_marker_is_not_flagged_either(self):
+        content = "The office dog is called Biscuit and loves Fridays [1]."
+        assert graph_routing.check_output(self._state(content))["last_retry_reason"] == "misattributed"
+        relaxed = graph_routing.check_output(self._state(content), enforce_citations=False)
+        assert relaxed["last_retry_reason"] is None
+
+    def test_every_other_check_still_applies(self):
+        leaked = graph.SYSTEM_PROMPT[:200]
+        assert graph_routing.check_output(self._state(leaked), enforce_citations=False)["last_retry_reason"] == "leaked_prompt"
+        deferred = "I will now run this script in the sandbox to get the actual contract value."
+        assert graph_routing.check_output(self._state(deferred), enforce_citations=False)["last_retry_reason"] == "deferred"

@@ -22,7 +22,9 @@ from app.core.untrusted import frame_untrusted
 
 
 # --- Node: agent ---
-def make_agent_node(llm, model_alias: str | None = None, kind: str = "chat"):
+def make_agent_node(
+    llm, model_alias: str | None = None, kind: str = "chat", citation_reminder: bool = True
+):
     """Factory, not a plain function, because `agent` needs an LLM client.
     Tests build it with a fake (e.g. GenericFakeChatModel) via
     `make_agent_node(fake_llm)(state)` (see test_agent_node.py) to cover
@@ -31,6 +33,12 @@ def make_agent_node(llm, model_alias: str | None = None, kind: str = "chat"):
     `model_alias` is the LiteLLM alias `llm` is bound to, used only to price its
     calls; None means the global chat alias (read at call time, see the module
     docstring).
+
+    `citation_reminder=False` (a nested subagent run) leaves out the tail
+    reminder that every sentence must end with a `[n]` marker. A subagent's
+    prompt says the opposite (its markers would name ITS sources, meaningless
+    to the parent), and a model handed both rules obeys neither. The retrieved
+    context is still passed, framed as untrusted data.
     """
 
     async def agent(state: State, config: RunnableConfig | None = None) -> dict:
@@ -119,7 +127,7 @@ def make_agent_node(llm, model_alias: str | None = None, kind: str = "chat"):
                 )
             )
 
-        if context:
+        if context and citation_reminder:
             # Same recency-anchoring fix as history_summary's reminder
             # above, for the SAME failure mode: qwen2.5:3b has been caught
             # dropping this "mandatory" citation instruction in prompts of

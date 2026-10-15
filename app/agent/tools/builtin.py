@@ -744,20 +744,10 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
                 f"No skill named {name!r} found. Call skill_search first to find "
                 "the exact name of an available skill."
             )
-        body = record.body
-        if "run_command_in_sandbox" in body:
-            # Proactive nudge, not a replacement for the reactive check —
-            # app/agent/graph/core.py::_skipped_required_sandbox_after_skill still
-            # catches this after the fact if the model ignores it too (real
-            # bug: even a skill body that explicitly says "don't estimate
-            # this by hand" got ignored). Placed at the END so it survives a
-            # skill author who forgets to write one themselves.
-            body += (
-                "\n\n---\nReminder: call run_command_in_sandbox now, with a real "
-                "script, for the actual computation this skill describes — do not "
-                "compute the result yourself."
-            )
-        return body
+        # No tool reminder is appended here: the agent node already adds a recency-weighted one
+        # while a tool the skill named is still pending (`_pending_skill_required_tool`), and no
+        # SKILL.md names run_command_in_sandbox any more.
+        return record.body
 
     @tool(args_schema=UseSkillArgs)
     async def use_skill(name: str) -> str:

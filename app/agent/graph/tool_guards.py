@@ -84,16 +84,18 @@ def too_many_tool_calls(state: State) -> dict:
 # --- Node: abort a batch containing a non-existent tool name, instead of
 # dispatching it or surfacing it to a human at human_approval (who couldn't
 # meaningfully approve/reject a name that doesn't exist). Same reject+retry
-# shape as too_many_tool_calls. Uses the module-default `valid_tool_names`
-# (Ecorp's TOOLS) just to NAME the offending tool(s) in the retry message —
-# should_continue already routed here using the correct domain-bound set,
-# so a custom domain still rejects correctly; only the cited name(s) could
-# differ. ---
-def invalid_tool_call(state: State) -> dict:
+# shape as too_many_tool_calls. `valid_tool_names` must be the SAME set
+# should_continue routed on (`build_graph` binds the domain's own via
+# `functools.partial`, like `check_output`'s `system_prompt`): judged against
+# Ecorp's list instead, a support domain's real `create_ticket` was named to
+# the model as a tool that doesn't exist. ---
+def invalid_tool_call(
+    state: State, valid_tool_names: frozenset[str] = _DEFAULT_VALID_TOOL_NAMES
+) -> dict:
     last_ai = cast(AIMessage, state["messages"][-1])
     tool_calls = last_ai.tool_calls or []
     metrics.agent_invalid_tool_call_total.inc()
-    bad_names = sorted(set(_invalid_tool_call_names(tool_calls)))
+    bad_names = sorted(set(_invalid_tool_call_names(tool_calls, valid_tool_names)))
     names_text = ", ".join(repr(n) for n in bad_names) if bad_names else "one of them"
     rejections = _reject_tool_calls(
         tool_calls,

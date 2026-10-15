@@ -169,7 +169,17 @@ def should_continue(
 # `graph.check_output(state)` stays directly callable as tests already
 # call it — same shape as should_continue's own defaults. build_graph
 # binds the correct per-domain prompt via functools.partial. ---
-def check_output(state: State, system_prompt: str = SYSTEM_PROMPT) -> dict:
+def check_output(
+    state: State, system_prompt: str = SYSTEM_PROMPT, enforce_citations: bool = True
+) -> dict:
+    """`enforce_citations=False` (a nested subagent run, bound by
+    `build_subagent_graph`) turns the two citation checks off: no uncited or
+    misattributed finding, and no `[n]` marker is ever inserted. A subagent is
+    told NOT to use bracket markers (they would name its own sources, which
+    mean nothing to the parent), so judging or "repairing" its answer by them
+    contradicted its own prompt and put a stray `[1]` in the text handed back.
+    Every other check (footer strip, prompt leak, fabrication, deferral,
+    skipped required tool) still applies."""
     last = state["messages"][-1]
     content = getattr(last, "content", "") or ""
     citations = state.get("citations") or []
@@ -193,7 +203,9 @@ def check_output(state: State, system_prompt: str = SYSTEM_PROMPT) -> dict:
         # allows citing nothing for either case). route_after_check
         # deliberately doesn't retry on this.
         metrics.agent_zero_citations_total.inc()
-    likely_misattributed = _likely_misattributed_citations(content, citations, used)
+    likely_misattributed = (
+        _likely_misattributed_citations(content, citations, used) if enforce_citations else []
+    )
     if likely_misattributed:
         metrics.agent_misattributed_citations_total.inc()
     defers = _defers_instead_of_acting(content)
@@ -216,7 +228,7 @@ def check_output(state: State, system_prompt: str = SYSTEM_PROMPT) -> dict:
     # against the CORRECTED text so every returned field reflects what the
     # user actually sees. Reuses `message_update` so both corrections
     # (footer strip + marker insert) compose onto the same final message.
-    likely_uncited = _likely_uncited_citations(content, citations, used)
+    likely_uncited = _likely_uncited_citations(content, citations, used) if enforce_citations else []
     if likely_uncited:
         corrected_content, fixed = _insert_missing_citation_markers(content, citations, used)
         if fixed:

@@ -50,12 +50,12 @@ class TestRouteAfterValidation:
         state = {"messages": [AIMessage(content="hello")], "ctx": TEST_CTX}
         assert route_after_validation(state) == "reject_input"
 
-    def test_valid_input_goes_to_compact_history_first(self):
+    def test_valid_input_goes_to_moderation_first_and_compaction_waits_for_a_cache_miss(self):
         state = {
             "messages": [HumanMessage(content="What is our refund policy?")],
             "ctx": TEST_CTX,
         }
-        assert route_after_validation(state) == "compact_history"
+        assert route_after_validation(state) == "moderate_input"
 
     def test_uses_last_human_message(self):
         state = {
@@ -66,7 +66,7 @@ class TestRouteAfterValidation:
                 HumanMessage(content="a real question"),
             ]
         }
-        assert route_after_validation(state) == "compact_history"
+        assert route_after_validation(state) == "moderate_input"
 
 
 def _tc_batch(*name_args_pairs, call_id_prefix="c"):
@@ -166,11 +166,11 @@ class TestRouteAfterCompaction:
     compact_history just updated it ends the turn instead of feeding a
     runaway summary into agent() on every future call."""
 
-    def test_within_budget_proceeds_to_moderation(self):
-        assert route_after_compaction({"history_summary": "short"}) == "moderate_input"
+    def test_within_budget_proceeds_to_retrieval(self):
+        assert route_after_compaction({"history_summary": "short"}) == "retrieve_context"
 
-    def test_absent_summary_proceeds_to_moderation(self):
-        assert route_after_compaction({}) == "moderate_input"
+    def test_absent_summary_proceeds_to_retrieval(self):
+        assert route_after_compaction({}) == "retrieve_context"
 
     def test_over_budget_ends_at_context_window_exceeded(self):
         state = {"history_summary": "x" * (MAX_HISTORY_SUMMARY_CHARS + 1)}
@@ -178,18 +178,18 @@ class TestRouteAfterCompaction:
 
     def test_at_exactly_the_limit_still_proceeds(self):
         state = {"history_summary": "x" * MAX_HISTORY_SUMMARY_CHARS}
-        assert route_after_compaction(state) == "moderate_input"
+        assert route_after_compaction(state) == "retrieve_context"
 
 
 class TestRouteAfterCache:
     def test_hit_skips_straight_to_check_output(self):
         assert route_after_cache({"cache_hit": True}) == "check_output"
 
-    def test_miss_proceeds_to_retrieve_context(self):
-        assert route_after_cache({"cache_hit": False}) == "retrieve_context"
+    def test_miss_proceeds_to_compaction_which_precedes_retrieval(self):
+        assert route_after_cache({"cache_hit": False}) == "compact_history"
 
     def test_absent_flag_defaults_to_a_miss(self):
-        assert route_after_cache({}) == "retrieve_context"
+        assert route_after_cache({}) == "compact_history"
 
 
 class TestRouteAfterValidationCtx:
