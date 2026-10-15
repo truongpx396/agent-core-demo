@@ -28,10 +28,10 @@ from langchain_core.messages import (
 from langchain_core.runnables import RunnableConfig
 
 from app.agent.cost import metering
-from app.agent.graph import core as graph_module
 from app.agent.graph.messages import human_text, is_retry_artifact, is_user_message
 from app.agent.graph.state import HISTORY_TOKEN_CEILING, HISTORY_TOKEN_FLOOR, State
 from app.core import gateway, metrics
+from app.core.config import CHAT_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +155,7 @@ def make_compact_history_node(
     llm,
     ceiling: int = HISTORY_TOKEN_CEILING,
     floor: int = HISTORY_TOKEN_FLOOR,
-    model_alias: str | None = None,
+    model_alias: str = CHAT_MODEL,
 ):
     """Factory, same rationale as make_agent_node/make_suggest_followups_node:
     needs an LLM client to turn discarded turns into a running summary
@@ -170,7 +170,7 @@ def make_compact_history_node(
     `ceiling`/`floor` default to the module constants; overridable only so
     tests can trigger the hysteresis behavior with small budgets.
     `model_alias` is the LiteLLM alias `llm` is bound to, used only to price and record its
-    calls (None = the global chat alias), the same meaning it has for `make_agent_node`.
+    calls, the same meaning it has for `make_agent_node`.
     """
 
     async def compact_history(state: State, config: RunnableConfig | None = None) -> dict:
@@ -218,7 +218,7 @@ def make_compact_history_node(
                 [HumanMessage(content=prompt)],
                 config=config,
                 kind="compaction",
-                model_alias=model_alias or graph_module.CHAT_MODEL,
+                model_alias=model_alias,
             )
             response = call.response
             new_summary = (response.content or "").strip()

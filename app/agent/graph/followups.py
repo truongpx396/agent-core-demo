@@ -9,9 +9,9 @@ from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.agent.cost import metering
-from app.agent.graph import core as graph_module
 from app.agent.graph.state import State
 from app.core import gateway
+from app.core.config import CHAT_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ _FOLLOWUP_PROMPT = (
 
 
 # --- Node: follow-up suggestions (GRAPH_PATTERNS.md pattern 27) ---
-def make_suggest_followups_node(llm, model_alias: str | None = None):
+def make_suggest_followups_node(llm, model_alias: str = CHAT_MODEL):
     """Factory, same rationale as make_agent_node: needs an LLM client.
 
     Only reached once a turn is confirmed final (route_after_check's
@@ -59,7 +59,7 @@ def make_suggest_followups_node(llm, model_alias: str | None = None):
                 [HumanMessage(content=_FOLLOWUP_PROMPT.format(answer=content))],
                 config=config,
                 kind="followups",
-                model_alias=model_alias or graph_module.CHAT_MODEL,
+                model_alias=model_alias,
             )
             response = call.response
             lines = [

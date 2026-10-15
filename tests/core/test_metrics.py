@@ -15,9 +15,8 @@ import uuid
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent.graph import core as graph
 from app.agent.graph.build import GraphDeps
-from app.agent.graph.hitl import human_approval
+from app.agent.graph.hitl import make_human_approval_node
 from app.agent.graph.retrieval import make_retrieve_context_node
 from app.agent.graph.retry import retry_output
 from app.agent.graph.tool_guards import tool_batch_guard
@@ -48,7 +47,7 @@ class TestNodeLevelMetrics:
         assert _count(metrics.agent_retry_total) == before + 1
 
     def test_human_approval_approved_increments_with_correct_label(self, monkeypatch):
-        monkeypatch.setattr(graph, "interrupt", lambda payload: True)
+        human_approval = make_human_approval_node(lambda payload: True)
         before = _count(metrics.agent_human_approval_total, decision="approved")
         ai = _tool_call_message("calculator", {"expression": "1+1"})
         human_approval({"messages": [ai]})
@@ -58,7 +57,7 @@ class TestNodeLevelMetrics:
         )
 
     def test_human_approval_rejected_increments_with_correct_label(self, monkeypatch):
-        monkeypatch.setattr(graph, "interrupt", lambda payload: False)
+        human_approval = make_human_approval_node(lambda payload: False)
         before = _count(metrics.agent_human_approval_total, decision="rejected")
         ai = _tool_call_message("calculator", {"expression": "1+1"})
         human_approval({"messages": [ai]})

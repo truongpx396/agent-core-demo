@@ -1,22 +1,12 @@
-"""Generic infrastructure helpers with no dependency on any node's own
-logic: `instrumented` (structured lifecycle logging wrapper applied at
-graph-registration time), `friendly_tool_error` (ToolNode's
-error-recovery formatter), `make_llm` (the production `ChatOpenAI`
-client factory), and `content_words` (a crude word-overlap helper
-shared by `app/agent/graph/core.py`'s vague-query check and `graph/routing.py`'s
-citation-grounding check). Split out of `app/agent/graph/core.py` for file
-size (see `graph/hitl.py`/`graph/routing.py`/`graph/tool_guards.py`/
-`graph/skill_guards.py` for sibling splits); no behavior change.
+"""Generic infrastructure helpers with no dependency on any node's own logic:
+`instrumented` (structured lifecycle logging wrapper applied at graph-registration time),
+`friendly_tool_error` (ToolNode's error-recovery formatter) and `make_llm` (the production
+`ChatOpenAI` client factory).
 
-`content_words` is read back into `app/agent/graph/core.py`'s `retrieval_query` via a
-deferred import to avoid a circular import.
-
-`make_llm` reads `CHAT_MODEL`/`OPENAI_API_BASE`/`OPENAI_API_KEY` through
-`graph_module.X` rather than a static bare import — several `tests/live/*`
-files monkeypatch these as attributes on the live `graph` module object,
-which a bare `from X import Y` would miss (copies the reference once, at
-import time). Same fix as `graph/hitl.py`'s `graph_module.interrupt`/
-`STATE_SCHEMA_VERSION`.
+`make_llm` takes the model, endpoint and key as arguments, defaulting to the configured ones. A
+caller that wants a different endpoint (a test pointing the graph at a local Ollama) passes it:
+`GraphDeps(llm_factory=functools.partial(make_llm, model=..., base_url=...))`. There is no module
+global to monkeypatch.
 """
 import asyncio
 import functools
@@ -27,7 +17,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.errors import GraphBubbleUp
 from pydantic import SecretStr
 
-from app.agent.graph import core as graph_module
+from app.core.config import CHAT_MODEL, OPENAI_API_BASE, OPENAI_API_KEY
 from app.core.tool_idempotency import MutatingToolTimedOut
 
 logger = logging.getLogger(__name__)
@@ -170,11 +160,17 @@ def friendly_tool_error(error: Exception) -> str:
     return f"Tool failed ({type(error).__name__}: {error}). Try a different approach."
 
 
-def make_llm(tools: list):
+def make_llm(
+    tools: list,
+    *,
+    model: str = CHAT_MODEL,
+    base_url: str = OPENAI_API_BASE,
+    api_key: str = OPENAI_API_KEY,
+):
     return ChatOpenAI(
-        model=graph_module.CHAT_MODEL,
-        base_url=graph_module.OPENAI_API_BASE,
-        api_key=SecretStr(graph_module.OPENAI_API_KEY),
+        model=model,
+        base_url=base_url,
+        api_key=SecretStr(api_key),
         temperature=0,
         # astream_events (app/agent/runtime/stream.py's astream_events_turn) forces this
         # model through its streaming code path even though agent() calls

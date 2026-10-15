@@ -202,7 +202,7 @@ def reset_agent_singleton(monkeypatch):
     Also resets subagent_tools' own `_subagent_graph_cache`: this file's
     TestSubagentCallUnderConcurrency drives the REAL `run_subagent` tool
     (`use_cache=True` on every production call), monkeypatching
-    `tools_module.ChatOpenAI` rather than DI-ing a fake `llm=` in directly —
+    `subagent_tools.make_llm` rather than DI-ing a fake `llm=` in directly —
     without this reset, the first test to exercise it here would
     permanently cache a test-scoped fake ChatOpenAI under the real
     `("ecorp", "researcher")` key, silently serving it to every later
@@ -886,7 +886,7 @@ class TestSubagentCallUnderConcurrency:
             return AIMessage(content=f"Nested result for: {_last_human_text(messages)}")
 
         monkeypatch.setattr(
-            tools_module, "ChatOpenAI", lambda *args, **kwargs: _echoing_llm(_nested_respond)
+            subagent_tools, "make_llm", lambda *args, **kwargs: _echoing_llm(_nested_respond)
         )
 
         def _top_respond(messages: list[BaseMessage]) -> AIMessage:
@@ -946,8 +946,8 @@ class TestSubagentCallUnderConcurrency:
         graph superstep, not racing/clobbering each other the way a plain
         overwrite field would."""
         monkeypatch.setattr(
-            tools_module,
-            "ChatOpenAI",
+            subagent_tools,
+            "make_llm",
             lambda *args, **kwargs: _echoing_llm(lambda msgs: AIMessage(content="nested done")),
         )
 

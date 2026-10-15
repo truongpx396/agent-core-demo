@@ -7,10 +7,10 @@ The tool the model sees is built per domain by `make_domain_subagent_tool`
 (`app/agent/tools/run_subagent_domain.py`), which resolves the registry against that domain's own
 tool universe and calls `run_subagent_impl`. Every domain, Ecorp included, goes through it.
 
-`run_subagent_impl` reads `ChatOpenAI` via `tools_module.ChatOpenAI`, not a statically-imported
-bare name: `tests/agent/runtime/test_concurrent_turns.py` patches it on
-`app.agent.tools.builtin`, and a bare import would bind the original class once at import time and
-silently defeat that.
+The nested run's chat client comes from `make_llm`, the same factory the main graph uses, unless the
+caller passes `llm=`. A test that drives the real `run_subagent` tool through a real graph and needs
+a fake client replaces `make_llm` in THIS module (where it is used), as
+`tests/agent/runtime/test_concurrent_turns.py` does.
 """
 import re
 import time
@@ -21,21 +21,18 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
-from pydantic import SecretStr
 
 from app.agent.cost import pricing
 from app.agent.graph.build import GraphDeps, build_subagent_graph
 from app.agent.graph.state import MAX_SUBAGENT_ITERATIONS, MAX_SUBAGENT_TOKENS_PER_RUN
+from app.agent.graph.utils import make_llm
 from app.agent.manifest import AgentManifest
-from app.agent.tools import builtin as tools_module
 from app.agent.tools import subagent_catalog as subagents_module
 from app.agent.tools.builtin import logger
 from app.core import metrics
 from app.core.config import (
     CHAT_MODEL,
     MAX_SUBAGENT_COST_USD_PER_RUN,
-    OPENAI_API_BASE,
-    OPENAI_API_KEY,
     SUBAGENT_TIMEOUT_SECONDS,
 )
 from app.core.scrubbing import scrub
@@ -293,13 +290,7 @@ async def run_subagent_impl(
     if use_cache and cache_key in _subagent_graph_cache:
         nested_graph = _subagent_graph_cache[cache_key]
     else:
-        nested_llm = llm if llm is not None else tools_module.ChatOpenAI(
-            model=record.model or CHAT_MODEL,
-            base_url=OPENAI_API_BASE,
-            api_key=SecretStr(OPENAI_API_KEY),
-            temperature=0,
-            stream_usage=True,
-        ).bind_tools(nested_tools)
+        nested_llm = llm if llm is not None else make_llm(nested_tools, model=record.model or CHAT_MODEL)
 
         nested_manifest = AgentManifest(name=record.name, system_prompt=nested_system_prompt)
         nested_domain = _SubagentDomainPlugin(nested_tools)

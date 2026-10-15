@@ -27,12 +27,7 @@ from typing import TYPE_CHECKING, Literal
 
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
-
-# `interrupt` is unused here directly (moved to graph/hitl.py's
-# human_approval) but re-exported deliberately: graph/hitl.py reads it as
-# `graph_module.interrupt` so tests' `monkeypatch.setattr(graph,
-# "interrupt", ...)` keep working. Don't remove this import.
-from langgraph.types import RetryPolicy, default_retry_on, interrupt  # noqa: F401
+from langgraph.types import RetryPolicy, default_retry_on
 
 from app.agent.graph.messages import (
     human_has_content,
@@ -45,16 +40,6 @@ from app.agent.graph.state import (
     State,
 )
 from app.core import gateway, metrics, moderation
-
-# OPENAI_API_BASE/OPENAI_API_KEY: same re-export reasoning as `interrupt`
-# above — graph/utils.py's `make_llm` and tests/live/* monkeypatches read
-# them live off this module. Don't remove.
-from app.core.config import (  # noqa: F401
-    CHAT_MODEL,
-    MAX_COST_USD_PER_TURN,
-    OPENAI_API_BASE,
-    OPENAI_API_KEY,
-)
 from app.core.security import valid_ctx
 
 if TYPE_CHECKING:

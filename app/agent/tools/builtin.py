@@ -48,14 +48,6 @@ from typing import Literal
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
-
-# `ChatOpenAI` isn't constructed in THIS file anymore (moved to
-# tools/run_subagent.py's `run_subagent_impl` fallback) — kept as a deliberate
-# re-export: tools/run_subagent.py reads it live as `tools_module.ChatOpenAI`
-# rather than importing it fresh, so tests/agent/runtime/test_concurrent_turns.py's
-# `monkeypatch.setattr(tools_module, "ChatOpenAI", ...)` keeps working. Don't
-# "clean up" this import.
-from langchain_openai import ChatOpenAI  # noqa: F401
 from pydantic import BaseModel, Field, field_validator
 
 from app.agent.tools import skill_catalog as skills_module

@@ -1504,19 +1504,19 @@ def test_retry_output_prefers_fabricated_complaint_over_skipped_tool_complaint()
 class TestHumanApproval:
     """`human_approval` calls `interrupt()`, which suspends the whole graph
     run outside of a compiled-graph context — so these node-level tests
-    patch it directly. The real pause/resume cycle through a compiled graph
-    is covered in test_graph_integration.py."""
+    build the node over a stand-in for it (`make_human_approval_node`). The real
+    pause/resume cycle through a compiled graph is covered in test_graph_integration.py."""
 
     @staticmethod
     def _ai_with_tool_calls(*calls):
         return AIMessage(content="", tool_calls=list(calls))
 
     def test_approved_sets_approved_flag(self, monkeypatch):
-        monkeypatch.setattr(graph, "interrupt", lambda payload: True)
+        human_approval = graph_hitl.make_human_approval_node(lambda payload: True)
         ai = self._ai_with_tool_calls(
             {"name": "search_docs", "args": {"query": "x"}, "id": "call_1"}
         )
-        result = graph_hitl.human_approval({"messages": [ai]})
+        result = human_approval({"messages": [ai]})
         assert result == {"approved": True}
 
     def test_cancelled_synthesizes_tool_message_and_sets_cancelled_flag(self, monkeypatch):
@@ -1524,11 +1524,11 @@ class TestHumanApproval:
         from both approved and rejected: `cancelled: True`, not just
         `approved: False`, is what route_after_approval needs to send
         this straight to __end__ instead of back to `agent`."""
-        monkeypatch.setattr(graph, "interrupt", lambda payload: graph_hitl.CANCEL_SENTINEL)
+        human_approval = graph_hitl.make_human_approval_node(lambda payload: graph_hitl.CANCEL_SENTINEL)
         ai = self._ai_with_tool_calls(
             {"name": "add_note", "args": {"title": "T", "content": "C", "topic": "company"}, "id": "call_1"}
         )
-        result = graph_hitl.human_approval({"messages": [ai]})
+        result = human_approval({"messages": [ai]})
 
         assert result["approved"] is False
         assert result["cancelled"] is True
@@ -1541,12 +1541,12 @@ class TestHumanApproval:
         GRAPH_PATTERNS.md: every pending tool_call needs a matching
         ToolMessage, or the next LLM call fails OpenAI's tool-response
         validation."""
-        monkeypatch.setattr(graph, "interrupt", lambda payload: False)
+        human_approval = graph_hitl.make_human_approval_node(lambda payload: False)
         ai = self._ai_with_tool_calls(
             {"name": "search_docs", "args": {"query": "x"}, "id": "call_1"},
             {"name": "calculator", "args": {"expression": "1+1"}, "id": "call_2"},
         )
-        result = graph_hitl.human_approval({"messages": [ai]})
+        result = human_approval({"messages": [ai]})
 
         assert result["approved"] is False
         assert len(result["messages"]) == 2
@@ -1561,11 +1561,11 @@ class TestHumanApproval:
             seen.update(payload)
             return True
 
-        monkeypatch.setattr(graph, "interrupt", fake_interrupt)
+        human_approval = graph_hitl.make_human_approval_node(fake_interrupt)
         ai = self._ai_with_tool_calls(
             {"name": "search_docs", "args": {"query": "x"}, "id": "call_1"}
         )
-        graph_hitl.human_approval({"messages": [ai]})
+        human_approval({"messages": [ai]})
 
         assert seen["action"] == "approve_tool_calls"
         assert seen["tool_calls"] == [{"name": "search_docs", "args": {"query": "x"}}]

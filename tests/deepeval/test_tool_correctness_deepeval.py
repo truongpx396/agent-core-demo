@@ -82,11 +82,10 @@ import uuid
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent.graph import core as graph_module
-from app.agent.graph.build import GraphDeps
 from app.ingestion import web_crawler
 from tests.conftest import TEST_CTX
 from tests.ecorp import build_graph
+from tests.ollama import ollama_deps
 from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.deepeval
@@ -110,13 +109,7 @@ async def _real_search(query: str, ctx=None) -> tuple[str, list[dict]]:
     return _CONTEXT, _CITATIONS
 
 
-@pytest.fixture(autouse=True)
-def real_ollama_chat_model(monkeypatch, deepeval_ollama):
-    monkeypatch.setattr(graph_module, "CHAT_MODEL", deepeval_ollama["model"])
-    monkeypatch.setattr(graph_module, "OPENAI_API_BASE", deepeval_ollama["openai_api_base"])
-
-
-async def _run_and_get_tool_calls(question: str, manifest=None, domain=None, auto_approve: bool = False):
+async def _run_and_get_tool_calls(endpoint: dict, question: str, manifest=None, domain=None, auto_approve: bool = False):
     """Shared by every test below: build a fresh graph/thread, seed it
     properly (see tests/seeding.py's own `seed_thread` docstring —
     this is exactly the test file that surfaced why that matters), run one
@@ -144,7 +137,7 @@ async def _run_and_get_tool_calls(question: str, manifest=None, domain=None, aut
     from deepeval.test_case import ToolCall
     from langgraph.types import Command
 
-    graph = build_graph(GraphDeps(search_docs=_real_search), manifest=manifest, domain=domain)
+    graph = build_graph(ollama_deps(endpoint, search_docs=_real_search), manifest=manifest, domain=domain)
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
     await seed_thread(graph, config["configurable"]["thread_id"])
     result = await graph.ainvoke(
@@ -177,7 +170,7 @@ async def test_search_docs_tool_call_is_correct_and_well_argued(deepeval_ollama,
     from deepeval.test_case import LLMTestCase, ToolCall
 
     question = "What are Ecorp's support hours?"
-    answer, tools_called = await _run_and_get_tool_calls(question)
+    answer, tools_called = await _run_and_get_tool_calls(deepeval_ollama, question)
 
     judge = deepeval_judge
     test_case = LLMTestCase(
@@ -213,7 +206,7 @@ async def test_calculator_tool_call_is_correct_and_well_argued(deepeval_ollama, 
     from deepeval.test_case import LLMTestCase, ToolCall
 
     question = "What is 12 times 7?"
-    answer, tools_called = await _run_and_get_tool_calls(question)
+    answer, tools_called = await _run_and_get_tool_calls(deepeval_ollama, question)
 
     judge = deepeval_judge
     test_case = LLMTestCase(
@@ -246,7 +239,7 @@ async def test_query_employees_tool_call_is_correct_and_well_argued(deepeval_oll
     from deepeval.test_case import LLMTestCase, ToolCall
 
     question = "Who works in the Sales department at Ecorp?"
-    answer, tools_called = await _run_and_get_tool_calls(question)
+    answer, tools_called = await _run_and_get_tool_calls(deepeval_ollama, question)
 
     judge = deepeval_judge
     test_case = LLMTestCase(
@@ -287,7 +280,7 @@ async def test_skill_tool_calls_are_correct_and_well_argued(deepeval_ollama, dee
     from deepeval.test_case import LLMTestCase, ToolCall
 
     question = "Can you put together an onboarding brief for a new hire named Alex Rivera?"
-    answer, tools_called = await _run_and_get_tool_calls(question)
+    answer, tools_called = await _run_and_get_tool_calls(deepeval_ollama, question)
 
     judge = deepeval_judge
     test_case = LLMTestCase(
@@ -335,7 +328,7 @@ async def test_subagent_delegation_is_correct_and_well_argued(deepeval_ollama, d
         "Look up Ecorp's support hours for me — I don't need to see how "
         "you found it, just the answer."
     )
-    answer, tools_called = await _run_and_get_tool_calls(question)
+    answer, tools_called = await _run_and_get_tool_calls(deepeval_ollama, question)
 
     judge = deepeval_judge
     test_case = LLMTestCase(
@@ -412,6 +405,7 @@ async def test_fetch_external_reference_tool_call_is_correct_and_well_argued(
 
     question = "A customer linked this page and asked if it explains their issue: https://example.com"
     answer, tools_called = await _run_and_get_tool_calls(
+        deepeval_ollama,
             question, manifest=SUPPORT_MANIFEST, domain=SUPPORT_DOMAIN_PLUGIN, auto_approve=True
         )
 

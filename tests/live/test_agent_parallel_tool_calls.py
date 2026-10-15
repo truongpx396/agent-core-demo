@@ -27,22 +27,12 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
-from app.agent.graph import core as graph_module
-from app.agent.graph.build import GraphDeps
 from tests.conftest import TEST_CTX
 from tests.ecorp import build_graph
+from tests.ollama import ollama_deps
 from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.llm
-
-
-@pytest.fixture(autouse=True)
-def real_ollama_chat_model(monkeypatch, ollama_endpoint):
-    """Same wiring as test_agent_tool_calling.py's fixture of the same
-    name — see that file's docstring for why this patches graph_module's
-    OWN bindings rather than app.core.config's."""
-    monkeypatch.setattr(graph_module, "CHAT_MODEL", ollama_endpoint["model"])
-    monkeypatch.setattr(graph_module, "OPENAI_API_BASE", ollama_endpoint["openai_api_base"])
 
 
 @pytest.fixture(autouse=True)
@@ -64,8 +54,8 @@ def _stub_add_note_io(monkeypatch):
     monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
 
-async def _invoke_and_approve(text: str):
-    graph = build_graph(GraphDeps())
+async def _invoke_and_approve(endpoint: dict, text: str):
+    graph = build_graph(ollama_deps(endpoint))
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
     # Seed the system prompt before the first real turn — see
     # tests/seeding.py's own `seed_thread` docstring; a test calling
@@ -78,7 +68,7 @@ async def _invoke_and_approve(text: str):
     return graph, config, paused_state, result
 
 
-async def test_real_model_calls_two_tools_in_one_turn_and_both_run_after_approval():
+async def test_real_model_calls_two_tools_in_one_turn_and_both_run_after_approval(ollama_endpoint):
     graph, config, paused_state, result = await _invoke_and_approve(
         "What is 15 * 3? Use the calculator tool for that. Also use the "
         "add_note tool right now to save a note with title 'Demo', topic "

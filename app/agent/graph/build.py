@@ -32,6 +32,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
+from langgraph.types import interrupt
 
 from app.agent.graph.agent_node import make_agent_node
 from app.agent.graph.cache import (
@@ -53,7 +54,7 @@ from app.agent.graph.core import (
     validate_input,
 )
 from app.agent.graph.followups import make_suggest_followups_node
-from app.agent.graph.hitl import human_approval, route_after_approval
+from app.agent.graph.hitl import make_human_approval_node, route_after_approval
 from app.agent.graph.retrieval import make_retrieve_context_node
 from app.agent.graph.retry import (
     make_no_answer_fallback_node,
@@ -71,7 +72,7 @@ from app.agent.graph.state import (
 from app.agent.graph.tool_guards import tool_batch_guard
 from app.agent.graph.utils import friendly_tool_error, instrumented, make_llm
 from app.agent.tools import builtin
-from app.core.config import MAX_COST_USD_PER_TURN
+from app.core.config import CHAT_MODEL, MAX_COST_USD_PER_TURN
 from app.core.security import SecurityCtx
 from app.retrieval import semantic_cache
 
@@ -133,6 +134,13 @@ class GraphDeps:
     cache_set: (
         Callable[["SecurityCtx | None", str, str, list[dict]], Awaitable[None]] | None
     ) = None
+    # Builds the chat client from the domain's tools when `llm` is unset (default: `make_llm`, the
+    # configured endpoint). A test pointing the graph at a local Ollama passes
+    # `functools.partial(make_llm, model=..., base_url=...)` here instead of patching a module.
+    llm_factory: Callable[[list], Any] | None = None
+    # The function that pauses the graph at `human_approval` (default: langgraph's `interrupt`). A
+    # test that wants an approval decision without driving a real pause passes a stand-in.
+    interrupt: Callable[[Any], Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -224,7 +232,8 @@ def build_graph(
     tool_capabilities = domain.tool_capabilities()
     valid_tool_names = frozenset(t.name for t in domain_tools)
 
-    llm_client = deps.llm or make_llm(domain_tools)
+    llm_client = deps.llm or (deps.llm_factory or make_llm)(domain_tools)
+    model_alias = deps.model_alias or CHAT_MODEL
 
     # Plain module-level functions bound to THIS domain with functools.partial, not factories:
     # they stay directly callable from tests with just `state` (and the domain's values), and
@@ -247,7 +256,7 @@ def build_graph(
 
     agent = make_agent_node(
         llm_client,
-        model_alias=deps.model_alias,
+        model_alias=model_alias,
         kind=deps.meter_kind,
         citation_reminder=profile.enforce_citations,
     )
@@ -284,7 +293,7 @@ def build_graph(
     # same bug (pattern 7).
     add("agent", agent, retry=AGENT_RETRY_POLICY)
     add("tools", run_tools)
-    add("human_approval", human_approval)
+    add("human_approval", make_human_approval_node(deps.interrupt or interrupt))
     add("tool_batch_guard", domain_tool_batch_guard)
     add("check_output", domain_check_output)
     add("retry_output", retry_output)
@@ -315,13 +324,13 @@ def build_graph(
                 llm_client,
                 ceiling=history_token_ceiling if history_token_ceiling is not None else HISTORY_TOKEN_CEILING,
                 floor=history_token_floor if history_token_floor is not None else HISTORY_TOKEN_FLOOR,
-                model_alias=deps.model_alias,
+                model_alias=model_alias,
             ),
         )
         add("context_window_exceeded", context_window_exceeded)
     if profile.include_followups:
         # Same: a tool-bound client asked a plain question just answers it.
-        add("suggest_followups", make_suggest_followups_node(llm_client, model_alias=deps.model_alias))
+        add("suggest_followups", make_suggest_followups_node(llm_client, model_alias=model_alias))
 
     # Where each stage hands off when the optional ones after it are absent.
     after_cache_miss = "compact_history" if profile.include_compaction else "retrieve_context"

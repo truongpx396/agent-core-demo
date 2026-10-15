@@ -80,10 +80,9 @@ import uuid
 import pytest
 from langchain_core.messages import HumanMessage
 
-from app.agent.graph import core as graph_module
-from app.agent.graph.build import GraphDeps
 from tests.conftest import TEST_CTX
 from tests.ecorp import build_graph
+from tests.ollama import ollama_deps
 from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.deepeval
@@ -116,19 +115,13 @@ async def _real_search(query: str, ctx=None) -> tuple[str, list[dict]]:
     return _CONTEXT, _CITATIONS
 
 
-@pytest.fixture(autouse=True)
-def real_ollama_chat_model(monkeypatch, deepeval_ollama):
-    monkeypatch.setattr(graph_module, "CHAT_MODEL", deepeval_ollama["model"])
-    monkeypatch.setattr(graph_module, "OPENAI_API_BASE", deepeval_ollama["openai_api_base"])
-
-
-async def _seed_and_answer(question: str) -> str:
+async def _seed_and_answer(endpoint: dict, question: str) -> str:
     """Shared by every test below: fresh graph/thread, seed it properly
     (see tests/seeding.py's own `seed_thread` docstring — without
     this, `build_graph().ainvoke()` never triggers the SYSTEM_PROMPT
     seeding every production path relies on), run one turn, return the
     final answer text."""
-    graph = build_graph(GraphDeps(search_docs=_real_search))
+    graph = build_graph(ollama_deps(endpoint, search_docs=_real_search))
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
     await seed_thread(graph, config["configurable"]["thread_id"])
     result = await graph.ainvoke(
@@ -146,7 +139,7 @@ async def test_grounded_answer_is_faithful_and_relevant_by_a_real_llm_judge(deep
     question = "What are Ecorp's support hours, and how long do refunds take once approved?"
     # asyncio.run(...), not the sync .invoke() this used to be — see
     # app/agent/graph/core.py: agent/retrieve_context/etc. are async def now.
-    answer = await _seed_and_answer(question)
+    answer = await _seed_and_answer(deepeval_ollama, question)
 
     judge = deepeval_judge
     test_case = LLMTestCase(
@@ -182,7 +175,7 @@ async def test_ungrounded_question_is_answered_without_hallucination(deepeval_ol
     from deepeval.test_case import LLMTestCase
 
     question = "What was Ecorp's total revenue last year?"
-    answer = await _seed_and_answer(question)
+    answer = await _seed_and_answer(deepeval_ollama, question)
 
     judge = deepeval_judge
     test_case = LLMTestCase(

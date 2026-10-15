@@ -1,19 +1,11 @@
 """`make_agent_node` — the node that calls the LLM, injecting retrieved
 context/history-summary/skill reminders as extra SystemMessages around the
-turn's real question. Split out of app/agent/graph/core.py purely for file size; see
-graph/retrieval.py/graph_cache.py for sibling splits. No behavior change.
-
-Reads `CHAT_MODEL` via `graph_module.CHAT_MODEL`, not a static import —
-several tests/live and tests/deepeval files monkeypatch
-`graph_module.CHAT_MODEL` directly, which a statically-imported bare name
-would never see (binds once, at import time). Same pattern as
-graph/utils.py's `make_llm`.
+turn's real question.
 """
 from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.agent.cost import metering
-from app.agent.graph import core as graph_module
 from app.agent.graph.messages import (
     current_turn_messages,
     is_retry_artifact,
@@ -21,12 +13,13 @@ from app.agent.graph.messages import (
 )
 from app.agent.graph.skill_guards import pending_skill_required_tool
 from app.agent.graph.state import State
+from app.core.config import CHAT_MODEL
 from app.core.untrusted import frame_untrusted
 
 
 # --- Node: agent ---
 def make_agent_node(
-    llm, model_alias: str | None = None, kind: str = "chat", citation_reminder: bool = True
+    llm, model_alias: str = CHAT_MODEL, kind: str = "chat", citation_reminder: bool = True
 ):
     """Factory, not a plain function, because `agent` needs an LLM client.
     Tests build it with a fake (e.g. GenericFakeChatModel) via
@@ -34,8 +27,8 @@ def make_agent_node(
     message-assembly logic without a network call.
 
     `model_alias` is the LiteLLM alias `llm` is bound to, used only to price its
-    calls; None means the global chat alias (read at call time, see the module
-    docstring).
+    calls. `build_graph` resolves it (`GraphDeps.model_alias`, else the configured
+    chat alias); a caller building the node directly passes its own.
 
     `citation_reminder=False` (a nested subagent run) leaves out the tail
     reminder that every sentence must end with a `[n]` marker. A subagent's
@@ -188,7 +181,7 @@ def make_agent_node(
             messages,
             config=config,
             kind=kind,
-            model_alias=model_alias or graph_module.CHAT_MODEL,
+            model_alias=model_alias,
         )
         response, usage = call.response, call.usage
 
