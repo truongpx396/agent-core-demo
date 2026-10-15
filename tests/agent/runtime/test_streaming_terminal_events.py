@@ -26,13 +26,13 @@ from types import SimpleNamespace
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
-from app.agent.graph.build import build_graph
+from app.agent.graph.build import GraphDeps
 from app.agent.graph.compaction import _estimate_tokens
-from app.agent.graph.core import GraphDeps
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
 from app.core import moderation
 from tests.conftest import TEST_CTX
+from tests.ecorp import build_graph
 
 
 async def _events_for(graph_obj, text, thread_id=None, ctx=TEST_CTX, monkeypatch=None):
@@ -424,7 +424,7 @@ class TestRetryExhaustedTrustsAttributionOnlyFailures:
 
 class TestCheckOutputCitationAutoCorrectionStreaming:
     """check_output's own citation auto-correction
-    (_insert_missing_citation_markers, app/agent/graph/core.py) mechanically edits an
+    (insert_missing_citation_markers, app/agent/graph/core.py) mechanically edits an
     already-streamed answer — the SAME "tokens already reached the client
     before the graph changed them" problem retry_exhausted's in-place
     replacement (TestRetryExhaustedReplacesAlreadyStreamedContent above)
@@ -703,7 +703,7 @@ class TestAGraphFailureNeverLeaksItsMessageToTheCaller:
 class TestSubagentEventsDontLeakIntoTheMainStream:
     """_run_graph_stream (app/agent/runtime/stream.py) threads this turn's own
     callbacks/metadata into a subagent's NESTED graph.invoke() (see
-    app/agent/tools/builtin.py::_run_subagent_impl's `nested_config`) so its
+    app/agent/tools/builtin.py::run_subagent_impl's `nested_config`) so its
     internal LLM/tool calls trace correctly — but that nested graph is
     built via this exact same build_graph(), so it ALSO has a node named
     "agent". Without the `metadata.subagent_name` guard added alongside

@@ -15,12 +15,12 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.agent.cost import pricing
 from app.agent.graph.agent_node import make_agent_node
-from app.agent.graph.build import build_graph
+from app.agent.graph.build import GraphDeps
 from app.agent.graph.compaction import _estimate_tokens, make_compact_history_node
-from app.agent.graph.core import GraphDeps
 from app.agent.graph.followups import make_suggest_followups_node
 from tests.agent.graph.test_graph_integration import TestHistorySummarization, _config
 from tests.conftest import TEST_CTX
+from tests.ecorp import build_graph
 
 CONFIG = {"configurable": {"ctx": TEST_CTX, "thread_id": "thread-1"}}
 

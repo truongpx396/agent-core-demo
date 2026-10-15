@@ -35,32 +35,16 @@ import uuid
 import pytest
 from langchain_core.messages import HumanMessage
 
-from app.agent.graph import core as graph_module
-from app.agent.graph.build import build_graph
-from app.agent.graph.core import GraphDeps
 from tests.conftest import TEST_CTX
+from tests.ecorp import build_graph
+from tests.ollama import ollama_deps
 from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.llm
 
 
-@pytest.fixture(autouse=True)
-def real_ollama_chat_model(monkeypatch, ollama_endpoint):
-    """Points app/agent/graph/utils.py's OWN `_make_llm` at the real Ollama
-    container — `graph.CHAT_MODEL`/`graph.OPENAI_API_BASE` specifically
-    (that module's `from app.core.config import CHAT_MODEL, OPENAI_API_BASE`
-    bindings, not `app.core.config`'s own — same "a `from X import Y`
-    binding is a separate reference" reasoning tests/conftest.py's docstring
-    already spells out for `get_connection`), so `build_graph(GraphDeps())`
-    below — `deps.llm` left unset — falls through to a REAL, tool-bound
-    `ChatOpenAI` exactly the way production does, no hand-duplicated client
-    construction here."""
-    monkeypatch.setattr(graph_module, "CHAT_MODEL", ollama_endpoint["model"])
-    monkeypatch.setattr(graph_module, "OPENAI_API_BASE", ollama_endpoint["openai_api_base"])
-
-
-async def _invoke_async(text: str) -> dict:
-    graph = build_graph(GraphDeps())
+async def _invoke_async(endpoint: dict, text: str) -> dict:
+    graph = build_graph(ollama_deps(endpoint))
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
     # Seed the system prompt before the first real turn — see
     # tests/seeding.py's own `seed_thread` docstring for why this is
@@ -74,15 +58,15 @@ async def _invoke_async(text: str) -> dict:
     return await graph.ainvoke({"messages": [HumanMessage(content=text)]}, config=config)
 
 
-async def _invoke(text: str) -> dict:
+async def _invoke(endpoint: dict, text: str) -> dict:
     # asyncio.run(...), not the sync .invoke() this used to be: the graph's
     # agent/retrieve_context/etc. nodes are async def now (real LLM/Redis/
     # Qdrant I/O — see app/agent/graph/core.py), and LangGraph's sync Pregel loop
     # can't run an async-only node at all.
-    return await _invoke_async(text)
+    return await _invoke_async(endpoint, text)
 
 
-async def test_real_model_uses_the_calculator_tool_and_returns_the_right_answer():
+async def test_real_model_uses_the_calculator_tool_and_returns_the_right_answer(ollama_endpoint):
     """Used to mirror scripts/eval.py's GOLDEN_CASES `calculator_basic`
     case, retired from there 2026-09-16 (see this file's own module
     docstring) — this smoke test stays regardless, since it's testing a
@@ -90,7 +74,7 @@ async def test_real_model_uses_the_calculator_tool_and_returns_the_right_answer(
     case ever was."""
     from langchain_core.messages import AIMessage
 
-    result = await _invoke("what is 21 * 2? Use the calculator tool.")
+    result = await _invoke(ollama_endpoint, "what is 21 * 2? Use the calculator tool.")
 
     tool_calls_made = {
         tc["name"]
@@ -104,11 +88,11 @@ async def test_real_model_uses_the_calculator_tool_and_returns_the_right_answer(
     assert "42" in answer, f"expected '42' in the final answer; got: {answer!r}"
 
 
-async def test_real_model_answers_a_plain_question_without_a_tool_call():
+async def test_real_model_answers_a_plain_question_without_a_tool_call(ollama_endpoint):
     """Mirrors scripts/eval.py's GOLDEN_CASES `general_knowledge_no_tool_needed`
     case — proves the real model doesn't reach for a tool it doesn't need,
     not just that it CAN call one when it does."""
-    result = await _invoke("In one sentence, what is the capital of France?")
+    result = await _invoke(ollama_endpoint, "In one sentence, what is the capital of France?")
 
     answer = result["messages"][-1].content
 

@@ -7,7 +7,7 @@ either package's own conftest.
 A real, disclosed finding from actually running one of these tests, not
 assumed: `app/agent/graph/core.py`'s own `agent()` node docstring says the base
 SYSTEM_PROMPT "is seeded once per thread by
-app/agent/runtime/core.py::_ensure_seeded_async before the graph ever runs, so
+app/agent/runtime/core.py::ensure_seeded_async before the graph ever runs, so
 we don't repeat it here" — every production path (API, Telegram,
 agent-worker) goes through that seeding via `app/agent/runtime/core.py`'s own
 `astream_events_turn`/`_unattended`, but a test that calls
@@ -21,12 +21,12 @@ LangChain always sends regardless of SystemMessage presence). This means
 every test in `tests/live/`/`tests/deepeval/`, and `scripts/eval.py`'s own
 release-gating golden dataset, had been exercising an UN-GUIDED agent this
 whole time, not the one real users actually get — reused
-`app.agent.runtime.core._ensure_seeded_async` directly rather than re-deriving
+`app.agent.runtime.core.ensure_seeded_async` directly rather than re-deriving
 the seeding logic (it reads `graph.manifest.system_prompt`, the correct
 prompt for whatever domain `graph` was actually built for, and is
 safe/idempotent to call before every turn, not just the first).
 """
-from app.agent.runtime.core import _ensure_seeded_async
+from app.agent.runtime.core import ensure_seeded_async
 
 
 async def seed_thread(graph, thread_id: str) -> None:
@@ -34,7 +34,7 @@ async def seed_thread(graph, thread_id: str) -> None:
     real turn — see this module's own docstring for why this is required
     for a test that calls `build_graph().ainvoke()`/`.astream()` directly.
     Thin wrapper, not a reimplementation: delegates straight to
-    `app.agent.runtime.core._ensure_seeded_async`, the exact function every
+    `app.agent.runtime.core.ensure_seeded_async`, the exact function every
     production path already relies on, so this can never drift out of
     sync with what real users actually get."""
-    await _ensure_seeded_async(graph, thread_id)
+    await ensure_seeded_async(graph, thread_id)

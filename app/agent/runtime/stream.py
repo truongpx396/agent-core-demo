@@ -5,18 +5,15 @@ content assembly (`_build_human_content`), Langfuse trace open
 (`astream_events_turn`, `astream_events_turn_unattended`,
 `astream_events_resume`, `astream_events_continue_turn`, `cancel_run`,
 `get_session_messages`, `get_pending_approval`). Split out
-of `app/agent/runtime/core.py` for file size only (see that module's
-docstring); `runtime/legacy_stream.py` holds the sibling
-`@asynccontextmanager` variant.
+of `app/agent/runtime/core.py` (see that module's docstring).
 
-Reads `init_graph_async`/`_ensure_seeded_async`/`_upsert_session`/
-`_allowance_refusal`/`RECURSION_LIMIT` via
+Reads `init_graph_async`/`ensure_seeded_async`/`upsert_session`/
+`allowance_refusal`/`RECURSION_LIMIT` via
 `runtime_module.X` rather than bare imports: tests
 `monkeypatch.setattr` these onto the live `app.agent.runtime.core` module
 object, and a bare imported name would bind to the original function at
 this module's own import time, permanently — the monkeypatch would
-silently never take effect (same fix as `graph/agent_node.py`'s
-`graph_module.CHAT_MODEL`). Applied uniformly even to names nothing
+silently never take effect. Applied uniformly even to names nothing
 patches today, so it doesn't need a per-name judgment call later.
 
 `_open_trace` stays a bare reference here: unlike the names above, both it
@@ -37,7 +34,7 @@ from app.agent.graph.hitl import (
     paused_approval_async,
     resumability_error_async,
 )
-from app.agent.graph.messages import _is_retry_artifact
+from app.agent.graph.messages import is_retry_artifact
 from app.agent.runtime import core as runtime_module
 from app.core import gateway, metrics, tracing
 from app.core.config import (
@@ -252,7 +249,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
           - `retry_exhausted`: route_after_check gave up after
             MAX_CONSECUTIVE_SAME_RETRY_REASON and replaces the message
             (same synthetic-token handling) — EXCEPT for
-            `_TRUST_CONTENT_RETRY_REASONS` (e.g. a real answer just
+            the checks marked `trust_on_exhaust` (e.g. a real answer just
             missing its citation marker), where it no-ops and the
             already-streamed content stands as the final answer; firing
             "retry" unconditionally there would blank a good answer with
@@ -306,7 +303,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 # langgraph_node == "agent"` isolates the main-answer node.
                 #
                 # `not subagent_name` guards a second source of the same
-                # problem: app/agent/tools/run_subagent.py::_run_subagent_impl threads this turn's
+                # problem: app/agent/tools/run_subagent.py::run_subagent_impl threads this turn's
                 # callbacks into a NESTED graph invoke() (built via
                 # build_subagent_graph(), so it also has a node named "agent") for
                 # correct child-span tracing — without this guard its
@@ -375,7 +372,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 # route_after_check gave up after
                 # MAX_CONSECUTIVE_SAME_RETRY_REASON and unconditionally
                 # replaced the message — except for
-                # _TRUST_CONTENT_RETRY_REASONS, where it no-ops (see this
+                # the checks marked trust_on_exhaust, where it no-ops (see this
                 # function's docstring, "retry", for the two real bugs this
                 # branch guards against).
                 output = event["data"].get("output") or {}
@@ -549,24 +546,24 @@ async def astream_events_turn(
     MAX_COST_USD_PER_TENANT_PER_DAY, or if UNPRICED_MODEL_POLICY is "block" and
     the chat model has no known price (nothing could be metered).
     """
-    if await runtime_module._chat_model_refused_as_unpriced():
+    if await runtime_module.chat_model_refused_as_unpriced():
         metrics.agent_requests_total.labels(outcome="rejected").inc()
-        envelope = runtime_module._model_unpriced_envelope()
+        envelope = runtime_module.model_unpriced_envelope()
         yield {"type": "error", "content": envelope.message, **envelope.to_dict()}
         return
-    refusal = await runtime_module._allowance_refusal(ctx)
+    refusal = await runtime_module.allowance_refusal(ctx)
     if refusal is not None:
         metrics.agent_requests_total.labels(outcome="rejected").inc()
         yield {"type": "error", "content": refusal.message, **refusal.to_dict()}
         return
     # Reserves this turn's worst-case cost against the tenant's in-flight
     # total for the rest of this generator's life (released in `finally`
-    # below, unconditionally) — see app/agent/runtime/core.py::_reserve_turn_budget's own
+    # below, unconditionally) — see app/agent/runtime/core.py::reserve_turn_budget's own
     # docstring for the race this closes: without it, a sibling turn for
     # the same tenant starting moments later would see nearly the same
     # `spent` this turn's own check just read: the usage events land as each
     # call returns, but not the calls this turn has yet to make.
-    budget_hold = await runtime_module._reserve_turn_budget(ctx)
+    budget_hold = await runtime_module.reserve_turn_budget(ctx)
     try:
         graph = await runtime_module.init_graph_async()
         pending = await paused_approval_async(graph, {"configurable": {"thread_id": thread_id}})
@@ -606,8 +603,8 @@ async def astream_events_turn(
                 "type": "system_note",
                 "content": "A previous pending approval on this conversation could not be resumed after an app update; starting a new request.",
             }
-        await runtime_module._ensure_seeded_async(graph, thread_id)
-        await runtime_module._upsert_session(ctx, thread_id, text)
+        await runtime_module.ensure_seeded_async(graph, thread_id)
+        await runtime_module.upsert_session(ctx, thread_id, text)
         trace, callbacks = _open_trace("chat-turn-stream", thread_id, text)
         cfg = {
             "configurable": {"thread_id": thread_id, "ctx": ctx},
@@ -639,14 +636,14 @@ def _release_turn_budget_in_background(ctx: SecurityCtx | None, budget_hold: str
     directly: tests/integration/test_worker_scaling.py's real-subprocess HITL
     test started failing intermittently once this await was added.
 
-    Safe to detach: _release_turn_budget already fails open internally (never
+    Safe to detach: release_turn_budget already fails open internally (never
     raises in practice), and a reservation that takes a few extra milliseconds to
     clear is harmless — it's not on any correctness-critical path, only
     in_flight_reservation's own read, which also ignores a hold older than
     RESERVATION_STALE_AFTER_MINUTES. Shared by every entry point that reserves
     (a new turn, a resume, a crash-continue) so they cannot drift apart.
     """
-    release_task = asyncio.create_task(runtime_module._release_turn_budget(ctx, budget_hold))
+    release_task = asyncio.create_task(runtime_module.release_turn_budget(ctx, budget_hold))
     release_task.add_done_callback(_log_if_release_task_failed)
 
 
@@ -777,12 +774,12 @@ async def astream_events_resume(
     already passed it — `astream_events_turn_unattended`'s decline loop. Refusing
     there would strand the conversation at its pause.
     """
-    refusal = None if admitted else await runtime_module._allowance_refusal(ctx)
+    refusal = None if admitted else await runtime_module.allowance_refusal(ctx)
     if refusal is not None:
         metrics.agent_requests_total.labels(outcome="rejected").inc()
         yield {"type": "error", "content": refusal.message, **refusal.to_dict()}
         return
-    budget_hold = await runtime_module._reserve_turn_budget(ctx)
+    budget_hold = await runtime_module.reserve_turn_budget(ctx)
     try:
         graph = await runtime_module.init_graph_async()
         error = await resumability_error_async(graph, {"configurable": {"thread_id": thread_id}})
@@ -844,7 +841,7 @@ async def astream_events_continue_turn(thread_id: str, ctx: SecurityCtx, cancel_
     closes that gap structurally rather than by scanning for which tools
     are dangerous to repeat.
 
-    No `_ensure_seeded_async`/`_upsert_session` here, deliberately: this thread
+    No `ensure_seeded_async`/`upsert_session` here, deliberately: this thread
     is already mid-turn, not starting a new one.
 
     The allowance is NOT re-checked here, unlike `astream_events_resume`
@@ -855,7 +852,7 @@ async def astream_events_continue_turn(thread_id: str, ctx: SecurityCtx, cancel_
     it does take is a hold: the crashed worker's was lost with it, so without
     one this turn's remaining spend is invisible to its siblings' checks.
     """
-    budget_hold = await runtime_module._reserve_turn_budget(ctx)
+    budget_hold = await runtime_module.reserve_turn_budget(ctx)
     try:
         async for event in _continue_turn_events(thread_id, ctx, cancel_check):
             yield event
@@ -945,7 +942,7 @@ async def get_session_messages(thread_id: str) -> list[dict]:
     state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
     messages = []
     for m in state.values.get("messages", []):
-        if _is_retry_artifact(m):
+        if is_retry_artifact(m):
             continue  # retry feedback and the answer it rejected were never part of the conversation
         if isinstance(m, HumanMessage):
             role = "user"

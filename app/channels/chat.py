@@ -28,7 +28,7 @@ from app.core.security import SecurityCtx
 # untrusted client to spoof it), unlike app/api/deps.py's header extraction.
 # `tenant` matches DEFAULT_TENANT so the CLI sees what `make ingest` seeded;
 # `principal` is the OS user, so multiple people on one machine get separate
-# memories (app/agent/tools/builtin.py's remember/recall_memories).
+# memories (app/agent/tools/builtin.py's `remember`).
 _LOCAL_CTX: SecurityCtx = {
     "tenant": DEFAULT_TENANT,
     "principal": f"local:{getpass.getuser()}",

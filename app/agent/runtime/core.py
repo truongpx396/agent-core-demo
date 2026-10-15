@@ -21,15 +21,14 @@ thread or a different loop.
 
 This file owns the checkpointer/graph singleton lifecycle
 (`init_graph_async`/`close_checkpointer_pool`/`_open_checkpointer`/
-`_resolve_domain_name`), per-thread prompt seeding (`_ensure_seeded_async`),
-session-directory upsert (`_upsert_session`), and the bindings of the tenant daily-budget
-check (`_check_allowance`/`_allowance_refusal`; the rule itself is `app/agent/cost/budgets.py`) — kept together
+`_resolve_domain_name`), per-thread prompt seeding (`ensure_seeded_async`),
+session-directory upsert (`upsert_session`), and the bindings of the tenant daily-budget
+check (`_check_allowance`/`allowance_refusal`; the rule itself is `app/agent/cost/budgets.py`) — kept together
 because each reads/reassigns a module global (`_graph`/`_domain_name`/
 `_seeded`, or config names several tests monkeypatch directly on this
 module) that only works correctly with consumer and binding in one file.
-The streaming entry points live in `app/agent/runtime/stream.py` (and the
-legacy `@asynccontextmanager` path in `runtime/legacy_stream.py`) — both
-access this module's globals via `runtime_module.X` rather than a bare
+The streaming entry points live in `app/agent/runtime/stream.py`, which
+accesses this module's globals via `runtime_module.X` rather than a bare
 import, for the same monkeypatch reason.
 """
 import asyncio
@@ -41,10 +40,11 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from app.agent.cost import budgets, pricing
+from app.agent.cost import budget_holds, budgets, pricing
 from app.agent.graph.build import build_graph
 from app.agent.graph.compaction import COMPACTION_MARKER_KEY
-from app.agent.graph.core import MAX_ITERATIONS
+from app.agent.graph.state import MAX_ITERATIONS
+from app.agent.runtime import sessions
 from app.core.config import (
     BUDGET_CHECK_FAILURE_POLICY,
     CHAT_MODEL,
@@ -58,6 +58,7 @@ from app.core.config import (
 )
 from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.security import SecurityCtx
+from app.domains.registry import resolve_domain
 
 if TYPE_CHECKING:
     from app.agent.manifest import AgentManifest, DomainPlugin
@@ -85,6 +86,7 @@ _checkpointer_pool = None  # keeps AsyncConnectionPool alive for the process
 # lifetime (GC'ing it closes every pooled connection under the saver); also lets
 # close_checkpointer_pool() shut it down explicitly on graceful shutdown.
 _seeded: set[str] = set()
+DEFAULT_DOMAIN = "ecorp"  # the domain a process serves when its caller names none
 
 # LangGraph's own graph-step cap — coarser than MAX_ITERATIONS (an agent-node
 # count): each turn also runs several fixed pre/post-loop nodes, and each
@@ -112,7 +114,7 @@ async def _check_allowance(ctx: SecurityCtx | None) -> budgets.Allowance:
     )
 
 
-async def _allowance_refusal(ctx: SecurityCtx | None) -> ErrorEnvelope | None:
+async def allowance_refusal(ctx: SecurityCtx | None) -> ErrorEnvelope | None:
     """The error to emit INSTEAD of starting a turn, or None if it may start. Every entry
     point that begins model work asks this one question (a new turn, and a resume), so the
     caller never has to tell "over budget" from "could not be checked" itself."""
@@ -120,7 +122,7 @@ async def _allowance_refusal(ctx: SecurityCtx | None) -> ErrorEnvelope | None:
     return budgets.refusal_envelope(allowance) if allowance.refused else None
 
 
-async def _chat_model_refused_as_unpriced() -> bool:
+async def chat_model_refused_as_unpriced() -> bool:
     """True if a turn must be refused because the chat model has no known price
     and `UNPRICED_MODEL_POLICY` is "block". Checked before any model work, and
     before the tenant allowance: every dollar ceiling multiplies tokens by a
@@ -129,7 +131,7 @@ async def _chat_model_refused_as_unpriced() -> bool:
     return await pricing.refuse_unpriced(CHAT_MODEL)
 
 
-def _model_unpriced_envelope() -> ErrorEnvelope:
+def model_unpriced_envelope() -> ErrorEnvelope:
     return ErrorEnvelope(
         code=ErrorCode.MODEL_UNPRICED,
         message=(
@@ -139,32 +141,28 @@ def _model_unpriced_envelope() -> ErrorEnvelope:
     )
 
 
-async def _reserve_turn_budget(ctx: SecurityCtx | None) -> str | None:
-    """Called once a turn has passed `_allowance_refusal` and is
+async def reserve_turn_budget(ctx: SecurityCtx | None) -> str | None:
+    """Called once a turn has passed `allowance_refusal` and is
     about to actually run — holds MAX_COST_USD_PER_TURN (the hard cap
     graph/routing.py::should_continue already enforces per turn, so it's
     always a safe upper bound on what this turn could cost) against this
     tenant's in-flight total. Returns the hold's id, or None if `ctx` is
     invalid or the write itself failed — callers pass this straight to
-    `_release_turn_budget` in a `finally`, so a failed reservation and a real
+    `release_turn_budget` in a `finally`, so a failed reservation and a real
     one both round-trip correctly (releasing None is a no-op)."""
-    from app.agent.cost import budget_holds
-
     return await budget_holds.reserve_budget(ctx, MAX_COST_USD_PER_TURN)
 
 
-async def _release_turn_budget(ctx: SecurityCtx | None, hold_id: str | None) -> None:
-    """Reverses `_reserve_turn_budget` — called unconditionally once a
+async def release_turn_budget(ctx: SecurityCtx | None, hold_id: str | None) -> None:
+    """Reverses `reserve_turn_budget` — called unconditionally once a
     turn ends (success, failure, or timeout), never only on success: the
     reservation's whole job is to cover the WINDOW while this turn is
     running, not to track whether it actually succeeded (the usage events,
     written as each call returned, are the real accounting for a turn)."""
-    from app.agent.cost import budget_holds
-
     await budget_holds.release_budget_reservation(ctx, hold_id)
 
 
-async def _upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> None:
+async def upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> None:
     """Record/refresh this thread_id in the session directory (the conversation
     switcher, app/agent/runtime/sessions.py) — called at the START of every turn, unlike
     the turn metrics which only fire on a completed turn. Deliberate: a
@@ -176,8 +174,6 @@ async def _upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) ->
     alongside `_graph`), so the stamped row always matches whichever domain
     actually ran the turn, regardless of caller.
     """
-    from app.agent.runtime import sessions
-
     await sessions.upsert_session(ctx, thread_id, text, domain=_domain_name)
 
 
@@ -224,15 +220,12 @@ async def _open_checkpointer():
 
 
 def _resolve_domain_name(manifest: "AgentManifest | None") -> str:
-    """`manifest.name` if given, else build_graph()'s own fallback
-    (DEFAULT_MANIFEST, "ecorp") — mirrors build_graph()'s substitution exactly
-    so `_domain_name` always names whichever manifest the graph was actually
-    built with."""
+    """`manifest.name` if given, else the process default's ("ecorp") — mirrors
+    init_graph_async's substitution exactly so `_domain_name` always names whichever
+    manifest the graph was actually built with."""
     if manifest is not None:
         return manifest.name
-    from app.agent.manifest import DEFAULT_MANIFEST
-
-    return DEFAULT_MANIFEST.name
+    return resolve_domain(DEFAULT_DOMAIN)[0].name
 
 
 async def close_checkpointer_pool() -> None:
@@ -256,8 +249,9 @@ async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "Dom
     ignored — the singleton doesn't change domain mid-process).
 
     `manifest`/`domain` (app/agent/manifest.py) thread straight into
-    `build_graph()` and default to `None` (build_graph()'s own Ecorp
-    default), so existing callers are unaffected. This is what lets a new
+    `build_graph()` and default to `None`, meaning the process default domain
+    (`DEFAULT_DOMAIN`, "ecorp", resolved through `app/domains/registry.py` like
+    any other), so existing callers are unaffected. This is what lets a new
     process boot the same durable-checkpointer machinery against a
     different domain — see app/channels/telegram.py, which resolves
     AGENT_DOMAIN via app/domains/registry.py before priming the singleton.
@@ -269,12 +263,15 @@ async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "Dom
     async with _graph_lock:
         if _graph is None:  # re-check: another caller may have finished while this one waited for the lock
             _domain_name = _resolve_domain_name(manifest)
+            default_manifest, default_domain = resolve_domain(DEFAULT_DOMAIN)
             saver = await _open_checkpointer()
-            _graph = build_graph(checkpointer=saver, manifest=manifest, domain=domain)
+            _graph = build_graph(
+                manifest or default_manifest, domain or default_domain, checkpointer=saver
+            )
     return _graph
 
 
-async def _ensure_seeded_async(graph, thread_id: str) -> None:
+async def ensure_seeded_async(graph, thread_id: str) -> None:
     """Make a conversation thread carry exactly one system prompt, the CURRENT one.
     ASYNC only — the streaming entry points run directly on the
     checkpointer's own event loop, where the sync `update_state` raises

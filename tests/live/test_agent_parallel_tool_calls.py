@@ -1,5 +1,5 @@
 """Smoke test for genuine parallel tool calls against the REAL model/graph —
-the scenario app/agent/graph/core.py's `_make_llm` removed `parallel_tool_calls=
+the scenario app/agent/graph/core.py's `make_llm` removed `parallel_tool_calls=
 False` for (2026-09-09). Sibling of test_agent_tool_calling.py (same fixture,
 same "one repetition against the small CI model" scope), but this one
 specifically drives a REAL two-tool-call turn (calculator + add_note) through
@@ -8,14 +8,14 @@ real, live-verified bug used to corrupt: two simultaneous tool calls from an
 ollama_chat model got glued into one malformed tool_calls entry (litellm's
 OllamaChatCompletionResponseIterator.chunk_parser assigning duplicate
 "index":0 across separate stream chunks — see deploy/litellm/patches/
-sitecustomize.py and graph/utils.py's _make_llm comment for the full writeup). A
+sitecustomize.py and graph/utils.py's make_llm comment for the full writeup). A
 fake-model test (tests/agent/graph/test_graph_integration.py's
 TestMandatoryCapabilityGate) already covers should_continue/human_approval's
 OWN batch-handling logic in isolation; this proves the real model's real
 streamed output survives the round trip into that logic at all.
 
 calculator (read_only) + add_note (mutating) is a deliberate pair: mixing
-capabilities forces should_continue's mandatory gate (_mandatory_gate_reason)
+capabilities forces should_continue's mandatory gate (mandatory_gate_reason)
 to route the WHOLE batch to human_approval, exercising the exact "one
 approve/reject decision covers every call in the batch" behavior the removal
 comment documents as a deliberate trade-off, not just "the model can emit two
@@ -27,22 +27,12 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
-from app.agent.graph import core as graph_module
-from app.agent.graph.build import build_graph
-from app.agent.graph.core import GraphDeps
 from tests.conftest import TEST_CTX
+from tests.ecorp import build_graph
+from tests.ollama import ollama_deps
 from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.llm
-
-
-@pytest.fixture(autouse=True)
-def real_ollama_chat_model(monkeypatch, ollama_endpoint):
-    """Same wiring as test_agent_tool_calling.py's fixture of the same
-    name — see that file's docstring for why this patches graph_module's
-    OWN bindings rather than app.core.config's."""
-    monkeypatch.setattr(graph_module, "CHAT_MODEL", ollama_endpoint["model"])
-    monkeypatch.setattr(graph_module, "OPENAI_API_BASE", ollama_endpoint["openai_api_base"])
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +41,7 @@ def _stub_add_note_io(monkeypatch):
     is about — stub it the same way tests/agent/graph/test_graph_integration.py's
     TestMandatoryCapabilityGate does, so a real APPROVED add_note call can
     actually run inside ToolNode without needing a live Qdrant."""
-    from app.agent.tools import builtin as tools_module
+    from app.domains.ecorp import store as ecorp_store
     from app.retrieval import qdrant_store
 
     async def fake_embed_text(text):
@@ -60,12 +50,12 @@ def _stub_add_note_io(monkeypatch):
     async def fake_upsert(points):
         return None
 
-    monkeypatch.setattr(tools_module, "embed_text", fake_embed_text)
+    monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
     monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
 
-async def _invoke_and_approve(text: str):
-    graph = build_graph(GraphDeps())
+async def _invoke_and_approve(endpoint: dict, text: str):
+    graph = build_graph(ollama_deps(endpoint))
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
     # Seed the system prompt before the first real turn — see
     # tests/seeding.py's own `seed_thread` docstring; a test calling
@@ -78,8 +68,9 @@ async def _invoke_and_approve(text: str):
     return graph, config, paused_state, result
 
 
-async def test_real_model_calls_two_tools_in_one_turn_and_both_run_after_approval():
+async def test_real_model_calls_two_tools_in_one_turn_and_both_run_after_approval(ollama_endpoint):
     graph, config, paused_state, result = await _invoke_and_approve(
+        ollama_endpoint,
         "What is 15 * 3? Use the calculator tool for that. Also use the "
         "add_note tool right now to save a note with title 'Demo', topic "
         "'company', content 'multi-tool-call test'. Call BOTH tools in "

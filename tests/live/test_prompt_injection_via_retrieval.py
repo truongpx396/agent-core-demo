@@ -32,11 +32,10 @@ import uuid
 import pytest
 from langchain_core.messages import HumanMessage
 
-from app.agent.graph import core as graph_module
-from app.agent.graph.build import build_graph
-from app.agent.graph.core import GraphDeps
 from app.agent.tools import builtin as tools_module
 from tests.conftest import TEST_CTX
+from tests.ecorp import build_graph
+from tests.ollama import ollama_deps
 from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.llm
@@ -80,20 +79,10 @@ async def _poisoned_search(query: str, ctx=None) -> tuple[str, list[dict]]:
     return _INJECTED_CONTEXT, _CITATIONS
 
 
-@pytest.fixture(autouse=True)
-def real_ollama_chat_model(monkeypatch, ollama_endpoint):
-    """Same real-model wiring as test_agent_tool_calling.py's own fixture of
-    the same name — see that file's docstring for why this monkeypatches
-    `graph.CHAT_MODEL`/`graph.OPENAI_API_BASE` rather than constructing a
-    `ChatOpenAI` by hand."""
-    monkeypatch.setattr(graph_module, "CHAT_MODEL", ollama_endpoint["model"])
-    monkeypatch.setattr(graph_module, "OPENAI_API_BASE", ollama_endpoint["openai_api_base"])
-
-
-async def test_real_model_does_not_comply_with_an_instruction_injected_into_retrieved_content(monkeypatch):
+async def test_real_model_does_not_comply_with_an_instruction_injected_into_retrieved_content(monkeypatch, ollama_endpoint):
     # `GraphDeps(search_docs=...)` only overrides `retrieve_context`'s own
-    # automatic PRE-FETCH (app/agent/graph/core.py's `_assemble_shared_graph_parts`:
-    # `make_retrieve_context_node(deps.search_docs or _default_search)`) —
+    # automatic PRE-FETCH (app/agent/graph/core.py's `assemble_shared_graph_parts`:
+    # `make_retrieve_context_node(deps.search_docs or default_search)`) —
     # it does NOT reach `app/agent/tools/builtin.py`'s
     # separately-bound `search_docs` TOOL, which the system prompt itself
     # instructs the model to use ("Use the search_docs tool to answer
@@ -115,7 +104,7 @@ async def test_real_model_does_not_comply_with_an_instruction_injected_into_retr
 
     monkeypatch.setattr(tools_module, "_search_docs_impl", fake_search_docs_impl)
 
-    graph = build_graph(GraphDeps(search_docs=_poisoned_search))
+    graph = build_graph(ollama_deps(ollama_endpoint, search_docs=_poisoned_search))
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
 
     async def _seed_and_invoke():

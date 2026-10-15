@@ -185,10 +185,10 @@ agent_misattributed_citations_total = Counter(
     "agent_misattributed_citations_total",
     "Final answers where a real, in-range citation marker was used on a "
     "sentence whose content shares no meaningful vocabulary with that "
-    "marker's actual source text (check_output's likely_misattributed_"
-    "citations) — a real marker attached to unsupported content, as opposed "
+    "marker's actual source text (check_output's "
+    "\"misattributed\" check) — a real marker attached to unsupported content, as opposed "
     "to a fabricated marker (ungrounded_claims_count) or a real source used "
-    "with no marker at all (the opposite failure, likely_uncited_citations). "
+    "with no marker at all (the opposite failure, the \"uncited\" check). "
     "Acted on by route_after_check: unlike zero_citations/ungrounded_claims, "
     "this one triggers a retry.",
 )
@@ -197,7 +197,7 @@ agent_reference_footer_stripped_total = Counter(
     "agent_reference_footer_stripped_total",
     "Final answers where check_output stripped a fabricated markdown-style "
     "reference-list footer ('[1]: some link') the model appended after its "
-    "own inline [n] markers (see _strip_fabricated_reference_footer) — this "
+    "own inline [n] markers (see strip_fabricated_reference_footer) — this "
     "app's citation convention is inline-only, so any such footer's 'link' "
     "is always invented, never a real source the model was actually given.",
 )
@@ -205,14 +205,14 @@ agent_reference_footer_stripped_total = Counter(
 agent_citation_auto_inserted_total = Counter(
     "agent_citation_auto_inserted_total",
     "Final answers where check_output mechanically inserted a missing [n] "
-    "marker into the specific sentence likely_uncited_citations flagged, "
+    "marker into the specific sentence the \"uncited\" check flagged, "
     "instead of retrying the model over it (see "
-    "_insert_missing_citation_markers's own docstring) — live-verified "
+    "insert_missing_citation_markers's own docstring) — live-verified "
     "that asking the model to fix this itself (the standard reminder, six "
     "reworded variants, and the actual concrete retry-feedback message) "
     "reliably does not work on a real case, so this is the primary "
-    "correction path for likely_uncited_citations now, not a fallback. "
-    "Watch this alongside likely_uncited_citations firing at all: a rising "
+    "correction path for an uncited answer now, not a fallback. "
+    "Watch this alongside the \"uncited\" check firing at all: a rising "
     "rate here means the model is drifting toward citing less, even though "
     "each individual case still gets silently corrected.",
 )
@@ -222,7 +222,7 @@ agent_deferred_instead_of_acting_total = Counter(
     "Final answers that narrate an intent to use a tool ('I will use the X "
     "tool...') or ask the user's permission to proceed ('would you like me "
     "to?') instead of actually calling the tool or answering directly "
-    "(check_output's _defers_instead_of_acting) — real bug, found live: a "
+    "(check_output's defers_instead_of_acting) — real bug, found live: a "
     "3B model repeating this across several turns on the same thread, "
     "each 'yes' reply just restarting the identical unresolved cycle since "
     "no real tool_calls were ever made. Acted on by route_after_check: "
@@ -233,7 +233,7 @@ agent_fabricated_tool_output_total = Counter(
     "agent_fabricated_tool_output_total",
     "Final answers containing two or more markdown code fences with NO "
     "real tool_calls entry backing them (check_output's "
-    "_fabricates_tool_output) — a script AND a plausible-looking 'output' "
+    "fabricates_tool_output) — a script AND a plausible-looking 'output' "
     "for it, presented as if run_command_in_sandbox had actually run, when "
     "it never did. Real bug, found live: after a sandbox approval was "
     "declined once, the model invented both a script and its output, whose "
@@ -248,7 +248,7 @@ agent_skipped_required_tool_total = Counter(
     "own text names run_command_in_sandbox as required, but that tool was "
     "never actually called, even though the final answer states a "
     "specific dollar figure (check_output's "
-    "_skipped_required_sandbox_after_skill). Real bug, found live: the "
+    "skipped_required_sandbox_after_skill). Real bug, found live: the "
     "deal-economics skill's own text says not to estimate this kind of "
     "number by hand, and the model estimated it by hand anyway — correct "
     "that one specific time, but nothing enforced it, and every other "
@@ -260,7 +260,7 @@ agent_skipped_required_tool_total = Counter(
 agent_system_prompt_leak_total = Counter(
     "agent_system_prompt_leak_total",
     "Final answers containing a long, verbatim run of the seeded system "
-    "prompt's own text (check_output's _leaks_system_prompt) — output-side "
+    "prompt's own text (check_output's reveals_system_prompt) — output-side "
     "defense-in-depth alongside app/core/moderation.py's input-side "
     "screening: an injection phrased in a way moderation's known-pattern "
     "regexes don't catch can still be caught here if it actually succeeds "
@@ -298,7 +298,7 @@ agent_use_skill_without_search_total = Counter(
     "agent_use_skill_without_search_total",
     "Turns where the LLM called use_skill without ever calling skill_search "
     "first in the same turn (app/agent/graph/skill_guards.py's use_skill_without_search "
-    "node, see _use_skill_called_without_search) — rejected and looped back "
+    "node, see use_skill_called_without_search) — rejected and looped back "
     "to agent instead of dispatched, so a fabricated skill name never gets "
     "as far as a 'not found' failure the model might narrate into the final "
     "answer. A rising rate here is a real signal the model is reaching for "

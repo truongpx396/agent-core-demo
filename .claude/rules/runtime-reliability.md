@@ -23,18 +23,21 @@ session; `GRAPH_PATTERNS.md` has the full story under the pattern number given.
 
 - `SYSTEM_PROMPT` stays a ctx-free constant (pattern 19). Never interpolate a tenant, principal,
   or timestamp; `tests/agent/graph/test_prompt_cache_stability.py` guards it.
-- Nodes are wrapped by `_instrumented` in `build_graph` at registration time, not in the node
+- Nodes are wrapped by `instrumented` in `build_graph` at registration time, not in the node
   body. `human_approval`'s `interrupt()` is a pause (`node_paused`), not a failure — re-raise it.
   Never log message content or the `state` dict.
 - Anything that rejects or skips pending tool calls (HITL rejection, over-budget batch) MUST emit
   one `ToolMessage` per pending `tool_call`, or the next LLM call fails (patterns 8, 10).
 - History trimming is turn-aware: never split a `tool_call` from its `ToolMessage` (pattern 13).
-- `retry_output`'s feedback is a `HumanMessage` tagged `RETRY_ARTIFACT_KEY` (as is the answer it rejected), not something the person said. Find the user's message or the turn start with `_is_user_message`, never a bare `isinstance(m, HumanMessage)`; never tag an `AIMessage` that has `tool_calls` (pattern 5).
+- `retry_output`'s feedback is a `HumanMessage` tagged `RETRY_ARTIFACT_KEY` (as is the answer it rejected), not something the person said. Find the user's message or the turn start with `is_user_message`, never a bare `isinstance(m, HumanMessage)`; never tag an `AIMessage` that has `tool_calls` (pattern 5).
 - `validate_input` resets `iterations`/`total_tokens` every turn but NOT on a HITL resume.
 - A breaking `State` / topology change bumps `STATE_SCHEMA_VERSION`; a differing build SHA alone
   is not a break (`resumability_error_async`, pattern 16).
-- `build_graph` and `build_subagent_graph` share `_assemble_shared_graph_parts`. A new node must
-  be considered for both; the subagent graph deliberately omits cache/follow-up/compaction nodes.
+- `build_graph` is the one builder; `build_subagent_graph` is it with `SUBAGENT_PROFILE`, which
+  deliberately omits the cache/follow-up/compaction nodes. A new node is registered in `build_graph`;
+  decide which `GraphProfile` flags it belongs behind. Nothing a node imports may import `graph/build.py`.
+- A new output check is one `OutputCheck` entry in `graph/output_checks.py` (its position is its priority),
+  not a `State` flag.
 - Every graph caller is async. `AsyncPostgresSaver`'s lock is bound to the loop that opened it:
   open it through `init_graph_async` on the calling loop. `MemorySaver` is for tests/subagents.
 - Don't reorder the bound tool list: `skill_search`/`use_skill` sit first on purpose (pattern 50).
@@ -72,4 +75,4 @@ session; `GRAPH_PATTERNS.md` has the full story under the pattern number given.
   committed business state (failed notify, degraded dedup, failed upload), also add an alert
   rule to `observability/prometheus/alerts.yml` — a metric nobody alerts on is still silent.
 - Caller-facing errors use the `ErrorCode` envelope (`app/core/errors.py`); a tool's message to
-  the LLM stays natural language (`_friendly_tool_error`).
+  the LLM stays natural language (`friendly_tool_error`).

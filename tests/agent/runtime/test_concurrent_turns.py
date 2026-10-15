@@ -87,18 +87,19 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langchain_core.outputs import ChatGeneration, ChatResult
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from app.agent.graph.build import build_graph
-from app.agent.graph.core import GraphDeps
+from app.agent.graph.build import GraphDeps
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
 from app.agent.tools import builtin as tools_module
 from app.agent.tools import run_subagent as subagent_tools
 from app.core import metrics
+from app.domains.ecorp import store as ecorp_store
 from app.job_queue import agent_worker, queue
 from app.retrieval import embeddings as embeddings_module
 from app.retrieval import qdrant_store, semantic_cache
 from tests.conftest import metric_value as _count
 from tests.containers import ensure_postgres, ensure_qdrant, ensure_redis
+from tests.ecorp import build_graph
 
 pytestmark = pytest.mark.integration
 
@@ -167,9 +168,9 @@ def _echoing_llm(respond: Callable[[list[BaseMessage]], AIMessage]):
     `BaseChatModel`'s own default raises `NotImplementedError` (verified
     directly), which `GraphDeps(llm=...)`'s own top-level use of a fake
     model never trips (`build_graph()` uses `deps.llm` raw, never calling
-    `.bind_tools()` on it — only its OWN `_make_llm()` production
+    `.bind_tools()` on it — only its OWN `make_llm()` production
     construction path does that), but
-    app/agent/tools/builtin.py::_run_subagent_impl's fallback DOES call
+    app/agent/tools/builtin.py::run_subagent_impl's fallback DOES call
     `ChatOpenAI(...).bind_tools(nested_tools)` on whatever `ChatOpenAI`
     constructs — needed for TestSubagentCallUnderConcurrency, which
     monkeypatches `ChatOpenAI` itself to return one of these. Same
@@ -202,7 +203,7 @@ def reset_agent_singleton(monkeypatch):
     Also resets subagent_tools' own `_subagent_graph_cache`: this file's
     TestSubagentCallUnderConcurrency drives the REAL `run_subagent` tool
     (`use_cache=True` on every production call), monkeypatching
-    `tools_module.ChatOpenAI` rather than DI-ing a fake `llm=` in directly —
+    `subagent_tools.make_llm` rather than DI-ing a fake `llm=` in directly —
     without this reset, the first test to exercise it here would
     permanently cache a test-scoped fake ChatOpenAI under the real
     `("ecorp", "researcher")` key, silently serving it to every later
@@ -309,12 +310,12 @@ async def real_semantic_cache_redis(monkeypatch):
 
 
 async def _real_search_docs(query: str, ctx) -> tuple[str, list[dict]]:
-    """The REAL retrieval path (app/agent/graph/core.py::_default_search's own
+    """The REAL retrieval path (app/agent/graph/core.py::default_search's own
     wrapper over app/agent/tools/builtin.py::gather_context, reproduced here since
     that real default is exactly what tests/conftest.py's session-wide
     `mock_search_docs` fixture overrides — see `_install_fake_graph`'s own
     docstring for the identical reasoning applied to the semantic cache).
-    Parameter order matches `_default_search`'s own adaptation:
+    Parameter order matches `default_search`'s own adaptation:
     `gather_context` takes `(ctx, query)`, reversed from what
     `retrieve_context`/`GraphDeps.search_docs` call with.
 
@@ -331,7 +332,7 @@ def _install_fake_graph(monkeypatch, llm, *, search_docs=_no_op_search) -> None:
     individual fields to inject fakes instead of monkeypatching module
     globals"). Needed specifically because tests/conftest.py's session-wide
     `mock_semantic_cache` autouse fixture always overrides
-    app/agent/graph/core.py's `_default_cache_get`/`_default_cache_set` to a
+    app/agent/graph/core.py's `default_cache_get`/`default_cache_set` to a
     hardcoded miss/no-op (correctly, for every OTHER test in this suite,
     which must never need a live Redis/embedding call) — build_graph()
     falls back to those exact (mocked) module names whenever GraphDeps
@@ -346,12 +347,12 @@ def _install_fake_graph(monkeypatch, llm, *, search_docs=_no_op_search) -> None:
     in this file, which isn't testing retrieval) — pass `_real_search_docs`
     for TestQdrantReadWriteUnderConcurrency specifically, for the exact
     same "the global mock would otherwise silently win" reason above,
-    applied to app/agent/graph/core.py's `_default_search` instead of its cache
+    applied to app/agent/graph/core.py's `default_search` instead of its cache
     counterpart."""
     monkeypatch.setattr(
         agent_module,
         "build_graph",
-        lambda checkpointer=None, manifest=None, domain=None: build_graph(
+        lambda manifest, domain, checkpointer=None: build_graph(
             GraphDeps(
                 llm=llm,
                 search_docs=search_docs,
@@ -403,7 +404,7 @@ async def real_qdrant(monkeypatch):
     qdrant = ensure_qdrant()
     monkeypatch.setattr(qdrant_store, "QDRANT_URL", qdrant["qdrant_url"])
     monkeypatch.setattr(qdrant_store, "COLLECTION", f"test-concurrent-turns-{uuid.uuid4().hex}")
-    monkeypatch.setattr(tools_module, "embed_text", _fake_embed_text)
+    monkeypatch.setattr(ecorp_store, "embed_text", _fake_embed_text)
     monkeypatch.setattr(embeddings_module, "embed_text", _fake_embed_text)
     await qdrant_store.ensure_collection(dim=_FAKE_EMBED_DIM)
     yield
@@ -862,7 +863,7 @@ class TestHITLApprovalUnderConcurrency:
 class TestSubagentCallUnderConcurrency:
     """The real `run_subagent` tool (read_only — no HITL pause,
     GRAPH_PATTERNS.md pattern 46) delegates to a genuinely separate,
-    nested `build_graph()` run per call (app/agent/tools/builtin.py::_run_subagent_impl)
+    nested `build_graph()` run per call (app/agent/tools/builtin.py::run_subagent_impl)
     — its own fresh messages (the delegated task, NOT this conversation's
     history), its own LLM client construction. Proves N concurrent
     top-level turns' own nested subagent runs never cross-wire: each
@@ -880,13 +881,13 @@ class TestSubagentCallUnderConcurrency:
         n = 6
 
         def _nested_respond(messages: list[BaseMessage]) -> AIMessage:
-            # _run_subagent_impl's own docstring: the nested run's ONLY
+            # run_subagent_impl's own docstring: the nested run's ONLY
             # human message is the delegated task itself, never the
             # parent's conversation history.
             return AIMessage(content=f"Nested result for: {_last_human_text(messages)}")
 
         monkeypatch.setattr(
-            tools_module, "ChatOpenAI", lambda *args, **kwargs: _echoing_llm(_nested_respond)
+            subagent_tools, "make_llm", lambda *args, **kwargs: _echoing_llm(_nested_respond)
         )
 
         def _top_respond(messages: list[BaseMessage]) -> AIMessage:
@@ -946,8 +947,8 @@ class TestSubagentCallUnderConcurrency:
         graph superstep, not racing/clobbering each other the way a plain
         overwrite field would."""
         monkeypatch.setattr(
-            tools_module,
-            "ChatOpenAI",
+            subagent_tools,
+            "make_llm",
             lambda *args, **kwargs: _echoing_llm(lambda msgs: AIMessage(content="nested done")),
         )
 

@@ -44,8 +44,8 @@ would close this more reliably; flagged as the next step, not built here.
 from dataclasses import dataclass
 
 from app.agent.manifest import AgentManifest, DomainPlugin
-from app.agent.tools.builtin import TOOL_CAPABILITIES as _ECORP_TOOL_CAPABILITIES
 from app.agent.tools.builtin import (
+    SHARED_TOOL_CAPABILITIES,
     ask_clarification,
     make_skill_tools,
     skill_tools_first,
@@ -65,9 +65,9 @@ _RUN_SUBAGENT = make_domain_subagent_tool(
     all_tools=list(_OPS_TOOLS) + _REUSED_READ_ONLY_TOOLS,
     tool_capabilities={
         **_OPS_TOOL_CAPABILITIES,
-        "ask_clarification": _ECORP_TOOL_CAPABILITIES["ask_clarification"],
-        "skill_search": _ECORP_TOOL_CAPABILITIES["skill_search"],
-        "use_skill": _ECORP_TOOL_CAPABILITIES["use_skill"],
+        "ask_clarification": SHARED_TOOL_CAPABILITIES["ask_clarification"],
+        "skill_search": SHARED_TOOL_CAPABILITIES["skill_search"],
+        "use_skill": SHARED_TOOL_CAPABILITIES["use_skill"],
     },
 )
 # None unless at least one bundled AGENT.md declares `domains: [ops]`.
@@ -164,9 +164,9 @@ class _OpsDomainPlugin:
     def tool_capabilities(self) -> dict[str, str]:
         merged = dict(_OPS_TOOL_CAPABILITIES)
         for name in ("ask_clarification", "skill_search", "use_skill"):
-            merged[name] = _ECORP_TOOL_CAPABILITIES[name]
+            merged[name] = SHARED_TOOL_CAPABILITIES[name]
         if _RUN_SUBAGENT is not None:
-            merged["run_subagent"] = _ECORP_TOOL_CAPABILITIES["run_subagent"]
+            merged["run_subagent"] = SHARED_TOOL_CAPABILITIES["run_subagent"]
         return merged
 
     def policy(self) -> Policy:

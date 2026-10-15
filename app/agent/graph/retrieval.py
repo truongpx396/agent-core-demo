@@ -1,37 +1,29 @@
 """`make_retrieve_context_node` — fetches relevant docs (and this
 principal's memories) before the agent reasons (GRAPH_PATTERNS.md pattern
-20). Split out of `app/agent/graph/core.py` for file size (see graph/cache.py
-for the sibling split).
+20).
 
-`_default_search` stays in `app/agent/graph/core.py` itself (imported here) because
-`tests/conftest.py`'s autouse fixture monkeypatches `graph._default_search`
-on every test run, and `_assemble_shared_graph_parts` reads it as a bare
-name there.
+The search callable is injected (`GraphDeps.search_docs`, defaulting to `graph/build.py`'s
+`default_search`), so this module imports nothing from the composition root.
 """
 import logging
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
 
-from app.agent.graph.core import State, _default_search
 from app.agent.graph.messages import (
-    _human_text,
-    _last_human_message,
-    _previous_human_message,
-    _retrieval_query,
+    human_text,
+    last_human_message,
+    previous_human_message,
+    retrieval_query,
 )
+from app.agent.graph.state import State
 from app.core import metrics
-
-if TYPE_CHECKING:
-    from app.core.security import SecurityCtx
+from app.core.security import SecurityCtx
 
 logger = logging.getLogger(__name__)
 
 
 # --- Node: enrich context (multi-step pattern) ---
 def make_retrieve_context_node(
-    search: Callable[
-        [str, "SecurityCtx | None"], Awaitable[tuple[str, list[dict]]]
-    ] = _default_search,
+    search: Callable[[str, "SecurityCtx | None"], Awaitable[tuple[str, list[dict]]]],
 ):
     """Factory, not a plain function, because retrieve_context needs a
     search client — same rationale as make_agent_node for `agent`. Tests
@@ -56,7 +48,7 @@ def make_retrieve_context_node(
         still-CPU-bound sparse-embedding leg gets its own narrower
         `asyncio.to_thread` inside `qdrant_store.hybrid_search`.
         """
-        last_human = _last_human_message(state["messages"])
+        last_human = last_human_message(state["messages"])
         # The turn's question is, right now, the last message in state.
         # Recording its index here (not re-deriving "last human message"
         # later, which would find a synthetic retry_output message after a
@@ -66,8 +58,8 @@ def make_retrieve_context_node(
         if last_human is None:
             return {"context": "", "citations": [], "context_anchor_index": anchor}
         try:
-            query = _retrieval_query(
-                _human_text(last_human), _previous_human_message(state["messages"], anchor)
+            query = retrieval_query(
+                human_text(last_human), previous_human_message(state["messages"], anchor)
             )
             context, citations = await search(query, state.get("ctx"))
             return {"context": context, "citations": citations, "context_anchor_index": anchor}

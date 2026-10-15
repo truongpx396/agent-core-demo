@@ -10,9 +10,8 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
-from app.agent.graph import core as graph
-from app.agent.graph.build import build_graph
-from app.agent.graph.core import GraphDeps
+from app.agent.graph import build as graph
+from app.agent.graph.build import GraphDeps
 from app.agent.manifest import AgentManifest
 from app.agent.runtime import stream as stream_module
 from app.agent.tools.subagent_catalog import (
@@ -21,6 +20,7 @@ from app.agent.tools.subagent_catalog import (
     load_subagents,
 )
 from tests.agent.fakes import Domain, call, cfg, scripted_llm
+from tests.ecorp import build_graph
 
 
 def _write_subagent(tmp_path, slug, content):
@@ -169,15 +169,15 @@ async def test_a_subagent_never_emits_citation_markers_or_events_into_the_parent
         citation = {"marker": "[1]", "doc_id": "d1", "title": "hours", "text": FACT, "score": 5.0}
         return f"[1] {FACT}", [citation]
 
-    monkeypatch.setattr(graph, "_default_search", nested_search)  # the nested graph's retrieval
+    monkeypatch.setattr(graph, "default_search", nested_search)  # the nested graph's retrieval
     record = SubagentRecord("researcher", "d", "You research.", (), None, None, Path("x"))
     nested_inputs, answers = [], []
 
     @tool
     async def delegate(task: str, config: RunnableConfig) -> str:
         """Delegate a lookup."""
-        result = await subagent_tools._run_subagent_impl(
-            "researcher", task, config,
+        result = await subagent_tools.run_subagent_impl(
+            "researcher", task, config, domain="ecorp",
             registry={"researcher": (record, ())}, tools_by_name={},
             llm=scripted_llm(lambda _m: AIMessage(content=FACT), nested_inputs),
         )

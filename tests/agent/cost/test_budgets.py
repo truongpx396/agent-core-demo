@@ -350,10 +350,10 @@ class TestAsRuntimeWiresIt:
     async def test_the_configured_limits_are_read_from_the_runtime_module_at_call_time(self, ledger, monkeypatch):
         ledger["spend"] = {("principal", "day"): 6.0}
 
-        assert await runtime_module._allowance_refusal(TEST_CTX) is None  # no personal limit configured
+        assert await runtime_module.allowance_refusal(TEST_CTX) is None  # no personal limit configured
 
         monkeypatch.setattr(runtime_module, "MAX_COST_USD_PER_PRINCIPAL_PER_DAY", 5.0)
-        refusal = await runtime_module._allowance_refusal(TEST_CTX)
+        refusal = await runtime_module.allowance_refusal(TEST_CTX)
 
         assert refusal is not None and refusal.code == errors.ErrorCode.PERSONAL_BUDGET_EXCEEDED
 
@@ -361,10 +361,10 @@ class TestAsRuntimeWiresIt:
         ledger["read_error"] = ConnectionError("down")
 
         monkeypatch.setattr(runtime_module, "BUDGET_CHECK_FAILURE_POLICY", "open")
-        assert await runtime_module._allowance_refusal(TEST_CTX) is None
+        assert await runtime_module.allowance_refusal(TEST_CTX) is None
 
         monkeypatch.setattr(runtime_module, "BUDGET_CHECK_FAILURE_POLICY", "closed")
-        refusal = await runtime_module._allowance_refusal(TEST_CTX)
+        refusal = await runtime_module.allowance_refusal(TEST_CTX)
         assert refusal is not None and refusal.code == errors.ErrorCode.BUDGET_CHECK_UNAVAILABLE
 
     async def test_a_turn_is_refused_before_any_graph_work_when_a_personal_limit_is_used_up(self, ledger, monkeypatch):

@@ -18,14 +18,14 @@ import uuid
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from app.agent.graph.build import build_graph
-from app.agent.graph.core import GraphDeps
+from app.agent.graph.build import GraphDeps
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
 from app.core import metrics
 from app.core.errors import ErrorCode
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
+from tests.ecorp import build_graph
 
 
 def _slow_llm(text: str = "a longer answer with several tokens in it", delay: float = 0.05):
@@ -281,7 +281,7 @@ class TestAstreamEventsResumeCancellation:
         with the tool's I/O stubbed to *record* writes — the observable that
         distinguishes "cancelled before the approved tool ran" from "ran,
         then reported cancelled"."""
-        from app.agent.tools import builtin as tools
+        from app.domains.ecorp import store as ecorp_store
         from app.retrieval import qdrant_store
 
         writes: list = []
@@ -292,7 +292,7 @@ class TestAstreamEventsResumeCancellation:
         async def fake_upsert(points):
             writes.append(points)
 
-        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
         llm = GenericFakeChatModel(

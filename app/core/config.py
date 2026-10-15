@@ -142,7 +142,7 @@ class Settings(BillingSettings):
     # real paid provider.
     max_cost_usd_per_turn: float = 0.50
 
-    # Per-run cost ceiling for a NESTED subagent run (app/agent/tools/run_subagent.py::run_subagent,
+    # Per-run cost ceiling for a NESTED subagent run (app/agent/tools/run_subagent.py::run_subagent_impl,
     # pattern 46) — smaller than max_cost_usd_per_turn above. A subagent's
     # spend is recorded to the ledger for audit but NOT folded back into the
     # parent turn's live total_cost_usd (disclosed gap, pattern 46), so this

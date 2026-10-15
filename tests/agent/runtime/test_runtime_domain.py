@@ -1,9 +1,9 @@
 """Tests for app/agent/runtime/core.py's `_resolve_domain_name`/`_domain_name` —
 GRAPH_PATTERNS.md pattern 49's per-process domain tag, used only to stamp
-app/agent/runtime/sessions.py's `chat_sessions.domain` column via `_upsert_session`.
+app/agent/runtime/sessions.py's `chat_sessions.domain` column via `upsert_session`.
 Hermetic: never touches init_graph_async's own real
 checkpointer setup, since `_resolve_domain_name` is a pure function of its
-`manifest` argument and `_upsert_session` only needs `app.agent.runtime.sessions`
+`manifest` argument and `upsert_session` only needs `app.agent.runtime.sessions`
 mocked out, the same "test the function, not the graph" scope
 tests/agent/graph/test_multimodal.py and friends already keep for this module.
 """
@@ -29,7 +29,7 @@ class TestUpsertSessionStampsTheCurrentDomain:
         async def fake_upsert_session(ctx, thread_id, title, domain):
             captured.update(ctx=ctx, thread_id=thread_id, title=title, domain=domain)
 
-        # _upsert_session does `from app.agent.runtime import sessions` lazily inside
+        # upsert_session does `from app.agent.runtime import sessions` lazily inside
         # its own body — patching the already-imported module object (not a
         # `runtime.sessions` name, which doesn't exist at module level here)
         # is what that lazy import actually re-reads.
@@ -38,7 +38,7 @@ class TestUpsertSessionStampsTheCurrentDomain:
         monkeypatch.setattr(sessions_module, "upsert_session", fake_upsert_session)
         monkeypatch.setattr(runtime, "_domain_name", "ops")
 
-        await runtime._upsert_session(TEST_CTX, "t1", "did anything break overnight?")
+        await runtime.upsert_session(TEST_CTX, "t1", "did anything break overnight?")
 
         assert captured == {
             "ctx": TEST_CTX,
@@ -57,6 +57,6 @@ class TestUpsertSessionStampsTheCurrentDomain:
         monkeypatch.setattr(sessions_module, "upsert_session", fake_upsert_session)
         monkeypatch.setattr(runtime, "_domain_name", "ecorp")
 
-        await runtime._upsert_session(TEST_CTX, "t1", "hello")
+        await runtime.upsert_session(TEST_CTX, "t1", "hello")
 
         assert captured["domain"] == "ecorp"

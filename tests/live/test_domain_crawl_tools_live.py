@@ -46,13 +46,13 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from app.agent.graph.build import build_graph
-from app.agent.graph.core import GraphDeps
+from app.agent.graph.build import GraphDeps
 from app.domains.ops.domain import OPS_DOMAIN_PLUGIN, OPS_MANIFEST
 from app.domains.support.domain import SUPPORT_DOMAIN_PLUGIN, SUPPORT_MANIFEST
 from app.ingestion import web_crawler
 from tests.conftest import TEST_CTX
 from tests.containers import CRAWL_TARGET_HEADING, CRAWL_TARGET_URL
+from tests.ecorp import build_graph
 
 pytestmark = pytest.mark.crawl
 

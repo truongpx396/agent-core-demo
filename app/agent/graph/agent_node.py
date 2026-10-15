@@ -1,29 +1,29 @@
 """`make_agent_node` — the node that calls the LLM, injecting retrieved
 context/history-summary/skill reminders as extra SystemMessages around the
-turn's real question. Split out of app/agent/graph/core.py purely for file size; see
-graph/retrieval.py/graph_cache.py for sibling splits. No behavior change.
-
-Reads `CHAT_MODEL` via `graph_module.CHAT_MODEL`, not a static import —
-several tests/live and tests/deepeval files monkeypatch
-`graph_module.CHAT_MODEL` directly, which a statically-imported bare name
-would never see (binds once, at import time). Same pattern as
-graph/utils.py's `_make_llm`.
+turn's real question.
 """
 from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.agent.cost import metering
-from app.agent.graph import core as graph_module
-from app.agent.graph.core import State
-from app.agent.graph.messages import _is_retry_artifact, _is_user_message
-from app.agent.graph.skill_guards import _pending_skill_required_tool
-from app.agent.graph.tool_guards import _current_turn_messages
+from app.agent.graph.messages import (
+    current_turn_messages,
+    is_retry_artifact,
+    is_user_message,
+)
+from app.agent.graph.skill_guards import pending_skill_required_tool
+from app.agent.graph.state import State
+from app.core.config import CHAT_MODEL
 from app.core.untrusted import frame_untrusted
 
 
 # --- Node: agent ---
 def make_agent_node(
-    llm, model_alias: str | None = None, kind: str = "chat", citation_reminder: bool = True
+    llm,
+    model_alias: str = CHAT_MODEL,
+    kind: str = "chat",
+    citation_reminder: bool = True,
+    skill_required_tools: tuple[str, ...] = (),
 ):
     """Factory, not a plain function, because `agent` needs an LLM client.
     Tests build it with a fake (e.g. GenericFakeChatModel) via
@@ -31,21 +31,24 @@ def make_agent_node(
     message-assembly logic without a network call.
 
     `model_alias` is the LiteLLM alias `llm` is bound to, used only to price its
-    calls; None means the global chat alias (read at call time, see the module
-    docstring).
+    calls. `build_graph` resolves it (`GraphDeps.model_alias`, else the configured
+    chat alias); a caller building the node directly passes its own.
 
     `citation_reminder=False` (a nested subagent run) leaves out the tail
     reminder that every sentence must end with a `[n]` marker. A subagent's
     prompt says the opposite (its markers would name ITS sources, meaningless
     to the parent), and a model handed both rules obeys neither. The retrieved
     context is still passed, framed as untrusted data.
+
+    `skill_required_tools` is the subset of `SKILL_REQUIRED_TOOL_MARKERS` the calling domain
+    really has; the "call it now" reminder is only ever about one of those.
     """
 
     async def agent(state: State, config: RunnableConfig | None = None) -> dict:
         """Call the LLM, injecting retrieved context as an extra SystemMessage.
 
         The *base* SYSTEM_PROMPT is seeded once per thread by
-        app/agent/runtime/core.py::_ensure_seeded_async before the graph ever runs, so
+        app/agent/runtime/core.py::ensure_seeded_async before the graph ever runs, so
         this only adds the per-turn retrieved context/history summary.
 
         `async def`/`ainvoke`, not `.invoke()`: this is the dominant
@@ -68,13 +71,13 @@ def make_agent_node(
         # progress needs them. Dropping shifts indexes, so `anchor` is re-located by identity
         # (the anchored message is the turn's own question, never a dropped artifact).
         turn_start = next(
-            (i for i in range(len(messages) - 1, -1, -1) if _is_user_message(messages[i])), None
+            (i for i in range(len(messages) - 1, -1, -1) if is_user_message(messages[i])), None
         )
-        if turn_start is not None and any(_is_retry_artifact(m) for m in messages[:turn_start]):
+        if turn_start is not None and any(is_retry_artifact(m) for m in messages[:turn_start]):
             anchor_msg = (
                 messages[anchor] if isinstance(anchor, int) and 0 <= anchor < len(messages) else None
             )
-            messages = [m for i, m in enumerate(messages) if i >= turn_start or not _is_retry_artifact(m)]
+            messages = [m for i, m in enumerate(messages) if i >= turn_start or not is_retry_artifact(m)]
             anchor = next((i for i, m in enumerate(messages) if m is anchor_msg), None)
         context = state.get("context", "")
 
@@ -149,17 +152,19 @@ def make_agent_node(
                 )
             )
 
-        pending_tool = _pending_skill_required_tool(_current_turn_messages(state["messages"]))
+        pending_tool = pending_skill_required_tool(
+            current_turn_messages(state["messages"]), skill_required_tools
+        )
         if pending_tool:
             # Same recency-weighted, tail-appended mechanism as the two
             # reminders above, for the SAME reason (see
-            # _pending_skill_required_tool's docstring): a loaded skill's
+            # pending_skill_required_tool's docstring): a loaded skill's
             # "use this tool, don't estimate by hand" instruction is buried
             # in tool-result text and gets pushed further from generation
             # each round. Names `pending_tool` itself (not hardcoded) so
-            # this stays correct as _SKILL_REQUIRED_TOOL_MARKERS grows.
+            # this stays correct as SKILL_REQUIRED_TOOL_MARKERS grows.
             # Proactive, not a replacement for check_output's reactive
-            # `_skipped_required_sandbox_after_skill` catch — real bug
+            # `skipped_required_sandbox_after_skill` catch — real bug
             # found live: the model ignored an equally direct reminder
             # appended to use_skill's own returned text once already, so no
             # single nudge is assumed sufficient.
@@ -185,7 +190,7 @@ def make_agent_node(
             messages,
             config=config,
             kind=kind,
-            model_alias=model_alias or graph_module.CHAT_MODEL,
+            model_alias=model_alias,
         )
         response, usage = call.response, call.usage
 

@@ -20,11 +20,11 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from app.agent.graph.build import build_graph
-from app.agent.graph.core import GraphDeps
+from app.agent.graph.build import GraphDeps
 from app.domains import notify
 from app.domains.ops.domain import OPS_DOMAIN_PLUGIN, OPS_MANIFEST
 from tests.conftest import TEST_CTX
+from tests.ecorp import ECORP_DOMAIN_PLUGIN, build_graph
 
 
 def _tool_call(name, args, call_id="c1"):
@@ -63,7 +63,7 @@ def test_tool_node_knows_at_least_the_core_ops_domains_tools():
     """Subset, not exact-set, check — leaves room for the manifest to grow
     without this test becoming a maintenance chore for every addition."""
     g = _build()
-    assert _CORE_OPS_TOOLS <= set(g.nodes["tools"].bound.tools_by_name)
+    assert _CORE_OPS_TOOLS <= set(g.tools_by_name)
 
 
 def test_sandbox_tools_are_always_present_as_a_fixed_set():
@@ -82,12 +82,12 @@ def test_sandbox_tools_are_always_present_as_a_fixed_set():
     tests/domains/test_sandbox_session.py (hermetic) and
     tests/live/test_sandbox_session_live.py (real bridge)."""
     g = _build()
-    assert _SANDBOX_TOOLS <= set(g.nodes["tools"].bound.tools_by_name)
+    assert _SANDBOX_TOOLS <= set(g.tools_by_name)
 
 
 def test_every_sandbox_tool_present_is_declared_outward():
     g = _build()
-    present = _SANDBOX_TOOLS & set(g.nodes["tools"].bound.tools_by_name)
+    present = _SANDBOX_TOOLS & set(g.tools_by_name)
     capabilities = OPS_DOMAIN_PLUGIN.tool_capabilities()
     for name in present:
         assert capabilities.get(name) == "outward", name
@@ -99,16 +99,16 @@ class TestDomainScopedSubagent:
     closure-built tool, and its menu offers only the bundled subagent(s)
     declared `domains: [ops]` (subagents/metrics-researcher/AGENT.md)."""
 
-    def test_is_not_the_ecorp_level_run_subagent_object(self):
-        from app.agent.tools.run_subagent import run_subagent as ecorp_run_subagent
+    def test_is_not_the_ecorp_domains_run_subagent_object(self):
+        ecorp_run_subagent = {t.name: t for t in ECORP_DOMAIN_PLUGIN.tools()}["run_subagent"]
 
         g = _build()
-        domain_run_subagent = g.nodes["tools"].bound.tools_by_name["run_subagent"]
+        domain_run_subagent = g.tools_by_name["run_subagent"]
         assert domain_run_subagent is not ecorp_run_subagent
 
     def test_menu_offers_only_the_ops_domains_own_subagents(self):
         g = _build()
-        domain_run_subagent = g.nodes["tools"].bound.tools_by_name["run_subagent"]
+        domain_run_subagent = g.tools_by_name["run_subagent"]
         schema = domain_run_subagent.args_schema.model_json_schema()
         enum_def = next(iter(schema["$defs"].values()))
         assert set(enum_def["enum"]) == {"metrics-researcher", "vendor-history-researcher"}
@@ -120,7 +120,7 @@ class TestDomainScopedSubagent:
             return agent_tools_module.SubagentResult("found it", 0, 0.0)
 
         monkeypatch.setattr(
-            agent_tools_module, "_run_subagent_impl", fake_run_subagent_impl
+            agent_tools_module, "run_subagent_impl", fake_run_subagent_impl
         )
         llm = _fake_llm_returning(
             _tool_call(

@@ -43,19 +43,17 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-from app.agent.graph.build import build_graph
-from app.agent.graph.core import (
-    STATE_SCHEMA_VERSION,
-    SYSTEM_PROMPT,
-    GraphDeps,
-)
+from app.agent.graph.build import GraphDeps
 from app.agent.graph.hitl import resumability_error_async
+from app.agent.graph.state import STATE_SCHEMA_VERSION
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
 from app.core import metrics
+from app.domains.ecorp.domain import ECORP_SYSTEM_PROMPT as SYSTEM_PROMPT
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
 from tests.containers import ensure_postgres
+from tests.ecorp import build_graph
 
 # Real Postgres, no LLM — exactly `test-integration`'s scope
 # (.github/workflows/ci.yml). A genuine gap this closes, not a stylistic
@@ -208,7 +206,7 @@ class TestAsyncSeeding:
     `thread_id` (the checkpointer refuses a sync call from its own loop;
     only a DIFFERENT thread's sync
     call is the supported cross-thread path — see app/agent/runtime/core.py's module
-    docstring). Fixed by adding `_ensure_seeded_async` (async callers:
+    docstring). Fixed by adding `ensure_seeded_async` (async callers:
     `astream_events_turn`/`astream_events_turn_ctx`, using
     `graph.aupdate_state`) as a separate async-safe seeding path, instead of
     reusing the sync `graph.update_state`-based helper the old `stream_turn`/
@@ -221,7 +219,7 @@ class TestAsyncSeeding:
         monkeypatch.setattr(
             agent_module,
             "build_graph",
-            lambda checkpointer=None, manifest=None, domain=None: build_graph(
+            lambda manifest, domain, checkpointer=None: build_graph(
                 GraphDeps(llm=_fake_llm()), checkpointer=checkpointer
             ),
         )
@@ -250,7 +248,7 @@ class TestAsyncSeeding:
         `agent-worker` processes for scaling, with Redis Streams
         distributing turns round-robin across them — a thread's turns
         can just as easily land on a DIFFERENT process that's never seen
-        this thread_id before. Either way, `_ensure_seeded_async` used to
+        this thread_id before. Either way, `ensure_seeded_async` used to
         trust `_seeded` alone and append a second copy of the prompt.
 
         Simulated here the same way TestDurabilityAcrossRestart above
@@ -267,7 +265,7 @@ class TestAsyncSeeding:
             async with AsyncPostgresSaver.from_conn_string(checkpointer_url) as saver:
                 await saver.setup()
                 graph = build_graph(GraphDeps(llm=_fake_llm()), checkpointer=saver)
-                await agent_module._ensure_seeded_async(graph, thread_id)
+                await agent_module.ensure_seeded_async(graph, thread_id)
 
         await _seed_once()
         agent_module._seeded.discard(thread_id)
@@ -348,7 +346,7 @@ class TestAsyncSeeding:
         monkeypatch.setattr(
             agent_module,
             "build_graph",
-            lambda checkpointer=None, manifest=None, domain=None: build_graph(
+            lambda manifest, domain, checkpointer=None: build_graph(
                 GraphDeps(llm=_mutating_tool_call_llm()), checkpointer=checkpointer
             ),
         )
@@ -419,7 +417,7 @@ class TestAsyncSeeding:
         monkeypatch.setattr(
             agent_module,
             "build_graph",
-            lambda checkpointer=None, manifest=None, domain=None: build_graph(
+            lambda manifest, domain, checkpointer=None: build_graph(
                 GraphDeps(llm=_mutating_tool_call_llm()), checkpointer=checkpointer
             ),
         )
@@ -511,7 +509,7 @@ class TestAstreamEventsContinueTurn:
         monkeypatch.setattr(
             agent_module,
             "build_graph",
-            lambda checkpointer=None, manifest=None, domain=None: build_graph(
+            lambda manifest, domain, checkpointer=None: build_graph(
                 GraphDeps(llm=_calculator_llm()), checkpointer=checkpointer
             ),
         )
@@ -620,7 +618,7 @@ class TestResumabilityError:
             # not the other way around.
             graph, config = await self._paused_graph_and_config()
             monkeypatch.setattr(
-                "app.agent.graph.core.STATE_SCHEMA_VERSION", STATE_SCHEMA_VERSION + 1
+                "app.agent.graph.hitl.STATE_SCHEMA_VERSION", STATE_SCHEMA_VERSION + 1
             )
             return await resumability_error_async(graph, config)
 
@@ -721,7 +719,7 @@ class TestResumabilityErrorRejectsAnActivelyRunningThread:
         monkeypatch.setattr(
             agent_module,
             "build_graph",
-            lambda checkpointer=None, manifest=None, domain=None: build_graph(
+            lambda manifest, domain, checkpointer=None: build_graph(
                 GraphDeps(
                     llm=llm,
                     cache_get=fake_cache_get,

@@ -6,7 +6,7 @@ app/agent/graph/core.py for why it's a factory.
 docstring), so every call below runs through `asyncio.run(...)` — this
 repo's established pattern for exercising async code from a plain
 `def test_...` (no pytest-asyncio configured; see app/agent/graph/utils.py's
-`_instrumented` docstring for why only the I/O-bound nodes are async at
+`instrumented` docstring for why only the I/O-bound nodes are async at
 all)."""
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -349,6 +349,9 @@ async def test_citation_reminder_is_the_very_last_message_when_both_reminders_fi
     assert "bracket marker" in seen[-1].content
 
 
+_SANDBOX = ("run_python_in_sandbox",)  # a domain that has the sandbox tool
+
+
 async def test_agent_appends_a_sandbox_reminder_after_a_sandbox_requiring_skill_loads():
     """Real bug, found live via Langfuse (trace `633eee2b`, 2026-09-08):
     the deal-economics skill was loaded, its own body already says to use
@@ -359,7 +362,7 @@ async def test_agent_appends_a_sandbox_reminder_after_a_sandbox_requiring_skill_
     reminder above: a short, tail-appended line, not a bigger rewrite of
     the skill's own body."""
     fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
-    agent = make_agent_node(fake_llm)
+    agent = make_agent_node(fake_llm, skill_required_tools=_SANDBOX)
 
     state = {
         "messages": [
@@ -381,7 +384,7 @@ async def test_agent_appends_a_sandbox_reminder_after_a_sandbox_requiring_skill_
 
 async def test_agent_skips_the_sandbox_reminder_once_the_tool_was_actually_called():
     fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
-    agent = make_agent_node(fake_llm)
+    agent = make_agent_node(fake_llm, skill_required_tools=_SANDBOX)
 
     state = {
         "messages": [
@@ -409,7 +412,7 @@ async def test_agent_skips_the_sandbox_reminder_once_the_tool_was_actually_calle
 
 async def test_agent_skips_the_sandbox_reminder_when_no_skill_mentions_the_tool():
     fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
-    agent = make_agent_node(fake_llm)
+    agent = make_agent_node(fake_llm, skill_required_tools=_SANDBOX)
 
     state = {
         "messages": [
@@ -425,6 +428,30 @@ async def test_agent_skips_the_sandbox_reminder_when_no_skill_mentions_the_tool(
     await agent(state)
 
     assert not any(isinstance(m, SystemMessage) for m in fake_llm.seen_messages)
+
+
+async def test_agent_never_reminds_a_domain_without_the_tool_to_call_it():
+    """The same loaded skill, in a domain whose tool set has no sandbox: nothing to remind about."""
+    fake_llm = _RecordingFakeLLM(messages=iter([AIMessage(content="answer")]))
+    agent = make_agent_node(fake_llm)  # skill_required_tools=()
+
+    state = {
+        "messages": [
+            HumanMessage(content="What's the real contract value?"),
+            AIMessage(content="", tool_calls=[{"name": "use_skill", "args": {}, "id": "c1"}]),
+            ToolMessage(
+                content="write a short script and run it with run_python_in_sandbox instead",
+                tool_call_id="c1",
+                name="use_skill",
+            ),
+        ],
+    }
+    await agent(state)
+
+    assert not any(
+        isinstance(m, SystemMessage) and "run_python_in_sandbox" in m.content
+        for m in fake_llm.seen_messages
+    )
 
 
 _ARTIFACT = {RETRY_ARTIFACT_KEY: True}

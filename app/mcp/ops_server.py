@@ -32,8 +32,8 @@ from app.core.config import DEFAULT_TENANT
 from app.core.security import SecurityCtx
 from app.domains.ops.tools import (
     OPS_POLICY,
-    _fetch_metrics_summary_impl,
-    _list_recent_incidents_impl,
+    fetch_metrics_summary_impl,
+    list_recent_incidents_impl,
 )
 
 mcp = FastMCP(
@@ -57,7 +57,7 @@ async def fetch_metrics_summary(principal: str) -> str:
     ctx: SecurityCtx = {"tenant": DEFAULT_TENANT, "principal": principal, "claims": {}}
     if not OPS_POLICY.permit("fetch_metrics", ctx):
         return "Refused: principal is required."
-    return await _fetch_metrics_summary_impl()
+    return await fetch_metrics_summary_impl()
 
 
 @mcp.tool()
@@ -67,7 +67,7 @@ async def list_recent_incidents(principal: str, status: str | None = None) -> st
     ctx: SecurityCtx = {"tenant": DEFAULT_TENANT, "principal": principal, "claims": {}}
     if not OPS_POLICY.permit("list_recent_incidents", ctx):
         return "Refused: principal is required."
-    return await _list_recent_incidents_impl(status)
+    return await list_recent_incidents_impl(status)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,7 @@
-"""`make_domain_subagent_tool` — builds a per-domain `run_subagent` tool
-(the domain equivalent of `app/agent/tools/run_subagent.py`'s own Ecorp-level
-construction). Split out of `tools/run_subagent.py` purely for file size — see
-that module's own docstring for the rest of the `run_subagent` machinery
-(`_run_subagent_impl`, `_build_subagent_registry`, the compiled-graph
-cache) this function calls into. No behavior change from the pre-split
-single-file version.
+"""`make_domain_subagent_tool`: builds a domain's `run_subagent` tool. Every domain, Ecorp
+included, calls it once at import. The menu, the read-only tool resolution and the nested run itself
+(`build_subagent_registry`, `run_subagent_impl`, the compiled-graph cache) are in
+`app/agent/tools/run_subagent.py`.
 """
 from collections.abc import Mapping
 from enum import Enum
@@ -17,7 +14,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field, field_validator
 
 from app.agent.tools import run_subagent as subagent_tools_module
-from app.agent.tools.run_subagent import _build_subagent_registry
+from app.agent.tools.run_subagent import build_subagent_registry
 
 
 def make_domain_subagent_tool(
@@ -41,7 +38,7 @@ def make_domain_subagent_tool(
     own import time.
     """
     all_tool_names = frozenset(t.name for t in all_tools)
-    registry = _build_subagent_registry(all_tool_names, tool_capabilities, domain=domain)
+    registry = build_subagent_registry(all_tool_names, tool_capabilities, domain=domain)
     if not registry:
         return None
 
@@ -94,13 +91,12 @@ def make_domain_subagent_tool(
         matches a subagent's specific focus better than doing it yourself.
         Every subagent is restricted to read_only tools, so calling this
         never needs human approval."""
-        # Read as subagent_tools_module._run_subagent_impl, not a bare
+        # Read as subagent_tools_module.run_subagent_impl, not a bare
         # imported name — tests/agent/tools/test_tools.py does
-        # monkeypatch.setattr(subagent_tools, "_run_subagent_impl", ...), and
+        # monkeypatch.setattr(subagent_tools, "run_subagent_impl", ...), and
         # a bare name would bind to the original function permanently at
-        # import time, silently defeating the monkeypatch (same fix as
-        # graph/hitl.py's `graph_module.interrupt`).
-        result = await subagent_tools_module._run_subagent_impl(
+        # import time, silently defeating the monkeypatch.
+        result = await subagent_tools_module.run_subagent_impl(
             subagent_name.value,
             task,
             config,

@@ -33,26 +33,19 @@ out of sync with what's on disk.
 Skills are bundled app capabilities, not tenant data — no `SecurityCtx`
 involved, same as `app/agent/tools/builtin.py::calculator`.
 """
-import logging
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-
+from app.agent.tools import frontmatter as fm
 from app.core.config import SKILLS_DIR
-
-logger = logging.getLogger(__name__)
-
-_FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?\n)---\s*\n?", re.DOTALL)
 
 
 class SkillLoadError(ValueError):
     """A SKILL.md file doesn't match the required shape (frontmatter with
     non-empty `name`/`description`, plus a non-empty body). Raised by
-    `_parse_skill_file`; `load_skills` catches this per-file and skips the
-    offending file rather than letting one bad skill take down the whole
-    catalog (GRAPH_PATTERNS.md pattern 10's degrade-gracefully posture)."""
+    `_parse_skill_file`; `load_skills` skips the offending file rather than
+    letting one bad skill take down the whole catalog (GRAPH_PATTERNS.md
+    pattern 10's degrade-gracefully posture)."""
 
 
 @dataclass(frozen=True)
@@ -66,77 +59,22 @@ class SkillRecord:
 
 
 def _parse_skill_file(path: Path) -> SkillRecord:
-    text = path.read_text(encoding="utf-8")
-    match = _FRONTMATTER_RE.match(text)
-    if not match:
-        raise SkillLoadError(
-            f"{path}: missing YAML frontmatter (expected a leading '---' block)."
-        )
-    try:
-        frontmatter = yaml.safe_load(match.group(1)) or {}
-    except yaml.YAMLError as exc:
-        raise SkillLoadError(f"{path}: invalid YAML frontmatter: {exc}") from exc
-    if not isinstance(frontmatter, dict):
-        raise SkillLoadError(f"{path}: frontmatter must be a YAML mapping.")
-
-    name = frontmatter.get("name")
-    description = frontmatter.get("description")
-    if not isinstance(name, str) or not name.strip():
-        raise SkillLoadError(f"{path}: frontmatter must set a non-empty 'name'.")
-    if not isinstance(description, str) or not description.strip():
-        raise SkillLoadError(f"{path}: frontmatter must set a non-empty 'description'.")
-
-    raw_domains = frontmatter.get("domains")
-    domains: tuple[str, ...] | None
-    if raw_domains is None:
-        domains = None
-    elif isinstance(raw_domains, list) and all(
-        isinstance(d, str) and d.strip() for d in raw_domains
-    ):
-        domains = tuple(raw_domains)
-    else:
-        raise SkillLoadError(f"{path}: 'domains', if set, must be a list of non-empty strings.")
-
-    body = text[match.end() :].strip()
-    if not body:
-        raise SkillLoadError(f"{path}: skill body (markdown after frontmatter) must not be empty.")
-
+    frontmatter, body = fm.split_file(path, SkillLoadError)
     return SkillRecord(
-        name=name.strip(),
-        description=description.strip(),
-        body=body,
-        domains=domains,
+        name=fm.required_text(frontmatter, "name", path, SkillLoadError),
+        description=fm.required_text(frontmatter, "description", path, SkillLoadError),
+        body=fm.required_body(body, path, "skill", SkillLoadError),
+        domains=fm.optional_string_list(frontmatter, "domains", path, SkillLoadError),
         path=path,
     )
 
 
 def load_skills(skills_dir: str | Path | None = None) -> dict[str, SkillRecord]:
     """Scans `skills_dir/*/SKILL.md` (default `SKILLS_DIR`) and returns
-    `{name: SkillRecord}`. A malformed file is logged and skipped — never
-    raised past this function — so one bad skill can't take the whole
-    catalog down. A duplicate `name` across two directories keeps whichever
-    was parsed first (directory order) and logs a warning; it's not an
-    error, since a name collision is a content-authoring mistake, not a
-    reason to refuse serving every OTHER skill."""
+    `{name: SkillRecord}`; see `frontmatter.load_catalog` for how a malformed file
+    or a duplicate name is handled."""
     root = Path(skills_dir) if skills_dir is not None else Path(SKILLS_DIR)
-    if not root.is_dir():
-        return {}
-
-    skills: dict[str, SkillRecord] = {}
-    for skill_md in sorted(root.glob("*/SKILL.md")):
-        try:
-            record = _parse_skill_file(skill_md)
-        except SkillLoadError as exc:
-            logger.warning("skipping invalid skill file", extra={"error": str(exc)})
-            continue
-        if record.name in skills:
-            logger.warning(
-                "duplicate skill name; keeping the first one found",
-                extra={"skill_name": record.name, "path": str(skill_md)},
-            )
-            continue
-        skills[record.name] = record
-    return skills
+    return fm.load_catalog(root, "SKILL.md", _parse_skill_file, SkillLoadError, "skill")
 
 
 _skills_cache: dict[str, SkillRecord] | None = None

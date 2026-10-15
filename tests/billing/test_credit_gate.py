@@ -173,7 +173,7 @@ class TestEnforcementOffChangesNothing:
         assert metric_value(admission.metrics.agent_credit_enforcement_refused_total) == before
 
     async def test_the_default_allowance_through_the_runtime_never_reads_the_wallet(self, world, real_gate):
-        assert await runtime_module._allowance_refusal(TEST_CTX) is None
+        assert await runtime_module.allowance_refusal(TEST_CTX) is None
         assert real_gate == []
 
     async def test_with_enforcement_on_the_same_wallet_refuses(self, world, real_gate, monkeypatch):
@@ -239,7 +239,7 @@ class TestTheRuntimeBinding:
     async def test_the_refusal_every_entry_point_asks_for_carries_the_credit_code(self, world):
         world["gate"].answer = billing_port.Admission("exhausted", D("0"), D("0"))
 
-        envelope = await runtime_module._allowance_refusal(TEST_CTX)
+        envelope = await runtime_module.allowance_refusal(TEST_CTX)
 
         assert envelope is not None and envelope.code == errors.ErrorCode.INSUFFICIENT_CREDITS
 
@@ -253,7 +253,7 @@ class _GraphTouched(AssertionError):
 
 
 class TestEntryPointsRefuseBeforeAnyModelWork:
-    """A new turn and a resume both ask `_allowance_refusal`, so both refuse a tenant with no credits before the graph is initialised, and neither
+    """A new turn and a resume both ask `allowance_refusal`, so both refuse a tenant with no credits before the graph is initialised, and neither
     takes a hold."""
 
     @pytest.fixture(autouse=True)
@@ -269,7 +269,7 @@ class TestEntryPointsRefuseBeforeAnyModelWork:
             return "hold"
 
         monkeypatch.setattr(runtime_module, "init_graph_async", boom)
-        monkeypatch.setattr(runtime_module, "_reserve_turn_budget", reserve)
+        monkeypatch.setattr(runtime_module, "reserve_turn_budget", reserve)
         self.reserved = reserved
         self.world = world
 

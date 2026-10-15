@@ -11,7 +11,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from app.agent.graph.core import MAX_ITERATIONS
+from app.agent.graph.state import MAX_ITERATIONS
 from tests.conftest import TEST_CTX
 
 

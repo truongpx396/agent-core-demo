@@ -24,12 +24,11 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
-from app.agent.graph.build import build_graph
-from app.agent.graph.cache import make_write_semantic_cache_node
-from app.agent.graph.core import GraphDeps
+from app.agent.graph.build import GraphDeps
 from app.domains.sales import store
 from app.domains.sales.domain import SALES_DOMAIN_PLUGIN, SALES_MANIFEST
 from tests.conftest import TEST_CTX
+from tests.ecorp import build_graph, make_write_semantic_cache_node
 
 CONTACT = "jordan@example.com"
 QUESTION = "Research jordan's company site and add it to their notes."

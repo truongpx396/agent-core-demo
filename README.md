@@ -58,7 +58,7 @@ flowchart TB
 
     Runtime --> Moderate
 
-    subgraph agent_sg["LangGraph agent — 21 nodes, safety budgets, approval gate"]
+    subgraph agent_sg["LangGraph agent — 19 nodes, safety budgets, approval gate"]
         Moderate["moderate_input"]
         CacheCheck{"semantic cache hit?"}
         Retrieve["retrieve_context"]
@@ -290,7 +290,7 @@ One disclosed gap: a DNS-rebinding race between validation and fetch. Production
 These come from the [constitution](.specify/memory/constitution.md). Tenant isolation, mandatory approval and exactly-once side effects are its non-negotiable principles.
 
 - **Tenant isolation fails closed.** `SecurityCtx` comes only from request config, never from message content. `Policy.lower` turns it into a store-native filter (a Qdrant pre-filter, `WHERE tenant = %s`). Every tool re-checks ctx on its own.
-- **Approval is mandatory and structural.** Every tool declares `read_only`, `mutating` or `outward` in `TOOL_CAPABILITIES`; an undeclared tool counts as `outward`. Unattended callers (Telegram, queue jobs) auto-decline and never auto-approve. Subagents may use only `read_only` tools.
+- **Approval is mandatory and structural.** Every tool declares `read_only`, `mutating` or `outward` (a shared map in `app/agent/tools/builtin.py`, merged with each domain's own); an undeclared tool counts as `outward`. Unattended callers (Telegram, queue jobs) auto-decline and never auto-approve. Subagents may use only `read_only` tools.
 - **Side effects happen once.** The layers, each closing a failure the previous one cannot see:
 
 | Failure | Defence |
@@ -308,10 +308,11 @@ such as "one open ticket per requester + subject" — what counts as the same ti
 ## Example domains
 
 `AgentManifest` + `DomainPlugin` (`app/agent/manifest.py`) mean a new use case is a manifest and a plugin,
-never a fork of `build_graph()`. Three real domains run on the one unmodified graph:
+never a fork of `build_graph()`. Four domains run on the one unmodified graph, the default one included:
 
 | Domain | What it does | Run |
 |---|---|---|
+| **Ecorp** `app/domains/ecorp/` | The default demo assistant: cited answers from the knowledge base, a calculator, a staff directory, and notes and memory (writes need approval) | `make serve` · `make chat` |
 | **Support copilot** `app/domains/support/` | Tier-1 support: searches the knowledge base, opens/checks/escalates tickets, adds comments, reads a customer-linked page live, parses pasted logs in the sandbox | `make telegram-support` |
 | **Ops bot** `app/domains/ops/` | Reads this repo's own Prometheus metrics, flags thresholds matching the alert rules, logs and resolves incidents, checks vendor status pages | `make ops-digest` (cron) · `python -m scripts.ops_investigate "…"` |
 | **Sales concierge** `app/domains/sales/` | Logs leads, drafts replies (never sends), schedules follow-ups, hands hot leads to a human, researches a lead's site, computes deal economics | `make telegram-sales` · `make followup-sweep` (cron) |
@@ -412,7 +413,7 @@ fails a check, isn't a required status, and is **off until you configure it**.
 - **When it runs:** a PR opened non-draft or marked ready, or when the `ai-review` label is added (remove and re-add to re-run). Deliberately not on every push.
 - **What the model sees:** the diff, the full text of each changed file, and reference snippets chosen by `.github/ai-review-context.toml` (for example `idempotent()` when a domain `tools.py` changed). Bounded by `AI_REVIEW_MAX_DIFF_CHARS`, `AI_REVIEW_MAX_CONTEXT_CHARS` and `AI_REVIEW_MAX_FILE_CHARS`; what doesn't fit is listed under "Not reviewed".
 - **Output:** findings on changed lines become inline threads; the rest stay in the summary, whose citations link to the exact commit read. `AI_REVIEW_INLINE=0` turns inline threads off.
-- **Reliability:** fallback models and providers (`AI_REVIEW_FALLBACK_*`, at most 6, one 480 s deadline), and retries that honour the provider's own wait hint. A provider's key is never sent to another provider's host. Details are in the docstrings of `scripts/ai_review_providers.py`, `ai_review_retry.py` and `ai_review_findings.py`.
+- **Reliability:** fallback models and providers (`AI_REVIEW_FALLBACK_*`, at most 6, one 480 s deadline), and retries that honour the provider's own wait hint. A provider's key is never sent to another provider's host. Details are in the docstrings of `scripts/ai_review/providers.py`, `ai_review_retry.py` and `ai_review_findings.py`.
 - **Safety:** `pull_request` (never `pull_request_target`), same-repo PRs only, no tools for the model, and the diff is untrusted data inside a random per-run boundary. Logs of this public repo carry counts and statuses only.
 
 **Known gaps:** the diff goes to whatever endpoint you configure; prompt injection is mitigated, not solved;

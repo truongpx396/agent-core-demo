@@ -15,17 +15,16 @@ import uuid
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent.graph import core as graph
-from app.agent.graph import routing as graph_routing
-from app.agent.graph.build import build_graph
-from app.agent.graph.core import GraphDeps
-from app.agent.graph.hitl import human_approval
+from app.agent.graph.build import GraphDeps
+from app.agent.graph.hitl import make_human_approval_node
 from app.agent.graph.retrieval import make_retrieve_context_node
 from app.agent.graph.retry import retry_output
-from app.agent.graph.tool_guards import too_many_tool_calls
+from app.agent.graph.tool_guards import tool_batch_guard
 from app.core import metrics
+from tests import ecorp
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
+from tests.ecorp import build_graph
 
 
 def _config():
@@ -44,11 +43,11 @@ def _tool_call_message(name, args, call_id="call_1"):
 class TestNodeLevelMetrics:
     def test_retry_output_increments_retry_counter(self):
         before = _count(metrics.agent_retry_total)
-        retry_output({"messages": []})
+        retry_output({"messages": [], "last_retry_reason": "too_short"})
         assert _count(metrics.agent_retry_total) == before + 1
 
     def test_human_approval_approved_increments_with_correct_label(self, monkeypatch):
-        monkeypatch.setattr(graph, "interrupt", lambda payload: True)
+        human_approval = make_human_approval_node(lambda payload: True)
         before = _count(metrics.agent_human_approval_total, decision="approved")
         ai = _tool_call_message("calculator", {"expression": "1+1"})
         human_approval({"messages": [ai]})
@@ -58,7 +57,7 @@ class TestNodeLevelMetrics:
         )
 
     def test_human_approval_rejected_increments_with_correct_label(self, monkeypatch):
-        monkeypatch.setattr(graph, "interrupt", lambda payload: False)
+        human_approval = make_human_approval_node(lambda payload: False)
         before = _count(metrics.agent_human_approval_total, decision="rejected")
         ai = _tool_call_message("calculator", {"expression": "1+1"})
         human_approval({"messages": [ai]})
@@ -76,8 +75,22 @@ class TestNodeLevelMetrics:
                 for i in range(6)
             ],
         )
-        too_many_tool_calls({"messages": [ai]})
+        tool_batch_guard({"messages": [ai]}, ecorp.ECORP_TOOL_NAMES)
         assert _count(metrics.agent_tool_budget_exceeded_total) == before + 1
+
+    def test_an_invalid_tool_call_increments_its_own_counter_not_the_budget_one(self):
+        before_invalid = _count(metrics.agent_invalid_tool_call_total)
+        before_budget = _count(metrics.agent_tool_budget_exceeded_total)
+        ai = AIMessage(content="", tool_calls=[{"name": "crate_tiket", "args": {}, "id": "c1"}])
+        tool_batch_guard({"messages": [ai]}, ecorp.ECORP_TOOL_NAMES)
+        assert _count(metrics.agent_invalid_tool_call_total) == before_invalid + 1
+        assert _count(metrics.agent_tool_budget_exceeded_total) == before_budget
+
+    def test_use_skill_before_a_search_increments_its_own_counter(self):
+        before = _count(metrics.agent_use_skill_without_search_total)
+        ai = AIMessage(content="", tool_calls=[{"name": "use_skill", "args": {"name": "x"}, "id": "c1"}])
+        tool_batch_guard({"messages": [HumanMessage(content="q"), ai]}, ecorp.ECORP_TOOL_NAMES)
+        assert _count(metrics.agent_use_skill_without_search_total) == before + 1
 
     async def test_retrieve_context_failure_increments_degraded_counter(self):
         async def failing_search_docs(query, ctx):
@@ -125,7 +138,7 @@ class TestNodeLevelMetrics:
                 )
             ],
         }
-        assert graph_routing.should_continue(state) == "human_approval"
+        assert ecorp.should_continue(state) == "human_approval"
         assert (
             _count(metrics.agent_capability_gate_total, capability="mutating")
             == before + 1
@@ -147,7 +160,7 @@ class TestNodeLevelMetrics:
                 )
             ],
         }
-        assert graph_routing.should_continue(state) == "human_approval"
+        assert ecorp.should_continue(state) == "human_approval"
         assert (
             _count(metrics.agent_capability_gate_total, capability="mutating")
             == before

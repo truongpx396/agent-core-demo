@@ -50,9 +50,9 @@ def budget(monkeypatch):
     async def release(ctx, hold_id):
         log["released"].append(hold_id)
 
-    monkeypatch.setattr(runtime_module, "_allowance_refusal", refusal)
-    monkeypatch.setattr(runtime_module, "_reserve_turn_budget", reserve)
-    monkeypatch.setattr(runtime_module, "_release_turn_budget", release)
+    monkeypatch.setattr(runtime_module, "allowance_refusal", refusal)
+    monkeypatch.setattr(runtime_module, "reserve_turn_budget", reserve)
+    monkeypatch.setattr(runtime_module, "release_turn_budget", release)
     return log
 
 

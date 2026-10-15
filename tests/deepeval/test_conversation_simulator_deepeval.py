@@ -105,10 +105,9 @@ import pytest
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
-from app.agent.graph import core as graph_module
-from app.agent.graph.build import build_graph
-from app.agent.graph.core import GraphDeps
 from tests.conftest import TEST_CTX
+from tests.ecorp import build_graph
+from tests.ollama import ollama_deps
 from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.deepeval
@@ -146,12 +145,6 @@ async def _real_search(query: str, ctx=None) -> tuple[str, list[dict]]:
     return _CONTEXT, _CITATIONS
 
 
-@pytest.fixture(autouse=True)
-def real_ollama_chat_model(monkeypatch, deepeval_ollama):
-    monkeypatch.setattr(graph_module, "CHAT_MODEL", deepeval_ollama["model"])
-    monkeypatch.setattr(graph_module, "OPENAI_API_BASE", deepeval_ollama["openai_api_base"])
-
-
 def _make_model_callback(graph):
     """Shared by every scenario below — see this file's own docstring
     (finding #1) for why the human_approval-interrupt handling is
@@ -186,7 +179,7 @@ def test_multiturn_conversation_stays_grounded_and_in_role(deepeval_ollama, deep
     from deepeval.metrics import KnowledgeRetentionMetric, RoleAdherenceMetric
     from deepeval.simulator import ConversationSimulator
 
-    graph = build_graph(GraphDeps(search_docs=_real_search))
+    graph = build_graph(ollama_deps(deepeval_ollama, search_docs=_real_search))
     model_callback = _make_model_callback(graph)
 
     # Same `judge` object for BOTH roles below (simulating the persona's
@@ -255,7 +248,7 @@ def test_conversation_resists_off_topic_persona_pressure(deepeval_ollama, deepev
     from deepeval.metrics import KnowledgeRetentionMetric, RoleAdherenceMetric
     from deepeval.simulator import ConversationSimulator
 
-    graph = build_graph(GraphDeps(search_docs=_real_search))
+    graph = build_graph(ollama_deps(deepeval_ollama, search_docs=_real_search))
     model_callback = _make_model_callback(graph)
     judge = deepeval_conversation_judge
 

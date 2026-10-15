@@ -8,26 +8,33 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent.graph.cache import route_after_cache
 from app.agent.graph.core import (
-    MAX_CONSECUTIVE_SAME_RETRY_REASON,
-    MAX_HISTORY_SUMMARY_CHARS,
-    MAX_ITERATIONS,
-    MAX_REPEATED_ACTIONS,
     route_after_compaction,
     route_after_moderation,
     route_after_validation,
 )
 from app.agent.graph.hitl import route_after_approval
 from app.agent.graph.loop_guards import (
-    _consecutive_repeat_count,
-    _mandatory_gate_reason,
     _tool_call_fingerprint,
-    _tool_capability,
-    _use_skill_called_without_search,
+    consecutive_repeat_count,
+    use_skill_called_without_search,
 )
-from app.agent.graph.routing import route_after_check, should_continue
-from app.agent.graph.skill_guards import _pending_skill_required_tool
-from app.agent.graph.tool_guards import _reject_tool_calls
+from app.agent.graph.messages import reject_tool_calls
+from app.agent.graph.routing import route_after_check
+from app.agent.graph.skill_guards import pending_skill_required_tool
+from app.agent.graph.state import (
+    MAX_CONSECUTIVE_SAME_RETRY_REASON,
+    MAX_HISTORY_SUMMARY_CHARS,
+    MAX_ITERATIONS,
+    MAX_REPEATED_ACTIONS,
+)
+from app.agent.graph.tool_guards import batch_problem
 from tests.conftest import TEST_CTX
+from tests.ecorp import (
+    ECORP_TOOL_NAMES,
+    mandatory_gate_reason,
+    should_continue,
+    tool_capability,
+)
 
 
 def _tool_call(name, call_id="1"):
@@ -96,19 +103,19 @@ class TestToolCallFingerprint:
 class TestConsecutiveRepeatCount:
     def test_no_tool_calls_at_all_is_zero(self):
         messages = [HumanMessage(content="hi"), AIMessage(content="hello")]
-        assert _consecutive_repeat_count(messages) == 0
+        assert consecutive_repeat_count(messages) == 0
 
     def test_a_single_tool_call_counts_as_one(self):
         messages = [
             HumanMessage(content="hi"),
             AIMessage(content="", tool_calls=_tc_batch(("calculator", {"expression": "1+1"}))),
         ]
-        assert _consecutive_repeat_count(messages) == 1
+        assert consecutive_repeat_count(messages) == 1
 
     def test_repeated_identical_calls_count_up(self):
         call = AIMessage(content="", tool_calls=_tc_batch(("calculator", {"expression": "1+1"})))
         messages = [HumanMessage(content="hi"), call, call, call]
-        assert _consecutive_repeat_count(messages) == 3
+        assert consecutive_repeat_count(messages) == 3
 
     def test_a_different_call_resets_the_count(self):
         messages = [
@@ -118,7 +125,7 @@ class TestConsecutiveRepeatCount:
             AIMessage(content="", tool_calls=_tc_batch(("calculator", {"expression": "2+2"}))),
         ]
         # Only the most recent (different) call counts — the repeat streak broke.
-        assert _consecutive_repeat_count(messages) == 1
+        assert consecutive_repeat_count(messages) == 1
 
     def test_never_scans_across_a_prior_turns_human_message(self):
         """A model calling the same tool in two DIFFERENT turns hasn't
@@ -131,7 +138,7 @@ class TestConsecutiveRepeatCount:
             HumanMessage(content="turn two"),  # a NEW turn starts here
             same_call,
         ]
-        assert _consecutive_repeat_count(messages) == 1
+        assert consecutive_repeat_count(messages) == 1
 
 
 class TestNoProgressDetection:
@@ -327,30 +334,30 @@ class TestShouldContinueBudgetOverrides:
 
 class TestToolCapability:
     def test_known_read_only_tools(self):
-        assert _tool_capability("search_docs") == "read_only"
-        assert _tool_capability("calculator") == "read_only"
+        assert tool_capability("search_docs") == "read_only"
+        assert tool_capability("calculator") == "read_only"
 
     def test_known_mutating_tool(self):
-        assert _tool_capability("add_note") == "mutating"
+        assert tool_capability("add_note") == "mutating"
 
     def test_unknown_tool_defaults_to_outward(self):
         """Fail closed: a tool added to TOOLS without a TOOL_CAPABILITIES
         entry must be gated, not silently trusted."""
-        assert _tool_capability("some_new_tool_nobody_registered") == "outward"
+        assert tool_capability("some_new_tool_nobody_registered") == "outward"
 
 
 class TestMandatoryGateReason:
     def test_all_read_only_is_none(self):
         calls = [{"name": "search_docs"}, {"name": "calculator"}]
-        assert _mandatory_gate_reason(calls) is None
+        assert mandatory_gate_reason(calls) is None
 
     def test_one_mutating_call_is_mutating(self):
         calls = [{"name": "search_docs"}, {"name": "add_note"}]
-        assert _mandatory_gate_reason(calls) == "mutating"
+        assert mandatory_gate_reason(calls) == "mutating"
 
     def test_undeclared_tool_outranks_mutating(self):
         calls = [{"name": "add_note"}, {"name": "totally_unknown"}]
-        assert _mandatory_gate_reason(calls) == "outward"
+        assert mandatory_gate_reason(calls) == "outward"
 
 
 class TestShouldContinueMandatoryGate:
@@ -421,20 +428,19 @@ class TestShouldContinueInvalidToolCall:
     TestShouldContinueMandatoryGate's "registered but undeclared capability"
     case above) is a more severe condition — the model itself emitted a
     malformed/hallucinated call, not a real dispatchable tool with unknown
-    risk. Routes to invalid_tool_call, checked BEFORE the mandatory
+    risk. Routes to the tool-batch guard (as `invalid_tool_call`), checked BEFORE the mandatory
     capability gate, so it never reaches human_approval with a name nobody
     could meaningfully approve."""
 
-    def test_name_absent_from_valid_tool_names_routes_to_invalid_tool_call(self):
+    def test_name_absent_from_valid_tool_names_routes_to_the_batch_guard_as_invalid(self):
         state = {
             "iterations": 1,
             "require_approval": False,
             "messages": [_tool_call("search_docscalculatoradd_note")],
         }
-        assert (
-            should_continue(state, valid_tool_names=frozenset({"search_docs", "calculator"}))
-            == "invalid_tool_call"
-        )
+        names = frozenset({"search_docs", "calculator"})
+        assert should_continue(state, valid_tool_names=names) == "tool_batch_guard"
+        assert batch_problem(state["messages"][-1].tool_calls, state["messages"], names) == "invalid_tool_call"
 
     def test_checked_before_the_mandatory_capability_gate(self):
         """Even a name that WOULD otherwise be mutating/outward (fails
@@ -445,10 +451,7 @@ class TestShouldContinueInvalidToolCall:
             "require_approval": False,
             "messages": [_tool_call("add_note_but_typo")],
         }
-        assert (
-            should_continue(state, valid_tool_names=frozenset({"add_note"}))
-            == "invalid_tool_call"
-        )
+        assert should_continue(state, valid_tool_names=frozenset({"add_note"})) == "tool_batch_guard"
 
     def test_registered_name_is_unaffected(self):
         state = {
@@ -479,7 +482,7 @@ class TestUseSkillCalledWithoutSearch:
                 tool_calls=[{"name": "use_skill", "args": {"name": "made_up"}, "id": "1"}],
             ),
         ]
-        assert _use_skill_called_without_search(
+        assert use_skill_called_without_search(
             [{"name": "use_skill", "args": {"name": "made_up"}, "id": "1"}], messages
         )
 
@@ -492,7 +495,7 @@ class TestUseSkillCalledWithoutSearch:
             ),
             ToolMessage(content="found: onboarding-brief", tool_call_id="1"),
         ]
-        assert not _use_skill_called_without_search(
+        assert not use_skill_called_without_search(
             [{"name": "use_skill", "args": {"name": "onboarding-brief"}, "id": "2"}], messages
         )
 
@@ -510,19 +513,19 @@ class TestUseSkillCalledWithoutSearch:
             AIMessage(content="done with that"),
             HumanMessage(content="how to build a good ai agent?"),
         ]
-        assert _use_skill_called_without_search(
+        assert use_skill_called_without_search(
             [{"name": "use_skill", "args": {"name": "made_up"}, "id": "2"}], messages
         )
 
     def test_a_batch_without_use_skill_is_never_flagged(self):
         messages = [HumanMessage(content="what is 2+2?")]
-        assert not _use_skill_called_without_search(
+        assert not use_skill_called_without_search(
             [{"name": "calculator", "args": {"expression": "2+2"}, "id": "1"}], messages
         )
 
 
 class TestShouldContinueUseSkillWithoutSearch:
-    def test_routes_to_use_skill_without_search(self):
+    def test_routes_to_the_batch_guard_as_use_skill_without_search(self):
         state = {
             "iterations": 1,
             "require_approval": False,
@@ -534,7 +537,8 @@ class TestShouldContinueUseSkillWithoutSearch:
                 ),
             ],
         }
-        assert should_continue(state) == "use_skill_without_search"
+        assert should_continue(state) == "tool_batch_guard"
+        assert batch_problem(state["messages"][-1].tool_calls, state["messages"], ECORP_TOOL_NAMES) == "use_skill_without_search"
 
     def test_checked_before_human_approval_even_when_require_approval_is_set(self):
         """use_skill is read_only (never reaches human_approval on its own
@@ -552,7 +556,7 @@ class TestShouldContinueUseSkillWithoutSearch:
                 ),
             ],
         }
-        assert should_continue(state) == "use_skill_without_search"
+        assert should_continue(state) == "tool_batch_guard"
 
     def test_use_skill_after_a_real_search_routes_normally(self):
         state = {
@@ -602,11 +606,11 @@ class TestRouteAfterCheck:
     a reason from raw message content or the individual
     likely_uncited_citations/likely_misattributed_citations/
     deferred_instead_of_acting fields itself (check_output already folds
-    all of those into _retry_reason, see that helper and
+    all of those into retry_reason, see that helper and
     MAX_CONSECUTIVE_SAME_RETRY_REASON's own docstring for why: only
     check_output can compare THIS round's reason against the PRIOR
     round's to detect a stuck, non-converging loop). Node-level coverage
-    of _retry_reason/check_output's own reason-computation logic lives in
+    of retry_reason/check_output's own reason-computation logic lives in
     test_nodes.py; these tests are purely about the routing decision
     given an already-computed reason."""
 
@@ -666,8 +670,8 @@ class TestRouteAfterCheck:
 
 class TestPendingSkillRequiredTool:
     def test_a_required_tool_the_person_rejected_is_no_longer_demanded(self):
-        """Real bug: `_reject_tool_calls` built its ToolMessages without a `name`, and
-        `_pending_skill_required_tool` only counts a tool as dealt with when a ToolMessage
+        """Real bug: `reject_tool_calls` built its ToolMessages without a `name`, and
+        `pending_skill_required_tool` only counts a tool as dealt with when a ToolMessage
         carries its name — so a call the person REJECTED at the approval gate was still
         "pending", the agent kept being told to call it, and `check_output` kept demanding it."""
         turn = [
@@ -675,8 +679,8 @@ class TestPendingSkillRequiredTool:
             _tool_call("use_skill", "s1"),
             ToolMessage(content="Use run_python_in_sandbox for the math.", tool_call_id="s1", name="use_skill"),
             _tool_call("run_python_in_sandbox", "p1"),
-            *_reject_tool_calls(
+            *reject_tool_calls(
                 [{"name": "run_python_in_sandbox", "args": {}, "id": "p1"}], "Rejected by human reviewer."
             ),
         ]
-        assert _pending_skill_required_tool(turn) is None
+        assert pending_skill_required_tool(turn, ("run_python_in_sandbox",)) is None

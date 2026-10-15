@@ -3,7 +3,7 @@ with a fake chat model standing in for the real ChatOpenAI client, so these
 run with no live services — no LiteLLM, no Ollama, no Qdrant.
 `retrieve_context`'s search_docs call defaults to the autouse
 `mock_search_docs` fixture in conftest.py (which patches
-`graph._default_search`); tool-call scenarios below use `calculator` (pure
+`graph.default_search`); tool-call scenarios below use `calculator` (pure
 Python, no network) rather than `search_docs` so the *actual*
 tool-execution step (inside ToolNode, which isn't touched by that stub)
 also stays hermetic.
@@ -28,22 +28,22 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command
 
-from app.agent.graph.build import build_graph
+from app.agent.graph.build import GraphDeps
 from app.agent.graph.compaction import _estimate_tokens
-from app.agent.graph.core import (
-    AGENT_RETRY_POLICY,
+from app.agent.graph.core import AGENT_RETRY_POLICY
+from app.agent.graph.state import (
     MAX_HISTORY_SUMMARY_CHARS,
     MAX_ITERATIONS,
     MAX_REPEATED_ACTIONS,
     MAX_TOKENS_PER_TURN,
     MAX_TOOL_CALLS_PER_TURN,
-    GraphDeps,
 )
 from app.agent.manifest import AgentManifest
 from app.agent.runtime import core as runtime_module
 from app.agent.runtime import stream as stream_module
 from tests.agent.fakes import Domain, call, cfg, orphan_tool_call_ids, queue_llm
 from tests.conftest import TEST_CTX
+from tests.ecorp import build_graph
 
 
 def _config():
@@ -485,7 +485,7 @@ class TestRetryExhaustedPath:
         to exercise retry_exhausted's trust-uncited-content fallback (2
         identical rounds, same "uncited" reason twice, gives up and shows
         it anyway, uncited). check_output now fixes this directly instead
-        (_insert_missing_citation_markers, added after live-verifying
+        (insert_missing_citation_markers, added after live-verifying
         that asking the model to add the marker itself — the original
         reminder, six reworded variants, and the actual concrete
         retry-feedback message — reliably does not work), so the exact
@@ -771,7 +771,7 @@ class TestMandatoryCapabilityGate:
         # (embedding + Qdrant upsert) the same way test_tools.py does, so
         # this stays a hermetic graph test rather than needing live
         # services just because the *approved* path runs a real tool.
-        from app.agent.tools import builtin as tools
+        from app.domains.ecorp import store as ecorp_store
         from app.retrieval import qdrant_store
 
         async def fake_embed_text(text):
@@ -780,7 +780,7 @@ class TestMandatoryCapabilityGate:
         async def fake_upsert(points):
             return None
 
-        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
         llm = _fake_llm(
@@ -844,7 +844,7 @@ class TestReliabilityPolicy:
         for name in (
             "retrieve_context",
             "check_output",
-            "too_many_tool_calls",
+            "tool_batch_guard",
             "check_semantic_cache",
             "write_semantic_cache",
             "moderate_input",

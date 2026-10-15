@@ -18,8 +18,8 @@ names (pattern 23).
 from dataclasses import dataclass
 
 from app.agent.manifest import AgentManifest, DomainPlugin
-from app.agent.tools.builtin import TOOL_CAPABILITIES as _ECORP_TOOL_CAPABILITIES
 from app.agent.tools.builtin import (
+    SHARED_TOOL_CAPABILITIES,
     ask_clarification,
     make_skill_tools,
     search_docs,
@@ -40,10 +40,10 @@ _RUN_SUBAGENT = make_domain_subagent_tool(
     all_tools=list(_SUPPORT_TOOLS) + _REUSED_READ_ONLY_TOOLS,
     tool_capabilities={
         **_SUPPORT_TOOL_CAPABILITIES,
-        "search_docs": _ECORP_TOOL_CAPABILITIES["search_docs"],
-        "skill_search": _ECORP_TOOL_CAPABILITIES["skill_search"],
-        "use_skill": _ECORP_TOOL_CAPABILITIES["use_skill"],
-        "ask_clarification": _ECORP_TOOL_CAPABILITIES["ask_clarification"],
+        "search_docs": SHARED_TOOL_CAPABILITIES["search_docs"],
+        "skill_search": SHARED_TOOL_CAPABILITIES["skill_search"],
+        "use_skill": SHARED_TOOL_CAPABILITIES["use_skill"],
+        "ask_clarification": SHARED_TOOL_CAPABILITIES["ask_clarification"],
     },
 )
 # None unless at least one bundled AGENT.md declares `domains: [support]` —
@@ -105,9 +105,9 @@ class _SupportDomainPlugin:
     def tool_capabilities(self) -> dict[str, str]:
         merged = dict(_SUPPORT_TOOL_CAPABILITIES)
         for name in ("search_docs", "skill_search", "use_skill", "ask_clarification"):
-            merged[name] = _ECORP_TOOL_CAPABILITIES[name]
+            merged[name] = SHARED_TOOL_CAPABILITIES[name]
         if _RUN_SUBAGENT is not None:
-            merged["run_subagent"] = _ECORP_TOOL_CAPABILITIES["run_subagent"]
+            merged["run_subagent"] = SHARED_TOOL_CAPABILITIES["run_subagent"]
         return merged
 
     def policy(self) -> Policy:

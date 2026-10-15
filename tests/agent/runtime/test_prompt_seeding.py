@@ -1,4 +1,4 @@
-"""`_ensure_seeded_async` keeps exactly one system prompt per thread, and it is the CURRENT one.
+"""`ensure_seeded_async` keeps exactly one system prompt per thread, and it is the CURRENT one.
 
 Real bug: it only asked "is a SystemMessage with the current text already here?" and appended
 one if not, so every prompt edit left the old prompt in every existing thread and added the new
@@ -11,11 +11,11 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.memory import MemorySaver
 
-from app.agent.graph.build import build_graph
-from app.agent.graph.core import GraphDeps
+from app.agent.graph.build import GraphDeps
 from app.agent.manifest import AgentManifest
 from app.agent.runtime import core as runtime_module
 from tests.agent.fakes import cfg
+from tests.ecorp import build_graph
 
 
 async def _seed_and_ask(saver, thread, prompt, question):
@@ -25,7 +25,7 @@ async def _seed_and_ask(saver, thread, prompt, question):
         manifest=AgentManifest("x", prompt),
     )
     runtime_module._seeded.clear()  # a fresh process after a deploy
-    await runtime_module._ensure_seeded_async(g, thread)
+    await runtime_module.ensure_seeded_async(g, thread)
     await g.ainvoke({"messages": [HumanMessage(content=question)]}, config=cfg(thread))
     return g
 
@@ -62,5 +62,5 @@ async def test_an_unchanged_prompt_writes_nothing_to_the_thread(monkeypatch):
 
     monkeypatch.setattr(g, "aupdate_state", counting_aupdate_state)
     runtime_module._seeded.clear()
-    await runtime_module._ensure_seeded_async(g, thread)
+    await runtime_module.ensure_seeded_async(g, thread)
     assert updates == []

@@ -1,55 +1,38 @@
-"""Everything behind `run_subagent` (GRAPH_PATTERNS.md pattern 46): bundled-
-catalog resolution (`_resolve_subagent_tools`/`_build_subagent_registry`/
-`_subagent_declared_for_domain`), the compiled-graph cache, `_run_subagent_impl`,
-and the Ecorp-level `run_subagent` singleton. Split out of `app/agent/tools/builtin.py`
-purely for file size — see that module's docstring, and
-`app/agent/graph/hitl.py`/`app/agent/graph/utils.py` for analogous splits on
-the app/agent/graph/core.py side. No behavior change from the pre-split file.
+"""Everything behind `run_subagent` (GRAPH_PATTERNS.md pattern 46): bundled-catalog
+resolution (`_resolve_subagent_tools`/`build_subagent_registry`/
+`_subagent_declared_for_domain`), the compiled-graph cache, and `run_subagent_impl`, the nested
+run itself.
 
-The per-domain equivalent, `make_domain_subagent_tool`, lives in
-`app/agent/tools/run_subagent_domain.py` — split out from THIS file (not
-`app/agent/tools/builtin.py`), since it only needs `_build_subagent_registry`/
-`_run_subagent_impl` from here, one-directionally.
+The tool the model sees is built per domain by `make_domain_subagent_tool`
+(`app/agent/tools/run_subagent_domain.py`), which resolves the registry against that domain's own
+tool universe and calls `run_subagent_impl`. Every domain, Ecorp included, goes through it.
 
-`_run_subagent_impl` reads `ChatOpenAI` via `tools_module.ChatOpenAI`, not a
-statically-imported bare name — same fix as `app/agent/graph/hitl.py`'s
-`graph_module.interrupt`: `tests/agent/runtime/test_concurrent_turns.py` does
-`monkeypatch.setattr(tools_module, "ChatOpenAI", ...)`, patching the live
-`app.agent.tools.builtin` module attribute. A bare import would bind the original
-class once at import time and silently defeat the monkeypatch.
-
-Second issue this split had to handle: the Ecorp-level `run_subagent` tool
-used to be appended to `app.agent.tools.builtin.TOOLS` just by living physically
-inside app/agent/tools/builtin.py. Now that construction lives here — `app/agent/tools/builtin.py`'s trailing
-`from app.agent.tools import run_subagent` import (at the very end of that
-file) preserves the guarantee that importing `app/agent/tools/builtin.py` still triggers this
-module to load and append `run_subagent` onto the same shared `TOOLS` list,
-regardless of import order.
+The nested run's chat client comes from `make_llm`, the same factory the main graph uses, unless the
+caller passes `llm=`. A test that drives the real `run_subagent` tool through a real graph and needs
+a fake client replaces `make_llm` in THIS module (where it is used), as
+`tests/agent/runtime/test_concurrent_turns.py` does.
 """
 import re
 import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import Enum
-from typing import Annotated, Any
+from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import InjectedToolCallId, tool
-from langgraph.types import Command
-from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from app.agent.cost import pricing
-from app.agent.tools import builtin as tools_module
+from app.agent.graph.build import GraphDeps, build_subagent_graph
+from app.agent.graph.state import MAX_SUBAGENT_ITERATIONS, MAX_SUBAGENT_TOKENS_PER_RUN
+from app.agent.graph.utils import make_llm
+from app.agent.manifest import AgentManifest
 from app.agent.tools import subagent_catalog as subagents_module
-from app.agent.tools.builtin import TOOL_CAPABILITIES, TOOLS, logger
+from app.agent.tools.builtin import logger
 from app.core import metrics
 from app.core.config import (
     CHAT_MODEL,
     MAX_SUBAGENT_COST_USD_PER_RUN,
-    OPENAI_API_BASE,
-    OPENAI_API_KEY,
     SUBAGENT_TIMEOUT_SECONDS,
 )
 from app.core.scrubbing import scrub
@@ -79,7 +62,7 @@ from app.core.tool_runtime import NO_CTX_REFUSAL, arun_with_timeout, ctx_from_co
 # was pure waste. Same lazy, unlocked cache shape as
 # app/agent/tools/subagent_catalog.py's `_subagents_cache` (a benign first-use race is
 # accepted here too). Populated/read only when a caller opts in via
-# `_run_subagent_impl(..., use_cache=True)` — see that docstring for why.
+# `run_subagent_impl(..., use_cache=True)` — see that docstring for why.
 _subagent_graph_cache: dict[tuple[str, str], Any] = {}
 
 
@@ -136,11 +119,6 @@ def _resolve_subagent_tools(
     return tuple(resolved)
 
 
-_ALL_TOOL_NAMES = frozenset(t.name for t in TOOLS)  # computed before
-# run_subagent is appended below — doesn't affect correctness (it's always
-# stripped anyway), just clarity.
-
-
 def _subagent_declared_for_domain(record: "subagents_module.SubagentRecord", domain: str) -> bool:
     """An AGENT.md with no `domains:` frontmatter (`record.domains is None`)
     stays visible only to `domain="ecorp"` — it doesn't silently become
@@ -154,7 +132,7 @@ def _subagent_declared_for_domain(record: "subagents_module.SubagentRecord", dom
     return domain in record.domains
 
 
-def _build_subagent_registry(
+def build_subagent_registry(
     all_tool_names: frozenset[str], tool_capabilities: Mapping[str, str], *, domain: str
 ) -> dict[str, tuple["subagents_module.SubagentRecord", tuple[str, ...]]]:
     """Every bundled AGENT.md declared for `domain` (see
@@ -171,8 +149,6 @@ def _build_subagent_registry(
     return registry
 
 
-_SUBAGENT_REGISTRY = _build_subagent_registry(_ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="ecorp")
-
 _CITATION_MARKER_RE = re.compile(r"\s*\[\d+\]")
 
 _CITATION_MARKER_WARNING = (
@@ -180,7 +156,7 @@ _CITATION_MARKER_WARNING = (
     "that citation convention is reserved for the orchestrating agent's own "
     "retrieved context, not yours."
 )
-# ^ Necessary, not decorative: the PARENT's check_output/_ungrounded_claims_count
+# ^ Necessary, not decorative: the PARENT's check_output/count_ungrounded_claims
 # (GRAPH_PATTERNS.md pattern 39) cross-checks [n] markers against
 # state["citations"], which a subagent's retrieval never populates on the
 # parent — without this, a grounded subagent answer could get flagged as
@@ -204,7 +180,7 @@ class _SubagentDomainPlugin:
     `tool_capabilities()` reports every `_tools` entry as `read_only`
     directly, not a lookup into the caller's own `TOOL_CAPABILITIES` (which
     for a domain-scoped subagent may not even contain that tool's name).
-    `_tool_capability()` (app/agent/graph/core.py) defaults an undeclared name to
+    `tool_capability()` (app/agent/graph/core.py) defaults an undeclared name to
     `"outward"` — correct for the top-level graph where a human can approve
     a pause, wrong here, where a nested one-shot run has no resume path and
     would just look like a silent failure. Correct by construction: every
@@ -226,7 +202,7 @@ class _SubagentDomainPlugin:
 
 @dataclass(frozen=True)
 class SubagentResult:
-    """`_run_subagent_impl`'s return shape: the scrubbed answer plus the
+    """`run_subagent_impl`'s return shape: the scrubbed answer plus the
     nested run's own `total_tokens`/`total_cost_usd`, needed so the calling
     `run_subagent` tool can fold them into the PARENT turn's live budget via
     `Command(update={"subagent_spend": [...]})` (see app/agent/graph/core.py's
@@ -238,30 +214,28 @@ class SubagentResult:
     total_cost_usd: float
 
 
-async def _run_subagent_impl(
+async def run_subagent_impl(
     subagent_name: str,
     task: str,
     config: RunnableConfig,
     *,
-    domain: str = "ecorp",
-    registry: dict[str, tuple] | None = None,
-    tools_by_name: Mapping[str, Any] | None = None,
+    domain: str,
+    registry: dict[str, tuple],
+    tools_by_name: Mapping[str, Any],
     llm: Any = None,
     use_cache: bool = False,
 ) -> SubagentResult:
     """Build and run one nested, isolated agent turn, return its final answer
     plus its own usage. See GRAPH_PATTERNS.md pattern 46 for the full design.
 
-    `registry`/`tools_by_name`/`llm` are DI for tests (mirrors
-    `build_graph(deps=...)`'s override shape): default to the real
-    `_SUBAGENT_REGISTRY`, every Ecorp tool by name, and a real ChatOpenAI
-    client respectively. `tools_by_name` matters because a domain-scoped
-    subagent's registry entry can name a tool that isn't in Ecorp's own
-    `TOOLS` — looking it up there would silently drop it;
-    `make_domain_subagent_tool` passes the calling domain's own tool objects.
+    `registry` and `tools_by_name` are the CALLING domain's own (built by
+    `make_domain_subagent_tool`): a registry entry can name a tool only that
+    domain has, so there is no shared default to fall back on. `llm` is DI for
+    tests (mirrors `build_graph(deps=...)`'s override shape) and defaults to a
+    real ChatOpenAI client.
 
     `domain` is only a cache-key/tracing label — it does NOT select
-    `registry` (always whatever the caller passes, or `_SUBAGENT_REGISTRY`).
+    `registry`.
 
     `use_cache` opts into reusing a compiled nested graph (`_subagent_graph_cache`
     above) — not inferred from whether `llm`/`registry`/`tools_by_name` were
@@ -280,7 +254,7 @@ async def _run_subagent_impl(
     durable checkpointer — bounded to complete within this one tool call.
 
     Uses `build_subagent_graph()` — build_graph()'s same node
-    functions/factories via `_assemble_shared_graph_parts`, but a leaner
+    functions/factories via `assemble_shared_graph_parts`, but a leaner
     one-shot topology: no semantic-cache read/write (a subagent's answer can
     never cross-serve to/from a top-level query), no suggest_followups, no
     history compaction (unreachable given MAX_SUBAGENT_TOKENS_PER_RUN). See
@@ -290,8 +264,7 @@ async def _run_subagent_impl(
     if not valid_ctx(ctx):
         return SubagentResult(NO_CTX_REFUSAL, 0, 0.0)
 
-    reg = registry if registry is not None else _SUBAGENT_REGISTRY
-    entry = reg.get(subagent_name)
+    entry = registry.get(subagent_name)
     if entry is None:
         return SubagentResult(f"No subagent named {subagent_name!r} is registered.", 0, 0.0)
     record, resolved_tool_names = entry
@@ -307,20 +280,7 @@ async def _run_subagent_impl(
             0,
             0.0,
         )
-    all_tools_by_name = tools_by_name if tools_by_name is not None else {t.name: t for t in TOOLS}
-    nested_tools = [all_tools_by_name[name] for name in resolved_tool_names if name in all_tools_by_name]
-
-    # Deferred imports: app/agent/graph/core.py imports app/agent/tools/builtin.py at module level
-    # for TOOL_CAPABILITIES/TOOLS, and manifest.py imports app/agent/graph/core.py at its
-    # own module level — importing either back here at module level would
-    # close a real import cycle. Only needed at call time regardless.
-    from app.agent.graph.build_subagent import build_subagent_graph
-    from app.agent.graph.core import (
-        MAX_SUBAGENT_ITERATIONS,
-        MAX_SUBAGENT_TOKENS_PER_RUN,
-        GraphDeps,
-    )
-    from app.agent.manifest import AgentManifest
+    nested_tools = [tools_by_name[name] for name in resolved_tool_names if name in tools_by_name]
 
     # Computed fresh every call regardless of caching below — cheap, fully
     # determined by record.system_prompt, no need to cache separately.
@@ -330,13 +290,7 @@ async def _run_subagent_impl(
     if use_cache and cache_key in _subagent_graph_cache:
         nested_graph = _subagent_graph_cache[cache_key]
     else:
-        nested_llm = llm if llm is not None else tools_module.ChatOpenAI(
-            model=record.model or CHAT_MODEL,
-            base_url=OPENAI_API_BASE,
-            api_key=SecretStr(OPENAI_API_KEY),
-            temperature=0,
-            stream_usage=True,
-        ).bind_tools(nested_tools)
+        nested_llm = llm if llm is not None else make_llm(nested_tools, model=record.model or CHAT_MODEL)
 
         nested_manifest = AgentManifest(name=record.name, system_prompt=nested_system_prompt)
         nested_domain = _SubagentDomainPlugin(nested_tools)
@@ -385,7 +339,7 @@ async def _run_subagent_impl(
         "recursion_limit": MAX_SUBAGENT_ITERATIONS * 2 + 15,
     }
 
-    # No auto-seeding here (unlike app/agent/runtime/core.py::_ensure_seeded_async) — this
+    # No auto-seeding here (unlike app/agent/runtime/core.py::ensure_seeded_async) — this
     # graph runs exactly once, so the system prompt is just the first message.
     #
     # `nested_graph.ainvoke` awaited directly via `arun_with_timeout`, not a
@@ -464,81 +418,3 @@ async def _run_subagent_impl(
         },
     )
     return SubagentResult(answer, total_tokens, total_cost_usd)
-
-
-if _SUBAGENT_REGISTRY:
-    # Closed, dynamically-built enum — same idiom as Topic/Department — so
-    # the LLM sees the full subagent menu directly in run_subagent's JSON
-    # schema, no discovery round trip needed. Unlike skill_search/use_skill,
-    # no separate list tool: a one-line description is small enough to embed
-    # directly, unlike a skill's full body.
-    #
-    # Built once, at import time, not lazily like app/agent/tools/skill_catalog.py's get_skills() —
-    # a compile-time enum must exist before any tool call can validate
-    # against it. A subagent added to disk after the process starts needs a
-    # restart to appear, same as TOOLS.
-    SubagentName = Enum(  # type: ignore[misc]  # mypy can't infer members from a
-        # dict comprehension — genuinely dynamic, built from whatever's on disk.
-        "SubagentName", {name: name for name in sorted(_SUBAGENT_REGISTRY)}, type=str
-    )
-
-    _SUBAGENT_MENU = "\n".join(
-        f"- {name}: {record.description}"
-        for name, (record, _tools) in sorted(_SUBAGENT_REGISTRY.items())
-    )
-
-    class RunSubagentArgs(BaseModel):
-        subagent_name: SubagentName = Field(
-            ..., description=f"Which subagent to delegate to. Options:\n{_SUBAGENT_MENU}"
-        )
-        task: str = Field(
-            ...,
-            description="The self-contained task to delegate. The subagent has NO "
-            "access to this conversation's history, so include everything it needs "
-            "to know in this one description.",
-        )
-        # Injected by ToolNode, never shown to the LLM. Must be declared on
-        # the args_schema itself (LangChain's InjectedToolCallId detection
-        # scans args_schema fields, unlike `config: RunnableConfig` which
-        # scans the raw function) — omitting it raises TypeError at
-        # invocation. Needed to build the ToolMessage returned via Command().
-        tool_call_id: Annotated[str, InjectedToolCallId]
-
-        @field_validator("task")
-        @classmethod
-        def _not_blank(cls, v: str) -> str:
-            if not v.strip():
-                raise ValueError("task must not be empty")
-            return v
-
-    @tool(args_schema=RunSubagentArgs)
-    async def run_subagent(
-        subagent_name: SubagentName,
-        task: str,
-        config: RunnableConfig,
-        tool_call_id: Annotated[str, InjectedToolCallId],
-    ) -> Command:
-        """Delegate a self-contained task to a specialized subagent running in
-        its own isolated context — it does NOT see this conversation's
-        history, only the `task` description you give it, so describe
-        everything it needs to know. Use this to keep a multi-step lookup's
-        intermediate steps out of the main conversation, or when a task
-        matches a subagent's specific focus better than doing it yourself.
-        Every subagent is restricted to read_only tools, so calling this
-        never needs human approval."""
-        result = await _run_subagent_impl(
-            subagent_name.value, task, config, domain="ecorp", use_cache=True
-        )
-        return Command(
-            update={
-                "messages": [ToolMessage(content=result.answer, tool_call_id=tool_call_id)],
-                "subagent_spend": [(result.total_tokens, result.total_cost_usd)],
-            }
-        )
-
-    # Inserted right after skill_search/use_skill (index 2), the same
-    # leading-tier position skill_tools_first gives run_subagent for every
-    # other domain (see that function's docstring, and its caveat that this
-    # placement isn't independently live-verified). No shared-helper route
-    # here since TOOLS has no separate "reused tools" list.
-    TOOLS.insert(2, run_subagent)

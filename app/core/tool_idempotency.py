@@ -78,7 +78,7 @@ class MutatingToolTimedOut(Exception):
     tool_call_id-keyed claim has never seen before, so it can't catch a
     second real side effect this way no matter how it's hardened.
 
-    `graph/utils.py::_friendly_tool_error` special-cases this type to
+    `graph/utils.py::friendly_tool_error` special-cases this type to
     steer the agent toward checking whether the effect already landed
     (e.g. a matching list/status/read tool) instead of blindly retrying —
     the one general defense that works regardless of which specific

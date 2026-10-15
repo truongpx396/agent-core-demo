@@ -1,11 +1,11 @@
 """Tests for the per-tenant daily cost ceiling as app/agent/runtime/core.py wires it
-(`_check_allowance` / `_allowance_refusal`, over app/agent/cost/budgets.py) — distinct from
+(`_check_allowance` / `allowance_refusal`, over app/agent/cost/budgets.py) — distinct from
 app/agent/graph/core.py's own MAX_COST_USD_PER_TURN, which only ever sees one turn at a time.
 
 `_check_allowance` itself is tested directly against a monkeypatched
 app.agent.cost.spend.usage_summary (no live Postgres); the rule's own cases, with explicit
 arguments, are in tests/agent/cost/test_budgets.py. The entry point (astream_events_turn) is tested
-by stubbing `_allowance_refusal` to an envelope/None and asserting it never even calls
+by stubbing `allowance_refusal` to an envelope/None and asserting it never even calls
 init_graph_async() when refused — proving the short-circuit happens BEFORE any real graph
 work, not just that it returns the right shape.
 
@@ -159,7 +159,7 @@ class TestReserveAndReleaseTurnBudget:
             return "hold-1"
 
         monkeypatch.setattr(budget_holds, "reserve_budget", fake_reserve_budget)
-        assert await agent._reserve_turn_budget(TEST_CTX) == "hold-1"
+        assert await agent.reserve_turn_budget(TEST_CTX) == "hold-1"
 
     async def test_reserve_returns_none_when_the_reservation_itself_fails(self, monkeypatch):
         from app.agent.cost import budget_holds
@@ -168,7 +168,7 @@ class TestReserveAndReleaseTurnBudget:
             return None
 
         monkeypatch.setattr(budget_holds, "reserve_budget", fake_reserve_budget)
-        assert await agent._reserve_turn_budget(TEST_CTX) is None
+        assert await agent.reserve_turn_budget(TEST_CTX) is None
 
     async def test_release_forwards_to_budget_holds_with_the_same_hold_id(self, monkeypatch):
         from app.agent.cost import budget_holds
@@ -179,7 +179,7 @@ class TestReserveAndReleaseTurnBudget:
             captured.update(ctx=ctx, hold_id=hold_id)
 
         monkeypatch.setattr(budget_holds, "release_budget_reservation", fake_release)
-        await agent._release_turn_budget(TEST_CTX, "hold-1")
+        await agent.release_turn_budget(TEST_CTX, "hold-1")
 
         assert captured == {"ctx": TEST_CTX, "hold_id": "hold-1"}
 
@@ -203,7 +203,7 @@ class TestEntryPointsRefuseBeforeTouchingTheGraph:
         async def fake_refusal(ctx):
             return budgets.refusal_envelope(budgets.Allowance("exceeded"))
 
-        monkeypatch.setattr(agent, "_allowance_refusal", fake_refusal)
+        monkeypatch.setattr(agent, "allowance_refusal", fake_refusal)
         _forbid_graph_access(monkeypatch)
 
         async def _collect():
@@ -222,7 +222,7 @@ class TestEntryPointsRefuseBeforeTouchingTheGraph:
         async def fake_refusal(ctx):
             return None
 
-        monkeypatch.setattr(agent, "_allowance_refusal", fake_refusal)
+        monkeypatch.setattr(agent, "allowance_refusal", fake_refusal)
         _forbid_graph_access(monkeypatch)
 
         async def _collect():

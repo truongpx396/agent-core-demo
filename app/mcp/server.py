@@ -27,8 +27,8 @@ Run with: `make mcp-serve` (stdio transport).
 """
 from mcp.server.fastmcp import FastMCP
 
-from app.agent.tools.builtin import Department, _query_employees_impl
 from app.core.security import DEFAULT_POLICY, SecurityCtx
+from app.domains.ecorp.store import Department, query_employees_impl
 
 mcp = FastMCP(
     name="ecorp-structured-data",
@@ -64,7 +64,7 @@ async def query_employees(
             valid = ", ".join(d.value for d in Department)
             return f"Invalid department {department!r}. Valid values: {valid}."
 
-    return await _query_employees_impl(dept, name_contains, ctx)
+    return await query_employees_impl(dept, name_contains, ctx)
 
 
 if __name__ == "__main__":

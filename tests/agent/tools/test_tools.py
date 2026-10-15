@@ -21,43 +21,52 @@ from app.agent.tools import run_subagent as subagent_tools
 from app.agent.tools import skill_catalog as skills_module
 from app.agent.tools import subagent_catalog as subagents_module
 from app.agent.tools.builtin import (
-    TOOL_CAPABILITIES,
-    TOOLS,
-    AddNoteArgs,
     AskClarificationArgs,
-    RememberArgs,
     Topic,
     _filter_skill_hits_by_domain,
     _skill_visible_to_domain,
-    add_note,
     ask_clarification,
+    gather_context,
     make_skill_tools,
-    query_employees,
-    recall_memories,
-    remember,
     search_docs,
-    skill_search,
     skill_tools_first,
-    use_skill,
 )
 from app.agent.tools.run_subagent import (
-    _ALL_TOOL_NAMES,
-    SubagentName,
     SubagentResult,
-    _build_subagent_registry,
     _resolve_subagent_tools,
-    _run_subagent_impl,
     _subagent_declared_for_domain,
     _SubagentDomainPlugin,
-    run_subagent,
+    build_subagent_registry,
 )
 from app.agent.tools.run_subagent_domain import make_domain_subagent_tool
 from app.agent.tools.skill_catalog import SkillRecord
 from app.agent.tools.subagent_catalog import SubagentRecord
 from app.core import metrics, sql_store, tool_runtime
 from app.core.config import SKILLS_COLLECTION
+from app.domains.ecorp import store as ecorp_store
+from app.domains.ecorp.tools import (
+    AddNoteArgs,
+    RememberArgs,
+    add_note,
+    query_employees,
+    remember,
+)
 from app.retrieval import qdrant_store
 from tests.conftest import TEST_CTX, metric_value
+from tests.ecorp import (
+    ECORP_DOMAIN_PLUGIN,
+    ECORP_TOOL_CAPABILITIES,
+    build_subagent_graph,
+    run_subagent_impl,
+)
+
+# Ecorp's tool universe, as the model is offered it (the default domain these tests exercise).
+TOOLS = ECORP_DOMAIN_PLUGIN.tools()
+TOOL_CAPABILITIES = ECORP_TOOL_CAPABILITIES
+_ALL_TOOL_NAMES = frozenset(t.name for t in TOOLS if t.name != "run_subagent")
+_ecorp_tools = {t.name: t for t in TOOLS}
+skill_search, use_skill, run_subagent = (_ecorp_tools[n] for n in ("skill_search", "use_skill", "run_subagent"))
+SubagentName = run_subagent.args_schema.model_fields["subagent_name"].annotation  # type: ignore[union-attr]
 
 _OTHER_TENANT_CTX = {"tenant": "other-co", "principal": "test-user", "claims": {}}
 
@@ -98,14 +107,14 @@ class TestAddNoteImpl:
         async def fake_upsert(points):
             captured["points"] = points
 
-        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
-        monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1, 2], [0.5, 0.5]))
+        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_sparse", lambda text: ([1, 2], [0.5, 0.5]))
         # `tools.qdrant_store` is the same module object as the `qdrant_store`
         # imported above (app/agent/tools/builtin.py does `from app.retrieval import qdrant_store`) —
         # this patches the one `.upsert` attribute both names resolve to.
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        result = await tools._add_note_impl(
+        result = await ecorp_store.add_note_impl(
             "Refunds", "30-day window.", Topic.company, TEST_CTX, "call-1"
         )
 
@@ -131,19 +140,19 @@ class TestAddNoteImpl:
         async def fake_embed_text(text):
             return [0.1]
 
-        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
 
         def failing_sparse(text):
             raise RuntimeError("model not loaded")
 
-        monkeypatch.setattr(tools, "embed_sparse", failing_sparse)
+        monkeypatch.setattr(ecorp_store, "embed_sparse", failing_sparse)
 
         async def fake_upsert(points):
             captured.update(points=points)
 
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        await tools._add_note_impl(
+        await ecorp_store.add_note_impl(
             "Refunds", "30-day window.", Topic.company, TEST_CTX, "call-1"
         )
 
@@ -163,12 +172,12 @@ class TestAddNoteImpl:
         async def fake_upsert(points):
             seen_ids.append(points[0].id)
 
-        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
-        monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1], [1.0]))
+        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_sparse", lambda text: ([1], [1.0]))
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        await tools._add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
-        await tools._add_note_impl("B", "two", Topic.qdrant, TEST_CTX, "call-2")
+        await ecorp_store.add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
+        await ecorp_store.add_note_impl("B", "two", Topic.qdrant, TEST_CTX, "call-2")
 
         assert len(seen_ids) == 2
         assert seen_ids[0] != seen_ids[1]
@@ -186,12 +195,12 @@ class TestAddNoteImpl:
         async def fake_upsert(points):
             seen_ids.append(points[0].id)
 
-        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
-        monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1], [1.0]))
+        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_sparse", lambda text: ([1], [1.0]))
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        await tools._add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
-        await tools._add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
+        await ecorp_store.add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
+        await ecorp_store.add_note_impl("A", "one", Topic.qdrant, TEST_CTX, "call-1")
 
         assert len(seen_ids) == 2
         assert seen_ids[0] == seen_ids[1]
@@ -207,8 +216,8 @@ class TestAddNoteImpl:
         async def fake_upsert(points):
             pass
 
-        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
-        monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1], [1.0]))
+        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_sparse", lambda text: ([1], [1.0]))
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
         # No dedup-store mocking needed here: tests/conftest.py's
         # mock_appdata_postgres fixture already forces
@@ -384,10 +393,10 @@ class TestRememberImpl:
         async def fake_upsert(points):
             captured.update(points=points)
 
-        monkeypatch.setattr(tools, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
-        result = await tools._remember_impl("likes dark roast coffee", TEST_CTX, "call-1")
+        result = await ecorp_store.remember_impl("likes dark roast coffee", TEST_CTX, "call-1")
 
         point = captured["points"][0]
         assert point.payload["kind"] == "memory"
@@ -417,30 +426,38 @@ class TestRememberImpl:
         assert upserted == []
 
 
-class TestRecallMemories:
-    async def test_returns_empty_string_without_ctx(self):
-        assert await recall_memories(None, "coffee") == ""
+class TestMemoryRecallIsScopedToTheOwner:
+    """Recall has one reader, `gather_context` (the automatic pre-fetch). These used to go through a
+    `recall_memories` wrapper nothing in production called; the scoping they pin is the same."""
+
+    @staticmethod
+    def _memory_filters(seen):
+        return [f for f in seen if any(c.key == "kind" and c.match.value == "memory" for c in f.must)]
+
+    async def test_returns_nothing_without_ctx(self):
+        assert await gather_context(None, "coffee") == ("", [])
 
     async def test_scopes_to_tenant_and_owner(self, monkeypatch):
-        captured = {}
+        captured = []
 
         async def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
-            captured["tenant_filter"] = tenant_filter
-            captured["rerank_results"] = rerank_results
+            captured.append((tenant_filter, rerank_results))
             return []
 
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
-        await recall_memories(TEST_CTX, "coffee")
+        await gather_context(TEST_CTX, "coffee")
 
-        must = captured["tenant_filter"].must
-        values = {c.key: c.match.value for c in must if c.match is not None}
+        memory_calls = [(f, r) for f, r in captured if self._memory_filters([f])]
+        assert len(memory_calls) == 1
+        memory_filter, rerank = memory_calls[0]
+        values = {c.key: c.match.value for c in memory_filter.must if c.match is not None}
         assert values["tenant"] == TEST_CTX["tenant"]
         assert values["kind"] == "memory"
         assert values["owner"] == TEST_CTX["principal"]
         # Reranking is deliberately skipped for memory recall — see
         # _memory_hits's docstring.
-        assert captured["rerank_results"] is False
+        assert rerank is False
 
     async def test_two_different_principals_get_different_filters(self, monkeypatch):
         """The concrete manifestation of "a memory belongs to whoever wrote
@@ -455,13 +472,14 @@ class TestRecallMemories:
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
         other_principal_same_tenant = {**TEST_CTX, "principal": "someone-else"}
-        await recall_memories(TEST_CTX, "coffee")
-        await recall_memories(other_principal_same_tenant, "coffee")
+        await gather_context(TEST_CTX, "coffee")
+        await gather_context(other_principal_same_tenant, "coffee")
 
         owners = [
-            next(c.match.value for c in f.must if c.key == "owner") for f in seen_filters
+            next(c.match.value for c in f.must if c.key == "owner")
+            for f in self._memory_filters(seen_filters)
         ]
-        assert owners[0] != owners[1]
+        assert len(owners) == 2 and owners[0] != owners[1]
 
 
 class TestQueryEmployees:
@@ -501,10 +519,10 @@ class TestQueryEmployees:
 
         await query_employees.ainvoke({}, config=_cfg())
 
-        assert captured["limit"] == tools.TOOL_RESULT_CAPS["query_employees"] + 1
+        assert captured["limit"] == ecorp_store.TOOL_RESULT_CAPS["query_employees"] + 1
 
     async def test_result_beyond_the_cap_is_marked_truncated_not_silently_dropped(self, monkeypatch):
-        cap = tools.TOOL_RESULT_CAPS["query_employees"]
+        cap = ecorp_store.TOOL_RESULT_CAPS["query_employees"]
         rows = [
             {"name": f"Employee {i}", "department": "Engineering", "title": "Engineer", "hired_on": "2021-01-01"}
             for i in range(cap + 1)  # sql_store.query_employees(limit=cap+1) returning cap+1 rows means "more exist"
@@ -520,7 +538,7 @@ class TestQueryEmployees:
         assert result.count("Employee") == cap  # exactly `cap` rows shown, not cap + 1
 
     async def test_result_at_or_under_the_cap_is_not_marked_truncated(self, monkeypatch):
-        cap = tools.TOOL_RESULT_CAPS["query_employees"]
+        cap = ecorp_store.TOOL_RESULT_CAPS["query_employees"]
         rows = [
             {"name": f"Employee {i}", "department": "Engineering", "title": "Engineer", "hired_on": "2021-01-01"}
             for i in range(cap)  # exactly at the cap, not over it
@@ -965,14 +983,13 @@ class TestBuildSubagentGraphTopology:
     are pure overhead (or worse) for a nested one-shot run — see that
     function's own docstring for the full per-node reasoning. Verified
     here directly at the graph level, not just indirectly via
-    _run_subagent_impl's own behavior tests below."""
+    run_subagent_impl's own behavior tests below."""
 
     def test_drops_exactly_the_five_overhead_nodes(self):
-        from app.agent.graph import build_subagent as graph_build_subagent
-        from app.agent.graph import core as graph_module
+        from app.agent.graph import build as graph_module
 
         fake_llm = _RecordingFakeLLM(AIMessage(content="unused"))
-        compiled = graph_build_subagent.build_subagent_graph(deps=graph_module.GraphDeps(llm=fake_llm))
+        compiled = build_subagent_graph(deps=graph_module.GraphDeps(llm=fake_llm))
         nodes = set(compiled.get_graph().nodes) - {"__start__", "__end__"}
 
         dropped = {
@@ -985,11 +1002,10 @@ class TestBuildSubagentGraphTopology:
         assert dropped.isdisjoint(nodes)
 
     def test_keeps_every_safety_and_agent_loop_node(self):
-        from app.agent.graph import build_subagent as graph_build_subagent
-        from app.agent.graph import core as graph_module
+        from app.agent.graph import build as graph_module
 
         fake_llm = _RecordingFakeLLM(AIMessage(content="unused"))
-        compiled = graph_build_subagent.build_subagent_graph(deps=graph_module.GraphDeps(llm=fake_llm))
+        compiled = build_subagent_graph(deps=graph_module.GraphDeps(llm=fake_llm))
         nodes = set(compiled.get_graph().nodes) - {"__start__", "__end__"}
 
         kept = {
@@ -1002,9 +1018,7 @@ class TestBuildSubagentGraphTopology:
             "agent",
             "tools",
             "human_approval",
-            "too_many_tool_calls",
-            "invalid_tool_call",
-            "use_skill_without_search",
+            "tool_batch_guard",
             "check_output",
             "retry_output",
             "retry_exhausted",
@@ -1015,11 +1029,11 @@ class TestBuildSubagentGraphTopology:
 
 class TestRunSubagentImpl:
     async def test_refuses_without_ctx(self):
-        result = await _run_subagent_impl("researcher", "do something", {"configurable": {}})
+        result = await run_subagent_impl("researcher", "do something", {"configurable": {}}, registry={})
         assert "Refused" in result.answer
 
     async def test_unknown_subagent_name_is_a_clear_message_not_an_exception(self):
-        result = await _run_subagent_impl("does-not-exist", "task", _subagent_cfg(), registry={})
+        result = await run_subagent_impl("does-not-exist", "task", _subagent_cfg(), registry={})
         assert "No subagent named" in result.answer
 
     async def test_delegates_and_returns_the_final_answer(self):
@@ -1032,7 +1046,7 @@ class TestRunSubagentImpl:
         )
         registry = {"researcher": (_fake_subagent_record(), ("search_docs", "calculator"))}
 
-        result = await _run_subagent_impl(
+        result = await run_subagent_impl(
             "researcher", "what is 6*7?", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1043,7 +1057,7 @@ class TestRunSubagentImpl:
         record = _fake_subagent_record()
         registry = {"researcher": (record, ("calculator",))}
 
-        await _run_subagent_impl("researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm)
+        await run_subagent_impl("researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm)
 
         first_call_messages = fake_llm.calls[0]
         system_text = "\n".join(
@@ -1058,7 +1072,7 @@ class TestRunSubagentImpl:
         fake_llm = _RecordingFakeLLM(AIMessage(content="A plain answer, long enough."))
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        await _run_subagent_impl(
+        await run_subagent_impl(
             "researcher", "the delegated task", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1073,7 +1087,7 @@ class TestRunSubagentImpl:
         build_graph(max_iterations=MAX_SUBAGENT_ITERATIONS) genuinely binds
         the nested run to its OWN, smaller ceiling rather than the parent's
         MAX_ITERATIONS (10 > MAX_SUBAGENT_ITERATIONS's 6)."""
-        from app.agent.graph.core import MAX_SUBAGENT_ITERATIONS
+        from app.agent.graph.state import MAX_SUBAGENT_ITERATIONS
 
         responses = [
             AIMessage(
@@ -1085,7 +1099,7 @@ class TestRunSubagentImpl:
         fake_llm = _RecordingFakeLLM(*responses)
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        result = await _run_subagent_impl(
+        result = await run_subagent_impl(
             "researcher", "never converge", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1116,7 +1130,7 @@ class TestRunSubagentImpl:
         before = metric_value(
             metrics.agent_subagent_run_total, subagent="researcher", outcome="budget_exceeded"
         )
-        result = await _run_subagent_impl(
+        result = await run_subagent_impl(
             "researcher", "loop forever", _subagent_cfg(), registry=registry, llm=fake_llm
         )
         after = metric_value(
@@ -1147,7 +1161,7 @@ class TestRunSubagentImpl:
         )
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        result = await _run_subagent_impl(
+        result = await run_subagent_impl(
             "researcher", "is that right?", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1166,20 +1180,20 @@ class TestRunSubagentImpl:
         budget_exceeded apology. Only ONE fake LLM response queued: if this still needed a second
         round, _RecordingFakeLLM's inner GenericFakeChatModel would raise on its exhausted
         iterator, failing this test loudly rather than silently passing."""
-        from app.agent.graph import core as graph_module
+        from app.agent.graph import build as graph_module
 
         source_text = "The sky is blue due to Rayleigh scattering."
 
         async def fake_default_search(query, ctx):
             return f"[1] {source_text}", [{"marker": "[1]", "text": source_text}]
 
-        monkeypatch.setattr(graph_module, "_default_search", fake_default_search)
+        monkeypatch.setattr(graph_module, "default_search", fake_default_search)
 
         correct_but_uncited = "The sky is blue due to Rayleigh scattering."
         fake_llm = _RecordingFakeLLM(AIMessage(content=correct_but_uncited))
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        result = await _run_subagent_impl(
+        result = await run_subagent_impl(
             "researcher", "why is the sky blue?", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1192,7 +1206,7 @@ class TestRunSubagentImpl:
         fake_llm = _RecordingFakeLLM(AIMessage(content="Support is open nine to five [1], Monday to Friday [2]."))
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        result = await _run_subagent_impl(
+        result = await run_subagent_impl(
             "researcher", "support hours?", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1211,7 +1225,7 @@ class TestRunSubagentImpl:
             metrics.agent_subagent_run_total, subagent="researcher", outcome="timeout"
         )
         with pytest.raises(TimeoutError):
-            await _run_subagent_impl(
+            await run_subagent_impl(
                 "researcher", "task", _subagent_cfg(), registry=registry, llm=_SlowLLM()
             )
         after = metric_value(
@@ -1230,7 +1244,7 @@ class TestRunSubagentImpl:
         fake_llm = _RecordingFakeLLM(reply)
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        await _run_subagent_impl(
+        await run_subagent_impl(
             "researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1248,20 +1262,20 @@ class TestRunSubagentImpl:
         near-identical phrasing, or vice versa. build_subagent_graph()
         doesn't wire check_semantic_cache/write_semantic_cache as nodes at
         all, so their underlying default functions must never be called."""
-        from app.agent.graph import core as graph_module
+        from app.agent.graph import build as graph_module
 
         cache_get_calls: list = []
         cache_set_calls: list = []
         monkeypatch.setattr(
-            graph_module, "_default_cache_get", lambda *a, **k: cache_get_calls.append(1)
+            graph_module, "default_cache_get", lambda *a, **k: cache_get_calls.append(1)
         )
         monkeypatch.setattr(
-            graph_module, "_default_cache_set", lambda *a, **k: cache_set_calls.append(1)
+            graph_module, "default_cache_set", lambda *a, **k: cache_set_calls.append(1)
         )
         fake_llm = _RecordingFakeLLM(AIMessage(content="An answer, long enough to pass."))
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        await _run_subagent_impl(
+        await run_subagent_impl(
             "researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1280,7 +1294,7 @@ class TestRunSubagentImpl:
         fake_llm = _RecordingFakeLLM(AIMessage(content="A single-round answer, long enough."))
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        result = await _run_subagent_impl(
+        result = await run_subagent_impl(
             "researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1298,7 +1312,7 @@ class TestASubagentOnAnUnpricedModelIsRefusedUnderTheBlockPolicy:
     @staticmethod
     def _delegate(llm, model):
         registry = {"researcher": (_fake_subagent_record(model=model), ("calculator",))}
-        return _run_subagent_impl("researcher", "a task", _subagent_cfg(), registry=registry, llm=llm)
+        return run_subagent_impl("researcher", "a task", _subagent_cfg(), registry=registry, llm=llm)
 
     @staticmethod
     def _policy(monkeypatch, policy):
@@ -1377,17 +1391,16 @@ class TestSubagentGraphCache:
         subagent_tools.reset_subagent_graph_cache()
 
     async def test_use_cache_reuses_the_compiled_graph_across_calls(self, monkeypatch):
-        from app.agent.graph import build_subagent as graph_build_subagent
 
         build_calls = []
-        real_build_subagent_graph = graph_build_subagent.build_subagent_graph
+        real_build_subagent_graph = subagent_tools.build_subagent_graph
 
         def counting_build_subagent_graph(*args, **kwargs):
             build_calls.append(1)
             return real_build_subagent_graph(*args, **kwargs)
 
         monkeypatch.setattr(
-            graph_build_subagent, "build_subagent_graph", counting_build_subagent_graph
+            subagent_tools, "build_subagent_graph", counting_build_subagent_graph
         )
 
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
@@ -1403,7 +1416,7 @@ class TestSubagentGraphCache:
         # bind THIS one and immediately exhaust its own single-shot iterator.
         never_used_llm = _RecordingFakeLLM(AIMessage(content="should never be reached."))
 
-        await _run_subagent_impl(
+        await run_subagent_impl(
             "researcher",
             "task one",
             _subagent_cfg(),
@@ -1414,7 +1427,7 @@ class TestSubagentGraphCache:
         )
         assert len(build_calls) == 1
 
-        await _run_subagent_impl(
+        await run_subagent_impl(
             "researcher",
             "task two",
             _subagent_cfg(),
@@ -1430,12 +1443,11 @@ class TestSubagentGraphCache:
         assert never_used_llm.calls == []
 
     async def test_different_domains_get_independent_cache_entries(self, monkeypatch):
-        from app.agent.graph import build_subagent as graph_build_subagent
 
         build_calls = []
-        real_build_subagent_graph = graph_build_subagent.build_subagent_graph
+        real_build_subagent_graph = subagent_tools.build_subagent_graph
         monkeypatch.setattr(
-            graph_build_subagent,
+            subagent_tools,
             "build_subagent_graph",
             lambda *a, **k: (build_calls.append(1), real_build_subagent_graph(*a, **k))[1],
         )
@@ -1445,11 +1457,11 @@ class TestSubagentGraphCache:
             AIMessage(content="a, long enough."), AIMessage(content="b, long enough.")
         )
 
-        await _run_subagent_impl(
+        await run_subagent_impl(
             "researcher", "t", _subagent_cfg(), registry=registry, llm=fake_llm,
             domain="ecorp", use_cache=True,
         )
-        await _run_subagent_impl(
+        await run_subagent_impl(
             "researcher", "t", _subagent_cfg(), registry=registry, llm=fake_llm,
             domain="support", use_cache=True,
         )
@@ -1466,7 +1478,7 @@ class TestSubagentGraphCache:
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
         fake_llm = _RecordingFakeLLM(AIMessage(content="an answer, long enough to pass."))
 
-        await _run_subagent_impl(
+        await run_subagent_impl(
             "researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1481,14 +1493,12 @@ class TestRunSubagentTool:
 
     def test_schema_lists_available_subagents_by_name_and_description(self):
         schema = run_subagent.args_schema.model_json_schema()
-        assert "researcher" in schema["$defs"]["SubagentName"]["enum"]
+        assert "researcher" in schema["$defs"]["SubagentName_ecorp"]["enum"]
         assert "Look up Ecorp facts" in schema["properties"]["subagent_name"]["description"]
 
     def test_blank_task_rejected(self):
-        from app.agent.tools.run_subagent import RunSubagentArgs
-
         with pytest.raises(ValueError):
-            RunSubagentArgs(
+            run_subagent.args_schema(
                 subagent_name=SubagentName.researcher, task="   ", tool_call_id="test-call-id"
             )
 
@@ -1503,7 +1513,7 @@ class TestRunSubagentTool:
         async def fake_run_subagent_impl(*a, **k):
             return SubagentResult("42", 123, 0.05)
 
-        monkeypatch.setattr(subagent_tools, "_run_subagent_impl", fake_run_subagent_impl)
+        monkeypatch.setattr(subagent_tools, "run_subagent_impl", fake_run_subagent_impl)
 
         result = await run_subagent.ainvoke(
             {
@@ -1548,8 +1558,8 @@ class TestBuildSubagentRegistryDomainFilter:
             lambda: {"ecorp-only": ecorp_record, "support-only": support_record},
         )
 
-        ecorp_registry = _build_subagent_registry(_ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="ecorp")
-        support_registry = _build_subagent_registry(
+        ecorp_registry = build_subagent_registry(_ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="ecorp")
+        support_registry = build_subagent_registry(
             _ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="support"
         )
 
@@ -1566,7 +1576,7 @@ class TestBuildSubagentRegistryDomainFilter:
         )
         monkeypatch.setattr(subagents_module, "get_subagents", lambda: {"ticket-researcher": record})
 
-        registry = _build_subagent_registry(
+        registry = build_subagent_registry(
             frozenset({"check_ticket_status"}),
             {"check_ticket_status": "read_only"},
             domain="support",
@@ -1650,7 +1660,7 @@ class TestMakeDomainSubagentTool:
             captured["registry"] = registry
             return SubagentResult("ok", 0, 0.0)
 
-        monkeypatch.setattr(subagent_tools, "_run_subagent_impl", fake_run_subagent_impl)
+        monkeypatch.setattr(subagent_tools, "run_subagent_impl", fake_run_subagent_impl)
 
         fake_support_tool = type("FakeTool", (), {"name": "a_support_only_tool"})()
         domain_tool = make_domain_subagent_tool(

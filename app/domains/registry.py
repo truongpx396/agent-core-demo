@@ -11,18 +11,14 @@
 Deliberately NOT consulted by app/channels/chat.py, which keeps defaulting
 to Ecorp unchanged (see runtime.py's init_graph_async docstring).
 """
-from app.agent.manifest import (
-    DEFAULT_DOMAIN_PLUGIN,
-    DEFAULT_MANIFEST,
-    AgentManifest,
-    DomainPlugin,
-)
+from app.agent.manifest import AgentManifest, DomainPlugin
+from app.domains.ecorp.domain import ECORP_DOMAIN_PLUGIN, ECORP_MANIFEST
 from app.domains.ops.domain import OPS_DOMAIN_PLUGIN, OPS_MANIFEST
 from app.domains.sales.domain import SALES_DOMAIN_PLUGIN, SALES_MANIFEST
 from app.domains.support.domain import SUPPORT_DOMAIN_PLUGIN, SUPPORT_MANIFEST
 
 DOMAINS: dict[str, tuple[AgentManifest, DomainPlugin]] = {
-    "ecorp": (DEFAULT_MANIFEST, DEFAULT_DOMAIN_PLUGIN),
+    "ecorp": (ECORP_MANIFEST, ECORP_DOMAIN_PLUGIN),
     "support": (SUPPORT_MANIFEST, SUPPORT_DOMAIN_PLUGIN),
     "ops": (OPS_MANIFEST, OPS_DOMAIN_PLUGIN),
     "sales": (SALES_MANIFEST, SALES_DOMAIN_PLUGIN),
