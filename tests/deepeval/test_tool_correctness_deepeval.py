@@ -49,7 +49,7 @@ Six cases now, not three — two groups:
   question anymore? A prompt fix aimed at one failure mode overcorrecting
   into a new one is exactly what happened once already during this file's
   own fix (calculator briefly stopped firing on real math after an early
-  SYSTEM_PROMPT edit — see app/agent/graph.py's own history).
+  SYSTEM_PROMPT edit — see app/agent/graph/core.py's own history).
 - `skill_search`/`use_skill`, `run_subagent`, `fetch_external_reference`:
   added 2026-09-16 to close a real, disclosed gap — skills and subagents
   had ZERO live/semantic coverage anywhere in this repo before this (only
@@ -66,7 +66,7 @@ consumer of it: an early, unseeded run of this exact test reliably called
 that collision was fixed at the prompt level — an unseeded re-verification
 STILL failed, identically, across three different prompt edits. The
 prompt edits turned out to be inert the whole time: `build_graph().ainvoke()`
-never triggers `app/agent/runtime.py::_ensure_seeded_async`, the seeding
+never triggers `app/agent/runtime/core.py::_ensure_seeded_async`, the seeding
 every production path relies on, so the agent was reasoning with ZERO
 tool-routing guidance — not "the fix doesn't work," but "the fix was never
 being tested." This file (and every sibling `build_graph().ainvoke()`
@@ -82,9 +82,9 @@ import uuid
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent import graph as graph_module
-from app.agent.graph import GraphDeps
-from app.agent.graph_build import build_graph
+from app.agent.graph import core as graph_module
+from app.agent.graph.build import build_graph
+from app.agent.graph.core import GraphDeps
 from app.ingestion import web_crawler
 from tests.conftest import TEST_CTX
 from tests.seeding import seed_thread
@@ -168,8 +168,8 @@ async def _run_and_get_tool_calls(question: str, manifest=None, domain=None, aut
 async def test_search_docs_tool_call_is_correct_and_well_argued(deepeval_ollama, deepeval_judge):
     """The original case this file was built around — see its own module
     docstring for the real, disclosed word-collision finding this
-    surfaced (fixed in app/agent/graph.py's SYSTEM_PROMPT and
-    app/agent/tools.py's docstrings) and the seeding-bug finding this same
+    surfaced (fixed in app/agent/graph/core.py's SYSTEM_PROMPT and
+    app/agent/tools/builtin.py's docstrings) and the seeding-bug finding this same
     test then went on to surface after that first fix (fixed across 9
     files — see tests/seeding.py)."""
     from deepeval import assert_test
@@ -207,7 +207,7 @@ async def test_calculator_tool_call_is_correct_and_well_argued(deepeval_ollama, 
     is the check that would catch calculator being scoped too narrowly to
     fire on real math anymore, the same class of regression this whole
     investigation's own SYSTEM_PROMPT edits produced once already (see
-    app/agent/graph.py's own history/GRAPH_PATTERNS.md pattern 48)."""
+    app/agent/graph/core.py's own history/GRAPH_PATTERNS.md pattern 48)."""
     from deepeval import assert_test
     from deepeval.metrics import ArgumentCorrectnessMetric, ToolCorrectnessMetric
     from deepeval.test_case import LLMTestCase, ToolCall
@@ -273,7 +273,7 @@ async def test_skill_tool_calls_are_correct_and_well_argued(deepeval_ollama, dee
     ("For a task that might have packaged, multi-step instructions... call
     skill_search first; if it returns a good match, call use_skill with
     that exact name"). Zero live/semantic coverage of this existed before
-    today — tests/agent/test_skills.py is hermetic (fake LLM), and nothing
+    today — tests/agent/tools/test_skills.py is hermetic (fake LLM), and nothing
     else in tests/live/ touches skills at all.
 
     `onboarding-brief` (skills/onboarding-brief/SKILL.md) is the right

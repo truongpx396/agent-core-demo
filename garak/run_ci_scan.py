@@ -5,12 +5,12 @@ pattern 48 for the full design writeup; this docstring covers WHY this is
 report-only rather than a pass/fail gate — a deliberate conclusion, not a
 default, reached empirically while building this:
 
-**garak scans the RAW model, bypassing `app/agent/moderation.py`
+**garak scans the RAW model, bypassing `app/core/moderation.py`
 entirely** — unlike promptfoo/support.yaml (which tests THIS app's system
 prompt), garak's OpenAICompatible target talks straight to Ollama, with no
 graph, no moderation node, no system prompt at all in front of it. That's
 the point: it measures the base model's OWN resistance as a defense-in-depth
-signal, independent of (not a regression test FOR) `moderation.py`'s
+signal, independent of (not a regression test FOR) `app/core/moderation.py`'s
 pattern-based screening, which sits in front of the model in the real app
 and is already covered by its own hermetic tests.
 
@@ -87,7 +87,7 @@ def _summarize(report_path: Path) -> None:
     print(
         "\nThis is an INFORMATIONAL signal about the raw model's own "
         "jailbreak resistance — see this script's own module docstring for "
-        "why it doesn't gate the build. `app/agent/moderation.py`'s "
+        "why it doesn't gate the build. `app/core/moderation.py`'s "
         "pattern-based screening (tested separately, hermetically) is what "
         "actually stands in front of this model in the real app."
     )

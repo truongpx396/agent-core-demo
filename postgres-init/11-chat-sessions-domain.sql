@@ -1,4 +1,4 @@
--- Domain-scoping the session switcher (app/agent/sessions.py,
+-- Domain-scoping the session switcher (app/agent/runtime/sessions.py,
 -- GRAPH_PATTERNS.md pattern 49) — the queued chat endpoints
 -- (app/api/main.py's X-Domain header) can now run a turn against any
 -- registered domain (app/domains/registry.py), not just Ecorp, so a

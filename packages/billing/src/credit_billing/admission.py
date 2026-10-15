@@ -1,6 +1,6 @@
 """The credit gate: may this tenant start another unit of work on its prepaid balance? (specs/010 T016, moved here by specs/013.)
 
-It lived in the agent app's `budgets.py` next to the dollar caps, with the rate, the markup and the failure policy passed in. It is the
+It lived in the agent app's `app/agent/cost/budgets.py` next to the dollar caps, with the rate, the markup and the failure policy passed in. It is the
 package's now, because every part of it is billing: whether to enforce, what a credit is worth, what to do when the wallet cannot be read.
 A host asks one question, `admit(tenant, reserved_usd=...)`, and maps the answer onto its own refusal.
 

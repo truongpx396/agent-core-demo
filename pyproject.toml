@@ -48,7 +48,7 @@ src = [".", "packages/billing/src"]
 # argument default is the framework's own idiom, not a bug).
 # BLE: flake8-blind-except — this codebase already annotates every
 # deliberate `except Exception` with a justifying `# noqa: BLE001 - ...`
-# comment (see app/agent/runtime.py, app/channels/telegram.py, etc.), so enabling
+# comment (see app/agent/runtime/core.py, app/channels/telegram.py, etc.), so enabling
 # the rule just makes those pre-existing comments meaningful instead of
 # decorative.
 # S110: bandit's try/except/pass check, paired with BLE001 for the same

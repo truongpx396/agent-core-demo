@@ -171,7 +171,7 @@ async def ingest_stream(job_id: str) -> StreamingResponse:
     more `{"type": "progress", "done": N, "total": M}` while
     ingest_worker.py's embedding loop runs, then one terminal event:
     `{"type": "done", "chunks": N}` or `{"type": "error", ...}`.
-    Deliberately NOT ownership-checked against sessions.py-style records
+    Deliberately NOT ownership-checked against app/agent/runtime/sessions.py-style records
     (this pipeline keeps no job directory) — `job_id` is a `uuid4().hex`,
     unguessable in practice, same posture as the chat results streams.
     """

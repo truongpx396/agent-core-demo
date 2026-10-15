@@ -7,14 +7,15 @@ unmodified graph. Python 3.13.
 Read these before changing behavior; they hold the reasoning this file deliberately omits:
 - `.specify/memory/constitution.md` — the non-negotiable rules. Principles I, II and IV
   (tenant isolation, mandatory approval, exactly-once side effects) are NON-NEGOTIABLE.
-- `GRAPH_PATTERNS.md` — the agent core's numbered patterns (1-66 so far), each with the real bug
-  that motivated it. "Extending Further" is the honest list of what is and isn't built. A
-  self-contained package (`packages/billing/`, see the constitution's "Self-contained packages") may keep
-  its own pattern file; a pattern that moves out leaves a one-line pointer here and its number is
-  never reused.
+- `GRAPH_PATTERNS.md` — the graph's numbered patterns (1-66 so far; 49 live there), each with the real bug
+  that motivated it. "Extending Further" is the honest list of what is and isn't built. A pattern that is
+  not about the graph moves out, leaves its number in a table here, and the number is never reused:
+  the spend meter and caps are in `COST_GOVERNANCE.md`, two repository lessons in `ENGINEERING_PATTERNS.md`,
+  and the billing package keeps its own (`packages/billing/docs/PATTERNS.md`, see the constitution's
+  "Self-contained packages").
 - `README.md` — architecture, make targets, testing tiers. `WORKER_CONCURRENCY.md` — worker sizing.
-  `BILLING_INTEGRATION.md` — how the app integrates the billing package; the package's own patterns
-  and docs are in `packages/billing/docs/`.
+  `BILLING_INTEGRATION.md` — the app's side of the billing seam; everything else about billing (patterns,
+  runbook, roadmap, specs) is in `packages/billing/`.
 
 ## Commands
 
@@ -26,7 +27,7 @@ make typecheck       # mypy over app/ scripts/ (CI gate)
 make test            # pytest -n auto -q — hermetic, no services needed (CI gate); then the billing package's own tests
 make test-billing-package   # only the package's hermetic tests, from its directory (the app is not on the path)
 make billing-migrate        # apply the billing package's schema scripts to an existing database (billing-migrate-status: read-only)
-pytest tests/agent/test_tool_idempotency.py::test_name -q   # one test; marked tiers are skipped by default
+pytest tests/core/test_tool_idempotency.py::test_name -q   # one test; marked tiers are skipped by default
 make test-integration  # real Postgres/Redis/Qdrant via testcontainers — needs Docker, not `make up`
 make test-live         # real Ollama + full stack + Playwright — needs Docker
 make up                # docker-compose infra (needs a native Ollama on the host, see README)
@@ -42,11 +43,12 @@ they delete volumes or kill running processes.
 
 ## Where things live
 
-- `app/agent/` — the graph. `graph.py` (State, nodes, `STATE_SCHEMA_VERSION`), `graph_build.py`
-  (`build_graph`), `graph_routing.py` (`should_continue`), `graph_hitl.py` (approval gate),
-  `runtime*.py` (durable singleton + streaming turns), `tools.py` (`TOOL_CAPABILITIES`),
-  `tool_idempotency.py`, `sql_store.py` (pooled appdata connections), `manifest.py`
-  (`AgentManifest`/`DomainPlugin`).
+- `app/agent/` — the agent, in four packages and one file. `graph/` is the LangGraph (`core.py` holds `State`,
+  `STATE_SCHEMA_VERSION` and the core nodes; `build.py` is `build_graph`, `routing.py` is `should_continue`,
+  `hitl.py` is the approval gate, the rest are one concern each). `runtime/` is the durable singleton and the
+  streaming turns (`core.py`, `stream.py`) plus the session directory. `tools/` is `builtin.py`
+  (`TOOL_CAPABILITIES`), `idempotency.py`, the skill and subagent catalogs and `run_subagent`. `cost/` is the
+  spend meter and caps (`COST_GOVERNANCE.md`). `manifest.py` is `AgentManifest`/`DomainPlugin`.
 - `app/domains/{support,ops,sales}/` — each is `store.py` + `tools.py` + `domain.py`. A new use
   case follows that shape; it never forks `build_graph()`.
 - `deploy/` — `compose/` (every `docker-compose*.yml`), `caddy/`, `litellm/` (configs + `patches/`).
@@ -54,10 +56,14 @@ they delete volumes or kill running processes.
   with `--project-directory .`; a bare `docker compose up` finds no file. `Dockerfile` stays at the
   root (build context), `docker/` holds the auxiliary image builds.
 - `app/job_queue/` — Redis Streams queue and workers. `app/ingestion/` — chunking, crawl, upload.
-- `app/core/` — config, security (`SecurityCtx`), metrics, errors, scrubbing, resilience.
+- `app/core/` — what every package may use and that depends on none of them: config, security (`SecurityCtx`),
+  metrics, errors, scrubbing, resilience, `sql_store.py` (pooled appdata connections), `gateway.py` and
+  `model_resolver.py` (the LiteLLM contract), `moderation.py`, and what every tool runs through:
+  `tool_runtime.py` (timeout, scrub, fail-closed ctx) and `tool_idempotency.py` (the exactly-once guard). A
+  module belongs here when it imports nothing from `agent`, `domains` or `api`.
 - `packages/billing/` — the credit wallet, payment webhooks, the billing half of a usage meter (rate, record,
   debit, export), the credit gate and operator CLIs as an independent package (`credit_billing`, src layout,
-  own pyproject/tests/schema/alerts/docs). It imports nothing from `app`; the app reaches it only through
+  own pyproject/tests/schema/alerts/docs/specs). It imports nothing from `app`; the app reaches it only through
   `app/billing_integration/port.py` and carries no billing logic of its own (it hands over six plain fields per
   model call and asks one question per turn); a test on each side enforces it, and one scans the app for any
   billing vocabulary. Edit the package, not the copies: `postgres-init/20-`, `22-`, `24-` and `25-`, the
@@ -67,6 +73,8 @@ they delete volumes or kill running processes.
 - `postgres-init/NN-*.sql` — numbered schema; auto-runs on a fresh volume only.
 - `skills/*/SKILL.md`, `subagents/*/AGENT.md` — the agent's own catalogs (not Claude Code's).
 - `observability/prometheus/alerts.yml` — alert rules over `app/core/metrics.py` metrics.
+- `promptfoo/` — the prompt checks, and the only Node in the repo: its `package.json`, lock file and `node_modules`
+  live here, so every `npm`/`npx` runs from this directory (`make promptfoo` does that). The root stays Python-only.
 
 ## Working rules
 
@@ -103,7 +111,7 @@ they delete volumes or kill running processes.
   `.claude/settings.json`. Never put their contents in output, logs, commits or docs; edit
   `.env.example` instead.
 - `requirements-lock.txt` — machine-generated from `requirements.txt`; regenerate, don't hand-edit.
-- `checkpoints.sqlite3*`, `.venv/`, `node_modules/`, `.mypy_cache/` — local artifacts.
+- `checkpoints.sqlite3*`, `.venv/`, `promptfoo/node_modules/`, `.mypy_cache/` — local artifacts.
 
 ## Guardrails
 
@@ -130,3 +138,5 @@ story. Amend the constitution only through `/speckit-constitution` and a PR.
 
 Path-scoped guidance loads automatically from `.claude/rules/`: `side-effect-tools.md`,
 `runtime-reliability.md`, `testing.md`.
+
+The billing package's own specs (010-013) live in `packages/billing/specs/`; `specs/` keeps a one-file pointer for each, so Spec Kit still counts the numbers as taken (the next is 014).

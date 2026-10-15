@@ -1,5 +1,5 @@
 """Tests for app/ingestion/ingestor.py — mocks embed_texts/embed_sparse_batch/
-qdrant_store.upsert (same boundary tests/agent/test_tools.py mocks for the
+qdrant_store.upsert (same boundary tests/agent/tools/test_tools.py mocks for the
 single-item embed_text/embed_sparse), plus socket.getaddrinfo/httpx for
 ingest_url, so these stay hermetic (no live network, no live Qdrant) like the
 rest of the suite.

@@ -210,7 +210,7 @@ class TestHybridSearchRerankScore:
     async def test_min_score_is_a_noop_when_rerank_is_skipped(self, monkeypatch):
         """`min_score` is only meaningful against the cross-encoder's raw
         logit scale — RRF fusion scores are rank-derived, not comparable to
-        it, so a caller that skips reranking (app/agent/tools.py's
+        it, so a caller that skips reranking (app/agent/tools/builtin.py's
         _memory_hits) must never have results silently dropped by it."""
         client = _fake_client(monkeypatch)
         points = self._fake_points(2)

@@ -9,10 +9,10 @@ many concurrent callers there are. Locust load results against real Ollama
 therefore measure Ollama's own serialization, not agent_worker.py's —
 pointing at this server instead removes that confound.
 
-`langchain_openai.ChatOpenAI` (app/agent/graph_utils.py::_make_llm) needs zero
+`langchain_openai.ChatOpenAI` (app/agent/graph/utils.py::_make_llm) needs zero
 code changes to talk to this: just point `OPENAI_API_BASE` here instead of
 LiteLLM. Implements both streaming and non-streaming `POST
-/v1/chat/completions`, since app/agent/graph_utils.py's `_make_llm()` comment
+/v1/chat/completions`, since app/agent/graph/utils.py's `_make_llm()` comment
 notes `astream_events` (what the queued path always runs through) forces
 every LLM call through the streaming HTTP path even when the calling node
 code does `.invoke()` — so a load-test run exercising `/chat/stream/queued`
@@ -61,7 +61,7 @@ implemented chat completions, silently degrading EVERY semantic-cache
 lookup and EVERY Qdrant read/write to a permanent miss/no-op — never
 exercising the real code on the other side of those calls at all. Same
 deterministic, dependency-free technique
-tests/agent/test_concurrent_turns.py's own `_fake_embed_text` already uses
+tests/agent/runtime/test_concurrent_turns.py's own `_fake_embed_text` already uses
 in-process (same text -> same vector, needed for a cache/Qdrant "hit" to
 work at all) — a real embedding model was never load-bearing for THIS
 server's job of exercising concurrency, only a consistent one.
@@ -121,7 +121,7 @@ _semaphore = asyncio.Semaphore(_MAX_CONCURRENCY) if _MAX_CONCURRENCY > 0 else No
 # as a `role: "tool"` message — never reaches these; see `_pick_tool_call`.
 #
 # The tool NAME returned must match a real tool this app's graph can execute
-# (app/agent/tools.py) — ToolNode actually runs it for real against the
+# (app/agent/tools/builtin.py) — ToolNode actually runs it for real against the
 # arguments given here, exactly as production would; this file only fakes
 # the LLM's decision to call it, never the tool execution itself.
 
@@ -144,7 +144,7 @@ def tool_simulator(fn: ToolSimulator) -> ToolSimulator:
 @tool_simulator
 def _calculator(last_user_text: str, requested_tool_names: set[str]) -> ToolCall | None:
     """Matches loadtest/locustfile_queued.py's `calculator` task, e.g.
-    "what is 12 * 7?" — app/agent/tools.py's real
+    "what is 12 * 7?" — app/agent/tools/builtin.py's real
     `calculator(expression: str)` tool then actually evaluates it, exactly
     as production would."""
     if "calculator" not in requested_tool_names:
@@ -159,7 +159,7 @@ def _calculator(last_user_text: str, requested_tool_names: set[str]) -> ToolCall
 @tool_simulator
 def _remember(last_user_text: str, requested_tool_names: set[str]) -> ToolCall | None:
     """Matches a "please remember <fact>"-shaped message (see
-    loadtest/locustfile_queued.py's own HITL task) — app/agent/tools.py's
+    loadtest/locustfile_queued.py's own HITL task) — app/agent/tools/builtin.py's
     real `remember(content: str)` tool then actually writes it to Qdrant.
     `remember` is declared "mutating" (TOOL_CAPABILITIES), so this ALWAYS
     pauses at human_approval regardless of this server's own decision —
@@ -179,7 +179,7 @@ def _remember(last_user_text: str, requested_tool_names: set[str]) -> ToolCall |
 def _run_subagent(last_user_text: str, requested_tool_names: set[str]) -> ToolCall | None:
     """Matches a "please delegate <task>"-shaped message (see
     loadtest/locustfile_queued.py's own subagent task) —
-    app/agent/tools.py's real `run_subagent` tool then actually runs a
+    app/agent/tools/builtin.py's real `run_subagent` tool then actually runs a
     genuinely separate, nested graph turn — including its OWN nested LLM
     call back to THIS SAME server (its `ChatOpenAI` construction also
     reads `OPENAI_API_BASE`), which `_final_answer_text` below handles
@@ -234,13 +234,13 @@ def _final_answer_text(messages: list[dict]) -> str:
     than a fixed generic string, so a caller running many of these
     concurrently can verify a given turn's answer actually reflects ITS
     OWN input and never a concurrent sibling's — the same no-cross-wiring
-    property tests/agent/test_concurrent_turns.py's `_echoing_llm` proves
+    property tests/agent/runtime/test_concurrent_turns.py's `_echoing_llm` proves
     in-process, proven here instead over the real wire.
 
     The tool-result branch includes the ORIGINAL user text too, not just
     the tool's own return value — verified directly that this matters:
     `remember`'s real return value is the fixed string "Remembered."
-    (app/agent/tools.py::_remember_impl), not an echo of what was
+    (app/agent/tools/builtin.py::_remember_impl), not an echo of what was
     remembered, so echoing ONLY the tool result would make every
     concurrent `remember` call's final answer identical and useless for
     telling them apart. `run_subagent`'s own tool result IS already
@@ -356,7 +356,7 @@ async def _stream_completion(model: str, tool_call: ToolCall | None, messages: l
     # A final usage-only chunk (empty `choices`) — matches what a real
     # OpenAI-compatible server sends when the request set
     # `stream_options: {"include_usage": true}`, which langchain_openai's
-    # `stream_usage=True` (app/agent/graph_utils.py::_make_llm) always requests.
+    # `stream_usage=True` (app/agent/graph/utils.py::_make_llm) always requests.
     yield chunk(
         {},
         usage={

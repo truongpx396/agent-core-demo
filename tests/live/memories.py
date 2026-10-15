@@ -2,7 +2,7 @@
 
 `remember` writes a persistent, cross-session memory into the SAME Qdrant `docs` collection the whole
 `real_stack_with_retrieval` session shares (`kind: "memory"`), and every later turn pre-fetches the
-principal's memories that look relevant to its prompt (app/agent/graph_retrieval.py). So a memory is
+principal's memories that look relevant to its prompt (app/agent/graph/retrieval.py). So a memory is
 state that outlives the test that wrote it.
 
 That is a real, reproduced failure, not a hypothetical one. `test_a_mutating_tool_call_pauses_for_approval_and_resumes_on_approve`

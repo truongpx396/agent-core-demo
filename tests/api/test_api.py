@@ -5,7 +5,7 @@ through it would trigger the real `lifespan` (a real durable checkpointer
 file, a real Qdrant/embedding call the first time a turn runs) — this
 suite calls the handler functions directly instead, the same "test the
 function, not the framework wiring" approach the rest of this codebase
-already takes for graph nodes (see tests/agent/test_nodes.py's module docstring).
+already takes for graph nodes (see tests/agent/graph/test_nodes.py's module docstring).
 """
 import io
 import json
@@ -14,7 +14,7 @@ from decimal import Decimal
 import pytest
 from fastapi import HTTPException, Response
 
-from app.agent import sessions
+from app.agent.runtime import sessions
 from app.api import deps
 from app.api.routers import chat as chat_router
 from app.api.routers import ingest as ingest_router
@@ -36,7 +36,7 @@ class _Ownership:
     real queries have — first claimant of a thread id owns it, ownership is
     (tenant, principal, domain) — so these tests exercise the endpoints'
     use of the check, not Postgres. `claim_session`'s own query shape is
-    pinned in tests/agent/test_sessions.py."""
+    pinned in tests/agent/runtime/test_sessions.py."""
 
     def __init__(self):
         self.rows: dict[str, tuple[str, str, str]] = {}
@@ -97,9 +97,9 @@ class TestHealthReady:
 
 
 class TestUsage:
-    """GET /usage — a thin pass-through to app/agent/spend.py::usage_summary,
+    """GET /usage — a thin pass-through to app/agent/cost/spend.py::usage_summary,
     called once all-time and once scoped to the rolling 24h window
-    app/agent/budgets.py::check_tenant_daily itself checks."""
+    app/agent/cost/budgets.py::check_tenant_daily itself checks."""
 
     async def test_reports_all_time_and_rolling_24h_figures(self, monkeypatch):
         calls = []
@@ -782,7 +782,7 @@ class TestConversationOwnership:
 
 
 class TestChatSessions:
-    """GET /chat/sessions — a thin pass-through to app/agent/sessions.py::list_sessions,
+    """GET /chat/sessions — a thin pass-through to app/agent/runtime/sessions.py::list_sessions,
     scoped by whatever ctx get_ctx resolved (not a caller-supplied field)
     AND by the X-Domain-derived `domain` (GRAPH_PATTERNS.md pattern 49)."""
 

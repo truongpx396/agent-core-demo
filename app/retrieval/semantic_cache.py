@@ -52,7 +52,7 @@ _index_ready = False
 # RediSearch TAG queries treat many characters as syntax, not literal text
 # (e.g. an unescaped tenant like "other-co" raises "Syntax error... near
 # other") — every tag value interpolated into a query string must be
-# escaped first, same reason sql_store.py never interpolates unparameterized.
+# escaped first, same reason core/sql_store.py never interpolates unparameterized.
 #
 # Escapes EVERY ASCII character that is not a letter, digit or underscore,
 # rather than a list of the ones known to bite: the first version was exactly
@@ -149,7 +149,7 @@ async def get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | N
 
 
 async def set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict]) -> None:
-    """Best-effort write-through after a turn completes (app/agent/graph.py's
+    """Best-effort write-through after a turn completes (app/agent/graph/core.py's
     write_semantic_cache node, only on the miss path — see its docstring
     for why a hit never re-writes). Swallows every failure: a cache write
     that fails must not fail the turn whose answer it's trying to cache."""

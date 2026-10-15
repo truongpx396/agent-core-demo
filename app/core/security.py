@@ -8,7 +8,7 @@ as the seam a real auth middleware replaces later, so that swap is a
 gateway config change, not a rewrite.
 
 Deliberately narrower than full RBAC: no `agent_role`/`allowed_tools` (no
-such feature exists yet), no `trace_id` (covered by graph.py's `run_id`).
+such feature exists yet), no `trace_id` (covered by app/agent/graph/core.py's `run_id`).
 `claims` is an opaque escape hatch, carried through but never branched on
 here, for a future policy to use.
 """
@@ -98,7 +98,7 @@ class TenantIsolationPolicy:
                 FieldCondition(key="owner", match=MatchValue(value=ctx["principal"]))
             )
             # Retention enforced AT RECALL TIME, not just by a background
-            # sweep (memory.py::delete_memories, pattern 33) — a memory past
+            # sweep (app/retrieval/memory.py::delete_memories, pattern 33) — a memory past
             # MEMORY_RETENTION_DAYS is invisible on the next read even if
             # unswept. Note: Qdrant treats a missing field as never matching
             # a range filter, so a memory with no `created_at` (written

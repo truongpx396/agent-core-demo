@@ -201,7 +201,7 @@ class TestProcessRequestTurn:
         assert captured["images"] == ["https://example.com/cat.png"]
 
     async def test_no_images_attached_passes_none_not_an_empty_list(self, monkeypatch):
-        """_build_human_content (app/agent/runtime_stream.py) treats an empty list the
+        """_build_human_content (app/agent/runtime/stream.py) treats an empty list the
         same as None, but keeping the distinction here means a future
         reader can tell "no image was ever attached" from "an empty list
         was explicitly sent" by reading the call, not by re-deriving it."""
@@ -605,7 +605,7 @@ class TestSameThreadJobsAreSerialized:
             yield {"type": "done"}
             if is_first_call:
                 # Simulates astream_events_turn's own post-yield cleanup
-                # (runtime_stream.py's fire-and-forget budget-release task
+                # (runtime/stream.py's fire-and-forget budget-release task
                 # creation, closing the Langfuse trace) — genuinely slow
                 # here so a premature-release regression would show up
                 # directly.
@@ -632,7 +632,7 @@ class TestSameThreadJobsAreSerialized:
     async def test_a_turn_and_a_resume_on_the_same_thread_also_exclude_each_other(self, monkeypatch):
         """The lock is keyed by thread_id, not by job kind — a resume
         racing a fresh turn on the same thread_id is exactly the "double
-        texting onto a paused thread" scenario runtime_stream.py's own
+        texting onto a paused thread" scenario runtime/stream.py's own
         PENDING_APPROVAL handling already guards at the graph level; this
         proves the dispatcher-level lock backs it up too."""
         handler_started = asyncio.Event()
@@ -703,7 +703,7 @@ class FakeGraph:
     checkpointed at all (empty `.values`). `paused` marks a thread_id as
     checkpointed mid a REAL `human_approval` interrupt (`state.next`
     truthy AND `state.tasks[i].interrupts` non-empty — see
-    `graph_hitl.py::_resumability_error_from_state`'s own docstring on why
+    `graph/hitl.py::_resumability_error_from_state`'s own docstring on why
     both are checked, not `state.next` alone)."""
 
     def __init__(self, states: dict | None = None, paused: set | None = None):
@@ -917,7 +917,7 @@ class TestHandleReclaimedJob:
         """Unlike "turn", "resume" needs no checkpoint inspection at all —
         it continues an EXISTING checkpoint's already-pending tool_calls
         under their own original tool_call_ids, and every mutating/outward
-        tool now dedupes on that id (app/agent/tool_idempotency.py), so
+        tool now dedupes on that id (app/core/tool_idempotency.py), so
         re-invoking one that already completed just returns its cached
         result instead of running again. The graph is irrelevant here on
         purpose — nothing about this decision reads it."""

@@ -9,7 +9,7 @@ Every read and write MUST be scoped to the caller's tenant (and, for personal da
   content, tool arguments, or model output.
 - Scoping MUST be enforced inside the store query (`WHERE tenant = %s`, a Qdrant pre-filter via
   `Policy.lower`). A Python post-filter over an unscoped result is forbidden.
-- Every tool that touches tenant data MUST independently check ctx (`_ctx_or_refuse` /
+- Every tool that touches tenant data MUST independently check ctx (`ctx_or_refuse` /
   `valid_ctx`) and refuse when it is missing or malformed. It MUST NOT rely on an upstream node
   having already checked.
 - A child table MUST carry its own `tenant` column rather than inherit it solely via a join.
@@ -52,7 +52,7 @@ model writes.
 
 ### IV. Exactly-Once Side Effects (NON-NEGOTIABLE)
 Every `mutating`/`outward` tool MUST be safe to run twice for the same logical action.
-- The tool call MUST be wrapped in `idempotent()` (`app/agent/tool_idempotency.py`), keyed by the
+- The tool call MUST be wrapped in `idempotent()` (`app/core/tool_idempotency.py`), keyed by the
   provider-assigned `tool_call_id` obtained via `InjectedToolCallId`.
 - The write itself MUST also be idempotent at the target, as the second layer: a nullable
   `tool_call_id UNIQUE` column with `ON CONFLICT DO NOTHING`, or a deterministic id
@@ -144,12 +144,16 @@ fast only if nothing in it can quietly reach a live service.
 ### VIII. Why-First Documentation and Honest Gaps
 Documentation records why, and the failure that motivated the code.
 - A new architectural pattern MUST be added as a numbered entry that states the bug or gotcha
-  behind it: to `GRAPH_PATTERNS.md` when it concerns the agent core, or to the pattern file of the
-  self-contained package it belongs to, or of that package's integration package (see
-  "Self-contained packages"). `GRAPH_PATTERNS.md` stays about the agent core: a pattern that moves
-  out leaves a one-line pointer in its place, and a pattern number is never reused or shifted. A
-  change that closes a gap MUST update the matching "Extending Further" entry in the file that
-  holds the pattern.
+  behind it, to the file that matches its subject: `GRAPH_PATTERNS.md` when it concerns the graph
+  (nodes, routing, tools, retrieval, memory, safety, the runtime); `COST_GOVERNANCE.md` when it
+  concerns the agent's own spend meter and limits (pricing, usage events, the dollar caps, holds,
+  retention); `ENGINEERING_PATTERNS.md` when it is a lesson about this repository's settings or
+  tests rather than about the agent; or the pattern file of the self-contained package it belongs
+  to (`packages/billing/docs/PATTERNS.md`), or of that package's integration package (see
+  "Self-contained packages"). `GRAPH_PATTERNS.md` stays about the graph: a pattern that moves out
+  leaves its number in a pointer there (one line or one table row), and a pattern number is never
+  reused or shifted. A change that closes a gap MUST update the matching "Extending Further" entry
+  in the file that holds the pattern.
 - Known limitations MUST be disclosed in the README "Roadmap" or "Extending Further", never
   omitted or papered over. A fix that deliberately leaves an adjacent gap open MUST name it.
 - Module docstrings and non-obvious comments MUST explain the invariant and the reason, not
@@ -173,8 +177,8 @@ cannot be judged or safely changed later.
 - **Stores**: Postgres (`appdata`, plus a dedicated checkpointer database), Qdrant (hybrid
   dense + BM25 retrieval, with the cross-encoder rerank layered on top), Redis (Streams queues,
   semantic cache), MinIO (uploads).
-  Appdata access goes through `app/agent/sql_store.py`'s pooled `get_connection()`; the only
-  other direct psycopg users are the checkpointer pool (`app/agent/runtime.py`) and the health
+  Appdata access goes through `app/core/sql_store.py`'s pooled `get_connection()`; the only
+  other direct psycopg users are the checkpointer pool (`app/agent/runtime/core.py`) and the health
   probe (`app/api/health.py`). A self-contained package opens no pool of its own: it receives that
   connection by injection from the host (`credit_billing.db.configure`) and refuses (fails
   closed) when none was supplied.
@@ -182,7 +186,7 @@ cannot be judged or safely changed later.
   Prefer a new script over editing an applied one. State in the script's header how an existing
   volume applies it (init scripts only auto-run on a fresh volume).
 - **Checkpoint compatibility**: a `State` or graph-topology change that is not backward
-  compatible MUST bump `STATE_SCHEMA_VERSION` (`app/agent/graph.py`); a differing build SHA
+  compatible MUST bump `STATE_SCHEMA_VERSION` (`app/agent/graph/core.py`); a differing build SHA
   alone is not a break.
 - **Composition**: a new use case is an `AgentManifest` + `DomainPlugin` under
   `app/domains/<name>/` (`store.py`, `tools.py`, `domain.py`). It MUST NOT fork or branch
@@ -264,4 +268,4 @@ states the intent and the conflicting document MUST be corrected.
 - **Runtime guidance**: day-to-day development guidance for agents and contributors lives in
   `CLAUDE.md` and `.claude/rules/`; those files MUST NOT contradict this constitution.
 
-**Version**: 1.1.1 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-10-14
+**Version**: 1.1.2 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-10-15

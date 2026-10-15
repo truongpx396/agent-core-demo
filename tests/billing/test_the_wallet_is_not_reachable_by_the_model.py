@@ -20,10 +20,7 @@ REPO = Path(__file__).resolve().parents[2]
 TOOL_MODULES = [
     *sorted((REPO / "app" / "domains").rglob("*.py")),
     *sorted((REPO / "app" / "mcp").rglob("*.py")),
-    REPO / "app" / "agent" / "tools.py",
-    REPO / "app" / "agent" / "subagent_tools.py",
-    REPO / "app" / "agent" / "subagent_domain_tools.py",
-    REPO / "app" / "agent" / "tool_idempotency.py",
+    *sorted((REPO / "app" / "agent" / "tools").rglob("*.py")),
 ]
 
 
@@ -54,7 +51,7 @@ def test_the_scan_actually_covers_the_tool_modules():
     """Guards the guard: an empty or misspelt list would pass vacuously."""
     covered = {p.relative_to(REPO).as_posix() for p in TOOL_MODULES if p.exists()}
 
-    assert "app/agent/tools.py" in covered and "app/agent/subagent_tools.py" in covered
+    assert "app/agent/tools/builtin.py" in covered and "app/agent/tools/run_subagent.py" in covered
     assert any(name.startswith("app/domains/support/") for name in covered)
 
 
@@ -72,6 +69,6 @@ def test_the_scanner_does_recognise_an_import_of_the_wallet(tmp_path):
     ):
         sample.write_text(source + "\n")
         assert _imports_billing(sample), source
-    for source in ("from app.agent import budget_holds", "from credit_billingx import y", "import app.billing", "from app import billing"):
+    for source in ("from app.agent.cost import budget_holds", "from credit_billingx import y", "import app.billing", "from app import billing"):
         sample.write_text(source + "\n")
         assert not _imports_billing(sample), source  # `app.billing` no longer exists, so importing it is a bug elsewhere, not a wallet path

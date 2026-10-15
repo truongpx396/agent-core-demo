@@ -1,4 +1,4 @@
-"""The credit gate as the agent app uses it: may this tenant start another turn on its prepaid balance? (app/agent/budgets.py, specs/010 T016 and
+"""The credit gate as the agent app uses it: may this tenant start another turn on its prepaid balance? (app/agent/cost/budgets.py, specs/010 T016 and
 T017; the decision moved into the billing package by specs/013.)
 
 The DECISION (who is gated, what counts as credit, holds in credits, the failure policy) is the package's and is proven there
@@ -14,9 +14,9 @@ from decimal import Decimal
 
 import pytest
 
-from app.agent import budget_holds, budgets, spend
-from app.agent import runtime as runtime_module
-from app.agent import runtime_stream as stream_module
+from app.agent.cost import budget_holds, budgets, spend
+from app.agent.runtime import core as runtime_module
+from app.agent.runtime import stream as stream_module
 from app.billing_integration import port as billing_port
 from app.core import errors, metrics
 from credit_billing import admission, credits

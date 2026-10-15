@@ -58,7 +58,7 @@ def scrub(text: str) -> str:
     """Returns `text` with every credential-shaped or bound secret value
     replaced by `[REDACTED]`. Never raises — on unexpected failure this
     degrades to returning `text` UNSCRUBBED (logged), rather than blocking
-    the tool result, same posture as moderation.py::screen."""
+    the tool result, same posture as app/core/moderation.py::screen."""
     if not text:
         return text
     try:

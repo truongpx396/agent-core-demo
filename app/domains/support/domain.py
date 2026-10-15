@@ -2,7 +2,7 @@
 behind a chat gateway (app/channels/telegram.py's AGENT_DOMAIN), with
 SANDBOXED tool access — just the knowledge base plus the ticket system.
 
-`tools()` reuses `search_docs`/`ask_clarification` from app/agent/tools.py
+`tools()` reuses `search_docs`/`ask_clarification` from app/agent/tools/builtin.py
 as-is rather than reimplementing retrieval. `skill_search`/`use_skill` are
 this domain's own pair (`make_skill_tools("support")`), so a
 domain-tagged `SKILL.md` stays scoped to the domain(s) it names.
@@ -18,14 +18,14 @@ names (pattern 23).
 from dataclasses import dataclass
 
 from app.agent.manifest import AgentManifest, DomainPlugin
-from app.agent.subagent_domain_tools import make_domain_subagent_tool
-from app.agent.tools import TOOL_CAPABILITIES as _ECORP_TOOL_CAPABILITIES
-from app.agent.tools import (
+from app.agent.tools.builtin import TOOL_CAPABILITIES as _ECORP_TOOL_CAPABILITIES
+from app.agent.tools.builtin import (
     ask_clarification,
     make_skill_tools,
     search_docs,
     skill_tools_first,
 )
+from app.agent.tools.run_subagent_domain import make_domain_subagent_tool
 from app.core.security import Policy
 from app.domains.support.tools import SUPPORT_POLICY
 from app.domains.support.tools import TOOL_CAPABILITIES as _SUPPORT_TOOL_CAPABILITIES

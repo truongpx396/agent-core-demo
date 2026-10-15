@@ -110,7 +110,7 @@ lines.
 
 **The bottleneck this doesn't remove:** the checkpointer itself has a
 fine-grained serialization point — `_open_checkpointer` in
-`app/agent/runtime.py` backs `AsyncPostgresSaver` with a connection *pool*
+`app/agent/runtime/core.py` backs `AsyncPostgresSaver` with a connection *pool*
 specifically because psycopg wraps every operation on one connection in its
 own internal lock, so a single shared connection would serialize every
 concurrent turn's checkpoint reads/writes regardless of the semaphore. The
@@ -225,7 +225,7 @@ Neither is derived from a fixed formula:
 Scaling replicas multiplies Postgres connections, and nothing here enforces
 the ceiling for you. Every process that runs the graph — each `agent-worker`
 replica **and** the API (`init_graph_async()` in its lifespan) — can hold up
-to two pools: the appdata pool (`app/agent/sql_store.py`, `max_size=10`, not
+to two pools: the appdata pool (`app/core/sql_store.py`, `max_size=10`, not
 configurable today) and the checkpointer pool (`CHECKPOINTER_POOL_MAX_SIZE`,
 default `10`). So the worst case is roughly:
 

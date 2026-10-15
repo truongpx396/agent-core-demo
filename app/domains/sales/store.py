@@ -1,13 +1,13 @@
 """Fixed, parameterized queries against `crm_leads`/`crm_followups`/
 `crm_lead_notes` (postgres-init/08-crm.sql, 15-append-notes-as-rows.sql) —
 the sales concierge's own system of record. Same discipline as
-app/agent/sql_store.py/app/domains/support/store.py: no generated SQL,
-every query explicitly `tenant = %s`, reusing app/agent/sql_store.py's own
+app/core/sql_store.py/app/domains/support/store.py: no generated SQL,
+every query explicitly `tenant = %s`, reusing app/core/sql_store.py's own
 pooled `appdata` connection.
 """
 from datetime import datetime
 
-from app.agent.sql_store import get_connection
+from app.core.sql_store import get_connection
 
 
 async def find_or_create_lead(

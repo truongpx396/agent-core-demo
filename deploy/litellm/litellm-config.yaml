@@ -30,7 +30,7 @@ model_list:
       # `num_ctx` straight through to Ollama's own `options.num_ctx`
       # (verified in its transformation.py) — a config change, not a code
       # change, per this file's own model-alias architecture.
-      # app/agent/graph.py's HISTORY_TOKEN_CEILING/FLOOR are sized against
+      # app/agent/graph/core.py's HISTORY_TOKEN_CEILING/FLOOR are sized against
       # this exact number — change both together. 32000 is right up
       # against qwen2.5:3b's own rated max (32768 per `ollama show`) —
       # real headroom (768 tokens), not a round-number guess.

@@ -7,7 +7,7 @@ any MCP server reachable over stdio.
 ## Capability enforcement for tools this app didn't author (AR-004b)
 
 Every tool declares a capability (`read_only`/`mutating`/`outward` —
-`app/agent/tools.py::TOOL_CAPABILITIES`) that `should_continue` uses to
+`app/agent/tools/builtin.py::TOOL_CAPABILITIES`) that `should_continue` uses to
 gate human approval. A remote MCP tool's self-reported `ToolAnnotations`
 (`readOnlyHint`, etc.) are HINTS per the MCP spec, not verified
 guarantees — a malicious or unmaintained server could claim
@@ -42,7 +42,7 @@ async def _call_remote_tool(params: StdioServerParameters, tool_name: str, kwarg
             await session.initialize()
             result = await session.call_tool(tool_name, kwargs)
             text = "".join(c.text for c in result.content if hasattr(c, "text"))
-            # Scrubbed here too, not just in-process tools' _run_with_timeout —
+            # Scrubbed here too, not just in-process tools' run_with_timeout —
             # a remote server this app doesn't own is at least as likely to
             # echo a credential-shaped value back (pattern 32).
             text = scrub(text)

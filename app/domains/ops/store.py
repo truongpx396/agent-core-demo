@@ -8,7 +8,7 @@ Deliberately NOT `tenant`-scoped, unlike support_tickets/crm_leads: this
 app's own operational metrics have no per-tenant dimension to inherit
 (see postgres-init/10-ops-incidents.sql's comment).
 """
-from app.agent.sql_store import get_connection
+from app.core.sql_store import get_connection
 
 
 async def log_incident(

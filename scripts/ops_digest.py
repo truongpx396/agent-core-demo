@@ -27,7 +27,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
-from app.agent import metering
+from app.agent.cost import metering
 from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_API_KEY
 from app.core.job_runtime import scheduled_job
 from app.core.security import SecurityCtx
@@ -66,7 +66,7 @@ def build_digest_prompt(readings: dict[str, float | None], anomalies: list[str])
 
 async def run_digest(llm=None) -> str:
     """Fetch → summarize → post. Returns the posted summary text. `llm` is
-    DI for tests (mirrors app/agent/tools.py::_run_subagent_impl's own
+    DI for tests (mirrors app/agent/tools/builtin.py::_run_subagent_impl's own
     `llm` override) — defaults to a real ChatOpenAI client via the LiteLLM
     proxy, no tools bound (a plain completion, not a tool-calling turn —
     see this module's docstring for why)."""
@@ -80,7 +80,7 @@ async def run_digest(llm=None) -> str:
         api_key=SecretStr(OPENAI_API_KEY),
         temperature=0,
     )
-    # One metered call (app/agent/metering.py): identity for the gateway, priced once, one usage
+    # One metered call (app/agent/cost/metering.py): identity for the gateway, priced once, one usage
     # event (a cron job has no turn whose total could carry it, and the event is what the caps count).
     thread_id = f"ops-digest:{datetime.now(UTC).date().isoformat()}"
     call = await metering.metered_invoke(

@@ -1,0 +1,1 @@
+"""What the agent spends and how it is held to a limit: pricing, the one-event-per-call meter, the dollar caps, holds and overrides, retention, and the reconciliation with the LLM gateway (COST_GOVERNANCE.md)."""

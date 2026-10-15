@@ -1,4 +1,4 @@
-"""The gateway reconciliation against a REAL Postgres (app/agent/usage_reconcile.py; postgres-init/03, 19).
+"""The gateway reconciliation against a REAL Postgres (app/agent/cost/usage_reconcile.py; postgres-init/03, 19).
 
 Every query it makes is the thing under test: the per-tenant, per-UTC-day grouping and the set of tenants the gateway's one-way ids are mapped
 back to. A fake cursor would only echo the answers its author already believed (constitution VII). The gateway is the stand-in of
@@ -18,11 +18,11 @@ from decimal import Decimal
 import psycopg
 import pytest
 
-from app.agent import usage_events
-from app.agent import usage_reconcile as reconcile
-from app.agent.gateway import end_user_id
-from app.agent.pricing import ModelPrice, PricedCall
-from app.agent.usage_reconcile import Tolerance, Window
+from app.agent.cost import usage_events
+from app.agent.cost import usage_reconcile as reconcile
+from app.agent.cost.pricing import ModelPrice, PricedCall
+from app.agent.cost.usage_reconcile import Tolerance, Window
+from app.core.gateway import end_user_id
 from tests.agent.fake_gateway import FakeGateway, spend_row
 from tests.containers import ensure_postgres
 from tests.integration.usage_seed import seed_event

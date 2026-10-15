@@ -1,7 +1,7 @@
 """What a tenant has spent, read from the usage events, against a REAL Postgres (specs/010 T030).
 
 The dollar caps and `GET /usage` used to sum `usage_ledger` (one row per turn) and now sum `usage_events` (one row per
-model call). tests/agent/test_spend.py proves the statement's shape through a fake connection; only a real table shows
+model call). tests/agent/cost/test_spend.py proves the statement's shape through a fake connection; only a real table shows
 what the shipped schema does with it:
 
   * the sum never crosses tenants and, when narrowed, never crosses people: the property every budget decision rests on;
@@ -24,7 +24,7 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent import budget_holds, budgets, metering, spend, usage_events
+from app.agent.cost import budget_holds, budgets, metering, spend, usage_events
 from scripts import usage_events_carry_over as carry
 from tests.containers import ensure_postgres
 from tests.integration.usage_seed import purge_events, seed_event, seed_ledger_row

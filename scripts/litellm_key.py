@@ -30,8 +30,8 @@ import sys
 
 import httpx
 
-from app.agent.gateway import end_user_id
-from app.agent.model_resolver import admin_base_url
+from app.core.gateway import end_user_id
+from app.core.model_resolver import admin_base_url
 
 DEFAULT_MODELS = "chat,embed"
 

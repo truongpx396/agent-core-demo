@@ -48,10 +48,10 @@ against the actual source before being ruled out, not assumed:
     ONNX-sparse-embedding or reranker failure (app/retrieval/qdrant_store.py)
     — an infra fault, not something any request content can cause.
   - agent_checkpoint_issue_total{reason="checkpoint_incompatible"}: needs
-    STATE_SCHEMA_VERSION (app/agent/graph.py) bumped mid-test, i.e. a
+    STATE_SCHEMA_VERSION (app/agent/graph/core.py) bumped mid-test, i.e. a
     redeploy between pausing and resuming the SAME thread — an operational
     scenario, not a payload variant.
-  - agent_memory_deletion_total: delete_memories (app/agent/memory.py) has
+  - agent_memory_deletion_total: delete_memories (app/retrieval/memory.py) has
     no HTTP caller anywhere in this app and isn't wrapped as an agent tool
     either (its own docstring: a trusted operational caller, never the
     graph) — genuinely unreachable from outside the process.
@@ -61,7 +61,7 @@ against the actual source before being ruled out, not assumed:
     interactive astream_events_turn instead, by design.
   - agent_tool_errors_total: fake_llm_server.py's calculator simulator only
     ever emits a clean "{a}{op}{b}" expression, and the REAL calculator
-    tool (app/agent/tools.py::_calculator_impl) catches every exception
+    tool (app/agent/tools/builtin.py::_calculator_impl) catches every exception
     itself and returns a string instead of raising — even a "5/0"-shaped
     message never reaches on_tool_error. Not reachable with this fake LLM
     as written; would need a real misbehaving tool or model.
@@ -81,7 +81,7 @@ against the actual source before being ruled out, not assumed:
     fault (e.g. Postgres/Redis down mid-turn), not content-driven.
 
 One caveat worth knowing before reading the "Turn rate by outcome" panel:
-_turn_outcome (app/agent/runtime_stream.py) reports outcome="rejected" whenever a
+_turn_outcome (app/agent/runtime/stream.py) reports outcome="rejected" whenever a
 turn never reaches the agent node — which includes reject_input/
 reject_context/reject_moderation (genuine rejections) AND a semantic-cache
 HIT (a fast, correct, non-rejected answer that happens to also skip the
@@ -101,7 +101,7 @@ RETRIEVAL_QUESTIONS = [
     "Who works in Engineering at Ecorp?",
 ]
 
-# Matches app/agent/moderation.py's _INJECTION_PATTERNS / _DENYLIST_PATTERNS
+# Matches app/core/moderation.py's _INJECTION_PATTERNS / _DENYLIST_PATTERNS
 # exactly (verified against that file directly, not guessed) — for
 # Moderation outcomes + the reject_moderation share of Turn outcome.
 INJECTION_MESSAGES = [
@@ -112,13 +112,13 @@ DENYLIST_MESSAGES = ["How to make a bomb?"]
 
 # ~17k+ words — fake_llm_server.py's _final_answer_text echoes the user's
 # own message back as the completion, so completion_tokens (len(text.split()))
-# is large enough to trip MAX_TOKENS_PER_TURN=16000 (app/agent/graph_routing.py)
+# is large enough to trip MAX_TOKENS_PER_TURN=16000 (app/agent/graph/routing.py)
 # on the model's very first reply, before compact_history could ever get
 # a chance to shrink anything.
 HUGE_MESSAGE = "x " * 17000
 
 # A single space: non-empty by Pydantic's min_length=1, but strips to "" —
-# app/agent/graph.py's _human_has_content gate (reject_input).
+# app/agent/graph/core.py's _human_has_content gate (reject_input).
 WHITESPACE_ONLY_MESSAGE = " "
 
 # Bytes content genuinely doesn't matter at the API layer for any of these
@@ -221,7 +221,7 @@ class ChatTurnUser(HttpUser):
     def token_budget_exceeded(self) -> None:
         # Always the FIRST turn of a brand new thread — compact_history
         # short-circuits on a thread's very first turn regardless of size
-        # (app/agent/graph.py), so this reaches should_continue's token
+        # (app/agent/graph/core.py), so this reaches should_continue's token
         # check unsummarized either way; fresh thread keeps that guaranteed
         # rather than incidental.
         self._post_chat(
@@ -259,7 +259,7 @@ class SemanticCacheUser(HttpUser):
 class HitlUser(HttpUser):
     """"remember <fact>" always pauses at human_approval regardless of any
     opt-in approval flag — `remember` is declared "mutating" in
-    TOOL_CAPABILITIES (app/agent/tools.py), so this is the mandatory
+    TOOL_CAPABILITIES (app/agent/tools/builtin.py), so this is the mandatory
     capability gate, not the (HTTP-unreachable) opt-in one. Covers HITL
     approval decisions, the capability-gate "mutating" series, and — on
     the cancel-while-paused branch — both agent_human_approval_total{
@@ -374,7 +374,7 @@ class StreamCancelUser(HttpUser):
 
 class HistoryCompactionUser(HttpUser):
     """One thread, reused for this user's entire run, fed long messages
-    every turn — compact_history (app/agent/graph.py) only fires once raw
+    every turn — compact_history (app/agent/graph/core.py) only fires once raw
     history crosses HISTORY_TOKEN_CEILING=24000 tokens AND the thread
     already has more than one turn on it, so this needs sustained traffic
     on a single thread rather than one-off requests.
@@ -404,7 +404,7 @@ class HistoryCompactionUser(HttpUser):
 
     _PADDING = "The quick brown fox jumps over the lazy dog. " * 40
     # Measured directly with real tiktoken (cl100k_base, the same encoding
-    # app/agent/graph.py's compact_history uses): one padded user message
+    # app/agent/graph/core.py's compact_history uses): one padded user message
     # is 409 tokens, and the fake LLM's echoed reply (_final_answer_text)
     # is 414 — 823 tokens/turn, crossing HISTORY_TOKEN_CEILING=24000
     # (app/core/config.py) at ~29.2 turns in theory. Verified live that 30
@@ -450,7 +450,7 @@ class HistoryCompactionUser(HttpUser):
 class CheckpointErrorUser(HttpUser):
     """Resuming a thread_id that was never actually paused is the simplest
     reachable trigger for agent_checkpoint_issue_total{reason="checkpoint_lost"}
-    (app/agent/graph_hitl.py's _resumability_error_from_state). The thread has
+    (app/agent/graph/hitl.py's _resumability_error_from_state). The thread has
     to EXIST and be this caller's first: POST /chat/resume answers a thread the
     caller doesn't own — including one that doesn't exist — with a 404 before
     the request ever reaches a worker (conversation ownership,

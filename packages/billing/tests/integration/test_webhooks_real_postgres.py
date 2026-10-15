@@ -392,7 +392,7 @@ class TestARefund:
         assert outcomes == ["applied"]
         balance = await world.balance()
         assert (balance.available, balance.debt) == (D("-70.000000"), D("70.000000"))
-        # What the agent app's gate refuses on is exactly `available - holds > 0` being false (app/agent/budgets.py::_credit_check); the gate itself
+        # What the agent app's gate refuses on is exactly `available - holds > 0` being false (app/agent/cost/budgets.py::_credit_check); the gate itself
         # is the host's and is proven against this same wallet in the repo's tests/integration/test_credit_charge_real_postgres.py.
         assert balance.available <= 0, "usage is refused while the tenant is in debt: its available credits are not positive"
         assert metric_value(metrics.agent_credit_overdraft_total) == overdraft_before, "a refund after spend is the policy, not a wallet running dry"

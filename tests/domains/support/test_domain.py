@@ -8,14 +8,14 @@ show a mutating tool call pauses for human_approval and, once approved,
 actually runs.
 
 The compiled graph's `agent`/`retrieve_context`/etc. nodes are `async def`
-now (real LLM/Redis/Qdrant I/O — see app/agent/graph.py), so every
+now (real LLM/Redis/Qdrant I/O — see app/agent/graph/core.py), so every
 `g.invoke`/`g.get_state` below runs as `asyncio.run(g.ainvoke(...))`/
 `asyncio.run(g.aget_state(...))` instead — LangGraph's sync Pregel loop
 can't run an async-only node at all. Each call gets its own `asyncio.run`
 rather than one shared event loop across a test, which is fine here since
 this domain's graphs use the default in-memory MemorySaver (no event-loop-
 bound state — contrast with `AsyncPostgresSaver`'s per-instance
-`asyncio.Lock`, see app/agent/runtime.py's module docstring).
+`asyncio.Lock`, see app/agent/runtime/core.py's module docstring).
 """
 from contextlib import asynccontextmanager
 
@@ -23,8 +23,8 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from app.agent.graph import GraphDeps
-from app.agent.graph_build import build_graph
+from app.agent.graph.build import build_graph
+from app.agent.graph.core import GraphDeps
 from app.domains.support import store
 from app.domains.support.domain import SUPPORT_DOMAIN_PLUGIN, SUPPORT_MANIFEST
 from tests.conftest import TEST_CTX
@@ -128,13 +128,13 @@ class TestSandboxing:
 
 class TestDomainScopedSubagent:
     """run_subagent is present, but it's this domain's OWN closure-built
-    tool (app.agent.subagent_domain_tools.make_domain_subagent_tool), never Ecorp's literal
+    tool (app.agent.tools.run_subagent_domain.make_domain_subagent_tool), never Ecorp's literal
     module-level object — and its menu offers only the bundled subagent(s)
     declared `domains: [support]` (subagents/ticket-researcher/AGENT.md),
     never Ecorp's own `researcher`."""
 
     def test_is_not_the_ecorp_level_run_subagent_object(self):
-        from app.agent.subagent_tools import run_subagent as ecorp_run_subagent
+        from app.agent.tools.run_subagent import run_subagent as ecorp_run_subagent
 
         g = _build()
         domain_run_subagent = g.nodes["tools"].bound.tools_by_name["run_subagent"]
@@ -148,7 +148,7 @@ class TestDomainScopedSubagent:
         assert enum_def["enum"] == ["ticket-researcher"]
 
     async def test_never_pauses_it_is_read_only(self, monkeypatch):
-        from app.agent import subagent_tools as agent_tools_module
+        from app.agent.tools import run_subagent as agent_tools_module
 
         async def fake_run_subagent_impl(*a, **k):
             return agent_tools_module.SubagentResult("found it", 0, 0.0)

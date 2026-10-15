@@ -265,7 +265,9 @@ async def _set_age_gauge(provider: str) -> None:
             "SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0) FROM billing_export_outbox WHERE provider = %s AND status = 'pending'",
             (provider,),
         )
-        (age,) = await cur.fetchone()
+        row = await cur.fetchone()
+    assert row is not None  # an aggregate always returns a row (COALESCE makes the age 0 when nothing is pending)
+    age = row[0]
     metrics.agent_usage_export_oldest_pending_age_seconds.labels(provider=provider).set(float(age))
 
 

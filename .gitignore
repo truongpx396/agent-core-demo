@@ -13,7 +13,7 @@ var/
 packages/*/build/
 packages/*/src/*.egg-info/
 
-# Node (promptfoo — see promptfoo/ and package.json)
+# Node (promptfoo only: package.json, its lock file and node_modules live in promptfoo/)
 node_modules/
 .promptfoo/
 promptfoo/prompts/

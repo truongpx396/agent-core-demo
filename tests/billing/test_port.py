@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent import budget_holds, budgets, spend, usage_events
+from app.agent.cost import budget_holds, budgets, spend, usage_events
 from app.api.routers import usage as usage_router
 from app.billing_integration import port as billing_port
 from app.core import metrics

@@ -21,10 +21,10 @@
 
 # Principles II and IV (approval gate, exactly-once side effects): capability tiers, the HITL
 # gate, idempotency, and the one place tenant-scoped SQL connections are pooled.
-/app/agent/tools.py                 @truongpx396
-/app/agent/tool_idempotency.py      @truongpx396
-/app/agent/graph_hitl.py            @truongpx396
-/app/agent/sql_store.py             @truongpx396
+/app/agent/tools/builtin.py         @truongpx396
+/app/core/tool_idempotency.py     @truongpx396
+/app/agent/graph/hitl.py            @truongpx396
+/app/core/sql_store.py             @truongpx396
 
 # Every domain's write tools and the SQL behind them (side-effect-tools checklist applies).
 /app/domains/*/tools.py             @truongpx396

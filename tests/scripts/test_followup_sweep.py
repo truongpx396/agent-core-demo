@@ -13,7 +13,7 @@ import asyncio
 
 import pytest
 
-from app.agent import gateway
+from app.core import gateway
 from scripts import followup_sweep
 
 
@@ -92,7 +92,7 @@ def test_run_followup_sweep_drafts_posts_and_marks_each_followup_done(monkeypatc
 
 def test_run_followup_sweep_tells_the_gateway_whose_call_it_is(monkeypatch):
     """Otherwise the gateway's spend log shows this cron's spend as an anonymous caller
-    (app/agent/gateway.py)."""
+    (app/core/gateway.py)."""
     due_items = [{"id": 1, "due_at": "2099-01-01", "note": "n", "contact": "a@example.com", "lead_name": "A"}]
 
     async def fake_due_followups(tenant, as_of):
@@ -171,7 +171,7 @@ def test_run_followup_sweep_records_usage_when_tokens_are_reported(monkeypatch, 
 
 def test_run_followup_sweep_records_the_priced_cost_of_each_draft(monkeypatch, usage_event_sink):
     """Spec 008 A2: same as the digest — the job prices its own model call."""
-    from app.agent import pricing
+    from app.agent.cost import pricing
     from app.core.config import CHAT_MODEL
 
     async def priced_fetch():

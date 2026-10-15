@@ -25,7 +25,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
-from app.agent import metering
+from app.agent.cost import metering
 from app.core.config import CHAT_MODEL, DEFAULT_TENANT, OPENAI_API_BASE, OPENAI_API_KEY
 from app.core.job_runtime import scheduled_job
 from app.core.security import SecurityCtx
@@ -76,7 +76,7 @@ async def run_followup_sweep(tenant: str = DEFAULT_TENANT, llm=None) -> list[str
     drafts = []
     for item in due:
         human_prompt = build_followup_prompt(item["lead_name"], item["contact"], item["note"])
-        # One metered call (app/agent/metering.py): identity, priced once, one usage event.
+        # One metered call (app/agent/cost/metering.py): identity, priced once, one usage event.
         call = await metering.metered_invoke(
             chat,
             [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)],

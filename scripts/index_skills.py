@@ -1,6 +1,6 @@
 """Embed the bundled skill catalog (name + description) into the `skills`
 Qdrant collection — the search index `skill_search` queries
-(app/agent/tools.py, GRAPH_PATTERNS.md pattern 45).
+(app/agent/tools/builtin.py, GRAPH_PATTERNS.md pattern 45).
 
 Run with `make index-skills` whenever a SKILL.md is added/edited/removed.
 
@@ -8,12 +8,12 @@ Mirrors scripts/seed.py's shape: `ensure_collection` is destructive
 (recreates the collection), so it's called explicitly, once. Unlike
 seed.py, skips the chunking pipeline — a skill's searchable text is just
 its `name: description` summary; the full instruction body is never
-written to Qdrant (disk stays the source of truth; see app/agent/skills.py).
+written to Qdrant (disk stays the source of truth; see app/agent/tools/skill_catalog.py).
 """
 import asyncio
 import uuid
 
-from app.agent import skills as skills_module
+from app.agent.tools import skill_catalog as skills_module
 from app.core.config import SKILLS_COLLECTION
 from app.retrieval import qdrant_store
 from app.retrieval.embeddings import embed_sparse, embed_text
@@ -38,7 +38,7 @@ async def main() -> None:
             text = f"{record.name}: {record.description}"
             try:
                 sparse = embed_sparse(text)
-            except Exception:  # noqa: BLE001 - degrade to dense-only, same as tools.py's write paths
+            except Exception:  # noqa: BLE001 - degrade to dense-only, same as app/agent/tools/builtin.py's write paths
                 sparse = None
             points.append(
                 qdrant_store.build_point(

@@ -14,7 +14,7 @@ Historical gotcha: sandbox-creation calls 405'd, root-caused to
 `docker-compose.yml`'s `open-webui` — requests silently landed on
 open-webui instead. Fixed via port 8090 + real `--api-key` auth.
 
-## Why a real code-execution tool, unlike app/agent/tools.py::calculator
+## Why a real code-execution tool, unlike app/agent/tools/builtin.py::calculator
 `calculator` is a narrow AST evaluator specifically because this app has
 nowhere safe to run arbitrary code. OpenSandbox changes that: an isolated,
 disposable container is a real security boundary. Wired into the ops
@@ -28,7 +28,7 @@ even with no `opensandbox-server` running (only actually calling a tool
 needs the backend reachable). Its one caller,
 `sandbox_session.py::load_raw_sandbox_tools`, calls it lazily and caches
 it there. Must degrade, never crash, if opensandbox-mcp is missing or the
-bridge hangs: wrapped in `_arun_with_timeout`, all exceptions caught,
+bridge hangs: wrapped in `arun_with_timeout`, all exceptions caught,
 degrading to `([], {})` with a logged warning.
 
 A connection-shaped failure (`ConnectionError`/`TimeoutError` — a bridge
@@ -57,9 +57,9 @@ from pathlib import Path
 
 from langchain_core.tools import BaseTool
 
-from app.agent.tools import _arun_with_timeout
 from app.core.config import OPENSANDBOX_API_KEY, OPENSANDBOX_MCP_DOMAIN
 from app.core.resilience import CircuitBreaker
+from app.core.tool_runtime import arun_with_timeout
 from app.mcp import client as mcp_client
 
 logger = logging.getLogger(__name__)
@@ -95,7 +95,7 @@ async def load_sandbox_tools() -> tuple[list[BaseTool], dict[str, str]]:
     dispatching to a worker thread and blocking that loop.
     """
     async def _attempt():
-        return await _arun_with_timeout(
+        return await arun_with_timeout(
             mcp_client.load_remote_tools,
             command=sys.executable,
             args=[

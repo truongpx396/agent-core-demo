@@ -413,7 +413,7 @@ groups:
         annotations:
           summary: "The tool-call idempotency store is degraded"
           description: >-
-            agent_tool_dedup_degraded_total increased — app/agent/tool_idempotency.py
+            agent_tool_dedup_degraded_total increased — app/core/tool_idempotency.py
             couldn't reach its dedup store and ran a mutating/outward tool
             call unprotected instead. A crash-recovery replay landing in
             this exact window could duplicate a real side effect

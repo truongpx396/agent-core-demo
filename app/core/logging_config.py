@@ -46,7 +46,7 @@ def bind_request_id(request_id: str) -> Iterator[None]:
     ingest_worker.py::process_job, app/api/main.py's in-process endpoints —
     `thread_id` doubles as the id for non-queued turns). Every log line
     emitted anywhere during the wrapped block — including deep inside
-    graph.py/tools.py, which have no idea this id exists — carries it, via
+    app/agent/graph/core.py/tools.py, which have no idea this id exists — carries it, via
     `_add_request_id` below. Reset on exit so a worker's next turn on the
     same asyncio task doesn't inherit a stale id.
     """

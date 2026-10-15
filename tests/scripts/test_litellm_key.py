@@ -10,7 +10,7 @@ import json
 import httpx
 import pytest
 
-from app.agent import gateway
+from app.core import gateway
 from scripts import litellm_key
 
 MASTER = "sk-master-SECRET"

@@ -76,7 +76,7 @@ CRAWL_TIMEOUT_SECONDS = 30  # headless-browser render is slower than a bare
 
 CRAWL_TOOL_TIMEOUT_SECONDS = CRAWL_TIMEOUT_SECONDS + 10  # the
 # `_timeout_seconds` every domain tool passes to
-# app/agent/tools.py::_run_with_timeout — larger than CRAWL_TIMEOUT_SECONDS
+# app/core/tool_runtime.py::run_with_timeout — larger than CRAWL_TIMEOUT_SECONDS
 # so crawl4ai's own page_timeout fires first, giving a clean CrawlFailed
 # message instead of the outer wrapper's blunter cutoff.
 
@@ -89,7 +89,7 @@ class CrawlFailed(Exception):
     """A URL that passed the SSRF guard but couldn't be rendered
     (navigation error, timeout, no content, server unreachable/
     unauthorized) — expected and caller-facing, not a bug. Propagates up
-    like any other exception (`graph.py`'s handle_tool_errors turns it into
+    like any other exception (`app/agent/graph/core.py`'s handle_tool_errors turns it into
     a ToolMessage) — no domain tool catches it itself."""
 
 

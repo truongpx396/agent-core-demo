@@ -238,24 +238,26 @@ eval:  ## Run the golden-dataset evaluation against the real stack (needs `make 
 	python -m scripts.eval
 
 promptfoo:  ## Prompt-level regression checks for the domain system prompts against a real Ollama (needs `make up` or a native Ollama with CHAT_MODEL pulled)
-	npm install --include=optional
+	cd promptfoo && npm install --include=optional
 	python -m promptfoo.dump_prompts
-	for domain in support ops sales; do \
-		npx promptfoo eval --config promptfoo/$$domain.yaml || exit 1; \
+	cd promptfoo && for domain in support ops sales; do \
+		npx promptfoo eval --config $$domain.yaml || exit 1; \
 	done
 
 promptfoo-redteam:  ## Adversarial variants of the support/sales/ops prompts (prompt injection, policy violations, sandbox misuse) against the real local target, generated+graded by Gemini 3.1 Flash-Lite (needs GOOGLE_API_KEY, see .env.example) — see promptfoo/redteam.yaml's own comments for why redteam.provider is the one deliberate exception to this project's offline commitment
-	npm install --include=optional
+	cd promptfoo && npm install --include=optional
 	python -m promptfoo.dump_prompts
 	# `--max-concurrency 1 --delay 2100`: keeps every domain's redteam.provider
 	# calls serial with >2s between them, safely under the free Gemini tier's
 	# 30 req/min this was built against (see redteam.yaml's own RATE LIMIT
 	# paragraph) — raise only alongside a paid tier/higher quota.
+	# Every promptfoo command runs from inside promptfoo/, where package.json and node_modules live
+	# (so the repo root stays Python-only); --config and --output are therefore relative to that directory.
 	# `redteam run`'s generated+graded test suite is written to `-o`/
 	# `--output`, which DEFAULTS to a HARDCODED `redteam.yaml` in the
 	# --config file's own DIRECTORY — not to the --config file itself,
 	# regardless of what it's named (confirmed directly in promptfoo's own
-	# installed source, node_modules/promptfoo/dist/src/main.js:
+	# installed source, promptfoo/node_modules/promptfoo/dist/src/main.js:
 	# `redteamPath = path.join(configDir, "redteam.yaml")`). Copying each
 	# domain's config to its own scratch file first does NOT protect the
 	# hand-authored sources on its own — every scratch file already lives in
@@ -281,11 +283,11 @@ promptfoo-redteam:  ## Adversarial variants of the support/sales/ops prompts (pr
 	# a bug in this target, it's the entire point of running it — so `-`
 	# tells `make` to keep going to the next domain regardless.
 	-cp promptfoo/redteam.yaml promptfoo/.support-redteam-run-scratch.yaml
-	-PROMPTFOO_DISABLE_REMOTE_GENERATION=true npx promptfoo redteam run --config promptfoo/.support-redteam-run-scratch.yaml --output promptfoo/.support-redteam-run-scratch.yaml --max-concurrency 1 --delay 2100
+	-cd promptfoo && PROMPTFOO_DISABLE_REMOTE_GENERATION=true npx promptfoo redteam run --config .support-redteam-run-scratch.yaml --output .support-redteam-run-scratch.yaml --max-concurrency 1 --delay 2100
 	-cp promptfoo/sales-redteam.yaml promptfoo/.sales-redteam-run-scratch.yaml
-	-PROMPTFOO_DISABLE_REMOTE_GENERATION=true npx promptfoo redteam run --config promptfoo/.sales-redteam-run-scratch.yaml --output promptfoo/.sales-redteam-run-scratch.yaml --max-concurrency 1 --delay 2100
+	-cd promptfoo && PROMPTFOO_DISABLE_REMOTE_GENERATION=true npx promptfoo redteam run --config .sales-redteam-run-scratch.yaml --output .sales-redteam-run-scratch.yaml --max-concurrency 1 --delay 2100
 	-cp promptfoo/ops-redteam.yaml promptfoo/.ops-redteam-run-scratch.yaml
-	-PROMPTFOO_DISABLE_REMOTE_GENERATION=true npx promptfoo redteam run --config promptfoo/.ops-redteam-run-scratch.yaml --output promptfoo/.ops-redteam-run-scratch.yaml --max-concurrency 1 --delay 2100
+	-cd promptfoo && PROMPTFOO_DISABLE_REMOTE_GENERATION=true npx promptfoo redteam run --config .ops-redteam-run-scratch.yaml --output .ops-redteam-run-scratch.yaml --max-concurrency 1 --delay 2100
 
 deepeval:  ## LLM-judged RAG quality (tests/deepeval/test_rag_quality_deepeval.py) + a multi-turn conversation simulation (test_conversation_simulator_deepeval.py) + tool-call trajectory correctness (test_tool_correctness_deepeval.py) against the real graph — needs Docker + GOOGLE_API_KEY (RAG quality/tool correctness, tests/deepeval/conftest.py's deepeval_judge fixture) + GROQ_API_KEY (conversation simulation only — Gemini's response_schema can't grade its KnowledgeRetentionMetric, see deepeval_conversation_judge); read the printed reasons by hand, don't trust pass/fail alone (see those files' own disclosed judge-reliability findings, GRAPH_PATTERNS.md pattern 48). Same command CI's own `deepeval` job runs; every file's test cases are `flaky=True` there so a bad score can't fail the build.
 	DEEPEVAL_TELEMETRY_OPT_OUT=1 pytest -m deepeval -q -s --reruns 2 --reruns-delay 10 --only-rerun "(ServerError|UNAVAILABLE|RESOURCE_EXHAUSTED|DEADLINE_EXCEEDED|RateLimitError|APITimeoutError|APIConnectionError|InternalServerError)" tests/deepeval
@@ -317,7 +319,7 @@ trivy:  ## Scan dependencies/Dockerfile+compose/secrets for known vulns (aquasec
 	docker run --rm -v $(PWD):/repo aquasec/trivy:0.74.0 fs \
 		--scanners vuln,secret,misconfig --severity HIGH,CRITICAL --ignore-unfixed \
 		--file-patterns 'pip:requirements-lock\.txt$$' \
-		--skip-dirs .venv,node_modules,.git,.mypy_cache,.ruff_cache,.pytest_cache,infra/terraform /repo
+		--skip-dirs .venv,**/node_modules,.git,.mypy_cache,.ruff_cache,.pytest_cache,infra/terraform /repo
 
 trivy-image:  ## Build the app image (see Dockerfile) and scan it for OS/library vulnerabilities
 	docker build -t agent-core-demo:trivy .

@@ -1,5 +1,5 @@
 """Operator CLI for per-tenant and per-person spend-limit overrides
-(app/agent/budget_policies.py, postgres-init/18-budget-policies.sql).
+(app/agent/cost/budget_policies.py, postgres-init/18-budget-policies.sql).
 
 The four spend limits are Settings defaults that apply to everyone. This changes one
 tenant's, or one person's, without a redeploy:
@@ -30,14 +30,14 @@ import argparse
 import asyncio
 import sys
 
-from app.agent import budget_policies, budgets
-from app.agent.sql_store import close_pool
+from app.agent.cost import budget_policies, budgets
 from app.core.config import (
     MAX_COST_USD_PER_PRINCIPAL_PER_DAY,
     MAX_COST_USD_PER_PRINCIPAL_PER_MONTH,
     MAX_COST_USD_PER_TENANT_PER_DAY,
     MAX_COST_USD_PER_TENANT_PER_MONTH,
 )
+from app.core.sql_store import close_pool
 
 
 def _parse_limit(text: str) -> float | None:

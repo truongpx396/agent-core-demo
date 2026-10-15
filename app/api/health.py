@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable
 import httpx
 import psycopg
 
-from app.agent import sql_store
+from app.core import sql_store
 from app.core.config import CHECKPOINTER_DATABASE_URL, ML_SERVICE_URL
 from app.job_queue import queue
 from app.retrieval import qdrant_store
@@ -34,7 +34,7 @@ async def _check_appdata_postgres() -> None:
 
 async def _check_checkpointer_postgres() -> None:
     # A separate, throwaway connection — not the graph's own AsyncPostgresSaver
-    # (app/agent/runtime.py), which may not be open on THIS event loop yet
+    # (app/agent/runtime/core.py), which may not be open on THIS event loop yet
     # (it's bound to whichever loop calls it). Readiness only cares whether
     # the database itself is reachable, not whether the singleton is initialized.
     async with await psycopg.AsyncConnection.connect(
@@ -54,7 +54,7 @@ async def _check_redis() -> None:
 async def _check_ml_service() -> None:
     # Its consumers already degrade rather than fail the turn when this is
     # down (qdrant_store.py::hybrid_search falls back to RRF-fused order,
-    # moderation.py::screen falls back to pattern-only) — still worth
+    # app/core/moderation.py::screen falls back to pattern-only) — still worth
     # surfacing here rather than silently absorbed.
     async with httpx.AsyncClient(timeout=_CHECK_TIMEOUT_SECONDS) as client:
         resp = await client.get(f"{ML_SERVICE_URL}/health")

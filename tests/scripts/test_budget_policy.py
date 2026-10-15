@@ -3,7 +3,7 @@ these prove argument handling and what is asked of them (and that a mistake is r
 anything is written); tests/integration/test_budget_policies_real_postgres.py runs it for real."""
 import pytest
 
-from app.agent import budget_policies
+from app.agent.cost import budget_policies
 from scripts import budget_policy
 
 

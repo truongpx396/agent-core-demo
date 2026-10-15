@@ -1,6 +1,6 @@
 """One-time carry-over of the usage ledger's history into the usage events (specs/010 T030).
 
-The dollar caps and `GET /usage` sum `usage_events` (`app/agent/spend.py`, specs/010 T030b), and that table only has rows from the day
+The dollar caps and `GET /usage` sum `usage_events` (`app/agent/cost/spend.py`, specs/010 T030b), and that table only has rows from the day
 postgres-init/19 was applied. Without this, a monthly cap would forget everything spent earlier in the month and `/usage` would report a
 fraction of the all-time total. This copies each `usage_ledger` row recorded BEFORE the first real event into `usage_events`, one row
 each, so the sum is whole from the first day the ledger has. It was merged BEFORE the change that reads the events, so it could be run,
@@ -45,8 +45,8 @@ from decimal import Decimal
 
 from psycopg import errors as pg_errors
 
-from app.agent.sql_store import get_connection
 from app.core.job_runtime import scheduled_job
+from app.core.sql_store import get_connection
 
 logger = logging.getLogger(__name__)
 

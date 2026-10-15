@@ -1,4 +1,4 @@
-"""The agent's meter and billing, end to end against a REAL Postgres (app/agent/usage_events.py -> app/billing_integration/port.py -> the billing
+"""The agent's meter and billing, end to end against a REAL Postgres (app/agent/cost/usage_events.py -> app/billing_integration/port.py -> the billing
 package; postgres-init/19, 20, 24, 25; specs/013-billing-owns-the-meter).
 
 What billing DOES with a recorded usage (rating, the atomic debit, the savepoints, the export row, the schema's guards) is proven against a real
@@ -20,8 +20,8 @@ from decimal import Decimal
 import psycopg
 import pytest
 
-from app.agent import budget_holds, budgets, usage_events
-from app.agent.pricing import ModelPrice, PricedCall
+from app.agent.cost import budget_holds, budgets, usage_events
+from app.agent.cost.pricing import ModelPrice, PricedCall
 from app.billing_integration import port as billing_port
 from app.core import metrics
 from credit_billing import admission, credits, usage

@@ -9,7 +9,7 @@ used to live here beside the agent's `usage_events` is in the package, and what 
   * `http.py`, the package's webhook route as the app mounts it.
 
 **The wiring.** Importing this package tells the core where database connections come from: the agent's single
-pool, `app.agent.sql_store.get_connection`. Every host module that imports `credit_billing` also imports this
+pool, `app.core.sql_store.get_connection`. Every host module that imports `credit_billing` also imports this
 package (tests/billing/test_billing_core_boundary.py scans for a miss), so no entry point (the API, a queue
 worker, the chat CLI, a cron script) can reach the core unwired. The core refuses to run unwired
 (`BillingNotConfigured`), so a miss is a loud failure, not a silent default.
@@ -19,7 +19,7 @@ because `configure_telemetry` is call-once and installs a network exporter. `con
 reference. It opens nothing, connects to nothing and may be called any number of times, so there is nothing to
 race and nothing to leak.
 """
-from app.agent import sql_store
+from app.core import sql_store
 from credit_billing import db as billing_db
 
 billing_db.configure(connection=sql_store.get_connection)

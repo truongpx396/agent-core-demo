@@ -5,7 +5,7 @@ ONNX models. Currently two:
     `rerank`.
   - POST /prompt-guard: prompt-injection/jailbreak classification (Meta's
     Llama Prompt Guard 2, 22M, via gravitee-io's ONNX port) — the ML layer
-    of app/agent/moderation.py's input screening.
+    of app/core/moderation.py's input screening.
 
 Both share ONE hand-rolled async micro-batching queue design (_MicroBatcher
 below) so concurrent calls from DIFFERENT callers get coalesced into fewer,

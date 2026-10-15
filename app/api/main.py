@@ -60,11 +60,11 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.agent import sql_store
-from app.agent.runtime import close_checkpointer_pool, init_graph_async
+from app.agent.runtime.core import close_checkpointer_pool, init_graph_async
 from app.api.rate_limit import TenantRateLimitMiddleware
 from app.api.routers import chat, ingest, system, usage
 from app.billing_integration import http as billing_http
+from app.core import sql_store
 from app.core.config import (
     CORS_ALLOWED_ORIGINS,
 )
@@ -83,7 +83,7 @@ async def lifespan(app: FastAPI):
     # startup, not lazily on first request — GET /chat/sessions/{thread_id}/
     # messages also reads it via get_session_messages, and it must be bound
     # to THIS loop or that call hits "bound to a different event loop" (see
-    # app/agent/runtime.py).
+    # app/agent/runtime/core.py).
     #
     # configure_telemetry() belongs here, not at module level like
     # configure_logging() above: OTel's set_meter_provider is call-once, so
@@ -97,7 +97,7 @@ async def lifespan(app: FastAPI):
     await init_graph_async()
     yield
     # Closes the Postgres pool's background worker threads cleanly
-    # (sql_store.py, pattern 31) — skipping this leaves them running at exit
+    # (core/sql_store.py, pattern 31) — skipping this leaves them running at exit
     # with a "couldn't stop thread" warning. No-op if the pool was never opened.
     await sql_store.close_pool()
     # Same reasoning for the checkpointer's pool — init_graph_async() above

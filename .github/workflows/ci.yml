@@ -379,12 +379,15 @@ jobs:
       # plain `npm install` alone still failed the same way on this repo's
       # dependency tree) — see
       # https://www.promptfoo.dev/docs/usage/troubleshooting/#libsql-binding-not-found.
+      # package.json, its lock file and node_modules live in promptfoo/, so the Node steps run from there.
       - run: npm install --include=optional
+        working-directory: promptfoo
       - run: python -m promptfoo.dump_prompts
       - run: |
           for domain in support ops sales; do
-            npx promptfoo eval --config promptfoo/$domain.yaml
+            npx promptfoo eval --config $domain.yaml
           done
+        working-directory: promptfoo
         env:
           PROMPTFOO_MODEL: qwen2.5:1.5b
       # Not actions/cache's own post-job save: that one cannot read the root-owned files the Ollama
@@ -420,7 +423,7 @@ jobs:
     # uses for its own Ollama fixture, minus the Postgres/Redis/crawl4ai
     # services those tests need but these don't (`build_graph()` with no
     # `checkpointer` argument — both files' own construction — defaults to
-    # an in-memory `MemorySaver`, see app/agent/graph_build.py).
+    # an in-memory `MemorySaver`, see app/agent/graph/build.py).
     #
     # `DEEPEVAL_MODEL` stays `qwen2.5:3b` here, NOT `TEST_LLM_MODEL`'s
     # CI-speed `1.5b` — this is `make deepeval`'s own local default (see
@@ -594,7 +597,7 @@ jobs:
       # not a style preference: without a path argument, `-m deepeval`
       # still COLLECTS (imports) every file under `testpaths = ["tests"]`
       # before filtering by marker, and `tests/api/test_api.py`/
-      # `test_health.py`/`test_rate_limit.py`/`tests/agent/test_multimodal.py`
+      # `test_health.py`/`test_rate_limit.py`/`tests/agent/graph/test_multimodal.py`
       # import `app.api.main` at module level — which calls
       # `configure_logging()` UNCONDITIONALLY at import time (unlike
       # `app/job_queue/agent_worker.py`'s/`app/channels/telegram.py`'s own
@@ -606,7 +609,7 @@ jobs:
       # app.api.main` alone in a fresh interpreter flips
       # `logging.getLogger().handlers` from `[]` to a live handler and the
       # level from WARNING to INFO, with zero such effect from importing
-      # only `app.agent.graph_build`/`app.ingestion.web_crawler`/
+      # only `app.agent.graph.build`/`app.ingestion.web_crawler`/
       # `tests.conftest` (everything the deepeval tests themselves actually
       # need). With `-s` disabling capture, every one of this app's own
       # per-node `logger.info(...)` calls (and the `openai` SDK's own
@@ -703,7 +706,8 @@ jobs:
           import os
           import sys
 
-          from app.agent import skills, subagents
+          from app.agent.tools import skill_catalog as skills
+          from app.agent.tools import subagent_catalog as subagents
           from app.domains import sandbox_tools
 
           problems = []
@@ -775,7 +779,7 @@ jobs:
           severity: CRITICAL
           ignore-unfixed: true
           exit-code: "1"
-          skip-dirs: .venv,node_modules,.mypy_cache,.ruff_cache,.pytest_cache,infra/terraform
+          skip-dirs: .venv,**/node_modules,.mypy_cache,.ruff_cache,.pytest_cache,infra/terraform
 
       - name: Trivy fs — full report (HIGH+CRITICAL, incl. unfixed) → SARIF
         if: always()
@@ -790,7 +794,7 @@ jobs:
           format: sarif
           output: trivy-fs-results.sarif
           exit-code: "0"
-          skip-dirs: .venv,node_modules,.mypy_cache,.ruff_cache,.pytest_cache,infra/terraform
+          skip-dirs: .venv,**/node_modules,.mypy_cache,.ruff_cache,.pytest_cache,infra/terraform
           skip-setup-trivy: true
 
       - name: Upload fs report to the Security tab

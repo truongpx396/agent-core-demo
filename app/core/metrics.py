@@ -16,9 +16,9 @@ telemetry.py, matched by instrument name.
 
 Two ways these get incremented: tool calls/errors via
 `MetricsCallbackHandler` (wired into `config["callbacks"]` like the
-Langfuse handler, so it needs no instrumentation inside graph.py's nodes);
-everything else incremented directly at the point it happens in graph.py's
-nodes / runtime.py's turn boundary, since those events can fire more than
+Langfuse handler, so it needs no instrumentation inside app/agent/graph/core.py's nodes);
+everything else incremented directly at the point it happens in app/agent/graph/core.py's
+nodes / app/agent/runtime/core.py's turn boundary, since those events can fire more than
 once per turn or need the final state dict — awkward to reconstruct from
 generic callback events.
 """
@@ -261,7 +261,7 @@ agent_system_prompt_leak_total = Counter(
     "agent_system_prompt_leak_total",
     "Final answers containing a long, verbatim run of the seeded system "
     "prompt's own text (check_output's _leaks_system_prompt) — output-side "
-    "defense-in-depth alongside app/agent/moderation.py's input-side "
+    "defense-in-depth alongside app/core/moderation.py's input-side "
     "screening: an injection phrased in a way moderation's known-pattern "
     "regexes don't catch can still be caught here if it actually succeeds "
     "in getting the model to recite its instructions back. Acted on by "
@@ -290,14 +290,14 @@ agent_tool_budget_exceeded_total = Counter(
 agent_invalid_tool_call_total = Counter(
     "agent_invalid_tool_call_total",
     "Turns where the LLM emitted a tool_call whose name isn't a real registered tool "
-    "(app/agent/graph_tools.py's invalid_tool_call node) — a model output-quality issue, not dispatched "
+    "(app/agent/graph/tool_guards.py's invalid_tool_call node) — a model output-quality issue, not dispatched "
     "or surfaced to human_approval",
 )
 
 agent_use_skill_without_search_total = Counter(
     "agent_use_skill_without_search_total",
     "Turns where the LLM called use_skill without ever calling skill_search "
-    "first in the same turn (app/agent/graph_skills.py's use_skill_without_search "
+    "first in the same turn (app/agent/graph/skill_guards.py's use_skill_without_search "
     "node, see _use_skill_called_without_search) — rejected and looped back "
     "to agent instead of dispatched, so a fabricated skill name never gets "
     "as far as a 'not found' failure the model might narrate into the final "
@@ -379,7 +379,7 @@ agent_ingest_refused_total = Counter(
 
 agent_moderation_total = Counter(
     "agent_moderation_total",
-    "Input moderation screens by outcome (app/agent/moderation.py)",
+    "Input moderation screens by outcome (app/core/moderation.py)",
     ["outcome"],
 )  # outcome: allowed | blocked_injection | blocked_denylist | blocked_ml_injection |
 # error (degraded — treated as allowed)
@@ -403,7 +403,7 @@ agent_worker_job_reclaimed_total = Counter(
 
 agent_tool_dedup_degraded_total = Counter(
     "agent_tool_dedup_degraded_total",
-    "Mutating/outward tool calls where app/agent/tool_idempotency.py::idempotent "
+    "Mutating/outward tool calls where app/core/tool_idempotency.py::idempotent "
     "couldn't reach its own dedup store (a connection failure, or a failure "
     "to persist the result after a successful call) and fell back to "
     "running the tool unprotected instead — same degrade-don't-fail-the-turn "
@@ -414,7 +414,7 @@ agent_tool_dedup_degraded_total = Counter(
 
 agent_moderation_ml_degraded_total = Counter(
     "agent_moderation_ml_degraded_total",
-    "Turns where the ML injection-classifier layer (app/agent/moderation.py's "
+    "Turns where the ML injection-classifier layer (app/core/moderation.py's "
     "call to ml-service's /prompt-guard) couldn't be reached and the turn "
     "proceeded on the pattern-based layer's result alone — same "
     "degrade-don't-fail-the-turn posture as agent_retrieval_degraded_total, "
@@ -425,30 +425,30 @@ agent_moderation_ml_degraded_total = Counter(
 
 agent_memory_deletion_total = Counter(
     "agent_memory_deletion_total",
-    "Memory deletion calls by outcome (app/agent/memory.py)",
+    "Memory deletion calls by outcome (app/retrieval/memory.py)",
     ["outcome"],
-)  # outcome: deleted | refused — never carries tenant/principal (see app/agent/memory.py's
+)  # outcome: deleted | refused — never carries tenant/principal (see app/retrieval/memory.py's
 # structured log line for the identified, per-call audit trail instead)
 
 agent_no_progress_total = Counter(
     "agent_no_progress_total",
     "Turns ended early for repeating an identical tool-call batch "
-    "MAX_REPEATED_ACTIONS times in a row (app/agent/graph_routing.py::should_continue)",
+    "MAX_REPEATED_ACTIONS times in a row (app/agent/graph/routing.py::should_continue)",
 )
 
 agent_cost_ceiling_exceeded_total = Counter(
     "agent_cost_ceiling_exceeded_total",
-    "Turns ended early for exceeding MAX_COST_USD_PER_TURN (app/agent/graph_routing.py::should_continue)",
+    "Turns ended early for exceeding MAX_COST_USD_PER_TURN (app/agent/graph/routing.py::should_continue)",
 )
 
 agent_cancellation_total = Counter(
     "agent_cancellation_total",
-    "Paused runs cancelled via app/agent/runtime_stream.py::cancel_run (GRAPH_PATTERNS.md pattern 36)",
+    "Paused runs cancelled via app/agent/runtime/stream.py::cancel_run (GRAPH_PATTERNS.md pattern 36)",
 )
 
 agent_streaming_cancellation_total = Counter(
     "agent_streaming_cancellation_total",
-    "Actively-streaming (not paused) turns stopped via app/agent/runtime.py's cancel_check "
+    "Actively-streaming (not paused) turns stopped via app/agent/runtime/core.py's cancel_check "
     "mechanism — the POST /chat/cancel queued-path counterpart to agent_cancellation_total, "
     "for a turn that wasn't paused at human_approval when the stop was requested",
 )
@@ -457,7 +457,7 @@ agent_context_window_exceeded_total = Counter(
     "agent_context_window_exceeded_total",
     "Turns ended at the context_window_exceeded terminal node: the cumulative "
     "history_summary stayed over MAX_HISTORY_SUMMARY_CHARS even after "
-    "compact_history just updated it (app/agent/graph.py::route_after_compaction, "
+    "compact_history just updated it (app/agent/graph/core.py::route_after_compaction, "
     "GRAPH_PATTERNS.md pattern 41)",
 )
 
@@ -469,7 +469,7 @@ agent_rate_limit_exceeded_total = Counter(
 agent_budget_exceeded_total = Counter(
     "agent_budget_exceeded_total",
     "Turns refused before starting because a spend limit was already used up "
-    "(app/agent/budgets.py::check_allowance); only the limit that refused is counted. "
+    "(app/agent/cost/budgets.py::check_allowance); only the limit that refused is counted. "
     "Replaces agent_tenant_budget_exceeded_total, which could not say whose limit it was.",
     ["scope", "window"],
 )  # scope: tenant | principal ; window: day | month
@@ -485,13 +485,13 @@ agent_budget_threshold_total = Counter(
 agent_gateway_budget_exceeded_total = Counter(
     "agent_gateway_budget_exceeded_total",
     "LLM calls the gateway refused because the app's key reached its max_budget "
-    "(app/agent/gateway.py). The gateway is the BACKSTOP: this firing means the app-level "
+    "(app/core/gateway.py). The gateway is the BACKSTOP: this firing means the app-level "
     "ceilings did not stop the spend first, or the backstop is sized too low.",
 )
 
 agent_unpriced_usage_total = Counter(
     "agent_unpriced_usage_total",
-    "LLM calls that spent tokens on a model with no known price (app/agent/pricing.py) — "
+    "LLM calls that spent tokens on a model with no known price (app/agent/cost/pricing.py) — "
     "every dollar ceiling reads $0 for that spend, so this must stay at zero in production",
     ["model_alias"],
 )
@@ -518,7 +518,7 @@ agent_cost_governance_degraded_total = Counter(
     "(spec 008 A1)",
     ["path"],
 )  # path: price_lookup | ledger_read | policy_read | reservation | model_resolve
-# | usage_event_write | usage_event_table_missing | usage_event_identity | usage_missing (app/agent/usage_events.py)
+# | usage_event_write | usage_event_table_missing | usage_event_identity | usage_missing (app/agent/cost/usage_events.py)
 # (the billing package counts its own paths on its own instrument of this name: credit_billing/metrics.py)
 
 agent_upload_rejected_total = Counter(
@@ -548,7 +548,7 @@ agent_worker_unreachable_total = Counter(
 
 agent_subagent_run_total = Counter(
     "agent_subagent_run_total",
-    "run_subagent calls (app/agent/tools.py, GRAPH_PATTERNS.md pattern 46) by "
+    "run_subagent calls (app/agent/tools/builtin.py, GRAPH_PATTERNS.md pattern 46) by "
     "subagent and outcome",
     ["subagent", "outcome"],
 )  # outcome: completed | budget_exceeded | timeout | error

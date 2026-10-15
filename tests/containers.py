@@ -1,12 +1,12 @@
 """Shared, Docker-backed real services for tests that need more than a fake
-— `tests/agent/test_durable_checkpoint.py` (real Postgres), `tests/integration/`
+— `tests/agent/runtime/test_durable_checkpoint.py` (real Postgres), `tests/integration/`
 (Postgres + Redis + Qdrant, no LLM), and `tests/live/` (adds a real, small
 Ollama model). See GRAPH_PATTERNS.md pattern 48 for the full design writeup;
 this module docstring covers the two mechanics every `ensure_*()` below
 depends on.
 
 **Skip, don't fail, when Docker isn't reachable.** Same UX
-`tests/agent/test_durable_checkpoint.py`'s original `_require_postgres` already
+`tests/agent/runtime/test_durable_checkpoint.py`'s original `_require_postgres` already
 established (a real connectivity probe, `pytest.skip` on failure) — the only
 change is these no longer need `make up` already running: each starts its
 own ephemeral container instead of probing an assumed-external one. A `pytest
@@ -313,7 +313,7 @@ def ensure_postgres() -> dict[str, str]:
 
 def _setup_checkpointer_schema_once(checkpointer_url: str) -> None:
     """Runs `AsyncPostgresSaver.setup()` — the same call
-    `app/agent/runtime.py::_open_checkpointer` makes on every real process
+    `app/agent/runtime/core.py::_open_checkpointer` makes on every real process
     startup, "idempotently, on every process including each
     independently-scaled agent_worker.py instance" per postgres-init/
     05-checkpointer-db.sql's own comment — exactly ONCE here, inside

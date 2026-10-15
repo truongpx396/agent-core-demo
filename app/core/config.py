@@ -27,7 +27,7 @@ load_dotenv()
 
 # A window something still reads must never lose spend: a monthly cap reads back 31 days, the reconciliation up to 35, the export
 # outbox gives up on an unsent event at 30. Retention below this would let the sweep delete spend that is still inside one
-# (app/agent/usage_events_retention.py::sweep_old_events).
+# (app/agent/cost/usage_events_retention.py::sweep_old_events).
 USAGE_EVENT_MIN_RETENTION_DAYS = 35
 
 
@@ -60,7 +60,7 @@ class Settings(BillingSettings):
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
 
-    # Durable checkpointer (app/agent/runtime.py) — survives a process restart.
+    # Durable checkpointer (app/agent/runtime/core.py) — survives a process restart.
     # Separate DB from the shared Postgres stack (own schema/lifecycle via
     # AsyncPostgresSaver.setup()); Postgres not SQLite because it's shared
     # across multiple processes (API + agent_worker.py replicas). Tests
@@ -85,14 +85,14 @@ class Settings(BillingSettings):
     # ~94% rejected under a 100-simultaneous burst, ~84s to sustain 100
     # requests, 2.26GiB idle. This service handles that burst with zero
     # rejections, ~14s sustainably, ~200-420MiB. Also hosts a second ONNX
-    # model (Llama Prompt Guard 2, moderation.py's ML injection layer) in
+    # model (Llama Prompt Guard 2, app/core/moderation.py's ML injection layer) in
     # the same container, hence the generic name — see
     # docker/ml-service/main.py for full reasoning and measured numbers.
     ml_service_url: str = "http://localhost:8083"
     hybrid_prefetch_limit: int = 20  # candidates pulled per leg (dense, sparse) before fusion
     rerank_top_k: int = 5            # final results returned after rerank
 
-    # Skill packages (app/agent/skills.py, pattern 45) — bundled SKILL.md
+    # Skill packages (app/agent/tools/skill_catalog.py, pattern 45) — bundled SKILL.md
     # files, a *procedural capability* shipped with the app, not tenant data.
     # `skills_dir` is disk truth for a skill's body (loaded by use_skill);
     # `skills_collection` is a SEPARATE Qdrant collection (never `collection`
@@ -111,14 +111,14 @@ class Settings(BillingSettings):
     # commits confidently instead of second-guessing a right answer.
     skills_search_top_k: int = 1
 
-    # Subagents (app/agent/subagents.py, pattern 46) — bundled AGENT.md files,
+    # Subagents (app/agent/tools/subagent_catalog.py, pattern 46) — bundled AGENT.md files,
     # each a scoped nested agent run `run_subagent` can delegate to.
     # `subagents_dir` is disk truth like `skills_dir`, but no separate Qdrant
     # collection — a subagent's description is embedded in run_subagent's
     # own tool schema.
     subagents_dir: str = "subagents"
 
-    # Structured-data tool (app/agent/sql_store.py) — a SEPARATE database in
+    # Structured-data tool (app/core/sql_store.py) — a SEPARATE database in
     # the same Postgres as LiteLLM/Langfuse, not sharing their schema.
     appdata_database_url: str = "postgresql://langfuse:langfuse@localhost:5432/appdata"
 
@@ -129,12 +129,12 @@ class Settings(BillingSettings):
     # be nearly identical in meaning to reuse a cached answer, not just topically close
     semantic_cache_ttl_seconds: int = 3600
 
-    # Cross-session memory retention (app/core/security.py, app/agent/memory.py)
+    # Cross-session memory retention (app/core/security.py, app/retrieval/memory.py)
     # — a memory older than this is invisible at RECALL time (Policy.lower),
     # not just eventually removed by delete_memories (pattern 33).
     memory_retention_days: int = 365
 
-    # Per-run cost ceiling (graph_routing.py::should_continue, pattern 35) —
+    # Per-run cost ceiling (graph/routing.py::should_continue, pattern 35) —
     # a HARD stop before the next tool/LLM call, independent of
     # MAX_TOKENS_PER_TURN (a token cap bounds work; a dollar cap bounds what
     # that work costs on the configured model tier). $0 for local Ollama
@@ -142,20 +142,20 @@ class Settings(BillingSettings):
     # real paid provider.
     max_cost_usd_per_turn: float = 0.50
 
-    # Per-run cost ceiling for a NESTED subagent run (tools.py::run_subagent,
+    # Per-run cost ceiling for a NESTED subagent run (app/agent/tools/run_subagent.py::run_subagent,
     # pattern 46) — smaller than max_cost_usd_per_turn above. A subagent's
     # spend is recorded to the ledger for audit but NOT folded back into the
     # parent turn's live total_cost_usd (disclosed gap, pattern 46), so this
     # is the only real enforcement on one subagent call's spend.
     max_subagent_cost_usd_per_run: float = 0.15
 
-    # Per-tenant ceiling across MANY turns (runtime.py's
+    # Per-tenant ceiling across MANY turns (app/agent/runtime/core.py's
     # budgets.check_tenant_daily), rolling 24h window against the usage events —
     # distinct from MAX_COST_USD_PER_TURN, which only sees one turn at a
     # time. Same "$0 on local Ollama" note applies.
     max_cost_usd_per_tenant_per_day: float = 20.0
 
-    # The other three spend limits (app/agent/budgets.py). All are OFF at 0, so a deployment that
+    # The other three spend limits (app/agent/cost/budgets.py). All are OFF at 0, so a deployment that
     # sets none of them behaves exactly as before and pays for none of their ledger reads.
     # `month` is the CALENDAR month in UTC (resets on the 1st, like an invoice); `day` is the
     # rolling 24h above. A person's limit applies to that person's spend inside their tenant,
@@ -167,20 +167,20 @@ class Settings(BillingSettings):
     max_cost_usd_per_principal_per_day: float = Field(default=0.0, ge=0)
     max_cost_usd_per_principal_per_month: float = Field(default=0.0, ge=0)
 
-    # How long a tenant's or person's limit overrides (app/agent/budget_policies.py) are cached
+    # How long a tenant's or person's limit overrides (app/agent/cost/budget_policies.py) are cached
     # per process. They are read before every turn, so this trades promptness for a database
     # round trip per turn: an override, including a SUSPEND, reaches a running worker within
     # this many seconds. 0 disables the cache (every turn reads the table).
     budget_policy_refresh_seconds: int = Field(default=30, ge=0)
 
-    # Model prices come from LiteLLM's `GET /model/info` (app/agent/pricing.py),
+    # Model prices come from LiteLLM's `GET /model/info` (app/agent/cost/pricing.py),
     # which merges its cost map with any `model_info` a deployment sets in the
     # LiteLLM config. A price is trusted for this long before it is read again,
     # so a change in the proxy's pricing is picked up without a restart.
     # Operational, like request_timeout_seconds: not a spend ceiling.
     pricing_refresh_seconds: int = 3600
 
-    # What the tenant allowance does when it cannot READ the ledger (app/agent/budgets.py).
+    # What the tenant allowance does when it cannot READ the ledger (app/agent/cost/budgets.py).
     # "open" serves the turn — a ledger outage must not also take every turn down — and
     # counts the failure (alert TenantAllowanceUnenforced), but it means every turn that hits
     # the failure ran with no daily cap. "closed" refuses the turn instead
@@ -189,7 +189,7 @@ class Settings(BillingSettings):
     # today's behaviour.
     budget_check_failure_policy: Literal["open", "closed"] = "open"
 
-    # Per-call usage events (app/agent/usage_events.py, postgres-init/19-usage-events.sql): the
+    # Per-call usage events (app/agent/cost/usage_events.py, postgres-init/19-usage-events.sql): the
     # meter of every model call, which is (specs/010 T030) the spend the dollar caps and GET /usage sum. It used to be an emergency kill switch; with the caps reading the same
     # rows, switching the writes off would make every cap read $0 and stop enforcing without a sound, so
     # `false` is refused at startup (`_usage_events_are_the_spend_the_caps_read`). The field remains so
@@ -197,7 +197,7 @@ class Settings(BillingSettings):
     # never fails a turn; it is counted and alerted (UsageEventWriteFailing).
     usage_events_enabled: bool = True
 
-    # Reconciliation of the meter with the LLM gateway (specs/010 PR 6, app/agent/usage_reconcile.py, `make usage-reconcile`): the app's events against the
+    # Reconciliation of the meter with the LLM gateway (specs/010 PR 6, app/agent/cost/usage_reconcile.py, `make usage-reconcile`): the app's events against the
     # gateway's spend log. A difference is drift only above the LARGER of the two tolerances: the fixed one stops a tenant that spent a cent
     # from being reported over rounding, the percentage stops a busy tenant's rounding (the gateway and the events round differently) from
     # being reported as a gap. SC-001's "stated tolerance". They were `CREDIT_RECONCILE_*` while the same job also checked the wallet; the wallet
@@ -253,7 +253,7 @@ class Settings(BillingSettings):
     # (Ollama) is NOT unpriced — LiteLLM reports it as a known $0.
     unpriced_model_policy: Literal["allow", "block"] = "allow"
 
-    # Outermost per-turn wall-clock bound (app/agent/runtime.py) — catches a
+    # Outermost per-turn wall-clock bound (app/agent/runtime/core.py) — catches a
     # turn stuck inside one slow LLM/tool call, which MAX_ITERATIONS/
     # RECURSION_LIMIT never see. Configurable (unlike the cost/token
     # ceilings, which are code-level constants bounding spend): it's a pure
@@ -262,7 +262,7 @@ class Settings(BillingSettings):
     # model's inference time on shared CI can exceed the 60s local default.
     request_timeout_seconds: int = 60
 
-    # Wall-clock cap on ONE nested subagent run (app/agent/subagent_tools.py,
+    # Wall-clock cap on ONE nested subagent run (app/agent/tools/run_subagent.py,
     # GRAPH_PATTERNS.md pattern 46) — same operational-timeout category as
     # request_timeout_seconds above, not a spend/safety ceiling, so it's
     # configurable the same way. Used to be a hardcoded module constant;
@@ -380,7 +380,7 @@ class Settings(BillingSettings):
     # `-np 1` ceiling vs a genuinely concurrent backend).
     agent_worker_max_concurrency: int = 10
 
-    # app/agent/runtime.py::_open_checkpointer's AsyncConnectionPool size.
+    # app/agent/runtime/core.py::_open_checkpointer's AsyncConnectionPool size.
     # Raising this ALONE won't raise checkpoint throughput past one
     # connection's worth: AsyncPostgresSaver wraps every checkpoint I/O in
     # one `asyncio.Lock()` per saver instance guarding pool.connection()
@@ -426,7 +426,7 @@ class Settings(BillingSettings):
     # stay comfortably above the longest a legitimately-alive job can hold
     # an entry: a "turn" job is wall-clock-bounded by request_timeout_seconds
     # (default 60s) and a "resume" job isn't bounded by that timeout at all
-    # (see runtime_stream.py::astream_events_resume) but is covered by
+    # (see runtime/stream.py::astream_events_resume) but is covered by
     # queue.py's THREAD_LOCK_TTL_SECONDS = request_timeout_seconds * 2 as its
     # own de facto ceiling — this default doubles THAT margin again so a
     # slow-but-alive resume is never mistaken for a dead worker.
@@ -448,7 +448,7 @@ class Settings(BillingSettings):
     # "try again exactly once."
     max_auto_reclaim_retries: int = 1
 
-    # app/agent/runtime_stream.py::astream_events_turn_unattended — how many
+    # app/agent/runtime/stream.py::astream_events_turn_unattended — how many
     # times an UNATTENDED caller (app/channels/telegram.py: no approve/reject UX)
     # auto-declines a pause on one turn before giving up and CANCELLING the run.
     # The model can re-request a declined write; each re-request pauses the

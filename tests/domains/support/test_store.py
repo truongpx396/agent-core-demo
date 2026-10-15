@@ -1,9 +1,9 @@
 """Tests for app/domains/support/store.py's query construction — same
 "assert the SQL text/params, no live Postgres" approach as
-tests/agent/test_sql_store.py.
+tests/core/test_sql_store.py.
 
 Every function here is `async def` now (a real `AsyncConnectionPool`, see
-app/agent/sql_store.py's own docstring), so every call below runs through
+app/core/sql_store.py's own docstring), so every call below runs through
 `asyncio.run(...)`, this repo's established pattern for exercising async
 code from a plain `def test_...`.
 """

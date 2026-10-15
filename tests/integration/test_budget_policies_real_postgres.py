@@ -1,6 +1,6 @@
 """Limit overrides against a REAL Postgres (postgres-init/18-budget-policies.sql).
 
-tests/agent/test_budget_policies.py proves the precedence rules and statement shape through a fake
+tests/agent/cost/test_budget_policies.py proves the precedence rules and statement shape through a fake
 cursor. What it cannot show is what the table itself does, and three properties live there:
 
   * NULL ("no cap") and 0 ("suspend") must come back as different things — they are opposite
@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 import psycopg
 import pytest
 
-from app.agent import budget_holds, budget_policies, budgets, spend
+from app.agent.cost import budget_holds, budget_policies, budgets, spend
 from scripts import budget_policy
 from tests.containers import ensure_postgres
 from tests.integration.usage_seed import seed_event

@@ -32,7 +32,7 @@
 #
 # Live evidence this actually happens against this stack: Langfuse traces
 # 3c6ed3b0 (2026-09-09) and fc0a31db/dbd2c02b (2026-09-08, the incident
-# app/agent/graph.py's _make_llm originally tried to fix with
+# app/agent/graph/core.py's _make_llm originally tried to fix with
 # `parallel_tool_calls=False` — a no-op here, since litellm's ollama_chat
 # get_supported_openai_params() doesn't list parallel_tool_calls at all, and
 # litellm-config.yaml's `drop_params: true` makes litellm silently discard
@@ -90,6 +90,6 @@ except Exception as exc:  # noqa: BLE001 - fail loud to stderr, never crash prox
         f"[litellm-patches] FAILED to apply ollama_chat tool_call index fix: {exc!r} "
         "-- a turn where the model calls more than one tool at once will silently "
         "corrupt both calls into one unusable tool_call again (see "
-        "deploy/litellm/patches/sitecustomize.py and app/agent/graph_utils.py's _make_llm comment)",
+        "deploy/litellm/patches/sitecustomize.py and app/agent/graph/utils.py's _make_llm comment)",
         file=sys.stderr,
     )

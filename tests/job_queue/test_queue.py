@@ -376,7 +376,7 @@ class TestPublishResultAndReadResults:
 
     async def test_read_results_stops_at_approval_required_too(self):
         """approval_required is the last event a "turn" job's worker ever
-        publishes for a paused turn (app/agent/runtime_stream.py::_run_graph_stream never
+        publishes for a paused turn (app/agent/runtime/stream.py::_run_graph_stream never
         yields anything after it) — without treating it as terminal here,
         this generator would block forever waiting for a "done"/"error"
         that will never come on THIS results stream (resuming is a

@@ -13,7 +13,7 @@ mypy==2.3.1
 # that's otherwise 100% hermetic/mocked).
 pytest-xdist==3.8.0
 
-# Real, ephemeral Docker-backed services for tests/agent/test_durable_checkpoint.py,
+# Real, ephemeral Docker-backed services for tests/agent/runtime/test_durable_checkpoint.py,
 # tests/integration/, and tests/live/ — see tests/containers.py. `[postgres,redis]`
 # are dedicated testcontainers-python modules; Qdrant has no dedicated module as
 # of this writing, so tests/containers.py drives it via the generic DockerContainer
@@ -53,7 +53,7 @@ pytest-playwright==0.7.1
 # `>=8.4.2`) but verified directly this is a false alarm, not a real
 # break like garak's langgraph-checkpoint one: huggingface_hub's own click
 # usage is its unused `huggingface-cli` entry point, and `import
-# huggingface_hub`/`fastembed`/this app's own `app.agent.graph` all work
+# huggingface_hub`/`fastembed`/this app's own `app.agent.graph.core` all work
 # fine with the resulting click 8.3.x pip actually installs.
 deepeval==4.2.0
 ollama==0.6.2

@@ -1,4 +1,4 @@
-"""MCP server exposing the structured-data tool (`app/agent/sql_store.py`'s
+"""MCP server exposing the structured-data tool (`app/core/sql_store.py`'s
 `query_employees`) over MCP, so an external client (Claude Desktop,
 another agent, `mcp dev`) can reach it — not just this app's own in-process
 LLM (GRAPH_PATTERNS.md pattern 21).
@@ -9,7 +9,7 @@ rewrite (ModuleNotFoundError on 2.0.0), so this stays on the last stable
 
 ## Identity over MCP: explicit arguments, not a RunnableConfig
 
-Every other tool (`app/agent/tools.py`) reads `SecurityCtx` from
+Every other tool (`app/agent/tools/builtin.py`) reads `SecurityCtx` from
 `RunnableConfig["configurable"]["ctx"]`, sourced from a trusted HTTP header
 (`app/api/deps.py::get_ctx`). MCP has no equivalent channel — nothing
 upstream stamps a tenant/principal for it. This demo's simplification:
@@ -27,7 +27,7 @@ Run with: `make mcp-serve` (stdio transport).
 """
 from mcp.server.fastmcp import FastMCP
 
-from app.agent.tools import Department, _query_employees_impl
+from app.agent.tools.builtin import Department, _query_employees_impl
 from app.core.security import DEFAULT_POLICY, SecurityCtx
 
 mcp = FastMCP(

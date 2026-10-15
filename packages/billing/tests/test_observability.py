@@ -75,3 +75,32 @@ def test_the_dashboard_has_its_own_identity_so_it_never_collides_with_the_applic
     dashboard = json.loads((OBS / "credit-billing-core.json").read_text())
 
     assert dashboard["uid"] == "credit-billing-core" and dashboard["uid"] != "credit-billing"
+
+
+def test_the_dashboard_is_valid_and_its_panels_are_distinct():
+    """(Moved here from the application's `tests/core/test_credit_dashboard.py`: the application's dashboard is a copy of this one, and
+    `tests/core/test_billing_package_copies.py` fails the build if the copy drifts, so checking the original is checking both.)"""
+    dashboard = json.loads((OBS / "credit-billing-core.json").read_text())
+    ids = [panel["id"] for panel in dashboard["panels"]]
+
+    assert dashboard["title"] and len(ids) == len(set(ids))
+
+
+def test_every_query_goes_to_the_provisioned_prometheus_datasource():
+    for panel in _panels():
+        assert panel["datasource"]["uid"] == "prometheus", panel["title"]
+        for target in panel["targets"]:
+            assert target["datasource"]["uid"] == "prometheus" and target["expr"], panel["title"]
+
+
+def test_the_balance_grant_rate_debit_rate_and_export_lag_an_operator_needs_are_there():
+    queries = "\n".join(target["expr"] for panel in _panels() for target in panel["targets"])
+
+    for needle in (
+        'agent_credit_outstanding{state="available"}',  # balance
+        "agent_credit_granted_total",  # grant rate
+        "agent_credit_debited_total",  # debit rate
+        "agent_usage_export_oldest_pending_age_seconds",  # export lag
+        "agent_credit_reconcile_max_drift_usd",  # the independent check
+    ):
+        assert needle in queries, f"no panel shows {needle}"

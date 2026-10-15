@@ -1,6 +1,6 @@
 """The in-flight budget reservation against a REAL Postgres.
 
-tests/agent/test_budget_holds.py pins the SQL the ledger sends (tenant in every
+tests/agent/cost/test_budget_holds.py pins the SQL the ledger sends (tenant in every
 WHERE, the staleness cutoff). What a fake cursor cannot show is how the real
 table behaves over TIME — which is exactly where this feature failed, twice,
 before it moved from one running total per tenant to one hold per turn
@@ -27,7 +27,7 @@ from contextlib import asynccontextmanager
 import psycopg
 import pytest
 
-from app.agent import budget_holds
+from app.agent.cost import budget_holds
 from tests.containers import ensure_postgres
 
 pytestmark = pytest.mark.integration

@@ -1,12 +1,12 @@
 """Tests for app/channels/telegram.py — a fake async httpx client stands in
-for a live Telegram API (see tests/agent/test_model_resolver.py's _FakeResponse
+for a live Telegram API (see tests/core/test_model_resolver.py's _FakeResponse
 for the sync-httpx equivalent), and
 app.channels.telegram.astream_events_turn_unattended is monkeypatched (as a
 fake async generator) so these never touch a real graph/LLM, matching the
 rest of the suite's hermetic discipline.
 
 No pytest-asyncio plugin is installed in this project (see
-tests/agent/test_durable_checkpoint.py) — async behavior here is driven the same
+tests/agent/runtime/test_durable_checkpoint.py) — async behavior here is driven the same
 established way: a plain sync `def test_...` wrapping an inner `async def`
 closure via `asyncio.run(...)`.
 """
