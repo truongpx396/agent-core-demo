@@ -11,6 +11,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
+from app.agent.graph import agent_node as _agent_node
 from app.agent.graph.state import MAX_ITERATIONS
 from tests.conftest import TEST_CTX
 
@@ -75,3 +76,12 @@ class Domain:
 
     def policy(self):
         return None
+
+
+def make_agent_node(llm, *args, system_prompt="", **kwargs):
+    """`make_agent_node` for tests of message assembly: no system prompt unless the test gives one.
+
+    The real factory requires it (the agent node puts the domain's prompt first on every call), so
+    a graph can never run un-guided. A test that is about how the REST of the call is assembled
+    (context, summary, reminders) says `system_prompt=""` once, here, instead of in every call."""
+    return _agent_node.make_agent_node(llm, *args, system_prompt=system_prompt, **kwargs)

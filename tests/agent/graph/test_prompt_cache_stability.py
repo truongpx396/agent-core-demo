@@ -29,8 +29,8 @@ actual guarantee GRAPH_PATTERNS.md documents.
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent.graph.agent_node import make_agent_node
 from app.domains.ecorp.domain import ECORP_SYSTEM_PROMPT as SYSTEM_PROMPT
+from tests.agent.fakes import make_agent_node
 
 CTX_A = {"tenant": "ecorp-corp", "principal": "alice", "claims": {"role": "admin"}}
 CTX_B = {"tenant": "globex-inc", "principal": "bob", "claims": {"role": "viewer"}}
@@ -55,7 +55,9 @@ class _RecordingFakeLLM:
 
 async def _render(ctx: dict) -> list:
     llm = _RecordingFakeLLM()
-    agent = make_agent_node(llm)
+    # The real prompt, so the rendered prefix under test is the one actually sent to the model
+    # (the agent node puts it first on every call).
+    agent = make_agent_node(llm, system_prompt=SYSTEM_PROMPT)
     state = {
         "messages": [HumanMessage(content="What is a checkpointer?")],
         "context": "doc: checkpointers persist graph state.",

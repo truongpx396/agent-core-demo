@@ -40,6 +40,7 @@ pre-fetch, re-filtered against *current* ctx every call
 prior snapshot. The only writer is Ecorp's `remember` (`app/domains/ecorp/`).
 """
 import ast
+import asyncio
 import logging
 import operator
 from collections.abc import Callable, Sequence
@@ -301,6 +302,13 @@ async def ask_clarification(question: str, options: list[str]) -> str:
     return await arun_with_timeout(_ask_clarification_impl, question, options)
 
 
+def _unwrap(result):
+    """A `gather(..., return_exceptions=True)` result, re-raised if it is an exception."""
+    if isinstance(result, BaseException):
+        raise result
+    return result
+
+
 async def gather_context(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]]:
     """Documents + this principal's memories, hybrid-searched and combined
     into ONE continuously-numbered citation sequence — called by
@@ -313,16 +321,23 @@ async def gather_context(ctx: SecurityCtx | None, query: str) -> tuple[str, list
     enrichment, never fails the turn (see retrieve_context's try/except in
     app/agent/graph/core.py).
 
-    Runs the doc/memory searches sequentially, not via `asyncio.gather` —
-    they could run concurrently, but that's a separate optimization not
-    bundled into this async conversion.
+    The document and memory searches are independent, so they run concurrently: the
+    pre-fetch costs the slower of the two instead of their sum. Both always run to the end, even
+    if one fails (no search is left running unawaited), and the first failure is re-raised as is,
+    so the caller's degrade path sees the same exception it always did.
     """
     if not valid_ctx(ctx):
         return "", []
-    doc_hits = await _document_hits(ctx, query) if DEFAULT_POLICY.permit("search", ctx) else []
-    memory_hits = (
-        await _memory_hits(ctx, query) if DEFAULT_POLICY.permit("recall_memory", ctx) else []
+
+    async def nothing() -> list:
+        return []
+
+    results = await asyncio.gather(
+        _document_hits(ctx, query) if DEFAULT_POLICY.permit("search", ctx) else nothing(),
+        _memory_hits(ctx, query) if DEFAULT_POLICY.permit("recall_memory", ctx) else nothing(),
+        return_exceptions=True,
     )
+    doc_hits, memory_hits = _unwrap(results[0]), _unwrap(results[1])
     all_hits = list(doc_hits) + list(memory_hits)
     if not all_hits:
         return "", []

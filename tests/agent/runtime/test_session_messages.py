@@ -9,7 +9,7 @@ tests/agent/runtime/test_durable_checkpoint.py).
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from app.agent.graph.compaction import COMPACTION_MARKER_KEY
+from app.agent.graph.messages import COMPACTION_MARKER_KEY
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
 

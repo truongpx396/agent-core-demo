@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.agent.cost import pricing
@@ -339,8 +339,9 @@ async def run_subagent_impl(
         "recursion_limit": MAX_SUBAGENT_ITERATIONS * 2 + 15,
     }
 
-    # No auto-seeding here (unlike app/agent/runtime/core.py::ensure_seeded_async) — this
-    # graph runs exactly once, so the system prompt is just the first message.
+    # The nested manifest carries the subagent's prompt (plus the citation warning), and the agent
+    # node puts it first on every call, so the input is just the delegated task, the sole human
+    # message of a fresh thread.
     #
     # `nested_graph.ainvoke` awaited directly via `arun_with_timeout`, not a
     # separate `asyncio.run(...)`: this function is `async def`, called on
@@ -353,10 +354,7 @@ async def run_subagent_impl(
         result_state = await arun_with_timeout(
             nested_graph.ainvoke,
             {
-                "messages": [
-                    SystemMessage(content=nested_system_prompt),
-                    HumanMessage(content=task),
-                ],
+                "messages": [HumanMessage(content=task)],
                 "require_approval": False,
             },
             config=nested_config,

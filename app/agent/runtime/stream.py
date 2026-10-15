@@ -7,7 +7,7 @@ content assembly (`_build_human_content`), Langfuse trace open
 `get_session_messages`, `get_pending_approval`). Split out
 of `app/agent/runtime/core.py` (see that module's docstring).
 
-Reads `init_graph_async`/`ensure_seeded_async`/`upsert_session`/
+Reads `init_graph_async`/`upsert_session`/
 `allowance_refusal`/`RECURSION_LIMIT` via
 `runtime_module.X` rather than bare imports: tests
 `monkeypatch.setattr` these onto the live `app.agent.runtime.core` module
@@ -28,13 +28,12 @@ import time
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
 
-from app.agent.graph.compaction import COMPACTION_MARKER_KEY
 from app.agent.graph.hitl import (
     CANCEL_SENTINEL,
     paused_approval_async,
     resumability_error_async,
 )
-from app.agent.graph.messages import is_retry_artifact
+from app.agent.graph.messages import COMPACTION_MARKER_KEY, is_retry_artifact
 from app.agent.runtime import core as runtime_module
 from app.core import gateway, metrics, tracing
 from app.core.config import (
@@ -603,7 +602,6 @@ async def astream_events_turn(
                 "type": "system_note",
                 "content": "A previous pending approval on this conversation could not be resumed after an app update; starting a new request.",
             }
-        await runtime_module.ensure_seeded_async(graph, thread_id)
         await runtime_module.upsert_session(ctx, thread_id, text)
         trace, callbacks = _open_trace("chat-turn-stream", thread_id, text)
         cfg = {
@@ -841,8 +839,8 @@ async def astream_events_continue_turn(thread_id: str, ctx: SecurityCtx, cancel_
     closes that gap structurally rather than by scanning for which tools
     are dangerous to repeat.
 
-    No `ensure_seeded_async`/`upsert_session` here, deliberately: this thread
-    is already mid-turn, not starting a new one.
+    No `upsert_session` here, deliberately: this thread is already mid-turn,
+    not starting a new one.
 
     The allowance is NOT re-checked here, unlike `astream_events_resume`
     (spec 008 A6): this is a retry of work that was already admitted, and

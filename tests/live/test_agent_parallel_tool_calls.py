@@ -30,7 +30,6 @@ from langgraph.types import Command
 from tests.conftest import TEST_CTX
 from tests.ecorp import build_graph
 from tests.ollama import ollama_deps
-from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.llm
 
@@ -57,11 +56,6 @@ def _stub_add_note_io(monkeypatch):
 async def _invoke_and_approve(endpoint: dict, text: str):
     graph = build_graph(ollama_deps(endpoint))
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
-    # Seed the system prompt before the first real turn — see
-    # tests/seeding.py's own `seed_thread` docstring; a test calling
-    # build_graph().ainvoke() directly never triggers the seeding every
-    # production path relies on otherwise.
-    await seed_thread(graph, config["configurable"]["thread_id"])
     await graph.ainvoke({"messages": [HumanMessage(content=text)]}, config=config)
     paused_state = (await graph.aget_state(config))
     result = await graph.ainvoke(Command(resume=True), config=config)

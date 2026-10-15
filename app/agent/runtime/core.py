@@ -21,28 +21,24 @@ thread or a different loop.
 
 This file owns the checkpointer/graph singleton lifecycle
 (`init_graph_async`/`close_checkpointer_pool`/`_open_checkpointer`/
-`_resolve_domain_name`), per-thread prompt seeding (`ensure_seeded_async`),
-session-directory upsert (`upsert_session`), and the bindings of the tenant daily-budget
+`_resolve_domain_name`), session-directory upsert (`upsert_session`), and the bindings of the tenant daily-budget
 check (`_check_allowance`/`allowance_refusal`; the rule itself is `app/agent/cost/budgets.py`) — kept together
-because each reads/reassigns a module global (`_graph`/`_domain_name`/
-`_seeded`, or config names several tests monkeypatch directly on this
-module) that only works correctly with consumer and binding in one file.
+because each reads/reassigns a module global (`_graph`/`_domain_name`, or
+config names several tests monkeypatch directly on this module) that only works correctly with consumer and binding in one file.
 The streaming entry points live in `app/agent/runtime/stream.py`, which
 accesses this module's globals via `runtime_module.X` rather than a bare
 import, for the same monkeypatch reason.
 """
 import asyncio
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
-from langchain_core.messages import RemoveMessage, SystemMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from app.agent.cost import budget_holds, budgets, pricing
 from app.agent.graph.build import build_graph
-from app.agent.graph.compaction import COMPACTION_MARKER_KEY
 from app.agent.graph.state import MAX_ITERATIONS
 from app.agent.runtime import sessions
 from app.core.config import (
@@ -85,7 +81,6 @@ _domain_name = "ecorp"  # this process's domain (app/domains/registry.py); stamp
 _checkpointer_pool = None  # keeps AsyncConnectionPool alive for the process
 # lifetime (GC'ing it closes every pooled connection under the saver); also lets
 # close_checkpointer_pool() shut it down explicitly on graceful shutdown.
-_seeded: set[str] = set()
 DEFAULT_DOMAIN = "ecorp"  # the domain a process serves when its caller names none
 
 # LangGraph's own graph-step cap — coarser than MAX_ITERATIONS (an agent-node
@@ -269,58 +264,3 @@ async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "Dom
                 manifest or default_manifest, domain or default_domain, checkpointer=saver
             )
     return _graph
-
-
-async def ensure_seeded_async(graph, thread_id: str) -> None:
-    """Make a conversation thread carry exactly one system prompt, the CURRENT one.
-    ASYNC only — the streaming entry points run directly on the
-    checkpointer's own event loop, where the sync `update_state` raises
-    `asyncio.InvalidStateError`; only `aupdate_state` is safe there.
-
-    Reads `graph.manifest.system_prompt` rather than the module-level
-    `SYSTEM_PROMPT` constant, so it seeds the correct prompt for whichever
-    domain `graph` was actually built for.
-
-    `_seeded` is a same-process fast path, never the source of truth: it's a
-    plain in-process `set()`, so it forgets everything on a worker restart,
-    and with several `agent_worker.py` replicas a thread's later turns can
-    land on a process that never saw this thread_id. Trusting `_seeded`
-    alone previously caused a real bug (caught via Langfuse) — a thread's
-    system prompt got duplicated, and since `_messages_to_trim` excludes
-    SystemMessages from trimming, the duplicate was permanent, quietly
-    eating into MAX_TOKENS_PER_TURN forever. Fixed by checking the thread's
-    actual persisted state before seeding, and only using `_seeded` to skip
-    that check once this process has confirmed it — one extra `aget_state`
-    per thread per process, not per turn.
-
-    That check used to ask only "is a SystemMessage with the CURRENT text
-    here?", so editing the prompt appended the new one after the old one in
-    every existing thread — `System(v1), Human, AI, System(v2), …` — and
-    both stayed for the thread's life, contradicting each other. Now the
-    thread's first prompt is REPLACED in place when its text differs (same
-    message id, so `add_messages` overwrites rather than appends: the
-    prefix changes once, at the edit, and stays at the front), and any
-    further prompt is removed, which also heals a thread the old code had
-    already duplicated. A compaction breadcrumb is a SystemMessage too but
-    not a prompt, and is left alone. An unchanged prompt writes nothing.
-    """
-    if thread_id in _seeded:
-        return
-    cfg = {"configurable": {"thread_id": thread_id}}
-    state = await graph.aget_state(cfg)
-    system_prompt = graph.manifest.system_prompt
-    prompts = [
-        m
-        for m in state.values.get("messages", [])
-        if isinstance(m, SystemMessage) and not m.additional_kwargs.get(COMPACTION_MARKER_KEY)
-    ]
-    if not prompts:
-        updates: list = [SystemMessage(content=system_prompt)]
-    else:
-        updates = []
-        if prompts[0].content != system_prompt:
-            updates.append(SystemMessage(content=system_prompt, id=prompts[0].id))
-        updates.extend(RemoveMessage(id=cast(str, m.id)) for m in prompts[1:])
-    if updates:
-        await graph.aupdate_state(cfg, {"messages": updates})
-    _seeded.add(thread_id)

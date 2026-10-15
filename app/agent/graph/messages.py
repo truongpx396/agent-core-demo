@@ -16,7 +16,12 @@
 import re
 from typing import TypeGuard
 
-from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 
 # Tags a message the graph wrote into the thread to drive a retry, so the
 # readers below can tell it from conversation. `retry_output` appends its
@@ -28,6 +33,35 @@ from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 # See GRAPH_PATTERNS.md pattern 5. Never set on an AIMessage with tool_calls:
 # dropping that one later would orphan its ToolMessages.
 RETRY_ARTIFACT_KEY = "retry_artifact"
+
+
+# Tags a compaction breadcrumb SystemMessage so
+# runtime/stream.py::get_session_messages can pick it out — every OTHER
+# SystemMessage in a thread (only a legacy persisted prompt, see
+# is_legacy_prompt) stays hidden from transcript replay as always. A
+# SystemMessage specifically: _messages_to_trim already excludes all
+# SystemMessages from both token count and removal candidates, so this
+# breadcrumb is free and never itself gets trimmed later — unlike
+# history_summary (replaced each compaction) or the context/summary
+# SystemMessages agent() synthesizes per-call and never persists. The agent
+# node passes it to the model; a legacy prompt it does not. See
+# GRAPH_PATTERNS.md pattern 41.
+COMPACTION_MARKER_KEY = "compaction_marker"
+
+
+def is_compaction_marker(message: BaseMessage) -> bool:
+    return bool((getattr(message, "additional_kwargs", None) or {}).get(COMPACTION_MARKER_KEY))
+
+
+def is_legacy_prompt(message: BaseMessage) -> bool:
+    """A SystemMessage persisted in a thread's history that is not a compaction breadcrumb.
+
+    Today nothing writes one: the agent node prepends the domain's CURRENT system prompt on every
+    call (`graph/agent_node.py`), so a prompt edit reaches every thread with no migration. Threads
+    created before that hold the prompt (sometimes two, after a prompt edit) as their first
+    message; those are ignored when the call is built, never shown to the model, and left in the
+    checkpoint (they are skipped by trimming and by the transcript replay too)."""
+    return isinstance(message, SystemMessage) and not is_compaction_marker(message)
 
 
 def is_retry_artifact(message: BaseMessage) -> bool:

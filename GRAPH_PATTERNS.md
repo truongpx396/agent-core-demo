@@ -24,7 +24,7 @@ is never reused or shifted. **Bug** marks a real defect that was found and fixed
 - **Use when:** always. It costs nothing and catches most bad cases.
 
 ### 2. Context enrichment
-`retrieve_context` pre-fetches before the LLM reasons. `agent` appends the result as a `SystemMessage` just before the call; the base `SYSTEM_PROMPT` is seeded once per thread and kept current by `app/agent/runtime/core.py::ensure_seeded_async` (19).
+`retrieve_context` pre-fetches before the LLM reasons. `agent` appends the result as a `SystemMessage` just before the call. The domain's system prompt is the first message of every call, put there by the agent node from the manifest at call time (19); nothing stores it in the thread.
 - **Use when:** you have a knowledge base (Qdrant, a DB, an API).
 
 ### 3. State tracking
@@ -137,7 +137,7 @@ A `SecurityCtx` (`tenant`, `principal`, `claims`) is stamped once by `validate_i
 
 ### 19. Prompt-cache stability
 `SYSTEM_PROMPT` is a plain constant: no principal, tenant or timestamp is ever interpolated. `SecurityCtx` flows through `config`/`state["ctx"]`, never into the messages sent to the LLM. The classic cache-buster, `ctx["principal"]` in the prefix, looks stable within one conversation and only shows once a second principal shares the manifest. `tests/agent/graph/test_prompt_cache_stability.py` asserts byte-identical rendering across two ctx values, plus a leak sweep.
-- **Bug:** `ensure_seeded_async` only asked whether a `SystemMessage` with the CURRENT text existed, so every prompt edit appended the new prompt after the old one in every existing thread (`System(v1), Human, AI, System(v2), …`). `_messages_to_trim` never trims a `SystemMessage`, so both stayed for the thread's life, possibly contradicting each other. It now replaces the thread's first prompt in place (same message id) when the text differs and removes any further one, which also heals threads the old code had duplicated; a compaction breadcrumb is not a prompt and is left alone; an unchanged prompt writes nothing. The prefix changes once, at the edit. Tests: `tests/agent/runtime/test_prompt_seeding.py`.
+- **Bug (and the design that ended its class):** the prompt used to be *seeded into each thread* once. `ensure_seeded_async` only asked whether a `SystemMessage` with the CURRENT text existed, so every prompt edit appended the new prompt after the old one in every existing thread (`System(v1), Human, AI, System(v2), …`), and `_messages_to_trim` never trims a `SystemMessage`, so both stayed for the thread's life. A patch (replace in place, remove extras) fixed that, but the design kept producing bugs: a graph built directly and never seeded ran as an **un-guided agent** (a test suite did this for weeks, with every prompt edit it "verified" having no effect), and every first turn of every thread paid a checkpoint read and write. The prompt is now **not stored at all**: the agent node prepends `manifest.system_prompt` to every call. An edit reaches every conversation on the next call with nothing to migrate; the prefix changes once, at the edit. A prompt persisted by an older build is ignored when the call is built (`is_legacy_prompt`; never shown to the model, left in the checkpoint). Tests: `tests/agent/graph/test_system_prompt_at_call_time.py`, including a real-Postgres two-process case in `test_durable_checkpoint.py`.
 - **Use when:** more than one principal's traffic shares a deployment behind a provider that discounts a stable prefix.
 
 ### 20. Hybrid retrieval, rerank and cited answers
@@ -183,7 +183,7 @@ A `SecurityCtx` (`tenant`, `principal`, `claims`) is stamped once by `validate_i
 Moved to `COST_GOVERNANCE.md` (the agent's usage meter and spend limits are not graph patterns). The number is kept so earlier references resolve and is never reused or shifted.
 
 ### 27. Clarification and follow-ups without forking the graph
-`ask_clarification` is an ordinary `read_only` tool: its result becomes a `ToolMessage` and `SYSTEM_PROMPT` says to relay it verbatim. Follow-ups are a real node, `suggest_followups`, after `check_output`'s non-retry branch, making one small LLM call for 2–3 questions.
+`ask_clarification` is an ordinary `read_only` tool: its result becomes a `ToolMessage` and `SYSTEM_PROMPT` says to relay it verbatim. Follow-ups are a real node, `suggest_followups`, after `check_output`'s non-retry branch, making one small LLM call for 2–3 questions. It runs in parallel with the cache write-through (22): neither needs the other, so `done` waits for the slower of the two, not their sum.
 - Follow-ups gate on `used_citations`: an answer with nothing derived (a refusal, a clarification, general knowledge) has none, so one signal suppresses all three cases. They are skipped on a cache hit, since an unconditional call would reintroduce an LLM call the hit exists to avoid.
 
 ### 28. Consuming a remote MCP tool catalog
@@ -384,12 +384,11 @@ route_after_validation?  ← valid ctx? last user message (not retry feedback, p
                            │                    artifacts (pattern 5) → agent
                            ├─→ retry_exhausted  (the SAME reason MAX_CONSECUTIVE_SAME_RETRY_REASON times in
                            │                     a row: replaces an untrusted answer with a fallback) → END
-                           └─→ suggest_followups  ← only for a GROUNDED answer (used_citations
-                                │                     non-empty); skipped on a hit (pattern 27)
-                                ↓
-                               write_semantic_cache  ← writes back unless this turn was a hit
-                                ↓                       or called a non-read_only tool (pattern 22)
-                               END
+                           └─→ finish  (the answer stands: two steps in ONE parallel superstep)
+                                ├─→ suggest_followups  ← only for a GROUNDED answer (used_citations
+                                │                         non-empty); skipped on a hit (pattern 27) → END
+                                └─→ write_semantic_cache  ← writes back unless this turn was a hit
+                                                           or called a non-read_only tool (22) → END
 ```
 
 A nested `run_subagent` run (46) is `build_graph` with `SUBAGENT_PROFILE`: the same graph without `check_semantic_cache`,
@@ -443,7 +442,7 @@ Two kinds of duplicate: a **replay** sees the same `tool_call_id` twice; a **re-
 - **A Telegram webhook.** Long-polling needs no inbound port; production would use `setWebhook`.
 - **Real authentication.** Pattern 17's `SecurityCtx`/`Policy` is the isolation structure; header extraction isn't authentication.
 - **Per-action authorization within a tenant.** Every principal has the write capability the gate allows at all; a `Policy` reading `ctx["claims"]` would live here.
-- **A multi-domain runtime** (partly done, pattern 49). The API routes per request via `X-Domain`, but one process still builds one graph. Serving several would need a per-domain graph registry and a seeding cache keyed by `(domain, thread_id)`.
+- **A multi-domain runtime** (partly done, pattern 49). The API routes per request via `X-Domain`, but one process still builds one graph. Serving several would need a per-domain graph registry (the system prompt is no longer a per-thread concern, so that part is already done).
 
 ### Known gaps
 

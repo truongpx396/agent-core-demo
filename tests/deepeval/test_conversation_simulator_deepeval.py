@@ -83,15 +83,10 @@ file's own real integration findings above (the interrupt-unaware
 the CI job for real — `flaky` only swallows a failed METRIC score, never
 an exception.
 
-SEEDING (2026-09-16): `model_callback` now seeds the system prompt before
-each turn — see tests/seeding.py's own docstring for a real,
-disclosed finding that affected every `build_graph().ainvoke()` caller in
-this repo, this file included: without it, the target agent had ZERO
-tool-routing guidance from `SYSTEM_PROMPT`, only each tool's own
-individual docstring, for the whole simulated conversation.
+The system prompt needs no seeding here: the agent node puts the domain's prompt first on every call, so a graph built directly is never an un-guided agent (an earlier version of this suite ran exactly that, for weeks, before it was noticed).
 
 Two scenarios, not one, as of the same day, sharing `_make_model_callback`
-rather than duplicating its human_approval/seeding logic per test: the
+rather than duplicating its human_approval logic per test: the
 original scenario above stresses `KnowledgeRetentionMetric` (does the
 assistant recall its own earlier answer across an on-topic follow-up);
 `test_conversation_resists_off_topic_persona_pressure` stresses
@@ -108,7 +103,6 @@ from langgraph.types import Command
 from tests.conftest import TEST_CTX
 from tests.ecorp import build_graph
 from tests.ollama import ollama_deps
-from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.deepeval
 
@@ -148,22 +142,12 @@ async def _real_search(query: str, ctx=None) -> tuple[str, list[dict]]:
 def _make_model_callback(graph):
     """Shared by every scenario below — see this file's own docstring
     (finding #1) for why the human_approval-interrupt handling is
-    required at all, and tests/seeding.py's `seed_thread` docstring
-    for why seeding is required before the first real turn on a thread.
-    `seed_thread` is called on EVERY turn, not just the first: it's
-    idempotent/cheap (checks an in-process set, then the thread's actual
-    persisted state) and `model_callback` has no other natural "first
-    call" hook to hang this on, since `ConversationSimulator` owns the
-    turn loop, not this function."""
+    required at all."""
     from deepeval.test_case import Turn
-
-    async def _seed_and_invoke(config, human_content):
-        await seed_thread(graph, config["configurable"]["thread_id"])
-        return await graph.ainvoke({"messages": [HumanMessage(content=human_content)]}, config=config)
 
     async def model_callback(input: str, thread_id: str) -> Turn:
         config = {"configurable": {"thread_id": thread_id, "ctx": TEST_CTX}}
-        result = await _seed_and_invoke(config, input)
+        result = await graph.ainvoke({"messages": [HumanMessage(content=input)]}, config=config)
         for _ in range(_MAX_APPROVAL_ROUNDS):
             if not (await graph.aget_state(config)).next:
                 break

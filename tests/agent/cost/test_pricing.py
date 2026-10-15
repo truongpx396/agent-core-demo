@@ -22,10 +22,10 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agent.cost import pricing
-from app.agent.graph.agent_node import make_agent_node
 from app.agent.runtime import core as runtime_module
 from app.agent.runtime import stream as stream_module
 from app.core import errors, metrics
+from tests.agent.fakes import make_agent_node
 from tests.conftest import TEST_CTX, metric_value
 
 _REAL_FETCH = pricing._fetch_model_info

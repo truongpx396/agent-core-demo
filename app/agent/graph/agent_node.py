@@ -8,6 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from app.agent.cost import metering
 from app.agent.graph.messages import (
     current_turn_messages,
+    is_legacy_prompt,
     is_retry_artifact,
     is_user_message,
 )
@@ -24,6 +25,8 @@ def make_agent_node(
     kind: str = "chat",
     citation_reminder: bool = True,
     skill_required_tools: tuple[str, ...] = (),
+    *,
+    system_prompt: str,
 ):
     """Factory, not a plain function, because `agent` needs an LLM client.
     Tests build it with a fake (e.g. GenericFakeChatModel) via
@@ -42,14 +45,20 @@ def make_agent_node(
 
     `skill_required_tools` is the subset of `SKILL_REQUIRED_TOOL_MARKERS` the calling domain
     really has; the "call it now" reminder is only ever about one of those.
+
+    `system_prompt` is the calling domain's (`manifest.system_prompt`, bound by `build_graph`).
+    It is the first message of EVERY call, taken from the manifest at call time rather than read
+    out of the thread: nothing persists a prompt in the checkpoint, so editing a prompt reaches
+    every conversation on the next call with no migration, and a graph built directly (a test, a
+    script) is never an un-guided agent because nobody remembered to seed it. Pass `""` only to
+    unit-test message assembly.
     """
 
     async def agent(state: State, config: RunnableConfig | None = None) -> dict:
         """Call the LLM, injecting retrieved context as an extra SystemMessage.
 
-        The *base* SYSTEM_PROMPT is seeded once per thread by
-        app/agent/runtime/core.py::ensure_seeded_async before the graph ever runs, so
-        this only adds the per-turn retrieved context/history summary.
+        The domain's system prompt goes first on every call (see `make_agent_node`);
+        beyond it this adds the per-turn retrieved context/history summary.
 
         `async def`/`ainvoke`, not `.invoke()`: this is the dominant
         per-turn cost (its own span ran ~3x longer than the GENERATION call
@@ -65,19 +74,27 @@ def make_agent_node(
         messages = list(state["messages"])
         anchor = state.get("context_anchor_index")
         history_summary = state.get("history_summary", "")
-        # Earlier turns' retry artifacts (a rejected answer and the feedback it drew, see
-        # messages.RETRY_ARTIFACT_KEY) are history the model must not see again: replayed, the
-        # feedback reads as something the person said. THIS turn's stay, because the retry in
-        # progress needs them. Dropping shifts indexes, so `anchor` is re-located by identity
-        # (the anchored message is the turn's own question, never a dropped artifact).
+        # History the model must not see. (1) A prompt persisted in the thread by an older build
+        # (`is_legacy_prompt`): the current one is prepended below instead, and replaying the old
+        # one would give the model two, possibly contradicting. (2) Earlier turns' retry artifacts
+        # (a rejected answer and the feedback it drew, see messages.RETRY_ARTIFACT_KEY): replayed,
+        # the feedback reads as something the person said. THIS turn's artifacts stay, because the
+        # retry in progress needs them. Dropping shifts indexes, so `anchor` is re-located by
+        # identity (the anchored message is the turn's own question, never one of these).
         turn_start = next(
             (i for i in range(len(messages) - 1, -1, -1) if is_user_message(messages[i])), None
         )
-        if turn_start is not None and any(is_retry_artifact(m) for m in messages[:turn_start]):
+
+        def droppable(i: int, m) -> bool:
+            if is_legacy_prompt(m):
+                return True
+            return turn_start is not None and i < turn_start and is_retry_artifact(m)
+
+        if any(droppable(i, m) for i, m in enumerate(messages)):
             anchor_msg = (
                 messages[anchor] if isinstance(anchor, int) and 0 <= anchor < len(messages) else None
             )
-            messages = [m for i, m in enumerate(messages) if i >= turn_start or not is_retry_artifact(m)]
+            messages = [m for i, m in enumerate(messages) if not droppable(i, m)]
             anchor = next((i for i, m in enumerate(messages) if m is anchor_msg), None)
         context = state.get("context", "")
 
@@ -177,6 +194,9 @@ def make_agent_node(
                     )
                 )
             )
+
+        if system_prompt:
+            messages.insert(0, SystemMessage(content=system_prompt))
 
         # The one place a call is made, priced and recorded (app/agent/cost/metering.py): it tells the
         # gateway whose call this is (its spend logs and Langfuse are otherwise one anonymous

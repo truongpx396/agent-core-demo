@@ -3,14 +3,6 @@ Ollama model (`@pytest.mark.llm`, `@pytest.mark.e2e`; see GRAPH_PATTERNS.md
 pattern 48 for the full design writeup). Two session fixtures, deliberately
 different weights for deliberately different needs:
 
-`seed_thread` moved to `tests/seeding.py` (2026-09-16, alongside the
-`deepeval`-marked tests moving to their own `tests/deepeval/` package) —
-see that module's own docstring for the full seeding rationale. Still
-imported directly by this file's own tests that build a graph themselves
-via `build_graph()` (`from tests.seeding import seed_thread`); this
-conftest no longer needs to define or re-export it since nothing here
-calls it internally.
-
 `ollama_endpoint` — just `tests/containers.py::ensure_ollama()`, which pulls
 both a real CHAT model and a real embedding model (`nomic-embed-text`,
 this app's own `EMBED_MODEL` default) into the same shared container. Used

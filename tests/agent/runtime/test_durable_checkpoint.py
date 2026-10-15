@@ -46,10 +46,11 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from app.agent.graph.build import GraphDeps
 from app.agent.graph.hitl import resumability_error_async
 from app.agent.graph.state import STATE_SCHEMA_VERSION
+from app.agent.manifest import AgentManifest
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
 from app.core import metrics
-from app.domains.ecorp.domain import ECORP_SYSTEM_PROMPT as SYSTEM_PROMPT
+from tests.agent.fakes import cfg, scripted_llm
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
 from tests.containers import ensure_postgres
@@ -195,25 +196,18 @@ class TestDurabilityAcrossRestart:
         assert "remember this" in contents
 
 
-class TestAsyncSeeding:
-    """Regression test for a real bug found while manually verifying the
-    web UI against a live `uvicorn` process: `_ensure_seeded` (the sync
-    `graph.update_state`) was being called from `astream_events_turn` —
-    which runs on the SAME event loop `init_graph_async()` opened the
-    checkpointer on (originally `AsyncSqliteSaver`, now `AsyncPostgresSaver`
-    — the same loop-binding constraint holds for both) — and raised
-    `asyncio.InvalidStateError` on the very first turn of any brand-new
-    `thread_id` (the checkpointer refuses a sync call from its own loop;
-    only a DIFFERENT thread's sync
-    call is the supported cross-thread path — see app/agent/runtime/core.py's module
-    docstring). Fixed by adding `ensure_seeded_async` (async callers:
-    `astream_events_turn`/`astream_events_turn_ctx`, using
-    `graph.aupdate_state`) as a separate async-safe seeding path, instead of
-    reusing the sync `graph.update_state`-based helper the old `stream_turn`/
-    `answer` entry points used (both since removed — see GRAPH_PATTERNS.md
-    pattern 8's note)."""
+class TestAsyncEntryPoints:
+    """Regression tests for a real bug found while manually verifying the web UI against a live
+    `uvicorn` process: a SYNC checkpointer call (`graph.update_state`) made from
+    `astream_events_turn` — which runs on the SAME event loop `init_graph_async()` opened the
+    checkpointer on (`AsyncPostgresSaver`; the same loop-binding constraint held for the
+    `AsyncSqliteSaver` it replaced) — raised `asyncio.InvalidStateError` on the very first turn of
+    any brand-new `thread_id`. The checkpointer refuses a sync call from its own loop; only a
+    DIFFERENT thread's sync call is the supported cross-thread path (see
+    app/agent/runtime/core.py's module docstring). The async entry points must only ever use the
+    async accessors (`aget_state`, `aupdate_state`, `ainvoke`)."""
 
-    async def test_astream_events_turn_seeds_a_brand_new_thread_without_raising(
+    async def test_astream_events_turn_runs_on_a_brand_new_thread_without_raising(
         self, monkeypatch
     ):
         monkeypatch.setattr(
@@ -238,50 +232,32 @@ class TestAsyncSeeding:
         assert not any(e["type"] == "error" for e in events)
         assert events[-1]["type"] == "done"
 
-    async def test_seeding_is_idempotent_even_when_seen_by_a_different_process(self):
-        """Real bug, found live via Langfuse: a long-running thread's
-        `agent` generation showed the ~800-token system prompt TWICE.
-        Root cause: `_seeded` (app/agent/runtime/core.py) is a plain
-        in-process `set()` — a fast-path cache, not the source of truth.
-        It forgets everything on a worker restart, and — since
-        app/job_queue/agent_worker.py's own docstring says to run SEVERAL
-        `agent-worker` processes for scaling, with Redis Streams
-        distributing turns round-robin across them — a thread's turns
-        can just as easily land on a DIFFERENT process that's never seen
-        this thread_id before. Either way, `ensure_seeded_async` used to
-        trust `_seeded` alone and append a second copy of the prompt.
-
-        Simulated here the same way TestDurabilityAcrossRestart above
-        does: two separate asyncio.run() calls, each its own
-        AsyncPostgresSaver connection — `_seeded` is a real module-level
-        global that would otherwise leak across both calls within this
-        one Python process, so it's explicitly cleared between them to
-        stand in for "a different process that's never seeded this
-        thread before"."""
+    async def test_a_prompt_is_never_persisted_and_an_edit_reaches_a_thread_another_process_started(self):
+        """The system prompt is not stored in the checkpoint: the agent node puts the manifest's
+        CURRENT prompt first on every call. So a thread started by one process under prompt v1 and
+        continued by another (a restart, or a second `agent-worker`) under an edited prompt v2 is
+        sent v2, once, with nothing to migrate and nothing to duplicate (it used to be seeded into
+        the thread, so an edit left both prompts in every existing conversation)."""
         thread_id = str(uuid.uuid4())
         checkpointer_url = ensure_postgres()["checkpointer_database_url"]
+        sent: list[list] = []
 
-        async def _seed_once():
+        async def _turn(prompt: str, question: str):
             async with AsyncPostgresSaver.from_conn_string(checkpointer_url) as saver:
                 await saver.setup()
-                graph = build_graph(GraphDeps(llm=_fake_llm()), checkpointer=saver)
-                await agent_module.ensure_seeded_async(graph, thread_id)
+                llm = scripted_llm(lambda _m: AIMessage(content="A sufficiently long answer here."), sent)
+                graph = build_graph(
+                    GraphDeps(llm=llm), checkpointer=saver, manifest=AgentManifest("x", prompt)
+                )
+                await graph.ainvoke({"messages": [HumanMessage(content=question)]}, config=cfg(thread_id))
+                return (await graph.aget_state(cfg(thread_id))).values["messages"]
 
-        await _seed_once()
-        agent_module._seeded.discard(thread_id)
-        await _seed_once()
+        await _turn("You are v1 of the prompt.", "first question here")
+        stored = await _turn("You are v2 of the prompt.", "second question here")
 
-        async def _read():
-            async with AsyncPostgresSaver.from_conn_string(checkpointer_url) as saver:
-                graph = build_graph(GraphDeps(llm=_fake_llm()), checkpointer=saver)
-                state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
-                return state.values.get("messages", [])
-
-        messages = await _read()
-        prompt_copies = [
-            m for m in messages if isinstance(m, SystemMessage) and m.content == SYSTEM_PROMPT
-        ]
-        assert len(prompt_copies) == 1
+        assert not any(isinstance(m, SystemMessage) for m in stored), "a prompt was written into the thread"
+        first_message_of_each_call = [call[0].content for call in sent]
+        assert first_message_of_each_call == ["You are v1 of the prompt.", "You are v2 of the prompt."]
 
     async def test_astream_events_resume_checks_resumability_without_raising(
         self, monkeypatch
@@ -291,8 +267,7 @@ class TestAsyncSeeding:
         raises InvalidStateError from the checkpointer's own loop. Fixed
         by resumability_error_async (aget_state) — this is the real
         production resume path (`make chat-hitl`'s HITL round trip),
-        so it gets its own regression test rather than relying on
-        coverage from the seeding test above.
+        so it gets its own regression test.
 
         Drives the pause via a plain `graph.ainvoke(...)`, not
         `astream_events_turn` — same reasoning as

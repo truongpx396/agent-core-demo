@@ -21,7 +21,6 @@ from langchain_core.messages import (
 
 from app.agent.graph.build import GraphDeps
 from app.agent.graph.compaction import (
-    COMPACTION_MARKER_KEY,
     _estimate_tokens,
     _format_turns_for_summary,
     _messages_to_trim,
@@ -29,6 +28,7 @@ from app.agent.graph.compaction import (
     make_compact_history_node,
 )
 from app.agent.graph.core import validate_input
+from app.agent.graph.messages import COMPACTION_MARKER_KEY
 from app.agent.graph.state import (
     MAX_ITERATIONS,
     MAX_SUBAGENT_TOKENS_PER_RUN,
