@@ -1,19 +1,20 @@
-"""The money-in settings (app/core/config.py): a webhook endpoint that cannot verify a signature must not start.
+"""What is the app's about the billing settings: the app's `Settings` INHERITS the package's, and `.env.example` describes them truthfully.
+
+The validators themselves (a provider with no secret refuses to start, a bound that would disable a guard, a credential's prefix, a blank means "not
+set") are the package's and are tested there (`packages/billing/tests/test_webhook_settings.py`, `test_provider_credentials_settings.py`), against
+`BillingSettings`. What is left to prove here is that none of it is lost on the way into the app's own `Settings`.
 
 `_env_file=None` and a scrubbed environment: `Settings()` otherwise reads the developer's own `.env`."""
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
-from credit_billing.settings import BILLING_INBOX_MIN_RETENTION_DAYS
+from credit_billing import providers
+from credit_billing.settings import BillingSettings
 
-_ENV = (
-    "BILLING_PROVIDERS", "BILLING_WEBHOOK_SECRETS", "BILLING_WEBHOOK_MAX_BODY_BYTES",
-    "BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE", "BILLING_WEBHOOK_MAX_ATTEMPTS", "BILLING_REFUND_HOLD_HOURS",
-    "BILLING_INBOX_RETENTION_DAYS", "BILLING_EXPORT_BATCH_SIZE", "BILLING_EXPORT_INTERVAL_SECONDS",
-    "BILLING_EXPORT_MAX_ATTEMPTS", "BILLING_EXPORT_BACKOFF_BASE_SECONDS", "BILLING_EXPORT_BACKOFF_CAP_SECONDS",
-    "BILLING_EXPORT_MAX_AGE_DAYS", "BILLING_EXPORT_CALL_TIMEOUT_SECONDS",
-)
+_ENV = ("STRIPE_API_KEY", "POLAR_ACCESS_TOKEN", "POLAR_ENVIRONMENT", "BILLING_PROVIDERS", "BILLING_WEBHOOK_SECRETS")
 
 
 @pytest.fixture(autouse=True)
@@ -22,72 +23,37 @@ def clean_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-def test_by_default_no_provider_is_served():
-    settings = Settings(_env_file=None)
-
-    assert settings.billing_providers == "" and settings.billing_webhook_secrets == {}
-
-
-def test_a_provider_with_a_secret_is_accepted(monkeypatch):
-    monkeypatch.setenv("BILLING_PROVIDERS", "fake, stripe")
-    monkeypatch.setenv("BILLING_WEBHOOK_SECRETS", '{"fake": "s1", "stripe": "s2"}')
-
-    assert Settings(_env_file=None).billing_providers == "fake, stripe"
+def test_the_apps_settings_carry_every_field_of_the_packages():
+    assert issubclass(Settings, BillingSettings)
+    assert set(BillingSettings.model_fields) <= set(Settings.model_fields)
 
 
-def test_an_enabled_provider_with_no_secret_refuses_to_start(monkeypatch):
+def test_a_provider_with_no_secret_still_refuses_to_start_through_the_apps_settings(monkeypatch):
     monkeypatch.setenv("BILLING_PROVIDERS", "fake")
 
     with pytest.raises(ValidationError, match="no secret"):
         Settings(_env_file=None)
 
 
-def test_one_enabled_provider_missing_its_secret_refuses_to_start_even_if_another_has_one(monkeypatch):
-    monkeypatch.setenv("BILLING_PROVIDERS", "fake,stripe")
-    monkeypatch.setenv("BILLING_WEBHOOK_SECRETS", '{"fake": "s1"}')
+def test_a_rejected_credential_is_never_printed_back_by_the_apps_settings(monkeypatch):
+    """`hide_input_in_errors` is set on the app's own class as well as the package's: a settings error is printed at import time, to a terminal or a
+    container log, so a credential pasted into the wrong variable would be echoed whole."""
+    monkeypatch.setenv("STRIPE_API_KEY", "pk_test_abc123")
 
-    with pytest.raises(ValidationError, match="stripe"):
+    with pytest.raises(ValidationError) as caught:
         Settings(_env_file=None)
 
-
-@pytest.mark.parametrize("blank", ["", "   "])
-def test_a_blank_secret_is_no_secret(monkeypatch, blank):
-    monkeypatch.setenv("BILLING_PROVIDERS", "fake")
-    monkeypatch.setenv("BILLING_WEBHOOK_SECRETS", f'{{"fake": "{blank}"}}')
-
-    with pytest.raises(ValidationError, match="no secret"):
-        Settings(_env_file=None)
+    assert "pk_test_abc123" not in str(caught.value) and "pk_test_abc123" not in repr(caught.value)
 
 
-def test_a_secret_never_shows_in_the_settings_repr(monkeypatch):
-    monkeypatch.setenv("BILLING_PROVIDERS", "fake")
-    monkeypatch.setenv("BILLING_WEBHOOK_SECRETS", '{"fake": "whsec_do_not_print_me"}')
-
-    settings = Settings(_env_file=None)
-
-    assert "whsec_do_not_print_me" not in repr(settings) and "whsec_do_not_print_me" not in str(settings)
-
-
-@pytest.mark.parametrize("name", ["Stripe", "str/ipe", "a b", "../x"])
-def test_a_provider_name_that_is_not_a_safe_path_segment_is_rejected(monkeypatch, name):
-    monkeypatch.setenv("BILLING_PROVIDERS", name)
-    monkeypatch.setenv("BILLING_WEBHOOK_SECRETS", f'{{"{name}": "s"}}')
-
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("billing_webhook_max_body_bytes", 10),
-        ("billing_webhook_max_body_bytes", 10**9),
-        ("billing_webhook_rate_limit_per_minute", 0),
-        ("billing_webhook_max_attempts", 0),
-        ("billing_refund_hold_hours", 0),
-        ("billing_inbox_retention_days", BILLING_INBOX_MIN_RETENTION_DAYS - 1),
-    ],
-)
-def test_a_bound_that_would_disable_a_guard_is_rejected(field, value):
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None, **{field: value})
+def test_the_comment_in_env_example_names_the_adapters_that_exist_and_an_unbuilt_name_still_refuses_to_start():
+    """`.env.example` tells the operator which providers can go in BILLING_PROVIDERS. When an adapter is registered or removed
+    this fails, which is the prompt to rewrite that comment (and the settings' comment in config.py) instead of leaving it to
+    mislead. (Stripe's landed first, then Polar's; PayPal's is the one still unbuilt, so it is the example of a name that refuses.)"""
+    assert set(providers.FACTORIES) == {"fake", "stripe", "polar"}
+    with pytest.raises(providers.UnknownProvider):
+        providers.build_configured(("paypal",), {"paypal": "whsec_x"})
+    for name in ("stripe", "polar"):
+        assert providers.build_configured((name,), {name: "whsec_x"})[name].name == name
+    example = (Path(__file__).resolve().parents[2] / ".env.example").read_text()
+    assert "STRIPE and POLAR adapters are built" in example and "PAYPAL" in example

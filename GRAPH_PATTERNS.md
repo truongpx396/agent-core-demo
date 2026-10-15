@@ -331,16 +331,16 @@ crawl4ai (`app/ingestion/web_crawler.py`) renders JS-heavy pages. OpenSandbox, c
 Moved to `packages/billing/docs/PATTERNS.md` (constitution Principle VIII, "Self-contained packages"). The number is kept so earlier references resolve and is never reused or shifted.
 
 ### 53. (moved)
-Moved to `BILLING_INTEGRATION.md` (constitution Principle VIII, "Self-contained packages"). The number is kept so earlier references resolve and is never reused or shifted.
+Moved to `packages/billing/docs/PATTERNS.md` (constitution Principle VIII, "Self-contained packages"). The number is kept so earlier references resolve and is never reused or shifted.
 
 ### 54. (moved)
 Moved to `packages/billing/docs/PATTERNS.md` (constitution Principle VIII, "Self-contained packages"). The number is kept so earlier references resolve and is never reused or shifted.
 
 ### 55. (moved)
-Moved to `BILLING_INTEGRATION.md` (constitution Principle VIII, "Self-contained packages"). The number is kept so earlier references resolve and is never reused or shifted.
+Moved to `packages/billing/docs/PATTERNS.md` (constitution Principle VIII, "Self-contained packages"). The number is kept so earlier references resolve and is never reused or shifted.
 
 ### 56. (moved)
-Moved to `BILLING_INTEGRATION.md` (constitution Principle VIII, "Self-contained packages"). The number is kept so earlier references resolve and is never reused or shifted.
+Moved to `packages/billing/docs/PATTERNS.md` (constitution Principle VIII, "Self-contained packages"). The number is kept so earlier references resolve and is never reused or shifted.
 
 ### 57. Carrying the ledger's history into the events, and a first version that could never finish
 The dollar caps sum `usage_ledger` today and are about to sum `usage_events` (specs/010 T030b), so the per-call meter, the wallet and the export are no longer a second record kept in step with the one the caps use. The events only begin when `postgres-init/19` is applied, so switching the read alone would make a monthly cap forget the month so far and `GET /usage`'s all-time total come back short. This change is the additive half and is merged first: it changes no behaviour, so it can be run and checked before the release that depends on it.
@@ -382,7 +382,7 @@ A test that checks "this migration can be applied twice" failed about one parall
 - **Gaps (disclosed):** other tests that run DDL against the shared database are not covered unless they use the helper; `.claude/rules/testing.md` says so. `lock_timeout` bounds this session only: a test that holds a lock for tens of seconds would still make the re-apply fail after its 60 tries.
 - The billing-specific parts (the migration whose lock order the cycle test depends on, the webhook test that was the victim) are in `packages/billing/docs/PATTERNS.md`, "Notes on patterns that stay in the agent app's GRAPH_PATTERNS.md". The package keeps its own copy of the helper (`packages/billing/tests/schema_reapply.py`), because it cannot import this repository's.
 ### 61. (moved)
-Moved to `BILLING_INTEGRATION.md` (constitution Principle VIII, "Self-contained packages"). The number is kept so earlier references resolve and is never reused or shifted.
+Moved to `packages/billing/docs/PATTERNS.md` (constitution Principle VIII, "Self-contained packages"). The number is kept so earlier references resolve and is never reused or shifted.
 
 ### 62. The per-turn ledger stops being written: one record of spend, and what that costs
 The caps sum the usage events (pattern 58) and the reconciliation no longer compares the ledger (pattern 61), so the per-turn `usage_ledger` row had no reader left. This change stops writing it (specs/010 T030c2): the turn-end row in `_record_turn_metrics`, the subagent run's own row, `metered_invoke(to_ledger=...)` and the follow-up, compaction and cron call sites that passed it, `record_usage` itself, the `LedgerWriteFailing` alert and the `ledger_write` metric path. One record of what was spent remains, written where the call is made.

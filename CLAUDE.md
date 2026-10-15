@@ -57,7 +57,7 @@ they delete volumes or kill running processes.
 - `app/core/` — config, security (`SecurityCtx`), metrics, errors, scrubbing, resilience.
 - `packages/billing/` — the credit wallet, payment webhooks, the billing half of a usage meter (rate, record,
   debit, export), the credit gate and operator CLIs as an independent package (`credit_billing`, src layout,
-  own pyproject/tests/schema/alerts/docs). It imports nothing from `app`; the app reaches it only through
+  own pyproject/tests/schema/alerts/docs/specs). It imports nothing from `app`; the app reaches it only through
   `app/billing_integration/port.py` and carries no billing logic of its own (it hands over six plain fields per
   model call and asks one question per turn); a test on each side enforces it, and one scans the app for any
   billing vocabulary. Edit the package, not the copies: `postgres-init/20-`, `22-`, `24-` and `25-`, the
@@ -130,3 +130,5 @@ story. Amend the constitution only through `/speckit-constitution` and a PR.
 
 Path-scoped guidance loads automatically from `.claude/rules/`: `side-effect-tools.md`,
 `runtime-reliability.md`, `testing.md`.
+
+The billing package's own specs (010-013) live in `packages/billing/specs/`; `specs/` keeps a one-file pointer for each, so Spec Kit still counts the numbers as taken (the next is 014).
