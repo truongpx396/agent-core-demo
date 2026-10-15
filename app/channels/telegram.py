@@ -42,6 +42,7 @@ Run with: `python -m app.channels.telegram` (Makefile's `telegram`/
 import asyncio
 import logging
 import signal
+from contextlib import aclosing
 
 import httpx
 import redis.asyncio as redis
@@ -145,14 +146,17 @@ async def _run_turn(text: str, thread_id: str, ctx: SecurityCtx) -> tuple[str, l
     channel needs one full reply per message, not the raw event stream."""
     parts: list[str] = []
     citations: list[dict] = []
-    async for event in astream_events_turn_unattended(text, thread_id, ctx):
-        kind = event["type"]
-        if kind == "token":
-            parts.append(event["content"])
-        elif kind == "citations":
-            citations = event["items"]
-        elif kind == "error":
-            return event["content"], []
+    # `aclosing`: the `error` branch returns before the stream is exhausted, and a bare
+    # `async for` leaves it to the event loop's finalizer to close what that return abandoned.
+    async with aclosing(astream_events_turn_unattended(text, thread_id, ctx)) as events:
+        async for event in events:
+            kind = event["type"]
+            if kind == "token":
+                parts.append(event["content"])
+            elif kind == "citations":
+                citations = event["items"]
+            elif kind == "error":
+                return event["content"], []
     return "".join(parts), citations
 
 

@@ -725,17 +725,22 @@ async def astream_events_turn_unattended(
         nonlocal paused
         paused = False
         pending_tools.clear()
-        async for event in stream:
-            if event.get("type") == "approval_required":
-                paused = True
-                pending_tools.extend(tc.get("name", "?") for tc in event.get("tool_calls", []))
-                continue
-            yield event
+        # `aclosing` here and on the two loops over `_drain` below: this wrapper holds three
+        # generators open at once, and a consumer that stops early closes only the outermost
+        # (see `aclosing` in `astream_events_turn`), so each must close the one it drives.
+        async with aclosing(stream):
+            async for event in stream:
+                if event.get("type") == "approval_required":
+                    paused = True
+                    pending_tools.extend(tc.get("name", "?") for tc in event.get("tool_calls", []))
+                    continue
+                yield event
 
-    async for event in _drain(
-        astream_events_turn(text, thread_id, ctx, require_approval=require_approval, images=images)
-    ):
-        yield event
+    async with aclosing(
+        _drain(astream_events_turn(text, thread_id, ctx, require_approval=require_approval, images=images))
+    ) as events:
+        async for event in events:
+            yield event
 
     declines = 0
     while paused:
@@ -756,8 +761,9 @@ async def astream_events_turn_unattended(
         # admitted=True: this decline is a step of the request that already passed the
         # allowance at its start. Re-checking here could refuse it and leave the
         # conversation paused — the stranded-pause bug this loop exists to prevent.
-        async for event in _drain(astream_events_resume(thread_id, False, ctx, admitted=True)):
-            yield event
+        async with aclosing(_drain(astream_events_resume(thread_id, False, ctx, admitted=True))) as events:
+            async for event in events:
+                yield event
 
 
 async def astream_events_resume(

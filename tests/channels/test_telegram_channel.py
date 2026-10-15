@@ -123,6 +123,27 @@ def _fake_astream(events):
     return _fake, captured
 
 
+class TestRunTurn:
+    async def test_an_error_event_returns_early_and_closes_the_stream_it_abandoned(self, monkeypatch):
+        """The `error` branch returns before the stream is exhausted. A bare `async for` would leave
+        the closing of what that return abandoned to the event loop's finalizer."""
+        closed = []
+
+        async def fake_unattended(text, thread_id, ctx):
+            try:
+                yield {"type": "error", "content": "Something went wrong."}
+                yield {"type": "done"}
+            finally:
+                closed.append(True)
+
+        monkeypatch.setattr(telegram_channel, "astream_events_turn_unattended", fake_unattended)
+
+        reply = await telegram_channel._run_turn("hi", "telegram:1", object())
+
+        assert reply == ("Something went wrong.", [])
+        assert closed == [True]
+
+
 class TestHandleMessage:
     async def test_calls_astream_events_turn_unattended_with_the_scoped_thread_and_ctx_and_replies(
         self, monkeypatch
