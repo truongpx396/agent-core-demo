@@ -40,10 +40,11 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from app.agent.cost import budgets, pricing
+from app.agent.cost import budget_holds, budgets, pricing
 from app.agent.graph.build import build_graph
 from app.agent.graph.compaction import COMPACTION_MARKER_KEY
 from app.agent.graph.state import MAX_ITERATIONS
+from app.agent.runtime import sessions
 from app.core.config import (
     BUDGET_CHECK_FAILURE_POLICY,
     CHAT_MODEL,
@@ -149,8 +150,6 @@ async def reserve_turn_budget(ctx: SecurityCtx | None) -> str | None:
     invalid or the write itself failed — callers pass this straight to
     `release_turn_budget` in a `finally`, so a failed reservation and a real
     one both round-trip correctly (releasing None is a no-op)."""
-    from app.agent.cost import budget_holds
-
     return await budget_holds.reserve_budget(ctx, MAX_COST_USD_PER_TURN)
 
 
@@ -160,8 +159,6 @@ async def release_turn_budget(ctx: SecurityCtx | None, hold_id: str | None) -> N
     reservation's whole job is to cover the WINDOW while this turn is
     running, not to track whether it actually succeeded (the usage events,
     written as each call returned, are the real accounting for a turn)."""
-    from app.agent.cost import budget_holds
-
     await budget_holds.release_budget_reservation(ctx, hold_id)
 
 
@@ -177,8 +174,6 @@ async def upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> 
     alongside `_graph`), so the stamped row always matches whichever domain
     actually ran the turn, regardless of caller.
     """
-    from app.agent.runtime import sessions
-
     await sessions.upsert_session(ctx, thread_id, text, domain=_domain_name)
 
 
