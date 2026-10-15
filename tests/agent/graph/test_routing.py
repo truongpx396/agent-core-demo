@@ -25,6 +25,8 @@ from app.agent.graph.loop_guards import (
     _use_skill_called_without_search,
 )
 from app.agent.graph.routing import route_after_check, should_continue
+from app.agent.graph.skill_guards import _pending_skill_required_tool
+from app.agent.graph.tool_guards import _reject_tool_calls
 from tests.conftest import TEST_CTX
 
 
@@ -660,3 +662,21 @@ class TestRouteAfterCheck:
         }
         route_after_check(state)
         assert metric_value(metrics.agent_retry_exhausted_total) == before + 1
+
+
+class TestPendingSkillRequiredTool:
+    def test_a_required_tool_the_person_rejected_is_no_longer_demanded(self):
+        """Real bug: `_reject_tool_calls` built its ToolMessages without a `name`, and
+        `_pending_skill_required_tool` only counts a tool as dealt with when a ToolMessage
+        carries its name — so a call the person REJECTED at the approval gate was still
+        "pending", the agent kept being told to call it, and `check_output` kept demanding it."""
+        turn = [
+            HumanMessage(content="work out the deal math"),
+            _tool_call("use_skill", "s1"),
+            ToolMessage(content="Use run_python_in_sandbox for the math.", tool_call_id="s1", name="use_skill"),
+            _tool_call("run_python_in_sandbox", "p1"),
+            *_reject_tool_calls(
+                [{"name": "run_python_in_sandbox", "args": {}, "id": "p1"}], "Rejected by human reviewer."
+            ),
+        ]
+        assert _pending_skill_required_tool(turn) is None

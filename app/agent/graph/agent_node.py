@@ -15,6 +15,7 @@ from langchain_core.runnables import RunnableConfig
 from app.agent.cost import metering
 from app.agent.graph import core as graph_module
 from app.agent.graph.core import State
+from app.agent.graph.messages import _is_retry_artifact, _is_user_message
 from app.agent.graph.skill_guards import _pending_skill_required_tool
 from app.agent.graph.tool_guards import _current_turn_messages
 from app.core.untrusted import frame_untrusted
@@ -53,6 +54,20 @@ def make_agent_node(llm, model_alias: str | None = None, kind: str = "chat"):
         messages = list(state["messages"])
         anchor = state.get("context_anchor_index")
         history_summary = state.get("history_summary", "")
+        # Earlier turns' retry artifacts (a rejected answer and the feedback it drew, see
+        # messages.RETRY_ARTIFACT_KEY) are history the model must not see again: replayed, the
+        # feedback reads as something the person said. THIS turn's stay, because the retry in
+        # progress needs them. Dropping shifts indexes, so `anchor` is re-located by identity
+        # (the anchored message is the turn's own question, never a dropped artifact).
+        turn_start = next(
+            (i for i in range(len(messages) - 1, -1, -1) if _is_user_message(messages[i])), None
+        )
+        if turn_start is not None and any(_is_retry_artifact(m) for m in messages[:turn_start]):
+            anchor_msg = (
+                messages[anchor] if isinstance(anchor, int) and 0 <= anchor < len(messages) else None
+            )
+            messages = [m for i, m in enumerate(messages) if i >= turn_start or not _is_retry_artifact(m)]
+            anchor = next((i for i, m in enumerate(messages) if m is anchor_msg), None)
         context = state.get("context", "")
 
         # history_summary and context are front-loaded together, right

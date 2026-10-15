@@ -19,6 +19,7 @@ from app.agent.graph import hitl as graph_hitl
 from app.agent.graph import retrieval as graph_retrieval
 from app.agent.graph import retry as graph_retry
 from app.agent.graph import routing as graph_routing
+from app.agent.graph.messages import RETRY_ARTIFACT_KEY, _is_retry_artifact
 from app.core import metrics, moderation
 from tests.conftest import TEST_CTX, metric_value
 
@@ -1253,6 +1254,33 @@ def test_retry_output_appends_corrective_human_message():
     assert "short" in msg.content.lower()
 
 
+def test_retry_output_tags_the_feedback_and_the_answer_it_rejected_as_retry_artifacts():
+    """The feedback is a HumanMessage, but not something the person said; the rejected answer is
+    not one they were shown. Both are tagged so every reader of "the user's message" / "this
+    turn" can skip them (pattern 5). The rejected answer comes back with its OWN id, so
+    `add_messages` replaces it in the thread instead of appending a second copy."""
+    rejected = AIMessage(content="ok", id="a1")
+    result = graph_retry.retry_output({"messages": [HumanMessage(content="q", id="h1"), rejected]})
+    retagged, feedback = result["messages"]
+    assert (retagged.id, retagged.content) == ("a1", "ok")
+    assert retagged.additional_kwargs[RETRY_ARTIFACT_KEY] is True
+    assert isinstance(feedback, HumanMessage) and feedback.additional_kwargs[RETRY_ARTIFACT_KEY] is True
+    assert not _is_retry_artifact(rejected)  # the state's own message is not mutated
+
+
+def test_retry_output_never_tags_an_answer_that_asked_for_tools():
+    """Dropping a tool-calling AIMessage later would orphan its ToolMessages."""
+    asked = AIMessage(content="", id="a1", tool_calls=[{"name": "calculator", "args": {}, "id": "c1"}])
+    result = graph_retry.retry_output({"messages": [asked]})
+    assert [type(m) for m in result["messages"]] == [HumanMessage]
+
+
+def test_retry_output_does_not_append_a_duplicate_of_an_answer_that_has_no_id():
+    """Without an id `add_messages` could not replace it, only append a second copy."""
+    result = graph_retry.retry_output({"messages": [AIMessage(content="ok")]})
+    assert [type(m) for m in result["messages"]] == [HumanMessage]
+
+
 def test_retry_output_too_short_feedback_also_nudges_toward_tool_use():
     """The "too_short" branch also covers a genuinely EMPTY response (no
     text, no tool_calls) — the common round-1 failure that precedes a
@@ -1661,6 +1689,43 @@ class TestNoAnswerFallback:
         assert "messages" in result
         assert "wasn't able to verify that with a real result" in result["messages"][0].content
 
+    def test_a_safety_net_exit_answers_the_tool_calls_it_never_ran(self):
+        """Real bug: the exit left the AIMessage's tool_calls with no ToolMessage, and the next
+        LLM call on that thread fails. The text written alongside the request is narration, not
+        a final answer, so it is replaced rather than shown even though it would pass check_output."""
+        asked = AIMessage(
+            content="Here is the full answer you wanted, in detail.",
+            id="a1",
+            tool_calls=[
+                {"name": "calculator", "args": {}, "id": "c1"},
+                {"name": "search_docs", "args": {}, "id": "c2"},
+            ],
+        )
+        result = graph_retry.make_no_answer_fallback_node()({"messages": [asked], "citations": []})
+
+        *rejections, fallback = result["messages"]
+        assert [(m.tool_call_id, m.name) for m in rejections] == [("c1", "calculator"), ("c2", "search_docs")]
+        assert isinstance(fallback, AIMessage) and not fallback.tool_calls
+        assert "full answer you wanted" not in fallback.content
+        assert not any(_is_retry_artifact(m) for m in result["messages"])  # `asked` is left as it was
+
+    def test_a_subagent_exit_still_answers_the_tool_calls_but_adds_no_fallback_message(self):
+        """emit_message=False must stay free of prose (run_subagent reads an empty final
+        AIMessage as "budget_exceeded"), but the history must still be well-formed."""
+        asked = AIMessage(content="", tool_calls=[{"name": "calculator", "args": {}, "id": "c1"}])
+        result = graph_retry.make_no_answer_fallback_node(emit_message=False)({"messages": [asked]})
+        assert [(type(m).__name__, m.tool_call_id) for m in result["messages"]] == [("ToolMessage", "c1")]
+
+    def test_the_untrusted_answer_it_replaces_is_kept_as_a_retry_artifact(self):
+        """So a transcript replay shows the fallback, not the answer that was judged unusable."""
+        narrated = AIMessage(
+            content="I will now run this script in the sandbox to get the actual contract value.", id="a1"
+        )
+        result = graph_retry.make_no_answer_fallback_node()({"messages": [narrated], "citations": []})
+        replaced, fallback = result["messages"]
+        assert (replaced.id, _is_retry_artifact(replaced)) == ("a1", True)
+        assert not _is_retry_artifact(fallback)
+
     def test_emit_message_false_skips_everything_for_the_nested_subagent_case(self):
         """run_subagent's own nested graphs (emit_no_answer_message=False)
         need the SAME genuine emptiness should_continue's routing already
@@ -1673,3 +1738,18 @@ class TestNoAnswerFallback:
             "citations": [{"marker": "[1]", "text": "Checkpointers persist state."}],
         }
         assert no_answer(state) == {}
+
+
+class TestRetryExhaustedArtifacts:
+    def test_the_answer_it_gives_up_on_is_kept_as_a_retry_artifact(self):
+        """The replaced answer was judged untrustworthy; a replay must show only the fallback."""
+        rejected = AIMessage(content="Here is a script and its invented output.", id="a1")
+        state = {"messages": [rejected], "last_retry_reason": "fabricated"}
+        result = graph_retry.make_retry_exhausted_node()(state)
+        replaced, fallback = result["messages"]
+        assert (replaced.id, _is_retry_artifact(replaced)) == ("a1", True)
+        assert not _is_retry_artifact(fallback) and fallback.content
+
+    def test_a_trusted_answer_is_left_alone(self):
+        state = {"messages": [AIMessage(content="A correct answer.", id="a1")], "last_retry_reason": "uncited"}
+        assert graph_retry.make_retry_exhausted_node()(state) == {}

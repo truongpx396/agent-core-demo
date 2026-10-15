@@ -24,17 +24,20 @@ is never reused or shifted. **Bug** marks a real defect that was found and fixed
 - **Use when:** always. It costs nothing and catches most bad cases.
 
 ### 2. Context enrichment
-`retrieve_context` pre-fetches before the LLM reasons. `agent` appends the result as a `SystemMessage` just before the call; the base `SYSTEM_PROMPT` is seeded once per thread (`app/agent/runtime/core.py::_ensure_seeded_async`).
+`retrieve_context` pre-fetches before the LLM reasons. `agent` appends the result as a `SystemMessage` just before the call; the base `SYSTEM_PROMPT` is seeded once per thread and kept current by `app/agent/runtime/core.py::_ensure_seeded_async` (19).
 - **Use when:** you have a knowledge base (Qdrant, a DB, an API).
 
 ### 3. State tracking
 Flow control lives in explicit state (`iterations`, `context`, …), which is what makes loop limits, retries and conditional routing possible.
+- **Bug:** `context` and `context_anchor_index` are written only by `retrieve_context`, which a semantic-cache hit skips (22), and nothing reset them. A cache-hit answer that then failed `check_output` was retried with the PREVIOUS turn's retrieved text spliced in at the previous turn's index. `validate_input` now resets both each turn (`test_safety_budgets.py::TestPerTurnReset`).
 
 ### 4. Conditional routing
 `should_continue` is an edge function, not a node: it decides where execution goes after `agent` (tools, approval, budget exit, or done).
 
 ### 5. Output gate with a real retry
 `check_output` + `route_after_check` + `retry_output`. A suspiciously short answer routes to `retry_output`, which appends a corrective `HumanMessage` and loops to `agent`. `MAX_ITERATIONS` bounds the retries. Pattern 50 adds two retry reasons from live findings.
+- **Retry artifacts:** the feedback is a `HumanMessage` only because that is the role a model acts on; it is not something the person said. `retry_output` tags it, and the answer it rejected, with `additional_kwargs[RETRY_ARTIFACT_KEY]` (`graph/messages.py`). `_is_user_message` is how every reader finds "the user's message" or "this turn"; `get_session_messages` and `_format_turns_for_summary` skip artifacts; the agent node drops earlier turns' artifacts before a call but keeps this turn's, because the retry needs them. `retry_exhausted` and `no_answer` tag the untrusted answer they replace the same way. An `AIMessage` with `tool_calls` is never tagged: dropping it would orphan its `ToolMessage`s.
+- **Bug:** the feedback was saved as a plain `HumanMessage`, and everything that looks for the last `HumanMessage` found it. After one retry round the semantic cache was keyed by the feedback text instead of the question, a vague follow-up ("more detail pls") searched on the feedback plus itself, the transcript replay showed the feedback as a user message beside the rejected answer, and `_turn_acted` only saw the messages after the feedback, so a turn that ran an approved write and then retried **was written to the semantic cache** (under the feedback text, so a replay was unlikely, but the guarantee in 22 that a cached answer never replays a write no longer held). Tests: `test_graph_integration.py::TestRetryFeedbackIsNotConversation`.
 
 ### 6. Loop control
 `MAX_ITERATIONS` is the shared cap for both the tool loop and the output-retry loop.
@@ -49,6 +52,7 @@ Flow control lives in explicit state (`iterations`, `context`, …), which is wh
 `human_approval` calls `interrupt()`, which suspends the node and persists state through the checkpointer; a caller resumes with `Command(resume=True/False)`. Two routes reach it: the opt-in `require_approval` flag, and the mandatory route for any non-`read_only` call (15). `make chat-hitl` is a runnable example.
 - **Gotcha:** a rejection still needs a matching `ToolMessage` per pending `tool_call`, or the next LLM call fails. `human_approval` synthesizes them.
 - **Unattended callers** (`astream_events_turn_unattended`: Telegram, fire-and-forget jobs) auto-decline with `Command(resume=False)`.
+- **Bug:** a rejection's `ToolMessage` had no `name`, and `_pending_skill_required_tool` counts a required tool as dealt with only when a `ToolMessage` names it. A person who rejected the `run_python_in_sandbox` call a loaded skill demanded was still told "call run_python_in_sandbox now" on every later round, and `check_output` kept rejecting answers for skipping it. `_reject_tool_calls` now sets `name` on every rejection (human, cancel, over-budget, invalid name, `use_skill` without search). Test: `test_routing.py::TestPendingSkillRequiredTool`.
 - **Bug:** it declined only once, so a model that re-requested the gated write left the checkpoint paused: an empty reply, then every later message refused as "pending approval". It now declines up to `UNATTENDED_MAX_DECLINE_ROUNDS` (3), then cancels the run and sends one explicit "needs a person's approval" message. Test: `test_agent_pause_handling.py::TestUnattendedSecondPause` (earlier tests mocked the stream and never drove a second pause).
 - **Use when:** an action sends, writes, spends or deletes.
 
@@ -72,6 +76,7 @@ Flow control lives in explicit state (`iterations`, `context`, …), which is wh
 
 - **Bug:** `iterations` and `total_tokens` persist across a thread, so `validate_input` resets them each turn (not on a resume).
 - **Bug:** a reset only works if the field's reducer allows it. `subagent_spend` used `operator.add`, so "reset to `[]`" did nothing and old spend counted against later turns; `cancelled`/`approved` weren't reset at all (36). The test asserted the return value, which can't see a reducer. Assert on state read back across two turns (`test_safety_budgets.py::TestPerTurnResetThroughTheGraph`).
+- **Bug:** the four safety-net exits (iterations, tokens, cost, no-progress) route to `no_answer`, which appended a fallback message but never answered the `tool_calls` of the `AIMessage` that tripped them. The thread kept a call with no `ToolMessage` for good, and the next LLM call on it is rejected by OpenAI-style APIs. `no_answer_fallback` now answers each pending call (also for a subagent, whose last `AIMessage` stays the empty tool-call one, so `run_subagent` still reports `budget_exceeded`), and treats text written alongside a tool request as untrusted, not as a final answer. Test: `test_graph_integration.py::TestNoProgressDetection`.
 - **Use when:** any agent talking to a real model and tools. The pattern (several narrow budgets) matters more than the numbers.
 
 ### 11. Custom metrics
@@ -94,7 +99,7 @@ Retrieved text is wrapped in `<retrieved_document>` delimiters, and `SYSTEM_PROM
 `messages` is the one `State` field with no cap by construction. `compact_history` (right after `validate_input`) trims via `RemoveMessage` with an estimated-token hysteresis: no-op at or under `HISTORY_TOKEN_CEILING`; once exceeded, drop the oldest whole turns until at or under the lower `HISTORY_TOKEN_FLOOR`.
 - **Hysteresis, not "trim back to N":** trimming to the same ceiling re-triggers summarization on nearly every turn and shifts every later token, invalidating the provider's prefix cache.
 - **Tokens, not turns:** turns vary wildly; a `tiktoken` estimate (approximate) tracks the context window.
-- **Turn-aware:** a turn runs from a `HumanMessage` to the next, so a `tool_call`/`ToolMessage` pair is never split (an orphan fails the next LLM call). The system prompt and latest turn are never dropped. Dropped turns are folded into a summary (41).
+- **Turn-aware:** a turn runs from a message the person sent to the next (not from `retry_output`'s feedback, which is a `HumanMessage` too, 5), so a `tool_call`/`ToolMessage` pair is never split (an orphan fails the next LLM call). The system prompt and latest turn are never dropped. Dropped turns are folded into a summary (41).
 
 ### 14. Node telemetry
 `build_graph` wraps every node (never inside the node) in `_instrumented`, which logs `node_started` then `node_completed`/`node_failed`/`node_paused` with the node name, a per-turn `run_id` and `duration_ms`. `human_approval`'s `GraphInterrupt` is a normal pause, logged as `node_paused` and re-raised untouched.
@@ -131,6 +136,7 @@ A `SecurityCtx` (`tenant`, `principal`, `claims`) is stamped once by `validate_i
 
 ### 19. Prompt-cache stability
 `SYSTEM_PROMPT` is a plain constant: no principal, tenant or timestamp is ever interpolated. `SecurityCtx` flows through `config`/`state["ctx"]`, never into the messages sent to the LLM. The classic cache-buster, `ctx["principal"]` in the prefix, looks stable within one conversation and only shows once a second principal shares the manifest. `tests/agent/graph/test_prompt_cache_stability.py` asserts byte-identical rendering across two ctx values, plus a leak sweep.
+- **Bug:** `_ensure_seeded_async` only asked whether a `SystemMessage` with the CURRENT text existed, so every prompt edit appended the new prompt after the old one in every existing thread (`System(v1), Human, AI, System(v2), …`). `_messages_to_trim` never trims a `SystemMessage`, so both stayed for the thread's life, possibly contradicting each other. It now replaces the thread's first prompt in place (same message id) when the text differs and removes any further one, which also heals threads the old code had duplicated; a compaction breadcrumb is not a prompt and is left alone; an unchanged prompt writes nothing. The prefix changes once, at the edit. Tests: `tests/agent/runtime/test_prompt_seeding.py`.
 - **Use when:** more than one principal's traffic shares a deployment behind a provider that discounts a stable prefix.
 
 ### 20. Hybrid retrieval, rerank and cited answers

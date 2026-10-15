@@ -34,15 +34,16 @@ import, for the same monkeypatch reason.
 """
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import RemoveMessage, SystemMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from app.agent.cost import budgets, pricing
 from app.agent.graph.build import build_graph
+from app.agent.graph.compaction import COMPACTION_MARKER_KEY
 from app.agent.graph.core import MAX_ITERATIONS
 from app.core.config import (
     BUDGET_CHECK_FAILURE_POLICY,
@@ -274,7 +275,7 @@ async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "Dom
 
 
 async def _ensure_seeded_async(graph, thread_id: str) -> None:
-    """Seed a new conversation thread with the system prompt exactly once.
+    """Make a conversation thread carry exactly one system prompt, the CURRENT one.
     ASYNC only — the streaming entry points run directly on the
     checkpointer's own event loop, where the sync `update_state` raises
     `asyncio.InvalidStateError`; only `aupdate_state` is safe there.
@@ -294,17 +295,35 @@ async def _ensure_seeded_async(graph, thread_id: str) -> None:
     actual persisted state before seeding, and only using `_seeded` to skip
     that check once this process has confirmed it — one extra `aget_state`
     per thread per process, not per turn.
+
+    That check used to ask only "is a SystemMessage with the CURRENT text
+    here?", so editing the prompt appended the new one after the old one in
+    every existing thread — `System(v1), Human, AI, System(v2), …` — and
+    both stayed for the thread's life, contradicting each other. Now the
+    thread's first prompt is REPLACED in place when its text differs (same
+    message id, so `add_messages` overwrites rather than appends: the
+    prefix changes once, at the edit, and stays at the front), and any
+    further prompt is removed, which also heals a thread the old code had
+    already duplicated. A compaction breadcrumb is a SystemMessage too but
+    not a prompt, and is left alone. An unchanged prompt writes nothing.
     """
     if thread_id in _seeded:
         return
     cfg = {"configurable": {"thread_id": thread_id}}
     state = await graph.aget_state(cfg)
-    already_seeded = any(
-        isinstance(m, SystemMessage) and m.content == graph.manifest.system_prompt
+    system_prompt = graph.manifest.system_prompt
+    prompts = [
+        m
         for m in state.values.get("messages", [])
-    )
-    if not already_seeded:
-        await graph.aupdate_state(
-            cfg, {"messages": [SystemMessage(content=graph.manifest.system_prompt)]}
-        )
+        if isinstance(m, SystemMessage) and not m.additional_kwargs.get(COMPACTION_MARKER_KEY)
+    ]
+    if not prompts:
+        updates: list = [SystemMessage(content=system_prompt)]
+    else:
+        updates = []
+        if prompts[0].content != system_prompt:
+            updates.append(SystemMessage(content=system_prompt, id=prompts[0].id))
+        updates.extend(RemoveMessage(id=cast(str, m.id)) for m in prompts[1:])
+    if updates:
+        await graph.aupdate_state(cfg, {"messages": updates})
     _seeded.add(thread_id)

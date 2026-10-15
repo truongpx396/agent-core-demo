@@ -23,6 +23,7 @@ from app.agent.graph.build import build_graph
 from app.agent.graph.compaction import (
     COMPACTION_MARKER_KEY,
     _estimate_tokens,
+    _format_turns_for_summary,
     _messages_to_trim,
     _trim_history,
     make_compact_history_node,
@@ -100,6 +101,20 @@ class TestPerTurnReset:
         state = {"messages": [HumanMessage(content="hi")]}
         result = validate_input(state, _cfg())
         assert result["ctx"] == TEST_CTX
+
+    def test_validate_input_forgets_the_previous_turns_retrieved_context(self):
+        """`context`/`context_anchor_index` are persisted State fields set only by
+        `retrieve_context`. A cache-hit turn skips that node, so without a reset a
+        `check_output` retry on it spliced the PREVIOUS turn's context at the previous turn's
+        index into its call."""
+        state = {
+            "messages": [HumanMessage(content="hi")],
+            "context": "[1] last turn's retrieved text",
+            "context_anchor_index": 4,
+        }
+        result = validate_input(state, _cfg())
+        assert result["context"] == ""
+        assert result["context_anchor_index"] is None
 
     def test_validate_input_stamps_none_when_config_has_no_ctx(self):
         state = {"messages": [HumanMessage(content="hi")]}
@@ -316,6 +331,25 @@ class TestHistoryBudget:
         # messages, must be a no-op — real headroom exists before the next
         # turn's own growth could retrigger it.
         assert _messages_to_trim(survivors, ceiling=ceiling, floor=floor) == []
+
+    def test_retry_feedback_is_not_a_turn_boundary_and_never_summarized_as_conversation(self):
+        """With feedback counted as a turn start, a floor sized to "feedback onward" cut the
+        history right at the feedback, leaving it as the first thing the model read. It is part
+        of the turn it belongs to, and is dropped or kept with it."""
+        artifact = {"retry_artifact": True}
+        messages = [
+            HumanMessage(content="first question " * 20, id="h1"),
+            AIMessage(content="ok", id="a1", additional_kwargs=artifact),
+            HumanMessage(content="That answer was too short", id="fb", additional_kwargs=artifact),
+            AIMessage(content="first answer " * 20, id="a1b"),
+            HumanMessage(content="second question", id="h2"),
+            AIMessage(content="second answer", id="a2"),
+        ]
+        floor = _estimate_tokens(messages[2:])  # what "feedback onward" would keep, if it were a turn
+        trimmed = _messages_to_trim(messages, ceiling=1, floor=floor)
+        assert [m.id for m in trimmed] == ["h1", "a1", "fb", "a1b"]
+        assert "too short" not in _format_turns_for_summary(trimmed)
+        assert "ok" not in _format_turns_for_summary(trimmed).split("Assistant: ")
 
     def test_validate_input_no_longer_touches_messages(self):
         """Trimming/summarization moved to compact_history (see below) —
