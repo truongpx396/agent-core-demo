@@ -70,6 +70,7 @@ async def _invoke_and_approve(endpoint: dict, text: str):
 
 async def test_real_model_calls_two_tools_in_one_turn_and_both_run_after_approval(ollama_endpoint):
     graph, config, paused_state, result = await _invoke_and_approve(
+        ollama_endpoint,
         "What is 15 * 3? Use the calculator tool for that. Also use the "
         "add_note tool right now to save a note with title 'Demo', topic "
         "'company', content 'multi-tool-call test'. Call BOTH tools in "
