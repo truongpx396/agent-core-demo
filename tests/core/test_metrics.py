@@ -1,5 +1,5 @@
 """Tests for OpenTelemetry metrics wiring: the tool-call callback handler
-and the direct increments inside graph.py's nodes for events a generic
+and the direct increments inside app/agent/graph/core.py's nodes for events a generic
 callback can't reliably distinguish (see app/core/metrics.py's module docstring
 for why the split exists).
 
@@ -15,13 +15,14 @@ import uuid
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent import graph, graph_routing
-from app.agent.graph import GraphDeps
-from app.agent.graph_build import build_graph
-from app.agent.graph_hitl import human_approval
-from app.agent.graph_retrieval import make_retrieve_context_node
-from app.agent.graph_retry import retry_output
-from app.agent.graph_tools import too_many_tool_calls
+from app.agent.graph import core as graph
+from app.agent.graph import routing as graph_routing
+from app.agent.graph.build import build_graph
+from app.agent.graph.core import GraphDeps
+from app.agent.graph.hitl import human_approval
+from app.agent.graph.retrieval import make_retrieve_context_node
+from app.agent.graph.retry import retry_output
+from app.agent.graph.tool_guards import too_many_tool_calls
 from app.core import metrics
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
@@ -88,7 +89,7 @@ class TestNodeLevelMetrics:
         assert _count(metrics.agent_context_retrieval_degraded_total) == before + 1
 
     async def test_history_trim_increments_compacted_counter(self):
-        from app.agent.graph_compaction import (
+        from app.agent.graph.compaction import (
             _estimate_tokens,
             make_compact_history_node,
         )

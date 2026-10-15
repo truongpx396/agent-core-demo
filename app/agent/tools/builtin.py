@@ -7,7 +7,7 @@
 - `remember`: the only way a memory gets written — also mutating. Recall
   is automatic (folded into retrieve_context); writing never is.
 - `skill_search`/`use_skill`: progressive disclosure over a bundled catalog
-  of `SKILL.md` packages (`app/agent/skills.py`, GRAPH_PATTERNS.md pattern
+  of `SKILL.md` packages (`app/agent/tools/skill_catalog.py`, GRAPH_PATTERNS.md pattern
   45). `skill_search` hybrid-searches a small Qdrant collection of skill
   name/description metadata; `use_skill` loads one matched skill's full
   body from disk by exact name. Bundled app capability, not tenant data —
@@ -15,7 +15,7 @@
 - `run_subagent`: delegates a self-contained task to a fresh, ISOLATED
   nested agent run — a genuinely separate `graph.invoke()`, unlike
   `use_skill` which loads more instructions into THIS agent's context.
-  Backed by `AGENT.md` packages (`app/agent/subagents.py`, GRAPH_PATTERNS.md
+  Backed by `AGENT.md` packages (`app/agent/tools/subagent_catalog.py`, GRAPH_PATTERNS.md
   pattern 46). Every subagent is restricted to `read_only` tools (enforced
   at catalog-build time, see `_resolve_subagent_tools`), so `run_subagent`
   needs no mandatory `human_approval` gating.
@@ -31,7 +31,7 @@ GRAPH_PATTERNS.md's "fixed tools, never generated queries").
 `search_docs`, `add_note`, and `remember` receive `config: RunnableConfig`
 (auto-injected by `ToolNode`, auto-excluded from the LLM-visible schema) to
 read `SecurityCtx` from `config["configurable"]["ctx"]`. Each calls
-`_ctx_or_refuse` first and fails closed if `ctx` is missing/malformed,
+`ctx_or_refuse` first and fails closed if `ctx` is missing/malformed,
 rather than running an unscoped query or untenanted write.
 
 ## Cross-session memory
@@ -39,7 +39,7 @@ rather than running an unscoped query or untenanted write.
 Memory is written only by `remember` — nothing extracts facts from turn
 text automatically, since whatever writes memory decides what gets
 replayed into every future prompt. Recall is automatic (`_default_search`
-in app/agent/graph.py, alongside document retrieval) and re-filtered
+in app/agent/graph/core.py, alongside document retrieval) and re-filtered
 against *current* ctx every call (`Policy.lower(ctx, "memories")`, scoped
 to `tenant` AND `owner`), never trusted from a prior snapshot. A recalled
 memory is framed like a retrieved document — untrusted, delimited content
@@ -48,7 +48,6 @@ memory is framed like a retrieved document — untrusted, delimited content
 """
 import ast
 import asyncio
-import concurrent.futures
 import logging
 import operator
 import uuid
@@ -61,22 +60,22 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, InjectedToolCallId, tool
 
 # `ChatOpenAI` isn't constructed in THIS file anymore (moved to
-# subagent_tools.py's `_run_subagent_impl` fallback) — kept as a deliberate
-# re-export: subagent_tools.py reads it live as `tools_module.ChatOpenAI`
-# rather than importing it fresh, so tests/agent/test_concurrent_turns.py's
+# tools/run_subagent.py's `_run_subagent_impl` fallback) — kept as a deliberate
+# re-export: tools/run_subagent.py reads it live as `tools_module.ChatOpenAI`
+# rather than importing it fresh, so tests/agent/runtime/test_concurrent_turns.py's
 # `monkeypatch.setattr(tools_module, "ChatOpenAI", ...)` keeps working. Don't
 # "clean up" this import.
 from langchain_openai import ChatOpenAI  # noqa: F401
 from pydantic import BaseModel, Field, field_validator
 
-from app.agent import skills as skills_module
-from app.agent.tool_idempotency import idempotent
+from app.agent.tools import skill_catalog as skills_module
 from app.core.config import (
     SKILLS_COLLECTION,
     SKILLS_SEARCH_TOP_K,
 )
-from app.core.scrubbing import scrub
 from app.core.security import DEFAULT_POLICY, SecurityCtx, valid_ctx
+from app.core.tool_idempotency import idempotent
+from app.core.tool_runtime import NO_CTX_REFUSAL, arun_with_timeout, ctx_or_refuse
 from app.retrieval import qdrant_store
 from app.retrieval.embeddings import embed_sparse, embed_text
 
@@ -92,11 +91,6 @@ _OPS: dict[type, Callable[..., float]] = {
     ast.USub: operator.neg,
 }
 
-# Safety budget: bounds how long one tool call can block the graph (a hung
-# Qdrant call, or a pathological expression like `2**99999999999`, could
-# otherwise stall — or exhaust memory — the turn indefinitely).
-TOOL_TIMEOUT_SECONDS = 15
-
 # Length budget for add_note/remember: bounds the BM25 sparse-embedding cost
 # per write (embed_sparse has no internal truncation, unlike the ml-service
 # ONNX models — see _sparse_vector_or_none) and keeps a note/memory citable
@@ -104,9 +98,6 @@ TOOL_TIMEOUT_SECONDS = 15
 _MAX_NOTE_TITLE_CHARS = 200
 _MAX_NOTE_CONTENT_CHARS = 4000
 _MAX_MEMORY_CONTENT_CHARS = 2000
-_TOOL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
-    max_workers=8, thread_name_prefix="tool-timeout"
-)
 
 # Fixed, arbitrary namespace for uuid5's content-addressed point ids below —
 # same "any constant works, it just must never change once chosen" rule as
@@ -126,10 +117,11 @@ def _tool_call_point_id(tool_call_id: str) -> str:
     silently overwrite the first point instead of creating a second one.
     Unlike `ingestor.py::_content_point_id`, no content hash is folded in
     here — a tool_call_id is already a fresh, unique id per LLM decision
-    (see tool_idempotency.py's own docstring), so there's nothing else
+    (see app/core/tool_idempotency.py's own docstring), so there's nothing else
     worth keying on.
     """
     return uuid.uuid5(_TOOL_POINT_ID_NAMESPACE, tool_call_id).hex
+
 
 # Real bug (Langfuse trace ed435567): the model cited [3] on every sentence
 # of an answer unrelated to what [3] said. hybrid_search's RRF/dense
@@ -142,91 +134,6 @@ def _tool_call_point_id(tool_call_id: str) -> str:
 # base -> ml-service's Xenova/ms-marco-MiniLM-L-6-v2): same shape held
 # (+6.3 / -5.8..-6.8 / -11.3), so left unchanged.
 MIN_RERANK_SCORE = -8.0
-
-
-async def _arun_with_timeout(func, *args, _timeout_seconds: float | None = None, **kwargs):
-    """Await `func(*args, **kwargs)` and stop waiting after `_timeout_seconds`
-    (default TOOL_TIMEOUT_SECONDS). Raised TimeoutError is caught by
-    ToolNode's `handle_tool_errors=_friendly_tool_error` in app/agent/graph.py
-    and surfaced to the agent like any other tool exception.
-
-    Every tool in this app uses this now (not `_run_with_timeout` below),
-    wrapping a real coroutine with `asyncio.wait_for` since every tool impl
-    now awaits an async client. `_run_with_timeout` still exists for the one
-    caller with no running event loop to await on (see its own docstring).
-
-    `_timeout_seconds` is keyword-only, resolved fresh per call rather than
-    a plain default — a `= TOOL_TIMEOUT_SECONDS` default is bound once at
-    definition time and would stop honoring
-    `monkeypatch.setattr(tools, "TOOL_TIMEOUT_SECONDS", ...)` (caught by
-    tests/agent/test_safety_budgets.py). `run_subagent` is the one caller
-    that overrides it, to SUBAGENT_TIMEOUT_SECONDS.
-
-    Soft timeout: `asyncio.wait_for` cancels the awaiting task, not
-    necessarily whatever `func` is awaiting underneath — cancellation only
-    takes effect at `func`'s next `await` point, so a call stuck in a
-    non-cancellable operation can outlive this timeout in the background.
-
-    Result is scrubbed (app/core/scrubbing.py, GRAPH_PATTERNS.md pattern 32)
-    before returning — the one chokepoint every tool impl funnels through,
-    so secrets in a raw result never reach the model or a trace.
-    `run_subagent` returns a state dict here (scrubbing skips non-str
-    results) and scrubs its extracted answer text separately.
-    """
-    timeout = _timeout_seconds if _timeout_seconds is not None else TOOL_TIMEOUT_SECONDS
-    try:
-        result = await asyncio.wait_for(func(*args, **kwargs), timeout=timeout)
-    except TimeoutError as exc:
-        raise TimeoutError(f"Tool call exceeded the {timeout}s timeout.") from exc
-    return scrub(result) if isinstance(result, str) else result
-
-
-def _run_with_timeout(func, *args, _timeout_seconds: float | None = None, **kwargs):
-    """The sync survivor of `_arun_with_timeout`'s predecessor: still runs
-    `func` in a worker thread via `concurrent.futures`, not `asyncio.wait_for`
-    — its one caller, `app/domains/sandbox_tools.py::load_sandbox_tools`, runs
-    at plain Python import time (eager domain composition), before any event
-    loop exists. `mcp_client.load_remote_tools` (what it wraps) opens its own
-    throwaway loop via `asyncio.run(...)` internally; this dispatches that
-    whole call to a worker thread bounded by `future.result(timeout=...)`.
-    Every other caller has moved to `_arun_with_timeout` — keep this one only
-    for callers with no running loop, not as a general alternative.
-
-    Same soft-timeout caveat (Python can't forcibly kill the worker thread)
-    and same scrub() chokepoint as `_arun_with_timeout`.
-    """
-    timeout = _timeout_seconds if _timeout_seconds is not None else TOOL_TIMEOUT_SECONDS
-    future = _TOOL_EXECUTOR.submit(func, *args, **kwargs)
-    try:
-        result = future.result(timeout=timeout)
-    except concurrent.futures.TimeoutError as exc:
-        raise TimeoutError(f"Tool call exceeded the {timeout}s timeout.") from exc
-    return scrub(result) if isinstance(result, str) else result
-
-
-_NO_CTX_REFUSAL = (
-    "Refused: no valid tenant/principal context for this request. "
-    "This isn't something you can work around — it means the request "
-    "never got a security context stamped on it upstream."
-)
-
-
-def _ctx_from_config(config: RunnableConfig | None) -> SecurityCtx | None:
-    if not config:
-        return None
-    return config.get("configurable", {}).get("ctx")
-
-
-def _ctx_or_refuse(config: RunnableConfig | None, action: str) -> SecurityCtx | None:
-    """Fail-closed check every ctx-aware tool makes first: missing/malformed
-    ctx, or a ctx Policy doesn't `permit` for `action`, returns None (caller
-    returns _NO_CTX_REFUSAL) instead of running an unscoped query or
-    untenanted write. Never raises — a refusal is a normal ToolMessage, not
-    an exception path (handle_tool_errors is for actual failures)."""
-    ctx = _ctx_from_config(config)
-    if not valid_ctx(ctx) or not DEFAULT_POLICY.permit(action, ctx):
-        return None
-    return ctx
 
 
 def _safe_eval(node: ast.AST) -> float:
@@ -317,7 +224,7 @@ def _format_cited_context(hits: list, offset: int = 0) -> str:
 def _citation_records(hits: list, offset: int = 0) -> list[dict]:
     """Structured citation metadata — marker, source id, title, text,
     relevance score — one per hit, same numbering as
-    `_format_cited_context`. app/agent/graph.py stores these in
+    `_format_cited_context`. app/agent/graph/core.py stores these in
     State["citations"]; check_output filters them down to the ones the
     final answer actually referenced (GRAPH_PATTERNS.md pattern 20)."""
     records = []
@@ -346,7 +253,7 @@ async def _sparse_vector_or_none(text: str) -> tuple[list[int], list[float]] | N
     so it's dispatched via `asyncio.to_thread` here too, same as
     `qdrant_store.py::hybrid_search`'s read-side call — a bare sync call
     would otherwise block every OTHER turn sharing this process's event
-    loop for the embed's duration, and (worse) a `_arun_with_timeout`
+    loop for the embed's duration, and (worse) a `arun_with_timeout`
     caller has no `await` point during a bare sync call for its
     `asyncio.wait_for` timeout to actually cancel."""
     try:
@@ -410,10 +317,10 @@ async def search_docs(
     though "Support" is also a department query_employees can filter by).
     Only use query_employees instead when the question is actually asking
     WHO works somewhere — a specific person, a roster, or headcount."""
-    ctx = _ctx_or_refuse(config, "search")
+    ctx = ctx_or_refuse(config, "search")
     if ctx is None:
-        return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_search_docs_impl, query, topic, ctx, doc_ids)
+        return NO_CTX_REFUSAL
+    return await arun_with_timeout(_search_docs_impl, query, topic, ctx, doc_ids)
 
 
 async def _calculator_impl(expression: str) -> str:
@@ -426,7 +333,7 @@ async def _calculator_impl(expression: str) -> str:
 @tool(args_schema=CalculatorArgs)
 async def calculator(expression: str) -> str:
     """Evaluate a basic arithmetic expression, e.g. '21 * 2'."""
-    return await _arun_with_timeout(_calculator_impl, expression)
+    return await arun_with_timeout(_calculator_impl, expression)
 
 
 class AskClarificationArgs(BaseModel):
@@ -463,7 +370,7 @@ async def ask_clarification(question: str, options: list[str]) -> str:
     node, no new routing — the existing agent -> tools -> agent loop
     already does exactly what this needs.
     """
-    return await _arun_with_timeout(_ask_clarification_impl, question, options)
+    return await arun_with_timeout(_ask_clarification_impl, question, options)
 
 
 class AddNoteArgs(BaseModel):
@@ -531,19 +438,19 @@ async def add_note(
 
     This WRITES to the knowledge base — unlike search_docs/calculator, this
     changes what other users and future turns will see. It is declared
-    "mutating" in TOOL_CAPABILITIES, which means app/agent/graph.py's
+    "mutating" in TOOL_CAPABILITIES, which means app/agent/graph/core.py's
     should_continue routes it through human_approval every time, regardless
     of whether the caller opted into require_approval.
     """
-    ctx = _ctx_or_refuse(config, "write_note")
+    ctx = ctx_or_refuse(config, "write_note")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="add_note",
-        fn=lambda: _arun_with_timeout(_add_note_impl, title, content, topic, ctx, tool_call_id),
+        fn=lambda: arun_with_timeout(_add_note_impl, title, content, topic, ctx, tool_call_id),
     )
 
 
@@ -571,7 +478,7 @@ async def _remember_impl(content: str, ctx: SecurityCtx, tool_call_id: str) -> s
 
     `created_at` (UTC, ISO 8601) is what `Policy.lower`'s retention filter
     (app/core/security.py, GRAPH_PATTERNS.md pattern 33) and
-    `app/agent/memory.py::delete_memories` both read — stamped once, here,
+    `app/retrieval/memory.py::delete_memories` both read — stamped once, here,
     never caller-supplied. The point id is `tool_call_id`-derived
     (`_tool_call_point_id`, same reasoning as `_add_note_impl`'s own docstring),
     not a random draw, so a genuine re-run under the same tool_call_id
@@ -607,15 +514,15 @@ async def remember(
     long-term, not for information already answerable from the current
     conversation.
     """
-    ctx = _ctx_or_refuse(config, "write_memory")
+    ctx = ctx_or_refuse(config, "write_memory")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="remember",
-        fn=lambda: _arun_with_timeout(_remember_impl, content, ctx, tool_call_id),
+        fn=lambda: arun_with_timeout(_remember_impl, content, ctx, tool_call_id),
     )
 
 
@@ -641,13 +548,13 @@ async def recall_memories(ctx: SecurityCtx | None, query: str) -> str:
 async def gather_context(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]]:
     """Documents + this principal's memories, hybrid-searched and combined
     into ONE continuously-numbered citation sequence — called by
-    app/agent/graph.py's `_default_search` (the automatic pre-fetch every
+    app/agent/graph/core.py's `_default_search` (the automatic pre-fetch every
     turn), not the same call recall_memories/_search_docs_impl make on
     their own, though all three share the same retrieval/Policy machinery.
 
     Degrades to `("", [])` on missing ctx or a retrieval failure —
     enrichment, never fails the turn (see retrieve_context's try/except in
-    app/agent/graph.py).
+    app/agent/graph/core.py).
 
     Runs the doc/memory searches sequentially, not via `asyncio.gather` —
     they could run concurrently, but that's a separate optimization not
@@ -687,7 +594,7 @@ class QueryEmployeesArgs(BaseModel):
 async def _query_employees_impl(
     department: Department | None, name_contains: str | None, ctx: SecurityCtx
 ) -> str:
-    from app.agent import sql_store
+    from app.core import sql_store
 
     cap = TOOL_RESULT_CAPS["query_employees"]
     rows = await sql_store.query_employees(
@@ -729,10 +636,10 @@ async def query_employees(
     business hours, not who's on the Support team; that belongs to
     search_docs instead. This tool only answers "who works here", never
     "what are the hours/policies"."""
-    ctx = _ctx_or_refuse(config, "query_structured_data")
+    ctx = ctx_or_refuse(config, "query_structured_data")
     if ctx is None:
-        return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_query_employees_impl, department, name_contains, ctx)
+        return NO_CTX_REFUSAL
+    return await arun_with_timeout(_query_employees_impl, department, name_contains, ctx)
 
 
 class SkillSearchArgs(BaseModel):
@@ -787,7 +694,7 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
     own pair below is `make_skill_tools("ecorp")`; each of
     app/domains/support|sales|ops/domain.py builds its own instead of reusing
     Ecorp's tool objects, so a domain-tagged skill (`domains: [...]`,
-    app/agent/skills.py) never leaks into a domain it wasn't written for.
+    app/agent/tools/skill_catalog.py) never leaks into a domain it wasn't written for.
     Enforced in BOTH tools: use_skill loads by exact name with no search
     step, so it applies the same filter itself in case a model somehow
     guesses a foreign-domain skill's name.
@@ -828,7 +735,7 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
         use_skill with the best match's exact name to load its full
         instructions before proceeding. If nothing matches well, just proceed
         with your other tools directly — not every task has a packaged skill."""
-        return await _arun_with_timeout(_skill_search_impl, query)
+        return await arun_with_timeout(_skill_search_impl, query)
 
     async def _use_skill_impl(name: str) -> str:
         record = skills_module.get_skills().get(name)
@@ -840,7 +747,7 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
         body = record.body
         if "run_command_in_sandbox" in body:
             # Proactive nudge, not a replacement for the reactive check —
-            # app/agent/graph.py::_skipped_required_sandbox_after_skill still
+            # app/agent/graph/core.py::_skipped_required_sandbox_after_skill still
             # catches this after the fact if the model ignores it too (real
             # bug: even a skill body that explicitly says "don't estimate
             # this by hand" got ignored). Placed at the END so it survives a
@@ -857,7 +764,7 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
         """Load one skill's full instructions by its exact name (from
         skill_search's results). Follow the returned instructions using your
         other tools to complete the task."""
-        return await _arun_with_timeout(_use_skill_impl, name)
+        return await arun_with_timeout(_use_skill_impl, name)
 
     return skill_search, use_skill
 
@@ -920,7 +827,7 @@ TOOLS = [
 # --- Tool capability declarations -------------------------------------------
 # Each tool declares its exposure "leg": read_only (safe immediately),
 # mutating (writes persisted state), or outward (reaches outside the
-# corpus). app/agent/graph_routing.py's should_continue routes ANY
+# corpus). app/agent/graph/routing.py's should_continue routes ANY
 # non-read_only tool call through human_approval unconditionally (mandatory,
 # not the opt-in require_approval gate) — a RAG agent's context is untrusted
 # on essentially every turn (GRAPH_PATTERNS.md pattern 12), so mutating or
@@ -953,11 +860,11 @@ TOOL_RESULT_CAPS: dict[str, int] = {
 }
 
 # Deliberate, load-bearing side-effecting import — not an unused import to
-# clean up. subagent_tools.py builds the Ecorp-level `run_subagent` tool and
+# clean up. tools/run_subagent.py builds the Ecorp-level `run_subagent` tool and
 # inserts it into THIS module's `TOOLS` list as part of its own top-level
 # execution. Placed at the very end, after TOOLS/TOOL_CAPABILITIES are fully
-# defined, so importing `app.agent.tools` from anywhere always triggers this
-# too, regardless of import order. No import cycle: subagent_tools.py's own
+# defined, so importing `app.agent.tools.builtin` from anywhere always triggers this
+# too, regardless of import order. No import cycle: tools/run_subagent.py's own
 # top-level imports from this module are already defined by this point.
-from app.agent import subagent_tools  # noqa: E402, F401
+from app.agent.tools import run_subagent as subagent_tools  # noqa: E402, F401
 

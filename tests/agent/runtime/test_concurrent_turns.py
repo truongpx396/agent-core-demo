@@ -1,11 +1,11 @@
 """Dedicated concurrency-correctness suite — does running several turns at
-once (agent_worker.py's own `_MAX_CONCURRENCY` + `app/agent/runtime.py`'s
+once (agent_worker.py's own `_MAX_CONCURRENCY` + `app/agent/runtime/core.py`'s
 pooled checkpointer, both added specifically to let ONE worker process run
 multiple turns simultaneously instead of one at a time) actually produce
 correct, isolated results, or does it corrupt/cross-deliver state between
 concurrent turns?
 
-Separate from tests/agent/test_durable_checkpoint.py (this file's closest
+Separate from tests/agent/runtime/test_durable_checkpoint.py (this file's closest
 sibling, same "real Postgres, fake LLM, no live Ollama" shape, same
 `ensure_postgres()`/`reset_agent_singleton` pattern) because that file's own
 concurrent-access tests (`TestResumabilityErrorRejectsAnActivelyRunningThread`)
@@ -87,12 +87,12 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langchain_core.outputs import ChatGeneration, ChatResult
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from app.agent import runtime as agent_module
-from app.agent import runtime_stream as stream_module
-from app.agent import subagent_tools
-from app.agent import tools as tools_module
-from app.agent.graph import GraphDeps
-from app.agent.graph_build import build_graph
+from app.agent.graph.build import build_graph
+from app.agent.graph.core import GraphDeps
+from app.agent.runtime import core as agent_module
+from app.agent.runtime import stream as stream_module
+from app.agent.tools import builtin as tools_module
+from app.agent.tools import run_subagent as subagent_tools
 from app.core import metrics
 from app.job_queue import agent_worker, queue
 from app.retrieval import embeddings as embeddings_module
@@ -119,7 +119,7 @@ def _fixed_llm(text: str = "A sufficiently long final answer.", delay: float = 0
     (itertools.repeat never exhausts) — these tests care whether turns
     interfere with EACH OTHER, not whether each gets a distinct scripted
     reply, so one fixed response is enough. `delay` (same technique as
-    tests/agent/test_durable_checkpoint.py's own `_SlowFakeLLM`) awaits
+    tests/agent/runtime/test_durable_checkpoint.py's own `_SlowFakeLLM`) awaits
     between streamed chunks so several concurrent turns' LLM calls
     genuinely overlap in wall-clock time instead of the fake model
     returning instantly — needed for the overlap-timing assertion in
@@ -169,7 +169,7 @@ def _echoing_llm(respond: Callable[[list[BaseMessage]], AIMessage]):
     model never trips (`build_graph()` uses `deps.llm` raw, never calling
     `.bind_tools()` on it — only its OWN `_make_llm()` production
     construction path does that), but
-    app/agent/tools.py::_run_subagent_impl's fallback DOES call
+    app/agent/tools/builtin.py::_run_subagent_impl's fallback DOES call
     `ChatOpenAI(...).bind_tools(nested_tools)` on whatever `ChatOpenAI`
     constructs — needed for TestSubagentCallUnderConcurrency, which
     monkeypatches `ChatOpenAI` itself to return one of these. Same
@@ -190,7 +190,7 @@ def _echoing_llm(respond: Callable[[list[BaseMessage]], AIMessage]):
 
 @pytest.fixture(autouse=True)
 def reset_agent_singleton(monkeypatch):
-    """Same fixture as tests/agent/test_durable_checkpoint.py — see that
+    """Same fixture as tests/agent/runtime/test_durable_checkpoint.py — see that
     file's docstring for why `_graph`/`_checkpointer_pool`/`_graph_lock`
     (module-level singletons) need resetting before and after every test
     here too — this file's own `asyncio.gather`-heavy tests (every class
@@ -309,8 +309,8 @@ async def real_semantic_cache_redis(monkeypatch):
 
 
 async def _real_search_docs(query: str, ctx) -> tuple[str, list[dict]]:
-    """The REAL retrieval path (app/agent/graph.py::_default_search's own
-    wrapper over app/agent/tools.py::gather_context, reproduced here since
+    """The REAL retrieval path (app/agent/graph/core.py::_default_search's own
+    wrapper over app/agent/tools/builtin.py::gather_context, reproduced here since
     that real default is exactly what tests/conftest.py's session-wide
     `mock_search_docs` fixture overrides — see `_install_fake_graph`'s own
     docstring for the identical reasoning applied to the semantic cache).
@@ -331,7 +331,7 @@ def _install_fake_graph(monkeypatch, llm, *, search_docs=_no_op_search) -> None:
     individual fields to inject fakes instead of monkeypatching module
     globals"). Needed specifically because tests/conftest.py's session-wide
     `mock_semantic_cache` autouse fixture always overrides
-    app/agent/graph.py's `_default_cache_get`/`_default_cache_set` to a
+    app/agent/graph/core.py's `_default_cache_get`/`_default_cache_set` to a
     hardcoded miss/no-op (correctly, for every OTHER test in this suite,
     which must never need a live Redis/embedding call) — build_graph()
     falls back to those exact (mocked) module names whenever GraphDeps
@@ -346,7 +346,7 @@ def _install_fake_graph(monkeypatch, llm, *, search_docs=_no_op_search) -> None:
     in this file, which isn't testing retrieval) — pass `_real_search_docs`
     for TestQdrantReadWriteUnderConcurrency specifically, for the exact
     same "the global mock would otherwise silently win" reason above,
-    applied to app/agent/graph.py's `_default_search` instead of its cache
+    applied to app/agent/graph/core.py's `_default_search` instead of its cache
     counterpart."""
     monkeypatch.setattr(
         agent_module,
@@ -369,14 +369,14 @@ _FAKE_EMBED_DIM = 32  # len(hashlib.sha256(...).digest()) — see _fake_embed_te
 @pytest.fixture
 async def real_qdrant(monkeypatch):
     """Points every real Qdrant read/write path this app has
-    (app/agent/tools.py's remember/add_note/search_docs, all the way down
+    (app/agent/tools/builtin.py's remember/add_note/search_docs, all the way down
     through app/retrieval/qdrant_store.py) at a real, ephemeral Qdrant
     container — for TestHITLApprovalUnderConcurrency and
     TestQdrantReadWriteUnderConcurrency specifically, not autouse, since
     the other classes in this file never touch Qdrant at all.
 
     `embed_text` is patched in BOTH places that hold their own separate
-    binding of it (app/agent/tools.py's `from ... import embed_text`, and
+    binding of it (app/agent/tools/builtin.py's `from ... import embed_text`, and
     app/retrieval/embeddings.py itself — read via a late `from
     app.retrieval import embeddings; embeddings.embed_text(...)` inside
     qdrant_store.hybrid_search, so patching the ORIGIN module is what that
@@ -410,7 +410,7 @@ async def real_qdrant(monkeypatch):
 
 
 class TestNoCrossContaminationUnderConcurrency:
-    """The pooled checkpointer (app/agent/runtime.py::_open_checkpointer)
+    """The pooled checkpointer (app/agent/runtime/core.py::_open_checkpointer)
     replaced a single shared AsyncConnection specifically so concurrent
     turns don't all funnel through one connection — this is the most
     direct possible check that the pool genuinely ISOLATES them rather
@@ -734,7 +734,7 @@ class TestSameThreadTurnsAreSerializedNotCorrupted:
 
 
 class TestHITLApprovalUnderConcurrency:
-    """`remember` is declared "mutating" (app/agent/tools.py::TOOL_CAPABILITIES),
+    """`remember` is declared "mutating" (app/agent/tools/builtin.py::TOOL_CAPABILITIES),
     so it ALWAYS pauses at the human_approval gate regardless of whether
     the caller opted into require_approval (GRAPH_PATTERNS.md pattern
     15's MANDATORY gate, not the opt-in one). Proves the pause/resume
@@ -749,7 +749,7 @@ class TestHITLApprovalUnderConcurrency:
 
     The PAUSE half drives via `graph.ainvoke()`, not `astream_events_turn`
     — verified directly (the same limitation
-    tests/agent/test_durable_checkpoint.py's own `TestAsyncSeeding`/
+    tests/agent/runtime/test_durable_checkpoint.py's own `TestAsyncSeeding`/
     `TestResumabilityErrorRejectsAnActivelyRunningThread` classes already
     document and work around the identical way): `astream_events()`
     raises "No generations found in stream" for a `.bind_tools()`-wrapped
@@ -771,7 +771,7 @@ class TestHITLApprovalUnderConcurrency:
             last = messages[-1]
             if isinstance(last, ToolMessage):
                 # `remember`'s real return value is the fixed string
-                # "Remembered." (app/agent/tools.py::_remember_impl), not an
+                # "Remembered." (app/agent/tools/builtin.py::_remember_impl), not an
                 # echo of what was remembered — the ORIGINAL human text is
                 # what actually distinguishes this thread from a sibling's,
                 # and it's still the only HumanMessage in this short
@@ -862,7 +862,7 @@ class TestHITLApprovalUnderConcurrency:
 class TestSubagentCallUnderConcurrency:
     """The real `run_subagent` tool (read_only — no HITL pause,
     GRAPH_PATTERNS.md pattern 46) delegates to a genuinely separate,
-    nested `build_graph()` run per call (app/agent/tools.py::_run_subagent_impl)
+    nested `build_graph()` run per call (app/agent/tools/builtin.py::_run_subagent_impl)
     — its own fresh messages (the delegated task, NOT this conversation's
     history), its own LLM client construction. Proves N concurrent
     top-level turns' own nested subagent runs never cross-wire: each

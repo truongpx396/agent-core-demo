@@ -9,7 +9,7 @@ page. Each child's larger **parent** passage is stored alongside it
 surfaced to the LLM/citations instead, since a bare child fragment often
 reads as ambiguous out of context. Standard "small-to-big" retrieval,
 riding on the existing hybrid-search path — `hybrid_search` doesn't know
-`parent_text` exists; `app/agent/tools.py`'s citation formatting reads it.
+`parent_text` exists; `app/agent/tools/builtin.py`'s citation formatting reads it.
 
 Children overlap (`child_overlap` shared chars between consecutive windows)
 so a fact straddling a hard chunk boundary is still captured whole by at
@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 DEFAULT_PARENT_CHARS = 1200
 # `parent_text` (not `text`) is injected into the LLM prompt per citation
-# (app/agent/tools.py::_display_text), and up to RERANK_TOP_K (5) parents
+# (app/agent/tools/builtin.py::_display_text), and up to RERANK_TOP_K (5) parents
 # can be cited in one turn — doubling this risks the ~2300-2800 token range
 # where pattern 13 measured qwen2.5:3b dropping the citation-format
 # instruction from its system prompt (pattern 20).

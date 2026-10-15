@@ -1,9 +1,9 @@
 """`make_retrieve_context_node` — fetches relevant docs (and this
 principal's memories) before the agent reasons (GRAPH_PATTERNS.md pattern
-20). Split out of `app/agent/graph.py` for file size (see graph_cache.py
+20). Split out of `app/agent/graph/core.py` for file size (see graph/cache.py
 for the sibling split).
 
-`_default_search` stays in `graph.py` itself (imported here) because
+`_default_search` stays in `app/agent/graph/core.py` itself (imported here) because
 `tests/conftest.py`'s autouse fixture monkeypatches `graph._default_search`
 on every test run, and `_assemble_shared_graph_parts` reads it as a bare
 name there.
@@ -12,8 +12,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from app.agent.graph import State, _default_search
-from app.agent.graph_messages import (
+from app.agent.graph.core import State, _default_search
+from app.agent.graph.messages import (
     _human_text,
     _last_human_message,
     _previous_human_message,
@@ -36,7 +36,7 @@ def make_retrieve_context_node(
     """Factory, not a plain function, because retrieve_context needs a
     search client — same rationale as make_agent_node for `agent`. Tests
     inject a fake via `make_retrieve_context_node(fake)(state)` instead of
-    monkeypatching a module global (see tests/agent/test_nodes.py).
+    monkeypatching a module global (see tests/agent/graph/test_nodes.py).
     """
 
     async def retrieve_context(state: State) -> dict:

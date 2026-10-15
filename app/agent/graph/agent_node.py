@@ -1,22 +1,22 @@
 """`make_agent_node` — the node that calls the LLM, injecting retrieved
 context/history-summary/skill reminders as extra SystemMessages around the
-turn's real question. Split out of graph.py purely for file size; see
-graph_retrieval.py/graph_cache.py for sibling splits. No behavior change.
+turn's real question. Split out of app/agent/graph/core.py purely for file size; see
+graph/retrieval.py/graph_cache.py for sibling splits. No behavior change.
 
 Reads `CHAT_MODEL` via `graph_module.CHAT_MODEL`, not a static import —
 several tests/live and tests/deepeval files monkeypatch
 `graph_module.CHAT_MODEL` directly, which a statically-imported bare name
 would never see (binds once, at import time). Same pattern as
-graph_utils.py's `_make_llm`.
+graph/utils.py's `_make_llm`.
 """
 from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
 
-from app.agent import graph as graph_module
-from app.agent import metering
-from app.agent.graph import State
-from app.agent.graph_skills import _pending_skill_required_tool
-from app.agent.graph_tools import _current_turn_messages
+from app.agent.cost import metering
+from app.agent.graph import core as graph_module
+from app.agent.graph.core import State
+from app.agent.graph.skill_guards import _pending_skill_required_tool
+from app.agent.graph.tool_guards import _current_turn_messages
 from app.core.untrusted import frame_untrusted
 
 
@@ -36,7 +36,7 @@ def make_agent_node(llm, model_alias: str | None = None, kind: str = "chat"):
         """Call the LLM, injecting retrieved context as an extra SystemMessage.
 
         The *base* SYSTEM_PROMPT is seeded once per thread by
-        runtime.py::_ensure_seeded_async before the graph ever runs, so
+        app/agent/runtime/core.py::_ensure_seeded_async before the graph ever runs, so
         this only adds the per-turn retrieved context/history summary.
 
         `async def`/`ainvoke`, not `.invoke()`: this is the dominant
@@ -150,7 +150,7 @@ def make_agent_node(llm, model_alias: str | None = None, kind: str = "chat"):
                 )
             )
 
-        # The one place a call is made, priced and recorded (app/agent/metering.py): it tells the
+        # The one place a call is made, priced and recorded (app/agent/cost/metering.py): it tells the
         # gateway whose call this is (its spend logs and Langfuse are otherwise one anonymous
         # caller), prices the usage once from the call's own input/output/cached split by the
         # model this node's client actually talks to — `model_alias` for a delegated run whose

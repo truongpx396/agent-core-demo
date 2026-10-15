@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 import psycopg
 import pytest
 
-from app.agent import sessions
+from app.agent.runtime import sessions
 from tests.containers import ensure_postgres
 
 pytestmark = pytest.mark.integration

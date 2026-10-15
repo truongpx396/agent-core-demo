@@ -5,15 +5,15 @@
 turns into a running `history_summary` instead of discarding them,
 AR-015a), and `COMPACTION_MARKER_KEY`/`_compaction_marker_message` (the
 permanent breadcrumb left in `state["messages"]` when compaction does
-something). Split out of `app/agent/graph.py` for file size (see
-`app/agent/graph_messages.py` for the sibling split providing
+something). Split out of `app/agent/graph/core.py` for file size (see
+`app/agent/graph/messages.py` for the sibling split providing
 `_human_text`); no behavior change.
 
-Pure one-directional dependency on `graph.py` (for
-`HISTORY_TOKEN_CEILING`/`HISTORY_TOKEN_FLOOR`) — nothing in `graph.py`
+Pure one-directional dependency on `app/agent/graph/core.py` (for
+`HISTORY_TOKEN_CEILING`/`HISTORY_TOKEN_FLOOR`) — nothing in `app/agent/graph/core.py`
 imports back from here; `make_compact_history_node` is wired in by
-`graph_build.py`, and `COMPACTION_MARKER_KEY` is read by
-`runtime_stream.py::get_session_messages`.
+`graph/build.py`, and `COMPACTION_MARKER_KEY` is read by
+`runtime/stream.py::get_session_messages`.
 """
 import logging
 from typing import cast
@@ -27,11 +27,11 @@ from langchain_core.messages import (
 )
 from langchain_core.runnables import RunnableConfig
 
-from app.agent import gateway, metering
-from app.agent import graph as graph_module
-from app.agent.graph import HISTORY_TOKEN_CEILING, HISTORY_TOKEN_FLOOR, State
-from app.agent.graph_messages import _human_text
-from app.core import metrics
+from app.agent.cost import metering
+from app.agent.graph import core as graph_module
+from app.agent.graph.core import HISTORY_TOKEN_CEILING, HISTORY_TOKEN_FLOOR, State
+from app.agent.graph.messages import _human_text
+from app.core import gateway, metrics
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ def _messages_to_trim(
     at/under `ceiling`; once exceeded, drops whole oldest turns until the
     kept tail is at/under `floor` (a strictly lower bar), so the next turn
     starts with real headroom instead of re-triggering every turn. See
-    HISTORY_TOKEN_CEILING/FLOOR's comments (graph.py) for why a plain
+    HISTORY_TOKEN_CEILING/FLOOR's comments (app/agent/graph/core.py) for why a plain
     "always trim to the same ceiling" design re-triggers forever.
 
     Trims by whole turn (HumanMessage through the next HumanMessage),
@@ -129,7 +129,7 @@ _HISTORY_SUMMARY_PROMPT = (
 
 
 # Tags a compaction breadcrumb SystemMessage so
-# runtime_stream.py::get_session_messages can pick it out — every OTHER
+# runtime/stream.py::get_session_messages can pick it out — every OTHER
 # SystemMessage (the seeded SYSTEM_PROMPT) stays hidden from transcript
 # replay as always. A SystemMessage specifically: _messages_to_trim
 # already excludes all SystemMessages from both token count and removal
@@ -183,7 +183,7 @@ def make_compact_history_node(
         show that older turns were cut.
 
         `async def`/`ainvoke`, same reasoning as `agent`
-        (graph_agent_node.py): a real LLM call is I/O and belongs on the
+        (graph/agent_node.py): a real LLM call is I/O and belongs on the
         event loop, not the shared default executor other turns' nodes
         queue behind.
         """
@@ -206,7 +206,7 @@ def make_compact_history_node(
                 prior_clause=prior_clause,
                 turns_text=_format_turns_for_summary(to_summarize),
             )
-            # Metered like every other model call (app/agent/metering.py): one usage event, and
+            # Metered like every other model call (app/agent/cost/metering.py): one usage event, and
             # NOT added to the turn's token/cost budget: a long history summary must not be able to
             # stop the answer the turn exists to give.
             call = await metering.metered_invoke(

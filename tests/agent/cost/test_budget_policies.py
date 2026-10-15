@@ -1,4 +1,4 @@
-"""Per-tenant and per-person limit overrides (app/agent/budget_policies.py, budgets.resolve_limits).
+"""Per-tenant and per-person limit overrides (app/agent/cost/budget_policies.py, budgets.resolve_limits).
 
 Hermetic: `get_connection` is a fake, so these prove the precedence rules, the statement shape
 (tenant in every WHERE) and the failure behaviour — not what Postgres does with the table, which
@@ -13,8 +13,8 @@ from contextlib import asynccontextmanager
 import pytest
 from psycopg import errors as pg_errors
 
-from app.agent import budget_policies, budgets
-from app.agent import runtime as runtime_module
+from app.agent.cost import budget_policies, budgets
+from app.agent.runtime import core as runtime_module
 from app.core import errors, metrics
 from tests.conftest import TEST_CTX, metric_value
 
@@ -247,7 +247,7 @@ def ledger(monkeypatch):
     async def in_flight_reservation(tenant):
         return 0.0
 
-    from app.agent import budget_holds, spend
+    from app.agent.cost import budget_holds, spend
 
     monkeypatch.setattr(spend, "usage_summary", usage_summary)
     monkeypatch.setattr(budget_holds, "in_flight_reservation", in_flight_reservation)
@@ -361,7 +361,7 @@ class TestUsageStatus:
         assert statuses[("tenant", "day")].resets_at is None
 
     async def test_it_does_not_fail_open_when_the_ledger_cannot_be_read(self, monkeypatch):
-        from app.agent import spend
+        from app.agent.cost import spend
 
         async def broken(*args, **kwargs):
             raise ConnectionError("down")

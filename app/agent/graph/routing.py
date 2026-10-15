@@ -1,14 +1,14 @@
 """The two conditional-edge gate functions — `should_continue` (after
 `agent`: tool call, final answer, or safety budget?) and `check_output`
 (is the final answer good enough to end on?) — plus `route_after_check`,
-which routes on check_output's result. Split out of graph.py purely for
+which routes on check_output's result. Split out of app/agent/graph/core.py purely for
 file size; `State` and the other routing functions stay there since
 they're tied to nodes that stay there too. No behavior change.
 
 Each gate's own helpers live in further sibling splits:
-graph_loop_guards.py (should_continue's tool-call fingerprinting/repeat
+graph/loop_guards.py (should_continue's tool-call fingerprinting/repeat
 detection, mandatory-approval gate, use_skill-without-search check) and
-graph_citations.py/graph_output_guardrails.py (check_output's citation-
+graph/citations.py/graph_output_guardrails.py (check_output's citation-
 grounding checks and deferral/fabrication/prompt-leak heuristics).
 should_continue/check_output/route_after_check themselves stay at this
 original import path so every existing caller/test is unaffected.
@@ -16,8 +16,8 @@ original import path so every existing caller/test is unaffected.
 A few helpers that LOOK like they belong here stayed in their own sibling
 files instead (`_invalid_tool_call_names`, `_current_turn_messages`,
 `_pending_skill_required_tool`, `_content_words`) — each is also called
-directly by a node function still in graph.py, so moving them here would
-force graph.py to import back from this module, a real circular import.
+directly by a node function still in app/agent/graph/core.py, so moving them here would
+force app/agent/graph/core.py to import back from this module, a real circular import.
 """
 from collections.abc import Mapping
 from typing import Literal, cast
@@ -25,7 +25,14 @@ from typing import Literal, cast
 from langchain_core.messages import AIMessage
 from langgraph.prebuilt import tools_condition
 
-from app.agent.graph import (
+from app.agent.graph.citations import (
+    _insert_missing_citation_markers,
+    _likely_misattributed_citations,
+    _likely_uncited_citations,
+    _ungrounded_claims_count,
+    _used_citations,
+)
+from app.agent.graph.core import (
     MAX_CONSECUTIVE_SAME_RETRY_REASON,
     MAX_ITERATIONS,
     MAX_REPEATED_ACTIONS,
@@ -34,19 +41,12 @@ from app.agent.graph import (
     SYSTEM_PROMPT,
     State,
 )
-from app.agent.graph_citations import (
-    _insert_missing_citation_markers,
-    _likely_misattributed_citations,
-    _likely_uncited_citations,
-    _ungrounded_claims_count,
-    _used_citations,
-)
-from app.agent.graph_loop_guards import (
+from app.agent.graph.loop_guards import (
     _consecutive_repeat_count,
     _mandatory_gate_reason,
     _use_skill_called_without_search,
 )
-from app.agent.graph_output_guardrails import (
+from app.agent.graph.output_guardrails import (
     _defers_instead_of_acting,
     _fabricates_tool_output,
     _leaks_system_prompt,
@@ -54,8 +54,11 @@ from app.agent.graph_output_guardrails import (
     _skipped_required_sandbox_after_skill,
     _strip_fabricated_reference_footer,
 )
-from app.agent.graph_tools import _DEFAULT_VALID_TOOL_NAMES, _invalid_tool_call_names
-from app.agent.tools import TOOL_CAPABILITIES
+from app.agent.graph.tool_guards import (
+    _DEFAULT_VALID_TOOL_NAMES,
+    _invalid_tool_call_names,
+)
+from app.agent.tools.builtin import TOOL_CAPABILITIES
 from app.core import metrics
 from app.core.config import MAX_COST_USD_PER_TURN
 
@@ -93,7 +96,7 @@ def should_continue(
     - `require_approval` on state — opt-in (default False), see
       `chat.py`'s `--hitl` mode.
     - Any pending tool_call whose declared capability (`tool_capabilities`,
-      default `tools.py::TOOL_CAPABILITIES`) isn't "read_only" — mandatory,
+      default `app/agent/tools/builtin.py::TOOL_CAPABILITIES`) isn't "read_only" — mandatory,
       never skippable via `require_approval=False`. An *undeclared* tool is
       treated as "outward," so forgetting to register a capability fails
       toward extra caution.

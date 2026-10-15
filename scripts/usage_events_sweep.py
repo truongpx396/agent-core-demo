@@ -1,5 +1,5 @@
 """Cron-callable retention sweep for the usage events
-(app/agent/usage_events_retention.py, postgres-init/19-usage-events.sql).
+(app/agent/cost/usage_events_retention.py, postgres-init/19-usage-events.sql).
 
 Nothing ever trimmed that table (spec D7 promised a job and none was built), and since specs/010 T030b the dollar caps and the
 reconciliation read it. This deletes events older than `USAGE_EVENT_RETENTION_DAYS` (400 by default; the setting enforces a floor
@@ -17,7 +17,7 @@ deletes nothing.
 import asyncio
 import logging
 
-from app.agent.usage_events_retention import (
+from app.agent.cost.usage_events_retention import (
     SWEEP_BATCH_SIZE,
     SWEEP_MAX_BATCHES,
     SweepResult,

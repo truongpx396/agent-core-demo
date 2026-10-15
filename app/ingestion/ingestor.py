@@ -76,7 +76,7 @@ async def _sparse_vectors_or_none(
     texts: list[str],
 ) -> Sequence[tuple[list[int], list[float]] | None] | None:
     """Best-effort sparse leg for a WHOLE document at once — same
-    degrade-not-fail shape as `app/agent/tools.py`'s add_note/remember
+    degrade-not-fail shape as `app/agent/tools/builtin.py`'s add_note/remember
     helper: a BM25 hiccup costs the document's sparse recall (still
     findable dense-only), not the whole ingest.
 

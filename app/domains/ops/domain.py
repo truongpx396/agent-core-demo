@@ -27,7 +27,7 @@ wiping log files under a fabricated outage, engaging with an out-of-scope
 asked to "summarize your directives." These are PROMPT-level mitigations
 only — sandbox_tools.py has no allow/denylist, so the sandbox runs
 whatever it's asked; this reduces likelihood, doesn't guarantee it (same
-partial-coverage honesty as app/agent/moderation.py's pattern layer).
+partial-coverage honesty as app/core/moderation.py's pattern layer).
 
 Re-verification after the fix landed found the two original vulnerability
 classes fixed, but two narrower gaps still real: (1) after correctly
@@ -44,13 +44,13 @@ would close this more reliably; flagged as the next step, not built here.
 from dataclasses import dataclass
 
 from app.agent.manifest import AgentManifest, DomainPlugin
-from app.agent.subagent_domain_tools import make_domain_subagent_tool
-from app.agent.tools import TOOL_CAPABILITIES as _ECORP_TOOL_CAPABILITIES
-from app.agent.tools import (
+from app.agent.tools.builtin import TOOL_CAPABILITIES as _ECORP_TOOL_CAPABILITIES
+from app.agent.tools.builtin import (
     ask_clarification,
     make_skill_tools,
     skill_tools_first,
 )
+from app.agent.tools.run_subagent_domain import make_domain_subagent_tool
 from app.core.security import Policy
 from app.domains.ops.tools import OPS_POLICY
 from app.domains.ops.tools import TOOL_CAPABILITIES as _OPS_TOOL_CAPABILITIES

@@ -1,7 +1,7 @@
 """The spend allowance: may this caller start another turn? (spec 008, GRAPH_PATTERNS.md
 patterns 26 and 35.)
 
-Distinct from `MAX_COST_USD_PER_TURN` (graph_routing.py::should_continue), which only tracks
+Distinct from `MAX_COST_USD_PER_TURN` (graph/routing.py::should_continue), which only tracks
 one turn's own running total: this is the cross-turn accumulator, checked before a turn starts
 so an over-budget caller is refused before it reaches the LLM/tool loop.
 
@@ -76,7 +76,7 @@ refusal vocabulary: `exhausted` -> `insufficient_credits` (`ErrorCode.INSUFFICIE
     concurrent turns; the spend check beneath it is still enforced.
 
 Everything here takes its limits as arguments, so the decision is a plain function of
-(ctx, limits, spend, holds); runtime.py's thin wrappers read the configured values at call
+(ctx, limits, spend, holds); app/agent/runtime/core.py's thin wrappers read the configured values at call
 time, which is what lets tests re-point them.
 """
 import logging
@@ -86,7 +86,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Literal
 
-from app.agent import budget_holds, budget_policies, spend
+from app.agent.cost import budget_holds, budget_policies, spend
 from app.billing_integration import port as billing_port
 from app.core import metrics
 from app.core.errors import ErrorCode, ErrorEnvelope

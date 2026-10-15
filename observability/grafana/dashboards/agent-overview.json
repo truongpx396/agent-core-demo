@@ -31,7 +31,7 @@
     {
       "type": "timeseries",
       "title": "Turn rate by outcome",
-      "description": "app/agent/runtime.py's turn boundary \u2014 outcome: success | rejected | error | timeout.",
+      "description": "app/agent/runtime/core.py's turn boundary \u2014 outcome: success | rejected | error | timeout.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -405,7 +405,7 @@
     {
       "type": "timeseries",
       "title": "Moderation outcomes",
-      "description": "app/agent/moderation.py \u2014 allowed | blocked_injection | blocked_denylist | error.",
+      "description": "app/core/moderation.py \u2014 allowed | blocked_injection | blocked_denylist | error.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -658,7 +658,7 @@
     {
       "type": "timeseries",
       "title": "Spend limits",
-      "description": "app/agent/budgets.py::check_allowance \u2014 turns served past a warning threshold (70/85/95%) and turns refused, by scope (tenant | principal) and window (day | month).",
+      "description": "app/agent/cost/budgets.py::check_allowance \u2014 turns served past a warning threshold (70/85/95%) and turns refused, by scope (tenant | principal) and window (day | month).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1274,7 +1274,7 @@
     {
       "type": "timeseries",
       "title": "Memory deletions",
-      "description": "deleted | refused \u2014 app/agent/memory.py::delete_memories.",
+      "description": "deleted | refused \u2014 app/retrieval/memory.py::delete_memories.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

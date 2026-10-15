@@ -12,7 +12,7 @@ app/domains/policy.py for why `ActionAllowlistPolicy` still fits.
 `log_incident`/`resolve_incident` stamp attribution from
 `ctx["principal"]` even though the incident row has no tenant column.
 
-All tools are `async def`, matching app/agent/tools.py's async-first
+All tools are `async def`, matching app/agent/tools/builtin.py's async-first
 design (store queries, HTTP clients, and the sandbox MCP session all await
 real I/O).
 """
@@ -22,16 +22,16 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolCallId, tool
 from pydantic import BaseModel, Field, field_validator
 
-from app.agent.tool_idempotency import idempotent
-from app.agent.tools import _arun_with_timeout
 from app.core.security import SecurityCtx, valid_ctx
+from app.core.tool_idempotency import idempotent
+from app.core.tool_runtime import arun_with_timeout
 from app.core.untrusted import frame_untrusted
 from app.domains import notify, sandbox_session
 from app.domains.ops import metrics_client, store
 from app.domains.policy import ActionAllowlistPolicy
 from app.ingestion.web_crawler import CRAWL_TOOL_TIMEOUT_SECONDS, render_url_to_markdown
 
-_NO_CTX_REFUSAL = (
+NO_CTX_REFUSAL = (
     "Refused: no valid tenant/principal context for this request. "
     "This isn't something you can work around — it means the request "
     "never got a security context stamped on it upstream."
@@ -55,14 +55,14 @@ OPS_POLICY = ActionAllowlistPolicy(
 )
 
 
-def _ctx_from_config(config: RunnableConfig | None) -> SecurityCtx | None:
+def ctx_from_config(config: RunnableConfig | None) -> SecurityCtx | None:
     if not config:
         return None
     return config.get("configurable", {}).get("ctx")
 
 
-def _ctx_or_refuse(config: RunnableConfig | None, action: str) -> SecurityCtx | None:
-    ctx = _ctx_from_config(config)
+def ctx_or_refuse(config: RunnableConfig | None, action: str) -> SecurityCtx | None:
+    ctx = ctx_from_config(config)
     if not valid_ctx(ctx) or not OPS_POLICY.permit(action, ctx):
         return None
     return ctx
@@ -91,10 +91,10 @@ async def fetch_metrics_summary(config: RunnableConfig) -> str:
     degradation, checkpoint issues) and flag anything past its
     alert-matching threshold. Read-only — pulls from Prometheus, changes
     nothing."""
-    ctx = _ctx_or_refuse(config, "fetch_metrics")
+    ctx = ctx_or_refuse(config, "fetch_metrics")
     if ctx is None:
-        return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_fetch_metrics_summary_impl)
+        return NO_CTX_REFUSAL
+    return await arun_with_timeout(_fetch_metrics_summary_impl)
 
 
 class PostToTeamChannelArgs(BaseModel):
@@ -124,15 +124,15 @@ async def post_to_team_channel(
     read-only fetch_metrics_summary — declared "outward" in
     TOOL_CAPABILITIES, so it is always gated behind human_approval before
     it runs, same as any mutating tool."""
-    ctx = _ctx_or_refuse(config, "post_to_channel")
+    ctx = ctx_or_refuse(config, "post_to_channel")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="post_to_team_channel",
-        fn=lambda: _arun_with_timeout(_post_to_team_channel_impl, channel, message),
+        fn=lambda: arun_with_timeout(_post_to_team_channel_impl, channel, message),
     )
 
 
@@ -168,15 +168,15 @@ async def log_incident(
     """Record a real anomaly found during an investigation as a durable
     incident — use this once you've confirmed something is actually wrong
     (past its alert-matching threshold), not for every routine check."""
-    ctx = _ctx_or_refuse(config, "log_incident")
+    ctx = ctx_or_refuse(config, "log_incident")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="log_incident",
-        fn=lambda: _arun_with_timeout(_log_incident_impl, summary, detail, ctx, tool_call_id),
+        fn=lambda: arun_with_timeout(_log_incident_impl, summary, detail, ctx, tool_call_id),
     )
 
 
@@ -202,10 +202,10 @@ async def list_recent_incidents(config: RunnableConfig, status: str | None = Non
     """List recently logged incidents, most recent first — use this to
     check whether something happening now has happened before. Read-only —
     changes nothing."""
-    ctx = _ctx_or_refuse(config, "list_recent_incidents")
+    ctx = ctx_or_refuse(config, "list_recent_incidents")
     if ctx is None:
-        return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_list_recent_incidents_impl, status)
+        return NO_CTX_REFUSAL
+    return await arun_with_timeout(_list_recent_incidents_impl, status)
 
 
 class ResolveIncidentArgs(BaseModel):
@@ -234,15 +234,15 @@ async def resolve_incident(
 ) -> str:
     """Mark a previously logged incident resolved, with what fixed it or
     why it's no longer a concern."""
-    ctx = _ctx_or_refuse(config, "resolve_incident")
+    ctx = ctx_or_refuse(config, "resolve_incident")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="resolve_incident",
-        fn=lambda: _arun_with_timeout(_resolve_incident_impl, incident_id, resolution, ctx),
+        fn=lambda: arun_with_timeout(_resolve_incident_impl, incident_id, resolution, ctx),
     )
 
 
@@ -282,15 +282,15 @@ async def check_vendor_status_page(
     like." Reaches the open internet — declared "outward" in
     TOOL_CAPABILITIES, so it always requires human approval before it
     runs, same as post_to_team_channel."""
-    ctx = _ctx_or_refuse(config, "check_vendor_status")
+    ctx = ctx_or_refuse(config, "check_vendor_status")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="check_vendor_status_page",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _check_vendor_status_page_impl, url, _timeout_seconds=CRAWL_TOOL_TIMEOUT_SECONDS
         ),
     )
@@ -370,15 +370,15 @@ async def run_command_in_sandbox(
     two), so use them directly for anything beyond plain arithmetic.
     Reaches an external service — always requires human approval
     before it runs."""
-    ctx = _ctx_or_refuse(config, "run_command_in_sandbox")
+    ctx = ctx_or_refuse(config, "run_command_in_sandbox")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="run_command_in_sandbox",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _run_command_in_sandbox_impl,
             command,
             _thread_id_from_config(config),
@@ -432,15 +432,15 @@ async def run_python_in_sandbox(
     and pandas are already available, so use them directly for anything
     beyond plain arithmetic. Reaches an external service — always
     requires human approval before it runs."""
-    ctx = _ctx_or_refuse(config, "run_python_in_sandbox")
+    ctx = ctx_or_refuse(config, "run_python_in_sandbox")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="run_python_in_sandbox",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _run_python_in_sandbox_impl,
             script,
             _thread_id_from_config(config),
@@ -474,15 +474,15 @@ async def read_sandbox_file(
     this particular tool, not in write_sandbox_file or
     run_command_in_sandbox. Reaches an external service — always
     requires human approval before it runs."""
-    ctx = _ctx_or_refuse(config, "read_sandbox_file")
+    ctx = ctx_or_refuse(config, "read_sandbox_file")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="read_sandbox_file",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _read_sandbox_file_impl,
             path,
             _thread_id_from_config(config),
@@ -513,15 +513,15 @@ async def write_sandbox_file(
     dump/config to diff). Same auto-created, per-investigation sandbox
     as run_command_in_sandbox. Reaches an external service — always
     requires human approval before it runs."""
-    ctx = _ctx_or_refuse(config, "write_sandbox_file")
+    ctx = ctx_or_refuse(config, "write_sandbox_file")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="write_sandbox_file",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _write_sandbox_file_impl,
             path,
             content,

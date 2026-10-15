@@ -1,7 +1,7 @@
-"""Tests for app/agent/tool_idempotency.py's idempotent() — the exactly-once
+"""Tests for app/core/tool_idempotency.py's idempotent() — the exactly-once
 guard every mutating/outward tool now runs its real side effect through.
 
-Same "no live Postgres" approach as tests/agent/test_budget_holds.py: a
+Same "no live Postgres" approach as tests/agent/cost/test_budget_holds.py: a
 tiny in-memory fake stands in for the tool_call_dedup table, real enough to
 prove idempotent()'s actual claim/cache-hit/store logic (not just record
 calls) — get_connection() is called up to three times per idempotent()
@@ -13,8 +13,8 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from app.agent import tool_idempotency
 from app.core import metrics
+from app.core import tool_idempotency as tool_idempotency
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
 
@@ -212,7 +212,7 @@ class TestIdempotent:
         the crash-replay race the other tests above cover — a retry from
         here arrives under a brand new tool_call_id, which no dedup keyed
         on tool_call_id can ever recognize. idempotent() re-raises it as
-        MutatingToolTimedOut so graph_utils.py::_friendly_tool_error can
+        MutatingToolTimedOut so graph/utils.py::_friendly_tool_error can
         steer the agent instead of silently swallowing the ambiguity."""
         store = _FakeDedupStore()
         monkeypatch.setattr(tool_idempotency, "get_connection", _fake_get_connection(store))

@@ -1,4 +1,4 @@
-"""Reconcile the agent's usage events against the LLM gateway's spend log (app/agent/usage_reconcile.py; specs/010 T026, specs/013;
+"""Reconcile the agent's usage events against the LLM gateway's spend log (app/agent/cost/usage_reconcile.py; specs/010 T026, specs/013;
 `make usage-reconcile`, `make usage-reconcile-worker`). The wallet's own check (was every usage worth credits charged?) is the billing
 package's, `credit-billing-reconcile`.
 
@@ -31,14 +31,14 @@ import signal
 
 import httpx
 
-from app.agent import sql_store
-from app.agent import usage_reconcile as reconcile
-from app.agent.model_resolver import admin_base_url
+from app.agent.cost import usage_reconcile as reconcile
+from app.core import sql_store
 from app.core.config import (
     USAGE_RECONCILE_INTERVAL_SECONDS,
     USAGE_RECONCILE_LOOKBACK_DAYS,
 )
 from app.core.logging_config import configure_logging
+from app.core.model_resolver import admin_base_url
 from app.core.telemetry import configure_telemetry, shutdown_telemetry
 
 logger = logging.getLogger(__name__)

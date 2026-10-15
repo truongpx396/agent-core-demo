@@ -23,12 +23,12 @@ This file owns the checkpointer/graph singleton lifecycle
 (`init_graph_async`/`close_checkpointer_pool`/`_open_checkpointer`/
 `_resolve_domain_name`), per-thread prompt seeding (`_ensure_seeded_async`),
 session-directory upsert (`_upsert_session`), and the bindings of the tenant daily-budget
-check (`_check_allowance`/`_allowance_refusal`; the rule itself is `budgets.py`) — kept together
+check (`_check_allowance`/`_allowance_refusal`; the rule itself is `app/agent/cost/budgets.py`) — kept together
 because each reads/reassigns a module global (`_graph`/`_domain_name`/
 `_seeded`, or config names several tests monkeypatch directly on this
 module) that only works correctly with consumer and binding in one file.
-The streaming entry points live in `app/agent/runtime_stream.py` (and the
-legacy `@asynccontextmanager` path in `runtime_legacy_stream.py`) — both
+The streaming entry points live in `app/agent/runtime/stream.py` (and the
+legacy `@asynccontextmanager` path in `runtime/legacy_stream.py`) — both
 access this module's globals via `runtime_module.X` rather than a bare
 import, for the same monkeypatch reason.
 """
@@ -41,9 +41,9 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from app.agent import budgets, pricing
-from app.agent.graph import MAX_ITERATIONS
-from app.agent.graph_build import build_graph
+from app.agent.cost import budgets, pricing
+from app.agent.graph.build import build_graph
+from app.agent.graph.core import MAX_ITERATIONS
 from app.core.config import (
     BUDGET_CHECK_FAILURE_POLICY,
     CHAT_MODEL,
@@ -69,16 +69,16 @@ _graph_lock = asyncio.Lock()  # guards _graph's construction, not its use — se
 # between the `if _graph is None` check and the `_graph = ...` write, so
 # without this lock several concurrent first-callers could each pass the
 # None check, each open their own checkpointer pool, and each overwrite
-# _graph, leaking every loser's pool the same way sql_store.py::_get_pool's
+# _graph, leaking every loser's pool the same way core/sql_store.py::_get_pool's
 # own identical guard exists to prevent. Every current production caller
 # happens to prime this sequentially before any concurrent turn dispatch
 # begins (agent_worker.py's run(), telegram.py's poll loop, chat.py's CLI
 # loop, FastAPI's lifespan) — so this lock is a hardening, not a fix for a
-# live incident, but the pattern is identical to sql_store.py's, which IS
+# live incident, but the pattern is identical to core/sql_store.py's, which IS
 # reachable, so closing both consistently is cheap insurance against a
 # future caller (e.g. a direct in-process turn endpoint) reintroducing it.
 _domain_name = "ecorp"  # this process's domain (app/domains/registry.py); stamps
-# app/agent/sessions.py's chat_sessions.domain column — the graph itself only needs
+# app/agent/runtime/sessions.py's chat_sessions.domain column — the graph itself only needs
 # the manifest/tools, already baked into _graph by build_graph().
 _checkpointer_pool = None  # keeps AsyncConnectionPool alive for the process
 # lifetime (GC'ing it closes every pooled connection under the saver); also lets
@@ -96,7 +96,7 @@ RECURSION_LIMIT = MAX_ITERATIONS * 2 + 15
 
 
 async def _check_allowance(ctx: SecurityCtx | None) -> budgets.Allowance:
-    """May this caller start another turn? The rule lives in `budgets.py`; this binds the
+    """May this caller start another turn? The rule lives in `app/agent/cost/budgets.py`; this binds the
     configured limits at CALL time (not import time), so the module globals below stay the
     single place a test or a deployment re-points them."""
     return await budgets.check(
@@ -141,13 +141,13 @@ def _model_unpriced_envelope() -> ErrorEnvelope:
 async def _reserve_turn_budget(ctx: SecurityCtx | None) -> str | None:
     """Called once a turn has passed `_allowance_refusal` and is
     about to actually run — holds MAX_COST_USD_PER_TURN (the hard cap
-    graph_routing.py::should_continue already enforces per turn, so it's
+    graph/routing.py::should_continue already enforces per turn, so it's
     always a safe upper bound on what this turn could cost) against this
     tenant's in-flight total. Returns the hold's id, or None if `ctx` is
     invalid or the write itself failed — callers pass this straight to
     `_release_turn_budget` in a `finally`, so a failed reservation and a real
     one both round-trip correctly (releasing None is a no-op)."""
-    from app.agent import budget_holds
+    from app.agent.cost import budget_holds
 
     return await budget_holds.reserve_budget(ctx, MAX_COST_USD_PER_TURN)
 
@@ -158,14 +158,14 @@ async def _release_turn_budget(ctx: SecurityCtx | None, hold_id: str | None) -> 
     reservation's whole job is to cover the WINDOW while this turn is
     running, not to track whether it actually succeeded (the usage events,
     written as each call returned, are the real accounting for a turn)."""
-    from app.agent import budget_holds
+    from app.agent.cost import budget_holds
 
     await budget_holds.release_budget_reservation(ctx, hold_id)
 
 
 async def _upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> None:
     """Record/refresh this thread_id in the session directory (the conversation
-    switcher, app/agent/sessions.py) — called at the START of every turn, unlike
+    switcher, app/agent/runtime/sessions.py) — called at the START of every turn, unlike
     the turn metrics which only fire on a completed turn. Deliberate: a
     rejected/moderated/short-circuited turn is still a real conversation and
     should still appear in "switch conversation." Degrades to a no-op on its
@@ -175,7 +175,7 @@ async def _upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) ->
     alongside `_graph`), so the stamped row always matches whichever domain
     actually ran the turn, regardless of caller.
     """
-    from app.agent import sessions
+    from app.agent.runtime import sessions
 
     await sessions.upsert_session(ctx, thread_id, text, domain=_domain_name)
 

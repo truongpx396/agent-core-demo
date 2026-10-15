@@ -7,8 +7,8 @@ the same stale "spent so far", all pass, and all proceed: a check-then-act race.
 a row in `tenant_budget_holds` (postgres-init/16) with its own timestamp, and one that outlives its turn ages out on its own clock.
 
 This used to live in `usage_ledger.py`, beside the per-turn ledger the caps read. That module is gone (specs/010 T030c3): nothing
-writes the ledger since T030c2, the caps sum the usage events (`app/agent/spend.py`), and its retention sweep was replaced by the
-events' (`app/agent/usage_events_retention.py`). The holds had never had anything to do with the ledger except sharing its file.
+writes the ledger since T030c2, the caps sum the usage events (`app/agent/cost/spend.py`), and its retention sweep was replaced by the
+events' (`app/agent/cost/usage_events_retention.py`). The holds had never had anything to do with the ledger except sharing its file.
 The `usage_ledger` TABLE stays as read-only history that `scripts/usage_events_carry_over.py` can copy into the events; dropping it
 is a later, separate, destructive migration.
 
@@ -18,9 +18,9 @@ Every function here fails OPEN (a hold that cannot be written or read must not b
 import logging
 import uuid
 
-from app.agent.sql_store import get_connection
 from app.core import metrics
 from app.core.security import SecurityCtx, valid_ctx
+from app.core.sql_store import get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ async def reserve_budget(ctx: SecurityCtx | None, amount_usd: float) -> str | No
     pre-reservation behavior.
 
     The sweep and the insert share one transaction (`get_connection` is one —
-    see sql_store.py). The sweep removes this tenant's abandoned holds so the
+    see core/sql_store.py). The sweep removes this tenant's abandoned holds so the
     table doesn't grow; the read already ignores them, so it is housekeeping,
     not correctness."""
     if not valid_ctx(ctx) or amount_usd <= 0:

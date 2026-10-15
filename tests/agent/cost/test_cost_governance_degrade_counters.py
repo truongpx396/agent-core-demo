@@ -13,9 +13,9 @@ only pins "and it is counted, under the right `path`".
 import httpx
 import pytest
 
-from app.agent import budget_holds, model_resolver, spend
-from app.agent import runtime as runtime_module
-from app.core import metrics
+from app.agent.cost import budget_holds, spend
+from app.agent.runtime import core as runtime_module
+from app.core import metrics, model_resolver
 from tests.conftest import TEST_CTX, metric_value
 
 

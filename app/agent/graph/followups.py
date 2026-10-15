@@ -1,6 +1,6 @@
 """`make_suggest_followups_node` — suggests 2-3 follow-up questions from a
 grounded final answer (GRAPH_PATTERNS.md pattern 27). Split out of
-`app/agent/graph.py` purely for file size — see that module's own
+`app/agent/graph/core.py` purely for file size — see that module's own
 docstring. No behavior change from the pre-split single-file version.
 """
 import logging
@@ -8,9 +8,10 @@ import logging
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 
-from app.agent import gateway, metering
-from app.agent import graph as graph_module
-from app.agent.graph import State
+from app.agent.cost import metering
+from app.agent.graph import core as graph_module
+from app.agent.graph.core import State
+from app.core import gateway
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def make_suggest_followups_node(llm, model_alias: str | None = None):
         if not content:
             return {"followups": []}
         try:
-            # Metered like every other model call (app/agent/metering.py): one usage event. Its cost never
+            # Metered like every other model call (app/agent/cost/metering.py): one usage event. Its cost never
             # joins the agent node's running total, and the event is what the dollar caps count.
             call = await metering.metered_invoke(
                 llm,

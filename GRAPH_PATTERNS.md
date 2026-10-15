@@ -24,7 +24,7 @@ is never reused or shifted. **Bug** marks a real defect that was found and fixed
 - **Use when:** always. It costs nothing and catches most bad cases.
 
 ### 2. Context enrichment
-`retrieve_context` pre-fetches before the LLM reasons. `agent` appends the result as a `SystemMessage` just before the call; the base `SYSTEM_PROMPT` is seeded once per thread (`runtime.py::_ensure_seeded_async`).
+`retrieve_context` pre-fetches before the LLM reasons. `agent` appends the result as a `SystemMessage` just before the call; the base `SYSTEM_PROMPT` is seeded once per thread (`app/agent/runtime/core.py::_ensure_seeded_async`).
 - **Use when:** you have a knowledge base (Qdrant, a DB, an API).
 
 ### 3. State tracking
@@ -68,7 +68,7 @@ Flow control lives in explicit state (`iterations`, `context`, …), which is wh
 | `MAX_REPEATED_ACTIONS` | `should_continue` | The same call with the same args, repeatedly (34) |
 | `TOOL_TIMEOUT_SECONDS` | Per tool call | A hung Qdrant or embedding call |
 | `REQUEST_TIMEOUT_SECONDS` | Whole turn | Many slow-but-not-hung steps |
-| `RECURSION_LIMIT` = `MAX_ITERATIONS * 2 + 15` | LangGraph step cap (`runtime.py`) | A routing bug causing a node cycle |
+| `RECURSION_LIMIT` = `MAX_ITERATIONS * 2 + 15` | LangGraph step cap (`app/agent/runtime/core.py`) | A routing bug causing a node cycle |
 
 - **Bug:** `iterations` and `total_tokens` persist across a thread, so `validate_input` resets them each turn (not on a resume).
 - **Bug:** a reset only works if the field's reducer allows it. `subagent_spend` used `operator.add`, so "reset to `[]`" did nothing and old spend counted against later turns; `cancelled`/`approved` weren't reset at all (36). The test asserted the return value, which can't see a reducer. Assert on state read back across two turns (`test_safety_budgets.py::TestPerTurnResetThroughTheGraph`).
@@ -102,7 +102,7 @@ Retrieved text is wrapped in `<retrieved_document>` delimiters, and `SYSTEM_PROM
 - `run_id` is the join key across a request's logs and metrics; Promtail ships the JSON to Loki.
 
 ### 15. Tool capability declarations: a mandatory gate
-Every tool declares `read_only`, `mutating` or `outward` in `TOOL_CAPABILITIES` (`app/agent/tools.py`). `should_continue` checks every pending batch: any non-`read_only` call routes through `human_approval` **unconditionally**. A tool missing from the mapping defaults to `outward` (fail closed). No flag turns this off.
+Every tool declares `read_only`, `mutating` or `outward` in `TOOL_CAPABILITIES` (`app/agent/tools/builtin.py`). `should_continue` checks every pending batch: any non-`read_only` call routes through `human_approval` **unconditionally**. A tool missing from the mapping defaults to `outward` (fail closed). No flag turns this off.
 - **Why mandatory:** a RAG agent already carries untrusted content on nearly every turn (12); adding write capability is one gamble from a document steering a real write.
 - **`add_note` is the worked example** of the companion rule: a write tool is a fixed, typed, closed-vocabulary operation, and its point id is derived by code (a fresh UUID, later `tool_call_id`-derived, see Extending Further), never supplied by the model, so it can only append.
 - **Use when:** the moment a second tool exists. Retrofitting after several writers accumulate means auditing them all at once.
@@ -130,7 +130,7 @@ A `SecurityCtx` (`tenant`, `principal`, `claims`) is stamped once by `validate_i
 - **Not built:** an LLM-facing forget tool. `delete_by_filter` supports a data-subject-request script, not the model.
 
 ### 19. Prompt-cache stability
-`SYSTEM_PROMPT` is a plain constant: no principal, tenant or timestamp is ever interpolated. `SecurityCtx` flows through `config`/`state["ctx"]`, never into the messages sent to the LLM. The classic cache-buster, `ctx["principal"]` in the prefix, looks stable within one conversation and only shows once a second principal shares the manifest. `tests/agent/test_prompt_cache_stability.py` asserts byte-identical rendering across two ctx values, plus a leak sweep.
+`SYSTEM_PROMPT` is a plain constant: no principal, tenant or timestamp is ever interpolated. `SecurityCtx` flows through `config`/`state["ctx"]`, never into the messages sent to the LLM. The classic cache-buster, `ctx["principal"]` in the prefix, looks stable within one conversation and only shows once a second principal shares the manifest. `tests/agent/graph/test_prompt_cache_stability.py` asserts byte-identical rendering across two ctx values, plus a leak sweep.
 - **Use when:** more than one principal's traffic shares a deployment behind a provider that discounts a stable prefix.
 
 ### 20. Hybrid retrieval, rerank and cited answers
@@ -151,10 +151,10 @@ A `SecurityCtx` (`tenant`, `principal`, `claims`) is stamped once by `validate_i
 - **Use when:** near-duplicate questions repeat across sessions.
 
 ### 23. Config-first multi-domain composition
-`build_graph(manifest=…, domain=…)` keeps its topology and adapts to a domain through an `AgentManifest` (config: name, system prompt, exposed tools) and a `DomainPlugin` (code: tool implementations, capabilities, policy). There is no `if domain == "…"` in `graph.py`; `DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN` wrap the Ecorp setup.
+`build_graph(manifest=…, domain=…)` keeps its topology and adapts to a domain through an `AgentManifest` (config: name, system prompt, exposed tools) and a `DomainPlugin` (code: tool implementations, capabilities, policy). There is no `if domain == "…"` in `app/agent/graph/core.py`; `DEFAULT_MANIFEST`/`DEFAULT_DOMAIN_PLUGIN` wrap the Ecorp setup.
 - **Port-swapping, not parameterization:** `should_continue` needs a domain's capability map but LangGraph calls it with only `state`, so it is bound with `functools.partial(should_continue, tool_capabilities=…)` once per build (with a default, so existing callers are unaffected).
 - **The load-bearing test:** `tests/agent/test_manifest.py` builds a domain with a different `Policy` and one Ecorp-unknown tool, proves the unmodified gate treats it as `mutating` using that domain's map, and checks Ecorp's tools are absent from its `ToolNode`.
-- **Gotcha:** `manifest.py` needs `graph.py`'s `SYSTEM_PROMPT` and `build_graph()` needs `manifest.py`'s defaults; a deferred import inside `build_graph()` breaks the cycle.
+- **Gotcha:** `manifest.py` needs `app/agent/graph/core.py`'s `SYSTEM_PROMPT` and `build_graph()` needs `manifest.py`'s defaults; a deferred import inside `build_graph()` breaks the cycle.
 - **Not done:** several domains from one process (see 47).
 
 ### 24. General-purpose ingestor with parent-child chunking
@@ -166,7 +166,7 @@ A `SecurityCtx` (`tenant`, `principal`, `claims`) is stamped once by `validate_i
 - **Gap:** validate-then-fetch leaves a narrow DNS-rebinding race, and a hung resolver still holds a task and a thread.
 
 ### 25. Input moderation before any spend
-`moderate_input` + `route_after_moderation` + `reject_moderation` (`app/agent/moderation.py`) run right after `validate_input`'s checks, before the cache, retrieval or any LLM call. Two layers, cheapest first: (1) a regex screen for known injection/jailbreak phrasings plus a small denylist; (2) an ML classifier, Meta's Llama Prompt Guard 2 (22M) served by `ml-service`'s `/prompt-guard`, which catches paraphrases the patterns miss (`ML_INJECTION_THRESHOLD` 0.5; ~25–100 ms).
+`moderate_input` + `route_after_moderation` + `reject_moderation` (`app/core/moderation.py`) run right after `validate_input`'s checks, before the cache, retrieval or any LLM call. Two layers, cheapest first: (1) a regex screen for known injection/jailbreak phrasings plus a small denylist; (2) an ML classifier, Meta's Llama Prompt Guard 2 (22M) served by `ml-service`'s `/prompt-guard`, which catches paraphrases the patterns miss (`ML_INJECTION_THRESHOLD` 0.5; ~25–100 ms).
 - A real hit at either layer fails **closed**; a failure of the check *itself* (a regex bug, `ml-service` unreachable) fails **open**, recorded as `outcome="error"`. The two are deliberately not conflated.
 - **Gap:** the threshold is the model's natural boundary, not recalibrated on live traffic. Moderation screens words, not pixels (44).
 - **Use when:** any input surface reachable by someone not fully trusted.
@@ -190,11 +190,11 @@ One self-contained HTML file (`app/api/static/index.html`, inline CSS/JS, no bui
 ### 30. Canonical error envelope
 One shape, `{code, message, details}`, from a single `ErrorCode` enum (`app/core/errors.py`) for every SSE `error` event and CLI error. It isn't applied to `ToolMessage` content, which is prose for the model.
 - `internal_error_envelope(exc)` returns a fixed message plus `error_class`, never `str(exc)`; the text goes to the trace.
-- **Bug:** both catch-alls (`runtime_stream.py::_run_graph_stream`, `agent_worker.py::process_request`) sent `str(exc)` to the caller, leaking internal hosts, SQL fragments or DSNs; the worker's had no `code` either. Three tests asserted the leak. They now assert a hostname-shaped sentinel never appears.
+- **Bug:** both catch-alls (`runtime/stream.py::_run_graph_stream`, `agent_worker.py::process_request`) sent `str(exc)` to the caller, leaking internal hosts, SQL fragments or DSNs; the worker's had no `code` either. Three tests asserted the leak. They now assert a hostname-shaped sentinel never appears.
 - **Gap:** the ingest worker's `process_job` has the same catch-all but mixes uploader-facing messages with unexpected failures, so it needs a per-exception decision; `CrawlFailed`/`IngestRefused` also embed a raw `{exc}`. Read from code, not reproduced.
 
 ### 31. DB connection pool
-One lazy `psycopg_pool.ConnectionPool` singleton (`min_size=1`, `max_size=10`) behind `get_connection()` in `app/agent/sql_store.py`, so call sites didn't change. `close_pool()` runs in the API lifespan shutdown; without it, background pool threads outlived the process (a reproduced bug).
+One lazy `psycopg_pool.ConnectionPool` singleton (`min_size=1`, `max_size=10`) behind `get_connection()` in `app/core/sql_store.py`, so call sites didn't change. `close_pool()` runs in the API lifespan shutdown; without it, background pool threads outlived the process (a reproduced bug).
 
 ### 32. Credential scrubbing on tool output
 `app/core/scrubbing.py`, at the one chokepoint every tool result funnels through: static patterns for common credential shapes (API keys, AWS ids, `password=`/`token=` pairs, `user:password@`, JWTs) plus this deployment's own configured secret values, so an exact echo of a real secret is caught. Tool output specifically because it never passes through the model's input: a raw DB row can carry a credential straight into `ToolMessage.content`. Fails open (logged) on its own internal failure.
@@ -210,7 +210,7 @@ One lazy `psycopg_pool.ConnectionPool` singleton (`min_size=1`, `max_size=10`) b
 `MAX_COST_USD_PER_TURN` is a hard stop on cumulative per-turn dollars, distinct from the token cap because the same tokens cost differently by model tier. `agent()` computes incremental cost per call from LiteLLM's input/output/cached rates (`pricing.price_usage`), the same running total each usage event is priced from (`COST_GOVERNANCE.md`). It is checked **before** the next call: enforcement, not just recording.
 
 ### 36. Run cancellation
-A third outcome for a paused interrupt, not a repurposed rejection: `route_after_approval` checks `cancelled` first and goes to `__end__`, never back to `agent` (`CANCEL_SENTINEL`, `runtime_stream.py::cancel_run`). A rejection lets the agent react; a cancel must stop the run.
+A third outcome for a paused interrupt, not a repurposed rejection: `route_after_approval` checks `cancelled` first and goes to `__end__`, never back to `agent` (`CANCEL_SENTINEL`, `runtime/stream.py::cancel_run`). A rejection lets the agent react; a cancel must stop the run.
 - **Bug: a cancel outlived its run.** Nothing cleared `cancelled`, so a later pause on the same thread that the person *approved* went straight to `__end__`, leaving a dangling `tool_call`. `validate_input` now resets `cancelled`/`approved` each turn (a resume skips it). Test: `TestApprovalAfterAnEarlierCancel`.
 - **Bug: an approved run couldn't be cancelled.** `astream_events_resume` took no `cancel_check`, so `POST /chat/cancel` between "approve" and "done" set a flag nothing polled. It now forwards it: a cancel before the worker picks the job up stops the turn before the approved write, and a later one stops it at the next event boundary (a running tool finishes; cancellation is cooperative).
 - **Use when:** a human might change their mind mid-review.
@@ -254,12 +254,12 @@ The only HTTP chat path. `POST /chat/stream/queued` publishes a turn to a Redis 
 - **Two scope boundaries:** moderation screens words, not pixels (an image-only message passes); retrieval and caching stay text-only. Verify vision **and** tool-calling support before assuming an alias swap is enough.
 
 ### 45. Skill packages with progressive disclosure
-A catalog of `SKILL.md` packages (YAML frontmatter + markdown, one directory under `skills/`) discovered by meaning. `skill_search` hybrid-searches `{name, description}`; `use_skill(name)` loads one matched skill's full body. A turn that needs no skill pays for two tool schemas, not the size of the catalog (`app/agent/skills.py`, `scripts/index_skills.py`).
+A catalog of `SKILL.md` packages (YAML frontmatter + markdown, one directory under `skills/`) discovered by meaning. `skill_search` hybrid-searches `{name, description}`; `use_skill(name)` loads one matched skill's full body. A turn that needs no skill pays for two tool schemas, not the size of the catalog (`app/agent/tools/skill_catalog.py`, `scripts/index_skills.py`).
 - Reuses `hybrid_search` via an optional `collection` parameter; no forked fusion logic. **Disk is content truth, Qdrant only the index:** `use_skill` reads the body from an on-disk registry, so the index can't disagree with the file.
 - Skills are a shared bundled catalog (no `SecurityCtx`, like `calculator`); a tenant-authored catalog is a larger extension not attempted. Domains scope skills with an optional `domains:` field.
 
 ### 46. Subagents: scoped, isolated delegation
-`run_subagent(subagent_name, task)` starts a separate nested run: a fresh `build_graph()` with its own messages, prompt and budget. Skills add instructions to the same context; this doesn't. One tool with a closed enum built from `subagents/<name>/AGENT.md` (`app/agent/subagents.py`).
+`run_subagent(subagent_name, task)` starts a separate nested run: a fresh `build_graph()` with its own messages, prompt and budget. Skills add instructions to the same context; this doesn't. One tool with a closed enum built from `subagents/<name>/AGENT.md` (`app/agent/tools/subagent_catalog.py`).
 - **Read-only tools only,** enforced at catalog-build time (others are dropped with a warning), so `run_subagent` is a plain `read_only` tool needing no gate special case. The nested graph runs synchronously on a throwaway `MemorySaver` inside one tool call; nobody could resume it hours later, so a write-capable subagent would mean a deadlocked gate or a bypass of pattern 15.
 - **No recursion:** `run_subagent` is stripped from every subagent's tools.
 - **Isolation:** fresh messages (its own prompt, the task as the only `HumanMessage`), inherited `SecurityCtx`, its own budget (`MAX_SUBAGENT_ITERATIONS=6`, `MAX_SUBAGENT_TOKENS_PER_RUN=4000`) via pattern 23's `functools.partial`, and a leaner `build_subagent_graph()` without 5 of 21 nodes (cache, follow-ups, compaction). Graphs are cached by `(domain, subagent_name)`.
@@ -267,7 +267,7 @@ A catalog of `SKILL.md` packages (YAML frontmatter + markdown, one directory und
 - **Gap:** a new subagent needs a process restart.
 
 ### 47. Example domains as a load-bearing proof
-`app/domains/support/`, `ops/` and `sales/` turn pattern 23's test-only proof into three runnable products on the same unmodified graph: a Tier-1 support copilot, an internal ops bot (reusing this repo's Prometheus thresholds) and a sales/CRM concierge. Each follows `sql_store.py`/`tools.py` conventions, plus a shared `app/domains/policy.py::ActionAllowlistPolicy`.
+`app/domains/support/`, `ops/` and `sales/` turn pattern 23's test-only proof into three runnable products on the same unmodified graph: a Tier-1 support copilot, an internal ops bot (reusing this repo's Prometheus thresholds) and a sales/CRM concierge. Each follows `core/sql_store.py`/`tools.py` conventions, plus a shared `app/domains/policy.py::ActionAllowlistPolicy`.
 - **Runtime change kept minimal:** `init_graph_async` takes an optional `manifest`/`domain` (default `None`, today's exact behavior): which one domain this process boots as, decided at start from `AGENT_DOMAIN`. Not a multi-domain registry.
 - **An unattended cron job can never approve itself.** `post_to_team_channel` is the first real `outward` tool and the gate has no bypass flag; auto-declining would silently make a digest never post. `scripts/ops_digest.py` and `followup_sweep.py` call the domain's `_impl` functions directly: a fixed pipeline that never enters the tool-calling loop.
 
@@ -276,7 +276,7 @@ A catalog of `SKILL.md` packages (YAML frontmatter + markdown, one directory und
 - **xdist:** shared containers need a fixed cache dir, not pytest's rotating `basetemp`; Ryuk is off and the controller tears down in `pytest_sessionfinish`. Concurrent first `init_graph_async()` calls hit an upstream `UniqueViolation` in `AsyncPostgresSaver.setup()`, so setup runs once, under a lock.
 - **Tool calling is real:** `OPENAI_API_BASE` points at Ollama's OpenAI-compatible endpoint, confirmed by a raw `curl` to return structured `tool_calls` (LiteLLM's `ollama/` provider fakes them).
 - **Tool gotchas:** promptfoo `file://` paths resolve from the config file, not the CWD; garak's `uri` must nest under `plugins:` or it is silently ignored.
-- **Small local models make poor judges and targets.** A garak `dan` probe had 100% attack success on `qwen2.5:1.5b`, so `moderation.py` is the real defence. A local-judge redteam run reported 93% failed from malformed prompts and a grader inventing evidence, and deepeval's metrics couldn't separate good answers from bad ones either. So the judge is hosted (Gemini, Groq) and the target stays local.
+- **Small local models make poor judges and targets.** A garak `dan` probe had 100% attack success on `qwen2.5:1.5b`, so `app/core/moderation.py` is the real defence. A local-judge redteam run reported 93% failed from malformed prompts and a grader inventing evidence, and deepeval's metrics couldn't separate good answers from bad ones either. So the judge is hosted (Gemini, Groq) and the target stays local.
 - **Redteam findings, fixed:** a system-prompt leak under an "act as an auditor" framing, and a destructive script written for "wipe temp files" under urgency. Both got explicit prompt rules and were re-verified. Narrower paraphrase gaps remain: a ceiling of prompt-only defence on a small model.
 - **deepeval** (`make deepeval`) checks faithfulness and relevancy to cited context, tool and argument correctness, and multi-turn role adherence and knowledge retention. In CI every case is `flaky=True`, so only a crash fails the job.
   - **Judge failover** (`tests/deepeval/fallback.py`): the primary, then other models on the same provider, then optional Plugsky and OpenRouter free models. It hands over on a rate limit, overload or timeout (and skips that model for 5 minutes, an hour for a daily limit), and on an unusable answer: invalid JSON or the wrong shape, for that one call, with no cooldown.
@@ -394,7 +394,7 @@ Two kinds of duplicate: a **replay** sees the same `tool_call_id` twice; a **re-
 
 | Gap | Fix |
 |---|---|
-| A tool call runs twice (a reclaimed `resume`) | `tool_idempotency.py::idempotent` wraps every `mutating`/`outward` tool, keyed by `tool_call_id` in `tool_call_dedup` (`13-`). A second call returns the cached result. Resuming re-invokes pending calls under their **original** ids, so reclaiming a `resume` is always safe. Fails open (`agent_tool_dedup_degraded_total`) |
+| A tool call runs twice (a reclaimed `resume`) | `app/core/tool_idempotency.py::idempotent` wraps every `mutating`/`outward` tool, keyed by `tool_call_id` in `tool_call_dedup` (`13-`). A second call returns the cached result. Resuming re-invokes pending calls under their **original** ids, so reclaiming a `resume` is always safe. Fails open (`agent_tool_dedup_degraded_total`) |
 | A worker dies mid-turn; a restart would re-ask the LLM for new ids | `queue.py::reclaim_stale_entries` (`XAUTOCLAIM`) runs in both workers. `_classify_reclaimed_turn` reads the checkpoint (never re-running anything): no `HumanMessage` yet → rerun; own `HumanMessage` checkpointed and unfinished → **continue** the run (`astream_events_continue_turn`), even after a write, since no new id is minted; finished, approval-paused or unreadable → dead-letter. Retries are capped by `MAX_AUTO_RECLAIM_RETRIES`; `agent_worker_job_reclaimed_total{queue,outcome}` separates `retried` from `dead_lettered` |
 | A finished zero-tool turn is reclaimed before its ack | `_turn_already_completed` refuses it; a tool-call check alone re-ran it and double-recorded its cost |
 | Ingest jobs on reclaim | Idempotent by construction (`_content_point_id`, pattern 24), so retried unconditionally |

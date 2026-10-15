@@ -5,9 +5,9 @@ Outside `packages/billing/src/credit_billing/` and `app/billing_integration/` no
 plain answers; rating, the wallet, the export and the gate's policy are all the package's:
 
   * `record_usage_in(conn, Usage(...))` is called once per metered model call, inside the transaction that records the agent's own usage event
-    (`app/agent/usage_events.py`). The package rates it, keeps its own record, debits the wallet and queues an export, and never raises for a
+    (`app/agent/cost/usage_events.py`). The package rates it, keeps its own record, debits the wallet and queues an export, and never raises for a
     fault. With billing not configured it does nothing.
-  * `admit(tenant, reserved_usd=...)` asks the credit gate whether the tenant may start another turn (`app/agent/budgets.py`). With enforcement
+  * `admit(tenant, reserved_usd=...)` asks the credit gate whether the tenant may start another turn (`app/agent/cost/budgets.py`). With enforcement
     off it reads nothing.
   * `credit_summary(tenant)` is what `GET /usage` shows of the wallet, or None.
 

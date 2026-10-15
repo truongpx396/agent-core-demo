@@ -7,7 +7,7 @@ tenant-scoping assertion to make here — only `opened_by` attribution and
 the status/limit filtering.
 
 Every function here is `async def` now (a real `AsyncConnectionPool`, see
-app/agent/sql_store.py's own docstring), so every call below runs through
+app/core/sql_store.py's own docstring), so every call below runs through
 `asyncio.run(...)`, this repo's established pattern for exercising async
 code from a plain `def test_...`.
 """

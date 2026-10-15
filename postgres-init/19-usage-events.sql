@@ -1,4 +1,4 @@
--- One row per MODEL CALL (app/agent/usage_events.py): the meter a credit or usage-billing product
+-- One row per MODEL CALL (app/agent/cost/usage_events.py): the meter a credit or usage-billing product
 -- is built on (specs/010-credit-billing-readiness).
 --
 -- Why it is not `usage_ledger`: that table is one row per completed TURN, with no key that

@@ -4,7 +4,7 @@ No LLM here — that's covered separately in test_agent_node.py, since `agent`
 is the only node that needs one. `check_semantic_cache`/`retrieve_context`/
 `suggest_followups`/`write_semantic_cache`/`moderate_input` are `async def`
 (real I/O — Redis/Qdrant/LLM/ml-service — see each node's own docstring in
-app/agent/graph.py), so their calls below run through `asyncio.run(...)`,
+app/agent/graph/core.py), so their calls below run through `asyncio.run(...)`,
 this repo's established pattern for exercising async code from a plain
 `def test_...`. Every other node here (reject_*, context_window_exceeded)
 stays plain sync — nothing to await — so those calls are unchanged.
@@ -12,17 +12,14 @@ stays plain sync — nothing to await — so those calls are unchanged.
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from app.agent import (
-    graph,
-    graph_cache,
-    graph_followups,
-    graph_hitl,
-    graph_retrieval,
-    graph_retry,
-    graph_routing,
-    moderation,
-)
-from app.core import metrics
+from app.agent.graph import cache as graph_cache
+from app.agent.graph import core as graph
+from app.agent.graph import followups as graph_followups
+from app.agent.graph import hitl as graph_hitl
+from app.agent.graph import retrieval as graph_retrieval
+from app.agent.graph import retry as graph_retry
+from app.agent.graph import routing as graph_routing
+from app.core import metrics, moderation
 from tests.conftest import TEST_CTX, metric_value
 
 
@@ -184,7 +181,7 @@ class TestSuggestFollowups:
 
 class _FailingLLM:
     """`ainvoke`, not `invoke` — suggest_followups/compact_history/agent all
-    call `llm.ainvoke(...)` now (see their docstrings in app/agent/graph.py)."""
+    call `llm.ainvoke(...)` now (see their docstrings in app/agent/graph/core.py)."""
 
     async def ainvoke(self, messages):
         raise RuntimeError("model unreachable")
@@ -345,7 +342,7 @@ async def test_retrieve_context_degrades_to_empty_when_search_docs_raises():
     """Reliability policy: retrieve_context is enrichment, not the agent's
     only path to this data (the LLM can still call search_docs as a tool),
     so a Qdrant/embedding outage must degrade to no pre-fetched context
-    instead of crashing the whole turn — see its docstring in app/agent/graph.py."""
+    instead of crashing the whole turn — see its docstring in app/agent/graph/core.py."""
 
     async def failing_search_docs(query, ctx):
         raise RuntimeError("Qdrant unreachable")
@@ -857,7 +854,7 @@ class TestDefersInsteadOfActing:
 
     def test_flags_narrating_a_correct_script_instead_of_running_it(self):
         """The exact real trace text, found live immediately after fixing
-        skill_tools_first (app/agent/tools.py): a complete, correct script
+        skill_tools_first (app/agent/tools/builtin.py): a complete, correct script
         quoted verbatim, followed by "Let's run this script in a sandbox
         to get the result" — that announcement never became a real
         tool_calls entry. "run this/that/it/the X" wasn't covered before
@@ -1156,7 +1153,7 @@ class TestSkippedRequiredSandboxAfterSkill:
 
 
 class TestLeaksSystemPrompt:
-    """Output-side defense-in-depth alongside app/agent/moderation.py's
+    """Output-side defense-in-depth alongside app/core/moderation.py's
     input-side screening (see that module's own docstring and the
     conversation this was added from): an injection phrased in a way
     moderation's known-pattern regexes don't catch can still be caught
@@ -1536,7 +1533,7 @@ class TestHumanApproval:
 
 
 class TestNoAnswerFallback:
-    """no_answer_fallback (app/agent/graph.py) is reached only via
+    """no_answer_fallback (app/agent/graph/core.py) is reached only via
     should_continue's safety-net exits — check_output never ran on
     whatever ends up here, so this node has to do its OWN grounding
     computation for whatever content is actually shown to the user."""

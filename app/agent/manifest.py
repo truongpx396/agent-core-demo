@@ -1,5 +1,5 @@
 """Config-first multi-domain composition layer (pattern 23): the ONE
-`app/agent/graph.py` StateGraph topology is adapted to a new domain by
+`app/agent/graph/core.py` StateGraph topology is adapted to a new domain by
 swapping an `AgentManifest` (config) plus a `DomainPlugin` (tools/
 capabilities/policy), never by forking `build_graph()` or branching on a
 domain name.
@@ -8,7 +8,7 @@ domain name.
   of the plugin's tools this deployment exposes.
 - `DomainPlugin` — the CODE a manifest can't express: tool
   implementations, capability declarations (read_only/mutating/outward,
-  see `tools.py::TOOL_CAPABILITIES`), and the `Policy` they enforce
+  see `app/agent/tools/builtin.py::TOOL_CAPABILITIES`), and the `Policy` they enforce
   internally. `build_graph()` never calls `.policy()` itself — enforcement
   lives at the tool-implementation boundary (pattern 17); it exists so a
   plugin can assert/expose its own Policy.
@@ -19,17 +19,17 @@ domain. See `tests/agent/test_manifest.py` for a second domain proving the
 same graph runs with different tools/prompt/Policy.
 
 Import direction: this module imports `graph.SYSTEM_PROMPT` at load time;
-`graph.py` imports this module back only INSIDE `build_graph()`'s body
+`app/agent/graph/core.py` imports this module back only INSIDE `build_graph()`'s body
 (never at its own module level), so the cycle never closes. Don't move
-that import to `graph.py`'s top without re-checking this.
+that import to `app/agent/graph/core.py`'s top without re-checking this.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Protocol
 
-from app.agent.graph import SYSTEM_PROMPT
-from app.agent.tools import TOOL_CAPABILITIES, TOOLS
+from app.agent.graph.core import SYSTEM_PROMPT
+from app.agent.tools.builtin import TOOL_CAPABILITIES, TOOLS
 from app.core.security import DEFAULT_POLICY, Policy
 
 
@@ -45,7 +45,7 @@ class DomainPlugin(Protocol):
 
     def tool_capabilities(self) -> dict[str, str]:
         """Maps each tool name to `"read_only" | "mutating" | "outward"` —
-        see `app/agent/tools.py::TOOL_CAPABILITIES`'s docstring for the mandatory
+        see `app/agent/tools/builtin.py::TOOL_CAPABILITIES`'s docstring for the mandatory
         human_approval gate this feeds (`should_continue`, unchanged
         regardless of domain)."""
         ...
@@ -61,7 +61,7 @@ class AgentManifest:
     """The CONFIG half of a domain. Frozen so a manifest can't be mutated
     out from under a graph already built with it — the same "stamped once,
     read-only from there on" discipline `State["ctx"]` already follows
-    (see `app/agent/graph.py`'s `State` docstring).
+    (see `app/agent/graph/core.py`'s `State` docstring).
     """
 
     name: str

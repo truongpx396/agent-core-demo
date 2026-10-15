@@ -4,12 +4,12 @@ The seam between the agent app and the billing package (`packages/billing/`, imp
 webhooks, rating a call in credits, the debit, the export outbox, the wallet reconciliation, the patterns behind them, the runbook) is the package's own and lives
 in `packages/billing/`. This file is only the app's side.
 
-**The seam is thin** (spec 013). The agent records its own usage events (`app/agent/usage_events.py`, the table its spend caps read), and:
+**The seam is thin** (spec 013). The agent records its own usage events (`app/agent/cost/usage_events.py`, the table its spend caps read), and:
 
 - hands the package **one plain value per model call**: `billing_port.record_usage_in(conn, Usage(...))`, in the same transaction as the event;
-- asks it **one question per turn**: `billing_port.admit(...)`, the credit gate, mapped to a refusal in `app/agent/budgets.py`.
+- asks it **one question per turn**: `billing_port.admit(...)`, the credit gate, mapped to a refusal in `app/agent/cost/budgets.py`.
 
-The agent keeps one check of its own: its events against the LLM gateway's spend log (`app/agent/usage_reconcile.py`, `make usage-reconcile`). What remains in
+The agent keeps one check of its own: its events against the LLM gateway's spend log (`app/agent/cost/usage_reconcile.py`, `make usage-reconcile`). What remains in
 `app/billing_integration/` is `port.py` (the one module host code imports) and `http.py` (the webhook route). Two tests keep the boundary honest, one per side
 (`tests/billing/test_billing_core_boundary.py`, `packages/billing/tests/test_boundary.py`), and one scans the agent for any rate, markup, gate or export setting, and
 any package table, named outside that directory.

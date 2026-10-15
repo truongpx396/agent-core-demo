@@ -7,7 +7,7 @@ approval decision from — unlike astream_events_turn's approval_required/
 astream_events_resume round trip — so when a turn pauses at human_approval
 (opt-in or, since add_note, the mandatory capability gate), it must
 auto-decline rather than leave the checkpoint paused forever or silently
-run an unreviewed tool call. See app/agent/runtime.py's matching docstring.
+run an unreviewed tool call. See app/agent/runtime/core.py's matching docstring.
 """
 
 from typing import Any
@@ -16,11 +16,11 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from app.agent import runtime as agent_module
-from app.agent import runtime_stream as stream_module
-from app.agent.graph import GraphDeps
-from app.agent.graph_build import build_graph
-from app.agent.graph_hitl import paused_approval_async
+from app.agent.graph.build import build_graph
+from app.agent.graph.core import GraphDeps
+from app.agent.graph.hitl import paused_approval_async
+from app.agent.runtime import core as agent_module
+from app.agent.runtime import stream as stream_module
 from app.core import metrics
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
@@ -36,7 +36,7 @@ class TestAstreamEventsTurnUnattended:
     module-level functions) rather than driving a real graph — the
     event-forwarding logic is what's under test here, not the
     graph/checkpointer machinery those two already have their own coverage
-    for (tests/agent/test_durable_checkpoint.py)."""
+    for (tests/agent/runtime/test_durable_checkpoint.py)."""
 
     async def test_forwards_every_event_unchanged_when_never_paused(self, monkeypatch):
         async def fake_turn(text, thread_id, ctx, require_approval=False, images=None):

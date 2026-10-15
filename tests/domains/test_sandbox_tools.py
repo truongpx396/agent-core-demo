@@ -10,7 +10,7 @@ tests/domains/ops/test_domain.py's live-environment-dependent assertions
 tool set).
 
 `load_sandbox_tools` is `async def` now (awaits `mcp_client.load_remote_tools`
-via `_arun_with_timeout` — see that module's own docstring), so every call
+via `arun_with_timeout` — see that module's own docstring), so every call
 below runs through `asyncio.run(...)`, this repo's established pattern for
 exercising async code from a plain `def test_...`.
 

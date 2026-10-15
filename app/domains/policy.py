@@ -3,7 +3,7 @@ support/ops/sales domains.
 
 `DomainPlugin.policy()` is never called by `build_graph()` itself —
 enforcement happens inside each domain's own tools, same as
-`app/agent/tools.py`'s `_ctx_or_refuse` calling `DEFAULT_POLICY.permit(...)`
+`app/agent/tools/builtin.py`'s `ctx_or_refuse` calling `DEFAULT_POLICY.permit(...)`
 directly, just against a domain-specific action vocabulary (`create_ticket`,
 `schedule_followup`, ...) that `TenantIsolationPolicy` doesn't know.
 

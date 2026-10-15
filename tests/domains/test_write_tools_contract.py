@@ -14,7 +14,7 @@ sample arguments must be declared below, adding one forces its author to look at
 this checklist (`.claude/rules/side-effect-tools.md`).
 
 What it deliberately does NOT prove: that `idempotent()` itself is exactly-once
-(tests/agent/test_tool_idempotency.py), or that each tool's row-level uniqueness
+(tests/core/test_tool_idempotency.py), or that each tool's row-level uniqueness
 holds at the store (the per-store tests). It pins that every write tool is
 *wired* to them.
 """
@@ -79,7 +79,7 @@ def _call(tool, config):
 
 @pytest.fixture
 def spies(monkeypatch):
-    """Replaces `idempotent` and `_arun_with_timeout` in every module that
+    """Replaces `idempotent` and `arun_with_timeout` in every module that
     defines a write tool: the first records how it was called, the second fails
     the test if a tool reaches its real work without going through the first."""
     idempotent_calls: list[dict] = []
@@ -94,7 +94,7 @@ def spies(monkeypatch):
     for module_name in {tool.coroutine.__module__ for _id, tool in WRITE_TOOLS}:
         module = sys.modules[module_name]
         monkeypatch.setattr(module, "idempotent", spy_idempotent, raising=False)
-        monkeypatch.setattr(module, "_arun_with_timeout", forbidden, raising=False)
+        monkeypatch.setattr(module, "arun_with_timeout", forbidden, raising=False)
     return idempotent_calls
 
 

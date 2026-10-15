@@ -1,6 +1,6 @@
 """`usage_events` against a REAL Postgres (postgres-init/19-usage-events.sql).
 
-tests/agent/test_usage_events.py proves the statement's text and every failure path through a fake
+tests/agent/cost/test_usage_events.py proves the statement's text and every failure path through a fake
 connection. A fake cannot show what the TABLE does, and the whole design leans on four things that
 only a real database enforces (constitution VII: reliance on a real UNIQUE / ON CONFLICT is stated
 and tested at this tier, not assumed):
@@ -26,7 +26,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from psycopg import errors as pg_errors
 
-from app.agent import metering, usage_events
+from app.agent.cost import metering, usage_events
 from tests.containers import ensure_postgres
 
 pytestmark = pytest.mark.integration

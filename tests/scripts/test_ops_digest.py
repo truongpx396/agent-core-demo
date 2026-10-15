@@ -1,6 +1,6 @@
 """Tests for scripts/ops_digest.py. `build_digest_prompt` is pure — tested
 directly. `run_digest` is tested with a fake LLM (`llm=` DI, same pattern
-app/agent/tools.py::_run_subagent_impl already uses) and
+app/agent/tools/builtin.py::_run_subagent_impl already uses) and
 metrics_client/notify monkeypatched, so this stays hermetic (no live
 Prometheus, LLM, or Postgres) — matching the rest of this suite's discipline.
 The call goes through the metering choke point, whose usage-event write is
@@ -15,7 +15,7 @@ import asyncio
 
 import pytest
 
-from app.agent import gateway
+from app.core import gateway
 from scripts import ops_digest
 
 
@@ -74,7 +74,7 @@ def test_run_digest_posts_the_summary_to_the_team_channel(monkeypatch):
 
 def test_run_digest_tells_the_gateway_whose_call_it_is(monkeypatch):
     """Otherwise the gateway's spend log shows this cron's spend as an anonymous caller
-    (app/agent/gateway.py)."""
+    (app/core/gateway.py)."""
 
     async def fake_fetch_readings():
         return {"turn_error_rate": 0.01}
@@ -113,7 +113,7 @@ def test_run_digest_records_usage_when_tokens_are_reported(monkeypatch, usage_ev
 
 
 def test_run_digest_records_a_cron_usage_event(monkeypatch, usage_event_sink):
-    """The call goes through the metering choke point (app/agent/metering.py), so it is one usage
+    """The call goes through the metering choke point (app/agent/cost/metering.py), so it is one usage
     event under its own kind, attributed to the cron's identity, not an unmetered side call."""
 
     async def fake_fetch_readings():
@@ -158,7 +158,7 @@ def test_run_digest_records_the_priced_cost_of_its_own_call(monkeypatch, usage_e
     """Spec 008 A2: a scheduled job calls the model itself, so it must price that
     call itself — it used to hand the ledger a table-derived cost, and so any
     model off the table cost $0 here too. (The priced figure is now the usage event's.)"""
-    from app.agent import pricing
+    from app.agent.cost import pricing
     from app.core.config import CHAT_MODEL
 
     async def priced_fetch():

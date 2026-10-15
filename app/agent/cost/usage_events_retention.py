@@ -23,8 +23,8 @@ LOCAL to the transaction, so it cannot be left switched on, and each batch commi
 import logging
 from dataclasses import dataclass
 
-from app.agent.sql_store import get_connection
 from app.core.config import USAGE_EVENT_MIN_RETENTION_DAYS
+from app.core.sql_store import get_connection
 
 logger = logging.getLogger(__name__)
 

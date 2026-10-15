@@ -1,4 +1,4 @@
-"""Tests for app/agent/model_resolver.py.
+"""Tests for app/core/model_resolver.py.
 
 Two kinds of test, on purpose:
 
@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 import pytest
 
-from app.agent import model_resolver
+from app.core import model_resolver
 
 _MODEL_INFO = {"data": [{"model_name": "chat", "litellm_params": {"model": "ollama_chat/qwen2.5:3b"}}]}
 

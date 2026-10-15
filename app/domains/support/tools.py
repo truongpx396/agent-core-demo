@@ -1,12 +1,12 @@
 """Tools for the support-copilot domain (app/domains/support/domain.py) —
 Tier-1 customer support: knowledge-base lookup (reused as-is from
-app/agent/tools.py), open/check/escalate a ticket, list a customer's own
+app/agent/tools/builtin.py), open/check/escalate a ticket, list a customer's own
 tickets, add a follow-up comment. Sandboxed by design: this domain's
 AgentManifest never exposes calculator/add_note/remember/query_employees/
 run_subagent (see domain.py's docstring).
 
-Same conventions as app/agent/tools.py: Pydantic `args_schema`,
-`config: RunnableConfig` for ctx, `_arun_with_timeout` reused for the
+Same conventions as app/agent/tools/builtin.py: Pydantic `args_schema`,
+`config: RunnableConfig` for ctx, `arun_with_timeout` reused for the
 shared timeout budget + output scrubbing, fail-closed ctx check before
 touching Postgres. All tools are `async def`, matching that module's
 async-first design.
@@ -18,16 +18,16 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolCallId, tool
 from pydantic import BaseModel, Field, field_validator
 
-from app.agent.tool_idempotency import idempotent
-from app.agent.tools import _arun_with_timeout
 from app.core.security import SecurityCtx, valid_ctx
+from app.core.tool_idempotency import idempotent
+from app.core.tool_runtime import arun_with_timeout
 from app.core.untrusted import frame_untrusted
 from app.domains import notify, sandbox_session
 from app.domains.policy import ActionAllowlistPolicy
 from app.domains.support import store
 from app.ingestion.web_crawler import CRAWL_TOOL_TIMEOUT_SECONDS, render_url_to_markdown
 
-_NO_CTX_REFUSAL = (
+NO_CTX_REFUSAL = (
     "Refused: no valid tenant/principal context for this request. "
     "This isn't something you can work around — it means the request "
     "never got a security context stamped on it upstream."
@@ -51,14 +51,14 @@ SUPPORT_POLICY = ActionAllowlistPolicy(
 )
 
 
-def _ctx_from_config(config: RunnableConfig | None) -> SecurityCtx | None:
+def ctx_from_config(config: RunnableConfig | None) -> SecurityCtx | None:
     if not config:
         return None
     return config.get("configurable", {}).get("ctx")
 
 
-def _ctx_or_refuse(config: RunnableConfig | None, action: str) -> SecurityCtx | None:
-    ctx = _ctx_from_config(config)
+def ctx_or_refuse(config: RunnableConfig | None, action: str) -> SecurityCtx | None:
+    ctx = ctx_from_config(config)
     if not valid_ctx(ctx) or not SUPPORT_POLICY.permit(action, ctx):
         return None
     return ctx
@@ -110,15 +110,15 @@ async def create_ticket(
     """Open a new Tier-1 support ticket for the current customer. Use this
     when the knowledge base doesn't resolve the issue and it needs to be
     tracked/followed up on."""
-    ctx = _ctx_or_refuse(config, "create_ticket")
+    ctx = ctx_or_refuse(config, "create_ticket")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="create_ticket",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _create_ticket_impl, subject, description, priority, ctx, tool_call_id
         ),
     )
@@ -143,10 +143,10 @@ async def _check_ticket_status_impl(ticket_id: int, ctx: SecurityCtx) -> str:
 @tool(args_schema=CheckTicketStatusArgs)
 async def check_ticket_status(ticket_id: int, config: RunnableConfig) -> str:
     """Look up an existing support ticket's current status by its number."""
-    ctx = _ctx_or_refuse(config, "check_ticket_status")
+    ctx = ctx_or_refuse(config, "check_ticket_status")
     if ctx is None:
-        return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_check_ticket_status_impl, ticket_id, ctx)
+        return NO_CTX_REFUSAL
+    return await arun_with_timeout(_check_ticket_status_impl, ticket_id, ctx)
 
 
 class EscalateToHumanArgs(BaseModel):
@@ -182,15 +182,15 @@ async def escalate_to_human(
     base doesn't cover, or a customer explicitly asking for a person).
     This is the sandbox boundary: you cannot resolve these yourself, only
     flag them."""
-    ctx = _ctx_or_refuse(config, "escalate_to_human")
+    ctx = ctx_or_refuse(config, "escalate_to_human")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="escalate_to_human",
-        fn=lambda: _arun_with_timeout(_escalate_to_human_impl, ticket_id, reason, ctx),
+        fn=lambda: arun_with_timeout(_escalate_to_human_impl, ticket_id, reason, ctx),
     )
 
 
@@ -214,10 +214,10 @@ async def list_my_tickets(config: RunnableConfig) -> str:
     """List the current customer's own support tickets, most recent first.
     Use this when a customer asks about "my tickets" or "what have I
     reported" without naming a specific ticket number."""
-    ctx = _ctx_or_refuse(config, "list_my_tickets")
+    ctx = ctx_or_refuse(config, "list_my_tickets")
     if ctx is None:
-        return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_list_my_tickets_impl, ctx)
+        return NO_CTX_REFUSAL
+    return await arun_with_timeout(_list_my_tickets_impl, ctx)
 
 
 class AddTicketCommentArgs(BaseModel):
@@ -249,15 +249,15 @@ async def add_ticket_comment(
     """Add more detail to an existing ticket the customer already opened —
     use this when they follow up with extra information rather than
     opening a duplicate ticket for the same issue."""
-    ctx = _ctx_or_refuse(config, "add_ticket_comment")
+    ctx = ctx_or_refuse(config, "add_ticket_comment")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="add_ticket_comment",
-        fn=lambda: _arun_with_timeout(_add_ticket_comment_impl, ticket_id, comment, ctx, tool_call_id),
+        fn=lambda: arun_with_timeout(_add_ticket_comment_impl, ticket_id, comment, ctx, tool_call_id),
     )
 
 
@@ -286,15 +286,15 @@ async def fetch_external_reference(
     knowledge base + ticket system" design. Reaches the open internet —
     declared "outward" in TOOL_CAPABILITIES, so it always requires human
     approval before it runs."""
-    ctx = _ctx_or_refuse(config, "fetch_external_reference")
+    ctx = ctx_or_refuse(config, "fetch_external_reference")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="fetch_external_reference",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _fetch_external_reference_impl, url, _timeout_seconds=CRAWL_TOOL_TIMEOUT_SECONDS
         ),
     )
@@ -369,15 +369,15 @@ async def run_command_in_sandbox(
     `pip install` anything (no network access) — numpy and pandas are
     already available if you need them. Reaches an external service —
     always requires human approval before it runs."""
-    ctx = _ctx_or_refuse(config, "run_command_in_sandbox")
+    ctx = ctx_or_refuse(config, "run_command_in_sandbox")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="run_command_in_sandbox",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _run_command_in_sandbox_impl,
             command,
             _thread_id_from_config(config),
@@ -435,15 +435,15 @@ async def run_python_in_sandbox(
     numpy and pandas are already available if you need them. Reaches
     an external service — always requires human approval before it
     runs."""
-    ctx = _ctx_or_refuse(config, "run_python_in_sandbox")
+    ctx = ctx_or_refuse(config, "run_python_in_sandbox")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="run_python_in_sandbox",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _run_python_in_sandbox_impl,
             script,
             _thread_id_from_config(config),
@@ -477,15 +477,15 @@ async def read_sandbox_file(
     this particular tool, not in write_sandbox_file or
     run_command_in_sandbox. Reaches an external service — always
     requires human approval before it runs."""
-    ctx = _ctx_or_refuse(config, "read_sandbox_file")
+    ctx = ctx_or_refuse(config, "read_sandbox_file")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="read_sandbox_file",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _read_sandbox_file_impl,
             path,
             _thread_id_from_config(config),
@@ -517,15 +517,15 @@ async def write_sandbox_file(
     auto-created sandbox as run_command_in_sandbox. Reaches an
     external service — always requires human approval before it
     runs."""
-    ctx = _ctx_or_refuse(config, "write_sandbox_file")
+    ctx = ctx_or_refuse(config, "write_sandbox_file")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="write_sandbox_file",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _write_sandbox_file_impl,
             path,
             content,

@@ -23,14 +23,14 @@ prompt-only defense, not a wording bug.
 from dataclasses import dataclass
 
 from app.agent.manifest import AgentManifest, DomainPlugin
-from app.agent.subagent_domain_tools import make_domain_subagent_tool
-from app.agent.tools import TOOL_CAPABILITIES as _ECORP_TOOL_CAPABILITIES
-from app.agent.tools import (
+from app.agent.tools.builtin import TOOL_CAPABILITIES as _ECORP_TOOL_CAPABILITIES
+from app.agent.tools.builtin import (
     ask_clarification,
     make_skill_tools,
     search_docs,
     skill_tools_first,
 )
+from app.agent.tools.run_subagent_domain import make_domain_subagent_tool
 from app.core.security import Policy
 from app.domains.sales.tools import SALES_POLICY
 from app.domains.sales.tools import TOOL_CAPABILITIES as _SALES_TOOL_CAPABILITIES

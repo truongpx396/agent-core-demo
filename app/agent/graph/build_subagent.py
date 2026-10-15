@@ -1,9 +1,9 @@
 """`build_subagent_graph()` — the leaner graph assembly for a NESTED
-subagent run (`app/agent/tools.py::run_subagent`, pattern 46). Split out
-of `graph.py` (which still holds `State`, every node function/factory, and
-the shared assembly helper) purely for file size — see graph.py's module
-docstring. Sibling splits: `graph_routing.py` (should_continue/
-check_output) and `graph_build.py` (build_graph(), the main-turn
+subagent run (`app/agent/tools/builtin.py::run_subagent`, pattern 46). Split out
+of `app/agent/graph/core.py` (which still holds `State`, every node function/factory, and
+the shared assembly helper) purely for file size — see app/agent/graph/core.py's module
+docstring. Sibling splits: `graph/routing.py` (should_continue/
+check_output) and `graph/build.py` (build_graph(), the main-turn
 counterpart). No behavior change from the pre-split file.
 """
 from typing import TYPE_CHECKING
@@ -12,7 +12,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
-from app.agent.graph import (
+from app.agent.graph.core import (
     AGENT_RETRY_POLICY,
     GraphDeps,
     State,
@@ -25,22 +25,22 @@ from app.agent.graph import (
     route_after_validation,
     validate_input,
 )
-from app.agent.graph_hitl import human_approval, route_after_approval
-from app.agent.graph_retry import (
+from app.agent.graph.hitl import human_approval, route_after_approval
+from app.agent.graph.retry import (
     make_no_answer_fallback_node,
     make_retry_exhausted_node,
     retry_output,
 )
-from app.agent.graph_routing import route_after_check
-from app.agent.graph_skills import use_skill_without_search
-from app.agent.graph_tools import invalid_tool_call, too_many_tool_calls
-from app.agent.graph_utils import _friendly_tool_error, _instrumented
+from app.agent.graph.routing import route_after_check
+from app.agent.graph.skill_guards import use_skill_without_search
+from app.agent.graph.tool_guards import invalid_tool_call, too_many_tool_calls
+from app.agent.graph.utils import _friendly_tool_error, _instrumented
 
 if TYPE_CHECKING:
     from app.agent.manifest import AgentManifest, DomainPlugin
 
 
-# --- Build a leaner graph for a NESTED subagent run (app/agent/tools.py::
+# --- Build a leaner graph for a NESTED subagent run (app/agent/tools/builtin.py::
 # run_subagent, GRAPH_PATTERNS.md pattern 46) ---
 def build_subagent_graph(
     deps: GraphDeps | None = None,

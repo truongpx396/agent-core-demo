@@ -63,7 +63,7 @@ refuses it. Nothing here swallows an error: a cap that silently reads zero is a 
 """
 from datetime import datetime
 
-from app.agent.sql_store import get_connection
+from app.core.sql_store import get_connection
 
 
 async def usage_summary(tenant: str, principal: str | None = None, since: datetime | None = None) -> dict:

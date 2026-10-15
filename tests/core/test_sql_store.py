@@ -1,4 +1,4 @@
-"""Tests for app/agent/sql_store.py's query construction — the one fixed,
+"""Tests for app/core/sql_store.py's query construction — the one fixed,
 parameterized SQL boundary query_employees is scoped to (GRAPH_PATTERNS.md
 pattern 21: fixed tools, never LLM-generated SQL).
 
@@ -16,7 +16,7 @@ pattern for exercising async code from a plain `def test_...`.
 import asyncio
 from contextlib import asynccontextmanager
 
-from app.agent import sql_store
+from app.core import sql_store
 
 
 class _FakeCursor:

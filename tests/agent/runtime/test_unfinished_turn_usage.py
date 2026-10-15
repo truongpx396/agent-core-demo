@@ -9,7 +9,7 @@ checkpoint, bounded, and feeds `agent_tokens_total`.
 It used to feed the per-turn `usage_ledger` row as well, which was what made this matter for MONEY: a turn that ran until
 the timeout never reached the end-of-turn write, so the daily tenant budget was checked against a ledger that left out the
 turns most likely to have spent a lot. That is over (specs/010 T030c2): the dollar caps sum the usage events, each written
-the moment its call returned (tests/agent/test_usage_events.py), so an unfinished turn's spend is counted whatever happens
+the moment its call returned (tests/agent/cost/test_usage_events.py), so an unfinished turn's spend is counted whatever happens
 to it afterwards, and these tests no longer have a ledger to check. What they pin is the metric, and that reading the
 checkpoint can never make a failing turn worse.
 
@@ -23,7 +23,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent import runtime_stream as stream_module
+from app.agent.runtime import stream as stream_module
 from app.core import metrics
 from tests.conftest import TEST_CTX, metric_value
 

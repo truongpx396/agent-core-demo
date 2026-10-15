@@ -423,7 +423,7 @@ jobs:
     # uses for its own Ollama fixture, minus the Postgres/Redis/crawl4ai
     # services those tests need but these don't (`build_graph()` with no
     # `checkpointer` argument — both files' own construction — defaults to
-    # an in-memory `MemorySaver`, see app/agent/graph_build.py).
+    # an in-memory `MemorySaver`, see app/agent/graph/build.py).
     #
     # `DEEPEVAL_MODEL` stays `qwen2.5:3b` here, NOT `TEST_LLM_MODEL`'s
     # CI-speed `1.5b` — this is `make deepeval`'s own local default (see
@@ -597,7 +597,7 @@ jobs:
       # not a style preference: without a path argument, `-m deepeval`
       # still COLLECTS (imports) every file under `testpaths = ["tests"]`
       # before filtering by marker, and `tests/api/test_api.py`/
-      # `test_health.py`/`test_rate_limit.py`/`tests/agent/test_multimodal.py`
+      # `test_health.py`/`test_rate_limit.py`/`tests/agent/graph/test_multimodal.py`
       # import `app.api.main` at module level — which calls
       # `configure_logging()` UNCONDITIONALLY at import time (unlike
       # `app/job_queue/agent_worker.py`'s/`app/channels/telegram.py`'s own
@@ -609,7 +609,7 @@ jobs:
       # app.api.main` alone in a fresh interpreter flips
       # `logging.getLogger().handlers` from `[]` to a live handler and the
       # level from WARNING to INFO, with zero such effect from importing
-      # only `app.agent.graph_build`/`app.ingestion.web_crawler`/
+      # only `app.agent.graph.build`/`app.ingestion.web_crawler`/
       # `tests.conftest` (everything the deepeval tests themselves actually
       # need). With `-s` disabling capture, every one of this app's own
       # per-node `logger.info(...)` calls (and the `openai` SDK's own
@@ -706,7 +706,8 @@ jobs:
           import os
           import sys
 
-          from app.agent import skills, subagents
+          from app.agent.tools import skill_catalog as skills
+          from app.agent.tools import subagent_catalog as subagents
           from app.domains import sandbox_tools
 
           problems = []

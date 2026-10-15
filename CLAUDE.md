@@ -27,7 +27,7 @@ make typecheck       # mypy over app/ scripts/ (CI gate)
 make test            # pytest -n auto -q — hermetic, no services needed (CI gate); then the billing package's own tests
 make test-billing-package   # only the package's hermetic tests, from its directory (the app is not on the path)
 make billing-migrate        # apply the billing package's schema scripts to an existing database (billing-migrate-status: read-only)
-pytest tests/agent/test_tool_idempotency.py::test_name -q   # one test; marked tiers are skipped by default
+pytest tests/core/test_tool_idempotency.py::test_name -q   # one test; marked tiers are skipped by default
 make test-integration  # real Postgres/Redis/Qdrant via testcontainers — needs Docker, not `make up`
 make test-live         # real Ollama + full stack + Playwright — needs Docker
 make up                # docker-compose infra (needs a native Ollama on the host, see README)
@@ -43,11 +43,12 @@ they delete volumes or kill running processes.
 
 ## Where things live
 
-- `app/agent/` — the graph. `graph.py` (State, nodes, `STATE_SCHEMA_VERSION`), `graph_build.py`
-  (`build_graph`), `graph_routing.py` (`should_continue`), `graph_hitl.py` (approval gate),
-  `runtime*.py` (durable singleton + streaming turns), `tools.py` (`TOOL_CAPABILITIES`),
-  `tool_idempotency.py`, `sql_store.py` (pooled appdata connections), `manifest.py`
-  (`AgentManifest`/`DomainPlugin`).
+- `app/agent/` — the agent, in four packages and one file. `graph/` is the LangGraph (`core.py` holds `State`,
+  `STATE_SCHEMA_VERSION` and the core nodes; `build.py` is `build_graph`, `routing.py` is `should_continue`,
+  `hitl.py` is the approval gate, the rest are one concern each). `runtime/` is the durable singleton and the
+  streaming turns (`core.py`, `stream.py`) plus the session directory. `tools/` is `builtin.py`
+  (`TOOL_CAPABILITIES`), `idempotency.py`, the skill and subagent catalogs and `run_subagent`. `cost/` is the
+  spend meter and caps (`COST_GOVERNANCE.md`). `manifest.py` is `AgentManifest`/`DomainPlugin`.
 - `app/domains/{support,ops,sales}/` — each is `store.py` + `tools.py` + `domain.py`. A new use
   case follows that shape; it never forks `build_graph()`.
 - `deploy/` — `compose/` (every `docker-compose*.yml`), `caddy/`, `litellm/` (configs + `patches/`).
@@ -55,7 +56,11 @@ they delete volumes or kill running processes.
   with `--project-directory .`; a bare `docker compose up` finds no file. `Dockerfile` stays at the
   root (build context), `docker/` holds the auxiliary image builds.
 - `app/job_queue/` — Redis Streams queue and workers. `app/ingestion/` — chunking, crawl, upload.
-- `app/core/` — config, security (`SecurityCtx`), metrics, errors, scrubbing, resilience.
+- `app/core/` — what every package may use and that depends on none of them: config, security (`SecurityCtx`),
+  metrics, errors, scrubbing, resilience, `sql_store.py` (pooled appdata connections), `gateway.py` and
+  `model_resolver.py` (the LiteLLM contract), `moderation.py`, and what every tool runs through:
+  `tool_runtime.py` (timeout, scrub, fail-closed ctx) and `tool_idempotency.py` (the exactly-once guard). A
+  module belongs here when it imports nothing from `agent`, `domains` or `api`.
 - `packages/billing/` — the credit wallet, payment webhooks, the billing half of a usage meter (rate, record,
   debit, export), the credit gate and operator CLIs as an independent package (`credit_billing`, src layout,
   own pyproject/tests/schema/alerts/docs/specs). It imports nothing from `app`; the app reaches it only through

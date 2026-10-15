@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # bucket — no usable resolution. These instead resolve sub-second tool
 # calls up to REQUEST_TIMEOUT_SECONDS (60s default) with headroom.
 _LATENCY_BUCKETS_SECONDS = (0.5, 1.0, 2.5, 5.0, 10.0, 15.0, 30.0, 60.0, 90.0, 120.0)
-# Matches MAX_ITERATIONS_PER_TURN's realistic range (app/agent/graph.py).
+# Matches MAX_ITERATIONS_PER_TURN's realistic range (app/agent/graph/core.py).
 _ITERATION_BUCKETS = (1, 2, 3, 4, 5, 7, 10, 15)
 
 _configured = False

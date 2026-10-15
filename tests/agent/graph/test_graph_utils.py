@@ -1,10 +1,10 @@
-"""Tests for app/agent/graph_utils.py's `_friendly_tool_error` — ToolNode's
+"""Tests for app/agent/graph/utils.py's `_friendly_tool_error` — ToolNode's
 `handle_tool_errors` formatter, called with exactly the raised exception and
 nothing else (see its own docstring on why it dispatches on the exception's
 TYPE rather than a tool name/capability lookup).
 """
-from app.agent.graph_utils import _friendly_tool_error
-from app.agent.tool_idempotency import MutatingToolTimedOut
+from app.agent.graph.utils import _friendly_tool_error
+from app.core.tool_idempotency import MutatingToolTimedOut
 
 
 class TestFriendlyToolError:

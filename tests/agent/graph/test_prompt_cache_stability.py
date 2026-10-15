@@ -13,7 +13,7 @@ identical message list, not just a self-consistent one.
 Two properties, checked independently:
 1. `agent()`'s assembled message list is byte-identical for two different
    ctx values, given the same messages/context — proving ctx never enters
-   the message list through app/agent/graph.py's own code.
+   the message list through app/agent/graph/core.py's own code.
 2. No message anywhere in that list contains either ctx's tenant or
    principal string — a leak-detection sweep, the same shape as the
    AR-020-style "sentinel string never appears in a log record" check
@@ -29,8 +29,8 @@ actual guarantee GRAPH_PATTERNS.md documents.
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent.graph import SYSTEM_PROMPT
-from app.agent.graph_agent_node import make_agent_node
+from app.agent.graph.agent_node import make_agent_node
+from app.agent.graph.core import SYSTEM_PROMPT
 
 CTX_A = {"tenant": "ecorp-corp", "principal": "alice", "claims": {"role": "admin"}}
 CTX_B = {"tenant": "globex-inc", "principal": "bob", "claims": {"role": "viewer"}}
@@ -38,11 +38,11 @@ CTX_B = {"tenant": "globex-inc", "principal": "bob", "claims": {"role": "viewer"
 
 class _RecordingFakeLLM:
     """Wraps GenericFakeChatModel and remembers every message list it was
-    invoked with — see tests/agent/test_agent_node.py for why this is a plain
+    invoked with — see tests/agent/graph/test_agent_node.py for why this is a plain
     wrapper rather than a subclass.
 
     Defines `ainvoke`, not `invoke` — `agent` calls `llm.ainvoke(...)` now
-    (see app/agent/graph.py's make_agent_node docstring)."""
+    (see app/agent/graph/core.py's make_agent_node docstring)."""
 
     def __init__(self):
         self._inner = GenericFakeChatModel(messages=iter([AIMessage(content="answer")]))
@@ -107,7 +107,7 @@ class TestNoCtxLeakIntoMessageContent:
 
     async def test_claims_dict_never_leaks_into_message_content(self):
         """`claims` is the opaque, domain-specific bag (app/core/security.py) —
-        nothing in app/agent/graph.py should ever stringify it into a prompt."""
+        nothing in app/agent/graph/core.py should ever stringify it into a prompt."""
         rendered = await _render(CTX_A)
         blob = "\n".join(m.content for m in rendered if isinstance(m.content, str))
         assert "admin" not in blob

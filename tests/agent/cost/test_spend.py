@@ -1,6 +1,6 @@
-"""`app/agent/spend.py`: the spend read behind every dollar cap and `GET /usage` (specs/010 T030).
+"""`app/agent/cost/spend.py`: the spend read behind every dollar cap and `GET /usage` (specs/010 T030).
 
-Same "no live Postgres" approach as tests/agent/test_budget_holds.py: `get_connection` is replaced by a fake that records
+Same "no live Postgres" approach as tests/agent/cost/test_budget_holds.py: `get_connection` is replaced by a fake that records
 the SQL and parameters it was handed. That proves statement SHAPE (tenant in every query, which table, which column the
 window uses), not how the real table behaves: tests/integration/test_spend_real_postgres.py runs the same read against it.
 """
@@ -11,7 +11,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.agent import budget_holds, budgets, spend
+from app.agent.cost import budget_holds, budgets, spend
 from tests.conftest import TEST_CTX, _NoPostgresInTests
 
 

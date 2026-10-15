@@ -21,7 +21,7 @@ import threading
 
 import pytest
 
-from app.agent import runtime_stream
+from app.agent.runtime import stream as runtime_stream
 from app.core import tracing
 
 

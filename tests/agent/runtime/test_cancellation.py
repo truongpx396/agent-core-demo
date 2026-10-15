@@ -1,13 +1,13 @@
-"""Tests for cooperative mid-turn cancellation (app/agent/runtime.py's
+"""Tests for cooperative mid-turn cancellation (app/agent/runtime/core.py's
 `cancel_check` parameter on `_iterate_with_timeout`/`_run_graph_stream`/
 `astream_events_turn`) — the "actively streaming, not yet paused" half of
 `POST /chat/cancel`'s two-mechanism design (GRAPH_PATTERNS.md pattern 43's
 queue-first HITL). The other half — cancelling a turn already paused at
 human_approval, via `cancel_run` — is already covered by
-tests/agent/test_durable_checkpoint.py::TestAsyncSeeding; this file is the new
+tests/agent/runtime/test_durable_checkpoint.py::TestAsyncSeeding; this file is the new
 mechanism only.
 
-Follows tests/agent/test_streaming_terminal_events.py's established pattern:
+Follows tests/agent/runtime/test_streaming_terminal_events.py's established pattern:
 drive `astream_events_turn` against a hermetic fake-LLM graph via a
 monkeypatched `init_graph_async`, bypassing the real durable checkpointer
 (a different concern, covered elsewhere).
@@ -18,10 +18,10 @@ import uuid
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from app.agent import runtime as agent_module
-from app.agent import runtime_stream as stream_module
-from app.agent.graph import GraphDeps
-from app.agent.graph_build import build_graph
+from app.agent.graph.build import build_graph
+from app.agent.graph.core import GraphDeps
+from app.agent.runtime import core as agent_module
+from app.agent.runtime import stream as stream_module
 from app.core import metrics
 from app.core.errors import ErrorCode
 from tests.conftest import TEST_CTX
@@ -29,8 +29,8 @@ from tests.conftest import metric_value as _count
 
 
 def _slow_llm(text: str = "a longer answer with several tokens in it", delay: float = 0.05):
-    """Same technique as tests/agent/test_concurrent_turns.py's own
-    `_fixed_llm`/tests/agent/test_durable_checkpoint.py's `_SlowFakeLLM`:
+    """Same technique as tests/agent/runtime/test_concurrent_turns.py's own
+    `_fixed_llm`/tests/agent/runtime/test_durable_checkpoint.py's `_SlowFakeLLM`:
     a real `await asyncio.sleep` between streamed chunks so there's an
     actual window to cancel INTO mid-stream, rather than the fake model
     returning before a test's own `task.cancel()` could ever land."""
@@ -281,7 +281,7 @@ class TestAstreamEventsResumeCancellation:
         with the tool's I/O stubbed to *record* writes — the observable that
         distinguishes "cancelled before the approved tool ran" from "ran,
         then reported cancelled"."""
-        from app.agent import tools
+        from app.agent.tools import builtin as tools
         from app.retrieval import qdrant_store
 
         writes: list = []

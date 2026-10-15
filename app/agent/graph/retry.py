@@ -3,13 +3,13 @@ corrective feedback naming the SPECIFIC rejection reason),
 `make_retry_exhausted_node` (route_after_check giving up on a stuck retry
 loop — MAX_CONSECUTIVE_SAME_RETRY_REASON), and `make_no_answer_fallback_node`
 (should_continue's own four safety-net exits — max iterations/tokens/cost,
-no-progress). Split out of `app/agent/graph.py` for file size; no behavior
+no-progress). Split out of `app/agent/graph/core.py` for file size; no behavior
 change.
 """
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent.graph import MIN_ANSWER_LENGTH, SYSTEM_PROMPT, State
-from app.agent.graph_routing import check_output
+from app.agent.graph.core import MIN_ANSWER_LENGTH, SYSTEM_PROMPT, State
+from app.agent.graph.routing import check_output
 from app.core import metrics
 
 
@@ -191,11 +191,11 @@ def make_retry_exhausted_node(emit_message: bool = True):
 # empty AIMessage (a small model can burn all its tokens failing to produce
 # real content or a valid tool call). Without this node, that empty message
 # would be the turn's final answer, and
-# runtime_stream.py::_run_graph_stream's own streaming fallback reads
+# runtime/stream.py::_run_graph_stream's own streaming fallback reads
 # exactly this last message to synthesize a token event.
 #
 # emit_message=False (run_subagent's nested graphs) makes this a no-op:
-# run_subagent (app/agent/tools.py) already runs the IDENTICAL "empty final
+# run_subagent (app/agent/tools/builtin.py) already runs the IDENTICAL "empty final
 # AIMessage" check on its own terms to report outcome="budget_exceeded" —
 # filling in prose here would make that check wrongly see real text and
 # report the run as completed. ---

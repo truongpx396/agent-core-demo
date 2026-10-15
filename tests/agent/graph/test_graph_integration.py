@@ -11,14 +11,14 @@ also stays hermetic.
 Scenarios mirror the graph's documented flow in GRAPH_PATTERNS.md.
 
 The compiled graph's `agent`/`retrieve_context`/etc. nodes are `async def`
-now (real LLM/Redis/Qdrant I/O — see app/agent/graph.py), so every
+now (real LLM/Redis/Qdrant I/O — see app/agent/graph/core.py), so every
 `g.invoke`/`g.get_state` below runs as `asyncio.run(g.ainvoke(...))`/
 `asyncio.run(g.aget_state(...))` instead — LangGraph's sync Pregel loop
 can't run an async-only node at all. Each call gets its own `asyncio.run`
 rather than one shared event loop across a test, which is fine here since
 these graphs use the default in-memory MemorySaver (no event-loop-bound
 state — contrast with `AsyncPostgresSaver`'s per-instance `asyncio.Lock`,
-see app/agent/runtime.py's module docstring).
+see app/agent/runtime/core.py's module docstring).
 """
 import asyncio
 import uuid
@@ -27,7 +27,9 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from app.agent.graph import (
+from app.agent.graph.build import build_graph
+from app.agent.graph.compaction import _estimate_tokens
+from app.agent.graph.core import (
     AGENT_RETRY_POLICY,
     MAX_HISTORY_SUMMARY_CHARS,
     MAX_ITERATIONS,
@@ -36,8 +38,6 @@ from app.agent.graph import (
     MAX_TOOL_CALLS_PER_TURN,
     GraphDeps,
 )
-from app.agent.graph_build import build_graph
-from app.agent.graph_compaction import _estimate_tokens
 from tests.conftest import TEST_CTX
 
 
@@ -47,8 +47,8 @@ def _config():
         # LangGraph's own default (25) sits right at the edge of what
         # MAX_ITERATIONS worth of agent<->tools round trips plus the fixed
         # pre/post-loop nodes needs — the same "each iteration is ~2 steps"
-        # math app/agent/runtime.py's own RECURSION_LIMIT and
-        # app/agent/tools.py::run_subagent's nested_config already use, so
+        # math app/agent/runtime/core.py's own RECURSION_LIMIT and
+        # app/agent/tools/builtin.py::run_subagent's nested_config already use, so
         # this test config does too rather than relying on the SDK default
         # coincidentally being just enough.
         "recursion_limit": MAX_ITERATIONS * 2 + 15,
@@ -161,7 +161,7 @@ class TestHumanApprovalPath:
         )
         assert (await g.aget_state(config)).next, "graph should be paused at the interrupt"
 
-        from app.agent.graph_hitl import CANCEL_SENTINEL
+        from app.agent.graph.hitl import CANCEL_SENTINEL
 
         result = await g.ainvoke(Command(resume=CANCEL_SENTINEL), config=config)
 
@@ -181,7 +181,7 @@ class TestApprovalAfterAnEarlierCancel:
         reported finished. The existing cancel tests cover the cancel itself
         and `route_after_approval` in isolation; none ran a second approval on
         the same thread."""
-        from app.agent.graph_hitl import CANCEL_SENTINEL
+        from app.agent.graph.hitl import CANCEL_SENTINEL
 
         llm = _fake_llm(
             _tool_call_message("calculator", {"expression": "2+2"}, call_id="call_cancelled"),
@@ -425,7 +425,7 @@ class TestOutputRetryPath:
 
 
 class TestRetryExhaustedPath:
-    """MAX_CONSECUTIVE_SAME_RETRY_REASON (app/agent/graph.py) — real bug,
+    """MAX_CONSECUTIVE_SAME_RETRY_REASON (app/agent/graph/core.py) — real bug,
     found live via Langfuse: a turn stuck narrating tool intent instead of
     calling one, round after round, burned 6 full LLM calls (and ~18k
     tokens) before should_continue's own, much blunter
@@ -557,7 +557,7 @@ class TestRetryExhaustedPath:
 class TestToolErrorRecovery:
     async def test_invalid_tool_args_become_a_tool_message_not_a_crash(self):
         """calculator's args_schema rejects a blank expression (see
-        CalculatorArgs._not_blank in app/agent/tools.py) — that validation error
+        CalculatorArgs._not_blank in app/agent/tools/builtin.py) — that validation error
         should surface to the agent as a ToolMessage via
         handle_tool_errors, not blow up the run."""
         llm = _fake_llm(
@@ -573,13 +573,14 @@ class TestToolErrorRecovery:
         )
 
     async def test_slow_tool_call_times_out_and_recovers(self, monkeypatch):
-        """app.agent.tools.TOOL_TIMEOUT_SECONDS bounds how long a single tool call
+        """app.core.tool_runtime.TOOL_TIMEOUT_SECONDS bounds how long a single tool call
         can block the graph — a hung call should surface as a friendly
         ToolMessage via handle_tool_errors, same as any other tool error,
         not hang the run."""
-        from app.agent import tools as tools_module
+        from app.agent.tools import builtin as tools_module
+        from app.core import tool_runtime
 
-        monkeypatch.setattr(tools_module, "TOOL_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr(tool_runtime, "TOOL_TIMEOUT_SECONDS", 0.05)
 
         async def slow_calculator_impl(expression):
             await asyncio.sleep(0.5)
@@ -741,7 +742,7 @@ class TestUseSkillWithoutSearchGate:
 class TestMandatoryCapabilityGate:
     """A mutating tool call must pause at human_approval even when the
     caller never set require_approval=True — see should_continue's
-    docstring and app/agent/tools.py::TOOL_CAPABILITIES. Contrast with
+    docstring and app/agent/tools/builtin.py::TOOL_CAPABILITIES. Contrast with
     TestHumanApprovalPath above, which exercises the pre-existing *opt-in*
     gate via a read_only tool."""
 
@@ -752,7 +753,7 @@ class TestMandatoryCapabilityGate:
         # (embedding + Qdrant upsert) the same way test_tools.py does, so
         # this stays a hermetic graph test rather than needing live
         # services just because the *approved* path runs a real tool.
-        from app.agent import tools
+        from app.agent.tools import builtin as tools
         from app.retrieval import qdrant_store
 
         async def fake_embed_text(text):
@@ -846,7 +847,7 @@ class TestContextRetrievalDegradation:
     async def test_search_docs_outage_degrades_instead_of_crashing_the_turn(self):
         """retrieve_context's search_docs call must never take the whole
         turn down with it — see its reliability-policy docstring in
-        app/agent/graph.py. The agent still answers, just without pre-fetched
+        app/agent/graph/core.py. The agent still answers, just without pre-fetched
         context (and could still retry search_docs itself as a tool)."""
 
         def failing_search_docs(query, ctx):
@@ -938,7 +939,7 @@ class TestModeration:
 class TestSemanticCache:
     """End-to-end proof of the check_semantic_cache/write_semantic_cache
     wiring through a real compiled graph — the node-level mechanics are
-    already covered in tests/agent/test_nodes.py; this proves the topology
+    already covered in tests/agent/graph/test_nodes.py; this proves the topology
     actually connects them the way GRAPH_PATTERNS.md pattern 22 describes."""
 
     async def test_cache_hit_never_calls_the_llm_and_returns_the_cached_answer(self):
@@ -1140,7 +1141,7 @@ class TestCostCeilingPath:
         price (not a huge token count) is what trips this one, proving
         MAX_COST_USD_PER_TURN is its own budget, not a re-derivation of
         MAX_TOKENS_PER_TURN (GRAPH_PATTERNS.md pattern 35)."""
-        from app.agent import pricing
+        from app.agent.cost import pricing
         from app.core.config import CHAT_MODEL
 
         async def absurd_prices():
@@ -1174,7 +1175,7 @@ class TestCostCeilingPath:
 
     async def test_ordinary_turns_never_approach_the_ceiling_with_local_models(self):
         """Every model this app's own docker-compose runs locally via
-        Ollama costs $0 (LiteLLM reports a known zero, app/agent/pricing.py) — a
+        Ollama costs $0 (LiteLLM reports a known zero, app/agent/cost/pricing.py) — a
         normal local turn must never trip this."""
         llm = _fake_llm(AIMessage(content="A perfectly ordinary local answer."))
         g = build_graph(GraphDeps(llm=llm))

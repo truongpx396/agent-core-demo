@@ -13,7 +13,7 @@ Redis-backed (`limits.storage.RedisStorage`), not in-process memory — a
 per-process counter would stop meaning anything once more than one
 `uvicorn` process is running (pattern 43). Fails OPEN if Redis is
 unreachable, same degrade-don't-crash posture as semantic_cache.py/
-moderation.py.
+app/core/moderation.py.
 """
 import logging
 

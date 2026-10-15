@@ -25,7 +25,7 @@ class _FakeManifest:
 class _FakeState:
     def __init__(self):
         self.next = ()  # never paused
-        # `.values["messages"]` — `_ensure_seeded_async` (app/agent/runtime.py)
+        # `.values["messages"]` — `_ensure_seeded_async` (app/agent/runtime/core.py)
         # reads this to decide whether the thread's already seeded; empty
         # here means it always takes the (no-op against this fake) seed path.
         self.values = {"messages": []}

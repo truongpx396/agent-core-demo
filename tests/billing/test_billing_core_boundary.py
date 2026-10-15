@@ -43,7 +43,7 @@ CORE = SRC / "credit_billing"
 
 
 def _package_of(path: Path) -> str:
-    """`app/agent/budgets.py` -> `app.agent`; `.../src/credit_billing/providers/stripe.py` -> `credit_billing.providers`
+    """`app/agent/cost/budgets.py` -> `app.agent`; `.../src/credit_billing/providers/stripe.py` -> `credit_billing.providers`
     (the package a relative import in that file is resolved against)."""
     try:
         relative = path.relative_to(SRC)
@@ -127,9 +127,9 @@ def test_the_scan_actually_covers_the_package():
         "from app.core import metrics",
         "from app.core.config import STRIPE_API_KEY",
         "from app import core",
-        "from app.agent.sql_store import get_connection",
+        "from app.core.sql_store import get_connection",
         "def f():\n    from app.core.config import X\n",
-        "class C:\n    def m(self):\n        if True:\n            import app.agent.gateway\n",
+        "class C:\n    def m(self):\n        if True:\n            import app.core.gateway\n",
         "from app.billingx import y",
         "import app.billingx",
         "from app import billing_integration",  # the package may not import the host's side of the seam either
@@ -221,7 +221,7 @@ def test_every_host_module_that_uses_the_package_also_wires_it():
         ("from credit_billing import credits\nfrom app.billing_integration import reconcile", False),
         ("from credit_billing import credits\nfrom app import billing_integration", False),
         ("from credit_billing import credits\nimport app.billing_integration.export", False),
-        ("from app.agent import budgets", False),
+        ("from app.agent.cost import budgets", False),
         ("from credit_billing.settings import BILLING_PROVIDERS", False),  # settings never touch the database
         ("from credit_billing import metrics", False),
         ("from credit_billing import settings", False),
@@ -279,14 +279,14 @@ def test_the_one_settings_exception_is_exactly_that_narrow():
     assert _allowed_direct_import(config, "credit_billing.settings")
     assert not _allowed_direct_import(config, "credit_billing.credits")
     assert not _allowed_direct_import(config, "credit_billing.settingsx")  # the prefix trap
-    assert not _allowed_direct_import(REPO / "app" / "agent" / "usage_events.py", "credit_billing.settings")
+    assert not _allowed_direct_import(REPO / "app" / "agent" / "cost" / "usage_events.py", "credit_billing.settings")
 
 
 def test_the_seam_scan_covers_the_files_that_used_to_import_the_package():
     covered = {path.relative_to(REPO).as_posix() for path in _seam_files()}
 
-    assert {"app/agent/usage_events.py", "app/agent/budgets.py", "app/api/routers/usage.py", "app/api/main.py",
-            "app/core/config.py", "scripts/usage_reconcile.py", "app/agent/usage_reconcile.py"} <= covered
+    assert {"app/agent/cost/usage_events.py", "app/agent/cost/budgets.py", "app/api/routers/usage.py", "app/api/main.py",
+            "app/core/config.py", "scripts/usage_reconcile.py", "app/agent/cost/usage_reconcile.py"} <= covered
     assert all(not path.startswith("app/billing_integration/") for path in covered), "the seam itself is not scanned"
     users = {p for p in covered if any(_is_core(n) for _, n in _imported((REPO / p).read_text(encoding="utf-8"), _package_of(REPO / p)))}
     assert users == {"app/core/config.py"}, f"the only direct user of the package outside the seam is the settings inheritance ({sorted(users)})"

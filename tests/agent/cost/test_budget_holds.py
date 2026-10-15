@@ -1,10 +1,10 @@
-"""Tests for app/agent/budget_holds.py's in-flight budget reservation
+"""Tests for app/agent/cost/budget_holds.py's in-flight budget reservation
 (reserve_budget/release_budget_reservation/in_flight_reservation) — the fix
-for the check-then-act race in app/agent/budgets.py::check_tenant_daily
-(tests/agent/test_tenant_budget.py covers that function itself; this file
+for the check-then-act race in app/agent/cost/budgets.py::check_tenant_daily
+(tests/agent/cost/test_tenant_budget.py covers that function itself; this file
 covers the reservation primitives it now reads).
 
-Same "no live Postgres" approach as tests/agent/test_sql_store.py:
+Same "no live Postgres" approach as tests/core/test_sql_store.py:
 get_connection is monkeypatched to a fake async-context-manager connection
 that records the SQL/params it was called with. That proves statement SHAPE
 (tenant scoping, which columns, the staleness cutoff), not how the real
@@ -14,7 +14,7 @@ drives the real table, including the abandoned-hold cases this file cannot.
 import uuid
 from contextlib import asynccontextmanager
 
-from app.agent import budget_holds
+from app.agent.cost import budget_holds
 from tests.conftest import TEST_CTX
 
 

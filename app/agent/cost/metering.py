@@ -4,14 +4,14 @@ Before this, `llm.ainvoke(...)` was called from five places and only one of them
 so follow-up suggestions, history compaction and the cron scripts spent tokens that no ledger, dollar ceiling or credit
 balance could see. A call site that must remember to meter is a call site that will one day forget; routing them all
 through `metered_invoke` makes the meter the default and its absence the thing a test can catch
-(tests/agent/test_metering_choke_point.py).
+(tests/agent/cost/test_metering_choke_point.py).
 
 It does three things for a call, in order, so they cannot disagree about it:
-  1. calls the model with the tenant's identity attached for the gateway (`gateway.py`);
+  1. calls the model with the tenant's identity attached for the gateway (`app/core/gateway.py`);
   2. prices the reported usage once (`pricing.price_call`), keeping the token split and the rate;
-  3. records one usage event (`usage_events.py`), best-effort and never raising.
+  3. records one usage event (`app/agent/cost/usage_events.py`), best-effort and never raising.
 
-That event is the whole record of the call: it is what the dollar caps sum (`spend.py`), what the wallet is debited from,
+That event is the whole record of the call: it is what the dollar caps sum (`app/agent/cost/spend.py`), what the wallet is debited from,
 what a usage-billing provider would be sent and what the reconciliation checks against the gateway. There is no second,
 per-turn ledger row any more (specs/010 T030c2): it used to be written here for the calls that never joined the agent node's
 running total (`to_ledger=True`), and by the runtime at the end of a turn for the rest, and it is retired because the caps
@@ -26,7 +26,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from app.agent import gateway, pricing, usage_events
+from app.agent.cost import pricing, usage_events
+from app.core import gateway
 
 
 @dataclass(frozen=True)

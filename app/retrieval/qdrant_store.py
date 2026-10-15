@@ -94,7 +94,7 @@ def build_point(
     sparse_vector: tuple[list[int], list[float]] | None = None,
 ) -> PointStruct:
     """One point, both vector legs — the single place that assembles the
-    hybrid vector shape, so `scripts/seed.py` and `app/agent/tools.py`'s
+    hybrid vector shape, so `scripts/seed.py` and `app/agent/tools/builtin.py`'s
     write paths (add_note, remember) can't drift from `ensure_collection`'s
     schema. `sparse_vector` is optional (a point missing it just never
     surfaces via that leg's Prefetch, still findable dense-only) so a
@@ -140,7 +140,7 @@ def _build_filter(
         # ANDed onto `must` (tenant, topic) — can only NARROW the result
         # set to a caller-chosen subset of already-permitted points, never
         # widen past the tenant filter (Policy.lower is still applied
-        # first — see app/agent/tools.py's search_docs docstring).
+        # first — see app/agent/tools/builtin.py's search_docs docstring).
         must.append(HasIdCondition(has_id=cast("list[int | str | UUID]", doc_ids)))
     return Filter(must=must) if must else None
 
@@ -240,7 +240,7 @@ async def hybrid_search(
         scores = await embeddings.rerank(query_text, texts)
         # Overwrite the RRF fusion score (rank-derived, not a relevance
         # measure) with the cross-encoder's raw logit score, so callers
-        # reading `.score` (e.g. app/agent/tools.py's relevance floor) see
+        # reading `.score` (e.g. app/agent/tools/builtin.py's relevance floor) see
         # an actual relevance judgment, not a fusion-rank artifact.
         for point, score in zip(points, scores, strict=True):
             point.score = score
@@ -259,7 +259,7 @@ async def hybrid_search(
 
 async def delete_by_filter(delete_filter: Filter) -> None:
     """Support function for the "a memory must be removable" requirement
-    (see app/agent/tools.py's remember/MemoryService note) — a scoped,
+    (see app/agent/tools/builtin.py's remember/MemoryService note) — a scoped,
     auditable delete, e.g. every point with `owner == <principal>`.
 
     Deliberately NOT exposed as an agent-facing tool: an LLM deciding to
@@ -275,7 +275,7 @@ async def delete_by_filter(delete_filter: Filter) -> None:
 
 async def count_by_filter(count_filter: Filter) -> int:
     """How many points currently match `count_filter` — used by
-    `app/agent/memory.py::delete_memories` to report how many memories a
+    `app/retrieval/memory.py::delete_memories` to report how many memories a
     deletion removed (Qdrant's `delete` doesn't return a row count, so
     this is called immediately BEFORE deleting the same filter — see that
     function's docstring for the accepted race)."""

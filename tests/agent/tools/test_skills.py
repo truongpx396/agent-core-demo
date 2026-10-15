@@ -1,10 +1,10 @@
-"""Tests for app/agent/skills.py — the on-disk skill-package loader
+"""Tests for app/agent/tools/skill_catalog.py — the on-disk skill-package loader
 (GRAPH_PATTERNS.md pattern 45). All isolated to `tmp_path`; nothing here
 touches the real `skills/` directory shipped with the app or a live Qdrant.
 """
 import pytest
 
-from app.agent.skills import SkillLoadError, _parse_skill_file, load_skills
+from app.agent.tools.skill_catalog import SkillLoadError, _parse_skill_file, load_skills
 
 
 def _write_skill(tmp_path, slug, content):

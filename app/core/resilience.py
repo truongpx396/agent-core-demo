@@ -53,7 +53,7 @@ services, not something this app's horizontally-scaled workers need a
 consistent shared view of (GRAPH_PATTERNS.md pattern 43). One replica's
 breaker opening slightly ahead of another's is an acceptable inefficiency,
 not a correctness bug — same "narrow accepted race, not worth closing"
-posture as app/agent/tool_idempotency.py's own docstring.
+posture as app/core/tool_idempotency.py's own docstring.
 """
 import asyncio
 import enum

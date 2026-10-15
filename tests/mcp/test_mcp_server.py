@@ -1,9 +1,9 @@
 """Tests for app/mcp/server.py — the MCP-exposed counterpart to
-app/agent/tools.py's query_employees, reached over FastMCP's in-process
+app/agent/tools/builtin.py's query_employees, reached over FastMCP's in-process
 list_tools/call_tool rather than a real stdio subprocess (verified once,
 empirically, against a real running Postgres before this file was written;
 these stay hermetic like the rest of the suite by mocking
-app.agent.sql_store.query_employees, same boundary test_tools.py's
+app.core.sql_store.query_employees, same boundary test_tools.py's
 TestQueryEmployees mocks at).
 
 `call_tool`/`list_tools` are async, so every test here is `async def` too
@@ -11,7 +11,7 @@ TestQueryEmployees mocks at).
 `@pytest.mark.asyncio` needed on each one).
 """
 
-from app.agent import sql_store
+from app.core import sql_store
 from app.mcp import server as mcp_server
 
 

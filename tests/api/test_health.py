@@ -1,7 +1,7 @@
 """Tests for app/api/health.py's readiness checks — no live services: every
 dependency client is monkeypatched to a fake that either succeeds or
 raises, the same "fake the collaborator, not the network" approach
-tests/agent/test_sql_store.py/tests/agent/test_tools.py already use.
+tests/core/test_sql_store.py/tests/agent/tools/test_tools.py already use.
 
 No pytest-asyncio plugin is installed in this project (see
 tests/job_queue/test_queue.py's own module docstring) — async calls go through
@@ -10,8 +10,8 @@ tests/job_queue/test_queue.py's own module docstring) — async calls go through
 import asyncio
 from contextlib import asynccontextmanager
 
-from app.agent import sql_store
 from app.api import health
+from app.core import sql_store
 from app.job_queue import queue
 from app.retrieval import qdrant_store
 

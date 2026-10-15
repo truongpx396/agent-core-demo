@@ -1,4 +1,4 @@
--- Closes a check-then-act race in app/agent/runtime.py's
+-- Closes a check-then-act race in app/agent/runtime/core.py's
 -- _tenant_over_daily_budget: it sums usage_ledger BEFORE a turn runs, and
 -- usage_ledger.record_usage only writes that turn's own cost AFTER it
 -- completes — nothing in between accounts for turns that are already

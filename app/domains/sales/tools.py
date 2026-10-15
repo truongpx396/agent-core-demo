@@ -2,9 +2,9 @@
 log an inbound lead interaction, schedule a follow-up, package a brief on
 a lead, hand a hot lead off to a human rep, check the pending follow-up
 queue, and close out a lead that isn't going to convert. Same conventions
-as app/agent/tools.py/support/tools.py (Pydantic args_schema,
-RunnableConfig ctx, `_arun_with_timeout`, fail-closed ctx check). All
-tools are `async def`, matching app/agent/tools.py's async-first design.
+as app/agent/tools/builtin.py/support/tools.py (Pydantic args_schema,
+RunnableConfig ctx, `arun_with_timeout`, fail-closed ctx check). All
+tools are `async def`, matching app/agent/tools/builtin.py's async-first design.
 
 No tool here sends anything to the customer — the LLM's ordinary final
 answer (shaped by SALES_MANIFEST's system prompt) is the draft; a human
@@ -18,16 +18,16 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolCallId, tool
 from pydantic import BaseModel, Field, field_validator
 
-from app.agent.tool_idempotency import idempotent
-from app.agent.tools import _arun_with_timeout
 from app.core.security import SecurityCtx, valid_ctx
+from app.core.tool_idempotency import idempotent
+from app.core.tool_runtime import arun_with_timeout
 from app.core.untrusted import frame_untrusted
 from app.domains import notify, sandbox_session
 from app.domains.policy import ActionAllowlistPolicy
 from app.domains.sales import store
 from app.ingestion.web_crawler import CRAWL_TOOL_TIMEOUT_SECONDS, render_url_to_markdown
 
-_NO_CTX_REFUSAL = (
+NO_CTX_REFUSAL = (
     "Refused: no valid tenant/principal context for this request. "
     "This isn't something you can work around — it means the request "
     "never got a security context stamped on it upstream."
@@ -52,14 +52,14 @@ SALES_POLICY = ActionAllowlistPolicy(
 )
 
 
-def _ctx_from_config(config: RunnableConfig | None) -> SecurityCtx | None:
+def ctx_from_config(config: RunnableConfig | None) -> SecurityCtx | None:
     if not config:
         return None
     return config.get("configurable", {}).get("ctx")
 
 
-def _ctx_or_refuse(config: RunnableConfig | None, action: str) -> SecurityCtx | None:
-    ctx = _ctx_from_config(config)
+def ctx_or_refuse(config: RunnableConfig | None, action: str) -> SecurityCtx | None:
+    ctx = ctx_from_config(config)
     if not valid_ctx(ctx) or not SALES_POLICY.permit(action, ctx):
         return None
     return ctx
@@ -69,7 +69,7 @@ class LogLeadInteractionArgs(BaseModel):
     name: str = Field(..., description="The lead's name.")
     contact: str = Field(..., description="Email, phone, or channel handle — the lead's stable identifier.")
     notes: str = Field(..., description="What was said/asked in this interaction.")
-    # Injected by ToolNode, never shown to the LLM — see app/agent/tools.py's
+    # Injected by ToolNode, never shown to the LLM — see app/agent/tools/builtin.py's
     # AddNoteArgs for the full explanation. Lets this tool run through
     # tool_idempotency.idempotent().
     tool_call_id: Annotated[str, InjectedToolCallId]
@@ -102,15 +102,15 @@ async def log_lead_interaction(
     """Record an inbound interaction with a lead — finds the existing lead
     by contact or creates a new one. Call this for every meaningful inbound
     message before deciding what to do next."""
-    ctx = _ctx_or_refuse(config, "log_lead_interaction")
+    ctx = ctx_or_refuse(config, "log_lead_interaction")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="log_lead_interaction",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _log_lead_interaction_impl, name, contact, notes, ctx, tool_call_id
         ),
     )
@@ -153,15 +153,15 @@ async def schedule_followup(
     """Schedule a future follow-up for a lead. scripts/followup_sweep.py
     (run via cron) picks these up once due and drafts a nudge for a human
     to review and send."""
-    ctx = _ctx_or_refuse(config, "schedule_followup")
+    ctx = ctx_or_refuse(config, "schedule_followup")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="schedule_followup",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _schedule_followup_impl, contact, due_in_days, note, ctx, tool_call_id
         ),
     )
@@ -217,10 +217,10 @@ async def package_lead_brief(contact: str, config: RunnableConfig) -> str:
     """Assemble a structured brief on a lead — history, notes, follow-ups
     — read-only, for either your own reasoning or as the summary handed to
     a human rep via handoff_to_human."""
-    ctx = _ctx_or_refuse(config, "package_lead_brief")
+    ctx = ctx_or_refuse(config, "package_lead_brief")
     if ctx is None:
-        return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_package_lead_brief_impl, contact, ctx)
+        return NO_CTX_REFUSAL
+    return await arun_with_timeout(_package_lead_brief_impl, contact, ctx)
 
 
 class HandoffToHumanArgs(BaseModel):
@@ -259,15 +259,15 @@ async def handoff_to_human(
     """Mark a lead 'hot' and hand it to a human rep with a packaged brief
     — use this once a lead is ready to talk to a person, never to send
     anything to the lead itself."""
-    ctx = _ctx_or_refuse(config, "handoff_to_human")
+    ctx = ctx_or_refuse(config, "handoff_to_human")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="handoff_to_human",
-        fn=lambda: _arun_with_timeout(_handoff_to_human_impl, contact, brief_summary, reason, ctx),
+        fn=lambda: arun_with_timeout(_handoff_to_human_impl, contact, brief_summary, reason, ctx),
     )
 
 
@@ -293,10 +293,10 @@ async def list_pending_followups(config: RunnableConfig, contact: str | None = N
     """List pending follow-ups, most-imminent first — the whole queue, or
     just one lead's if `contact` is given. Use this to see what's coming
     up rather than guessing whether a lead already has one scheduled."""
-    ctx = _ctx_or_refuse(config, "list_pending_followups")
+    ctx = ctx_or_refuse(config, "list_pending_followups")
     if ctx is None:
-        return _NO_CTX_REFUSAL
-    return await _arun_with_timeout(_list_pending_followups_impl, contact, ctx)
+        return NO_CTX_REFUSAL
+    return await arun_with_timeout(_list_pending_followups_impl, contact, ctx)
 
 
 class MarkLeadLostArgs(BaseModel):
@@ -329,15 +329,15 @@ async def mark_lead_lost(
     unresponsive — cancels its pending follow-ups so it stops surfacing in
     the sweep. Use this instead of leaving a dead lead's follow-ups
     dangling; never use it just because a lead hasn't replied yet."""
-    ctx = _ctx_or_refuse(config, "mark_lead_lost")
+    ctx = ctx_or_refuse(config, "mark_lead_lost")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="mark_lead_lost",
-        fn=lambda: _arun_with_timeout(_mark_lead_lost_impl, contact, reason, ctx, tool_call_id),
+        fn=lambda: arun_with_timeout(_mark_lead_lost_impl, contact, reason, ctx, tool_call_id),
     )
 
 
@@ -377,15 +377,15 @@ async def enrich_lead_from_website(
     open internet — declared "outward" in TOOL_CAPABILITIES, so it always
     requires human approval before it runs, same as any mutating tool.
     Requires an existing lead (log_lead_interaction first)."""
-    ctx = _ctx_or_refuse(config, "enrich_lead")
+    ctx = ctx_or_refuse(config, "enrich_lead")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="enrich_lead_from_website",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _enrich_lead_from_website_impl,
             contact,
             url,
@@ -468,15 +468,15 @@ async def run_command_in_sandbox(
     access) — numpy and pandas are already available if you need
     them. Reaches an external service — always requires human
     approval before it runs."""
-    ctx = _ctx_or_refuse(config, "run_command_in_sandbox")
+    ctx = ctx_or_refuse(config, "run_command_in_sandbox")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="run_command_in_sandbox",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _run_command_in_sandbox_impl,
             command,
             _thread_id_from_config(config),
@@ -534,15 +534,15 @@ async def run_python_in_sandbox(
     and pandas are already available if you need them. Reaches an
     external service — always requires human approval before it
     runs."""
-    ctx = _ctx_or_refuse(config, "run_python_in_sandbox")
+    ctx = ctx_or_refuse(config, "run_python_in_sandbox")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="run_python_in_sandbox",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _run_python_in_sandbox_impl,
             script,
             _thread_id_from_config(config),
@@ -576,15 +576,15 @@ async def read_sandbox_file(
     this particular tool, not in write_sandbox_file or
     run_command_in_sandbox. Reaches an external service — always
     requires human approval before it runs."""
-    ctx = _ctx_or_refuse(config, "read_sandbox_file")
+    ctx = ctx_or_refuse(config, "read_sandbox_file")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="read_sandbox_file",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _read_sandbox_file_impl,
             path,
             _thread_id_from_config(config),
@@ -616,15 +616,15 @@ async def write_sandbox_file(
     auto-created sandbox as run_command_in_sandbox. Reaches an
     external service — always requires human approval before it
     runs."""
-    ctx = _ctx_or_refuse(config, "write_sandbox_file")
+    ctx = ctx_or_refuse(config, "write_sandbox_file")
     if ctx is None:
-        return _NO_CTX_REFUSAL
+        return NO_CTX_REFUSAL
     return await idempotent(
         tool_call_id=tool_call_id,
         ctx=ctx,
         config=config,
         tool_name="write_sandbox_file",
-        fn=lambda: _arun_with_timeout(
+        fn=lambda: arun_with_timeout(
             _write_sandbox_file_impl,
             path,
             content,

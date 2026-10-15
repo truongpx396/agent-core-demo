@@ -1,18 +1,18 @@
 """Tests for the `agent` node in isolation, using a fake chat model instead
 of the real ChatOpenAI client — see `make_agent_node`'s docstring in
-app/agent/graph.py for why it's a factory.
+app/agent/graph/core.py for why it's a factory.
 
 `agent` is `async def` (calls `llm.ainvoke`, not `.invoke` — see its own
 docstring), so every call below runs through `asyncio.run(...)` — this
 repo's established pattern for exercising async code from a plain
-`def test_...` (no pytest-asyncio configured; see app/agent/graph_utils.py's
+`def test_...` (no pytest-asyncio configured; see app/agent/graph/utils.py's
 `_instrumented` docstring for why only the I/O-bound nodes are async at
 all)."""
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from app.agent.graph_agent_node import make_agent_node
+from app.agent.graph.agent_node import make_agent_node
 
 
 class _RecordingFakeLLM:

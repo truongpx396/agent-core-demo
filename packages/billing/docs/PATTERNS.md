@@ -16,11 +16,11 @@ live now (spec 013 moved them out of the app, so those four entries describe cod
 | Entry | Mechanism | Now |
 |---|---|---|
 | 53 | rating, the debit in the event's transaction, the savepoint | `usage.py::record_usage_in` (the agent calls it; it never raises) |
-| 53 | the credit gate, its holds in credits, its failure policy | `admission.py::admit` (the agent maps the answer in `app/agent/budgets.py`) |
+| 53 | the credit gate, its holds in credits, its failure policy | `admission.py::admit` (the agent maps the answer in `app/agent/cost/budgets.py`) |
 | 53 | `CREDITS_PER_USD`, `MARKUP`, `CREDITS_ENFORCEMENT`, `CREDIT_CHECK_FAILURE_POLICY` | `settings.py` (same variable names; the credits live in `billing_usage_events`, `sql/24-`) |
 | 55 | the usage export outbox, its worker, backoff and age limit | `export.py`, `credit-billing-export-worker`, `billing_export_outbox` (`sql/25-`) |
 | 56 | wallet half of the reconciliation: was every usage charged? | `reconcile.py`, `credit-billing-reconcile` |
-| 56, 61 | gateway half: the events against the LLM gateway's spend log | **not the package's**: the agent's `app/agent/usage_reconcile.py` (`USAGE_RECONCILE_*`; the old `CREDIT_RECONCILE_*` names still work) |
+| 56, 61 | gateway half: the events against the LLM gateway's spend log | **not the package's**: the agent's `app/agent/cost/usage_reconcile.py` (`USAGE_RECONCILE_*`; the old `CREDIT_RECONCILE_*` names still work) |
 | 55 | retention that never deletes an unexported event | `retention.py`, `credit-billing-usage-sweep` |
 
 ## Patterns

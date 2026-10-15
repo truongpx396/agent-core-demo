@@ -1,4 +1,4 @@
--- Backs app/agent/tool_idempotency.py::idempotent — the exactly-once guard
+-- Backs app/core/tool_idempotency.py::idempotent — the exactly-once guard
 -- every "mutating"/"outward" tool (TOOL_CAPABILITIES) now goes through
 -- before performing its real side effect.
 --

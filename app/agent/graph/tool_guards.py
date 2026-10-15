@@ -3,22 +3,22 @@ to agent for a self-correcting retry: `too_many_tool_calls` (over the
 per-turn cap), `invalid_tool_call` (hallucinated/non-existent tool name),
 and shared machinery — `_reject_tool_calls`, `_current_turn_messages`,
 `_invalid_tool_call_names`/`_DEFAULT_VALID_TOOL_NAMES`. Split out of
-`app/agent/graph.py` for file size.
+`app/agent/graph/core.py` for file size.
 
 `use_skill_without_search` — a third node with this same shape — lives in
-`graph_skills.py` instead (grouped with the rest of the skill-misuse
+`graph/skill_guards.py` instead (grouped with the rest of the skill-misuse
 family) and imports `_reject_tool_calls` from here.
 
 `_current_turn_messages`/`_invalid_tool_call_names`/`_DEFAULT_VALID_TOOL_NAMES`
-are also used by `graph_routing.py`, and `_current_turn_messages` by
-`graph.py`'s `make_agent_node` (deferred import to avoid a cycle).
+are also used by `graph/routing.py`, and `_current_turn_messages` by
+`app/agent/graph/core.py`'s `make_agent_node` (deferred import to avoid a cycle).
 """
 from typing import cast
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from app.agent.graph import MAX_TOOL_CALLS_PER_TURN, State
-from app.agent.tools import TOOLS
+from app.agent.graph.core import MAX_TOOL_CALLS_PER_TURN, State
+from app.agent.tools.builtin import TOOLS
 from app.core import metrics
 
 
@@ -33,7 +33,7 @@ def _reject_tool_calls(tool_calls: list, reason: str) -> list[ToolMessage]:
 def _current_turn_messages(messages: list) -> list:
     """Messages in the CURRENT turn only — from the most recent
     HumanMessage (inclusive) onward, never spanning into a prior turn.
-    Shared by graph_routing.py's `_current_turn_tool_call_batches`
+    Shared by graph/routing.py's `_current_turn_tool_call_batches`
     (pattern 34) and `_skipped_required_sandbox_after_skill`, each
     filtering it differently afterward."""
     last_human_index = next(
@@ -54,7 +54,7 @@ def _invalid_tool_call_names(
     real, just undeclared, tool). Guards against the model emitting a
     malformed/hallucinated tool call (seen with Ollama's native
     tool-calling on small models, e.g. qwen2.5:3b). `valid_tool_names`
-    defaults to app/agent/tools.py's TOOLS (Ecorp); `build_graph` passes a
+    defaults to app/agent/tools/builtin.py's TOOLS (Ecorp); `build_graph` passes a
     domain's own tool set instead."""
     return [tc["name"] for tc in tool_calls if tc["name"] not in valid_tool_names]
 

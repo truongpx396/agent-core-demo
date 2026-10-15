@@ -13,13 +13,13 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from app.agent import pricing
-from app.agent.graph import GraphDeps
-from app.agent.graph_agent_node import make_agent_node
-from app.agent.graph_build import build_graph
-from app.agent.graph_compaction import _estimate_tokens, make_compact_history_node
-from app.agent.graph_followups import make_suggest_followups_node
-from tests.agent.test_graph_integration import TestHistorySummarization, _config
+from app.agent.cost import pricing
+from app.agent.graph.agent_node import make_agent_node
+from app.agent.graph.build import build_graph
+from app.agent.graph.compaction import _estimate_tokens, make_compact_history_node
+from app.agent.graph.core import GraphDeps
+from app.agent.graph.followups import make_suggest_followups_node
+from tests.agent.graph.test_graph_integration import TestHistorySummarization, _config
 from tests.conftest import TEST_CTX
 
 CONFIG = {"configurable": {"ctx": TEST_CTX, "thread_id": "thread-1"}}
@@ -200,7 +200,7 @@ class TestTheGraphThreadsTheClientsOwnAliasToEverySpender:
 def test_build_graph_hands_the_clients_alias_to_the_follow_up_node(monkeypatch):
     """Follow-ups only run for a grounded answer, which is awkward to provoke through a whole graph;
     what can go wrong at the seam is the argument not being passed, so capture it."""
-    from app.agent import graph_build
+    from app.agent.graph import build as graph_build
 
     seen = {}
     real = graph_build.make_suggest_followups_node

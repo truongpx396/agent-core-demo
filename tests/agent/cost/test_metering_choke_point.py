@@ -15,12 +15,12 @@ record a deliberate exception, rather than being deleted.
 import ast
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 
 # Empty: every chat-model call goes through the choke point. An exemption added here is a call the
 # billing meter cannot see, so it needs a reason that is written down and a plan to remove it.
 KNOWN_UNMETERED: set[str] = set()
-CHOKE_POINT = "app/agent/metering.py"
+CHOKE_POINT = "app/agent/cost/metering.py"
 
 
 def _is_chat_model_call(node: ast.AST) -> bool:
@@ -51,11 +51,11 @@ def test_every_chat_model_call_is_metered_except_the_known_unrouted_ones():
     assert found == KNOWN_UNMETERED, (
         f"new unmetered call site(s): {sorted(found - KNOWN_UNMETERED)}; "
         f"stale entries to delete from KNOWN_UNMETERED: {sorted(KNOWN_UNMETERED - found)}. "
-        "Route a model call through app/agent/metering.py::metered_invoke."
+        "Route a model call through app/agent/cost/metering.py::metered_invoke."
     )
 
 
 def test_the_choke_point_itself_is_where_the_agent_nodes_call_goes():
     """Guards the guard: if the scanner stopped recognising calls it would pass vacuously."""
     assert CHOKE_POINT in _files_with_a_chat_model_call()
-    assert "app/agent/graph_agent_node.py" not in _files_with_a_chat_model_call()
+    assert "app/agent/graph/agent_node.py" not in _files_with_a_chat_model_call()

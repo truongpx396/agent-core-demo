@@ -129,7 +129,7 @@ def test_a_mutating_tool_call_pauses_for_approval_and_resumes_on_approve(
     tool-argument generation as low-risk as this scenario allows.
 
     Needs `real_stack_with_retrieval`, not `real_stack`: `remember` embeds the
-    text it stores (`app/agent/tools.py::_remember_impl`), and `real_stack`
+    text it stores (`app/agent/tools/builtin.py::_remember_impl`), and `real_stack`
     runs with no real embedding model. Reproduced locally and read off the CI
     logs: the approved `remember` call failed immediately with the embedding
     model's 404, the 3B model reacted by asking for `remember` again, that

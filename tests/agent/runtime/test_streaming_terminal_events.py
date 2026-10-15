@@ -1,5 +1,5 @@
 """Regression tests: `astream_events_turn`/`_run_graph_stream`
-(app/agent/runtime.py) must surface the actual answer text for EVERY way a turn
+(app/agent/runtime/core.py) must surface the actual answer text for EVERY way a turn
 can end, not just the ones that stream token-by-token through the LLM.
 
 Real bug, found live: `final_answer` only ever accumulates from
@@ -16,7 +16,7 @@ renders it correctly with no changes of its own.
 
 Each test drives `astream_events_turn` against a hermetic fake graph via
 a monkeypatched `init_graph_async` (bypassing the real durable
-checkpointer — already covered separately by tests/agent/test_durable_checkpoint.py)
+checkpointer — already covered separately by tests/agent/runtime/test_durable_checkpoint.py)
 since only the EVENT SHAPE is under test here.
 """
 import json
@@ -26,12 +26,12 @@ from types import SimpleNamespace
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
-from app.agent import moderation
-from app.agent import runtime as agent_module
-from app.agent import runtime_stream as stream_module
-from app.agent.graph import GraphDeps
-from app.agent.graph_build import build_graph
-from app.agent.graph_compaction import _estimate_tokens
+from app.agent.graph.build import build_graph
+from app.agent.graph.compaction import _estimate_tokens
+from app.agent.graph.core import GraphDeps
+from app.agent.runtime import core as agent_module
+from app.agent.runtime import stream as stream_module
+from app.core import moderation
 from tests.conftest import TEST_CTX
 
 
@@ -338,7 +338,7 @@ class TestRetryEventClearsTheStream:
 
 class TestRetryExhaustedReplacesAlreadyStreamedContent:
     """Real bug, caught live immediately after shipping
-    leaks_system_prompt detection: retry_exhausted (graph.py)
+    leaks_system_prompt detection: retry_exhausted (app/agent/graph/core.py)
     unconditionally replaces the last message rather than trusting it
     (it's content check_output already judged bad on repeat) — but that
     message's own tokens already streamed live via on_chat_model_stream
@@ -353,7 +353,7 @@ class TestRetryExhaustedReplacesAlreadyStreamedContent:
         self, monkeypatch
     ):
         # deferred_instead_of_acting — one of the two NOT trust-content
-        # reasons (see graph.py's _TRUST_CONTENT_RETRY_REASONS): pure
+        # reasons (see app/agent/graph/core.py's _TRUST_CONTENT_RETRY_REASONS): pure
         # narration has zero answer value, so it must be replaced. (The
         # OTHER two — too_short, uncited — are deliberately TRUSTED and
         # shown as-is now; see TestRetryExhaustedTrustsAttributionOnlyFailures
@@ -383,7 +383,7 @@ class TestRetryExhaustedReplacesAlreadyStreamedContent:
 
 
 class TestRetryExhaustedTrustsAttributionOnlyFailures:
-    """The still-live half of _TRUST_CONTENT_RETRY_REASONS (graph.py):
+    """The still-live half of _TRUST_CONTENT_RETRY_REASONS (app/agent/graph/core.py):
     "too_short" repeated twice reaches retry_exhausted (giving up after
     MAX_CONSECUTIVE_SAME_RETRY_REASON identical rounds), which trusts it
     and shows it as-is — no spurious SECOND "retry" clearing it out from
@@ -424,7 +424,7 @@ class TestRetryExhaustedTrustsAttributionOnlyFailures:
 
 class TestCheckOutputCitationAutoCorrectionStreaming:
     """check_output's own citation auto-correction
-    (_insert_missing_citation_markers, graph.py) mechanically edits an
+    (_insert_missing_citation_markers, app/agent/graph/core.py) mechanically edits an
     already-streamed answer — the SAME "tokens already reached the client
     before the graph changed them" problem retry_exhausted's in-place
     replacement (TestRetryExhaustedReplacesAlreadyStreamedContent above)
@@ -490,7 +490,7 @@ class TestCompactedEventSignalsHistoryTrimming:
     instead (see _run_graph_stream's own docstring)."""
 
     async def test_a_compacting_turn_emits_exactly_one_compacted_event(self, monkeypatch):
-        # Same ceiling/floor derivation tests/agent/test_graph_integration.py's
+        # Same ceiling/floor derivation tests/agent/graph/test_graph_integration.py's
         # TestHistorySummarization uses: real turns driven through the
         # graph (not a hand-poked aupdate_state, which LangGraph rejects
         # as an ambiguous update with no originating node) via 3 REAL
@@ -589,7 +589,7 @@ class _FakeStreamGraph:
     GenericFakeChatModel's own `_stream` reconstruction raises "No
     generations found in stream" for an empty-content, tool-calls-only
     AIMessage once routed through `astream_events()` specifically (its
-    plain `.invoke()`/`.ainvoke()` path — what tests/agent/test_concurrent_turns.py's
+    plain `.invoke()`/`.ainvoke()` path — what tests/agent/runtime/test_concurrent_turns.py's
     own subagent tests use instead — doesn't hit this) — a pre-existing
     fake-model/streaming-API interaction limitation, reproduced even with
     ZERO subagent involvement, unrelated to the filtering logic under test
@@ -655,7 +655,7 @@ class _RaisingStreamGraph:
 
     async def aget_state(self, cfg):
         # Read after a failure so the tokens the turn had already spent can be
-        # recorded (spec 008, B17; tests/agent/test_unfinished_turn_usage.py).
+        # recorded (spec 008, B17; tests/agent/runtime/test_unfinished_turn_usage.py).
         # An empty checkpoint here: nothing was spent, nothing to record.
         return SimpleNamespace(values={}, next=(), tasks=[])
 
@@ -701,9 +701,9 @@ class TestAGraphFailureNeverLeaksItsMessageToTheCaller:
 
 
 class TestSubagentEventsDontLeakIntoTheMainStream:
-    """_run_graph_stream (app/agent/runtime_stream.py) threads this turn's own
+    """_run_graph_stream (app/agent/runtime/stream.py) threads this turn's own
     callbacks/metadata into a subagent's NESTED graph.invoke() (see
-    app/agent/tools.py::_run_subagent_impl's `nested_config`) so its
+    app/agent/tools/builtin.py::_run_subagent_impl's `nested_config`) so its
     internal LLM/tool calls trace correctly — but that nested graph is
     built via this exact same build_graph(), so it ALSO has a node named
     "agent". Without the `metadata.subagent_name` guard added alongside

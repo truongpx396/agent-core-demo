@@ -1,17 +1,17 @@
 """Citation-grounding helpers used exclusively by `check_output`
-(`app/agent/graph_routing.py`): which offered citations the answer
+(`app/agent/graph/routing.py`): which offered citations the answer
 actually used (`_used_citations`), which cited markers were invented
 (`_ungrounded_claims_count`), and two directional "used without
 attributing" checks plus their shared sentence-matching machinery
 (`_uncited_citation_matches`, `_likely_uncited_citations`,
 `_insert_missing_citation_markers`, `_likely_misattributed_citations`).
-Split out of `app/agent/graph_routing.py` for file size (see sibling
-splits `graph_loop_guards.py`/`graph_output_guardrails.py`); no behavior
+Split out of `app/agent/graph/routing.py` for file size (see sibling
+splits `graph/loop_guards.py`/`graph/output_guardrails.py`); no behavior
 change.
 """
 import re
 
-from app.agent.graph_utils import _content_words
+from app.agent.graph.utils import _content_words
 
 _CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
 

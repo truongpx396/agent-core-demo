@@ -41,7 +41,7 @@ def real_redis(monkeypatch):
     test just published," so two tests racing against the fixed names under
     real parallelism could cross-deliver each other's message. Unique
     per-test names are the same isolation idiom
-    tests/agent/test_durable_checkpoint.py already uses via a unique
+    tests/agent/runtime/test_durable_checkpoint.py already uses via a unique
     thread_id, applied to the two names that stand in for it here.
 
     Patches `requests_stream_key` itself (not a fixed module constant, now

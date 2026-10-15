@@ -44,8 +44,8 @@ from pathlib import Path
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from app.agent.graph_build import build_graph
-from app.agent.runtime import _ensure_seeded_async
+from app.agent.graph.build import build_graph
+from app.agent.runtime.core import _ensure_seeded_async
 from app.core.config import DEFAULT_TENANT
 from app.core.security import SecurityCtx
 
@@ -56,7 +56,7 @@ REPETITION_PASS_THRESHOLD = 0.80  # 4-of-5
 GROUNDED_CLAIMS_THRESHOLD = 0.95  # answer-quality gate, over the whole golden set
 
 # Every golden case needs a valid ctx to even reach retrieve_context (see
-# graph.py's route_after_validation) — DEFAULT_TENANT so search_docs can
+# app/agent/graph/core.py's route_after_validation) — DEFAULT_TENANT so search_docs can
 # actually find the docs `make ingest` seeded under it.
 _EVAL_CTX: SecurityCtx = {"tenant": DEFAULT_TENANT, "principal": "eval-harness", "claims": {}}
 
@@ -156,15 +156,15 @@ async def _run_case_once(graph, case: GoldenCase) -> _Attempt:
     start = time.monotonic()
 
     # Seed the system prompt before the first real turn — build_graph() +
-    # .ainvoke() directly bypasses app/agent/runtime.py, so it never
+    # .ainvoke() directly bypasses app/agent/runtime/core.py, so it never
     # triggers the seeding every production path relies on (see
-    # app/agent/graph.py's `agent()` node docstring). Without this the
+    # app/agent/graph/core.py's `agent()` node docstring). Without this the
     # agent runs with zero tool-routing guidance, unlike real users. Reuses
     # the production function so this can't drift from real behavior.
     await _ensure_seeded_async(graph, thread_id)
 
     # `ainvoke`/`aget_state`, not sync `.invoke()`/`.get_state()` — the
-    # graph's nodes are `async def` now (app/agent/graph.py), and
+    # graph's nodes are `async def` now (app/agent/graph/core.py), and
     # LangGraph's sync Pregel loop can't run an async-only node at all.
     result = await graph.ainvoke(
         {

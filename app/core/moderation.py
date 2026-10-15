@@ -1,6 +1,6 @@
 """Real (not hollow) input moderation — screens each turn's input before
 retrieval, the semantic cache, or any LLM spend (pattern 25; wired in via
-`graph.py`'s `moderate_input` node, right after `validate_input`).
+`app/agent/graph/core.py`'s `moderate_input` node, right after `validate_input`).
 
 Two layers, cheapest first:
 1. Pattern-based check (known injection/jailbreak phrasings + a small
@@ -29,7 +29,7 @@ _ML_CHECK_TIMEOUT_SECONDS = 3
 
 # Llama Prompt Guard 2's natural decision boundary (argmax over its 2-class
 # softmax). Not recalibrated against live traffic like MIN_RERANK_SCORE
-# (app/agent/tools.py) — no production trace yet for this layer. Published
+# (app/agent/tools/builtin.py) — no production trace yet for this layer. Published
 # number for the 22M variant: 88.7% recall at 1% FPR (docker-compose.yml).
 ML_INJECTION_THRESHOLD = 0.5
 

@@ -51,7 +51,7 @@ integration-tier test proves it against a real Postgres, not a fake cursor).
 `make usage-events-carry-over` for one old `usage_ledger` row (one TURN, `kind = 'chat'`, no input/output split, `occurred_at` = the ledger row's own time), so a sum over this table sees
 the history from before the table existed. A carried row is **never rated, charged or queued for export**: it has no `credits`, no wallet debit and no outbox row, and it is produced by plain SQL outside the paths
 that create those. Only rows older than the first *call* row are carried, so no turn is in the table twice. The caps and `GET /usage` read `SUM(total_tokens)` and `SUM(cost_usd)` over
-`(tenant [, principal], occurred_at >= since)` (`app/agent/spend.py`, T030b); `SUM` skips the NULL cost of an unpriced call, so it adds its tokens and no dollars.
+`(tenant [, principal], occurred_at >= since)` (`app/agent/cost/spend.py`, T030b); `SUM` skips the NULL cost of an unpriced call, so it adds its tokens and no dollars.
 
 ## Wallet
 

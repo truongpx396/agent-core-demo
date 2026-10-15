@@ -1,4 +1,4 @@
-"""Fast, per-PR smoke checks that this app's REAL graph code (app/agent/graph.py)
+"""Fast, per-PR smoke checks that this app's REAL graph code (app/agent/graph/core.py)
 correctly drives a REAL model's REAL native tool-calling — the one thing
 every other test in this suite (`GenericFakeChatModel`, hand-scripted
 responses) structurally cannot prove, because a fake model's tool calls are
@@ -21,11 +21,11 @@ file's own smoke-test role is unaffected, since it's testing something
 that golden case never was: a deliberately SMALL, CI-speed model, not
 `scripts/eval.py`'s full-size production one.)
 
-`build_graph()` is called directly — no `app.agent.runtime` wrapper, no
+`build_graph()` is called directly — no `app.agent.runtime.core` wrapper, no
 Postgres/Redis/Qdrant needed at all (only `ollama_endpoint`, the cheapest of
 tests/live/conftest.py's two fixtures) — the exact same "assert the real
 dependency, mock everything orthogonal" scoping
-tests/agent/test_durable_checkpoint.py already uses for Postgres. Retrieval/
+tests/agent/runtime/test_durable_checkpoint.py already uses for Postgres. Retrieval/
 the semantic cache are already mocked for every test in this whole suite by
 tests/conftest.py's autouse fixtures; nothing here needs them anyway, since
 neither scenario below calls search_docs.
@@ -35,9 +35,9 @@ import uuid
 import pytest
 from langchain_core.messages import HumanMessage
 
-from app.agent import graph as graph_module
-from app.agent.graph import GraphDeps
-from app.agent.graph_build import build_graph
+from app.agent.graph import core as graph_module
+from app.agent.graph.build import build_graph
+from app.agent.graph.core import GraphDeps
 from tests.conftest import TEST_CTX
 from tests.seeding import seed_thread
 
@@ -46,7 +46,7 @@ pytestmark = pytest.mark.llm
 
 @pytest.fixture(autouse=True)
 def real_ollama_chat_model(monkeypatch, ollama_endpoint):
-    """Points app/agent/graph_utils.py's OWN `_make_llm` at the real Ollama
+    """Points app/agent/graph/utils.py's OWN `_make_llm` at the real Ollama
     container — `graph.CHAT_MODEL`/`graph.OPENAI_API_BASE` specifically
     (that module's `from app.core.config import CHAT_MODEL, OPENAI_API_BASE`
     bindings, not `app.core.config`'s own — same "a `from X import Y`
@@ -65,9 +65,9 @@ async def _invoke_async(text: str) -> dict:
     # Seed the system prompt before the first real turn — see
     # tests/seeding.py's own `seed_thread` docstring for why this is
     # required for a test that calls `build_graph().ainvoke()` directly,
-    # bypassing app/agent/runtime.py's own seeding every production path
+    # bypassing app/agent/runtime/core.py's own seeding every production path
     # relies on. Real, disclosed finding: this file's own docstring above
-    # frames "no app.agent.runtime wrapper" as a deliberate minimal-deps
+    # frames "no app.agent.runtime.core wrapper" as a deliberate minimal-deps
     # choice, but never accounted for that wrapper also being what seeds
     # the model's tool-routing guidance in real usage.
     await seed_thread(graph, config["configurable"]["thread_id"])
@@ -77,7 +77,7 @@ async def _invoke_async(text: str) -> dict:
 async def _invoke(text: str) -> dict:
     # asyncio.run(...), not the sync .invoke() this used to be: the graph's
     # agent/retrieve_context/etc. nodes are async def now (real LLM/Redis/
-    # Qdrant I/O — see app/agent/graph.py), and LangGraph's sync Pregel loop
+    # Qdrant I/O — see app/agent/graph/core.py), and LangGraph's sync Pregel loop
     # can't run an async-only node at all.
     return await _invoke_async(text)
 

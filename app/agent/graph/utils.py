@@ -3,19 +3,19 @@ logic: `_instrumented` (structured lifecycle logging wrapper applied at
 graph-registration time), `_friendly_tool_error` (ToolNode's
 error-recovery formatter), `_make_llm` (the production `ChatOpenAI`
 client factory), and `_content_words` (a crude word-overlap helper
-shared by `graph.py`'s vague-query check and `graph_routing.py`'s
-citation-grounding check). Split out of `app/agent/graph.py` for file
-size (see `graph_hitl.py`/`graph_routing.py`/`graph_tools.py`/
-`graph_skills.py` for sibling splits); no behavior change.
+shared by `app/agent/graph/core.py`'s vague-query check and `graph/routing.py`'s
+citation-grounding check). Split out of `app/agent/graph/core.py` for file
+size (see `graph/hitl.py`/`graph/routing.py`/`graph/tool_guards.py`/
+`graph/skill_guards.py` for sibling splits); no behavior change.
 
-`_content_words` is read back into `graph.py`'s `_retrieval_query` via a
+`_content_words` is read back into `app/agent/graph/core.py`'s `_retrieval_query` via a
 deferred import to avoid a circular import.
 
 `_make_llm` reads `CHAT_MODEL`/`OPENAI_API_BASE`/`OPENAI_API_KEY` through
 `graph_module.X` rather than a static bare import — several `tests/live/*`
 files monkeypatch these as attributes on the live `graph` module object,
 which a bare `from X import Y` would miss (copies the reference once, at
-import time). Same fix as `graph_hitl.py`'s `graph_module.interrupt`/
+import time). Same fix as `graph/hitl.py`'s `graph_module.interrupt`/
 `STATE_SCHEMA_VERSION`.
 """
 import asyncio
@@ -28,9 +28,9 @@ from langchain_openai import ChatOpenAI
 from langgraph.errors import GraphBubbleUp
 from pydantic import SecretStr
 
-from app.agent import graph as graph_module
-from app.agent.tool_idempotency import MutatingToolTimedOut
-from app.agent.tools import TOOLS
+from app.agent.graph import core as graph_module
+from app.agent.tools.builtin import TOOLS
+from app.core.tool_idempotency import MutatingToolTimedOut
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ def _friendly_tool_error(error: Exception) -> str:
     """Turned into a ToolMessage by ToolNode's handle_tool_errors instead of
     propagating and killing the run — the agent sees this on its next turn.
 
-    `MutatingToolTimedOut` (app/agent/tool_idempotency.py) gets its own
+    `MutatingToolTimedOut` (app/core/tool_idempotency.py) gets its own
     message: a plain "try a different approach" is actively dangerous
     advice for a mutating/outward tool's soft timeout, since the
     underlying write may well have already committed — "try again" here
@@ -178,7 +178,7 @@ def _make_llm(tools: list = TOOLS):
         base_url=graph_module.OPENAI_API_BASE,
         api_key=SecretStr(graph_module.OPENAI_API_KEY),
         temperature=0,
-        # astream_events (app/agent/runtime_stream.py's astream_events_turn) forces this
+        # astream_events (app/agent/runtime/stream.py's astream_events_turn) forces this
         # model through its streaming code path even though agent() calls
         # .invoke() — OpenAI-compatible streaming only includes token usage
         # in the final chunk when explicitly requested, so without this,

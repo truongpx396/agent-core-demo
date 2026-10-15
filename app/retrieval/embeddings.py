@@ -15,7 +15,7 @@ bottleneck in-process, worth isolating unlike sparse's cheap lexical scoring.
 
 The fastembed sparse model is lazily constructed (first call pays the
 download/load cost, not import time) and cached in a module global — same
-reason as `app/agent/runtime.py`'s lazy singleton graph: don't pay startup
+reason as `app/agent/runtime/core.py`'s lazy singleton graph: don't pay startup
 cost for a path a process might never exercise.
 """
 import httpx
@@ -112,11 +112,11 @@ async def rerank(query: str, candidates: list[str]) -> list[float]:
 
     A fresh `httpx.AsyncClient` per call, not a shared one: `AsyncClient`'s
     pool is bound to whichever loop creates it (same loop-affinity
-    constraint as `AsyncPostgresSaver` in `app/agent/runtime.py`), and this
+    constraint as `AsyncPostgresSaver` in `app/agent/runtime/core.py`), and this
     function gets called from genuinely different loops (the long-running
     loop `retrieve_context` runs on, and the fresh, short-lived loops
-    `app/agent/tools.py`'s `_search_docs_impl`/`_skill_search_impl` spin up
-    via `_run_with_timeout`'s worker threads) — a shared client would break
+    `app/agent/tools/builtin.py`'s `_search_docs_impl`/`_skill_search_impl` spin up
+    via `run_with_timeout`'s worker threads) — a shared client would break
     on the second kind.
 
     Response is `[{"index", "score", ...}]`, placed back into `candidates`'
@@ -125,7 +125,7 @@ async def rerank(query: str, candidates: list[str]) -> list[float]:
     input order, but reading `index` avoids depending on which).
     `raw_scores` is for wire-compatibility with that TEI contract —
     `ml-service` only ever returns the raw, unbounded logit score
-    (`MIN_RERANK_SCORE` in `app/agent/tools.py` is calibrated to that scale).
+    (`MIN_RERANK_SCORE` in `app/agent/tools/builtin.py` is calibrated to that scale).
     """
     async with httpx.AsyncClient(timeout=_RERANK_TIMEOUT_SECONDS) as client:
         resp = await client.post(

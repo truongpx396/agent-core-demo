@@ -3,12 +3,12 @@ pattern 23) — not just that `AgentManifest`/`DomainPlugin` exist as types
 nobody exercises. A SECOND domain plugin below has a completely different
 tool, prompt, and Policy from the Ecorp domain `build_graph()` defaults to.
 It runs green end-to-end through the exact same, unmodified graph topology
-`app/agent/graph.py` already ships — no `if domain == "..."` anywhere in that
+`app/agent/graph/core.py` already ships — no `if domain == "..."` anywhere in that
 file, no domain-specific node. That's the concrete meaning of "swap a
 manifest+plugin, never fork the graph."
 
 The compiled graph's `agent`/`retrieve_context`/etc. nodes are `async def`
-now (real LLM/Redis/Qdrant I/O — see app/agent/graph.py), so LangGraph's
+now (real LLM/Redis/Qdrant I/O — see app/agent/graph/core.py), so LangGraph's
 sync `.invoke()`/`.get_state()` can't run this graph at all (it raises "No
 synchronous function provided" the moment it reaches one) — the handful of
 tests below that actually run the graph use `.ainvoke()`/`.aget_state()`
@@ -22,8 +22,8 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.types import Command
 
-from app.agent.graph import GraphDeps
-from app.agent.graph_build import build_graph
+from app.agent.graph.build import build_graph
+from app.agent.graph.core import GraphDeps
 from app.agent.manifest import DEFAULT_DOMAIN_PLUGIN, DEFAULT_MANIFEST, AgentManifest
 from app.core.security import Policy, SecurityCtx, valid_ctx
 
@@ -63,7 +63,7 @@ def open_ticket(config: RunnableConfig, summary: str) -> str:
 @dataclass
 class _WidgetSupportDomainPlugin:
     """The "thin domain plugin (code)" half — one tool, its capability,
-    and the Policy backing it. Nothing here touches app/agent/graph.py."""
+    and the Policy backing it. Nothing here touches app/agent/graph/core.py."""
 
     def tools(self) -> list:
         return [open_ticket]
@@ -193,7 +193,7 @@ class TestSecondDomainProvesReuse:
         module-level state the OTHER domain reads — proves the two
         domains' capability mappings are genuinely independent dicts, not
         accidentally the same object with one mutated in place."""
-        from app.agent.tools import TOOL_CAPABILITIES
+        from app.agent.tools.builtin import TOOL_CAPABILITIES
 
         build_graph(GraphDeps(llm=None), manifest=WIDGET_MANIFEST, domain=WIDGET_DOMAIN)
 
@@ -201,7 +201,7 @@ class TestSecondDomainProvesReuse:
         assert TOOL_CAPABILITIES["search_docs"] == "read_only"
 
     async def test_check_output_leak_detection_uses_this_domains_own_system_prompt(self):
-        """check_output (app/agent/graph_routing.py's _leaks_system_prompt) is bound
+        """check_output (app/agent/graph/routing.py's _leaks_system_prompt) is bound
         via functools.partial to manifest.system_prompt inside build_graph
         — NOT the bare Ecorp-only SYSTEM_PROMPT module default. Proof: an
         answer that verbatim-reproduces the WIDGET domain's own (much

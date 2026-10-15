@@ -1,5 +1,5 @@
-"""Tests for the durable checkpointer machinery in app/agent/runtime.py
-(init_graph_async) and app/agent/graph_hitl.py's resumability_error_async.
+"""Tests for the durable checkpointer machinery in app/agent/runtime/core.py
+(init_graph_async) and app/agent/graph/hitl.py's resumability_error_async.
 
 Everything here uses a real AsyncPostgresSaver — no Qdrant/LiteLLM — so it
 stays as close as possible to this suite's "no live services" contract
@@ -23,13 +23,13 @@ thread_id, and AsyncPostgresSaver's tables are keyed by thread_id — sharing
 one database across test runs just means old rows accumulate harmlessly in
 a throwaway container, not a correctness issue.
 
-`app.agent.runtime._graph`/`_checkpointer_pool` are module-level singletons; the
+`app.agent.runtime.core._graph`/`_checkpointer_pool` are module-level singletons; the
 `reset_agent_singleton` fixture below resets them before and after every
 test in this file so tests don't leak state into each other (or into other
-test modules, which never touch app.agent.runtime and would otherwise be affected
+test modules, which never touch app.agent.runtime.core and would otherwise be affected
 by whichever checkpointer happened to win the singleton race). The same
 fixture also points `agent_module.CHECKPOINTER_DATABASE_URL` at the
-ephemeral container for the run — `app/agent/runtime.py`'s own `from
+ephemeral container for the run — `app/agent/runtime/core.py`'s own `from
 app.core.config import CHECKPOINTER_DATABASE_URL` binding, specifically,
 not `app.core.config.CHECKPOINTER_DATABASE_URL` itself (same "a `from X
 import Y` binding is a separate reference" reasoning tests/conftest.py's
@@ -43,15 +43,15 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-from app.agent import runtime as agent_module
-from app.agent import runtime_stream as stream_module
-from app.agent.graph import (
+from app.agent.graph.build import build_graph
+from app.agent.graph.core import (
     STATE_SCHEMA_VERSION,
     SYSTEM_PROMPT,
     GraphDeps,
 )
-from app.agent.graph_build import build_graph
-from app.agent.graph_hitl import resumability_error_async
+from app.agent.graph.hitl import resumability_error_async
+from app.agent.runtime import core as agent_module
+from app.agent.runtime import stream as stream_module
 from app.core import metrics
 from tests.conftest import TEST_CTX
 from tests.conftest import metric_value as _count
@@ -156,7 +156,7 @@ class TestDurabilityAcrossRestart:
     separate instance pointed at the same database — simulating a process
     restart without actually restarting a process.
 
-    Deliberately bypasses app.agent.runtime's singleton machinery (that's
+    Deliberately bypasses app.agent.runtime.core's singleton machinery (that's
     what TestInitGraphAsync above already proves works) and
     talks to build_graph()+AsyncPostgresSaver directly with a fake LLM, each
     "instance" on its own short-lived asyncio.run() loop with its own fresh
@@ -207,7 +207,7 @@ class TestAsyncSeeding:
     `asyncio.InvalidStateError` on the very first turn of any brand-new
     `thread_id` (the checkpointer refuses a sync call from its own loop;
     only a DIFFERENT thread's sync
-    call is the supported cross-thread path — see app/agent/runtime.py's module
+    call is the supported cross-thread path — see app/agent/runtime/core.py's module
     docstring). Fixed by adding `_ensure_seeded_async` (async callers:
     `astream_events_turn`/`astream_events_turn_ctx`, using
     `graph.aupdate_state`) as a separate async-safe seeding path, instead of
@@ -243,7 +243,7 @@ class TestAsyncSeeding:
     async def test_seeding_is_idempotent_even_when_seen_by_a_different_process(self):
         """Real bug, found live via Langfuse: a long-running thread's
         `agent` generation showed the ~800-token system prompt TWICE.
-        Root cause: `_seeded` (app/agent/runtime.py) is a plain
+        Root cause: `_seeded` (app/agent/runtime/core.py) is a plain
         in-process `set()` — a fast-path cache, not the source of truth.
         It forgets everything on a worker restart, and — since
         app/job_queue/agent_worker.py's own docstring says to run SEVERAL
@@ -289,7 +289,7 @@ class TestAsyncSeeding:
         self, monkeypatch
     ):
         """Same bug class, different call site: astream_events_resume
-        used the SYNC `resumability_error` (app/agent/graph.py), which also
+        used the SYNC `resumability_error` (app/agent/graph/core.py), which also
         raises InvalidStateError from the checkpointer's own loop. Fixed
         by resumability_error_async (aget_state) — this is the real
         production resume path (`make chat-hitl`'s HITL round trip),
@@ -478,7 +478,7 @@ class TestAstreamEventsContinueTurn:
     async def test_continuing_does_not_re_execute_an_already_completed_tool_call(
         self, monkeypatch
     ):
-        from app.agent import tools as tools_module
+        from app.agent.tools import builtin as tools_module
 
         calls = []
         real_impl = tools_module._calculator_impl
@@ -489,7 +489,7 @@ class TestAstreamEventsContinueTurn:
 
         # calculator's own body looks up `_calculator_impl` as a bare name
         # in THIS module's globals at call time (both live in
-        # app/agent/tools.py), so patching the module attribute — not the
+        # app/agent/tools/builtin.py), so patching the module attribute — not the
         # name calculator.py imported it under — takes effect.
         monkeypatch.setattr(tools_module, "_calculator_impl", _counting_impl)
 
@@ -620,7 +620,7 @@ class TestResumabilityError:
             # not the other way around.
             graph, config = await self._paused_graph_and_config()
             monkeypatch.setattr(
-                "app.agent.graph.STATE_SCHEMA_VERSION", STATE_SCHEMA_VERSION + 1
+                "app.agent.graph.core.STATE_SCHEMA_VERSION", STATE_SCHEMA_VERSION + 1
             )
             return await resumability_error_async(graph, config)
 

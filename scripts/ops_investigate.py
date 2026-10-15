@@ -27,7 +27,7 @@ import uuid
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from app.agent.graph_build import build_graph
+from app.agent.graph.build import build_graph
 from app.core.config import DEFAULT_TENANT
 from app.core.job_runtime import scheduled_job
 from app.core.security import SecurityCtx
@@ -52,7 +52,7 @@ async def investigate(question: str) -> str:
         }
     }
     # `ainvoke`, not `.invoke()` — the graph's nodes are `async def` now
-    # (app/agent/graph.py); LangGraph's sync Pregel loop can't run one.
+    # (app/agent/graph/core.py); LangGraph's sync Pregel loop can't run one.
     result = await graph.ainvoke(
         {
             "messages": [

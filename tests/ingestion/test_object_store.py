@@ -1,7 +1,7 @@
 """Tests for app/ingestion/object_store.py — the MinIO wrapper backing the
 production ingestion pipeline (GRAPH_PATTERNS.md roadmap item #1). Same
 "assert the call, not a live service result" approach
-tests/agent/test_sql_store.py already uses for Postgres, applied to MinIO
+tests/core/test_sql_store.py already uses for Postgres, applied to MinIO
 instead — no live MinIO needed for these; live verification happens
 separately (`make up` + a real upload round trip).
 """

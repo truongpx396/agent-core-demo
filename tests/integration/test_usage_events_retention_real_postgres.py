@@ -1,6 +1,6 @@
-"""The usage-event retention sweep against a REAL Postgres (app/agent/usage_events_retention.py, specs/010 T030c3).
+"""The usage-event retention sweep against a REAL Postgres (app/agent/cost/usage_events_retention.py, specs/010 T030c3).
 
-tests/agent/test_usage_events_retention.py proves the statements' shape and the loop through a scripted connection. What only a real
+tests/agent/cost/test_usage_events_retention.py proves the statements' shape and the loop through a scripted connection. What only a real
 database shows is what they DO to the shipped schema, and the sweep's safety rests on it:
 
   * only events past the cutoff go, across batches, and a re-run deletes nothing more;
@@ -18,7 +18,7 @@ import psycopg
 import pytest
 from psycopg import errors as pg_errors
 
-from app.agent import usage_events_retention as retention
+from app.agent.cost import usage_events_retention as retention
 from tests.containers import ensure_postgres
 from tests.integration.usage_seed import purge_events, seed_event
 

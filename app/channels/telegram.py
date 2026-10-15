@@ -1,7 +1,7 @@
 """Telegram bot channel (pattern 42) — a fourth interface alongside the CLI,
 the HTTP API, and the built-in web UI. Long-polls Telegram's `getUpdates`
 (no public webhook needed) and drives the same
-`runtime_stream.py::astream_events_turn_unattended()` every queued worker
+`runtime/stream.py::astream_events_turn_unattended()` every queued worker
 turn runs through — just a new front door onto it, collecting streamed
 events into one final reply since Telegram has no token-streaming UX.
 
@@ -18,7 +18,7 @@ app.channels.telegram` runs the support copilot, `AGENT_DOMAIN=sales` the
 sales concierge, unmodified. Each domain is still its own OS process (own
 bot token) — this is "which domain a process boots as," not the
 "several domains from one process" registry the Roadmap still lists as
-unbuilt (see runtime.py::init_graph_async).
+unbuilt (see app/agent/runtime/core.py::init_graph_async).
 
 A WhatsApp gateway for the same domains would reuse
 `handle_message`/`astream_events_turn_unattended()` unchanged — only the
@@ -46,10 +46,10 @@ import signal
 import httpx
 import redis.asyncio as redis
 
-from app.agent import sql_store
-from app.agent.runtime import close_checkpointer_pool, init_graph_async
-from app.agent.runtime_stream import astream_events_turn_unattended
-from app.agent.sessions import TELEGRAM_THREAD_PREFIX
+from app.agent.runtime.core import close_checkpointer_pool, init_graph_async
+from app.agent.runtime.sessions import TELEGRAM_THREAD_PREFIX
+from app.agent.runtime.stream import astream_events_turn_unattended
+from app.core import sql_store
 from app.core.config import AGENT_DOMAIN, DEFAULT_TENANT, TELEGRAM_BOT_TOKEN
 from app.core.logging_config import configure_logging
 from app.core.security import SecurityCtx
@@ -95,7 +95,7 @@ async def _save_offset(client: redis.Redis, domain: str, offset: int) -> None:
 def _thread_id_for_chat(chat_id: int) -> str:
     """One durable conversation thread per Telegram chat — stable across
     process restarts (the durable checkpointer), so history survives a
-    bot restart. The prefix is shared with `sessions.py` because HTTP callers
+    bot restart. The prefix is shared with `app/agent/runtime/sessions.py` because HTTP callers
     may never claim an id in this namespace (see `TELEGRAM_THREAD_PREFIX`)."""
     return f"{TELEGRAM_THREAD_PREFIX}{chat_id}"
 
@@ -209,7 +209,7 @@ async def run() -> None:
     logger.info("telegram_channel_domain", extra={"domain": manifest.name})
     # Opens the durable checkpointer on THIS loop, against whichever domain
     # AGENT_DOMAIN resolved to — it must be bound to the same loop driving
-    # it (see runtime.py).
+    # it (see app/agent/runtime/core.py).
     await init_graph_async(manifest=manifest, domain=domain)
     redis_client = get_redis_client()
     offset = await _load_offset(redis_client, AGENT_DOMAIN)
@@ -247,7 +247,7 @@ async def run() -> None:
 
     logger.info("telegram_channel_stopping")
     # Same reasoning as app/api/main.py's lifespan shutdown: handle_message
-    # runs the full graph, which may have opened sql_store.py's pool.
+    # runs the full graph, which may have opened core/sql_store.py's pool.
     # No-op if this process never touched it.
     await sql_store.close_pool()
     # Same reasoning for the checkpointer's pool — init_graph_async() above

@@ -1,4 +1,4 @@
-"""`app/agent/usage_events_retention.py`: the shape and the control flow of the usage-event retention sweep (specs/010 T030c3).
+"""`app/agent/cost/usage_events_retention.py`: the shape and the control flow of the usage-event retention sweep (specs/010 T030c3).
 
 Hermetic, with a scripted connection: that proves what is sent (the floor, the delete permission, that no tenant narrows it) and when the loop
 stops. What the database DOES with the statements (the append-only trigger, the batch counts) is proven against a real Postgres in
@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from app.agent import usage_events_retention as retention
+from app.agent.cost import usage_events_retention as retention
 from app.core.config import USAGE_EVENT_MIN_RETENTION_DAYS
 
 

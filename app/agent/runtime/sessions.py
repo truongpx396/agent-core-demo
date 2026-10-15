@@ -19,8 +19,8 @@ like `title`.
 """
 import logging
 
-from app.agent.sql_store import get_connection
 from app.core.security import SecurityCtx, valid_ctx
+from app.core.sql_store import get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ async def upsert_session(
     ctx: SecurityCtx | None, thread_id: str, title: str | None = None, domain: str = "ecorp"
 ) -> None:
     """Best-effort write-through at the start of every turn
-    (`runtime.py::astream_events_turn`, right after seeding) — NOT gated
+    (`app/agent/runtime/core.py::astream_events_turn`, right after seeding) — NOT gated
     on the turn completing, unlike the turn metrics, so a
     rejected/moderated/short-circuited turn still shows up in the session
     list.
@@ -139,7 +139,7 @@ async def session_belongs_to(ctx: SecurityCtx | None, thread_id: str, domain: st
     messages and `.../pending_approval`, and `POST /chat/resume` and
     `/chat/cancel` — all of which only ever act on a conversation that
     already exists. (Sending a message uses `claim_session`, which creates
-    the row for a new id.) `runtime_stream.py::get_session_messages` reads
+    the row for a new id.) `runtime/stream.py::get_session_messages` reads
     the shared Postgres checkpointer directly, which has no tenant/
     principal/domain to check, so the CALLER must verify ownership here
     first. A targeted row lookup, not a full `list_sessions` scan. Requiring `domain` to match

@@ -2,13 +2,13 @@
 
 `usage_ledger` recorded a completed TURN, summed, with no key that names a call. That was enough for a first spend cap and not enough for a
 meter: a meter must be able to say "this exact call, once", so that a replayed write and anything built on the record all agree on what one call
-is. This module is that meter, and since specs/010 T030 it is also what the dollar caps and `GET /usage` sum (`app/agent/spend.py`).
+is. This module is that meter, and since specs/010 T030 it is also what the dollar caps and `GET /usage` sum (`app/agent/cost/spend.py`).
 
 ## Identity
 
 `event_id = uuid5(NAMESPACE, f"{tenant}|{message_id}")`, where `message_id` is the response's
 `AIMessage.id`. Verified against the installed langchain-core / langchain-openai / langgraph
-(specs/010 research R5, pinned by tests/agent/test_usage_events.py): langchain-core assigns it as
+(specs/010 research R5, pinned by tests/agent/cost/test_usage_events.py): langchain-core assigns it as
 `run-<run id>-<index>`, it is unique per invocation (two identical calls that came back with the
 SAME provider id still got different ones), and it is identical after a checkpoint round trip. The
 provider's own `chatcmpl-...` id is deliberately not used: a backend may return a fixed or missing one.
@@ -51,12 +51,12 @@ import uuid
 
 from psycopg import errors as pg_errors
 
-from app.agent.model_resolver import resolve_model
-from app.agent.pricing import PricedCall
-from app.agent.sql_store import get_connection
+from app.agent.cost.pricing import PricedCall
 from app.billing_integration import port as billing_port
 from app.core import metrics
+from app.core.model_resolver import resolve_model
 from app.core.security import SecurityCtx, valid_ctx
+from app.core.sql_store import get_connection
 
 logger = logging.getLogger(__name__)
 

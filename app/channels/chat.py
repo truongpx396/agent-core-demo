@@ -1,12 +1,12 @@
 """Interactive CLI for the LangGraph agent.
 
-Thin front-end over `app.agent.runtime` — demonstrates streaming, memory (thread_id),
+Thin front-end over `app.agent.runtime.core` — demonstrates streaming, memory (thread_id),
 and Langfuse tracing. The same runtime backs the FastAPI service (`app.api.main`).
 
 Uses astream_events v2: prints raw tokens as they arrive AND shows a visible
 indicator whenever a tool is called, so you can see the agent "thinking".
 
-`--hitl` gates every tool call behind an approve/reject prompt (see graph.py's
+`--hitl` gates every tool call behind an approve/reject prompt (see app/agent/graph/core.py's
 human_approval) — a runnable, self-contained example of driving the
 `interrupt()` pause/resume cycle through this app's real streaming path.
 
@@ -19,8 +19,8 @@ import uuid
 
 from langfuse.decorators import langfuse_context
 
-from app.agent.runtime import init_graph_async
-from app.agent.runtime_stream import astream_events_resume, astream_events_turn
+from app.agent.runtime.core import init_graph_async
+from app.agent.runtime.stream import astream_events_resume, astream_events_turn
 from app.core.config import DEFAULT_TENANT
 from app.core.security import SecurityCtx
 
@@ -28,7 +28,7 @@ from app.core.security import SecurityCtx
 # untrusted client to spoof it), unlike app/api/deps.py's header extraction.
 # `tenant` matches DEFAULT_TENANT so the CLI sees what `make ingest` seeded;
 # `principal` is the OS user, so multiple people on one machine get separate
-# memories (app/agent/tools.py's remember/recall_memories).
+# memories (app/agent/tools/builtin.py's remember/recall_memories).
 _LOCAL_CTX: SecurityCtx = {
     "tenant": DEFAULT_TENANT,
     "principal": f"local:{getpass.getuser()}",
@@ -97,11 +97,11 @@ async def async_main(hitl: bool = False) -> None:
     """Streaming CLI: token-level latency + visible tool indicators.
 
     `hitl=True` gates every tool call behind an approve/reject prompt (see
-    graph_hitl.py's human_approval) — the streaming event protocol's own
+    graph/hitl.py's human_approval) — the streaming event protocol's own
     opt-in HITL mechanism.
     """
     # Opens the durable checkpointer on THIS loop before any graph call —
-    # it must be bound to the same loop driving it (see runtime.py). No-op
+    # it must be bound to the same loop driving it (see app/agent/runtime/core.py). No-op
     # if the singleton is already initialized.
     await init_graph_async()
     thread_id = str(uuid.uuid4())

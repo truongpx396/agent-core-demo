@@ -4,7 +4,7 @@
 generated SQL, every query explicitly `WHERE tenant = %s`, reusing
 sql_store's pooled `appdata` connection.
 """
-from app.agent.sql_store import get_connection
+from app.core.sql_store import get_connection
 
 
 async def create_ticket(

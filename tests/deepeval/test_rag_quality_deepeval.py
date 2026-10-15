@@ -80,9 +80,9 @@ import uuid
 import pytest
 from langchain_core.messages import HumanMessage
 
-from app.agent import graph as graph_module
-from app.agent.graph import GraphDeps
-from app.agent.graph_build import build_graph
+from app.agent.graph import core as graph_module
+from app.agent.graph.build import build_graph
+from app.agent.graph.core import GraphDeps
 from tests.conftest import TEST_CTX
 from tests.seeding import seed_thread
 
@@ -145,7 +145,7 @@ async def test_grounded_answer_is_faithful_and_relevant_by_a_real_llm_judge(deep
 
     question = "What are Ecorp's support hours, and how long do refunds take once approved?"
     # asyncio.run(...), not the sync .invoke() this used to be — see
-    # app/agent/graph.py: agent/retrieve_context/etc. are async def now.
+    # app/agent/graph/core.py: agent/retrieve_context/etc. are async def now.
     answer = await _seed_and_answer(question)
 
     judge = deepeval_judge

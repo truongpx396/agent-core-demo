@@ -1,5 +1,5 @@
 """Smoke test for genuine parallel tool calls against the REAL model/graph —
-the scenario app/agent/graph.py's `_make_llm` removed `parallel_tool_calls=
+the scenario app/agent/graph/core.py's `_make_llm` removed `parallel_tool_calls=
 False` for (2026-09-09). Sibling of test_agent_tool_calling.py (same fixture,
 same "one repetition against the small CI model" scope), but this one
 specifically drives a REAL two-tool-call turn (calculator + add_note) through
@@ -8,8 +8,8 @@ real, live-verified bug used to corrupt: two simultaneous tool calls from an
 ollama_chat model got glued into one malformed tool_calls entry (litellm's
 OllamaChatCompletionResponseIterator.chunk_parser assigning duplicate
 "index":0 across separate stream chunks — see deploy/litellm/patches/
-sitecustomize.py and graph_utils.py's _make_llm comment for the full writeup). A
-fake-model test (tests/agent/test_graph_integration.py's
+sitecustomize.py and graph/utils.py's _make_llm comment for the full writeup). A
+fake-model test (tests/agent/graph/test_graph_integration.py's
 TestMandatoryCapabilityGate) already covers should_continue/human_approval's
 OWN batch-handling logic in isolation; this proves the real model's real
 streamed output survives the round trip into that logic at all.
@@ -27,9 +27,9 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
-from app.agent import graph as graph_module
-from app.agent.graph import GraphDeps
-from app.agent.graph_build import build_graph
+from app.agent.graph import core as graph_module
+from app.agent.graph.build import build_graph
+from app.agent.graph.core import GraphDeps
 from tests.conftest import TEST_CTX
 from tests.seeding import seed_thread
 
@@ -48,10 +48,10 @@ def real_ollama_chat_model(monkeypatch, ollama_endpoint):
 @pytest.fixture(autouse=True)
 def _stub_add_note_io(monkeypatch):
     """add_note's own I/O (embedding + Qdrant upsert) isn't what this test
-    is about — stub it the same way tests/agent/test_graph_integration.py's
+    is about — stub it the same way tests/agent/graph/test_graph_integration.py's
     TestMandatoryCapabilityGate does, so a real APPROVED add_note call can
     actually run inside ToolNode without needing a live Qdrant."""
-    from app.agent import tools as tools_module
+    from app.agent.tools import builtin as tools_module
     from app.retrieval import qdrant_store
 
     async def fake_embed_text(text):

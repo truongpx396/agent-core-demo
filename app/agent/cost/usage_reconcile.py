@@ -61,9 +61,7 @@ from decimal import Decimal
 
 import httpx
 
-from app.agent import gateway
-from app.agent.sql_store import get_connection
-from app.core import metrics
+from app.core import gateway, metrics
 from app.core.config import (
     USAGE_RECONCILE_GATEWAY_MAX_PAGES,
     USAGE_RECONCILE_LOOKBACK_DAYS,
@@ -71,6 +69,7 @@ from app.core.config import (
     USAGE_RECONCILE_TOLERANCE_PCT,
     USAGE_RECONCILE_TOLERANCE_USD,
 )
+from app.core.sql_store import get_connection
 
 logger = logging.getLogger(__name__)
 

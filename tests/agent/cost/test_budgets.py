@@ -1,6 +1,6 @@
-"""app/agent/budgets.py — the spend allowance, with its inputs passed explicitly.
+"""app/agent/cost/budgets.py — the spend allowance, with its inputs passed explicitly.
 
-tests/agent/test_tenant_budget.py covers the same rule as runtime.py wires it (module globals
+tests/agent/cost/test_tenant_budget.py covers the same rule as app/agent/runtime/core.py wires it (module globals
 re-pointed per test) and the entry points' short-circuit. This file calls the rule directly, so
 each case names exactly the limits, the spend, the clock and the failure policy it is about.
 
@@ -13,9 +13,9 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.agent import budget_holds, budgets, spend
-from app.agent import runtime as runtime_module
-from app.agent import runtime_stream as stream_module
+from app.agent.cost import budget_holds, budgets, spend
+from app.agent.runtime import core as runtime_module
+from app.agent.runtime import stream as stream_module
 from app.core import errors, metrics
 from tests.conftest import TEST_CTX, metric_value
 

@@ -1,5 +1,5 @@
-"""Tests for app/agent/memory.py::delete_memories — mocks qdrant_store's
-count_by_filter/delete_by_filter (same boundary tests/agent/test_tools.py mocks
+"""Tests for app/retrieval/memory.py::delete_memories — mocks qdrant_store's
+count_by_filter/delete_by_filter (same boundary tests/agent/tools/test_tools.py mocks
 qdrant_store.upsert/hybrid_search at) so these stay hermetic.
 
 `delete_memories` is `async def` now (it awaits `qdrant_store`'s own now-
@@ -10,8 +10,7 @@ pattern for exercising async code from a plain `def test_...`.
 
 import pytest
 
-from app.agent import memory
-from app.retrieval import qdrant_store
+from app.retrieval import memory, qdrant_store
 from tests.conftest import TEST_CTX
 
 

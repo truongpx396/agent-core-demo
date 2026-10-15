@@ -1,17 +1,17 @@
-"""Tests for app/agent/runtime_stream.py::get_session_messages — the session switcher's
+"""Tests for app/agent/runtime/stream.py::get_session_messages — the session switcher's
 transcript replay (item #9). Bypasses the real durable checkpointer via a
 monkeypatched init_graph_async (same pattern
-tests/agent/test_streaming_terminal_events.py's `_events_for` helper already
+tests/agent/runtime/test_streaming_terminal_events.py's `_events_for` helper already
 uses) since only the message-filtering/normalization logic is under test
 here, not checkpointer machinery (covered separately by
-tests/agent/test_durable_checkpoint.py).
+tests/agent/runtime/test_durable_checkpoint.py).
 """
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from app.agent import runtime as agent_module
-from app.agent import runtime_stream as stream_module
-from app.agent.graph_compaction import COMPACTION_MARKER_KEY
+from app.agent.graph.compaction import COMPACTION_MARKER_KEY
+from app.agent.runtime import core as agent_module
+from app.agent.runtime import stream as stream_module
 
 
 class _FakeState:
@@ -122,7 +122,7 @@ async def test_empty_thread_returns_an_empty_list(monkeypatch):
 async def test_a_compaction_marker_surfaces_as_a_system_role(monkeypatch):
     """The ONE exception to "SystemMessages are omitted" (see
     test_system_and_tool_messages_are_omitted above): a compact_history
-    breadcrumb (graph.py's COMPACTION_MARKER_KEY) is deliberately meant
+    breadcrumb (app/agent/graph/core.py's COMPACTION_MARKER_KEY) is deliberately meant
     for a human replaying this session to see — unlike the seeded base
     prompt, which stays hidden."""
     result = await _get(

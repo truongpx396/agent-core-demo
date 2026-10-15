@@ -1,15 +1,15 @@
-"""Tests for app/agent/runtime.py's `_resolve_domain_name`/`_domain_name` —
+"""Tests for app/agent/runtime/core.py's `_resolve_domain_name`/`_domain_name` —
 GRAPH_PATTERNS.md pattern 49's per-process domain tag, used only to stamp
-app/agent/sessions.py's `chat_sessions.domain` column via `_upsert_session`.
+app/agent/runtime/sessions.py's `chat_sessions.domain` column via `_upsert_session`.
 Hermetic: never touches init_graph_async's own real
 checkpointer setup, since `_resolve_domain_name` is a pure function of its
-`manifest` argument and `_upsert_session` only needs `app.agent.sessions`
+`manifest` argument and `_upsert_session` only needs `app.agent.runtime.sessions`
 mocked out, the same "test the function, not the graph" scope
-tests/agent/test_multimodal.py and friends already keep for this module.
+tests/agent/graph/test_multimodal.py and friends already keep for this module.
 """
 
-from app.agent import runtime
 from app.agent.manifest import AgentManifest
+from app.agent.runtime import core as runtime
 from tests.conftest import TEST_CTX
 
 
@@ -29,11 +29,11 @@ class TestUpsertSessionStampsTheCurrentDomain:
         async def fake_upsert_session(ctx, thread_id, title, domain):
             captured.update(ctx=ctx, thread_id=thread_id, title=title, domain=domain)
 
-        # _upsert_session does `from app.agent import sessions` lazily inside
+        # _upsert_session does `from app.agent.runtime import sessions` lazily inside
         # its own body — patching the already-imported module object (not a
         # `runtime.sessions` name, which doesn't exist at module level here)
         # is what that lazy import actually re-reads.
-        import app.agent.sessions as sessions_module
+        import app.agent.runtime.sessions as sessions_module
 
         monkeypatch.setattr(sessions_module, "upsert_session", fake_upsert_session)
         monkeypatch.setattr(runtime, "_domain_name", "ops")
@@ -49,7 +49,7 @@ class TestUpsertSessionStampsTheCurrentDomain:
 
     async def test_defaults_to_ecorp_when_no_process_ever_set_a_different_domain(self, monkeypatch):
         captured = {}
-        import app.agent.sessions as sessions_module
+        import app.agent.runtime.sessions as sessions_module
 
         async def fake_upsert_session(ctx, thread_id, title, domain):
             captured.update(domain=domain)

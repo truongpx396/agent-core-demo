@@ -79,7 +79,7 @@ StreamReadResponse = list[tuple[str, list[tuple[str, dict[str, str]]]]]
 
 CONSUMER_GROUP = "agent-workers"
 TERMINAL_EVENT_TYPES = frozenset({"done", "error", "approval_required"})  # the
-# last event type `runtime_stream.py::_run_graph_stream` ever yields for a
+# last event type `runtime/stream.py::_run_graph_stream` ever yields for a
 # given job — shared by `read_results` (stop reading) and
 # `agent_worker.py`'s handlers (release `acquire_thread_lock` the INSTANT
 # one of these is published, not after their own generator's later
@@ -141,7 +141,7 @@ def requests_stream_key(domain: str = "ecorp") -> str:
     """The one requests stream a domain's worker pool (`AGENT_DOMAIN`) all
     consume from as a single consumer group — see module docstring for why
     domain-scoping keeps each pool's load independent. Defaults to
-    `"ecorp"`, same convention as `runtime.py::init_graph_async` and
+    `"ecorp"`, same convention as `app/agent/runtime/core.py::init_graph_async` and
     `AGENT_DOMAIN`'s own default."""
     return f"agent:requests:{domain}"
 
@@ -217,7 +217,7 @@ async def publish_resume_request(
 ) -> None:
     """Producer side: enqueue a resume decision for a turn paused at
     human_approval — the queued-path counterpart to
-    `runtime_stream.py::astream_events_resume`. Any worker in `domain`'s
+    `runtime/stream.py::astream_events_resume`. Any worker in `domain`'s
     pool can pick it up: the checkpoint lives in Postgres, not worker
     memory (see `publish_request`'s docstring for why `domain` must match
     the original turn's)."""
@@ -237,7 +237,7 @@ async def publish_cancel_request(
     client: redis.Redis, *, request_id: str, thread_id: str, ctx: SecurityCtx, domain: str = "ecorp"
 ) -> None:
     """Producer side: enqueue a cancel for a turn paused at human_approval
-    (queued-path counterpart to `runtime_stream.py::cancel_run`).
+    (queued-path counterpart to `runtime/stream.py::cancel_run`).
     Deliberately not how an ACTIVELY STREAMING turn gets cancelled — that's
     the cancel-flag mechanism below; this is a no-op in that case
     (`cancel_run` returns False). `POST /chat/cancel` always does both: set
@@ -254,7 +254,7 @@ def cancel_flag_key(thread_id: str) -> str:
 
 async def set_cancel_flag(client: redis.Redis, thread_id: str) -> None:
     """Signal an ACTIVELY STREAMING `"turn"`/`"resume"` job's worker to stop at its
-    next cancel-check (`runtime_stream.py::_iterate_with_timeout`'s
+    next cancel-check (`runtime/stream.py::_iterate_with_timeout`'s
     `cancel_check`) — a short-lived flag, not a queued job, since that
     worker is polling this key directly, not waiting on the queue."""
     await client.set(cancel_flag_key(thread_id), "1", ex=CANCEL_FLAG_TTL_SECONDS)
@@ -319,7 +319,7 @@ async def release_thread_lock(client: redis.Redis, thread_id: str, token: str) -
 # attempt already finished races nothing — the lock is free again, so the
 # retry runs as a genuinely new, independent turn: a second LLM call, with
 # its own fresh tool_call_ids, that can execute a real mutating tool call a
-# SECOND time (app/agent/tool_idempotency.py can't catch this either — its
+# SECOND time (app/core/tool_idempotency.py can't catch this either — its
 # dedup is keyed by tool_call_id, and an independently-decided second turn
 # never reuses the first's). `claim_or_get_existing_submission` closes that
 # specific window: identical (thread_id, text, images) submitted twice
@@ -384,7 +384,7 @@ async def release_submission_claim(client: redis.Redis, *, thread_id: str, diges
 
 async def publish_result(client: redis.Redis, request_id: str, event: dict) -> None:
     """Consumer side: append one typed event (same shapes
-    `runtime_stream.py::_run_graph_stream` yields — token, tool_start,
+    `runtime/stream.py::_run_graph_stream` yields — token, tool_start,
     tool_end, citations, error, done) to this request's results stream,
     refreshing its TTL so a long-running turn doesn't expire mid-flight."""
     key = results_stream_key(request_id)

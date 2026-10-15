@@ -142,7 +142,7 @@ services:
   # also considered for this and rejected, each for a concrete, verified
   # reason, not just "not chosen."
   #
-  # Prompt-injection classification (app/agent/moderation.py's ML layer,
+  # Prompt-injection classification (app/core/moderation.py's ML layer,
   # defense-in-depth alongside its pattern-based check) is Meta's Llama
   # Prompt Guard 2, 22M — the smaller of its two published sizes, same
   # CPU/low-memory tradeoff this whole service already optimizes for —
@@ -151,7 +151,7 @@ services:
   # license (requires accepting terms + an HF token), a real blocker for
   # an anonymous Docker build; gravitee-io's port is verified unauthenticated-
   # downloadable. This was originally ruled out entirely for this app (see
-  # app/agent/moderation.py's git history) as "a whole additional...
+  # app/core/moderation.py's git history) as "a whole additional...
   # inference cost on the turn's hot path, for a demo" — that constraint
   # no longer holds once a fast, fully local, no-extra-container CPU
   # service already exists for the reranker above; adding a second small
@@ -189,7 +189,7 @@ services:
       retries: 10
 
   # --- Langfuse tracing UI + its Postgres (also used by LiteLLM and, now,
-  # app/agent/sql_store.py's structured-data tool — see postgres-init/02-appdata.sql) ---
+  # app/core/sql_store.py's structured-data tool — see postgres-init/02-appdata.sql) ---
   postgres:
     image: postgres:16
     # pg_stat_statements must be loaded at server start (shared_preload_libraries),
@@ -200,7 +200,7 @@ services:
     # target or the one-time `CREATE EXTENSION` run after this service restarts).
     command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
     ports:
-      - "5432:5432"   # exposed so app/agent/sql_store.py (host process) can connect directly
+      - "5432:5432"   # exposed so app/core/sql_store.py (host process) can connect directly
     environment:
       POSTGRES_USER: langfuse
       POSTGRES_PASSWORD: langfuse

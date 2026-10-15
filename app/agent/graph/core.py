@@ -23,21 +23,21 @@ This file holds `State`, `SYSTEM_PROMPT`/safety-budget constants, the
 turn-entry gating nodes (validate_input/moderate_input/reject_*/
 context_window_exceeded), the swappable defaults `_default_search`/
 `_default_cache_get`/`_default_cache_set` (kept here because
-tests/conftest.py monkeypatches them on this module, and graph_build.py
+tests/conftest.py monkeypatches them on this module, and graph/build.py
 reads them via `graph_module.X`), and `GraphDeps`/
 `_assemble_shared_graph_parts` (the composition root build_graph()/
 build_subagent_graph() both use). Everything else was split out purely for
 file size (no behavior change):
-- graph_messages.py — human-message text helpers
-- graph_compaction.py — token estimation, history trimming, make_compact_history_node
-- graph_cache.py — semantic-cache node pair
-- graph_retrieval.py — make_retrieve_context_node
-- graph_agent_node.py — make_agent_node
-- graph_followups.py — make_suggest_followups_node
-- graph_retry.py — retry_output, make_retry_exhausted_node, make_no_answer_fallback_node
-- graph_routing.py — should_continue, check_output, route_after_check (+ its own sibling splits)
-- graph_hitl.py / graph_skills.py / graph_tools.py / graph_utils.py /
-  graph_build.py / graph_build_subagent.py — pre-existing splits (see each one's docstring)
+- graph/messages.py — human-message text helpers
+- graph/compaction.py — token estimation, history trimming, make_compact_history_node
+- graph/cache.py — semantic-cache node pair
+- graph/retrieval.py — make_retrieve_context_node
+- graph/agent_node.py — make_agent_node
+- graph/followups.py — make_suggest_followups_node
+- graph/retry.py — retry_output, make_retry_exhausted_node, make_no_answer_fallback_node
+- graph/routing.py — should_continue, check_output, route_after_check (+ its own sibling splits)
+- graph/hitl.py / graph/skill_guards.py / graph/tool_guards.py / graph/utils.py /
+  graph/build.py / graph/build_subagent.py — pre-existing splits (see each one's docstring)
 """
 import functools
 import logging
@@ -52,22 +52,21 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.message import add_messages
 
-# `interrupt` is unused here directly (moved to graph_hitl.py's
-# human_approval) but re-exported deliberately: graph_hitl.py reads it as
+# `interrupt` is unused here directly (moved to graph/hitl.py's
+# human_approval) but re-exported deliberately: graph/hitl.py reads it as
 # `graph_module.interrupt` so tests' `monkeypatch.setattr(graph,
 # "interrupt", ...)` keep working. Don't remove this import.
 from langgraph.types import RetryPolicy, default_retry_on, interrupt  # noqa: F401
 
-from app.agent import gateway, moderation
-from app.agent.graph_messages import (
+from app.agent.graph.messages import (
     _human_has_content,
     _human_text,
     _last_human_message,
 )
-from app.core import metrics
+from app.core import gateway, metrics, moderation
 
 # OPENAI_API_BASE/OPENAI_API_KEY: same re-export reasoning as `interrupt`
-# above — graph_utils.py's `_make_llm` and tests/live/* monkeypatches read
+# above — graph/utils.py's `_make_llm` and tests/live/* monkeypatches read
 # them live off this module. Don't remove.
 from app.core.config import (  # noqa: F401
     CHAT_MODEL,
@@ -80,7 +79,7 @@ from app.retrieval import semantic_cache
 
 if TYPE_CHECKING:
     from app.agent.manifest import AgentManifest, DomainPlugin
-from app.agent import tools
+from app.agent.tools import builtin as tools
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +175,7 @@ SYSTEM_PROMPT = (
     "only what the user just asked."
 )  # Static, deliberately (pattern 19): never interpolate request-specific
    # data (ctx, timestamps, trace ids) here — it breaks prompt-cache
-   # stability silently. Guarded by tests/agent/test_prompt_cache_stability.py.
+   # stability silently. Guarded by tests/agent/graph/test_prompt_cache_stability.py.
 
 MAX_ITERATIONS = 10  # safety budget: LLM loop iterations, per turn (see validate_input's reset)
 MIN_ANSWER_LENGTH = 10
@@ -226,7 +225,7 @@ MAX_CONSECUTIVE_SAME_RETRY_REASON = 2  # check_output's own convergence
 # on a DIFFERENT reason (that's slow progress through distinct issues, not
 # a stuck loop) — see route_after_check/retry_exhausted.
 
-# Budgets for a NESTED subagent run (app/agent/tools.py::run_subagent,
+# Budgets for a NESTED subagent run (app/agent/tools/builtin.py::run_subagent,
 # pattern 46) — separate from the constants above; a subagent's own
 # should_continue is bound to THESE via functools.partial, independent of
 # the parent turn's remaining budget. Hardcoded (not Settings-backed) as a
@@ -238,7 +237,7 @@ MAX_SUBAGENT_TOKENS_PER_RUN = 4000
 def _retry_agent_on(exc: Exception) -> bool:
     """LangGraph's own predicate, minus the gateway's budget stop. That refusal repeats until the
     budget resets, so a retry cannot succeed: it only delays the caller's error by the backoff and
-    adds refused calls to the gateway's log (app/agent/gateway.py)."""
+    adds refused calls to the gateway's log (app/core/gateway.py)."""
     return not gateway.is_budget_exceeded(exc) and default_retry_on(exc)
 
 
@@ -253,7 +252,7 @@ AGENT_RETRY_POLICY = RetryPolicy(max_attempts=3, retry_on=_retry_agent_on)
 # removed State key, or a removed/reordered node a *paused* thread might
 # resume into) — an ordinary change (new node appended, prompt/timeout
 # tweak) leaves this unchanged deliberately. Meaningful only with a durable
-# checkpointer (app/agent/runtime.py's AsyncPostgresSaver) — MemorySaver
+# checkpointer (app/agent/runtime/core.py's AsyncPostgresSaver) — MemorySaver
 # never survives a restart, so there's never a stale checkpoint to compare
 # against.
 STATE_SCHEMA_VERSION = 1
@@ -313,12 +312,12 @@ class State(TypedDict):
     iterations: int  # Track how many agent loops we've done *this turn*.
     total_tokens: int  # Cumulative token usage *this turn* (see agent()).
     total_cost_usd: float  # Cumulative $ cost *this turn*, priced per call from
-    # the model's LiteLLM prices (app/agent/pricing.py) — should_continue enforces
+    # the model's LiteLLM prices (app/agent/cost/pricing.py) — should_continue enforces
     # MAX_COST_USD_PER_TURN against this
     # (GRAPH_PATTERNS.md patterns 26 and 35).
     subagent_spend: Annotated[list[tuple[int, float]], _concat_or_reset]  # One
     # (tokens, cost_usd) entry per completed run_subagent call this turn,
-    # appended via Command(update=...) from tools.py's run_subagent. The
+    # appended via Command(update=...) from app/agent/tools/run_subagent.py's run_subagent. The
     # only other reducer field besides `messages`: ToolNode runs multiple
     # tool calls from one AI turn CONCURRENTLY (pattern 9), so concurrent
     # run_subagent calls must list-concat safely rather than race a
@@ -348,7 +347,7 @@ class State(TypedDict):
     # fail-closed check.
     citations: list[dict]  # Set by retrieve_context — every numbered [n]
     # source retrieve_context's pre-fetch could have cited, whether or not
-    # the final answer actually used it. See app/agent/tools.py::gather_context.
+    # the final answer actually used it. See app/agent/tools/builtin.py::gather_context.
     used_citations: list[dict]  # Set by check_output — `citations` filtered
     # down to the markers that actually appear in the final answer text
     # (GRAPH_PATTERNS.md pattern 20). What the streamed `citations` SSE event carries.
@@ -394,7 +393,7 @@ class State(TypedDict):
     # route_after_check to trigger a retry.
     leaks_system_prompt: bool  # Set by check_output — a long, verbatim run
     # of the seeded system prompt in the final answer (_leaks_system_prompt).
-    # Output-side defense-in-depth alongside moderation.py's input-side
+    # Output-side defense-in-depth alongside app/core/moderation.py's input-side
     # screening: catches an injection phrased past moderation's regexes if
     # it actually succeeds in getting the prompt recited back. Read by
     # route_after_check to trigger a retry.
@@ -491,7 +490,7 @@ def route_after_validation(
     to reject_context (a system-level failure), kept distinct from
     reject_input's "you typed nothing" so an infra problem doesn't read as
     a user error in the transcript or in agent_requests_total's outcome
-    label (see runtime_stream.py::_turn_outcome).
+    label (see runtime/stream.py::_turn_outcome).
 
     Valid path goes to compact_history, not moderate_input directly —
     history trimming/summarization runs on every valid turn regardless of
@@ -509,7 +508,7 @@ def route_after_validation(
 # the semantic cache lookup or retrieval, so a screened-out input never
 # reaches either. ---
 async def moderate_input(state: State) -> dict:
-    """Screens the TEXT only (`_human_text`) — moderation.py is a pattern
+    """Screens the TEXT only (`_human_text`) — app/core/moderation.py is a pattern
     screen + ML classifier over that text, neither can inspect an image's
     actual content. An image-only message has empty `_human_text`, so it
     passes through unblocked — a disclosed gap (pattern 44): this app
@@ -617,7 +616,7 @@ async def _default_search(query: str, ctx: SecurityCtx | None) -> tuple[str, lis
     from config when the *model* calls them as tools, so pre-fetched and
     on-demand retrieval are policy-enforced identically. Hybrid search
     (dense+sparse RRF, cross-encoder reranked) and cross-session memory
-    recall both live inside `gather_context` (see tools.py, pattern 20).
+    recall both live inside `gather_context` (see app/agent/tools/builtin.py, pattern 20).
 
     async: gather_context awaits real I/O (the reranker is an HTTP call to
     ml-service, not local ONNX compute).
@@ -632,16 +631,16 @@ class GraphDeps:
     that need them — see make_agent_node, make_retrieve_context_node.
     Unset fields fall back to the real clients inside build_graph(); tests
     set individual fields to inject fakes instead of monkeypatching module
-    globals (see tests/agent/test_agent_node.py, tests/agent/test_nodes.py).
+    globals (see tests/agent/graph/test_agent_node.py, tests/agent/graph/test_nodes.py).
     """
 
     llm: Any = None
     # The LiteLLM alias `llm` is bound to, used only to price its calls
-    # (app/agent/pricing.py). None = the global chat alias; a delegated run whose
+    # (app/agent/cost/pricing.py). None = the global chat alias; a delegated run whose
     # specialist declares its own model sets it so its calls are priced by that
     # model, not by the parent's.
     model_alias: str | None = None
-    # The usage-event `kind` this client's calls are recorded under (app/agent/usage_events.py).
+    # The usage-event `kind` this client's calls are recorded under (app/agent/cost/usage_events.py).
     # "chat" for the main loop; a delegated run sets "subagent" so its spend is separable.
     meter_kind: str = "chat"
     search_docs: (
@@ -689,15 +688,15 @@ def _assemble_shared_graph_parts(
     pipeline, not two that can drift" (pattern 46). Each caller builds
     whatever else it additionally needs from `.llm_client`/`.deps`.
     """
-    # Deferred: graph_routing.py and graph_utils.py both import State/
+    # Deferred: graph/routing.py and graph/utils.py both import State/
     # constants back from THIS module at their own top level, so importing
     # them here at module level would close a real cycle. Only needed at
     # call time. make_agent_node/make_retrieve_context_node don't strictly
     # need deferring either, but kept together for one single import block.
-    from app.agent.graph_agent_node import make_agent_node
-    from app.agent.graph_retrieval import make_retrieve_context_node
-    from app.agent.graph_routing import check_output, should_continue
-    from app.agent.graph_utils import _make_llm
+    from app.agent.graph.agent_node import make_agent_node
+    from app.agent.graph.retrieval import make_retrieve_context_node
+    from app.agent.graph.routing import check_output, should_continue
+    from app.agent.graph.utils import _make_llm
     from app.agent.manifest import DEFAULT_DOMAIN_PLUGIN, DEFAULT_MANIFEST
 
     deps = deps or GraphDeps()

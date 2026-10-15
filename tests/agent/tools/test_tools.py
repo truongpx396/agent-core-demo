@@ -1,4 +1,4 @@
-"""Tests for app/agent/tools.py — mainly `add_note`/`remember` (the mutating
+"""Tests for app/agent/tools/builtin.py — mainly `add_note`/`remember` (the mutating
 tools) and the tenant/owner isolation `search_docs`/`add_note`/`remember`
 all enforce via app/core/security.py's Policy.
 
@@ -16,24 +16,11 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 
-from app.agent import skills as skills_module
-from app.agent import sql_store, subagent_tools, tools
-from app.agent import subagents as subagents_module
-from app.agent.skills import SkillRecord
-from app.agent.subagent_domain_tools import make_domain_subagent_tool
-from app.agent.subagent_tools import (
-    _ALL_TOOL_NAMES,
-    SubagentName,
-    SubagentResult,
-    _build_subagent_registry,
-    _resolve_subagent_tools,
-    _run_subagent_impl,
-    _subagent_declared_for_domain,
-    _SubagentDomainPlugin,
-    run_subagent,
-)
-from app.agent.subagents import SubagentRecord
-from app.agent.tools import (
+from app.agent.tools import builtin as tools
+from app.agent.tools import run_subagent as subagent_tools
+from app.agent.tools import skill_catalog as skills_module
+from app.agent.tools import subagent_catalog as subagents_module
+from app.agent.tools.builtin import (
     TOOL_CAPABILITIES,
     TOOLS,
     AddNoteArgs,
@@ -53,7 +40,21 @@ from app.agent.tools import (
     skill_tools_first,
     use_skill,
 )
-from app.core import metrics
+from app.agent.tools.run_subagent import (
+    _ALL_TOOL_NAMES,
+    SubagentName,
+    SubagentResult,
+    _build_subagent_registry,
+    _resolve_subagent_tools,
+    _run_subagent_impl,
+    _subagent_declared_for_domain,
+    _SubagentDomainPlugin,
+    run_subagent,
+)
+from app.agent.tools.run_subagent_domain import make_domain_subagent_tool
+from app.agent.tools.skill_catalog import SkillRecord
+from app.agent.tools.subagent_catalog import SubagentRecord
+from app.core import metrics, sql_store, tool_runtime
 from app.core.config import SKILLS_COLLECTION
 from app.retrieval import qdrant_store
 from tests.conftest import TEST_CTX, metric_value
@@ -100,7 +101,7 @@ class TestAddNoteImpl:
         monkeypatch.setattr(tools, "embed_text", fake_embed_text)
         monkeypatch.setattr(tools, "embed_sparse", lambda text: ([1, 2], [0.5, 0.5]))
         # `tools.qdrant_store` is the same module object as the `qdrant_store`
-        # imported above (tools.py does `from app.retrieval import qdrant_store`) —
+        # imported above (app/agent/tools/builtin.py does `from app.retrieval import qdrant_store`) —
         # this patches the one `.upsert` attribute both names resolve to.
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
@@ -174,7 +175,7 @@ class TestAddNoteImpl:
 
     async def test_the_same_tool_call_id_always_produces_the_same_point_id(self, monkeypatch):
         """The flip side of the test above: a genuine re-run under the SAME
-        tool_call_id (a crash-recovery replay — see tool_idempotency.py's
+        tool_call_id (a crash-recovery replay — see app/core/tool_idempotency.py's
         own accepted-race docstring) must upsert onto the SAME point
         instead of duplicating the note."""
         seen_ids = []
@@ -197,7 +198,7 @@ class TestAddNoteImpl:
 
     async def test_run_with_timeout_wraps_the_impl(self, monkeypatch):
         """add_note (the @tool-decorated function) must route through
-        _run_with_timeout like search_docs/calculator do — a hung
+        run_with_timeout like search_docs/calculator do — a hung
         embedding/Qdrant call shouldn't be able to stall the turn
         indefinitely either."""
         async def fake_embed_text(text):
@@ -253,7 +254,7 @@ class TestAddNoteImpl:
 
 
 class TestRunWithTimeoutScrubbing:
-    """_run_with_timeout (app/agent/tools.py) is the one chokepoint every
+    """run_with_timeout (app/agent/tools/builtin.py) is the one chokepoint every
     read/write tool impl funnels through — proving scrubbing is wired in
     HERE, not just that app/core/scrubbing.py::scrub() works in isolation
     (already covered in tests/core/test_scrubbing.py), is what actually
@@ -261,18 +262,18 @@ class TestRunWithTimeoutScrubbing:
     pattern 32)."""
 
     def test_a_credential_shaped_result_is_scrubbed(self):
-        result = tools._run_with_timeout(lambda: "here is a key: sk-abcdefghijklmnopqrstuvwx")
+        result = tool_runtime.run_with_timeout(lambda: "here is a key: sk-abcdefghijklmnopqrstuvwx")
         assert "sk-abcdefghijklmnopqrstuvwx" not in result
         assert "[REDACTED]" in result
 
     def test_an_ordinary_result_is_unaffected(self):
-        result = tools._run_with_timeout(lambda: "Refunds — 30-day window.")
+        result = tool_runtime.run_with_timeout(lambda: "Refunds — 30-day window.")
         assert result == "Refunds — 30-day window."
 
     def test_a_non_string_result_passes_through_unscrubbed(self):
-        # No current tool returns a non-str, but _run_with_timeout itself
+        # No current tool returns a non-str, but run_with_timeout itself
         # doesn't assume one — scrub() only applies to str results.
-        result = tools._run_with_timeout(lambda: 42)
+        result = tool_runtime.run_with_timeout(lambda: 42)
         assert result == 42
 
 
@@ -853,7 +854,7 @@ class _RecordingFakeLLM:
 
     Defines `ainvoke`, not `invoke` — the (sub)agent/compact_history/
     suggest_followups nodes this drives all call `llm.ainvoke(...)` now
-    (see app/agent/graph.py)."""
+    (see app/agent/graph/core.py)."""
 
     def __init__(self, *responses):
         self._inner = GenericFakeChatModel(messages=iter(responses))
@@ -959,7 +960,7 @@ class TestResolveSubagentTools:
 
 
 class TestBuildSubagentGraphTopology:
-    """build_subagent_graph() (app/agent/graph_build_subagent.py) reuses
+    """build_subagent_graph() (app/agent/graph/build_subagent.py) reuses
     build_graph()'s own node functions/factories but drops 5 nodes that
     are pure overhead (or worse) for a nested one-shot run — see that
     function's own docstring for the full per-node reasoning. Verified
@@ -967,8 +968,8 @@ class TestBuildSubagentGraphTopology:
     _run_subagent_impl's own behavior tests below."""
 
     def test_drops_exactly_the_five_overhead_nodes(self):
-        from app.agent import graph as graph_module
-        from app.agent import graph_build_subagent
+        from app.agent.graph import build_subagent as graph_build_subagent
+        from app.agent.graph import core as graph_module
 
         fake_llm = _RecordingFakeLLM(AIMessage(content="unused"))
         compiled = graph_build_subagent.build_subagent_graph(deps=graph_module.GraphDeps(llm=fake_llm))
@@ -984,8 +985,8 @@ class TestBuildSubagentGraphTopology:
         assert dropped.isdisjoint(nodes)
 
     def test_keeps_every_safety_and_agent_loop_node(self):
-        from app.agent import graph as graph_module
-        from app.agent import graph_build_subagent
+        from app.agent.graph import build_subagent as graph_build_subagent
+        from app.agent.graph import core as graph_module
 
         fake_llm = _RecordingFakeLLM(AIMessage(content="unused"))
         compiled = graph_build_subagent.build_subagent_graph(deps=graph_module.GraphDeps(llm=fake_llm))
@@ -1072,7 +1073,7 @@ class TestRunSubagentImpl:
         build_graph(max_iterations=MAX_SUBAGENT_ITERATIONS) genuinely binds
         the nested run to its OWN, smaller ceiling rather than the parent's
         MAX_ITERATIONS (10 > MAX_SUBAGENT_ITERATIONS's 6)."""
-        from app.agent.graph import MAX_SUBAGENT_ITERATIONS
+        from app.agent.graph.core import MAX_SUBAGENT_ITERATIONS
 
         responses = [
             AIMessage(
@@ -1132,7 +1133,7 @@ class TestRunSubagentImpl:
         route_after_check's SEPARATE same-reason-repeat guard
         (MAX_CONSECUTIVE_SAME_RETRY_REASON) instead — a nested subagent
         can get stuck in that loop too. `deferred_instead_of_acting` is
-        one of the NOT trust-content reasons (graph.py's
+        one of the NOT trust-content reasons (app/agent/graph/core.py's
         _TRUST_CONTENT_RETRY_REASONS — pure narration has no real answer
         value), so retry_exhausted's `emit_message=False` branch must
         BLANK the content here, not no-op like no_answer_fallback's own
@@ -1171,7 +1172,7 @@ class TestRunSubagentImpl:
         if this still needed a second round, _RecordingFakeLLM's inner
         GenericFakeChatModel would raise on its exhausted iterator,
         failing this test loudly rather than silently passing."""
-        from app.agent import graph as graph_module
+        from app.agent.graph import core as graph_module
 
         source_text = "The sky is blue due to Rayleigh scattering."
 
@@ -1241,7 +1242,7 @@ class TestRunSubagentImpl:
         near-identical phrasing, or vice versa. build_subagent_graph()
         doesn't wire check_semantic_cache/write_semantic_cache as nodes at
         all, so their underlying default functions must never be called."""
-        from app.agent import graph as graph_module
+        from app.agent.graph import core as graph_module
 
         cache_get_calls: list = []
         cache_set_calls: list = []
@@ -1295,7 +1296,7 @@ class TestASubagentOnAnUnpricedModelIsRefusedUnderTheBlockPolicy:
 
     @staticmethod
     def _policy(monkeypatch, policy):
-        from app.agent import pricing
+        from app.agent.cost import pricing
 
         monkeypatch.setattr(pricing, "UNPRICED_MODEL_POLICY", policy)
 
@@ -1334,7 +1335,7 @@ class TestASubagentOnAnUnpricedModelIsRefusedUnderTheBlockPolicy:
         assert result.answer == "Delegated answer."
 
     async def test_a_priced_specialist_model_still_runs_under_block(self, monkeypatch):
-        from app.agent import pricing
+        from app.agent.cost import pricing
 
         async def fetch():
             return [
@@ -1358,7 +1359,7 @@ class TestSubagentGraphCache:
     of rebuilding one from scratch every time (a whole StateGraph compile +
     a fresh ChatOpenAI().bind_tools() call, wasted on every single
     delegation) — same "compile once, invoke many" idiom the top-level
-    `_graph` singleton (app/agent/runtime.py) already follows. Opt-in via
+    `_graph` singleton (app/agent/runtime/core.py) already follows. Opt-in via
     `use_cache`, not inferred from `llm`/`registry`/`tools_by_name`, so
     every OTHER test in this file (which never sets it) is automatically
     excluded from the cache with no change to its own call shape."""
@@ -1370,7 +1371,7 @@ class TestSubagentGraphCache:
         subagent_tools.reset_subagent_graph_cache()
 
     async def test_use_cache_reuses_the_compiled_graph_across_calls(self, monkeypatch):
-        from app.agent import graph_build_subagent
+        from app.agent.graph import build_subagent as graph_build_subagent
 
         build_calls = []
         real_build_subagent_graph = graph_build_subagent.build_subagent_graph
@@ -1423,7 +1424,7 @@ class TestSubagentGraphCache:
         assert never_used_llm.calls == []
 
     async def test_different_domains_get_independent_cache_entries(self, monkeypatch):
-        from app.agent import graph_build_subagent
+        from app.agent.graph import build_subagent as graph_build_subagent
 
         build_calls = []
         real_build_subagent_graph = graph_build_subagent.build_subagent_graph
@@ -1478,7 +1479,7 @@ class TestRunSubagentTool:
         assert "Look up Ecorp facts" in schema["properties"]["subagent_name"]["description"]
 
     def test_blank_task_rejected(self):
-        from app.agent.subagent_tools import RunSubagentArgs
+        from app.agent.tools.run_subagent import RunSubagentArgs
 
         with pytest.raises(ValueError):
             RunSubagentArgs(

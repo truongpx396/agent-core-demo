@@ -2,8 +2,8 @@
 (the opt-in-or-mandatory approval gate, GRAPH_PATTERNS.md pattern 8/15/36)
 and `resumability_error_async`/`_resumability_error_from_state`/
 `CANCEL_SENTINEL` (safety checks before resuming a paused thread, pattern
-16/36). Split out of `app/agent/graph.py` for file size (see
-`graph_routing.py`/`graph_utils.py` for sibling splits); no behavior
+16/36). Split out of `app/agent/graph/core.py` for file size (see
+`graph/routing.py`/`graph/utils.py` for sibling splits); no behavior
 change.
 
 `interrupt` (in `human_approval`) and `STATE_SCHEMA_VERSION` (in
@@ -11,15 +11,15 @@ change.
 than a static import — several tests monkeypatch both as attributes on
 the live `graph` module object, which a bare `from X import Y` would
 miss (copies the reference once, at import time). Same fix as
-`graph_build.py`'s `graph_module._default_cache_get`/`_default_cache_set`.
+`graph/build.py`'s `graph_module._default_cache_get`/`_default_cache_set`.
 """
 from typing import Literal, cast
 
 from langchain_core.messages import AIMessage
 
-from app.agent import graph as graph_module
-from app.agent.graph import State
-from app.agent.graph_tools import _reject_tool_calls
+from app.agent.graph import core as graph_module
+from app.agent.graph.core import State
+from app.agent.graph.tool_guards import _reject_tool_calls
 from app.core import metrics
 
 
@@ -27,7 +27,7 @@ def _resumability_error_from_state(state) -> str | None:
     """The actual check, factored out of graph/config-fetching so
     `resumability_error_async` stays a thin `aget_state` wrapper. (A sync
     counterpart was removed alongside its only caller, `scripts/hitl_demo.py`
-    — see runtime.py's module docstring.) See `resumability_error_async`
+    — see app/agent/runtime/core.py's module docstring.) See `resumability_error_async`
     for the two failure modes this distinguishes.
 
     `state.next` ALONE does not mean "paused" — verified against a real
@@ -98,7 +98,7 @@ async def paused_approval_async(graph, config: dict) -> dict | None:
     "resumable": bool}`.
 
     Two callers, same shape needed for opposite reasons:
-    - `astream_events_turn` (runtime_stream.py) — checked before starting a
+    - `astream_events_turn` (runtime/stream.py) — checked before starting a
       BRAND-NEW turn, so a fresh message can't silently blow past a
       pending approval: LangGraph's own `.astream(new_input, config)`
       restarts flatly from `__start__` and never revisits an unresumed
@@ -132,7 +132,7 @@ async def paused_approval_async(graph, config: dict) -> dict | None:
     return {"tool_calls": tool_calls, "resumable": _resumability_error_from_state(state) is None}
 
 
-CANCEL_SENTINEL = "cancelled"  # app/agent/runtime_stream.py::cancel_run resumes a paused run with this value
+CANCEL_SENTINEL = "cancelled"  # app/agent/runtime/stream.py::cancel_run resumes a paused run with this value
 
 
 def human_approval(state: State) -> dict:
@@ -142,7 +142,7 @@ def human_approval(state: State) -> dict:
     `graph.invoke(Command(resume=True_or_False_or_"cancelled"), config)`,
     at which point this node continues with that value. Three outcomes,
     not two (pattern 36): approved, rejected (model sees a ToolMessage
-    and can react), and CANCELLED (`runtime_stream.py::cancel_run`) — a
+    and can react), and CANCELLED (`runtime/stream.py::cancel_run`) — a
     caller-initiated abort, deliberately distinct from rejection:
     `route_after_approval` sends a cancelled run straight to `__end__`,
     never back to `agent`.

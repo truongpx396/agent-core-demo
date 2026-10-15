@@ -13,7 +13,7 @@ Mirrors the transcript endpoint's tests in tests/api/test_api.py.
 import pytest
 from fastapi import HTTPException
 
-from app.agent import sessions
+from app.agent.runtime import sessions
 from app.api.routers import chat as chat_router
 from tests.conftest import TEST_CTX
 

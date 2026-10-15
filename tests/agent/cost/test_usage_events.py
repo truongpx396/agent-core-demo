@@ -1,4 +1,4 @@
-"""Per-call usage events (app/agent/usage_events.py, app/agent/metering.py).
+"""Per-call usage events (app/agent/cost/usage_events.py, app/agent/cost/metering.py).
 
 Four things are proven here, each against the cheapest tier that can prove it:
 
@@ -28,12 +28,12 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from psycopg import errors as pg_errors
 
-from app.agent import metering, pricing, usage_events
-from app.agent.graph import GraphDeps
-from app.agent.graph_agent_node import make_agent_node
-from app.agent.graph_build import build_graph
+from app.agent.cost import metering, pricing, usage_events
+from app.agent.graph.agent_node import make_agent_node
+from app.agent.graph.build import build_graph
+from app.agent.graph.core import GraphDeps
 from app.core import metrics
-from tests.agent.test_graph_integration import _config
+from tests.agent.graph.test_graph_integration import _config
 from tests.conftest import TEST_CTX, metric_value
 
 _REAL_INSERT = usage_events._insert  # imported before any autouse fixture patches it
@@ -265,8 +265,8 @@ class TestWhatAnEventRecords:
         node built by hand: a delegated run's spend must be separable from the parent's."""
         from pathlib import Path
 
-        from app.agent.subagent_tools import _run_subagent_impl
-        from app.agent.subagents import SubagentRecord
+        from app.agent.tools.run_subagent import _run_subagent_impl
+        from app.agent.tools.subagent_catalog import SubagentRecord
 
         record = SubagentRecord(
             name="researcher", description="d", system_prompt="You are a test subagent.",

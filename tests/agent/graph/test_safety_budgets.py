@@ -2,7 +2,7 @@
 counters actually reset between turns, the tool-call-per-turn cap, the
 token-per-turn cap, and the tool execution timeout.
 
-Request-level wall-clock timeout (REQUEST_TIMEOUT_SECONDS, app/agent/runtime.py)
+Request-level wall-clock timeout (REQUEST_TIMEOUT_SECONDS, app/agent/runtime/core.py)
 isn't exercised here since it needs the real ChatOpenAI client / live
 services to observe meaningfully — `_iterate_with_timeout` itself is a
 thin wrapper over `asyncio.wait_for`, which is well-covered by asyncio's
@@ -19,9 +19,15 @@ from langchain_core.messages import (
     SystemMessage,
 )
 
-from app.agent import runtime as agent_module
-from app.agent import tools
-from app.agent.graph import (
+from app.agent.graph.build import build_graph
+from app.agent.graph.compaction import (
+    COMPACTION_MARKER_KEY,
+    _estimate_tokens,
+    _messages_to_trim,
+    _trim_history,
+    make_compact_history_node,
+)
+from app.agent.graph.core import (
     MAX_ITERATIONS,
     MAX_SUBAGENT_TOKENS_PER_RUN,
     MAX_TOKENS_PER_TURN,
@@ -30,17 +36,10 @@ from app.agent.graph import (
     _concat_or_reset,
     validate_input,
 )
-from app.agent.graph_build import build_graph
-from app.agent.graph_compaction import (
-    COMPACTION_MARKER_KEY,
-    _estimate_tokens,
-    _messages_to_trim,
-    _trim_history,
-    make_compact_history_node,
-)
-from app.agent.graph_routing import should_continue
-from app.agent.graph_tools import too_many_tool_calls
-from app.core import metrics
+from app.agent.graph.routing import should_continue
+from app.agent.graph.tool_guards import too_many_tool_calls
+from app.agent.runtime import core as agent_module
+from app.core import metrics, tool_runtime
 from app.core.config import MAX_COST_USD_PER_TURN, MAX_SUBAGENT_COST_USD_PER_RUN
 from tests.conftest import TEST_CTX, metric_value
 
@@ -76,7 +75,7 @@ class TestPerTurnReset:
         assert result["subagent_spend"] is None
 
     def test_validate_input_clears_a_previous_turns_cancellation_and_approval(self):
-        """`cancelled`/`approved` are persisted State fields (graph.py), so a
+        """`cancelled`/`approved` are persisted State fields (app/agent/graph/core.py), so a
         cancel on one turn must not decide the routing of a later turn's
         approval. See TestApprovalAfterAnEarlierCancel for the end-to-end case."""
         state = {"messages": [HumanMessage(content="hi")], "cancelled": True, "approved": True}
@@ -169,9 +168,9 @@ class TestPerTurnResetThroughTheGraph:
 
 
 class TestConcatOrResetReducer:
-    """`State.subagent_spend`'s reducer (graph.py::_concat_or_reset). The
+    """`State.subagent_spend`'s reducer (app/agent/graph/core.py::_concat_or_reset). The
     concurrency case here is the hermetic twin of
-    tests/agent/test_concurrent_turns.py::TestSubagentCallUnderConcurrency
+    tests/agent/runtime/test_concurrent_turns.py::TestSubagentCallUnderConcurrency
     (an `integration`-tier test, so not run by `make test`): it proves that
     making the field resettable did not cost the race-freedom the reducer
     exists for."""
@@ -229,7 +228,7 @@ class TestConcatOrResetReducer:
 class TestHistoryBudget:
     """The only unbounded input in State (`messages`) must not grow forever
     across a long-running thread — see HISTORY_TOKEN_CEILING/FLOOR and
-    _trim_history in app/agent/graph.py.
+    _trim_history in app/agent/graph/core.py.
 
     Uses small, LOCAL ceiling/floor values throughout (never the real
     production constants, which would need thousands of tokens of
@@ -328,7 +327,7 @@ class TestHistoryBudget:
 
 
 class TestCompactHistoryNode:
-    """compact_history (app/agent/graph.py) replaced validate_input's old
+    """compact_history (app/agent/graph/core.py) replaced validate_input's old
     discard-only trim with a discard-AND-summarize node — see
     _messages_to_trim (the shared "what falls outside the window" helper)
     and make_compact_history_node's docstring.
@@ -543,22 +542,22 @@ class TestSubagentSpendBudget:
 
 class TestToolTimeout:
     def test_fast_call_returns_normally(self, monkeypatch):
-        monkeypatch.setattr(tools, "TOOL_TIMEOUT_SECONDS", 5)
-        assert tools._run_with_timeout(lambda: 42) == 42
+        monkeypatch.setattr(tool_runtime, "TOOL_TIMEOUT_SECONDS", 5)
+        assert tool_runtime.run_with_timeout(lambda: 42) == 42
 
     def test_slow_call_raises_timeout_error(self, monkeypatch):
-        monkeypatch.setattr(tools, "TOOL_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr(tool_runtime, "TOOL_TIMEOUT_SECONDS", 0.05)
 
         def slow():
             time.sleep(0.5)
             return "too slow"
 
         with pytest.raises(TimeoutError):
-            tools._run_with_timeout(slow)
+            tool_runtime.run_with_timeout(slow)
 
 
 class TestRecursionLimit:
-    """app/agent/runtime.py::RECURSION_LIMIT — LangGraph's own graph-step
+    """app/agent/runtime/core.py::RECURSION_LIMIT — LangGraph's own graph-step
     cap, a coarser unit than MAX_ITERATIONS. Regression coverage for a real
     bug found while smoke-testing GRAPH_PATTERNS.md pattern 46 against the
     live stack: a flat "12" (this constant's value before the derivation

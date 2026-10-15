@@ -30,7 +30,7 @@ async def _fake_embed_text(text: str) -> list[float]:
     """Deterministic and network-free: same text, same vector. Isolation here is
     enforced by the TAG filter regardless of the vector's values, so a real
     embedding model is not load-bearing (same reasoning as
-    tests/agent/test_concurrent_turns.py's `_fake_embed_text`)."""
+    tests/agent/runtime/test_concurrent_turns.py's `_fake_embed_text`)."""
     return [b / 255.0 for b in hashlib.sha256(text.encode()).digest()]
 
 

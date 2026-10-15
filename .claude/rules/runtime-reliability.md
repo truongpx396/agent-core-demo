@@ -1,7 +1,7 @@
 ---
 paths:
-  - "app/agent/graph*.py"
-  - "app/agent/runtime*.py"
+  - "app/agent/graph/**/*.py"
+  - "app/agent/runtime/**/*.py"
   - "app/job_queue/**/*.py"
   - "app/ingestion/ingest_queue.py"
   - "app/ingestion/ingest_worker.py"
@@ -19,10 +19,10 @@ paths:
 Constitution Principles V and VI apply. Each item below exists because it cost a real debugging
 session; `GRAPH_PATTERNS.md` has the full story under the pattern number given.
 
-## Graph (`graph*.py`)
+## Graph (`app/agent/graph/`)
 
 - `SYSTEM_PROMPT` stays a ctx-free constant (pattern 19). Never interpolate a tenant, principal,
-  or timestamp; `tests/agent/test_prompt_cache_stability.py` guards it.
+  or timestamp; `tests/agent/graph/test_prompt_cache_stability.py` guards it.
 - Nodes are wrapped by `_instrumented` in `build_graph` at registration time, not in the node
   body. `human_approval`'s `interrupt()` is a pause (`node_paused`), not a failure — re-raise it.
   Never log message content or the `state` dict.

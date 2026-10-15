@@ -1,13 +1,13 @@
 """Tests for multimodal/image-question support (GRAPH_PATTERNS.md pattern
-44): app/agent/graph.py's `_human_text`/`_human_has_content` (extracting the text
+44): app/agent/graph/core.py's `_human_text`/`_human_has_content` (extracting the text
 portion of a possibly-multimodal HumanMessage for every downstream
 text-only consumer — moderation, the semantic cache key, the retrieval
-query), app/agent/runtime_stream.py's `_build_human_content` (constructing the multimodal
+query), app/agent/runtime/stream.py's `_build_human_content` (constructing the multimodal
 content list actually sent to the model), and the routing/node-level call
 sites that had to switch from `.content` to these helpers.
 
 check_semantic_cache/retrieve_context/write_semantic_cache are `async def`
-(real Redis/Qdrant I/O — see their docstrings in app/agent/graph.py), so
+(real Redis/Qdrant I/O — see their docstrings in app/agent/graph/core.py), so
 their calls below run through `asyncio.run(...)`, this repo's established
 pattern for exercising async code from a plain `def test_...`.
 """
@@ -15,11 +15,13 @@ pattern for exercising async code from a plain `def test_...`.
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent import graph, graph_cache, graph_retrieval
-from app.agent import runtime as agent_module
-from app.agent import runtime_stream as stream_module
-from app.agent.graph import route_after_validation
-from app.agent.graph_messages import _human_has_content, _human_text
+from app.agent.graph import cache as graph_cache
+from app.agent.graph import core as graph
+from app.agent.graph import retrieval as graph_retrieval
+from app.agent.graph.core import route_after_validation
+from app.agent.graph.messages import _human_has_content, _human_text
+from app.agent.runtime import core as agent_module
+from app.agent.runtime import stream as stream_module
 from tests.conftest import TEST_CTX
 
 
@@ -216,7 +218,7 @@ class TestBuildHumanContent:
 
 class _RecordingFakeLLM:
     """`ainvoke`, not `invoke` — the `agent` node calls `llm.ainvoke(...)`
-    now (see app/agent/graph.py's make_agent_node docstring)."""
+    now (see app/agent/graph/core.py's make_agent_node docstring)."""
 
     def __init__(self, response):
         self._inner = GenericFakeChatModel(messages=iter([response]))
@@ -237,12 +239,12 @@ class TestAstreamEventsTurnBuildsMultimodalContent:
     ):
         """Tested against a fake graph reached via a monkeypatched
         init_graph_async, bypassing the real durable checkpointer (already
-        covered separately by tests/agent/test_durable_checkpoint.py) since
+        covered separately by tests/agent/runtime/test_durable_checkpoint.py) since
         this test only cares about the content SHAPE reaching the LLM."""
         import uuid
 
-        from app.agent.graph import GraphDeps
-        from app.agent.graph_build import build_graph
+        from app.agent.graph.build import build_graph
+        from app.agent.graph.core import GraphDeps
 
         llm = _RecordingFakeLLM(
             AIMessage(content="A cat sitting on a windowsill, sufficiently long.")

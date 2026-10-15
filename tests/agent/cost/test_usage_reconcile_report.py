@@ -1,4 +1,4 @@
-"""One reconciliation pass end to end (app/agent/usage_reconcile.py::reconcile), with the database reads replaced by figures so every
+"""One reconciliation pass end to end (app/agent/cost/usage_reconcile.py::reconcile), with the database reads replaced by figures so every
 disagreement is chosen by the test; the same pass against a real Postgres is tests/integration/test_usage_reconcile_real_postgres.py.
 
 The headline (specs/010 T026): delete ONE usage event and the report names the tenant, the day and the amount. (The wallet half, was every
@@ -10,10 +10,10 @@ from decimal import Decimal as D
 import httpx
 import pytest
 
-from app.agent import usage_reconcile as reconcile
-from app.agent.gateway import end_user_id
-from app.agent.usage_reconcile import Report, Tolerance, Window
+from app.agent.cost import usage_reconcile as reconcile
+from app.agent.cost.usage_reconcile import Report, Tolerance, Window
 from app.core import metrics
+from app.core.gateway import end_user_id
 from tests.agent.fake_gateway import FakeGateway, spend_row
 from tests.conftest import metric_value
 

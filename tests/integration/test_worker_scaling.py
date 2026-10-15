@@ -4,7 +4,7 @@ app/job_queue/agent_worker.py processes, each running M turns concurrently
 requests against POST /chat/stream/queued — correctly, not just without
 crashing?
 
-tests/agent/test_concurrent_turns.py already proves the underlying
+tests/agent/runtime/test_concurrent_turns.py already proves the underlying
 mechanism is correct at small scale, in-process (direct function calls,
 one Python interpreter). This is the complementary question at PRODUCTION
 shape and real scale: real OS processes, a real HTTP server, real
@@ -147,7 +147,7 @@ def qdrant_collection() -> str:
     shared across the WHOLE pytest session (and, under `pytest -n auto`,
     across every xdist worker — exactly what CI runs). Verified directly
     on a real CI run: this fixture's own `ensure_collection()` call (a
-    DESTRUCTIVE `recreate_collection`) and tests/agent/test_concurrent_turns.py's
+    DESTRUCTIVE `recreate_collection`) and tests/agent/runtime/test_concurrent_turns.py's
     own identical call, racing on different xdist workers against the SAME
     shared default collection, wiped out each other's seeded documents/
     memories mid-test. `collection: str` (app/core/config.py) is a real,
@@ -215,7 +215,7 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
         # provisions Qdrant too, even for its own two tests that don't need
         # real retrieval either. retrieve_context's own try/except still
         # degrades a search miss to empty context rather than failing a
-        # turn (app/agent/tools.py::gather_context) — this is purely about
+        # turn (app/agent/tools/builtin.py::gather_context) — this is purely about
         # satisfying the readiness check, not about what a turn needs to
         # succeed.
         "QDRANT_URL": qdrant["qdrant_url"],
@@ -437,7 +437,7 @@ class TestScaledWorkersHandleHITLAndSubagentDelegation:
     this. `n` is smaller than `_TOTAL_REQUESTS` here (HITL is two real
     HTTP round trips per turn, not one) to keep this class's own runtime
     reasonable while still exercising genuine concurrency across all 5
-    workers — tests/agent/test_concurrent_turns.py's own
+    workers — tests/agent/runtime/test_concurrent_turns.py's own
     TestHITLApprovalUnderConcurrency/TestSubagentCallUnderConcurrency
     already prove exhaustive cross-wiring isolation in-process; this
     class's job is proving the same mechanisms hold at real
@@ -503,7 +503,7 @@ class TestScaledWorkersHandleHITLAndSubagentDelegation:
 
         # The real write underneath every approval: real Qdrant (not the
         # HTTP response text) — same "read the real store back" check
-        # tests/agent/test_concurrent_turns.py's own HITL test already
+        # tests/agent/runtime/test_concurrent_turns.py's own HITL test already
         # does in-process, proven here instead at real 5-process
         # concurrency, over the real network.
         client = QdrantClient(url=qdrant_url)

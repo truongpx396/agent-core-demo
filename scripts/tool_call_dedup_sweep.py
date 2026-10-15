@@ -1,5 +1,5 @@
 """Cron-callable retention sweep for `tool_call_dedup`
-(app/agent/tool_idempotency.py, postgres-init/13-tool-call-dedup.sql).
+(app/core/tool_idempotency.py, postgres-init/13-tool-call-dedup.sql).
 
 That table has no retention of its own: it exists purely as a short-lived
 crash-recovery claim (see its own docstring — a genuine replay only ever
@@ -20,8 +20,8 @@ row goes stale just deletes nothing.
 import asyncio
 import logging
 
-from app.agent.tool_idempotency import sweep_stale_rows
 from app.core.job_runtime import scheduled_job
+from app.core.tool_idempotency import sweep_stale_rows
 
 logger = logging.getLogger(__name__)
 

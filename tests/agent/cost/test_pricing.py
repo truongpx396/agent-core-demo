@@ -1,4 +1,4 @@
-"""Tests for app/agent/pricing.py (spec 008 A2).
+"""Tests for app/agent/cost/pricing.py (spec 008 A2).
 
 Three layers, none needing a live proxy:
 
@@ -21,10 +21,10 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent import pricing
-from app.agent import runtime as runtime_module
-from app.agent import runtime_stream as stream_module
-from app.agent.graph_agent_node import make_agent_node
+from app.agent.cost import pricing
+from app.agent.graph.agent_node import make_agent_node
+from app.agent.runtime import core as runtime_module
+from app.agent.runtime import stream as stream_module
 from app.core import errors, metrics
 from tests.conftest import TEST_CTX, metric_value
 

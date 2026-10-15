@@ -1,19 +1,19 @@
 """Deferral/fabrication/prompt-leak heuristics behind `check_output`
-(`app/agent/graph_routing.py`): narrated-instead-of-acting
+(`app/agent/graph/routing.py`): narrated-instead-of-acting
 (`_defers_instead_of_acting`), fabricated tool output
 (`_fabricates_tool_output`), a fabricated reference-list footer
 (`_strip_fabricated_reference_footer`), a skipped skill-required tool
 (`_skipped_required_sandbox_after_skill`), a system-prompt leak
 (`_leaks_system_prompt`), and priority arbitration across all of these
 plus the citation checks (`_retry_reason`). Split out of
-`app/agent/graph_routing.py` for file size (see sibling splits
-`graph_loop_guards.py`/`graph_citations.py`); no behavior change.
+`app/agent/graph/routing.py` for file size (see sibling splits
+`graph/loop_guards.py`/`graph/citations.py`); no behavior change.
 """
 import re
 
-from app.agent.graph import MIN_ANSWER_LENGTH
-from app.agent.graph_skills import _pending_skill_required_tool
-from app.agent.graph_tools import _current_turn_messages
+from app.agent.graph.core import MIN_ANSWER_LENGTH
+from app.agent.graph.skill_guards import _pending_skill_required_tool
+from app.agent.graph.tool_guards import _current_turn_messages
 
 # Real bug, found live via Langfuse: qwen2.5:3b narrated tool intent
 # ("I will use the `query_employees` tool...") or asked permission ("Would
@@ -209,7 +209,7 @@ def _skipped_required_sandbox_after_skill(messages: list) -> str | None:
 # Long enough that reusing a few words of instructions ("Be concise and
 # direct") can't trip this, short enough to catch a real recitation
 # without needing the whole prompt reproduced — same reasoning as
-# graph_citations.py's _MIN_JUDGED_SENTENCE_WORDS, but on characters since
+# graph/citations.py's _MIN_JUDGED_SENTENCE_WORDS, but on characters since
 # a leak is judged by verbatim reproduction, not topical overlap.
 _SYSTEM_PROMPT_LEAK_MIN_CHARS = 60
 # Smaller than the window itself so a leak starting at any alignment is
@@ -236,13 +236,13 @@ _SYSTEM_PROMPT_OPENING_MIN_CHARS = 20
 def _leaks_system_prompt(content: str, system_prompt: str) -> bool:
     """True when the final answer contains a long-enough VERBATIM run of
     the seeded system prompt to be a real leak, not coincidental overlap —
-    output-side defense-in-depth complementing app/agent/moderation.py's
+    output-side defense-in-depth complementing app/core/moderation.py's
     input-side screening; an injection moderation's regexes miss can still
     be caught here if it actually gets the model to recite instructions
     back.
 
     Crude verbatim-substring check, not paraphrase-aware — same posture as
-    moderation.py: catches direct recitation (the common jailbreak form),
+    app/core/moderation.py: catches direct recitation (the common jailbreak form),
     not a paraphrased/translated leak. Whitespace is normalized on both
     sides so reflowed text still matches.
     """

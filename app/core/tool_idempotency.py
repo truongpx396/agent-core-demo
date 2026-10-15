@@ -1,5 +1,5 @@
 """Exactly-once guard for every "mutating"/"outward" tool (TOOL_CAPABILITIES,
-app/agent/tools.py) — closes the gap `app/job_queue/agent_worker.py`'s
+app/agent/tools/builtin.py) — closes the gap `app/job_queue/agent_worker.py`'s
 reclaim loop left open: a reclaimed `"resume"` job re-invokes whichever
 tool calls were already pending at its `human_approval` pause, under the
 SAME `tool_call_id`s (the pause happens before those calls run, and
@@ -7,7 +7,7 @@ SAME `tool_call_id`s (the pause happens before those calls run, and
 this, retrying one risked re-sending an email, re-creating a ticket, or any
 other already-applied side effect a SECOND time.
 
-Persisted in the same `appdata` Postgres database as sql_store.py
+Persisted in the same `appdata` Postgres database as core/sql_store.py
 (`tool_call_dedup` table, postgres-init/13-tool-call-dedup.sql). Keyed by
 `tool_call_id` alone: the LLM provider assigns a fresh one per tool call it
 decides to make, so two invocations sharing an id are, by construction, the
@@ -27,7 +27,7 @@ paragraph, generalized from "resume" to any crashed turn; see
 docstrings.
 
 Fails OPEN on its own storage failure — same posture, and same reason, as
-`app/agent/budget_holds.py`/`app/agent/sessions.py`'s own `get_connection()`
+`app/agent/cost/budget_holds.py`/`app/agent/runtime/sessions.py`'s own `get_connection()`
 callers (see tests/conftest.py's `mock_appdata_postgres` docstring): a
 dedup-store outage must degrade to "run the tool, unprotected" rather than
 block every mutating/outward tool call in the app on it. This is a
@@ -36,7 +36,7 @@ retry landing exactly while the dedup store is ALSO down), never a
 precondition for a tool call to work at all.
 
 A second, DIFFERENT gap this module cannot close by keying on
-`tool_call_id`: `fn()`'s own soft timeout (`_arun_with_timeout`) firing
+`tool_call_id`: `fn()`'s own soft timeout (`arun_with_timeout`) firing
 AFTER its underlying write already committed on the far side, but before
 this module's own closing `UPDATE` runs. A retry from there arrives under
 a BRAND NEW tool_call_id (a fresh LLM decision), which no tool_call_id
@@ -49,9 +49,9 @@ from collections.abc import Awaitable, Callable
 
 from langchain_core.runnables import RunnableConfig
 
-from app.agent.sql_store import get_connection
 from app.core import metrics
 from app.core.security import SecurityCtx
+from app.core.sql_store import get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +63,9 @@ def _thread_id_from_config(config: RunnableConfig | None) -> str | None:
 class MutatingToolTimedOut(Exception):
     """Raised by `idempotent()` in place of the `TimeoutError` `fn()`
     itself raised, when that `fn()` is a mutating/outward tool's own
-    `_arun_with_timeout(...)` call.
+    `arun_with_timeout(...)` call.
 
-    Why this needs its own type: `_arun_with_timeout`'s own docstring
+    Why this needs its own type: `arun_with_timeout`'s own docstring
     already names the risk — `asyncio.wait_for` cancels the AWAITING
     task, not necessarily whatever `fn()` is awaiting underneath, so the
     real side effect (an INSERT, a Qdrant upsert) can commit on the far
@@ -78,7 +78,7 @@ class MutatingToolTimedOut(Exception):
     tool_call_id-keyed claim has never seen before, so it can't catch a
     second real side effect this way no matter how it's hardened.
 
-    `graph_utils.py::_friendly_tool_error` special-cases this type to
+    `graph/utils.py::_friendly_tool_error` special-cases this type to
     steer the agent toward checking whether the effect already landed
     (e.g. a matching list/status/read tool) instead of blindly retrying —
     the one general defense that works regardless of which specific
@@ -124,7 +124,7 @@ async def idempotent(
     tool_name: str,
     fn: Callable[[], Awaitable[str]],
 ) -> str:
-    """Runs `fn()` (a tool's own real `_arun_with_timeout(...)` call) at
+    """Runs `fn()` (a tool's own real `arun_with_timeout(...)` call) at
     most once per `tool_call_id`, ever. A second call with an id already
     seen returns the FIRST call's own result without running `fn` again —
     the actual side effect (an email, a ticket, a note) only ever happens

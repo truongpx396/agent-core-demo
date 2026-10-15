@@ -1,4 +1,4 @@
-"""Tests for app/agent/moderation.py — the pattern layer (pure string
+"""Tests for app/core/moderation.py — the pattern layer (pure string
 matching, no I/O) and the ML layer (a real HTTP call to ml-service's
 /prompt-guard, mocked here via `_ml_malicious_score` directly — same
 "patch the inner async function, not the network" approach
@@ -20,7 +20,7 @@ file's own original "no mocking needed" docstring before the ML layer
 existed.
 """
 
-from app.agent import moderation
+from app.core import moderation
 
 
 class TestScreen:

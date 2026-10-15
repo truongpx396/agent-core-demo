@@ -8,8 +8,8 @@ from decimal import Decimal as D
 
 import pytest
 
-from app.agent import usage_reconcile as reconcile
-from app.agent.usage_reconcile import Finding, Report, Tolerance, Window
+from app.agent.cost import usage_reconcile as reconcile
+from app.agent.cost.usage_reconcile import Finding, Report, Tolerance, Window
 from app.core import metrics
 from scripts import usage_reconcile
 from tests.conftest import metric_value

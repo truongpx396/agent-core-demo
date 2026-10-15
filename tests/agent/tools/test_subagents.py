@@ -1,10 +1,14 @@
-"""Tests for app/agent/subagents.py — the on-disk subagent-definition loader
+"""Tests for app/agent/tools/subagent_catalog.py — the on-disk subagent-definition loader
 (GRAPH_PATTERNS.md pattern 46). All isolated to `tmp_path`; nothing here
 touches the real `subagents/` directory shipped with the app.
 """
 import pytest
 
-from app.agent.subagents import SubagentLoadError, _parse_subagent_file, load_subagents
+from app.agent.tools.subagent_catalog import (
+    SubagentLoadError,
+    _parse_subagent_file,
+    load_subagents,
+)
 
 
 def _write_subagent(tmp_path, slug, content):

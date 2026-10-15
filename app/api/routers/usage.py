@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends
 
-from app.agent import budgets, spend
+from app.agent.cost import budgets, spend
 from app.api.deps import get_ctx
 from app.api.schemas import BudgetStatus, CreditBalance, UsageResponse
 from app.billing_integration import port as billing_port

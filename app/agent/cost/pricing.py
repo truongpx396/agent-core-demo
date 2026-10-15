@@ -2,7 +2,7 @@
 (spec 008 A2, GRAPH_PATTERNS.md patterns 26 and 35).
 
 Prices are READ from LiteLLM (`GET /model/info`), not kept in a table here. The
-proxy already owns the alias -> concrete-model mapping (model_resolver.py), so it
+proxy already owns the alias -> concrete-model mapping (app/core/model_resolver.py), so it
 is the one place that can say what an alias costs: its entry carries
 `input_cost_per_token`, `output_cost_per_token` and `cache_read_input_token_cost`,
 merged from LiteLLM's maintained cost map, with any `model_info` a deployment sets
@@ -41,13 +41,13 @@ from dataclasses import dataclass
 
 import httpx
 
-from app.agent.model_resolver import admin_base_url
 from app.core import metrics
 from app.core.config import (
     OPENAI_API_KEY,
     PRICING_REFRESH_SECONDS,
     UNPRICED_MODEL_POLICY,
 )
+from app.core.model_resolver import admin_base_url
 
 logger = logging.getLogger(__name__)
 

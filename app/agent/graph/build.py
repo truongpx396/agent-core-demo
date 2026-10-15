@@ -1,8 +1,8 @@
 """`build_graph()` — compiles the main conversation graph. Split out of
-`graph.py` (which still holds `State`, every node function/factory, and
-the shared assembly helper) purely for file size — see graph.py's module
-docstring. Sibling splits: `graph_routing.py` (should_continue/
-check_output) and `graph_build_subagent.py` (build_subagent_graph(), the
+`app/agent/graph/core.py` (which still holds `State`, every node function/factory, and
+the shared assembly helper) purely for file size — see app/agent/graph/core.py's module
+docstring. Sibling splits: `graph/routing.py` (should_continue/
+check_output) and `graph/build_subagent.py` (build_subagent_graph(), the
 nested-run counterpart). No behavior change from the pre-split file.
 """
 from typing import TYPE_CHECKING
@@ -11,8 +11,14 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
-from app.agent import graph as graph_module
-from app.agent.graph import (
+from app.agent.graph import core as graph_module
+from app.agent.graph.cache import (
+    make_check_semantic_cache_node,
+    make_write_semantic_cache_node,
+    route_after_cache,
+)
+from app.agent.graph.compaction import make_compact_history_node
+from app.agent.graph.core import (
     AGENT_RETRY_POLICY,
     HISTORY_TOKEN_CEILING,
     HISTORY_TOKEN_FLOOR,
@@ -29,23 +35,17 @@ from app.agent.graph import (
     route_after_validation,
     validate_input,
 )
-from app.agent.graph_cache import (
-    make_check_semantic_cache_node,
-    make_write_semantic_cache_node,
-    route_after_cache,
-)
-from app.agent.graph_compaction import make_compact_history_node
-from app.agent.graph_followups import make_suggest_followups_node
-from app.agent.graph_hitl import human_approval, route_after_approval
-from app.agent.graph_retry import (
+from app.agent.graph.followups import make_suggest_followups_node
+from app.agent.graph.hitl import human_approval, route_after_approval
+from app.agent.graph.retry import (
     make_no_answer_fallback_node,
     make_retry_exhausted_node,
     retry_output,
 )
-from app.agent.graph_routing import route_after_check
-from app.agent.graph_skills import use_skill_without_search
-from app.agent.graph_tools import invalid_tool_call, too_many_tool_calls
-from app.agent.graph_utils import _friendly_tool_error, _instrumented
+from app.agent.graph.routing import route_after_check
+from app.agent.graph.skill_guards import use_skill_without_search
+from app.agent.graph.tool_guards import invalid_tool_call, too_many_tool_calls
+from app.agent.graph.utils import _friendly_tool_error, _instrumented
 
 if TYPE_CHECKING:
     from app.agent.manifest import AgentManifest, DomainPlugin
@@ -69,12 +69,12 @@ def build_graph(
     `deps` bundles swappable external clients (LLM, search) — see
     GraphDeps; tests inject fakes via a GraphDeps to run full scenarios
     (reject path, tool loop, HITL, iteration cap, retry) without a live
-    model or Qdrant (tests/agent/test_graph_integration.py).
+    model or Qdrant (tests/agent/graph/test_graph_integration.py).
 
     `checkpointer` defaults to an in-memory MemorySaver — fine for tests,
     never for a real HITL pause: a paused human_approval gate parks the run
     indefinitely, and MemorySaver doesn't survive a process restart.
-    runtime.py's init_graph_async() passes a durable AsyncPostgresSaver
+    app/agent/runtime/core.py's init_graph_async() passes a durable AsyncPostgresSaver
     instead for the CLI/API singleton.
 
     `manifest`/`domain` (pattern 23, app/agent/manifest.py) let this SAME
@@ -87,7 +87,7 @@ def build_graph(
 
     `max_iterations`/`max_tokens_per_turn`/`max_cost_usd_per_turn` default
     to `None` (this module's own MAX_ITERATIONS/MAX_TOKENS_PER_TURN/
-    MAX_COST_USD_PER_TURN). `tools.py::run_subagent` is the one caller that
+    MAX_COST_USD_PER_TURN). `app/agent/tools/run_subagent.py::run_subagent` is the one caller that
     sets them, to MAX_SUBAGENT_ITERATIONS/_TOKENS_PER_RUN/_COST_USD_PER_RUN
     (pattern 46), so a nested run is bounded by its own ceiling.
 
@@ -130,7 +130,7 @@ def build_graph(
     )
     # Read as graph_module.X, not a bare imported name — tests/conftest.py's
     # autouse mock_semantic_cache fixture monkeypatches these exact
-    # attributes on the live `app.agent.graph` module object; a statically
+    # attributes on the live `app.agent.graph.core` module object; a statically
     # imported bare name binds to the original function once, at import
     # time, so the monkeypatch would silently never take effect. Real bug,
     # caught by the test suite before this fix: a fake-LLM test got back a
@@ -251,7 +251,7 @@ def build_graph(
 
     compiled = builder.compile(checkpointer=checkpointer or MemorySaver())
     # Not LangGraph API — a plain attribute stash so a caller holding the
-    # compiled graph (chiefly runtime.py's _ensure_seeded_async) can
+    # compiled graph (chiefly app/agent/runtime/core.py's _ensure_seeded_async) can
     # recover which domain built it, without changing this function's
     # return type.
     compiled.manifest = manifest  # type: ignore[attr-defined]  # deliberate stash, see comment above

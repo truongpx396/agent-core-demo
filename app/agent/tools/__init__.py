@@ -1,1 +1,1 @@
-"""What the agent can call: the built-in tools and their capability table (`builtin.py`), the exactly-once guard (`idempotency.py`), and the skill and subagent catalogs with `run_subagent`."""
+"""What the agent can call: the built-in tools and their capability table (`builtin.py`), and the skill and subagent catalogs with `run_subagent`. What every tool runs through (the timeout, the scrub, the fail-closed context, the exactly-once guard) is in `app/core/tool_runtime.py` and `app/core/tool_idempotency.py`."""

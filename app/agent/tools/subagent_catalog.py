@@ -5,7 +5,7 @@ nested agent runs the main agent can delegate to (GRAPH_PATTERNS.md pattern
 A subagent is one directory under `SUBAGENTS_DIR` (app/core/config.py)
 containing an `AGENT.md` — YAML frontmatter (`name`, `description`, and
 optionally `tools`, `model`, `domains`) followed by a markdown system-prompt
-body, the same shape `app/agent/skills.py`'s `SKILL.md` uses:
+body, the same shape `app/agent/tools/skill_catalog.py`'s `SKILL.md` uses:
 
     ---
     name: researcher
@@ -16,13 +16,13 @@ body, the same shape `app/agent/skills.py`'s `SKILL.md` uses:
 
     You are a focused research assistant...
 
-This module is domain-agnostic, mirroring `app/agent/skills.py`'s scope: it
+This module is domain-agnostic, mirroring `app/agent/tools/skill_catalog.py`'s scope: it
 knows nothing about `TOOL_CAPABILITIES`, read_only-ness, or which domain's
-tools exist. That validation lives in `app/agent/tools.py`, which already
+tools exist. That validation lives in `app/agent/tools/builtin.py`, which already
 owns `TOOL_CAPABILITIES` — avoids import-order coupling between the two.
 Same split for `domains`: this module only parses and carries the raw list
-(or `None`); app/agent/tools.py decides the default. Unlike
-`app/agent/skills.py`'s SkillRecord (where `None` means "every domain"), an
+(or `None`); app/agent/tools/builtin.py decides the default. Unlike
+`app/agent/tools/skill_catalog.py`'s SkillRecord (where `None` means "every domain"), an
 untagged subagent here stays visible only when Ecorp's own registry is
 built — because a subagent's declared `tools:` only make sense against ONE
 specific tool universe, and an untagged subagent exposed to every domain
@@ -49,7 +49,7 @@ class SubagentLoadError(ValueError):
     non-empty body). Raised by `_parse_subagent_file`; `load_subagents`
     catches this per-file and skips the offending file rather than letting
     one bad subagent take down the whole catalog (GRAPH_PATTERNS.md pattern
-    10's degrade-gracefully posture, same as `app/agent/skills.py::SkillLoadError`)."""
+    10's degrade-gracefully posture, same as `app/agent/tools/skill_catalog.py::SkillLoadError`)."""
 
 
 @dataclass(frozen=True)
@@ -58,10 +58,10 @@ class SubagentRecord:
     description: str
     system_prompt: str
     tools: tuple[str, ...] | None  # None = "inherit the domain's read_only
-    # tools" (resolved by app/agent/tools.py, not here — see module docstring).
+    # tools" (resolved by app/agent/tools/builtin.py, not here — see module docstring).
     model: str | None  # None = use the parent's own CHAT_MODEL alias.
     domains: tuple[str, ...] | None  # None = defaults applied by
-    # app/agent/tools.py, not here — see module docstring.
+    # app/agent/tools/builtin.py, not here — see module docstring.
     path: Path
 
 
@@ -131,7 +131,7 @@ def load_subagents(subagents_dir: str | Path | None = None) -> dict[str, Subagen
     raised past this function — so one bad subagent can't take the whole
     catalog down. A duplicate `name` across two directories keeps whichever
     was parsed first (directory order) and logs a warning, same posture as
-    `app/agent/skills.py::load_skills`."""
+    `app/agent/tools/skill_catalog.py::load_skills`."""
     root = Path(subagents_dir) if subagents_dir is not None else Path(SUBAGENTS_DIR)
     if not root.is_dir():
         return {}
@@ -158,7 +158,7 @@ _subagents_cache: dict[str, SubagentRecord] | None = None
 
 def get_subagents() -> dict[str, SubagentRecord]:
     """Lazy-loaded, process-wide catalog — same lazy-singleton shape as
-    `app/agent/skills.py::get_skills`. app/agent/tools.py calls this ONCE, at
+    `app/agent/tools/skill_catalog.py::get_skills`. app/agent/tools/builtin.py calls this ONCE, at
     its own module-import time, to build run_subagent's closed name enum —
     see that module's docstring for why subagents need eager resolution
     where skills don't."""

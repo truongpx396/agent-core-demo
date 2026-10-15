@@ -10,7 +10,7 @@ Naming only aliases keeps this app portable (swapping providers is a
 config change), but means the biggest lever on output quality (a gateway
 remap) can change without any recorded artifact reflecting it. Resolving
 it here keeps model choice invisible to routing but visible to forensics
-(the usage events, `usage_events.py`).
+(the usage events, `app/agent/cost/usage_events.py`).
 
 Async, with a short negative cache. The first version was a plain synchronous
 `httpx.get` called from the per-turn ledger write (since retired), which ran on the event loop

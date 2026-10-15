@@ -12,7 +12,7 @@ directly, no more inner `asyncio.run(...)` bridge), and every wrapped
 remote tool is `coroutine`-only — no sync `func` — since this module's one
 real caller (app/domains/sandbox_tools.py::load_sandbox_tools) is `async
 def` too now, with nothing left calling `.invoke()` synchronously. No
-pytest-asyncio in this project (see tests/agent/test_durable_checkpoint.py)
+pytest-asyncio in this project (see tests/agent/runtime/test_durable_checkpoint.py)
 — every call below wraps in asyncio.run(), same pattern used there.
 """
 
@@ -124,7 +124,7 @@ class TestLoadRemoteTools:
     async def test_remote_error_result_is_surfaced_not_raised(self, monkeypatch):
         """A remote tool's own error is a handled outcome (a string the
         agent can react to), not an exception that escapes the node —
-        same "tool output, never a crash" contract app/agent/graph.py's
+        same "tool output, never a crash" contract app/agent/graph/core.py's
         ToolNode(handle_tool_errors=...) already gives in-process tools."""
 
         async def fake_list(params):

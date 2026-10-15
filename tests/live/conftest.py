@@ -14,7 +14,7 @@ calls it internally.
 `ollama_endpoint` — just `tests/containers.py::ensure_ollama()`, which pulls
 both a real CHAT model and a real embedding model (`nomic-embed-text`,
 this app's own `EMBED_MODEL` default) into the same shared container. Used
-by test_agent_tool_calling.py, which drives `app.agent.graph.build_graph()`
+by test_agent_tool_calling.py, which drives `app.agent.graph.core.build_graph()`
 directly, in-process, with a real `ChatOpenAI` pointed at this endpoint and
 every OTHER dependency mocked exactly the way tests/conftest.py's autouse
 fixtures already mock them for the rest of this suite (no retrieval/cache/
@@ -192,7 +192,7 @@ def _build_app_env(
         # it exists to catch.
         "CHAT_FIRST_RESPONSE_DEADLINE_SECONDS": "420",
         # SUBAGENT_TIMEOUT_SECONDS: a SEPARATE, INNER wall-clock cap
-        # (app/agent/subagent_tools.py) on just the nested subagent's own
+        # (app/agent/tools/run_subagent.py) on just the nested subagent's own
         # run, independent of REQUEST_TIMEOUT_SECONDS above — real CI
         # failure, caught live (test-live, 2026-09-21): widening the OUTER
         # request timeout to 420s never helped
@@ -264,7 +264,7 @@ def real_stack() -> Iterator[str]:
     # turn calls retrieve_context -> search_docs -> hybrid_search ->
     # embed_text unconditionally (GRAPH_PATTERNS.md pattern 20), and
     # retrieve_context's own try/except degrades a failure there to empty
-    # context rather than failing the turn (app/agent/tools.py::
+    # context rather than failing the turn (app/agent/tools/builtin.py::
     # gather_context's own docstring) — so this was never load-bearing for
     # this fixture's own calculator prompts, which don't need retrieval to
     # pass, and skipping it keeps those tests as cheap as they've always been.

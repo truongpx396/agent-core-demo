@@ -91,7 +91,7 @@ class TestTenantRateLimitMiddleware:
     async def test_storage_failure_fails_open_not_closed(self, monkeypatch):
         """Redis (or here, the storage backend) being unreachable must
         never block the core turn — same degrade-don't-crash posture as
-        app/retrieval/semantic_cache.py and app/agent/moderation.py."""
+        app/retrieval/semantic_cache.py and app/core/moderation.py."""
         middleware = _fresh_middleware(monkeypatch, limit_per_minute=1)
 
         def _broken_hit(*args, **kwargs):

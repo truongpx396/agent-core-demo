@@ -24,17 +24,17 @@ attach = ["CLAUDE.md#Where things live"]
 why = "a map of where things live in this repo"
 
 [[rule]]
-when = ["app/domains/*/tools.py", "app/agent/tools.py"]
+when = ["app/domains/*/tools.py", "app/agent/tools/builtin.py"]
 attach = [
   "app/domains/support/tools.py::create_ticket",
   "app/domains/support/tools.py::_create_ticket_impl",
   "app/domains/support/tools.py::TOOL_CAPABILITIES",
-  "app/agent/tool_idempotency.py::idempotent",
+  "app/core/tool_idempotency.py::idempotent",
 ]
 why = "reference side-effect tool: ctx check first, then idempotent() keyed by tool_call_id, tier declared in TOOL_CAPABILITIES"
 
 [[rule]]
-when = ["app/domains/*/store.py", "app/agent/sql_store.py"]
+when = ["app/domains/*/store.py", "app/core/sql_store.py"]
 attach = ["app/domains/support/store.py::create_ticket"]
 why = "reference store write: tenant-scoped fixed SQL, ON CONFLICT on tool_call_id, read the existing row back on a replay"
 

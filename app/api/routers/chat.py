@@ -16,8 +16,8 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.agent import sessions
-from app.agent.runtime_stream import get_pending_approval, get_session_messages
+from app.agent.runtime import sessions
+from app.agent.runtime.stream import get_pending_approval, get_session_messages
 from app.api.deps import get_ctx, get_domain
 from app.api.schemas import (
     CancelRequest,
@@ -225,7 +225,7 @@ async def chat_cancel(
     1. Actively streaming — a new turn, or the run that follows an approval
        (`"resume"`): sets a short-lived Redis flag
        (`queue.py::set_cancel_flag`) the worker running that turn polls
-       between graph events (`runtime.py`'s `cancel_check`) — its own
+       between graph events (`app/agent/runtime/core.py`'s `cancel_check`) — its own
        results stream gets the terminal "cancelled" event directly. Keyed
        by thread_id alone; domain is irrelevant since the worker polls the
        flag directly.

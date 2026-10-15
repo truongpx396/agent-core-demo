@@ -1,6 +1,6 @@
 """Per-tenant and per-person overrides of the spend limits (postgres-init/18-budget-policies.sql).
 
-`budgets.py` decides; this module only stores and fetches what an operator has changed. A
+`app/agent/cost/budgets.py` decides; this module only stores and fetches what an operator has changed. A
 row overrides ONE of the Settings defaults — for the tenant (`subject=''`), for every person in
 the tenant (`'*'`), or for one person — and `budgets.resolve_limits` applies them.
 
@@ -18,8 +18,8 @@ from dataclasses import dataclass
 
 from psycopg import errors as pg_errors
 
-from app.agent.sql_store import get_connection
 from app.core.config import BUDGET_POLICY_REFRESH_SECONDS
+from app.core.sql_store import get_connection
 
 logger = logging.getLogger(__name__)
 

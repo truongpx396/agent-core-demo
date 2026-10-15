@@ -2,7 +2,7 @@
 
 The gateway (LiteLLM) sits between the app and the model provider, so it is the one place that
 can bound spend even if everything in the app is wrong: a bug in the allowance, an unpriced model
-(pricing.py), a loop. Two things make that work, both here.
+(app/agent/cost/pricing.py), a loop. Two things make that work, both here.
 
 ## Identity on every call
 
@@ -27,7 +27,7 @@ which the stream reports as a generic internal error — and nobody learns that 
 means the app-level ceilings did not stop the spend first (or the backstop is sized too low), so it
 gets its own error code, its own counter and a critical alert.
 
-It is also never retried (`graph.py::_retry_agent_on`): it repeats until the budget resets. The
+It is also never retried (`app/agent/graph/core.py::_retry_agent_on`): it repeats until the budget resets. The
 openai SDK still retries a 429 twice inside one call (measured: 3 requests per `ainvoke`), which is
 harmless — the gateway refuses at authentication, before any provider is called or any money spent.
 """

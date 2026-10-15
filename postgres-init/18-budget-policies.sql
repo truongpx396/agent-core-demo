@@ -1,4 +1,4 @@
--- Per-tenant and per-person OVERRIDES of the spend limits (app/agent/budget_policies.py).
+-- Per-tenant and per-person OVERRIDES of the spend limits (app/agent/cost/budget_policies.py).
 --
 -- The limits themselves come from Settings (MAX_COST_USD_PER_TENANT_PER_DAY, ...). Those
 -- apply to everyone identically, which is wrong the moment tenants are on different plans or

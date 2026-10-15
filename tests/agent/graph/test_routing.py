@@ -6,7 +6,8 @@ deterministic way it deserves.
 """
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from app.agent.graph import (
+from app.agent.graph.cache import route_after_cache
+from app.agent.graph.core import (
     MAX_CONSECUTIVE_SAME_RETRY_REASON,
     MAX_HISTORY_SUMMARY_CHARS,
     MAX_ITERATIONS,
@@ -15,16 +16,15 @@ from app.agent.graph import (
     route_after_moderation,
     route_after_validation,
 )
-from app.agent.graph_cache import route_after_cache
-from app.agent.graph_hitl import route_after_approval
-from app.agent.graph_loop_guards import (
+from app.agent.graph.hitl import route_after_approval
+from app.agent.graph.loop_guards import (
     _consecutive_repeat_count,
     _mandatory_gate_reason,
     _tool_call_fingerprint,
     _tool_capability,
     _use_skill_called_without_search,
 )
-from app.agent.graph_routing import route_after_check, should_continue
+from app.agent.graph.routing import route_after_check, should_continue
 from tests.conftest import TEST_CTX
 
 
@@ -159,7 +159,7 @@ class TestRouteAfterModeration:
 
 
 class TestRouteAfterCompaction:
-    """AR-015a's edge case (app/agent/graph.py's route_after_compaction) — a
+    """AR-015a's edge case (app/agent/graph/core.py's route_after_compaction) — a
     history_summary still over MAX_HISTORY_SUMMARY_CHARS after
     compact_history just updated it ends the turn instead of feeding a
     runaway summary into agent() on every future call."""
@@ -192,7 +192,7 @@ class TestRouteAfterCache:
 
 class TestRouteAfterValidationCtx:
     """SecurityCtx is checked before the message itself — see
-    route_after_validation's docstring in app/agent/graph.py for why a missing
+    route_after_validation's docstring in app/agent/graph/core.py for why a missing
     ctx gets its own outcome (reject_context) rather than being folded
     into reject_input's "you typed nothing.\""""
 
@@ -282,7 +282,7 @@ class TestShouldContinueSubagent:
     def test_run_subagent_call_never_needs_approval(self):
         """The core security property GRAPH_PATTERNS.md pattern 46 rests on:
         run_subagent is declared read_only (every subagent it can ever reach
-        is validated read_only-only at catalog-build time, app/agent/tools.py
+        is validated read_only-only at catalog-build time, app/agent/tools/builtin.py
         ::_resolve_subagent_tools), so a call to it must route exactly like
         search_docs — never through human_approval."""
         state = {"iterations": 1, "messages": [_tool_call("run_subagent")]}
@@ -302,7 +302,7 @@ class TestShouldContinueSubagent:
 class TestShouldContinueBudgetOverrides:
     """should_continue's max_iterations/max_tokens/max_cost_usd params
     (GRAPH_PATTERNS.md pattern 46) — the mechanism
-    app/agent/tools.py::run_subagent relies on, via
+    app/agent/tools/builtin.py::run_subagent relies on, via
     build_graph(max_iterations=..., ...), to bind a nested subagent run to
     its own, smaller MAX_SUBAGENT_* ceiling independent of the parent turn's
     own MAX_ITERATIONS/MAX_TOKENS_PER_TURN/MAX_COST_USD_PER_TURN."""
@@ -354,7 +354,7 @@ class TestMandatoryGateReason:
 class TestShouldContinueMandatoryGate:
     """A mutating/outward tool call must route to human_approval even when
     require_approval is False (the default) — mandatory, not opt-in. See
-    app/agent/tools.py::TOOL_CAPABILITIES and should_continue's docstring."""
+    app/agent/tools/builtin.py::TOOL_CAPABILITIES and should_continue's docstring."""
 
     def test_mutating_tool_gates_even_without_require_approval(self):
         state = {

@@ -3,12 +3,12 @@ and per-turn repeat/loop detection (`_tool_call_fingerprint`,
 `_current_turn_tool_call_batches`, `_consecutive_repeat_count`), the
 mandatory human-approval capability gate (`_tool_capability`,
 `_mandatory_gate_reason`), and the use_skill-without-search guardrail
-(`_use_skill_called_without_search`). Split out of `graph_routing.py` for
-file size (see sibling splits `graph_citations.py`/
-`graph_output_guardrails.py`, the two private helper clusters behind
+(`_use_skill_called_without_search`). Split out of `graph/routing.py` for
+file size (see sibling splits `graph/citations.py`/
+`graph/output_guardrails.py`, the two private helper clusters behind
 `check_output`); no behavior change.
 
-These are also directly unit-tested by `tests/agent/test_routing.py`,
+These are also directly unit-tested by `tests/agent/graph/test_routing.py`,
 imported from here now rather than from `graph_routing`.
 """
 import json
@@ -16,15 +16,15 @@ from collections.abc import Mapping
 
 from langchain_core.messages import AIMessage
 
-from app.agent.graph_tools import _current_turn_messages
-from app.agent.tools import TOOL_CAPABILITIES
+from app.agent.graph.tool_guards import _current_turn_messages
+from app.agent.tools.builtin import TOOL_CAPABILITIES
 
 
 def _tool_capability(name: str, tool_capabilities: Mapping[str, str] = TOOL_CAPABILITIES) -> str:
     """A tool absent from `tool_capabilities` defaults to "outward" — fail
     closed, so a new tool without a capability entry is gated rather than
     trusted. The only place this default is applied; elsewhere just reads
-    the mapping. Defaults to `app/agent/tools.py`'s TOOL_CAPABILITIES
+    the mapping. Defaults to `app/agent/tools/builtin.py`'s TOOL_CAPABILITIES
     (Ecorp) so existing callers work unchanged; `build_graph` passes a
     domain's own mapping instead (GRAPH_PATTERNS.md pattern 23)."""
     return tool_capabilities.get(name, "outward")

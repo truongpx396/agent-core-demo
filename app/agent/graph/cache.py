@@ -2,11 +2,11 @@
 `make_check_semantic_cache_node`/`route_after_cache` (read side — a hit
 short-circuits to a final answer, no LLM call, no retrieval) and
 `make_write_semantic_cache_node` (write-through side, skipped on a hit).
-Split out of `app/agent/graph.py` for file size (see graph_retrieval.py
+Split out of `app/agent/graph/core.py` for file size (see graph/retrieval.py
 for the sibling split).
 
-`_default_cache_get`/`_default_cache_set` stay in `graph.py` itself
-(imported here) because `tests/conftest.py` and `graph_build.py`
+`_default_cache_get`/`_default_cache_set` stay in `app/agent/graph/core.py` itself
+(imported here) because `tests/conftest.py` and `graph/build.py`
 monkeypatch/read them as `graph.<name>` — moving them would break that.
 """
 from collections.abc import Awaitable, Callable, Mapping
@@ -14,11 +14,11 @@ from typing import TYPE_CHECKING, Literal
 
 from langchain_core.messages import AIMessage
 
-from app.agent.graph import State, _default_cache_get, _default_cache_set
-from app.agent.graph_loop_guards import _tool_capability
-from app.agent.graph_messages import _human_text, _last_human_message
-from app.agent.graph_tools import _current_turn_messages
-from app.agent.tools import TOOL_CAPABILITIES
+from app.agent.graph.core import State, _default_cache_get, _default_cache_set
+from app.agent.graph.loop_guards import _tool_capability
+from app.agent.graph.messages import _human_text, _last_human_message
+from app.agent.graph.tool_guards import _current_turn_messages
+from app.agent.tools.builtin import TOOL_CAPABILITIES
 
 if TYPE_CHECKING:
     from app.core.security import SecurityCtx
@@ -31,7 +31,7 @@ def make_check_semantic_cache_node(
     ] = _default_cache_get,
 ):
     """Factory, same rationale as make_retrieve_context_node: needs an
-    injected client so tests can fake it (see tests/agent/test_nodes.py) instead
+    injected client so tests can fake it (see tests/agent/graph/test_nodes.py) instead
     of monkeypatching app.retrieval.semantic_cache directly.
     """
 

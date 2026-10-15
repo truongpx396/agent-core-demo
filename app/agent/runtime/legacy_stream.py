@@ -1,9 +1,9 @@
 """Alternative streaming implementation, kept for reference/comparison:
 `_langfuse_trace`/`astream_events_turn_ctx` implement the same production
-streaming contract as `runtime_stream.py`'s `astream_events_turn`, via
+streaming contract as `runtime/stream.py`'s `astream_events_turn`, via
 `@asynccontextmanager` for Langfuse's open/flush lifecycle instead of
-manual trace bookkeeping. Split out of `runtime.py` for file size only
-(see that module's docstring); `runtime_stream.py` is the sibling split
+manual trace bookkeeping. Split out of `app/agent/runtime/core.py` for file size only
+(see that module's docstring); `runtime/stream.py` is the sibling split
 holding the actual production path.
 
 Not wired into any production caller or test — `astream_events_turn` is
@@ -13,7 +13,7 @@ shape, not dead code to delete.
 
 Reads `init_graph_async`/`_ensure_seeded_async`/`RECURSION_LIMIT` via
 `runtime_module.X` rather than bare imports — same monkeypatch reasoning
-as `runtime_stream.py`'s module docstring.
+as `runtime/stream.py`'s module docstring.
 """
 import logging
 import time
@@ -21,16 +21,15 @@ from contextlib import asynccontextmanager
 
 from langchain_core.messages import HumanMessage
 
-from app.agent import gateway
-from app.agent import runtime as runtime_module
-from app.agent.runtime_stream import (
+from app.agent.runtime import core as runtime_module
+from app.agent.runtime.stream import (
     CallbackHandler,
     _iterate_with_timeout,
     _record_turn_metrics,
     _text_content,
     _turn_outcome,
 )
-from app.core import metrics, tracing
+from app.core import gateway, metrics, tracing
 from app.core.config import REQUEST_TIMEOUT_SECONDS
 from app.core.errors import ErrorCode, ErrorEnvelope, internal_error_envelope
 from app.core.security import SecurityCtx

@@ -19,7 +19,7 @@ tenant-scoped resources are per-call/pooled, and `bind_request_id`'s
 `ContextVar` is copied per-task by `asyncio.create_task`, not shared.
 `_MAX_CONCURRENCY` lets the slow parts (LLM calls, tool execution) of
 several turns overlap — it doesn't eliminate the checkpointer's own
-finer-grained serialization point (see `app/agent/runtime.py::_open_checkpointer`).
+finer-grained serialization point (see `app/agent/runtime/core.py::_open_checkpointer`).
 
 For the SAME thread_id, two jobs are NOT independent even though neither
 holds shared in-process state: both would read the checkpointer's latest
@@ -67,7 +67,7 @@ provably safe, and if so, exactly HOW to re-run it:
 - `"cancel"` — always safe (cancelling is inherently idempotent: it either
   still applies, or there's nothing left to cancel and it's a no-op either
   way).
-- `"resume"` — also always safe, since `app/agent/tool_idempotency.py`
+- `"resume"` — also always safe, since `app/core/tool_idempotency.py`
   started guarding every `mutating`/`outward` tool: a resume continues an
   EXISTING checkpoint from its `human_approval` pause, re-invoking whichever
   tool calls were already pending under the exact SAME `tool_call_id`s (the
@@ -82,7 +82,7 @@ provably safe, and if so, exactly HOW to re-run it:
   - `"dead_letter"` if the checkpoint can't be read; if that HumanMessage's
     own turn already produced a final answer (`_turn_already_completed` —
     it can finish, usage/cost already recorded via
-    `runtime_stream.py::_record_turn_metrics`, with ZERO tool calls, so
+    `runtime/stream.py::_record_turn_metrics`, with ZERO tool calls, so
     retrying it from scratch would only double-record that cost for no
     benefit); or if it crashed in the narrow window between reaching a
     real `human_approval` interrupt and this job's own ack (indistinguishable
@@ -131,15 +131,14 @@ from typing import cast
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent import sql_store
-from app.agent.runtime import close_checkpointer_pool, init_graph_async
-from app.agent.runtime_stream import (
+from app.agent.runtime.core import close_checkpointer_pool, init_graph_async
+from app.agent.runtime.stream import (
     astream_events_continue_turn,
     astream_events_resume,
     astream_events_turn,
     cancel_run,
 )
-from app.core import metrics
+from app.core import metrics, sql_store
 from app.core.config import (
     AGENT_DOMAIN,
     AGENT_WORKER_MAX_CONCURRENCY,
@@ -389,7 +388,7 @@ def _turn_already_completed(turn_messages: list) -> bool:
     """True if the last message in this turn's own slice is a real final
     `AIMessage` (content produced, no pending `tool_calls`) — i.e. the
     graph already reached `check_output`/`END` (or a safety-net fallback)
-    for this turn, which means `runtime_stream.py::_record_turn_metrics`
+    for this turn, which means `runtime/stream.py::_record_turn_metrics`
     already ran and recorded this turn's usage/cost. Retrying it — fresh
     OR continued — would re-run/re-tally an answer that already exists,
     silently double-recording that cost for no benefit; a zero-tool-call
@@ -406,7 +405,7 @@ async def _classify_reclaimed_turn(graph, thread_id: str) -> str:
     """Returns `"dead_letter"`, `"retry_fresh"`, or `"retry_continue"` for a
     reclaimed `"turn"`/`"turn_continue"` job, by inspecting this thread's
     checkpointed state — never re-runs anything (same read-only
-    `graph.aget_state` call `app/agent/runtime_stream.py`'s
+    `graph.aget_state` call `app/agent/runtime/stream.py`'s
     `get_session_messages`/`resumability_error_async` already use
     elsewhere).
 
@@ -425,7 +424,7 @@ async def _classify_reclaimed_turn(graph, thread_id: str) -> str:
       produced its final answer (`_turn_already_completed` — see its own
       docstring); OR the checkpoint is paused at a real `human_approval`
       interrupt (`state.tasks[i].interrupts`, not just `state.next` —
-      `graph_hitl.py::_resumability_error_from_state` documents why
+      `graph/hitl.py::_resumability_error_from_state` documents why
       `state.next` alone doesn't mean "paused") — a `"turn"` job only ever
       reaches THIS function if it was reclaimed, i.e. its worker died
       before reaching `process_request`'s own ack, and a healthy worker
@@ -441,7 +440,7 @@ async def _classify_reclaimed_turn(graph, thread_id: str) -> str:
       per-tool capability check needed: see that function's own docstring
       for why continuing the exact same checkpointed run (instead of
       restarting with a fresh `astream_events_turn` call, which mints
-      brand-new `tool_call_id`s `app/agent/tool_idempotency.py` has never
+      brand-new `tool_call_id`s `app/core/tool_idempotency.py` has never
       seen) makes that structurally safe rather than heuristically so.
 
     Deliberately conservative in one specific edge case, unchanged from
@@ -660,7 +659,7 @@ async def run() -> None:
     await reclaim_task  # stop_event already set above, so this returns promptly
     await client.aclose()
     # Same reasoning as app/api/main.py's lifespan shutdown: a turn may have
-    # opened sql_store.py's connection pool; leaving it open past exit
+    # opened core/sql_store.py's connection pool; leaving it open past exit
     # produces the "couldn't stop thread... within 5.0 seconds" warning
     # documented there. No-op if this worker never touched it.
     await sql_store.close_pool()

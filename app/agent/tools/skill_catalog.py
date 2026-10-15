@@ -17,12 +17,12 @@ Anthropic's Agent Skills / OpenClaw's `SKILL.md` use:
 `domains`, if set, is a list of domain names (`app/domains/registry.py`'s
 keys) this skill is relevant to; omitted means "every domain" — the
 pre-existing default, so an un-tagged `SKILL.md` keeps working unchanged.
-`app/agent/tools.py::make_skill_tools` enforces this (in both
+`app/agent/tools/builtin.py::make_skill_tools` enforces this (in both
 `skill_search`'s results and `use_skill`'s lookup); this module only
 carries the fact.
 
 This module is the DISK side only — the source of truth for a skill's full
-body. `app/agent/tools.py::use_skill` reads a skill's `body` from here by
+body. `app/agent/tools/builtin.py::use_skill` reads a skill's `body` from here by
 exact `name`, never from Qdrant: the `skills` Qdrant collection
 (`app/retrieval/qdrant_store.py`, built by `scripts/index_skills.py`) holds
 only `{name, description}`, just enough for `skill_search`'s hybrid search
@@ -31,7 +31,7 @@ to find the right name. Keeping "searchable" (Qdrant) and "authoritative"
 out of sync with what's on disk.
 
 Skills are bundled app capabilities, not tenant data — no `SecurityCtx`
-involved, same as `app/agent/tools.py::calculator`.
+involved, same as `app/agent/tools/builtin.py::calculator`.
 """
 import logging
 import re

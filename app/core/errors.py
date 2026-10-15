@@ -4,10 +4,10 @@ from a single registry (`ErrorCode`) so a caller can switch on `code`
 instead of parsing free-text `message`.
 
 Applied to operator/caller-facing surfaces: the SSE `error` event
-(`runtime_stream.py::_run_graph_stream`), the queue worker's catch-all
+(`runtime/stream.py::_run_graph_stream`), the queue worker's catch-all
 (`job_queue/agent_worker.py::process_request`) and the CLI's error text
 (`app/channels/chat.py`). NOT applied to `ToolMessage` content — a failing
-tool's message to the LLM (`graph_utils.py::_friendly_tool_error`) is
+tool's message to the LLM (`graph/utils.py::_friendly_tool_error`) is
 natural-language by design, a different audience.
 
 The envelope's `message` is written for the *caller*, never for the
@@ -43,7 +43,7 @@ class ErrorCode(str, Enum):
 
 
 class TurnCancelled(Exception):
-    """Raised by `runtime_stream.py::_iterate_with_timeout` when `cancel_check`
+    """Raised by `runtime/stream.py::_iterate_with_timeout` when `cancel_check`
     reports a user-initiated stop mid-turn (the "actively streaming, not
     paused at approval" case — a paused run is cancelled directly via
     `cancel_run` instead). Caught specifically in `_run_graph_stream`, apart

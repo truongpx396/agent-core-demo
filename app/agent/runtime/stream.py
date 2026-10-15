@@ -5,24 +5,24 @@ content assembly (`_build_human_content`), Langfuse trace open
 (`astream_events_turn`, `astream_events_turn_unattended`,
 `astream_events_resume`, `astream_events_continue_turn`, `cancel_run`,
 `get_session_messages`, `get_pending_approval`). Split out
-of `app/agent/runtime.py` for file size only (see that module's
-docstring); `runtime_legacy_stream.py` holds the sibling
+of `app/agent/runtime/core.py` for file size only (see that module's
+docstring); `runtime/legacy_stream.py` holds the sibling
 `@asynccontextmanager` variant.
 
 Reads `init_graph_async`/`_ensure_seeded_async`/`_upsert_session`/
 `_allowance_refusal`/`RECURSION_LIMIT` via
 `runtime_module.X` rather than bare imports: tests
-`monkeypatch.setattr` these onto the live `app.agent.runtime` module
+`monkeypatch.setattr` these onto the live `app.agent.runtime.core` module
 object, and a bare imported name would bind to the original function at
 this module's own import time, permanently — the monkeypatch would
-silently never take effect (same fix as `graph_agent_node.py`'s
+silently never take effect (same fix as `graph/agent_node.py`'s
 `graph_module.CHAT_MODEL`). Applied uniformly even to names nothing
 patches today, so it doesn't need a per-name judgment call later.
 
 `_open_trace` stays a bare reference here: unlike the names above, both it
 and its callers (`astream_events_turn`, `astream_events_resume`) live in
 this same file, so it already resolves dynamically against this module's
-own globals. Tests patch `app.agent.runtime_stream._open_trace` directly.
+own globals. Tests patch `app.agent.runtime.stream._open_trace` directly.
 """
 import asyncio
 import logging
@@ -31,15 +31,14 @@ import time
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
 
-from app.agent import gateway
-from app.agent import runtime as runtime_module
-from app.agent.graph_compaction import COMPACTION_MARKER_KEY
-from app.agent.graph_hitl import (
+from app.agent.graph.compaction import COMPACTION_MARKER_KEY
+from app.agent.graph.hitl import (
     CANCEL_SENTINEL,
     paused_approval_async,
     resumability_error_async,
 )
-from app.core import metrics, tracing
+from app.agent.runtime import core as runtime_module
+from app.core import gateway, metrics, tracing
 from app.core.config import (
     REQUEST_TIMEOUT_SECONDS,
     UNATTENDED_MAX_DECLINE_ROUNDS,
@@ -75,7 +74,7 @@ async def _record_turn_metrics(
     observe_iterations: bool = True,
 ) -> None:
     """Counts a turn: its outcome, latency, iterations and tokens. It records no SPEND: the money is in the usage events,
-    written as each model call returned (app/agent/metering.py), which is what the dollar caps sum. It used to also write
+    written as each model call returned (app/agent/cost/metering.py), which is what the dollar caps sum. It used to also write
     the turn's `usage_ledger` row from `state` here; that row is retired (specs/010 T030c2), and with it the reason this
     needed the tenant and the thread."""
     metrics.agent_requests_total.labels(outcome=outcome).inc()
@@ -231,7 +230,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
     event shapes, and yields exactly one terminal event:
 
       {"type": "approval_required", "tool_calls": [...]} — paused at
-        human_approval's interrupt() (graph_hitl.py); resume via
+        human_approval's interrupt() (graph/hitl.py); resume via
         astream_events_resume(thread_id, approved).
       {"type": "retry"} — NOT terminal; tells the client to discard
         everything streamed so far because that content was just
@@ -299,7 +298,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 # langgraph_node == "agent"` isolates the main-answer node.
                 #
                 # `not subagent_name` guards a second source of the same
-                # problem: tools.py::_run_subagent_impl threads this turn's
+                # problem: app/agent/tools/run_subagent.py::_run_subagent_impl threads this turn's
                 # callbacks into a NESTED graph invoke() (built via the same
                 # build_graph(), so it also has a node named "agent") for
                 # correct child-span tracing — without this guard its
@@ -374,7 +373,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
 
             elif kind == "on_chain_end" and event["name"] == "compact_history":
                 # Runs every turn but only does real work once its
-                # ceiling trips; `output` is `{}` (graph.py's early
+                # ceiling trips; `output` is `{}` (app/agent/graph/core.py's early
                 # return) otherwise.
                 output = event["data"].get("output") or {}
                 if output.get("messages"):
@@ -520,7 +519,7 @@ async def astream_events_turn(
     _run_graph_stream for the full shape list).
 
     `ctx` is required (see stream_turn's docstring). `require_approval`
-    mirrors graph.py's opt-in HITL gate (should_continue): a tool call
+    mirrors app/agent/graph/core.py's opt-in HITL gate (should_continue): a tool call
     pauses instead of executing, and the caller resumes via
     astream_events_resume(thread_id, approved, ctx) — see
     app/channels/chat.py's `--hitl` mode. `images` (pattern 44) is
@@ -545,7 +544,7 @@ async def astream_events_turn(
         return
     # Reserves this turn's worst-case cost against the tenant's in-flight
     # total for the rest of this generator's life (released in `finally`
-    # below, unconditionally) — see runtime.py::_reserve_turn_budget's own
+    # below, unconditionally) — see app/agent/runtime/core.py::_reserve_turn_budget's own
     # docstring for the race this closes: without it, a sibling turn for
     # the same tenant starting moments later would see nearly the same
     # `spent` this turn's own check just read: the usage events land as each
@@ -821,7 +820,7 @@ async def astream_events_continue_turn(thread_id: str, ctx: SecurityCtx, cancel_
     unfinished-task writes from the previous checkpoint and starts a fresh
     superstep sequence from the graph's entry edges — a brand-new `agent`
     call with brand-new `tool_call_id`s unrelated to the crashed attempt's
-    own. `app/agent/tool_idempotency.py` dedupes by `tool_call_id`, so it
+    own. `app/core/tool_idempotency.py` dedupes by `tool_call_id`, so it
     can't catch a duplicate there — which is exactly why restarting a turn
     that already ran a mutating tool used to be treated as unsafe
     (dead-lettered) rather than retried. Continuing instead of restarting
@@ -906,13 +905,13 @@ async def get_session_messages(thread_id: str) -> list[dict]:
     """Session-switcher transcript replay
     (`GET /chat/sessions/{thread_id}/messages`, app/api/routers/chat.py) — reads
     the same Postgres checkpointer every resume/cancel path uses
-    (sessions.py's `chat_sessions` table only has title/timestamps, not
+    (app/agent/runtime/sessions.py's `chat_sessions` table only has title/timestamps, not
     content).
 
     No `ctx` here on purpose: a thread_id's checkpoint carries no owner to
     check against. Ownership (does this thread_id belong to the caller's
     tenant+principal) is the CALLER's job, via
-    app/agent/sessions.py::list_sessions, before calling this.
+    app/agent/runtime/sessions.py::list_sessions, before calling this.
 
     Returns `[{"role": "user"|"assistant"|"system", "text": str}, ...]` —
     a replay of what the user actually saw, not a full forensic trace

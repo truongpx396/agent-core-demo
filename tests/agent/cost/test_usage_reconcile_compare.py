@@ -1,11 +1,10 @@
-"""The pure half of the reconciliation (app/agent/usage_reconcile.py): who is allowed to differ by how much, which window is read, how a
+"""The pure half of the reconciliation (app/agent/cost/usage_reconcile.py): who is allowed to differ by how much, which window is read, how a
 one-way gateway id becomes a tenant, and what counts as drift. No database and no gateway: the reading of each is in
 test_reconcile_gateway.py and tests/integration/test_reconcile_real_postgres.py."""
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal as D
 
-from app.agent.gateway import end_user_id
-from app.agent.usage_reconcile import (
+from app.agent.cost.usage_reconcile import (
     Finding,
     Tolerance,
     Window,
@@ -13,6 +12,7 @@ from app.agent.usage_reconcile import (
     compare,
     default_window,
 )
+from app.core.gateway import end_user_id
 
 DAY = date(2026, 10, 6)
 NEXT = date(2026, 10, 7)

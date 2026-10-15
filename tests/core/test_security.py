@@ -1,7 +1,7 @@
 """Tests for app/core/security.py: SecurityCtx validity, and TenantIsolationPolicy
 — the one Policy this app ships.
 
-app/agent/tools.py's tests already prove the Policy is wired correctly into
+app/agent/tools/builtin.py's tests already prove the Policy is wired correctly into
 search_docs/add_note/remember; these test the Policy itself in isolation,
 the way GRAPH_PATTERNS.md's "Multi-Tenant Isolation" pattern describes:
 pure, fail-closed, and exhaustively testable without any I/O.
@@ -101,7 +101,7 @@ class TestTenantIsolationPolicyLower:
 
     def test_documents_and_memories_filters_never_overlap(self):
         """A document can never satisfy a memory-scoped filter or vice
-        versa — the `kind` discriminator is what keeps app/agent/tools.py's
+        versa — the `kind` discriminator is what keeps app/agent/tools/builtin.py's
         shared Qdrant collection from leaking one kind into the other's
         results."""
         policy = TenantIsolationPolicy()
