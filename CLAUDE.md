@@ -68,6 +68,8 @@ they delete volumes or kill running processes.
 - `postgres-init/NN-*.sql` — numbered schema; auto-runs on a fresh volume only.
 - `skills/*/SKILL.md`, `subagents/*/AGENT.md` — the agent's own catalogs (not Claude Code's).
 - `observability/prometheus/alerts.yml` — alert rules over `app/core/metrics.py` metrics.
+- `promptfoo/` — the prompt checks, and the only Node in the repo: its `package.json`, lock file and `node_modules`
+  live here, so every `npm`/`npx` runs from this directory (`make promptfoo` does that). The root stays Python-only.
 
 ## Working rules
 
@@ -104,7 +106,7 @@ they delete volumes or kill running processes.
   `.claude/settings.json`. Never put their contents in output, logs, commits or docs; edit
   `.env.example` instead.
 - `requirements-lock.txt` — machine-generated from `requirements.txt`; regenerate, don't hand-edit.
-- `checkpoints.sqlite3*`, `.venv/`, `node_modules/`, `.mypy_cache/` — local artifacts.
+- `checkpoints.sqlite3*`, `.venv/`, `promptfoo/node_modules/`, `.mypy_cache/` — local artifacts.
 
 ## Guardrails
 

@@ -499,7 +499,7 @@ infra/terraform/          DigitalOcean droplets; infra/README.md is the runbook
 observability/            Prometheus (+ alerts.yml), Alertmanager, Loki, Promtail, otel-collector, Grafana
 postgres-init/            numbered SQL schema (fresh volumes only)
 tests/                    mirrors app/; integration/, live/, deepeval/ are the marked tiers
-promptfoo/ garak/ loadtest/   prompt checks, jailbreak scan, Locust
+promptfoo/ garak/ loadtest/   prompt checks (and the repo's only package.json), jailbreak scan, Locust
 .github/workflows/        ci, deploy, ai-review, terraform-validate, redteam, strix, zap
 ```
 
