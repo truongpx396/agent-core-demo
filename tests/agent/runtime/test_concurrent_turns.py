@@ -93,6 +93,7 @@ from app.agent.runtime import stream as stream_module
 from app.agent.tools import builtin as tools_module
 from app.agent.tools import run_subagent as subagent_tools
 from app.core import metrics
+from app.domains.ecorp import store as ecorp_store
 from app.job_queue import agent_worker, queue
 from app.retrieval import embeddings as embeddings_module
 from app.retrieval import qdrant_store, semantic_cache
@@ -351,7 +352,7 @@ def _install_fake_graph(monkeypatch, llm, *, search_docs=_no_op_search) -> None:
     monkeypatch.setattr(
         agent_module,
         "build_graph",
-        lambda checkpointer=None, manifest=None, domain=None: build_graph(
+        lambda manifest, domain, checkpointer=None: build_graph(
             GraphDeps(
                 llm=llm,
                 search_docs=search_docs,
@@ -403,7 +404,7 @@ async def real_qdrant(monkeypatch):
     qdrant = ensure_qdrant()
     monkeypatch.setattr(qdrant_store, "QDRANT_URL", qdrant["qdrant_url"])
     monkeypatch.setattr(qdrant_store, "COLLECTION", f"test-concurrent-turns-{uuid.uuid4().hex}")
-    monkeypatch.setattr(tools_module, "embed_text", _fake_embed_text)
+    monkeypatch.setattr(ecorp_store, "embed_text", _fake_embed_text)
     monkeypatch.setattr(embeddings_module, "embed_text", _fake_embed_text)
     await qdrant_store.ensure_collection(dim=_FAKE_EMBED_DIM)
     yield

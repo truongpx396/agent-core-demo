@@ -219,7 +219,7 @@ class TestAsyncSeeding:
         monkeypatch.setattr(
             agent_module,
             "build_graph",
-            lambda checkpointer=None, manifest=None, domain=None: build_graph(
+            lambda manifest, domain, checkpointer=None: build_graph(
                 GraphDeps(llm=_fake_llm()), checkpointer=checkpointer
             ),
         )
@@ -346,7 +346,7 @@ class TestAsyncSeeding:
         monkeypatch.setattr(
             agent_module,
             "build_graph",
-            lambda checkpointer=None, manifest=None, domain=None: build_graph(
+            lambda manifest, domain, checkpointer=None: build_graph(
                 GraphDeps(llm=_mutating_tool_call_llm()), checkpointer=checkpointer
             ),
         )
@@ -417,7 +417,7 @@ class TestAsyncSeeding:
         monkeypatch.setattr(
             agent_module,
             "build_graph",
-            lambda checkpointer=None, manifest=None, domain=None: build_graph(
+            lambda manifest, domain, checkpointer=None: build_graph(
                 GraphDeps(llm=_mutating_tool_call_llm()), checkpointer=checkpointer
             ),
         )
@@ -509,7 +509,7 @@ class TestAstreamEventsContinueTurn:
         monkeypatch.setattr(
             agent_module,
             "build_graph",
-            lambda checkpointer=None, manifest=None, domain=None: build_graph(
+            lambda manifest, domain, checkpointer=None: build_graph(
                 GraphDeps(llm=_calculator_llm()), checkpointer=checkpointer
             ),
         )
@@ -719,7 +719,7 @@ class TestResumabilityErrorRejectsAnActivelyRunningThread:
         monkeypatch.setattr(
             agent_module,
             "build_graph",
-            lambda checkpointer=None, manifest=None, domain=None: build_graph(
+            lambda manifest, domain, checkpointer=None: build_graph(
                 GraphDeps(
                     llm=llm,
                     cache_get=fake_cache_get,
