@@ -36,7 +36,7 @@ deepeval's own installed source, not assumed from the class names:
 Six cases now, not three — two groups:
 - `search_docs`/`calculator`/`query_employees`: one per tool this domain's
   small-model routing has actually been found confused about (see the
-  SEEDING/collision finding below). `search_docs` reuses
+  word-collision finding below). `search_docs` reuses
   `test_rag_quality_deepeval.py`'s own "Ecorp support hours" wording
   deliberately — the same wording `scripts/eval.py`'s own
   `retrieval_company_topic_filter` golden case used to use, before that
@@ -59,23 +59,10 @@ Six cases now, not three — two groups:
   correctly chooses to reach for it. Same two metrics, same judge, three
   more genuinely different questions this file didn't ask before.
 
-SEEDING (2026-09-16) — this file is what surfaced the finding, not just a
-consumer of it: an early, unseeded run of this exact test reliably called
-`query_employees` instead of `search_docs` (a word collision between
-"support hours" and the `Department.support` enum value), then — once
-that collision was fixed at the prompt level — an unseeded re-verification
-STILL failed, identically, across three different prompt edits. The
-prompt edits turned out to be inert the whole time: `build_graph().ainvoke()`
-never triggers `app/agent/runtime/core.py::ensure_seeded_async`, the seeding
-every production path relies on, so the agent was reasoning with ZERO
-tool-routing guidance — not "the fix doesn't work," but "the fix was never
-being tested." This file (and every sibling `build_graph().ainvoke()`
-caller in this repo, `scripts/eval.py` included — see
-tests/seeding.py's own `seed_thread` docstring for the full list)
-now seeds properly before asserting anything. `scripts/eval.py`'s own
-`retrieval_company_topic_filter` case was never actually a "proven"
-baseline the way earlier comments here assumed — it has the identical gap
-and needs its own re-verification, not just this file's.
+History worth keeping: this file surfaced a word collision between "support hours" and the
+`Department.support` enum value (the model called `query_employees` instead of `search_docs`),
+and then that three prompt edits meant to fix it had no effect, because the agent was running with
+NO system prompt at all (a directly built graph was never seeded). The system prompt needs no seeding here: the agent node puts the domain's prompt first on every call, so a graph built directly is never an un-guided agent (an earlier version of this suite ran exactly that, for weeks, before it was noticed).
 """
 import uuid
 
@@ -86,7 +73,6 @@ from app.ingestion import web_crawler
 from tests.conftest import TEST_CTX
 from tests.ecorp import build_graph
 from tests.ollama import ollama_deps
-from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.deepeval
 
@@ -110,9 +96,7 @@ async def _real_search(query: str, ctx=None) -> tuple[str, list[dict]]:
 
 
 async def _run_and_get_tool_calls(endpoint: dict, question: str, manifest=None, domain=None, auto_approve: bool = False):
-    """Shared by every test below: build a fresh graph/thread, seed it
-    properly (see tests/seeding.py's own `seed_thread` docstring —
-    this is exactly the test file that surfaced why that matters), run one
+    """Shared by every test below: build a fresh graph/thread, run one
     turn, and extract (answer, tools_called) in the shape `ToolCall` needs.
     Same extraction shape scripts/eval.py's own `tool_calls` field already
     uses (`tc["name"] for m in result["messages"] if isinstance(m,
@@ -139,7 +123,6 @@ async def _run_and_get_tool_calls(endpoint: dict, question: str, manifest=None, 
 
     graph = build_graph(ollama_deps(endpoint, search_docs=_real_search), manifest=manifest, domain=domain)
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
-    await seed_thread(graph, config["configurable"]["thread_id"])
     result = await graph.ainvoke(
         {"messages": [HumanMessage(content=question)]},
         config=config,
@@ -161,10 +144,9 @@ async def _run_and_get_tool_calls(endpoint: dict, question: str, manifest=None, 
 async def test_search_docs_tool_call_is_correct_and_well_argued(deepeval_ollama, deepeval_judge):
     """The original case this file was built around — see its own module
     docstring for the real, disclosed word-collision finding this
-    surfaced (fixed in app/agent/graph/core.py's SYSTEM_PROMPT and
-    app/agent/tools/builtin.py's docstrings) and the seeding-bug finding this same
-    test then went on to surface after that first fix (fixed across 9
-    files — see tests/seeding.py)."""
+    surfaced (fixed in Ecorp's system prompt and the tools' docstrings) and the
+    missing-system-prompt finding it then went on to surface (fixed structurally: see the
+    module docstring)."""
     from deepeval import assert_test
     from deepeval.metrics import ArgumentCorrectnessMetric, ToolCorrectnessMetric
     from deepeval.test_case import LLMTestCase, ToolCall

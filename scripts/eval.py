@@ -45,7 +45,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
 from app.agent.graph.build import build_graph
-from app.agent.runtime.core import DEFAULT_DOMAIN, ensure_seeded_async
+from app.agent.runtime.core import DEFAULT_DOMAIN
 from app.core.config import DEFAULT_TENANT
 from app.core.security import SecurityCtx
 from app.domains.registry import resolve_domain
@@ -157,13 +157,6 @@ async def _run_case_once(graph, case: GoldenCase) -> _Attempt:
     start = time.monotonic()
 
     # Seed the system prompt before the first real turn — build_graph() +
-    # .ainvoke() directly bypasses app/agent/runtime/core.py, so it never
-    # triggers the seeding every production path relies on (see
-    # app/agent/graph/core.py's `agent()` node docstring). Without this the
-    # agent runs with zero tool-routing guidance, unlike real users. Reuses
-    # the production function so this can't drift from real behavior.
-    await ensure_seeded_async(graph, thread_id)
-
     # `ainvoke`/`aget_state`, not sync `.invoke()`/`.get_state()` — the
     # graph's nodes are `async def` now (app/agent/graph/core.py), and
     # LangGraph's sync Pregel loop can't run an async-only node at all.

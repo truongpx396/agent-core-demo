@@ -264,6 +264,7 @@ def build_graph(
         kind=deps.meter_kind,
         citation_reminder=profile.enforce_citations,
         skill_required_tools=skill_required_tools,
+        system_prompt=manifest.system_prompt,
     )
     retrieve_context = make_retrieve_context_node(deps.search_docs or default_search)
 

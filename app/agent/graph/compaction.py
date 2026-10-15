@@ -8,7 +8,7 @@ does something).
 Depends only on `graph/state.py` (for `HISTORY_TOKEN_CEILING`/`HISTORY_TOKEN_FLOOR`) and
 `graph/messages.py`; `make_compact_history_node` is wired in by `graph/build.py`, and
 `COMPACTION_MARKER_KEY` is read by `runtime/stream.py::get_session_messages` and
-`runtime/core.py::ensure_seeded_async`.
+`graph/agent_node.py`.
 """
 import logging
 from typing import cast
@@ -23,7 +23,12 @@ from langchain_core.messages import (
 from langchain_core.runnables import RunnableConfig
 
 from app.agent.cost import metering
-from app.agent.graph.messages import human_text, is_retry_artifact, is_user_message
+from app.agent.graph.messages import (
+    COMPACTION_MARKER_KEY,
+    human_text,
+    is_retry_artifact,
+    is_user_message,
+)
 from app.agent.graph.state import HISTORY_TOKEN_CEILING, HISTORY_TOKEN_FLOOR, State
 from app.core import gateway, metrics
 from app.core.config import CHAT_MODEL
@@ -123,18 +128,6 @@ _HISTORY_SUMMARY_PROMPT = (
     "already resolved.\n\n{prior_clause}"
     "Turns to summarize:\n{turns_text}\n\nSummary:"
 )
-
-
-# Tags a compaction breadcrumb SystemMessage so
-# runtime/stream.py::get_session_messages can pick it out — every OTHER
-# SystemMessage (the seeded SYSTEM_PROMPT) stays hidden from transcript
-# replay as always. A SystemMessage specifically: _messages_to_trim
-# already excludes all SystemMessages from both token count and removal
-# candidates, so this breadcrumb is free and never itself gets trimmed
-# later — unlike history_summary (replaced each compaction) or the
-# context/summary SystemMessages agent() synthesizes per-call and never
-# persists. See GRAPH_PATTERNS.md pattern 41.
-COMPACTION_MARKER_KEY = "compaction_marker"
 
 
 def _compaction_marker_message(turns_dropped: int, *, summarized: bool) -> SystemMessage:

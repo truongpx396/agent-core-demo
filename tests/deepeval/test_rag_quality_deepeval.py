@@ -60,12 +60,7 @@ job for real, since `flaky` only swallows a failed METRIC, not an
 exception. Still read the `reason` fields in the CI job's own log by hand —
 `flaky=True` makes a bad score non-blocking, not meaningful on its own.
 
-SEEDING (2026-09-16): every test below calls `seed_thread` before its
-first `ainvoke` — see tests/seeding.py's own docstring for a real,
-disclosed finding that affected every `build_graph().ainvoke()` caller in
-this repo, this file included: without it, the target agent had ZERO
-tool-routing guidance from `SYSTEM_PROMPT`, only each tool's own
-individual docstring.
+The system prompt needs no seeding here: the agent node puts the domain's prompt first on every call, so a graph built directly is never an un-guided agent (an earlier version of this suite ran exactly that, for weeks, before it was noticed).
 
 Two cases, not one, as of the same day: the original grounded case above
 asks "is a claim the model DID make faithful to its context" — a second
@@ -83,7 +78,6 @@ from langchain_core.messages import HumanMessage
 from tests.conftest import TEST_CTX
 from tests.ecorp import build_graph
 from tests.ollama import ollama_deps
-from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.deepeval
 
@@ -115,15 +109,11 @@ async def _real_search(query: str, ctx=None) -> tuple[str, list[dict]]:
     return _CONTEXT, _CITATIONS
 
 
-async def _seed_and_answer(endpoint: dict, question: str) -> str:
-    """Shared by every test below: fresh graph/thread, seed it properly
-    (see tests/seeding.py's own `seed_thread` docstring — without
-    this, `build_graph().ainvoke()` never triggers the SYSTEM_PROMPT
-    seeding every production path relies on), run one turn, return the
-    final answer text."""
+async def _answer(endpoint: dict, question: str) -> str:
+    """Shared by every test below: fresh graph/thread, run one turn, return the final answer
+    text."""
     graph = build_graph(ollama_deps(endpoint, search_docs=_real_search))
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
-    await seed_thread(graph, config["configurable"]["thread_id"])
     result = await graph.ainvoke(
         {"messages": [HumanMessage(content=question)]},
         config=config,
@@ -139,7 +129,7 @@ async def test_grounded_answer_is_faithful_and_relevant_by_a_real_llm_judge(deep
     question = "What are Ecorp's support hours, and how long do refunds take once approved?"
     # asyncio.run(...), not the sync .invoke() this used to be — see
     # app/agent/graph/core.py: agent/retrieve_context/etc. are async def now.
-    answer = await _seed_and_answer(deepeval_ollama, question)
+    answer = await _answer(deepeval_ollama, question)
 
     judge = deepeval_judge
     test_case = LLMTestCase(
@@ -175,7 +165,7 @@ async def test_ungrounded_question_is_answered_without_hallucination(deepeval_ol
     from deepeval.test_case import LLMTestCase
 
     question = "What was Ecorp's total revenue last year?"
-    answer = await _seed_and_answer(deepeval_ollama, question)
+    answer = await _answer(deepeval_ollama, question)
 
     judge = deepeval_judge
     test_case = LLMTestCase(

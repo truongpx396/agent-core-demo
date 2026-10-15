@@ -12,8 +12,8 @@ all)."""
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from app.agent.graph.agent_node import make_agent_node
 from app.agent.graph.messages import RETRY_ARTIFACT_KEY
+from tests.agent.fakes import make_agent_node
 
 
 class _RecordingFakeLLM:

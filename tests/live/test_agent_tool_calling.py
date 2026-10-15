@@ -38,7 +38,6 @@ from langchain_core.messages import HumanMessage
 from tests.conftest import TEST_CTX
 from tests.ecorp import build_graph
 from tests.ollama import ollama_deps
-from tests.seeding import seed_thread
 
 pytestmark = pytest.mark.llm
 
@@ -46,15 +45,6 @@ pytestmark = pytest.mark.llm
 async def _invoke_async(endpoint: dict, text: str) -> dict:
     graph = build_graph(ollama_deps(endpoint))
     config = {"configurable": {"thread_id": str(uuid.uuid4()), "ctx": TEST_CTX}}
-    # Seed the system prompt before the first real turn — see
-    # tests/seeding.py's own `seed_thread` docstring for why this is
-    # required for a test that calls `build_graph().ainvoke()` directly,
-    # bypassing app/agent/runtime/core.py's own seeding every production path
-    # relies on. Real, disclosed finding: this file's own docstring above
-    # frames "no app.agent.runtime.core wrapper" as a deliberate minimal-deps
-    # choice, but never accounted for that wrapper also being what seeds
-    # the model's tool-routing guidance in real usage.
-    await seed_thread(graph, config["configurable"]["thread_id"])
     return await graph.ainvoke({"messages": [HumanMessage(content=text)]}, config=config)
 
 

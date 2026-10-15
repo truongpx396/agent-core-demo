@@ -19,13 +19,6 @@ also needs a real lead row — left to a hermetic, mocked-store test instead
 since covering that combination live would need a real Postgres too, for
 comparatively little extra proof over what this file already establishes).
 
-Deliberately NOT using tests/seeding.py's `seed_thread` (unlike this
-suite's other `build_graph().ainvoke()` callers — see that helper's own
-docstring for the general finding): `GenericFakeChatModel` returns
-pre-scripted responses from a fixed `iter(...)`, never actually reading
-the system prompt to decide anything — seeding here would add a call that
-provably can't change this file's behavior, not close a real gap.
-
 `_use_crawl4ai_server` (2026-09-17) — both tools here bottom out in
 `app.ingestion.web_crawler.render_url_to_markdown`, same as
 test_web_crawler_live.py, so it needs the same `crawl4ai_server`
