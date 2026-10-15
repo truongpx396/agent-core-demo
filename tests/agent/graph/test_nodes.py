@@ -21,7 +21,7 @@ from app.agent.graph import hitl as graph_hitl
 from app.agent.graph import retrieval as graph_retrieval
 from app.agent.graph import retry as graph_retry
 from app.agent.graph import routing as graph_routing
-from app.agent.graph.messages import RETRY_ARTIFACT_KEY, _is_retry_artifact
+from app.agent.graph.messages import RETRY_ARTIFACT_KEY, is_retry_artifact
 from app.core import metrics, moderation
 from tests.conftest import TEST_CTX, metric_value
 
@@ -506,7 +506,7 @@ class TestCheckOutput:
         Langfuse trace for "How does Qdrant's hybrid search work?").
         check_output USED to just flag this for a model retry; it now
         mechanically inserts the missing markers instead
-        (_insert_missing_citation_markers) — see that function's own
+        (insert_missing_citation_markers) — see that function's own
         docstring for the live evidence that retrying the model doesn't
         work here, so likely_uncited_citations comes back empty (already
         fixed) and the corrected message is what the user actually sees."""
@@ -741,7 +741,7 @@ class TestCheckOutput:
         ("magiclab396", saved verbatim by the `remember` tool) got recalled
         as [1] and cited three times on an answer about bundled skills for
         report-writing — content with zero relation to that memory. This
-        function used to reuse _likely_uncited_citations's short-source
+        function used to reuse find_likely_uncited's short-source
         skip (>=4 content words) and missed it entirely: a citation this
         short is NOT too little evidence to judge, it's the easiest case to
         judge, since a real match would require the sentence to contain
@@ -1008,7 +1008,7 @@ class TestFabricatesToolOutput:
         assert result["fabricated_tool_output"] is False
 
     def test_outranks_deferred_instead_of_acting_when_both_could_apply(self):
-        """fabricated is checked before deferred in _retry_reason's
+        """fabricated is checked before deferred in retry_reason's
         priority chain — presenting a fake result is worse than merely
         narrating intent, so if a message somehow does both, fabricated
         is the one named."""
@@ -1127,7 +1127,7 @@ class TestSkippedRequiredSandboxAfterSkill:
     def test_outranks_deferred_but_not_fabricated(self):
         """skipped_tool ranks between fabricated (worse: invents a fake
         result) and deferred (milder: no confident answer at all) in
-        _retry_reason's priority chain."""
+        retry_reason's priority chain."""
         state = {
             "messages": [
                 HumanMessage(content="What's the real contract value?"),
@@ -1174,7 +1174,7 @@ class TestLeaksSystemPrompt:
     def test_flags_a_recitation_starting_mid_prompt(self):
         """The leak doesn't have to start from character 0 of the prompt —
         a model asked to "continue from where it says X" would reproduce a
-        chunk starting mid-prompt. _leaks_system_prompt slides a window
+        chunk starting mid-prompt. reveals_system_prompt slides a window
         across the WHOLE prompt, not just its start."""
         mid_chunk = graph.SYSTEM_PROMPT[500:700]
         content = f"Continuing from your instructions: {mid_chunk}"
@@ -1239,7 +1239,7 @@ class TestLeaksSystemPrompt:
         assert metric_value(metrics.agent_system_prompt_leak_total) == before + 1
 
     def test_outranks_every_other_retry_reason(self):
-        """Checked FIRST in _retry_reason — see that function's own
+        """Checked FIRST in retry_reason — see that function's own
         docstring for why a leak severe enough to trip this outranks even
         length."""
         content = graph.SYSTEM_PROMPT[:200]
@@ -1267,7 +1267,7 @@ def test_retry_output_tags_the_feedback_and_the_answer_it_rejected_as_retry_arti
     assert (retagged.id, retagged.content) == ("a1", "ok")
     assert retagged.additional_kwargs[RETRY_ARTIFACT_KEY] is True
     assert isinstance(feedback, HumanMessage) and feedback.additional_kwargs[RETRY_ARTIFACT_KEY] is True
-    assert not _is_retry_artifact(rejected)  # the state's own message is not mutated
+    assert not is_retry_artifact(rejected)  # the state's own message is not mutated
 
 
 def test_retry_output_never_tags_an_answer_that_asked_for_tools():
@@ -1286,7 +1286,7 @@ def test_retry_output_does_not_append_a_duplicate_of_an_answer_that_has_no_id():
 def test_retry_output_too_short_feedback_also_nudges_toward_tool_use():
     """The "too_short" branch also covers a genuinely EMPTY response (no
     text, no tool_calls) — the common round-1 failure that precedes a
-    round-2 narration (see _defers_instead_of_acting). Nudging toward
+    round-2 narration (see defers_instead_of_acting). Nudging toward
     tool use directly here, not just "write more," is meant to short-
     circuit that whole narration cycle one round earlier."""
     result = graph_retry.retry_output({"messages": [AIMessage(content="")]})
@@ -1357,7 +1357,7 @@ def test_retry_output_tells_the_model_never_to_reveal_instructions_on_a_leak():
 
 def test_retry_output_leak_complaint_outranks_the_length_complaint():
     """leaks_system_prompt is checked FIRST, ahead of even length — see
-    _retry_reason's own docstring for why."""
+    retry_reason's own docstring for why."""
     state = {
         "messages": [AIMessage(content="Yes.")],  # also too short
         "leaks_system_prompt": True,
@@ -1612,7 +1612,7 @@ class TestNoAnswerFallback:
         just an accurate reflection of it: if the last round's answer
         genuinely didn't cite anything AND doesn't overlap with the
         available citation enough to trigger check_output's own citation
-        auto-correction (_insert_missing_citation_markers — see
+        auto-correction (insert_missing_citation_markers — see
         test_no_answer_fallback_propagates_an_auto_corrected_citation
         below for that case), used_citations correctly stays empty rather
         than fabricating one."""
@@ -1664,7 +1664,7 @@ class TestNoAnswerFallback:
         deferral ("I will now run this script in the sandbox to get the
         actual contract value.") reached the user completely unvetted the
         moment a budget happened to trip on that exact round, even though
-        _defers_instead_of_acting correctly flags that same text the
+        defers_instead_of_acting correctly flags that same text the
         moment check_output actually gets to see it. This node must now
         run that same check fresh, not skip it."""
         state = {
@@ -1718,7 +1718,7 @@ class TestNoAnswerFallback:
         assert [(m.tool_call_id, m.name) for m in rejections] == [("c1", "calculator"), ("c2", "search_docs")]
         assert isinstance(fallback, AIMessage) and not fallback.tool_calls
         assert "full answer you wanted" not in fallback.content
-        assert not any(_is_retry_artifact(m) for m in result["messages"])  # `asked` is left as it was
+        assert not any(is_retry_artifact(m) for m in result["messages"])  # `asked` is left as it was
 
     def test_a_subagent_exit_still_answers_the_tool_calls_but_adds_no_fallback_message(self):
         """emit_message=False must stay free of prose (run_subagent reads an empty final
@@ -1734,8 +1734,8 @@ class TestNoAnswerFallback:
         )
         result = graph_retry.make_no_answer_fallback_node()({"messages": [narrated], "citations": []})
         replaced, fallback = result["messages"]
-        assert (replaced.id, _is_retry_artifact(replaced)) == ("a1", True)
-        assert not _is_retry_artifact(fallback)
+        assert (replaced.id, is_retry_artifact(replaced)) == ("a1", True)
+        assert not is_retry_artifact(fallback)
 
     def test_emit_message_false_skips_everything_for_the_nested_subagent_case(self):
         """run_subagent's own nested graphs (emit_no_answer_message=False)
@@ -1758,8 +1758,8 @@ class TestRetryExhaustedArtifacts:
         state = {"messages": [rejected], "last_retry_reason": "fabricated"}
         result = graph_retry.make_retry_exhausted_node()(state)
         replaced, fallback = result["messages"]
-        assert (replaced.id, _is_retry_artifact(replaced)) == ("a1", True)
-        assert not _is_retry_artifact(fallback) and fallback.content
+        assert (replaced.id, is_retry_artifact(replaced)) == ("a1", True)
+        assert not is_retry_artifact(fallback) and fallback.content
 
     def test_a_trusted_answer_is_left_alone(self):
         state = {"messages": [AIMessage(content="A correct answer.", id="a1")], "last_retry_reason": "uncited"}

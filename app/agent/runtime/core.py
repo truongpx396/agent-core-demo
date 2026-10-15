@@ -21,9 +21,9 @@ thread or a different loop.
 
 This file owns the checkpointer/graph singleton lifecycle
 (`init_graph_async`/`close_checkpointer_pool`/`_open_checkpointer`/
-`_resolve_domain_name`), per-thread prompt seeding (`_ensure_seeded_async`),
-session-directory upsert (`_upsert_session`), and the bindings of the tenant daily-budget
-check (`_check_allowance`/`_allowance_refusal`; the rule itself is `app/agent/cost/budgets.py`) — kept together
+`_resolve_domain_name`), per-thread prompt seeding (`ensure_seeded_async`),
+session-directory upsert (`upsert_session`), and the bindings of the tenant daily-budget
+check (`_check_allowance`/`allowance_refusal`; the rule itself is `app/agent/cost/budgets.py`) — kept together
 because each reads/reassigns a module global (`_graph`/`_domain_name`/
 `_seeded`, or config names several tests monkeypatch directly on this
 module) that only works correctly with consumer and binding in one file.
@@ -111,7 +111,7 @@ async def _check_allowance(ctx: SecurityCtx | None) -> budgets.Allowance:
     )
 
 
-async def _allowance_refusal(ctx: SecurityCtx | None) -> ErrorEnvelope | None:
+async def allowance_refusal(ctx: SecurityCtx | None) -> ErrorEnvelope | None:
     """The error to emit INSTEAD of starting a turn, or None if it may start. Every entry
     point that begins model work asks this one question (a new turn, and a resume), so the
     caller never has to tell "over budget" from "could not be checked" itself."""
@@ -119,7 +119,7 @@ async def _allowance_refusal(ctx: SecurityCtx | None) -> ErrorEnvelope | None:
     return budgets.refusal_envelope(allowance) if allowance.refused else None
 
 
-async def _chat_model_refused_as_unpriced() -> bool:
+async def chat_model_refused_as_unpriced() -> bool:
     """True if a turn must be refused because the chat model has no known price
     and `UNPRICED_MODEL_POLICY` is "block". Checked before any model work, and
     before the tenant allowance: every dollar ceiling multiplies tokens by a
@@ -128,7 +128,7 @@ async def _chat_model_refused_as_unpriced() -> bool:
     return await pricing.refuse_unpriced(CHAT_MODEL)
 
 
-def _model_unpriced_envelope() -> ErrorEnvelope:
+def model_unpriced_envelope() -> ErrorEnvelope:
     return ErrorEnvelope(
         code=ErrorCode.MODEL_UNPRICED,
         message=(
@@ -138,22 +138,22 @@ def _model_unpriced_envelope() -> ErrorEnvelope:
     )
 
 
-async def _reserve_turn_budget(ctx: SecurityCtx | None) -> str | None:
-    """Called once a turn has passed `_allowance_refusal` and is
+async def reserve_turn_budget(ctx: SecurityCtx | None) -> str | None:
+    """Called once a turn has passed `allowance_refusal` and is
     about to actually run — holds MAX_COST_USD_PER_TURN (the hard cap
     graph/routing.py::should_continue already enforces per turn, so it's
     always a safe upper bound on what this turn could cost) against this
     tenant's in-flight total. Returns the hold's id, or None if `ctx` is
     invalid or the write itself failed — callers pass this straight to
-    `_release_turn_budget` in a `finally`, so a failed reservation and a real
+    `release_turn_budget` in a `finally`, so a failed reservation and a real
     one both round-trip correctly (releasing None is a no-op)."""
     from app.agent.cost import budget_holds
 
     return await budget_holds.reserve_budget(ctx, MAX_COST_USD_PER_TURN)
 
 
-async def _release_turn_budget(ctx: SecurityCtx | None, hold_id: str | None) -> None:
-    """Reverses `_reserve_turn_budget` — called unconditionally once a
+async def release_turn_budget(ctx: SecurityCtx | None, hold_id: str | None) -> None:
+    """Reverses `reserve_turn_budget` — called unconditionally once a
     turn ends (success, failure, or timeout), never only on success: the
     reservation's whole job is to cover the WINDOW while this turn is
     running, not to track whether it actually succeeded (the usage events,
@@ -163,7 +163,7 @@ async def _release_turn_budget(ctx: SecurityCtx | None, hold_id: str | None) -> 
     await budget_holds.release_budget_reservation(ctx, hold_id)
 
 
-async def _upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> None:
+async def upsert_session(ctx: SecurityCtx | None, thread_id: str, text: str) -> None:
     """Record/refresh this thread_id in the session directory (the conversation
     switcher, app/agent/runtime/sessions.py) — called at the START of every turn, unlike
     the turn metrics which only fire on a completed turn. Deliberate: a
@@ -273,7 +273,7 @@ async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "Dom
     return _graph
 
 
-async def _ensure_seeded_async(graph, thread_id: str) -> None:
+async def ensure_seeded_async(graph, thread_id: str) -> None:
     """Make a conversation thread carry exactly one system prompt, the CURRENT one.
     ASYNC only — the streaming entry points run directly on the
     checkpointer's own event loop, where the sync `update_state` raises

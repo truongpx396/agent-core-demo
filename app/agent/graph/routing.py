@@ -14,8 +14,8 @@ should_continue/check_output/route_after_check themselves stay at this
 original import path so every existing caller/test is unaffected.
 
 A few helpers that LOOK like they belong here stayed in their own sibling
-files instead (`_invalid_tool_call_names`, `_current_turn_messages`,
-`_pending_skill_required_tool`, `_content_words`) — each is also called
+files instead (`invalid_tool_call_names`, `current_turn_messages`,
+`pending_skill_required_tool`, `content_words`) — each is also called
 directly by a node function still in app/agent/graph/core.py, so moving them here would
 force app/agent/graph/core.py to import back from this module, a real circular import.
 """
@@ -26,11 +26,11 @@ from langchain_core.messages import AIMessage
 from langgraph.prebuilt import tools_condition
 
 from app.agent.graph.citations import (
-    _insert_missing_citation_markers,
-    _likely_misattributed_citations,
-    _likely_uncited_citations,
-    _ungrounded_claims_count,
-    _used_citations,
+    count_ungrounded_claims,
+    find_likely_misattributed,
+    find_likely_uncited,
+    find_used_citations,
+    insert_missing_citation_markers,
 )
 from app.agent.graph.core import (
     MAX_CONSECUTIVE_SAME_RETRY_REASON,
@@ -42,21 +42,21 @@ from app.agent.graph.core import (
     State,
 )
 from app.agent.graph.loop_guards import (
-    _consecutive_repeat_count,
-    _mandatory_gate_reason,
-    _use_skill_called_without_search,
+    consecutive_repeat_count,
+    mandatory_gate_reason,
+    use_skill_called_without_search,
 )
 from app.agent.graph.output_guardrails import (
-    _defers_instead_of_acting,
-    _fabricates_tool_output,
-    _leaks_system_prompt,
-    _retry_reason,
-    _skipped_required_sandbox_after_skill,
-    _strip_fabricated_reference_footer,
+    defers_instead_of_acting,
+    fabricates_tool_output,
+    retry_reason,
+    reveals_system_prompt,
+    skipped_required_sandbox_after_skill,
+    strip_fabricated_reference_footer,
 )
 from app.agent.graph.tool_guards import (
-    _DEFAULT_VALID_TOOL_NAMES,
-    _invalid_tool_call_names,
+    DEFAULT_VALID_TOOL_NAMES,
+    invalid_tool_call_names,
 )
 from app.agent.tools.builtin import TOOL_CAPABILITIES
 from app.core import metrics
@@ -67,7 +67,7 @@ from app.core.config import MAX_COST_USD_PER_TURN
 def should_continue(
     state: State,
     tool_capabilities: Mapping[str, str] = TOOL_CAPABILITIES,
-    valid_tool_names: frozenset[str] = _DEFAULT_VALID_TOOL_NAMES,
+    valid_tool_names: frozenset[str] = DEFAULT_VALID_TOOL_NAMES,
     max_iterations: int = MAX_ITERATIONS,
     max_tokens: int = MAX_TOKENS_PER_TURN,
     max_cost_usd: float = MAX_COST_USD_PER_TURN,
@@ -85,8 +85,8 @@ def should_continue(
     Checked in order: iteration/token/cost caps (turn-wide safety nets,
     checked first regardless of what the LLM said) -> is this a tool call
     -> too many tool calls at once -> any invalid tool name
-    (`_invalid_tool_call_names`) -> `use_skill` called without
-    `skill_search` first (`_use_skill_called_without_search`) -> human
+    (`invalid_tool_call_names`) -> `use_skill` called without
+    `skill_search` first (`use_skill_called_without_search`) -> human
     approval. The invalid-name and use_skill checks run BEFORE
     human_approval deliberately: neither is a real tool call a human could
     meaningfully approve, so both loop back to `agent` for a
@@ -142,17 +142,17 @@ def should_continue(
     tool_calls = cast(AIMessage, state["messages"][-1]).tool_calls or []
     if len(tool_calls) > MAX_TOOL_CALLS_PER_TURN:
         return "too_many_tool_calls"
-    if _invalid_tool_call_names(tool_calls, valid_tool_names):
+    if invalid_tool_call_names(tool_calls, valid_tool_names):
         return "invalid_tool_call"
-    if _use_skill_called_without_search(tool_calls, state["messages"]):
+    if use_skill_called_without_search(tool_calls, state["messages"]):
         return "use_skill_without_search"
-    if _consecutive_repeat_count(state["messages"]) >= MAX_REPEATED_ACTIONS:
+    if consecutive_repeat_count(state["messages"]) >= MAX_REPEATED_ACTIONS:
         # Checked independently of MAX_ITERATIONS — a run looping on one
         # identical action would otherwise just exhaust the iteration cap,
         # indistinguishable from one that's actually converging (pattern 34).
         metrics.agent_no_progress_total.inc()
         return "no_answer"
-    mandatory_reason = _mandatory_gate_reason(tool_calls, tool_capabilities)
+    mandatory_reason = mandatory_gate_reason(tool_calls, tool_capabilities)
     if mandatory_reason:
         metrics.agent_capability_gate_total.labels(capability=mandatory_reason).inc()
     if state.get("require_approval") or mandatory_reason:
@@ -161,8 +161,8 @@ def should_continue(
 
 
 # --- Node: check output — also extracts which offered citations were
-# actually used (_used_citations) and how many cited markers were invented
-# (_ungrounded_claims_count). Recomputed from scratch every call, so a
+# actually used (find_used_citations) and how many cited markers were invented
+# (count_ungrounded_claims). Recomputed from scratch every call, so a
 # retry_output round doesn't leave stale values from the rejected answer.
 #
 # `system_prompt` defaults to module-level SYSTEM_PROMPT (Ecorp's) so
@@ -188,13 +188,13 @@ def check_output(
     # computation — it isn't a real answer sentence to judge grounding on,
     # and every field below should reflect the cleaned text.
     message_update: dict = {}
-    cleaned_content = _strip_fabricated_reference_footer(content)
+    cleaned_content = strip_fabricated_reference_footer(content)
     if cleaned_content != content:
         metrics.agent_reference_footer_stripped_total.inc()
         content = cleaned_content
         message_update["messages"] = [last.model_copy(update={"content": content})]
 
-    used = _used_citations(content, citations)
+    used = find_used_citations(content, citations)
     if citations and not used and content:
         # Directional signal only, not enforced — a legitimate
         # general-knowledge/calculator-only answer looks IDENTICAL to a
@@ -204,41 +204,41 @@ def check_output(
         # deliberately doesn't retry on this.
         metrics.agent_zero_citations_total.inc()
     likely_misattributed = (
-        _likely_misattributed_citations(content, citations, used) if enforce_citations else []
+        find_likely_misattributed(content, citations, used) if enforce_citations else []
     )
     if likely_misattributed:
         metrics.agent_misattributed_citations_total.inc()
-    defers = _defers_instead_of_acting(content)
+    defers = defers_instead_of_acting(content)
     if defers:
         metrics.agent_deferred_instead_of_acting_total.inc()
-    fabricated = _fabricates_tool_output(content)
+    fabricated = fabricates_tool_output(content)
     if fabricated:
         metrics.agent_fabricated_tool_output_total.inc()
-    skipped_tool = _skipped_required_sandbox_after_skill(state["messages"])
+    skipped_tool = skipped_required_sandbox_after_skill(state["messages"])
     if skipped_tool:
         metrics.agent_skipped_required_tool_total.inc()
-    leaks_prompt = _leaks_system_prompt(content, system_prompt)
+    leaks_prompt = reveals_system_prompt(content, system_prompt)
     if leaks_prompt:
         metrics.agent_system_prompt_leak_total.inc()
 
-    # Auto-correct rather than retry: _insert_missing_citation_markers's
+    # Auto-correct rather than retry: insert_missing_citation_markers's
     # docstring has the evidence (7 different prompt-level attempts, all
     # failed) for fixing the marker directly instead of routing to
     # retry_output. `used`/`likely_uncited`/`content` are recomputed
     # against the CORRECTED text so every returned field reflects what the
     # user actually sees. Reuses `message_update` so both corrections
     # (footer strip + marker insert) compose onto the same final message.
-    likely_uncited = _likely_uncited_citations(content, citations, used) if enforce_citations else []
+    likely_uncited = find_likely_uncited(content, citations, used) if enforce_citations else []
     if likely_uncited:
-        corrected_content, fixed = _insert_missing_citation_markers(content, citations, used)
+        corrected_content, fixed = insert_missing_citation_markers(content, citations, used)
         if fixed:
             metrics.agent_citation_auto_inserted_total.inc()
             content = corrected_content
-            used = _used_citations(content, citations)
-            likely_uncited = _likely_uncited_citations(content, citations, used)
+            used = find_used_citations(content, citations)
+            likely_uncited = find_likely_uncited(content, citations, used)
             message_update["messages"] = [last.model_copy(update={"content": content})]
 
-    reason = _retry_reason(
+    reason = retry_reason(
         content, leaks_prompt, fabricated, skipped_tool, defers, likely_uncited, likely_misattributed
     )
     prior_reason = state.get("last_retry_reason")
@@ -251,7 +251,7 @@ def check_output(
     return {
         **message_update,
         "used_citations": used,
-        "ungrounded_claims_count": _ungrounded_claims_count(content, citations),
+        "ungrounded_claims_count": count_ungrounded_claims(content, citations),
         "likely_uncited_citations": likely_uncited,
         "likely_misattributed_citations": likely_misattributed,
         "deferred_instead_of_acting": defers,

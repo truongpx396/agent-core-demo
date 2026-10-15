@@ -1,5 +1,5 @@
 """Tests for multimodal/image-question support (GRAPH_PATTERNS.md pattern
-44): app/agent/graph/core.py's `_human_text`/`_human_has_content` (extracting the text
+44): app/agent/graph/core.py's `human_text`/`human_has_content` (extracting the text
 portion of a possibly-multimodal HumanMessage for every downstream
 text-only consumer — moderation, the semantic cache key, the retrieval
 query), app/agent/runtime/stream.py's `_build_human_content` (constructing the multimodal
@@ -19,7 +19,7 @@ from app.agent.graph import cache as graph_cache
 from app.agent.graph import core as graph
 from app.agent.graph import retrieval as graph_retrieval
 from app.agent.graph.core import route_after_validation
-from app.agent.graph.messages import _human_has_content, _human_text
+from app.agent.graph.messages import human_has_content, human_text
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
 from tests.conftest import TEST_CTX
@@ -33,52 +33,52 @@ def _multimodal(text, *image_urls):
 
 class TestHumanText:
     def test_plain_string_content_returned_as_is(self):
-        assert _human_text(HumanMessage(content="hello")) == "hello"
+        assert human_text(HumanMessage(content="hello")) == "hello"
 
     def test_extracts_text_part_from_a_multimodal_message(self):
         msg = _multimodal("what is this?", "https://example.com/cat.png")
-        assert _human_text(msg) == "what is this?"
+        assert human_text(msg) == "what is this?"
 
     def test_image_only_message_yields_empty_string(self):
         msg = _multimodal("", "https://example.com/cat.png")
-        assert _human_text(msg) == ""
+        assert human_text(msg) == ""
 
     def test_none_message_yields_empty_string(self):
-        assert _human_text(None) == ""
+        assert human_text(None) == ""
 
     def test_multiple_text_parts_are_concatenated(self):
         msg = HumanMessage(
             content=[{"type": "text", "text": "part one "}, {"type": "text", "text": "part two"}]
         )
-        assert _human_text(msg) == "part one part two"
+        assert human_text(msg) == "part one part two"
 
 
 class TestHumanHasContent:
     def test_non_empty_text_has_content(self):
-        assert _human_has_content(HumanMessage(content="hi")) is True
+        assert human_has_content(HumanMessage(content="hi")) is True
 
     def test_whitespace_only_text_has_no_content(self):
-        assert _human_has_content(HumanMessage(content="   ")) is False
+        assert human_has_content(HumanMessage(content="   ")) is False
 
     def test_empty_text_has_no_content(self):
-        assert _human_has_content(HumanMessage(content="")) is False
+        assert human_has_content(HumanMessage(content="")) is False
 
     def test_image_only_message_has_content(self):
-        """The case _human_text alone would get wrong: no text part at
+        """The case human_text alone would get wrong: no text part at
         all, but a real image attached — this must count as real input,
         not be rejected as empty (route_after_validation)."""
         msg = _multimodal("", "https://example.com/cat.png")
-        assert _human_has_content(msg) is True
+        assert human_has_content(msg) is True
 
     def test_text_and_image_has_content(self):
         msg = _multimodal("what is this?", "https://example.com/cat.png")
-        assert _human_has_content(msg) is True
+        assert human_has_content(msg) is True
 
     def test_empty_multimodal_list_has_no_content(self):
-        assert _human_has_content(HumanMessage(content=[])) is False
+        assert human_has_content(HumanMessage(content=[])) is False
 
     def test_none_message_has_no_content(self):
-        assert _human_has_content(None) is False
+        assert human_has_content(None) is False
 
 
 class TestRouteAfterValidationWithImages:

@@ -1,17 +1,17 @@
 """Generic infrastructure helpers with no dependency on any node's own
-logic: `_instrumented` (structured lifecycle logging wrapper applied at
-graph-registration time), `_friendly_tool_error` (ToolNode's
-error-recovery formatter), `_make_llm` (the production `ChatOpenAI`
-client factory), and `_content_words` (a crude word-overlap helper
+logic: `instrumented` (structured lifecycle logging wrapper applied at
+graph-registration time), `friendly_tool_error` (ToolNode's
+error-recovery formatter), `make_llm` (the production `ChatOpenAI`
+client factory), and `content_words` (a crude word-overlap helper
 shared by `app/agent/graph/core.py`'s vague-query check and `graph/routing.py`'s
 citation-grounding check). Split out of `app/agent/graph/core.py` for file
 size (see `graph/hitl.py`/`graph/routing.py`/`graph/tool_guards.py`/
 `graph/skill_guards.py` for sibling splits); no behavior change.
 
-`_content_words` is read back into `app/agent/graph/core.py`'s `_retrieval_query` via a
+`content_words` is read back into `app/agent/graph/core.py`'s `retrieval_query` via a
 deferred import to avoid a circular import.
 
-`_make_llm` reads `CHAT_MODEL`/`OPENAI_API_BASE`/`OPENAI_API_KEY` through
+`make_llm` reads `CHAT_MODEL`/`OPENAI_API_BASE`/`OPENAI_API_KEY` through
 `graph_module.X` rather than a static bare import — several `tests/live/*`
 files monkeypatch these as attributes on the live `graph` module object,
 which a bare `from X import Y` would miss (copies the reference once, at
@@ -35,7 +35,7 @@ from app.core.tool_idempotency import MutatingToolTimedOut
 logger = logging.getLogger(__name__)
 
 
-def _instrumented(node_name: str):
+def instrumented(node_name: str):
     """Wrap a node with structured start/complete/failed/paused lifecycle logs.
 
     Applied once, at graph-registration time (build_graph), to every node
@@ -141,7 +141,7 @@ def _instrumented(node_name: str):
     return decorator
 
 
-def _friendly_tool_error(error: Exception) -> str:
+def friendly_tool_error(error: Exception) -> str:
     """Turned into a ToolMessage by ToolNode's handle_tool_errors instead of
     propagating and killing the run — the agent sees this on its next turn.
 
@@ -172,7 +172,7 @@ def _friendly_tool_error(error: Exception) -> str:
     return f"Tool failed ({type(error).__name__}: {error}). Try a different approach."
 
 
-def _make_llm(tools: list = TOOLS):
+def make_llm(tools: list = TOOLS):
     return ChatOpenAI(
         model=graph_module.CHAT_MODEL,
         base_url=graph_module.OPENAI_API_BASE,
@@ -223,7 +223,7 @@ _STOPWORDS = frozenset(
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
 
-def _content_words(text: str) -> set[str]:
+def content_words(text: str) -> set[str]:
     return {
         w for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS and len(w) > 2
     }

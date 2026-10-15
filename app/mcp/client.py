@@ -15,7 +15,7 @@ guarantees — a malicious or unmaintained server could claim
 `capability_overrides` — supplied by the LOCAL caller, never read from the
 remote's own metadata — is the ONLY source of truth for a remote tool's
 capability. Any tool not named in `capability_overrides` defaults to
-`"outward"`, same fail-closed default as `_tool_capability` for an
+`"outward"`, same fail-closed default as `tool_capability` for an
 in-process tool missing from `TOOL_CAPABILITIES`.
 
 ## One connection per call, by design

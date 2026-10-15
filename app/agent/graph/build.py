@@ -24,7 +24,7 @@ from app.agent.graph.core import (
     HISTORY_TOKEN_FLOOR,
     GraphDeps,
     State,
-    _assemble_shared_graph_parts,
+    assemble_shared_graph_parts,
     context_window_exceeded,
     moderate_input,
     reject_context,
@@ -45,7 +45,7 @@ from app.agent.graph.retry import (
 from app.agent.graph.routing import route_after_check
 from app.agent.graph.skill_guards import use_skill_without_search
 from app.agent.graph.tool_guards import too_many_tool_calls
-from app.agent.graph.utils import _friendly_tool_error, _instrumented
+from app.agent.graph.utils import friendly_tool_error, instrumented
 
 if TYPE_CHECKING:
     from app.agent.manifest import AgentManifest, DomainPlugin
@@ -103,7 +103,7 @@ def build_graph(
     they let tests exercise compact_history's hysteresis with small,
     controlled budgets instead of thousands of tokens of placeholder text.
     """
-    parts = _assemble_shared_graph_parts(
+    parts = assemble_shared_graph_parts(
         deps, manifest, domain, max_iterations, max_tokens_per_turn, max_cost_usd_per_turn
     )
     deps = parts.deps
@@ -136,91 +136,91 @@ def build_graph(
     # caught by the test suite before this fix: a fake-LLM test got back a
     # stale cached answer from an unrelated test's real cache write.
     check_semantic_cache = make_check_semantic_cache_node(
-        deps.cache_get or graph_module._default_cache_get
+        deps.cache_get or graph_module.default_cache_get
     )
     write_semantic_cache = make_write_semantic_cache_node(
-        deps.cache_set or graph_module._default_cache_set,
+        deps.cache_set or graph_module.default_cache_set,
         parts.tool_capabilities,
     )
 
     builder = StateGraph(State)
 
-    # Every node below is wrapped in _instrumented(name) at registration
+    # Every node below is wrapped in instrumented(name) at registration
     # time, not by editing the node functions themselves (pattern 14).
     # Plain module-level functions stay undecorated so they're directly
     # callable from tests; `agent`/`retrieve_context` are the two
     # factory-built exceptions above.
-    builder.add_node("validate_input", _instrumented("validate_input")(validate_input))
-    builder.add_node("reject_input", _instrumented("reject_input")(reject_input))
-    builder.add_node("reject_context", _instrumented("reject_context")(reject_context))
+    builder.add_node("validate_input", instrumented("validate_input")(validate_input))
+    builder.add_node("reject_input", instrumented("reject_input")(reject_input))
+    builder.add_node("reject_context", instrumented("reject_context")(reject_context))
     builder.add_node(
-        "compact_history", _instrumented("compact_history")(compact_history)
+        "compact_history", instrumented("compact_history")(compact_history)
     )
     builder.add_node(
         "context_window_exceeded",
-        _instrumented("context_window_exceeded")(context_window_exceeded),
+        instrumented("context_window_exceeded")(context_window_exceeded),
     )
-    builder.add_node("moderate_input", _instrumented("moderate_input")(moderate_input))
+    builder.add_node("moderate_input", instrumented("moderate_input")(moderate_input))
     builder.add_node(
-        "reject_moderation", _instrumented("reject_moderation")(reject_moderation)
+        "reject_moderation", instrumented("reject_moderation")(reject_moderation)
     )
     builder.add_node(
         "check_semantic_cache",
-        _instrumented("check_semantic_cache")(check_semantic_cache),
+        instrumented("check_semantic_cache")(check_semantic_cache),
     )
     builder.add_node(
-        "retrieve_context", _instrumented("retrieve_context")(retrieve_context)
+        "retrieve_context", instrumented("retrieve_context")(retrieve_context)
     )
     # Reliability policy: retry a transient LLM-endpoint failure a few
     # times before giving up — see AGENT_RETRY_POLICY. Nothing else here
     # gets one: `tools` recovers via handle_tool_errors below, and every
     # other node is a pure function of state where a retry would just
     # repeat the same bug (pattern 7).
-    builder.add_node("agent", _instrumented("agent")(agent), retry=AGENT_RETRY_POLICY)
+    builder.add_node("agent", instrumented("agent")(agent), retry=AGENT_RETRY_POLICY)
     # Error recovery: a failing tool (e.g. Qdrant unreachable) doesn't
     # crash the run — handle_tool_errors turns the exception into a
     # ToolMessage so `agent` can react on the next turn instead of the
     # graph blowing up. Parallel: ToolNode already runs multiple tool_calls
     # from one AIMessage concurrently — no extra wiring needed.
     builder.add_node(
-        "tools", ToolNode(domain_tools, handle_tool_errors=_friendly_tool_error)
+        "tools", ToolNode(domain_tools, handle_tool_errors=friendly_tool_error)
     )
     builder.add_node(
-        "human_approval", _instrumented("human_approval")(human_approval)
+        "human_approval", instrumented("human_approval")(human_approval)
     )
     # Safety budget node: rejects an over-large batch of tool calls the
     # same way human_approval rejects a disapproved one, then loops back
     # to agent — see MAX_TOOL_CALLS_PER_TURN in should_continue.
     builder.add_node(
         "too_many_tool_calls",
-        _instrumented("too_many_tool_calls")(too_many_tool_calls),
+        instrumented("too_many_tool_calls")(too_many_tool_calls),
     )
     builder.add_node(
         "invalid_tool_call",
-        _instrumented("invalid_tool_call")(parts.domain_invalid_tool_call),
+        instrumented("invalid_tool_call")(parts.domain_invalid_tool_call),
     )
     builder.add_node(
         "use_skill_without_search",
-        _instrumented("use_skill_without_search")(use_skill_without_search),
+        instrumented("use_skill_without_search")(use_skill_without_search),
     )
-    builder.add_node("check_output", _instrumented("check_output")(domain_check_output))
-    builder.add_node("retry_output", _instrumented("retry_output")(retry_output))
+    builder.add_node("check_output", instrumented("check_output")(domain_check_output))
+    builder.add_node("retry_output", instrumented("retry_output")(retry_output))
     builder.add_node(
         "retry_exhausted",
-        _instrumented("retry_exhausted")(make_retry_exhausted_node(emit_no_answer_message)),
+        instrumented("retry_exhausted")(make_retry_exhausted_node(emit_no_answer_message)),
     )
     builder.add_node(
         "no_answer",
-        _instrumented("no_answer")(
+        instrumented("no_answer")(
             make_no_answer_fallback_node(emit_no_answer_message, system_prompt=manifest.system_prompt)
         ),
     )
     builder.add_node(
-        "suggest_followups", _instrumented("suggest_followups")(suggest_followups)
+        "suggest_followups", instrumented("suggest_followups")(suggest_followups)
     )
     builder.add_node(
         "write_semantic_cache",
-        _instrumented("write_semantic_cache")(write_semantic_cache),
+        instrumented("write_semantic_cache")(write_semantic_cache),
     )
 
     builder.add_edge(START, "validate_input")
@@ -251,7 +251,7 @@ def build_graph(
 
     compiled = builder.compile(checkpointer=checkpointer or MemorySaver())
     # Not LangGraph API — a plain attribute stash so a caller holding the
-    # compiled graph (chiefly app/agent/runtime/core.py's _ensure_seeded_async) can
+    # compiled graph (chiefly app/agent/runtime/core.py's ensure_seeded_async) can
     # recover which domain built it, without changing this function's
     # return type.
     compiled.manifest = manifest  # type: ignore[attr-defined]  # deliberate stash, see comment above

@@ -1,13 +1,13 @@
 """Human-message helpers with no dependency on `State` or node logic:
 telling the person's own messages from the graph's retry artifacts
-(`RETRY_ARTIFACT_KEY`, `_is_user_message`), locating the last/previous
-user message (`_last_human_message`, `_previous_human_message`), building
-retrieval query text for a vague follow-up (`_retrieval_query`), and
+(`RETRY_ARTIFACT_KEY`, `is_user_message`), locating the last/previous
+user message (`last_human_message`, `previous_human_message`), building
+retrieval query text for a vague follow-up (`retrieval_query`), and
 normalizing a `HumanMessage`'s content — plain string or multimodal content
-list (pattern 44) — to its text portion (`_human_text`,
-`_human_has_content`). Split out of `app/agent/graph/core.py` for file size.
+list (pattern 44) — to its text portion (`human_text`,
+`human_has_content`). Split out of `app/agent/graph/core.py` for file size.
 
-`_human_text`/`_human_has_content` are also unit-tested directly by
+`human_text`/`human_has_content` are also unit-tested directly by
 `tests/agent/graph/test_multimodal.py`.
 """
 from typing import TypeGuard
@@ -26,27 +26,27 @@ from langchain_core.messages import BaseMessage, HumanMessage
 RETRY_ARTIFACT_KEY = "retry_artifact"
 
 
-def _is_retry_artifact(message: BaseMessage) -> bool:
+def is_retry_artifact(message: BaseMessage) -> bool:
     return bool((getattr(message, "additional_kwargs", None) or {}).get(RETRY_ARTIFACT_KEY))
 
 
-def _is_user_message(message: BaseMessage) -> TypeGuard[HumanMessage]:
+def is_user_message(message: BaseMessage) -> TypeGuard[HumanMessage]:
     """A HumanMessage the person sent, not retry feedback the graph wrote."""
-    return isinstance(message, HumanMessage) and not _is_retry_artifact(message)
+    return isinstance(message, HumanMessage) and not is_retry_artifact(message)
 
 
-def _last_human_message(messages: list[BaseMessage]) -> HumanMessage | None:
-    return next((m for m in reversed(messages) if _is_user_message(m)), None)
+def last_human_message(messages: list[BaseMessage]) -> HumanMessage | None:
+    return next((m for m in reversed(messages) if is_user_message(m)), None)
 
 
-def _previous_human_message(messages: list[BaseMessage], before_index: int) -> HumanMessage | None:
+def previous_human_message(messages: list[BaseMessage], before_index: int) -> HumanMessage | None:
     """The HumanMessage immediately before `before_index` — the prior
-    turn's question, used by `_retrieval_query` to enrich a vague
+    turn's question, used by `retrieval_query` to enrich a vague
     follow-up. `before_index` is retrieve_context's `anchor`, so
     `messages[:before_index]` is everything before THIS turn. None on the
     first turn."""
     return next(
-        (m for m in reversed(messages[:before_index]) if _is_user_message(m)),
+        (m for m in reversed(messages[:before_index]) if is_user_message(m)),
         None,
     )
 
@@ -59,7 +59,7 @@ def _previous_human_message(messages: list[BaseMessage], before_index: int) -> H
 _VAGUE_QUERY_MAX_CONTENT_WORDS = 4
 
 
-def _retrieval_query(current_text: str, previous_human: HumanMessage | None) -> str:
+def retrieval_query(current_text: str, previous_human: HumanMessage | None) -> str:
     """The text `retrieve_context` searches on — the current turn's
     question, unless too vague/short to search meaningfully alone, in
     which case the PRIOR turn's question is folded in too.
@@ -79,21 +79,21 @@ def _retrieval_query(current_text: str, previous_human: HumanMessage | None) -> 
     # level, and app/agent/graph/core.py re-exports names from THIS module at its top
     # level — importing graph_utils back here at module level would close
     # a real cycle.
-    from app.agent.graph.utils import _content_words
+    from app.agent.graph.utils import content_words
 
-    if previous_human is not None and len(_content_words(current_text)) <= _VAGUE_QUERY_MAX_CONTENT_WORDS:
-        return f"{_human_text(previous_human)} {current_text}"
+    if previous_human is not None and len(content_words(current_text)) <= _VAGUE_QUERY_MAX_CONTENT_WORDS:
+        return f"{human_text(previous_human)} {current_text}"
     return current_text
 
 
-def _human_text(message: BaseMessage | None) -> str:
+def human_text(message: BaseMessage | None) -> str:
     """The TEXT portion of a HumanMessage's content — a plain string, or
     a multimodal content list (`[{"type": "text", ...}, {"type":
     "image_url", ...}]`, pattern 44) built by
     `runtime/stream.py::_build_human_content` when an image is attached.
     Downstream text-only consumers (moderation, cache key, retrieval
     query) read through this. An image-only message yields "", not an
-    error — see `_human_has_content` for why that's not "no content."
+    error — see `human_has_content` for why that's not "no content."
     """
     if message is None:
         return ""
@@ -107,9 +107,9 @@ def _human_text(message: BaseMessage | None) -> str:
     )
 
 
-def _human_has_content(message: BaseMessage | None) -> bool:
+def human_has_content(message: BaseMessage | None) -> bool:
     """True if this message has SOME real content — non-empty text OR at
-    least one image part. A plain `_human_text(message).strip()` check
+    least one image part. A plain `human_text(message).strip()` check
     alone would wrongly reject a genuine image-only question as empty
     input in route_after_validation."""
     if message is None:
@@ -117,6 +117,6 @@ def _human_has_content(message: BaseMessage | None) -> bool:
     content = message.content
     if isinstance(content, str):
         return bool(content.strip())
-    if _human_text(message).strip():
+    if human_text(message).strip():
         return True
     return any(isinstance(part, dict) and part.get("type") == "image_url" for part in content)

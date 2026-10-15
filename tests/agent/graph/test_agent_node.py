@@ -6,7 +6,7 @@ app/agent/graph/core.py for why it's a factory.
 docstring), so every call below runs through `asyncio.run(...)` — this
 repo's established pattern for exercising async code from a plain
 `def test_...` (no pytest-asyncio configured; see app/agent/graph/utils.py's
-`_instrumented` docstring for why only the I/O-bound nodes are async at
+`instrumented` docstring for why only the I/O-bound nodes are async at
 all)."""
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel

@@ -38,7 +38,7 @@ rather than running an unscoped query or untenanted write.
 
 Memory is written only by `remember` — nothing extracts facts from turn
 text automatically, since whatever writes memory decides what gets
-replayed into every future prompt. Recall is automatic (`_default_search`
+replayed into every future prompt. Recall is automatic (`default_search`
 in app/agent/graph/core.py, alongside document retrieval) and re-filtered
 against *current* ctx every call (`Policy.lower(ctx, "memories")`, scoped
 to `tenant` AND `owner`), never trusted from a prior snapshot. A recalled
@@ -60,7 +60,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, InjectedToolCallId, tool
 
 # `ChatOpenAI` isn't constructed in THIS file anymore (moved to
-# tools/run_subagent.py's `_run_subagent_impl` fallback) — kept as a deliberate
+# tools/run_subagent.py's `run_subagent_impl` fallback) — kept as a deliberate
 # re-export: tools/run_subagent.py reads it live as `tools_module.ChatOpenAI`
 # rather than importing it fresh, so tests/agent/runtime/test_concurrent_turns.py's
 # `monkeypatch.setattr(tools_module, "ChatOpenAI", ...)` keeps working. Don't
@@ -529,7 +529,7 @@ async def remember(
 async def gather_context(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]]:
     """Documents + this principal's memories, hybrid-searched and combined
     into ONE continuously-numbered citation sequence — called by
-    app/agent/graph/core.py's `_default_search` (the automatic pre-fetch every
+    app/agent/graph/core.py's `default_search` (the automatic pre-fetch every
     turn), not the same call `_search_docs_impl` makes when the model asks,
     though both share the same retrieval/Policy machinery. This is the only
     reader of this principal's memories; `remember` is the only writer.
@@ -573,7 +573,7 @@ class QueryEmployeesArgs(BaseModel):
     )
 
 
-async def _query_employees_impl(
+async def query_employees_impl(
     department: Department | None, name_contains: str | None, ctx: SecurityCtx
 ) -> str:
     from app.core import sql_store
@@ -621,7 +621,7 @@ async def query_employees(
     ctx = ctx_or_refuse(config, "query_structured_data")
     if ctx is None:
         return NO_CTX_REFUSAL
-    return await arun_with_timeout(_query_employees_impl, department, name_contains, ctx)
+    return await arun_with_timeout(query_employees_impl, department, name_contains, ctx)
 
 
 class SkillSearchArgs(BaseModel):
@@ -727,7 +727,7 @@ def make_skill_tools(domain: str) -> tuple[BaseTool, BaseTool]:
                 "the exact name of an available skill."
             )
         # No tool reminder is appended here: the agent node already adds a recency-weighted one
-        # while a tool the skill named is still pending (`_pending_skill_required_tool`), and no
+        # while a tool the skill named is still pending (`pending_skill_required_tool`), and no
         # SKILL.md names run_command_in_sandbox any more.
         return record.body
 
@@ -825,7 +825,7 @@ TOOL_CAPABILITIES: dict[str, ToolCapability] = {
 # --- Tool result-size declarations -------------------------------------------
 # Per-tool cap (query_employees has no inherent row limit) rather than one
 # global constant, since the right cap is a property of the tool. A capped
-# result is always MARKED as truncated (see _query_employees_impl) — never
+# result is always MARKED as truncated (see query_employees_impl) — never
 # silently shortened.
 TOOL_RESULT_CAPS: dict[str, int] = {
     "query_employees": 20,

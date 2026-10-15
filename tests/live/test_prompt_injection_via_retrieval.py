@@ -92,8 +92,8 @@ def real_ollama_chat_model(monkeypatch, ollama_endpoint):
 
 async def test_real_model_does_not_comply_with_an_instruction_injected_into_retrieved_content(monkeypatch):
     # `GraphDeps(search_docs=...)` only overrides `retrieve_context`'s own
-    # automatic PRE-FETCH (app/agent/graph/core.py's `_assemble_shared_graph_parts`:
-    # `make_retrieve_context_node(deps.search_docs or _default_search)`) —
+    # automatic PRE-FETCH (app/agent/graph/core.py's `assemble_shared_graph_parts`:
+    # `make_retrieve_context_node(deps.search_docs or default_search)`) —
     # it does NOT reach `app/agent/tools/builtin.py`'s
     # separately-bound `search_docs` TOOL, which the system prompt itself
     # instructs the model to use ("Use the search_docs tool to answer

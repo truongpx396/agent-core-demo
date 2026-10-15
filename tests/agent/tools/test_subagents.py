@@ -169,14 +169,14 @@ async def test_a_subagent_never_emits_citation_markers_or_events_into_the_parent
         citation = {"marker": "[1]", "doc_id": "d1", "title": "hours", "text": FACT, "score": 5.0}
         return f"[1] {FACT}", [citation]
 
-    monkeypatch.setattr(graph, "_default_search", nested_search)  # the nested graph's retrieval
+    monkeypatch.setattr(graph, "default_search", nested_search)  # the nested graph's retrieval
     record = SubagentRecord("researcher", "d", "You research.", (), None, None, Path("x"))
     nested_inputs, answers = [], []
 
     @tool
     async def delegate(task: str, config: RunnableConfig) -> str:
         """Delegate a lookup."""
-        result = await subagent_tools._run_subagent_impl(
+        result = await subagent_tools.run_subagent_impl(
             "researcher", task, config,
             registry={"researcher": (record, ())}, tools_by_name={},
             llm=scripted_llm(lambda _m: AIMessage(content=FACT), nested_inputs),

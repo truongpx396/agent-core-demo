@@ -208,7 +208,7 @@ class TestAsyncSeeding:
     `thread_id` (the checkpointer refuses a sync call from its own loop;
     only a DIFFERENT thread's sync
     call is the supported cross-thread path — see app/agent/runtime/core.py's module
-    docstring). Fixed by adding `_ensure_seeded_async` (async callers:
+    docstring). Fixed by adding `ensure_seeded_async` (async callers:
     `astream_events_turn`/`astream_events_turn_ctx`, using
     `graph.aupdate_state`) as a separate async-safe seeding path, instead of
     reusing the sync `graph.update_state`-based helper the old `stream_turn`/
@@ -250,7 +250,7 @@ class TestAsyncSeeding:
         `agent-worker` processes for scaling, with Redis Streams
         distributing turns round-robin across them — a thread's turns
         can just as easily land on a DIFFERENT process that's never seen
-        this thread_id before. Either way, `_ensure_seeded_async` used to
+        this thread_id before. Either way, `ensure_seeded_async` used to
         trust `_seeded` alone and append a second copy of the prompt.
 
         Simulated here the same way TestDurabilityAcrossRestart above
@@ -267,7 +267,7 @@ class TestAsyncSeeding:
             async with AsyncPostgresSaver.from_conn_string(checkpointer_url) as saver:
                 await saver.setup()
                 graph = build_graph(GraphDeps(llm=_fake_llm()), checkpointer=saver)
-                await agent_module._ensure_seeded_async(graph, thread_id)
+                await agent_module.ensure_seeded_async(graph, thread_id)
 
         await _seed_once()
         agent_module._seeded.discard(thread_id)

@@ -16,7 +16,7 @@ from app.agent.graph.core import (
     AGENT_RETRY_POLICY,
     GraphDeps,
     State,
-    _assemble_shared_graph_parts,
+    assemble_shared_graph_parts,
     moderate_input,
     reject_context,
     reject_input,
@@ -34,7 +34,7 @@ from app.agent.graph.retry import (
 from app.agent.graph.routing import route_after_check
 from app.agent.graph.skill_guards import use_skill_without_search
 from app.agent.graph.tool_guards import too_many_tool_calls
-from app.agent.graph.utils import _friendly_tool_error, _instrumented
+from app.agent.graph.utils import friendly_tool_error, instrumented
 
 if TYPE_CHECKING:
     from app.agent.manifest import AgentManifest, DomainPlugin
@@ -61,7 +61,7 @@ def build_subagent_graph(
       conversation's own cache (keyed by tenant+principal), risking a
       cross-contaminated cache hit in either direction.
     - `suggest_followups`: dropped — closes another disclosed gap, a full
-      extra LLM call whose result `_run_subagent_impl` simply discarded.
+      extra LLM call whose result `run_subagent_impl` simply discarded.
     - `compact_history`/`context_window_exceeded`: dropped because they're
       PROVABLY inert here, not just unlikely — compact_history only fires
       once history crosses HISTORY_TOKEN_CEILING (24000), but a subagent
@@ -77,7 +77,7 @@ def build_subagent_graph(
     but stays as defense-in-depth (same "no flag turns this off" posture as
     pattern 15 for the main graph).
 
-    Reuses `_assemble_shared_graph_parts` for everything shared with
+    Reuses `assemble_shared_graph_parts` for everything shared with
     `build_graph()`, and reuses `route_after_validation`/
     `route_after_moderation`/`route_after_check` unmodified via LangGraph's
     `path_map` to remap their full-topology branches onto whichever node
@@ -90,7 +90,7 @@ def build_subagent_graph(
     # enforce_citations=False: a subagent's retrieval cites ITS sources, which mean nothing to
     # the parent, so its prompt says to use no `[n]` markers; the graph must not demand them
     # (tail reminder) or insert them (check_output) either.
-    parts = _assemble_shared_graph_parts(
+    parts = assemble_shared_graph_parts(
         deps,
         manifest,
         domain,
@@ -103,44 +103,44 @@ def build_subagent_graph(
 
     builder = StateGraph(State)
 
-    builder.add_node("validate_input", _instrumented("validate_input")(validate_input))
-    builder.add_node("reject_input", _instrumented("reject_input")(reject_input))
-    builder.add_node("reject_context", _instrumented("reject_context")(reject_context))
-    builder.add_node("moderate_input", _instrumented("moderate_input")(moderate_input))
+    builder.add_node("validate_input", instrumented("validate_input")(validate_input))
+    builder.add_node("reject_input", instrumented("reject_input")(reject_input))
+    builder.add_node("reject_context", instrumented("reject_context")(reject_context))
+    builder.add_node("moderate_input", instrumented("moderate_input")(moderate_input))
     builder.add_node(
-        "reject_moderation", _instrumented("reject_moderation")(reject_moderation)
+        "reject_moderation", instrumented("reject_moderation")(reject_moderation)
     )
     builder.add_node(
-        "retrieve_context", _instrumented("retrieve_context")(parts.retrieve_context)
+        "retrieve_context", instrumented("retrieve_context")(parts.retrieve_context)
     )
-    builder.add_node("agent", _instrumented("agent")(parts.agent), retry=AGENT_RETRY_POLICY)
+    builder.add_node("agent", instrumented("agent")(parts.agent), retry=AGENT_RETRY_POLICY)
     builder.add_node(
-        "tools", ToolNode(parts.domain_tools, handle_tool_errors=_friendly_tool_error)
+        "tools", ToolNode(parts.domain_tools, handle_tool_errors=friendly_tool_error)
     )
     builder.add_node(
-        "human_approval", _instrumented("human_approval")(human_approval)
+        "human_approval", instrumented("human_approval")(human_approval)
     )
     builder.add_node(
         "too_many_tool_calls",
-        _instrumented("too_many_tool_calls")(too_many_tool_calls),
+        instrumented("too_many_tool_calls")(too_many_tool_calls),
     )
     builder.add_node(
         "invalid_tool_call",
-        _instrumented("invalid_tool_call")(parts.domain_invalid_tool_call),
+        instrumented("invalid_tool_call")(parts.domain_invalid_tool_call),
     )
     builder.add_node(
         "use_skill_without_search",
-        _instrumented("use_skill_without_search")(use_skill_without_search),
+        instrumented("use_skill_without_search")(use_skill_without_search),
     )
-    builder.add_node("check_output", _instrumented("check_output")(parts.domain_check_output))
-    builder.add_node("retry_output", _instrumented("retry_output")(retry_output))
+    builder.add_node("check_output", instrumented("check_output")(parts.domain_check_output))
+    builder.add_node("retry_output", instrumented("retry_output")(retry_output))
     builder.add_node(
         "retry_exhausted",
-        _instrumented("retry_exhausted")(make_retry_exhausted_node(emit_no_answer_message)),
+        instrumented("retry_exhausted")(make_retry_exhausted_node(emit_no_answer_message)),
     )
     builder.add_node(
         "no_answer",
-        _instrumented("no_answer")(
+        instrumented("no_answer")(
             make_no_answer_fallback_node(
                 emit_no_answer_message, system_prompt=manifest.system_prompt, enforce_citations=False
             )

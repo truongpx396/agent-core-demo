@@ -376,7 +376,7 @@ class TestAsRuntimeWiresIt:
     async def test_a_suspension_reaches_a_turn_as_a_personal_refusal(self, monkeypatch, ledger):
         _overrides(monkeypatch, [O(TEST_CTX["principal"], "day", 0.0)])
 
-        refusal = await runtime_module._allowance_refusal(TEST_CTX)
+        refusal = await runtime_module.allowance_refusal(TEST_CTX)
 
         assert refusal is not None
         assert refusal.code == errors.ErrorCode.PERSONAL_BUDGET_EXCEEDED

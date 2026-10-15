@@ -201,7 +201,7 @@ class TestSecondDomainProvesReuse:
         assert TOOL_CAPABILITIES["search_docs"] == "read_only"
 
     async def test_check_output_leak_detection_uses_this_domains_own_system_prompt(self):
-        """check_output (app/agent/graph/routing.py's _leaks_system_prompt) is bound
+        """check_output (app/agent/graph/routing.py's reveals_system_prompt) is bound
         via functools.partial to manifest.system_prompt inside build_graph
         — NOT the bare Ecorp-only SYSTEM_PROMPT module default. Proof: an
         answer that verbatim-reproduces the WIDGET domain's own (much

@@ -28,7 +28,7 @@ _TOOL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 async def arun_with_timeout(func, *args, _timeout_seconds: float | None = None, **kwargs):
     """Await `func(*args, **kwargs)` and stop waiting after `_timeout_seconds`
     (default TOOL_TIMEOUT_SECONDS). Raised TimeoutError is caught by
-    ToolNode's `handle_tool_errors=_friendly_tool_error` in app/agent/graph/core.py
+    ToolNode's `handle_tool_errors=friendly_tool_error` in app/agent/graph/core.py
     and surfaced to the agent like any other tool exception.
 
     Every tool in this app uses this now (not `run_with_timeout` below),

@@ -1,6 +1,6 @@
 """Everything behind `run_subagent` (GRAPH_PATTERNS.md pattern 46): bundled-
-catalog resolution (`_resolve_subagent_tools`/`_build_subagent_registry`/
-`_subagent_declared_for_domain`), the compiled-graph cache, `_run_subagent_impl`,
+catalog resolution (`_resolve_subagent_tools`/`build_subagent_registry`/
+`_subagent_declared_for_domain`), the compiled-graph cache, `run_subagent_impl`,
 and the Ecorp-level `run_subagent` singleton. Split out of `app/agent/tools/builtin.py`
 purely for file size — see that module's docstring, and
 `app/agent/graph/hitl.py`/`app/agent/graph/utils.py` for analogous splits on
@@ -8,10 +8,10 @@ the app/agent/graph/core.py side. No behavior change from the pre-split file.
 
 The per-domain equivalent, `make_domain_subagent_tool`, lives in
 `app/agent/tools/run_subagent_domain.py` — split out from THIS file (not
-`app/agent/tools/builtin.py`), since it only needs `_build_subagent_registry`/
-`_run_subagent_impl` from here, one-directionally.
+`app/agent/tools/builtin.py`), since it only needs `build_subagent_registry`/
+`run_subagent_impl` from here, one-directionally.
 
-`_run_subagent_impl` reads `ChatOpenAI` via `tools_module.ChatOpenAI`, not a
+`run_subagent_impl` reads `ChatOpenAI` via `tools_module.ChatOpenAI`, not a
 statically-imported bare name — same fix as `app/agent/graph/hitl.py`'s
 `graph_module.interrupt`: `tests/agent/runtime/test_concurrent_turns.py` does
 `monkeypatch.setattr(tools_module, "ChatOpenAI", ...)`, patching the live
@@ -79,7 +79,7 @@ from app.core.tool_runtime import NO_CTX_REFUSAL, arun_with_timeout, ctx_from_co
 # was pure waste. Same lazy, unlocked cache shape as
 # app/agent/tools/subagent_catalog.py's `_subagents_cache` (a benign first-use race is
 # accepted here too). Populated/read only when a caller opts in via
-# `_run_subagent_impl(..., use_cache=True)` — see that docstring for why.
+# `run_subagent_impl(..., use_cache=True)` — see that docstring for why.
 _subagent_graph_cache: dict[tuple[str, str], Any] = {}
 
 
@@ -154,7 +154,7 @@ def _subagent_declared_for_domain(record: "subagents_module.SubagentRecord", dom
     return domain in record.domains
 
 
-def _build_subagent_registry(
+def build_subagent_registry(
     all_tool_names: frozenset[str], tool_capabilities: Mapping[str, str], *, domain: str
 ) -> dict[str, tuple["subagents_module.SubagentRecord", tuple[str, ...]]]:
     """Every bundled AGENT.md declared for `domain` (see
@@ -171,7 +171,7 @@ def _build_subagent_registry(
     return registry
 
 
-_SUBAGENT_REGISTRY = _build_subagent_registry(_ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="ecorp")
+_SUBAGENT_REGISTRY = build_subagent_registry(_ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="ecorp")
 
 _CITATION_MARKER_RE = re.compile(r"\s*\[\d+\]")
 
@@ -180,7 +180,7 @@ _CITATION_MARKER_WARNING = (
     "that citation convention is reserved for the orchestrating agent's own "
     "retrieved context, not yours."
 )
-# ^ Necessary, not decorative: the PARENT's check_output/_ungrounded_claims_count
+# ^ Necessary, not decorative: the PARENT's check_output/count_ungrounded_claims
 # (GRAPH_PATTERNS.md pattern 39) cross-checks [n] markers against
 # state["citations"], which a subagent's retrieval never populates on the
 # parent — without this, a grounded subagent answer could get flagged as
@@ -204,7 +204,7 @@ class _SubagentDomainPlugin:
     `tool_capabilities()` reports every `_tools` entry as `read_only`
     directly, not a lookup into the caller's own `TOOL_CAPABILITIES` (which
     for a domain-scoped subagent may not even contain that tool's name).
-    `_tool_capability()` (app/agent/graph/core.py) defaults an undeclared name to
+    `tool_capability()` (app/agent/graph/core.py) defaults an undeclared name to
     `"outward"` — correct for the top-level graph where a human can approve
     a pause, wrong here, where a nested one-shot run has no resume path and
     would just look like a silent failure. Correct by construction: every
@@ -226,7 +226,7 @@ class _SubagentDomainPlugin:
 
 @dataclass(frozen=True)
 class SubagentResult:
-    """`_run_subagent_impl`'s return shape: the scrubbed answer plus the
+    """`run_subagent_impl`'s return shape: the scrubbed answer plus the
     nested run's own `total_tokens`/`total_cost_usd`, needed so the calling
     `run_subagent` tool can fold them into the PARENT turn's live budget via
     `Command(update={"subagent_spend": [...]})` (see app/agent/graph/core.py's
@@ -238,7 +238,7 @@ class SubagentResult:
     total_cost_usd: float
 
 
-async def _run_subagent_impl(
+async def run_subagent_impl(
     subagent_name: str,
     task: str,
     config: RunnableConfig,
@@ -280,7 +280,7 @@ async def _run_subagent_impl(
     durable checkpointer — bounded to complete within this one tool call.
 
     Uses `build_subagent_graph()` — build_graph()'s same node
-    functions/factories via `_assemble_shared_graph_parts`, but a leaner
+    functions/factories via `assemble_shared_graph_parts`, but a leaner
     one-shot topology: no semantic-cache read/write (a subagent's answer can
     never cross-serve to/from a top-level query), no suggest_followups, no
     history compaction (unreachable given MAX_SUBAGENT_TOKENS_PER_RUN). See
@@ -385,7 +385,7 @@ async def _run_subagent_impl(
         "recursion_limit": MAX_SUBAGENT_ITERATIONS * 2 + 15,
     }
 
-    # No auto-seeding here (unlike app/agent/runtime/core.py::_ensure_seeded_async) — this
+    # No auto-seeding here (unlike app/agent/runtime/core.py::ensure_seeded_async) — this
     # graph runs exactly once, so the system prompt is just the first message.
     #
     # `nested_graph.ainvoke` awaited directly via `arun_with_timeout`, not a
@@ -526,7 +526,7 @@ if _SUBAGENT_REGISTRY:
         matches a subagent's specific focus better than doing it yourself.
         Every subagent is restricted to read_only tools, so calling this
         never needs human approval."""
-        result = await _run_subagent_impl(
+        result = await run_subagent_impl(
             subagent_name.value, task, config, domain="ecorp", use_cache=True
         )
         return Command(

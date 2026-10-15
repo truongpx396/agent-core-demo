@@ -85,7 +85,7 @@ class TestPerTurnReset:
         assert result["approved"] is False
 
     def test_validate_input_generates_a_fresh_run_id_every_turn(self):
-        """run_id correlates this turn's node lifecycle logs (_instrumented)
+        """run_id correlates this turn's node lifecycle logs (instrumented)
         — it must change turn over turn, same reset point as
         iterations/total_tokens, or logs from different turns on a
         long-running thread would be indistinguishable."""

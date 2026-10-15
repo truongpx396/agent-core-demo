@@ -11,7 +11,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from app.agent.graph.core import MIN_ANSWER_LENGTH, SYSTEM_PROMPT, State
 from app.agent.graph.messages import RETRY_ARTIFACT_KEY
 from app.agent.graph.routing import check_output
-from app.agent.graph.tool_guards import _reject_tool_calls
+from app.agent.graph.tool_guards import reject_tool_calls
 from app.core import metrics
 
 
@@ -164,7 +164,7 @@ def _no_answer_message(reason: str | None) -> str:
     for the reasons where naming what actually went wrong is genuinely
     actionable for the user — never for `leaked_prompt` (the one reason
     with a security dimension: confirming a leak attempt registered would
-    just help someone iterate a jailbreak, see `_retry_reason`'s own
+    just help someone iterate a jailbreak, see `retry_reason`'s own
     docstring) or `misattributed` (no user-facing action differs from the
     generic case), and never one that quotes/describes the rejected
     content itself, only the CATEGORY of problem."""
@@ -242,7 +242,7 @@ def make_no_answer_fallback_node(
         # malformed history either. `run_subagent` still reads the last AIMessage, which stays
         # the empty tool-call one, so it still reports "budget_exceeded".
         pending_calls = (last.tool_calls or []) if isinstance(last, AIMessage) else []
-        rejections = _reject_tool_calls(
+        rejections = reject_tool_calls(
             pending_calls,
             "Not run: this turn reached a safety limit before this call could run.",
         )
@@ -283,7 +283,7 @@ def make_no_answer_fallback_node(
         elif "messages" in fresh:
             # check_output may have mechanically inserted a missing
             # citation marker into this content
-            # (_insert_missing_citation_markers) — carry that correction
+            # (insert_missing_citation_markers) — carry that correction
             # through, or `used_citations` above would claim a marker the
             # message actually shown to the user doesn't contain.
             updates["messages"] = fresh["messages"]

@@ -212,7 +212,7 @@ class TestIdempotent:
         the crash-replay race the other tests above cover — a retry from
         here arrives under a brand new tool_call_id, which no dedup keyed
         on tool_call_id can ever recognize. idempotent() re-raises it as
-        MutatingToolTimedOut so graph/utils.py::_friendly_tool_error can
+        MutatingToolTimedOut so graph/utils.py::friendly_tool_error can
         steer the agent instead of silently swallowing the ambiguity."""
         store = _FakeDedupStore()
         monkeypatch.setattr(tool_idempotency, "get_connection", _fake_get_connection(store))
@@ -236,7 +236,7 @@ class TestIdempotent:
         """Only TimeoutError gets the special MutatingToolTimedOut
         treatment — a tool that genuinely failed for some other reason
         (e.g. a validation error) didn't ambiguously commit anything, so
-        the plain exception (and _friendly_tool_error's generic message)
+        the plain exception (and friendly_tool_error's generic message)
         is already correct for it."""
         store = _FakeDedupStore()
         monkeypatch.setattr(tool_idempotency, "get_connection", _fake_get_connection(store))

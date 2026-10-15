@@ -390,4 +390,4 @@ class TestTurnsOnAnUnpricedModelAreRefusedUnderTheBlockPolicy:
         _patch_fetch(monkeypatch, _entry(CHAT_MODEL, {}))
         monkeypatch.setattr(pricing, "UNPRICED_MODEL_POLICY", "allow")
 
-        assert await runtime_module._chat_model_refused_as_unpriced() is False
+        assert await runtime_module.chat_model_refused_as_unpriced() is False

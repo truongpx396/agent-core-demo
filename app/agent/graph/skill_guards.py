@@ -1,6 +1,6 @@
 """Skill-misuse guardrail family: `use_skill_without_search` (a node —
 reject a batch calling `use_skill` without `skill_search` first this turn)
-and `_pending_skill_required_tool`/`_SKILL_REQUIRED_TOOL_MARKERS` (a loaded
+and `pending_skill_required_tool`/`_SKILL_REQUIRED_TOOL_MARKERS` (a loaded
 skill named a required tool, e.g. `run_python_in_sandbox`, that hasn't
 been called yet this turn). Split out of `app/agent/graph/core.py` for file
 size.
@@ -10,11 +10,11 @@ the agent misusing skill_search/use_skill mid-turn, not loading packages.
 
 `use_skill_without_search` shares its "reject batch + retry" shape with
 `too_many_tool_calls`/`invalid_tool_call` in `graph/tool_guards.py`, importing
-`_reject_tool_calls` from there.
+`reject_tool_calls` from there.
 
-`_pending_skill_required_tool` is called from `app/agent/graph/core.py`'s `make_agent_node`
+`pending_skill_required_tool` is called from `app/agent/graph/core.py`'s `make_agent_node`
 (proactive reminder, deferred import to avoid a cycle) and
-`graph/routing.py`'s `_skipped_required_sandbox_after_skill` (reactive
+`graph/routing.py`'s `skipped_required_sandbox_after_skill` (reactive
 check_output rejection).
 """
 from typing import cast
@@ -22,7 +22,7 @@ from typing import cast
 from langchain_core.messages import AIMessage, ToolMessage
 
 from app.agent.graph.core import State
-from app.agent.graph.tool_guards import _reject_tool_calls
+from app.agent.graph.tool_guards import reject_tool_calls
 from app.core import metrics
 
 
@@ -34,7 +34,7 @@ def use_skill_without_search(state: State) -> dict:
     last_ai = cast(AIMessage, state["messages"][-1])
     tool_calls = last_ai.tool_calls or []
     metrics.agent_use_skill_without_search_total.inc()
-    rejections = _reject_tool_calls(
+    rejections = reject_tool_calls(
         tool_calls,
         "You called use_skill without calling skill_search first this turn. "
         "Call skill_search now to find the exact name of a matching skill — "
@@ -58,12 +58,12 @@ def use_skill_without_search(state: State) -> dict:
 _SKILL_REQUIRED_TOOL_MARKERS = ("run_python_in_sandbox",)
 
 
-def _pending_skill_required_tool(turn_messages: list) -> str | None:
+def pending_skill_required_tool(turn_messages: list) -> str | None:
     """Name of a tool a skill loaded THIS TURN (via use_skill) named as
     required, if not yet called this turn — or None. `turn_messages` is
-    already scoped to the current turn (see _current_turn_messages).
+    already scoped to the current turn (see current_turn_messages).
     Shared by `agent()` (proactive reminder before next generation) and
-    `graph/routing.py::_skipped_required_sandbox_after_skill` (reactive
+    `graph/routing.py::skipped_required_sandbox_after_skill` (reactive
     check_output rejection). Returns the name, not a bool, so neither
     caller hardcodes which tool matched."""
     for name in _SKILL_REQUIRED_TOOL_MARKERS:

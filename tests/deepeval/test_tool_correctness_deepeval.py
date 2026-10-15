@@ -66,7 +66,7 @@ consumer of it: an early, unseeded run of this exact test reliably called
 that collision was fixed at the prompt level — an unseeded re-verification
 STILL failed, identically, across three different prompt edits. The
 prompt edits turned out to be inert the whole time: `build_graph().ainvoke()`
-never triggers `app/agent/runtime/core.py::_ensure_seeded_async`, the seeding
+never triggers `app/agent/runtime/core.py::ensure_seeded_async`, the seeding
 every production path relies on, so the agent was reasoning with ZERO
 tool-routing guidance — not "the fix doesn't work," but "the fix was never
 being tested." This file (and every sibling `build_graph().ainvoke()`

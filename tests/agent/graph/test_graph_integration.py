@@ -3,7 +3,7 @@ with a fake chat model standing in for the real ChatOpenAI client, so these
 run with no live services — no LiteLLM, no Ollama, no Qdrant.
 `retrieve_context`'s search_docs call defaults to the autouse
 `mock_search_docs` fixture in conftest.py (which patches
-`graph._default_search`); tool-call scenarios below use `calculator` (pure
+`graph.default_search`); tool-call scenarios below use `calculator` (pure
 Python, no network) rather than `search_docs` so the *actual*
 tool-execution step (inside ToolNode, which isn't touched by that stub)
 also stays hermetic.
@@ -485,7 +485,7 @@ class TestRetryExhaustedPath:
         to exercise retry_exhausted's trust-uncited-content fallback (2
         identical rounds, same "uncited" reason twice, gives up and shows
         it anyway, uncited). check_output now fixes this directly instead
-        (_insert_missing_citation_markers, added after live-verifying
+        (insert_missing_citation_markers, added after live-verifying
         that asking the model to add the marker itself — the original
         reminder, six reworded variants, and the actual concrete
         retry-feedback message — reliably does not work), so the exact

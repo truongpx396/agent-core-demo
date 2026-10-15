@@ -5,7 +5,7 @@ short-circuits to a final answer, no LLM call, no retrieval) and
 Split out of `app/agent/graph/core.py` for file size (see graph/retrieval.py
 for the sibling split).
 
-`_default_cache_get`/`_default_cache_set` stay in `app/agent/graph/core.py` itself
+`default_cache_get`/`default_cache_set` stay in `app/agent/graph/core.py` itself
 (imported here) because `tests/conftest.py` and `graph/build.py`
 monkeypatch/read them as `graph.<name>` — moving them would break that.
 """
@@ -14,10 +14,10 @@ from typing import TYPE_CHECKING, Literal
 
 from langchain_core.messages import AIMessage
 
-from app.agent.graph.core import State, _default_cache_get, _default_cache_set
-from app.agent.graph.loop_guards import _tool_capability
-from app.agent.graph.messages import _human_text, _last_human_message
-from app.agent.graph.tool_guards import _current_turn_messages
+from app.agent.graph.core import State, default_cache_get, default_cache_set
+from app.agent.graph.loop_guards import tool_capability
+from app.agent.graph.messages import human_text, last_human_message
+from app.agent.graph.tool_guards import current_turn_messages
 from app.agent.tools.builtin import TOOL_CAPABILITIES
 
 if TYPE_CHECKING:
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 def make_check_semantic_cache_node(
     cache_get: Callable[
         ["SecurityCtx | None", str], Awaitable[tuple[str, list[dict]] | None]
-    ] = _default_cache_get,
+    ] = default_cache_get,
 ):
     """Factory, same rationale as make_retrieve_context_node: needs an
     injected client so tests can fake it (see tests/agent/graph/test_nodes.py) instead
@@ -46,10 +46,10 @@ def make_check_semantic_cache_node(
         miss and a degraded lookup both return None), so no try/except
         is needed here.
         """
-        last_human = _last_human_message(state["messages"])
+        last_human = last_human_message(state["messages"])
         if last_human is None:
             return {}
-        hit = await cache_get(state.get("ctx"), _human_text(last_human))
+        hit = await cache_get(state.get("ctx"), human_text(last_human))
         if hit is None:
             return {}
         answer, citations = hit
@@ -71,12 +71,12 @@ def route_after_cache(state: State) -> Literal["compact_history", "check_output"
 
 def _turn_acted(state: State, tool_capabilities: Mapping[str, str]) -> bool:
     """True if the CURRENT turn called any tool that is not `read_only`. An
-    undeclared tool counts as `outward` (`_tool_capability`'s fail-closed
+    undeclared tool counts as `outward` (`tool_capability`'s fail-closed
     default). Only this turn: an earlier turn's write says nothing about this
     one's answer."""
     return any(
-        _tool_capability(call["name"], tool_capabilities) != "read_only"
-        for message in _current_turn_messages(state["messages"])
+        tool_capability(call["name"], tool_capabilities) != "read_only"
+        for message in current_turn_messages(state["messages"])
         for call in (getattr(message, "tool_calls", None) or [])
     )
 
@@ -85,7 +85,7 @@ def _turn_acted(state: State, tool_capabilities: Mapping[str, str]) -> bool:
 def make_write_semantic_cache_node(
     cache_set: Callable[
         ["SecurityCtx | None", str, str, list[dict]], Awaitable[None]
-    ] = _default_cache_set,
+    ] = default_cache_set,
     tool_capabilities: Mapping[str, str] = TOOL_CAPABILITIES,
 ):
     """Factory, same rationale as make_check_semantic_cache_node.
@@ -113,13 +113,13 @@ def make_write_semantic_cache_node(
             return {}
         if _turn_acted(state, tool_capabilities):
             return {}
-        last_human = _last_human_message(state["messages"])
+        last_human = last_human_message(state["messages"])
         last = state["messages"][-1]
         content = getattr(last, "content", "") or ""
         if last_human is None or not content:
             return {}
         await cache_set(
-            state.get("ctx"), _human_text(last_human), content, state.get("used_citations") or []
+            state.get("ctx"), human_text(last_human), content, state.get("used_citations") or []
         )
         return {}
 

@@ -72,7 +72,7 @@ class FetchMetricsSummaryArgs(BaseModel):
     pass
 
 
-async def _fetch_metrics_summary_impl() -> str:
+async def fetch_metrics_summary_impl() -> str:
     readings = await metrics_client.fetch_readings()
     anomalies = metrics_client.detect_anomalies(readings)
     lines = [metrics_client.format_readings(readings)]
@@ -94,7 +94,7 @@ async def fetch_metrics_summary(config: RunnableConfig) -> str:
     ctx = ctx_or_refuse(config, "fetch_metrics")
     if ctx is None:
         return NO_CTX_REFUSAL
-    return await arun_with_timeout(_fetch_metrics_summary_impl)
+    return await arun_with_timeout(fetch_metrics_summary_impl)
 
 
 class PostToTeamChannelArgs(BaseModel):
@@ -186,7 +186,7 @@ class ListRecentIncidentsArgs(BaseModel):
     )
 
 
-async def _list_recent_incidents_impl(status: str | None) -> str:
+async def list_recent_incidents_impl(status: str | None) -> str:
     incidents = await store.list_recent_incidents(status=status)
     if not incidents:
         return "No incidents on record."
@@ -205,7 +205,7 @@ async def list_recent_incidents(config: RunnableConfig, status: str | None = Non
     ctx = ctx_or_refuse(config, "list_recent_incidents")
     if ctx is None:
         return NO_CTX_REFUSAL
-    return await arun_with_timeout(_list_recent_incidents_impl, status)
+    return await arun_with_timeout(list_recent_incidents_impl, status)
 
 
 class ResolveIncidentArgs(BaseModel):

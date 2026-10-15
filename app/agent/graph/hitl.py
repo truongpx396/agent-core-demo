@@ -11,7 +11,7 @@ change.
 than a static import — several tests monkeypatch both as attributes on
 the live `graph` module object, which a bare `from X import Y` would
 miss (copies the reference once, at import time). Same fix as
-`graph/build.py`'s `graph_module._default_cache_get`/`_default_cache_set`.
+`graph/build.py`'s `graph_module.default_cache_get`/`default_cache_set`.
 """
 from typing import Literal, cast
 
@@ -19,7 +19,7 @@ from langchain_core.messages import AIMessage
 
 from app.agent.graph import core as graph_module
 from app.agent.graph.core import State
-from app.agent.graph.tool_guards import _reject_tool_calls
+from app.agent.graph.tool_guards import reject_tool_calls
 from app.core import metrics
 
 
@@ -159,7 +159,7 @@ def human_approval(state: State) -> dict:
     )
     if decision == CANCEL_SENTINEL:
         metrics.agent_human_approval_total.labels(decision="cancelled").inc()
-        rejections = _reject_tool_calls(
+        rejections = reject_tool_calls(
             tool_calls, "Cancelled by request — this action will not run."
         )
         return {"messages": rejections, "approved": False, "cancelled": True}
@@ -167,7 +167,7 @@ def human_approval(state: State) -> dict:
         metrics.agent_human_approval_total.labels(decision="approved").inc()
         return {"approved": True}
     metrics.agent_human_approval_total.labels(decision="rejected").inc()
-    rejections = _reject_tool_calls(tool_calls, "Rejected by human reviewer.")
+    rejections = reject_tool_calls(tool_calls, "Rejected by human reviewer.")
     return {"messages": rejections, "approved": False}
 
 

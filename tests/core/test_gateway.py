@@ -237,7 +237,7 @@ class TestTheAgentNodeAttributesItsCalls:
 
     async def test_a_real_graph_run_hands_the_node_its_ctx(self):
         """Through `build_graph`, not around it: LangGraph decides whether a node receives `config`
-        from its signature, and the `_instrumented` wrapper sits between the two. If the ctx did not
+        from its signature, and the `instrumented` wrapper sits between the two. If the ctx did not
         arrive, every production call would silently be anonymous and no test above would notice."""
         llm = _RecordingLLM(AIMessage(content="This is a sufficiently long final answer."))
         graph = build_graph(GraphDeps(llm=llm))

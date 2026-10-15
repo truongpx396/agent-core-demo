@@ -265,7 +265,7 @@ class TestWhatAnEventRecords:
         node built by hand: a delegated run's spend must be separable from the parent's."""
         from pathlib import Path
 
-        from app.agent.tools.run_subagent import _run_subagent_impl
+        from app.agent.tools.run_subagent import run_subagent_impl
         from app.agent.tools.subagent_catalog import SubagentRecord
 
         record = SubagentRecord(
@@ -273,7 +273,7 @@ class TestWhatAnEventRecords:
             tools=("calculator",), model=None, domains=None, path=Path("subagents/researcher/AGENT.md"),
         )
 
-        result = await _run_subagent_impl(
+        result = await run_subagent_impl(
             "researcher", "a task", CONFIG, registry={"researcher": (record, ("calculator",))},
             llm=_llm(_reply("The delegated researcher found that the answer is forty-two."))
         )

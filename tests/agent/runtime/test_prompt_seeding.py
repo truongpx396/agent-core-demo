@@ -1,4 +1,4 @@
-"""`_ensure_seeded_async` keeps exactly one system prompt per thread, and it is the CURRENT one.
+"""`ensure_seeded_async` keeps exactly one system prompt per thread, and it is the CURRENT one.
 
 Real bug: it only asked "is a SystemMessage with the current text already here?" and appended
 one if not, so every prompt edit left the old prompt in every existing thread and added the new
@@ -25,7 +25,7 @@ async def _seed_and_ask(saver, thread, prompt, question):
         manifest=AgentManifest("x", prompt),
     )
     runtime_module._seeded.clear()  # a fresh process after a deploy
-    await runtime_module._ensure_seeded_async(g, thread)
+    await runtime_module.ensure_seeded_async(g, thread)
     await g.ainvoke({"messages": [HumanMessage(content=question)]}, config=cfg(thread))
     return g
 
@@ -62,5 +62,5 @@ async def test_an_unchanged_prompt_writes_nothing_to_the_thread(monkeypatch):
 
     monkeypatch.setattr(g, "aupdate_state", counting_aupdate_state)
     runtime_module._seeded.clear()
-    await runtime_module._ensure_seeded_async(g, thread)
+    await runtime_module.ensure_seeded_async(g, thread)
     assert updates == []

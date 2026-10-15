@@ -1,22 +1,22 @@
 """Citation-grounding helpers used exclusively by `check_output`
 (`app/agent/graph/routing.py`): which offered citations the answer
-actually used (`_used_citations`), which cited markers were invented
-(`_ungrounded_claims_count`), and two directional "used without
+actually used (`find_used_citations`), which cited markers were invented
+(`count_ungrounded_claims`), and two directional "used without
 attributing" checks plus their shared sentence-matching machinery
-(`_uncited_citation_matches`, `_likely_uncited_citations`,
-`_insert_missing_citation_markers`, `_likely_misattributed_citations`).
+(`_uncited_citation_matches`, `find_likely_uncited`,
+`insert_missing_citation_markers`, `find_likely_misattributed`).
 Split out of `app/agent/graph/routing.py` for file size (see sibling
 splits `graph/loop_guards.py`/`graph/output_guardrails.py`); no behavior
 change.
 """
 import re
 
-from app.agent.graph.utils import _content_words
+from app.agent.graph.utils import content_words
 
 _CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
 
 
-def _used_citations(content: str, citations: list[dict]) -> list[dict]:
+def find_used_citations(content: str, citations: list[dict]) -> list[dict]:
     """`citations` (every numbered source retrieve_context offered)
     filtered down to the markers the final answer actually used — the
     grounded, cited-answer output (GRAPH_PATTERNS.md pattern 20). Computed
@@ -33,12 +33,12 @@ def _used_citations(content: str, citations: list[dict]) -> list[dict]:
     ]
 
 
-def _ungrounded_claims_count(content: str, citations: list[dict]) -> int:
+def count_ungrounded_claims(content: str, citations: list[dict]) -> int:
     """How many `[n]` markers in `content` don't correspond to any real
     citation offered — the model inventing a source number (SYSTEM_PROMPT
     says never to; GRAPH_PATTERNS.md pattern 39). `0` is a meaningful
     value, not just "no signal." Computed independently from
-    `_used_citations` (not derived from it) so a bug in one can't mask a
+    `find_used_citations` (not derived from it) so a bug in one can't mask a
     bug in the other.
     """
     if not isinstance(content, str) or not content:
@@ -56,7 +56,7 @@ def _ungrounded_claims_count(content: str, citations: list[dict]) -> int:
 # word overlap on 8-14 content words), with margin below that while still
 # requiring enough distinctive vocabulary that generic shared domain words
 # alone can't trip it. Re-validated after the ratio's denominator changed
-# to per-sentence (see _likely_uncited_citations) — live data (Langfuse
+# to per-sentence (see find_likely_uncited) — live data (Langfuse
 # `057e3594`, 2026-09-09): genuine paraphrase sentences scored 0.79-1.00,
 # sentences merely sharing generic vocabulary across citations topped out
 # at 0.50. 0.6 sits in the gap with margin both ways.
@@ -69,8 +69,8 @@ def _uncited_citation_matches(
     """For each citation not referenced by marker in `content`, its single
     BEST-matching answer sentence (most shared distinctive vocabulary,
     gated by `_UNCITED_OVERLAP_RATIO`) — paired as `(citation, sentence)`.
-    Shared by `_likely_uncited_citations` (which citations) and
-    `_insert_missing_citation_markers` (also needs where, to append the
+    Shared by `find_likely_uncited` (which citations) and
+    `insert_missing_citation_markers` (also needs where, to append the
     marker).
 
     Best match, not first-to-clear-bar, matters for insertion: a generic
@@ -85,13 +85,13 @@ def _uncited_citation_matches(
     for citation in citations:
         if citation.get("marker") in used_markers:
             continue
-        cite_words = _content_words(citation.get("text", ""))
+        cite_words = content_words(citation.get("text", ""))
         if not cite_words:
             continue
         best_sentence = None
         best_ratio = 0.0
         for sentence in sentences:
-            sentence_words = _content_words(sentence)
+            sentence_words = content_words(sentence)
             if len(sentence_words) < _MIN_JUDGED_SENTENCE_WORDS:
                 continue
             overlap = sentence_words & cite_words
@@ -104,7 +104,7 @@ def _uncited_citation_matches(
     return matches
 
 
-def _likely_uncited_citations(
+def find_likely_uncited(
     content: str, citations: list[dict], used: list[dict]
 ) -> list[dict]:
     """Citations not referenced by marker in `content` where at least one
@@ -132,10 +132,10 @@ def _likely_uncited_citations(
     return [citation for citation, _sentence in _uncited_citation_matches(content, citations, used)]
 
 
-def _insert_missing_citation_markers(
+def insert_missing_citation_markers(
     content: str, citations: list[dict], used: list[dict]
 ) -> tuple[str, list[dict]]:
-    """Mechanically appends each `_likely_uncited_citations`-flagged
+    """Mechanically appends each `find_likely_uncited`-flagged
     citation's `[n]` marker onto the sentence `_uncited_citation_matches`
     identified as its best match, instead of asking the model to redo it —
     live-verified necessary: on Langfuse trace `057e3594` (2026-09-09),
@@ -187,16 +187,16 @@ def _insert_missing_citation_markers(
 
 
 # Coarse "good enough" sentence splitter (no NLP dependency), same
-# posture as `_content_words`. Splits after ./!/? + whitespace; a marker
+# posture as `content_words`. Splits after ./!/? + whitespace; a marker
 # like "[3]" never contains those chars so it stays attached to its
 # sentence.
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
-# Shared by _likely_uncited_citations and _likely_misattributed_citations
+# Shared by find_likely_uncited and find_likely_misattributed
 # — below this many words a sentence has too little vocabulary for either
 # overlap ratio to mean anything. Judged by the SENTENCE's length, not the
 # citation's, so a short source can't inflate the ratio by coincidence
-# (see _likely_misattributed_citations for the live bug this caught).
+# (see find_likely_misattributed for the live bug this caught).
 _MIN_JUDGED_SENTENCE_WORDS = 4
 # Deliberately looser than _UNCITED_OVERLAP_RATIO's 0.6, in the OPPOSITE
 # direction: a LOW ratio here still counts as "supported" — this only
@@ -205,15 +205,15 @@ _MIN_JUDGED_SENTENCE_WORDS = 4
 _MISATTRIBUTED_OVERLAP_RATIO = 0.25
 
 
-def _likely_misattributed_citations(
+def find_likely_misattributed(
     content: str, citations: list[dict], used: list[dict]
 ) -> list[dict]:
-    """Mirror of `_likely_uncited_citations`: catches a real, in-range
+    """Mirror of `find_likely_uncited`: catches a real, in-range
     marker used on a sentence that shares no meaningful vocabulary with
     THAT marker's own source — real bug, found live (Langfuse trace
     `ed435567`): the model cited [3] on every sentence of an answer,
     though [3]'s actual content had nothing to do with it. Neither
-    `_ungrounded_claims_count` (marker is real) nor `used_citations`
+    `count_ungrounded_claims` (marker is real) nor `used_citations`
     (marker genuinely appears) catches this.
 
     For each `used` marker, every citing sentence is checked against that
@@ -222,7 +222,7 @@ def _likely_misattributed_citations(
     `_MIN_JUDGED_SENTENCE_WORDS` on the SENTENCE, not the citation — real
     bug, found live: a one-word memory ("magiclab396") cited on an answer
     went undetected because this used to skip any short CITATION, missing
-    the clearest misattribution case there is. `_likely_uncited_citations`
+    the clearest misattribution case there is. `find_likely_uncited`
     was later given the same floor for the same reason, in the other
     direction. Only skipped when a source has NO content words at all.
     """
@@ -232,14 +232,14 @@ def _likely_misattributed_citations(
     flagged = []
     for citation in used:
         marker = citation["marker"]
-        cite_words = _content_words(citation.get("text", ""))
+        cite_words = content_words(citation.get("text", ""))
         if not cite_words:
             continue
         citing_sentences = [s for s in sentences if marker in s]
         judged = False
         supported = False
         for sentence in citing_sentences:
-            sentence_words = _content_words(sentence)
+            sentence_words = content_words(sentence)
             if len(sentence_words) < _MIN_JUDGED_SENTENCE_WORDS:
                 continue
             judged = True

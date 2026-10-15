@@ -46,7 +46,7 @@ pytestmark = pytest.mark.llm
 
 @pytest.fixture(autouse=True)
 def real_ollama_chat_model(monkeypatch, ollama_endpoint):
-    """Points app/agent/graph/utils.py's OWN `_make_llm` at the real Ollama
+    """Points app/agent/graph/utils.py's OWN `make_llm` at the real Ollama
     container — `graph.CHAT_MODEL`/`graph.OPENAI_API_BASE` specifically
     (that module's `from app.core.config import CHAT_MODEL, OPENAI_API_BASE`
     bindings, not `app.core.config`'s own — same "a `from X import Y`

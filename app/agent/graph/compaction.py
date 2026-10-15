@@ -7,7 +7,7 @@ AR-015a), and `COMPACTION_MARKER_KEY`/`_compaction_marker_message` (the
 permanent breadcrumb left in `state["messages"]` when compaction does
 something). Split out of `app/agent/graph/core.py` for file size (see
 `app/agent/graph/messages.py` for the sibling split providing
-`_human_text`); no behavior change.
+`human_text`); no behavior change.
 
 Pure one-directional dependency on `app/agent/graph/core.py` (for
 `HISTORY_TOKEN_CEILING`/`HISTORY_TOKEN_FLOOR`) — nothing in `app/agent/graph/core.py`
@@ -30,7 +30,7 @@ from langchain_core.runnables import RunnableConfig
 from app.agent.cost import metering
 from app.agent.graph import core as graph_module
 from app.agent.graph.core import HISTORY_TOKEN_CEILING, HISTORY_TOKEN_FLOOR, State
-from app.agent.graph.messages import _human_text, _is_retry_artifact, _is_user_message
+from app.agent.graph.messages import human_text, is_retry_artifact, is_user_message
 from app.core import gateway, metrics
 
 logger = logging.getLogger(__name__)
@@ -70,12 +70,12 @@ def _messages_to_trim(
     Trims by whole turn (HumanMessage through the next HumanMessage),
     never raw message count, so a tool_call/ToolMessage pair is never
     split (an orphaned tool_call fails LLM validation — same gotcha
-    `_reject_tool_calls` avoids for the current turn). The seeded system
+    `reject_tool_calls` avoids for the current turn). The seeded system
     prompt and the most recent turn are never dropped. A message with no
     id is left alone rather than guessed at, since RemoveMessage deletes
     by id.
     """
-    turn_starts = [i for i, m in enumerate(messages) if _is_user_message(m)]
+    turn_starts = [i for i, m in enumerate(messages) if is_user_message(m)]
     if len(turn_starts) <= 1:
         return []  # nothing to drop without losing the current turn itself
     non_system = [m for m in messages if not isinstance(m, SystemMessage)]
@@ -108,14 +108,14 @@ def _format_turns_for_summary(messages: list[BaseMessage]) -> str:
     discard, for the summarization prompt only. Messages with no content
     (e.g. pure tool_calls) are skipped. A multimodal HumanMessage
     (GRAPH_PATTERNS.md pattern 44) renders its text part only via
-    `_human_text` — an attached image is seen once, by the model that
+    `human_text` — an attached image is seen once, by the model that
     answered that turn, never re-sent later."""
     role_names = {"human": "User", "ai": "Assistant", "tool": "Tool"}
     lines = []
     for m in messages:
-        if _is_retry_artifact(m):
+        if is_retry_artifact(m):
             continue  # a rejected answer and the feedback it drew, not part of the conversation
-        content = _human_text(m) if isinstance(m, HumanMessage) else (getattr(m, "content", "") or "")
+        content = human_text(m) if isinstance(m, HumanMessage) else (getattr(m, "content", "") or "")
         if content:
             lines.append(f"{role_names.get(m.type, m.type)}: {content}")
     return "\n".join(lines)
@@ -197,7 +197,7 @@ def make_compact_history_node(
 
         removals = [RemoveMessage(id=cast(str, m.id)) for m in to_summarize]
         metrics.agent_history_compacted_total.inc()
-        turns_dropped = sum(1 for m in to_summarize if _is_user_message(m))
+        turns_dropped = sum(1 for m in to_summarize if is_user_message(m))
 
         prior_summary = state.get("history_summary") or ""
         try:

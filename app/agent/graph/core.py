@@ -7,7 +7,7 @@ pair), an output quality gate with retry, per-node reliability policies
 (retrieve_context degrades, agent gets AGENT_RETRY_POLICY, tool exceptions
 become a message instead of crashing), opt-in human-in-the-loop
 (app/channels/chat.py's `--hitl`), built-in parallel tool execution via
-ToolNode, per-node telemetry (_instrumented), multi-tenant isolation via
+ToolNode, per-node telemetry (instrumented), multi-tenant isolation via
 SecurityCtx (stamped once by validate_input, fails closed at
 reject_context, every downstream read/write pre-filtered by it), and
 cross-session memory (automatic recall, explicit-only write via
@@ -21,11 +21,11 @@ make_retrieve_context_node); see GraphDeps/build_graph.
 
 This file holds `State`, `SYSTEM_PROMPT`/safety-budget constants, the
 turn-entry gating nodes (validate_input/moderate_input/reject_*/
-context_window_exceeded), the swappable defaults `_default_search`/
-`_default_cache_get`/`_default_cache_set` (kept here because
+context_window_exceeded), the swappable defaults `default_search`/
+`default_cache_get`/`default_cache_set` (kept here because
 tests/conftest.py monkeypatches them on this module, and graph/build.py
 reads them via `graph_module.X`), and `GraphDeps`/
-`_assemble_shared_graph_parts` (the composition root build_graph()/
+`assemble_shared_graph_parts` (the composition root build_graph()/
 build_subagent_graph() both use). Everything else was split out purely for
 file size (no behavior change):
 - graph/messages.py — human-message text helpers
@@ -59,14 +59,14 @@ from langgraph.graph.message import add_messages
 from langgraph.types import RetryPolicy, default_retry_on, interrupt  # noqa: F401
 
 from app.agent.graph.messages import (
-    _human_has_content,
-    _human_text,
-    _last_human_message,
+    human_has_content,
+    human_text,
+    last_human_message,
 )
 from app.core import gateway, metrics, moderation
 
 # OPENAI_API_BASE/OPENAI_API_KEY: same re-export reasoning as `interrupt`
-# above — graph/utils.py's `_make_llm` and tests/live/* monkeypatches read
+# above — graph/utils.py's `make_llm` and tests/live/* monkeypatches read
 # them live off this module. Don't remove.
 from app.core.config import (  # noqa: F401
     CHAT_MODEL,
@@ -96,7 +96,7 @@ logger = logging.getLogger(__name__)
 # 3. Small-model instruction-following is proximity-sensitive: a rule
 #    stated once, early, in a general style paragraph isn't reliably
 #    followed right after a tool result. check_output's
-#    `_defers_instead_of_acting` caught the model appending a
+#    `defers_instead_of_acting` caught the model appending a
 #    permission-seeking closer (already forbidden earlier in the prompt)
 #    in roughly half of real runs; repeating a SHORTER version of the same
 #    rule right after the citation-marker instructions (closest to the
@@ -342,7 +342,7 @@ class State(TypedDict):
     cancelled: bool  # Set by human_approval on a cancel decision; read by
     # route_after_approval to end the run outright (GRAPH_PATTERNS.md pattern 36).
     run_id: str  # Per-turn correlation id for node lifecycle logs (see
-    # validate_input, _instrumented) — regenerated every turn, same reset
+    # validate_input, instrumented) — regenerated every turn, same reset
     # point as iterations/total_tokens.
     graph_version: str  # Build that wrote this checkpoint — see _graph_version.
     state_schema_version: int  # See STATE_SCHEMA_VERSION / resumability_error.
@@ -361,51 +361,51 @@ class State(TypedDict):
     # answer used that don't match any real citation (GRAPH_PATTERNS.md pattern 39).
     likely_uncited_citations: list[dict]  # Set by check_output — citations
     # NOT referenced by marker in the final answer, but with heavy word
-    # overlap with it (see _likely_uncited_citations) — stronger signal
+    # overlap with it (see find_likely_uncited) — stronger signal
     # than agent_zero_citations_total's "was merely available" check.
     # Almost always empty: check_output auto-fixes a real hit by inserting
-    # the missing marker (_insert_missing_citation_markers — live-verified
+    # the missing marker (insert_missing_citation_markers — live-verified
     # that asking the model to fix this doesn't work) and recomputes this
     # field against the corrected answer. route_after_check still retries
     # on a real value here as the last line of defense.
     likely_misattributed_citations: list[dict]  # Set by check_output — the
     # mirror image of likely_uncited_citations: a real, in-range marker IS
     # used, but its citing sentences share no vocabulary with that marker's
-    # source (see _likely_misattributed_citations). Real bug found live:
+    # source (see find_likely_misattributed). Real bug found live:
     # [3] cited on every sentence of an answer unrelated to what [3] said.
     # Read by route_after_check to trigger a retry.
     deferred_instead_of_acting: bool  # Set by check_output — the answer
     # narrates intent ("I will use the X tool...") or asks permission
-    # ("would you like me to?") instead of acting (_defers_instead_of_acting).
+    # ("would you like me to?") instead of acting (defers_instead_of_acting).
     # Real bug found live: a 3B model repeating this across turns, each
     # "yes" reply just restarting the same cycle. Read by route_after_check
     # to trigger a retry.
     fabricated_tool_output: bool  # Set by check_output — 2+ markdown code
-    # fences with NO real tool_calls backing them (_fabricates_tool_output).
+    # fences with NO real tool_calls backing them (fabricates_tool_output).
     # Real bug found live: after a sandbox approval was declined, the model
     # invented both a script and its "output," narrated in present tense so
     # deferred_instead_of_acting's future-tense check missed it. Ranks
-    # ABOVE deferred_instead_of_acting in _retry_reason — presenting false
+    # ABOVE deferred_instead_of_acting in retry_reason — presenting false
     # info as true is worse than merely failing to act. Read by
     # route_after_check to trigger a retry.
     skipped_required_tool: str | None  # Set by check_output — the NAME of
     # a tool a skill loaded THIS TURN named as required, if the final
     # answer states a dollar figure without ever calling it
-    # (_skipped_required_sandbox_after_skill); None if nothing was skipped.
+    # (skipped_required_sandbox_after_skill); None if nothing was skipped.
     # Real bug found live: the deal-economics skill says "don't estimate
     # this in your head," and the model did anyway — right that once,
     # wrong on other freehand attempts. The actual name (not a bool) lets
     # retry_output's feedback name it specifically. Read by
     # route_after_check to trigger a retry.
     leaks_system_prompt: bool  # Set by check_output — a long, verbatim run
-    # of the seeded system prompt in the final answer (_leaks_system_prompt).
+    # of the seeded system prompt in the final answer (reveals_system_prompt).
     # Output-side defense-in-depth alongside app/core/moderation.py's input-side
     # screening: catches an injection phrased past moderation's regexes if
     # it actually succeeds in getting the prompt recited back. Read by
     # route_after_check to trigger a retry.
     last_retry_reason: str | None  # Set by check_output — short code
     # ("leaked_prompt"/"too_short"/"fabricated"/"skipped_tool"/"deferred"/
-    # "uncited"/"misattributed", in `_retry_reason`'s priority order)
+    # "uncited"/"misattributed", in `retry_reason`'s priority order)
     # naming this round's rejection reason, or None. Compared against the
     # PRIOR round's value by check_output to compute
     # retry_reason_repeat_count below — never reset mid-turn elsewhere.
@@ -517,8 +517,8 @@ def route_after_validation(
     """
     if not valid_ctx(state.get("ctx")):
         return "reject_context"
-    last_human = _last_human_message(state["messages"])
-    if not _human_has_content(last_human):
+    last_human = last_human_message(state["messages"])
+    if not human_has_content(last_human):
         return "reject_input"
     return "moderate_input"
 
@@ -527,18 +527,18 @@ def route_after_validation(
 # the semantic cache lookup or retrieval, so a screened-out input never
 # reaches either. ---
 async def moderate_input(state: State) -> dict:
-    """Screens the TEXT only (`_human_text`) — app/core/moderation.py is a pattern
+    """Screens the TEXT only (`human_text`) — app/core/moderation.py is a pattern
     screen + ML classifier over that text, neither can inspect an image's
-    actual content. An image-only message has empty `_human_text`, so it
+    actual content. An image-only message has empty `human_text`, so it
     passes through unblocked — a disclosed gap (pattern 44): this app
     screens WORDS, not PIXELS.
 
     async: moderation.screen awaits a real HTTP call to ml-service.
     """
-    last_human = _last_human_message(state["messages"])
+    last_human = last_human_message(state["messages"])
     if last_human is None:
         return {"moderation_blocked": False}
-    result = await moderation.screen(_human_text(last_human))
+    result = await moderation.screen(human_text(last_human))
     return {"moderation_blocked": not result.allowed}
 
 
@@ -617,15 +617,15 @@ def context_window_exceeded(state: State) -> dict:
     }
 
 
-async def _default_cache_get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
+async def default_cache_get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
     return await semantic_cache.get(ctx, query)
 
 
-async def _default_cache_set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict]) -> None:
+async def default_cache_set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[dict]) -> None:
     await semantic_cache.set(ctx, query, answer, citations)
 
 
-async def _default_search(query: str, ctx: SecurityCtx | None) -> tuple[str, list[dict]]:
+async def default_search(query: str, ctx: SecurityCtx | None) -> tuple[str, list[dict]]:
     """Thin wrapper over `tools.gather_context` matching the
     `Callable[[str, SecurityCtx | None], Awaitable[tuple[str, list[dict]]]]`
     shape `make_retrieve_context_node` expects, so tests can pass a plain
@@ -676,7 +676,7 @@ class GraphDeps:
 @dataclass(frozen=True)
 class _SharedGraphParts:
     """What `build_graph()` and `build_subagent_graph()` both need before
-    they diverge — see `_assemble_shared_graph_parts`'s own docstring."""
+    they diverge — see `assemble_shared_graph_parts`'s own docstring."""
 
     deps: GraphDeps
     manifest: "AgentManifest"
@@ -690,7 +690,7 @@ class _SharedGraphParts:
     domain_invalid_tool_call: Callable
 
 
-def _assemble_shared_graph_parts(
+def assemble_shared_graph_parts(
     deps: GraphDeps | None,
     manifest: "AgentManifest | None",
     domain: "DomainPlugin | None",
@@ -724,7 +724,7 @@ def _assemble_shared_graph_parts(
     from app.agent.graph.retrieval import make_retrieve_context_node
     from app.agent.graph.routing import check_output, should_continue
     from app.agent.graph.tool_guards import invalid_tool_call
-    from app.agent.graph.utils import _make_llm
+    from app.agent.graph.utils import make_llm
     from app.agent.manifest import DEFAULT_DOMAIN_PLUGIN, DEFAULT_MANIFEST
 
     deps = deps or GraphDeps()
@@ -738,14 +738,14 @@ def _assemble_shared_graph_parts(
     domain_tool_capabilities = domain.tool_capabilities()
     domain_valid_tool_names = frozenset(t.name for t in domain_tools)
 
-    llm_client = deps.llm or _make_llm(domain_tools)
+    llm_client = deps.llm or make_llm(domain_tools)
     agent = make_agent_node(
         llm_client,
         model_alias=deps.model_alias,
         kind=deps.meter_kind,
         citation_reminder=enforce_citations,
     )
-    retrieve_context = make_retrieve_context_node(deps.search_docs or _default_search)
+    retrieve_context = make_retrieve_context_node(deps.search_docs or default_search)
     # A plain module-level function (not a factory) bound to this domain's
     # capability mapping via functools.partial — see should_continue's own
     # docstring for why it stays a directly-callable module-level function
@@ -760,7 +760,7 @@ def _assemble_shared_graph_parts(
     )
     # Same "plain function, not a factory" shape — bound to THIS domain's
     # own system_prompt, not the bare Ecorp SYSTEM_PROMPT, so
-    # _leaks_system_prompt checks an answer against the prompt it was
+    # reveals_system_prompt checks an answer against the prompt it was
     # ACTUALLY seeded with.
     domain_check_output = functools.partial(
         check_output, system_prompt=manifest.system_prompt, enforce_citations=enforce_citations

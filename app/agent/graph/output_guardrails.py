@@ -1,19 +1,19 @@
 """Deferral/fabrication/prompt-leak heuristics behind `check_output`
 (`app/agent/graph/routing.py`): narrated-instead-of-acting
-(`_defers_instead_of_acting`), fabricated tool output
-(`_fabricates_tool_output`), a fabricated reference-list footer
-(`_strip_fabricated_reference_footer`), a skipped skill-required tool
-(`_skipped_required_sandbox_after_skill`), a system-prompt leak
-(`_leaks_system_prompt`), and priority arbitration across all of these
-plus the citation checks (`_retry_reason`). Split out of
+(`defers_instead_of_acting`), fabricated tool output
+(`fabricates_tool_output`), a fabricated reference-list footer
+(`strip_fabricated_reference_footer`), a skipped skill-required tool
+(`skipped_required_sandbox_after_skill`), a system-prompt leak
+(`reveals_system_prompt`), and priority arbitration across all of these
+plus the citation checks (`retry_reason`). Split out of
 `app/agent/graph/routing.py` for file size (see sibling splits
 `graph/loop_guards.py`/`graph/citations.py`); no behavior change.
 """
 import re
 
 from app.agent.graph.core import MIN_ANSWER_LENGTH
-from app.agent.graph.skill_guards import _pending_skill_required_tool
-from app.agent.graph.tool_guards import _current_turn_messages
+from app.agent.graph.skill_guards import pending_skill_required_tool
+from app.agent.graph.tool_guards import current_turn_messages
 
 # Real bug, found live via Langfuse: qwen2.5:3b narrated tool intent
 # ("I will use the `query_employees` tool...") or asked permission ("Would
@@ -69,7 +69,7 @@ _PERMISSION_SEEKING_RE = re.compile(
 )
 
 
-def _defers_instead_of_acting(content: str) -> bool:
+def defers_instead_of_acting(content: str) -> bool:
     """True when the final answer narrates tool intent or asks permission
     instead of calling a tool or answering directly. Only meaningful on a
     message with no real tool_calls — check_output's only caller already
@@ -105,7 +105,7 @@ _CLAIMS_EXECUTION_RE = re.compile(
 )
 
 
-def _fabricates_tool_output(content: str) -> bool:
+def fabricates_tool_output(content: str) -> bool:
     """True when a tool-call-free final answer contains 2+ markdown code
     fences AND narrates them as if actually executed (`_CLAIMS_EXECUTION_RE`)
     — the "here's the script, here's its output" shape presented as if
@@ -113,7 +113,7 @@ def _fabricates_tool_output(content: str) -> bool:
 
     Real bug, found live: after a sandbox approval was declined, the model
     invented both a script and its "output," narrated in PRESENT tense
-    ("Running the calculation...") so `_defers_instead_of_acting` never
+    ("Running the calculation...") so `defers_instead_of_acting` never
     caught it — and the fabricated math didn't even match the fabricated
     code (claimed 43750.00 for a calc that's actually 36450.00), yet
     passed every other check.
@@ -145,7 +145,7 @@ def _fabricates_tool_output(content: str) -> bool:
 _REFERENCE_FOOTER_LINE_RE = re.compile(r"^\[\d+\]:\s")
 
 
-def _strip_fabricated_reference_footer(content: str) -> str:
+def strip_fabricated_reference_footer(content: str) -> str:
     """Strips a trailing markdown-style reference list the model sometimes
     appends after its own inline `[n]` markers, e.g.:
 
@@ -176,8 +176,8 @@ def _strip_fabricated_reference_footer(content: str) -> str:
 _DOLLAR_FIGURE_RE = re.compile(r"\$[\d,]+(?:\.\d{1,2})?")
 
 
-def _skipped_required_sandbox_after_skill(messages: list) -> str | None:
-    """The tool name `_pending_skill_required_tool` still names, if the
+def skipped_required_sandbox_after_skill(messages: list) -> str | None:
+    """The tool name `pending_skill_required_tool` still names, if the
     model's final answer (no more tool_calls) states a specific dollar
     figure without ever calling it — the model ignored a skill's own
     instruction not to estimate this kind of number by hand. Returns the
@@ -192,11 +192,11 @@ def _skipped_required_sandbox_after_skill(messages: list) -> str | None:
     the gap between "the skill said to use a tool" and it actually being
     used.
 
-    Narrower than `_pending_skill_required_tool` itself: only fires when
+    Narrower than `pending_skill_required_tool` itself: only fires when
     the final answer states a dollar figure — a clarifying question or an
     honest "I couldn't compute this" isn't the problem."""
-    turn_messages = _current_turn_messages(messages)
-    pending_tool = _pending_skill_required_tool(turn_messages)
+    turn_messages = current_turn_messages(messages)
+    pending_tool = pending_skill_required_tool(turn_messages)
     if not pending_tool:
         return None
     last = turn_messages[-1] if turn_messages else None
@@ -233,7 +233,7 @@ _SYSTEM_PROMPT_LEAK_STEP = 30
 _SYSTEM_PROMPT_OPENING_MIN_CHARS = 20
 
 
-def _leaks_system_prompt(content: str, system_prompt: str) -> bool:
+def reveals_system_prompt(content: str, system_prompt: str) -> bool:
     """True when the final answer contains a long-enough VERBATIM run of
     the seeded system prompt to be a real leak, not coincidental overlap —
     output-side defense-in-depth complementing app/core/moderation.py's
@@ -262,7 +262,7 @@ def _leaks_system_prompt(content: str, system_prompt: str) -> bool:
     return False
 
 
-def _retry_reason(
+def retry_reason(
     content: str,
     leaks_prompt: bool,
     fabricated: bool,

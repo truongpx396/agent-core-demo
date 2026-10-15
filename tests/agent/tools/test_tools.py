@@ -44,12 +44,12 @@ from app.agent.tools.run_subagent import (
     _ALL_TOOL_NAMES,
     SubagentName,
     SubagentResult,
-    _build_subagent_registry,
     _resolve_subagent_tools,
-    _run_subagent_impl,
     _subagent_declared_for_domain,
     _SubagentDomainPlugin,
+    build_subagent_registry,
     run_subagent,
+    run_subagent_impl,
 )
 from app.agent.tools.run_subagent_domain import make_domain_subagent_tool
 from app.agent.tools.skill_catalog import SkillRecord
@@ -974,7 +974,7 @@ class TestBuildSubagentGraphTopology:
     are pure overhead (or worse) for a nested one-shot run — see that
     function's own docstring for the full per-node reasoning. Verified
     here directly at the graph level, not just indirectly via
-    _run_subagent_impl's own behavior tests below."""
+    run_subagent_impl's own behavior tests below."""
 
     def test_drops_exactly_the_five_overhead_nodes(self):
         from app.agent.graph import build_subagent as graph_build_subagent
@@ -1024,11 +1024,11 @@ class TestBuildSubagentGraphTopology:
 
 class TestRunSubagentImpl:
     async def test_refuses_without_ctx(self):
-        result = await _run_subagent_impl("researcher", "do something", {"configurable": {}})
+        result = await run_subagent_impl("researcher", "do something", {"configurable": {}})
         assert "Refused" in result.answer
 
     async def test_unknown_subagent_name_is_a_clear_message_not_an_exception(self):
-        result = await _run_subagent_impl("does-not-exist", "task", _subagent_cfg(), registry={})
+        result = await run_subagent_impl("does-not-exist", "task", _subagent_cfg(), registry={})
         assert "No subagent named" in result.answer
 
     async def test_delegates_and_returns_the_final_answer(self):
@@ -1041,7 +1041,7 @@ class TestRunSubagentImpl:
         )
         registry = {"researcher": (_fake_subagent_record(), ("search_docs", "calculator"))}
 
-        result = await _run_subagent_impl(
+        result = await run_subagent_impl(
             "researcher", "what is 6*7?", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1052,7 +1052,7 @@ class TestRunSubagentImpl:
         record = _fake_subagent_record()
         registry = {"researcher": (record, ("calculator",))}
 
-        await _run_subagent_impl("researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm)
+        await run_subagent_impl("researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm)
 
         first_call_messages = fake_llm.calls[0]
         system_text = "\n".join(
@@ -1067,7 +1067,7 @@ class TestRunSubagentImpl:
         fake_llm = _RecordingFakeLLM(AIMessage(content="A plain answer, long enough."))
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        await _run_subagent_impl(
+        await run_subagent_impl(
             "researcher", "the delegated task", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1094,7 +1094,7 @@ class TestRunSubagentImpl:
         fake_llm = _RecordingFakeLLM(*responses)
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        result = await _run_subagent_impl(
+        result = await run_subagent_impl(
             "researcher", "never converge", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1125,7 +1125,7 @@ class TestRunSubagentImpl:
         before = metric_value(
             metrics.agent_subagent_run_total, subagent="researcher", outcome="budget_exceeded"
         )
-        result = await _run_subagent_impl(
+        result = await run_subagent_impl(
             "researcher", "loop forever", _subagent_cfg(), registry=registry, llm=fake_llm
         )
         after = metric_value(
@@ -1156,7 +1156,7 @@ class TestRunSubagentImpl:
         )
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        result = await _run_subagent_impl(
+        result = await run_subagent_impl(
             "researcher", "is that right?", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1182,13 +1182,13 @@ class TestRunSubagentImpl:
         async def fake_default_search(query, ctx):
             return f"[1] {source_text}", [{"marker": "[1]", "text": source_text}]
 
-        monkeypatch.setattr(graph_module, "_default_search", fake_default_search)
+        monkeypatch.setattr(graph_module, "default_search", fake_default_search)
 
         correct_but_uncited = "The sky is blue due to Rayleigh scattering."
         fake_llm = _RecordingFakeLLM(AIMessage(content=correct_but_uncited))
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        result = await _run_subagent_impl(
+        result = await run_subagent_impl(
             "researcher", "why is the sky blue?", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1201,7 +1201,7 @@ class TestRunSubagentImpl:
         fake_llm = _RecordingFakeLLM(AIMessage(content="Support is open nine to five [1], Monday to Friday [2]."))
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        result = await _run_subagent_impl(
+        result = await run_subagent_impl(
             "researcher", "support hours?", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1220,7 +1220,7 @@ class TestRunSubagentImpl:
             metrics.agent_subagent_run_total, subagent="researcher", outcome="timeout"
         )
         with pytest.raises(TimeoutError):
-            await _run_subagent_impl(
+            await run_subagent_impl(
                 "researcher", "task", _subagent_cfg(), registry=registry, llm=_SlowLLM()
             )
         after = metric_value(
@@ -1239,7 +1239,7 @@ class TestRunSubagentImpl:
         fake_llm = _RecordingFakeLLM(reply)
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        await _run_subagent_impl(
+        await run_subagent_impl(
             "researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1262,15 +1262,15 @@ class TestRunSubagentImpl:
         cache_get_calls: list = []
         cache_set_calls: list = []
         monkeypatch.setattr(
-            graph_module, "_default_cache_get", lambda *a, **k: cache_get_calls.append(1)
+            graph_module, "default_cache_get", lambda *a, **k: cache_get_calls.append(1)
         )
         monkeypatch.setattr(
-            graph_module, "_default_cache_set", lambda *a, **k: cache_set_calls.append(1)
+            graph_module, "default_cache_set", lambda *a, **k: cache_set_calls.append(1)
         )
         fake_llm = _RecordingFakeLLM(AIMessage(content="An answer, long enough to pass."))
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        await _run_subagent_impl(
+        await run_subagent_impl(
             "researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1289,7 +1289,7 @@ class TestRunSubagentImpl:
         fake_llm = _RecordingFakeLLM(AIMessage(content="A single-round answer, long enough."))
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
 
-        result = await _run_subagent_impl(
+        result = await run_subagent_impl(
             "researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1307,7 +1307,7 @@ class TestASubagentOnAnUnpricedModelIsRefusedUnderTheBlockPolicy:
     @staticmethod
     def _delegate(llm, model):
         registry = {"researcher": (_fake_subagent_record(model=model), ("calculator",))}
-        return _run_subagent_impl("researcher", "a task", _subagent_cfg(), registry=registry, llm=llm)
+        return run_subagent_impl("researcher", "a task", _subagent_cfg(), registry=registry, llm=llm)
 
     @staticmethod
     def _policy(monkeypatch, policy):
@@ -1412,7 +1412,7 @@ class TestSubagentGraphCache:
         # bind THIS one and immediately exhaust its own single-shot iterator.
         never_used_llm = _RecordingFakeLLM(AIMessage(content="should never be reached."))
 
-        await _run_subagent_impl(
+        await run_subagent_impl(
             "researcher",
             "task one",
             _subagent_cfg(),
@@ -1423,7 +1423,7 @@ class TestSubagentGraphCache:
         )
         assert len(build_calls) == 1
 
-        await _run_subagent_impl(
+        await run_subagent_impl(
             "researcher",
             "task two",
             _subagent_cfg(),
@@ -1454,11 +1454,11 @@ class TestSubagentGraphCache:
             AIMessage(content="a, long enough."), AIMessage(content="b, long enough.")
         )
 
-        await _run_subagent_impl(
+        await run_subagent_impl(
             "researcher", "t", _subagent_cfg(), registry=registry, llm=fake_llm,
             domain="ecorp", use_cache=True,
         )
-        await _run_subagent_impl(
+        await run_subagent_impl(
             "researcher", "t", _subagent_cfg(), registry=registry, llm=fake_llm,
             domain="support", use_cache=True,
         )
@@ -1475,7 +1475,7 @@ class TestSubagentGraphCache:
         registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
         fake_llm = _RecordingFakeLLM(AIMessage(content="an answer, long enough to pass."))
 
-        await _run_subagent_impl(
+        await run_subagent_impl(
             "researcher", "task", _subagent_cfg(), registry=registry, llm=fake_llm
         )
 
@@ -1512,7 +1512,7 @@ class TestRunSubagentTool:
         async def fake_run_subagent_impl(*a, **k):
             return SubagentResult("42", 123, 0.05)
 
-        monkeypatch.setattr(subagent_tools, "_run_subagent_impl", fake_run_subagent_impl)
+        monkeypatch.setattr(subagent_tools, "run_subagent_impl", fake_run_subagent_impl)
 
         result = await run_subagent.ainvoke(
             {
@@ -1557,8 +1557,8 @@ class TestBuildSubagentRegistryDomainFilter:
             lambda: {"ecorp-only": ecorp_record, "support-only": support_record},
         )
 
-        ecorp_registry = _build_subagent_registry(_ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="ecorp")
-        support_registry = _build_subagent_registry(
+        ecorp_registry = build_subagent_registry(_ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="ecorp")
+        support_registry = build_subagent_registry(
             _ALL_TOOL_NAMES, TOOL_CAPABILITIES, domain="support"
         )
 
@@ -1575,7 +1575,7 @@ class TestBuildSubagentRegistryDomainFilter:
         )
         monkeypatch.setattr(subagents_module, "get_subagents", lambda: {"ticket-researcher": record})
 
-        registry = _build_subagent_registry(
+        registry = build_subagent_registry(
             frozenset({"check_ticket_status"}),
             {"check_ticket_status": "read_only"},
             domain="support",
@@ -1659,7 +1659,7 @@ class TestMakeDomainSubagentTool:
             captured["registry"] = registry
             return SubagentResult("ok", 0, 0.0)
 
-        monkeypatch.setattr(subagent_tools, "_run_subagent_impl", fake_run_subagent_impl)
+        monkeypatch.setattr(subagent_tools, "run_subagent_impl", fake_run_subagent_impl)
 
         fake_support_tool = type("FakeTool", (), {"name": "a_support_only_tool"})()
         domain_tool = make_domain_subagent_tool(

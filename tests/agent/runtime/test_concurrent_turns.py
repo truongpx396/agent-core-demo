@@ -167,9 +167,9 @@ def _echoing_llm(respond: Callable[[list[BaseMessage]], AIMessage]):
     `BaseChatModel`'s own default raises `NotImplementedError` (verified
     directly), which `GraphDeps(llm=...)`'s own top-level use of a fake
     model never trips (`build_graph()` uses `deps.llm` raw, never calling
-    `.bind_tools()` on it — only its OWN `_make_llm()` production
+    `.bind_tools()` on it — only its OWN `make_llm()` production
     construction path does that), but
-    app/agent/tools/builtin.py::_run_subagent_impl's fallback DOES call
+    app/agent/tools/builtin.py::run_subagent_impl's fallback DOES call
     `ChatOpenAI(...).bind_tools(nested_tools)` on whatever `ChatOpenAI`
     constructs — needed for TestSubagentCallUnderConcurrency, which
     monkeypatches `ChatOpenAI` itself to return one of these. Same
@@ -309,12 +309,12 @@ async def real_semantic_cache_redis(monkeypatch):
 
 
 async def _real_search_docs(query: str, ctx) -> tuple[str, list[dict]]:
-    """The REAL retrieval path (app/agent/graph/core.py::_default_search's own
+    """The REAL retrieval path (app/agent/graph/core.py::default_search's own
     wrapper over app/agent/tools/builtin.py::gather_context, reproduced here since
     that real default is exactly what tests/conftest.py's session-wide
     `mock_search_docs` fixture overrides — see `_install_fake_graph`'s own
     docstring for the identical reasoning applied to the semantic cache).
-    Parameter order matches `_default_search`'s own adaptation:
+    Parameter order matches `default_search`'s own adaptation:
     `gather_context` takes `(ctx, query)`, reversed from what
     `retrieve_context`/`GraphDeps.search_docs` call with.
 
@@ -331,7 +331,7 @@ def _install_fake_graph(monkeypatch, llm, *, search_docs=_no_op_search) -> None:
     individual fields to inject fakes instead of monkeypatching module
     globals"). Needed specifically because tests/conftest.py's session-wide
     `mock_semantic_cache` autouse fixture always overrides
-    app/agent/graph/core.py's `_default_cache_get`/`_default_cache_set` to a
+    app/agent/graph/core.py's `default_cache_get`/`default_cache_set` to a
     hardcoded miss/no-op (correctly, for every OTHER test in this suite,
     which must never need a live Redis/embedding call) — build_graph()
     falls back to those exact (mocked) module names whenever GraphDeps
@@ -346,7 +346,7 @@ def _install_fake_graph(monkeypatch, llm, *, search_docs=_no_op_search) -> None:
     in this file, which isn't testing retrieval) — pass `_real_search_docs`
     for TestQdrantReadWriteUnderConcurrency specifically, for the exact
     same "the global mock would otherwise silently win" reason above,
-    applied to app/agent/graph/core.py's `_default_search` instead of its cache
+    applied to app/agent/graph/core.py's `default_search` instead of its cache
     counterpart."""
     monkeypatch.setattr(
         agent_module,
@@ -862,7 +862,7 @@ class TestHITLApprovalUnderConcurrency:
 class TestSubagentCallUnderConcurrency:
     """The real `run_subagent` tool (read_only — no HITL pause,
     GRAPH_PATTERNS.md pattern 46) delegates to a genuinely separate,
-    nested `build_graph()` run per call (app/agent/tools/builtin.py::_run_subagent_impl)
+    nested `build_graph()` run per call (app/agent/tools/builtin.py::run_subagent_impl)
     — its own fresh messages (the delegated task, NOT this conversation's
     history), its own LLM client construction. Proves N concurrent
     top-level turns' own nested subagent runs never cross-wire: each
@@ -880,7 +880,7 @@ class TestSubagentCallUnderConcurrency:
         n = 6
 
         def _nested_respond(messages: list[BaseMessage]) -> AIMessage:
-            # _run_subagent_impl's own docstring: the nested run's ONLY
+            # run_subagent_impl's own docstring: the nested run's ONLY
             # human message is the delegated task itself, never the
             # parent's conversation history.
             return AIMessage(content=f"Nested result for: {_last_human_text(messages)}")

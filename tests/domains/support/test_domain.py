@@ -154,7 +154,7 @@ class TestDomainScopedSubagent:
             return agent_tools_module.SubagentResult("found it", 0, 0.0)
 
         monkeypatch.setattr(
-            agent_tools_module, "_run_subagent_impl", fake_run_subagent_impl
+            agent_tools_module, "run_subagent_impl", fake_run_subagent_impl
         )
         llm = _fake_llm_returning(
             _tool_call(

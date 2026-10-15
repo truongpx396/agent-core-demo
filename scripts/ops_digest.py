@@ -66,7 +66,7 @@ def build_digest_prompt(readings: dict[str, float | None], anomalies: list[str])
 
 async def run_digest(llm=None) -> str:
     """Fetch → summarize → post. Returns the posted summary text. `llm` is
-    DI for tests (mirrors app/agent/tools/builtin.py::_run_subagent_impl's own
+    DI for tests (mirrors app/agent/tools/builtin.py::run_subagent_impl's own
     `llm` override) — defaults to a real ChatOpenAI client via the LiteLLM
     proxy, no tools bound (a plain completion, not a tool-calling turn —
     see this module's docstring for why)."""

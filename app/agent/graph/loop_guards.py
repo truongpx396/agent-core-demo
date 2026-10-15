@@ -1,9 +1,9 @@
 """`should_continue`'s private helper cluster: tool-call fingerprinting
 and per-turn repeat/loop detection (`_tool_call_fingerprint`,
-`_current_turn_tool_call_batches`, `_consecutive_repeat_count`), the
-mandatory human-approval capability gate (`_tool_capability`,
-`_mandatory_gate_reason`), and the use_skill-without-search guardrail
-(`_use_skill_called_without_search`). Split out of `graph/routing.py` for
+`_current_turn_tool_call_batches`, `consecutive_repeat_count`), the
+mandatory human-approval capability gate (`tool_capability`,
+`mandatory_gate_reason`), and the use_skill-without-search guardrail
+(`use_skill_called_without_search`). Split out of `graph/routing.py` for
 file size (see sibling splits `graph/citations.py`/
 `graph/output_guardrails.py`, the two private helper clusters behind
 `check_output`); no behavior change.
@@ -16,11 +16,11 @@ from collections.abc import Mapping
 
 from langchain_core.messages import AIMessage
 
-from app.agent.graph.tool_guards import _current_turn_messages
+from app.agent.graph.tool_guards import current_turn_messages
 from app.agent.tools.builtin import TOOL_CAPABILITIES
 
 
-def _tool_capability(name: str, tool_capabilities: Mapping[str, str] = TOOL_CAPABILITIES) -> str:
+def tool_capability(name: str, tool_capabilities: Mapping[str, str] = TOOL_CAPABILITIES) -> str:
     """A tool absent from `tool_capabilities` defaults to "outward" — fail
     closed, so a new tool without a capability entry is gated rather than
     trusted. The only place this default is applied; elsewhere just reads
@@ -47,7 +47,7 @@ def _current_turn_tool_call_batches(messages: list) -> list:
     recent first — never spanning a prior turn. A per-turn loop-progress
     check (GRAPH_PATTERNS.md pattern 34): calling search_docs last turn
     and again this turn isn't a repeat."""
-    turn_messages = _current_turn_messages(messages)
+    turn_messages = current_turn_messages(messages)
     return [
         m.tool_calls
         for m in reversed(turn_messages)
@@ -55,7 +55,7 @@ def _current_turn_tool_call_batches(messages: list) -> list:
     ]
 
 
-def _consecutive_repeat_count(messages: list) -> int:
+def consecutive_repeat_count(messages: list) -> int:
     """How many of the most recent consecutive tool-call batches (within
     this turn) share the current one's fingerprint — a pure function of
     `state["messages"]`, no extra State field needed to track it, since
@@ -72,14 +72,14 @@ def _consecutive_repeat_count(messages: list) -> int:
     return count
 
 
-def _mandatory_gate_reason(
+def mandatory_gate_reason(
     tool_calls: list, tool_capabilities: Mapping[str, str] = TOOL_CAPABILITIES
 ) -> str | None:
     """None if every call in this batch is read_only; otherwise the more
     severe capability present ("outward" — including any undeclared tool —
     over "mutating"), used only to label the metric in should_continue.
     Gating itself doesn't care which one — either forces human_approval."""
-    capabilities = {_tool_capability(tc["name"], tool_capabilities) for tc in tool_calls}
+    capabilities = {tool_capability(tc["name"], tool_capabilities) for tc in tool_calls}
     if "outward" in capabilities:
         return "outward"
     if "mutating" in capabilities:
@@ -87,7 +87,7 @@ def _mandatory_gate_reason(
     return None
 
 
-def _use_skill_called_without_search(tool_calls: list, messages: list) -> bool:
+def use_skill_called_without_search(tool_calls: list, messages: list) -> bool:
     """True if this batch calls `use_skill` but `skill_search` was never
     called earlier in THIS turn — SYSTEM_PROMPT requires searching first so
     the model uses a skill's real name instead of guessing one.

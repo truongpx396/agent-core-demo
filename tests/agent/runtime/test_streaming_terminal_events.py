@@ -424,7 +424,7 @@ class TestRetryExhaustedTrustsAttributionOnlyFailures:
 
 class TestCheckOutputCitationAutoCorrectionStreaming:
     """check_output's own citation auto-correction
-    (_insert_missing_citation_markers, app/agent/graph/core.py) mechanically edits an
+    (insert_missing_citation_markers, app/agent/graph/core.py) mechanically edits an
     already-streamed answer — the SAME "tokens already reached the client
     before the graph changed them" problem retry_exhausted's in-place
     replacement (TestRetryExhaustedReplacesAlreadyStreamedContent above)
@@ -703,7 +703,7 @@ class TestAGraphFailureNeverLeaksItsMessageToTheCaller:
 class TestSubagentEventsDontLeakIntoTheMainStream:
     """_run_graph_stream (app/agent/runtime/stream.py) threads this turn's own
     callbacks/metadata into a subagent's NESTED graph.invoke() (see
-    app/agent/tools/builtin.py::_run_subagent_impl's `nested_config`) so its
+    app/agent/tools/builtin.py::run_subagent_impl's `nested_config`) so its
     internal LLM/tool calls trace correctly — but that nested graph is
     built via this exact same build_graph(), so it ALSO has a node named
     "agent". Without the `metadata.subagent_name` guard added alongside

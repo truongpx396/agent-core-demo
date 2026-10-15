@@ -1,4 +1,4 @@
-"""Tests for `_instrumented`, the structured lifecycle-logging wrapper
+"""Tests for `instrumented`, the structured lifecycle-logging wrapper
 applied to every node at graph-registration time (see build_graph and
 GRAPH_PATTERNS.md pattern 14).
 
@@ -12,11 +12,11 @@ import logging
 import pytest
 from langgraph.errors import GraphInterrupt
 
-from app.agent.graph.utils import _instrumented
+from app.agent.graph.utils import instrumented
 
 
 def test_wraps_node_and_returns_its_result_unchanged():
-    @_instrumented("dummy")
+    @instrumented("dummy")
     def node(state):
         return {"ok": True}
 
@@ -24,7 +24,7 @@ def test_wraps_node_and_returns_its_result_unchanged():
 
 
 def test_logs_started_and_completed_on_success(caplog):
-    @_instrumented("dummy")
+    @instrumented("dummy")
     def node(state):
         return {"ok": True}
 
@@ -43,7 +43,7 @@ def test_logs_started_and_completed_on_success(caplog):
 
 
 def test_missing_run_id_logs_as_placeholder_not_a_crash():
-    @_instrumented("dummy")
+    @instrumented("dummy")
     def node(state):
         return {}
 
@@ -53,7 +53,7 @@ def test_missing_run_id_logs_as_placeholder_not_a_crash():
 
 
 def test_logs_failed_and_reraises_on_exception(caplog):
-    @_instrumented("dummy")
+    @instrumented("dummy")
     def node(state):
         raise ValueError("boom")
 
@@ -71,9 +71,9 @@ def test_graph_interrupt_is_logged_as_paused_not_failed_and_still_propagates(cap
     """human_approval's interrupt() raises GraphInterrupt to pause the
     run — normal control flow, not a node failure. It must be logged
     distinctly and re-raised untouched, or LangGraph can't actually pause
-    the graph (see _instrumented's docstring)."""
+    the graph (see instrumented's docstring)."""
 
-    @_instrumented("dummy")
+    @instrumented("dummy")
     def node(state):
         raise GraphInterrupt()
 
