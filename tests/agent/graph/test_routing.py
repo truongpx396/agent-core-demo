@@ -683,4 +683,4 @@ class TestPendingSkillRequiredTool:
                 [{"name": "run_python_in_sandbox", "args": {}, "id": "p1"}], "Rejected by human reviewer."
             ),
         ]
-        assert pending_skill_required_tool(turn) is None
+        assert pending_skill_required_tool(turn, ("run_python_in_sandbox",)) is None

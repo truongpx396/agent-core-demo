@@ -43,7 +43,7 @@ def _tool_call_message(name, args, call_id="call_1"):
 class TestNodeLevelMetrics:
     def test_retry_output_increments_retry_counter(self):
         before = _count(metrics.agent_retry_total)
-        retry_output({"messages": []})
+        retry_output({"messages": [], "last_retry_reason": "too_short"})
         assert _count(metrics.agent_retry_total) == before + 1
 
     def test_human_approval_approved_increments_with_correct_label(self, monkeypatch):

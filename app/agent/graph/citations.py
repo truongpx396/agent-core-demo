@@ -154,7 +154,7 @@ def insert_missing_citation_markers(
 
     Returns `(possibly-modified content, citations actually inserted)` —
     check_output uses the second value for its own metric and recomputes
-    `likely_uncited_citations` against the new content rather than
+    the "uncited" finding against the new content rather than
     assuming this emptied it.
     """
     matches = _uncited_citation_matches(content, citations, used)

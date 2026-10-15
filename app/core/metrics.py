@@ -185,10 +185,10 @@ agent_misattributed_citations_total = Counter(
     "agent_misattributed_citations_total",
     "Final answers where a real, in-range citation marker was used on a "
     "sentence whose content shares no meaningful vocabulary with that "
-    "marker's actual source text (check_output's likely_misattributed_"
-    "citations) — a real marker attached to unsupported content, as opposed "
+    "marker's actual source text (check_output's "
+    "\"misattributed\" check) — a real marker attached to unsupported content, as opposed "
     "to a fabricated marker (ungrounded_claims_count) or a real source used "
-    "with no marker at all (the opposite failure, likely_uncited_citations). "
+    "with no marker at all (the opposite failure, the \"uncited\" check). "
     "Acted on by route_after_check: unlike zero_citations/ungrounded_claims, "
     "this one triggers a retry.",
 )
@@ -205,14 +205,14 @@ agent_reference_footer_stripped_total = Counter(
 agent_citation_auto_inserted_total = Counter(
     "agent_citation_auto_inserted_total",
     "Final answers where check_output mechanically inserted a missing [n] "
-    "marker into the specific sentence likely_uncited_citations flagged, "
+    "marker into the specific sentence the \"uncited\" check flagged, "
     "instead of retrying the model over it (see "
     "insert_missing_citation_markers's own docstring) — live-verified "
     "that asking the model to fix this itself (the standard reminder, six "
     "reworded variants, and the actual concrete retry-feedback message) "
     "reliably does not work on a real case, so this is the primary "
-    "correction path for likely_uncited_citations now, not a fallback. "
-    "Watch this alongside likely_uncited_citations firing at all: a rising "
+    "correction path for an uncited answer now, not a fallback. "
+    "Watch this alongside the \"uncited\" check firing at all: a rising "
     "rate here means the model is drifting toward citing less, even though "
     "each individual case still gets silently corrected.",
 )

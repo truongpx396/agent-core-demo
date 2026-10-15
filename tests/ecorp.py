@@ -63,8 +63,8 @@ def should_continue(
     return _routing.should_continue(state, tool_capabilities, valid_tool_names, *args, **kwargs)
 
 
-def check_output(state, system_prompt=ECORP_SYSTEM_PROMPT, enforce_citations=True):
-    return _routing.check_output(state, system_prompt, enforce_citations)
+def check_output(state, system_prompt=ECORP_SYSTEM_PROMPT, enforce_citations=True, skill_required_tools=()):
+    return _routing.check_output(state, system_prompt, enforce_citations, skill_required_tools)
 
 
 def invalid_tool_call(state, valid_tool_names=ECORP_TOOL_NAMES):

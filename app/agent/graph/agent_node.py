@@ -19,7 +19,11 @@ from app.core.untrusted import frame_untrusted
 
 # --- Node: agent ---
 def make_agent_node(
-    llm, model_alias: str = CHAT_MODEL, kind: str = "chat", citation_reminder: bool = True
+    llm,
+    model_alias: str = CHAT_MODEL,
+    kind: str = "chat",
+    citation_reminder: bool = True,
+    skill_required_tools: tuple[str, ...] = (),
 ):
     """Factory, not a plain function, because `agent` needs an LLM client.
     Tests build it with a fake (e.g. GenericFakeChatModel) via
@@ -35,6 +39,9 @@ def make_agent_node(
     prompt says the opposite (its markers would name ITS sources, meaningless
     to the parent), and a model handed both rules obeys neither. The retrieved
     context is still passed, framed as untrusted data.
+
+    `skill_required_tools` is the subset of `SKILL_REQUIRED_TOOL_MARKERS` the calling domain
+    really has; the "call it now" reminder is only ever about one of those.
     """
 
     async def agent(state: State, config: RunnableConfig | None = None) -> dict:
@@ -145,7 +152,9 @@ def make_agent_node(
                 )
             )
 
-        pending_tool = pending_skill_required_tool(current_turn_messages(state["messages"]))
+        pending_tool = pending_skill_required_tool(
+            current_turn_messages(state["messages"]), skill_required_tools
+        )
         if pending_tool:
             # Same recency-weighted, tail-appended mechanism as the two
             # reminders above, for the SAME reason (see
@@ -153,7 +162,7 @@ def make_agent_node(
             # "use this tool, don't estimate by hand" instruction is buried
             # in tool-result text and gets pushed further from generation
             # each round. Names `pending_tool` itself (not hardcoded) so
-            # this stays correct as _SKILL_REQUIRED_TOOL_MARKERS grows.
+            # this stays correct as SKILL_REQUIRED_TOOL_MARKERS grows.
             # Proactive, not a replacement for check_output's reactive
             # `skipped_required_sandbox_after_skill` catch — real bug
             # found live: the model ignored an equally direct reminder

@@ -250,7 +250,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
           - `retry_exhausted`: route_after_check gave up after
             MAX_CONSECUTIVE_SAME_RETRY_REASON and replaces the message
             (same synthetic-token handling) — EXCEPT for
-            `_TRUST_CONTENT_RETRY_REASONS` (e.g. a real answer just
+            the checks marked `trust_on_exhaust` (e.g. a real answer just
             missing its citation marker), where it no-ops and the
             already-streamed content stands as the final answer; firing
             "retry" unconditionally there would blank a good answer with
@@ -373,7 +373,7 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 # route_after_check gave up after
                 # MAX_CONSECUTIVE_SAME_RETRY_REASON and unconditionally
                 # replaced the message — except for
-                # _TRUST_CONTENT_RETRY_REASONS, where it no-ops (see this
+                # the checks marked trust_on_exhaust, where it no-ops (see this
                 # function's docstring, "retry", for the two real bugs this
                 # branch guards against).
                 output = event["data"].get("output") or {}

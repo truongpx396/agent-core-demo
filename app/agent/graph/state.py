@@ -13,7 +13,7 @@ router and builder can depend on it without a cycle.
   to. Their reasoning lives in the comments next to each, and in
   GRAPH_PATTERNS.md patterns 10, 13, 34, 35 and 41.
 """
-from typing import Annotated, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
@@ -160,54 +160,16 @@ class State(TypedDict):
     # (GRAPH_PATTERNS.md pattern 20). What the streamed `citations` SSE event carries.
     ungrounded_claims_count: int  # Set by check_output — [n] markers the
     # answer used that don't match any real citation (GRAPH_PATTERNS.md pattern 39).
-    likely_uncited_citations: list[dict]  # Set by check_output — citations
-    # NOT referenced by marker in the final answer, but with heavy word
-    # overlap with it (see find_likely_uncited) — stronger signal
-    # than agent_zero_citations_total's "was merely available" check.
-    # Almost always empty: check_output auto-fixes a real hit by inserting
-    # the missing marker (insert_missing_citation_markers — live-verified
-    # that asking the model to fix this doesn't work) and recomputes this
-    # field against the corrected answer. route_after_check still retries
-    # on a real value here as the last line of defense.
-    likely_misattributed_citations: list[dict]  # Set by check_output — the
-    # mirror image of likely_uncited_citations: a real, in-range marker IS
-    # used, but its citing sentences share no vocabulary with that marker's
-    # source (see find_likely_misattributed). Real bug found live:
-    # [3] cited on every sentence of an answer unrelated to what [3] said.
-    # Read by route_after_check to trigger a retry.
-    deferred_instead_of_acting: bool  # Set by check_output — the answer
-    # narrates intent ("I will use the X tool...") or asks permission
-    # ("would you like me to?") instead of acting (defers_instead_of_acting).
-    # Real bug found live: a 3B model repeating this across turns, each
-    # "yes" reply just restarting the same cycle. Read by route_after_check
-    # to trigger a retry.
-    fabricated_tool_output: bool  # Set by check_output — 2+ markdown code
-    # fences with NO real tool_calls backing them (fabricates_tool_output).
-    # Real bug found live: after a sandbox approval was declined, the model
-    # invented both a script and its "output," narrated in present tense so
-    # deferred_instead_of_acting's future-tense check missed it. Ranks
-    # ABOVE deferred_instead_of_acting in retry_reason — presenting false
-    # info as true is worse than merely failing to act. Read by
-    # route_after_check to trigger a retry.
-    skipped_required_tool: str | None  # Set by check_output — the NAME of
-    # a tool a skill loaded THIS TURN named as required, if the final
-    # answer states a dollar figure without ever calling it
-    # (skipped_required_sandbox_after_skill); None if nothing was skipped.
-    # Real bug found live: the deal-economics skill says "don't estimate
-    # this in your head," and the model did anyway — right that once,
-    # wrong on other freehand attempts. The actual name (not a bool) lets
-    # retry_output's feedback name it specifically. Read by
-    # route_after_check to trigger a retry.
-    leaks_system_prompt: bool  # Set by check_output — a long, verbatim run
-    # of the seeded system prompt in the final answer (reveals_system_prompt).
-    # Output-side defense-in-depth alongside app/core/moderation.py's input-side
-    # screening: catches an injection phrased past moderation's regexes if
-    # it actually succeeds in getting the prompt recited back. Read by
-    # route_after_check to trigger a retry.
+    output_findings: dict[str, Any]  # Set by check_output — every output check that fired on
+    # this round's answer, `{code: detail}` in priority order (an empty dict when it passed).
+    # The detail is what that check's feedback needs: the offending citation markers for
+    # "uncited"/"misattributed", the skipped tool's NAME for "skipped_tool", `True` otherwise.
+    # Replaces what used to be one State flag per check. The checks, their priority, feedback
+    # and fallback text are the registry in graph/output_checks.py. Reset every turn.
     last_retry_reason: str | None  # Set by check_output — short code
-    # ("leaked_prompt"/"too_short"/"fabricated"/"skipped_tool"/"deferred"/
-    # "uncited"/"misattributed", in `retry_reason`'s priority order)
-    # naming this round's rejection reason, or None. Compared against the
+    # naming this round's rejection reason (the first key of `output_findings`:
+    # "leaked_prompt"/"too_short"/"fabricated"/"skipped_tool"/"deferred"/
+    # "uncited"/"misattributed", in graph/output_checks.py's priority order), or None. Compared against the
     # PRIOR round's value by check_output to compute
     # retry_reason_repeat_count below — never reset mid-turn elsewhere.
     retry_reason_repeat_count: int  # Set by check_output — consecutive

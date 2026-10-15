@@ -12,12 +12,14 @@ stays plain sync — nothing to await — so those calls are unchanged.
 
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent.graph import cache as graph_cache
 from app.agent.graph import core as graph
 from app.agent.graph import followups as graph_followups
 from app.agent.graph import hitl as graph_hitl
+from app.agent.graph import output_checks
 from app.agent.graph import retrieval as graph_retrieval
 from app.agent.graph import retry as graph_retry
 from app.agent.graph.messages import RETRY_ARTIFACT_KEY, is_retry_artifact
@@ -373,12 +375,7 @@ class TestCheckOutput:
         assert result == {
             "used_citations": [],
             "ungrounded_claims_count": 0,
-            "likely_uncited_citations": [],
-            "likely_misattributed_citations": [],
-            "deferred_instead_of_acting": False,
-            "fabricated_tool_output": False,
-            "skipped_required_tool": None,
-            "leaks_system_prompt": False,
+            "output_findings": {"too_short": True},
             "last_retry_reason": "too_short",
             "retry_reason_repeat_count": 1,
         }
@@ -396,12 +393,7 @@ class TestCheckOutput:
         assert result == {
             "used_citations": [citations[0]],
             "ungrounded_claims_count": 0,
-            "likely_uncited_citations": [],
-            "likely_misattributed_citations": [],
-            "deferred_instead_of_acting": False,
-            "fabricated_tool_output": False,
-            "skipped_required_tool": None,
-            "leaks_system_prompt": False,
+            "output_findings": {},
             "last_retry_reason": None,
             "retry_reason_repeat_count": 0,
         }
@@ -416,12 +408,7 @@ class TestCheckOutput:
         assert result == {
             "used_citations": [],
             "ungrounded_claims_count": 0,
-            "likely_uncited_citations": [],
-            "likely_misattributed_citations": [],
-            "deferred_instead_of_acting": False,
-            "fabricated_tool_output": False,
-            "skipped_required_tool": None,
-            "leaks_system_prompt": False,
+            "output_findings": {},
             "last_retry_reason": None,
             "retry_reason_repeat_count": 0,
         }
@@ -445,12 +432,7 @@ class TestCheckOutput:
         assert result == {
             "used_citations": [],
             "ungrounded_claims_count": 1,
-            "likely_uncited_citations": [],
-            "likely_misattributed_citations": [],
-            "deferred_instead_of_acting": False,
-            "fabricated_tool_output": False,
-            "skipped_required_tool": None,
-            "leaks_system_prompt": False,
+            "output_findings": {},
             "last_retry_reason": None,
             "retry_reason_repeat_count": 0,
         }
@@ -532,7 +514,7 @@ class TestCheckOutput:
         )
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = ecorp.check_output(state)
-        assert result["likely_uncited_citations"] == []
+        assert "uncited" not in result["output_findings"]
         corrected = result["messages"][0].content
         assert "payload fields [1]." in corrected
         assert "embeddings in Qdrant [2]." in corrected
@@ -567,7 +549,7 @@ class TestCheckOutput:
         )
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = ecorp.check_output(state)
-        assert result["likely_uncited_citations"] == []
+        assert "uncited" not in result["output_findings"]
         corrected = result["messages"][0].content
         assert "offline developer tools [2]." in corrected
         assert "for all open-source users [1]." in corrected
@@ -577,7 +559,7 @@ class TestCheckOutput:
         content = "Cosine distance is a common similarity metric [1]."
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = ecorp.check_output(state)
-        assert result["likely_uncited_citations"] == []
+        assert "uncited" not in result["output_findings"]
 
     def test_likely_uncited_ignores_unrelated_general_knowledge_answer(self):
         """A general-knowledge answer with no real overlap to the (available
@@ -593,7 +575,7 @@ class TestCheckOutput:
         content = "The capital of France is Paris."
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = ecorp.check_output(state)
-        assert result["likely_uncited_citations"] == []
+        assert "uncited" not in result["output_findings"]
 
     def test_likely_uncited_flags_a_short_paraphrase_of_a_long_source(self):
         """Regression for the heuristic's OWN fix, not the model behavior it
@@ -638,7 +620,7 @@ class TestCheckOutput:
         )
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = ecorp.check_output(state)
-        assert result["likely_uncited_citations"] == []
+        assert "uncited" not in result["output_findings"]
         corrected = result["messages"][0].content
         assert corrected == (
             "To build a production-grade agent, track task progress and "
@@ -654,7 +636,7 @@ class TestCheckOutput:
         content = "Qdrant is a fast, open-source vector database built in Rust."
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = ecorp.check_output(state)
-        assert result["likely_uncited_citations"] == []
+        assert "uncited" not in result["output_findings"]
 
     def test_strips_a_fabricated_reference_footer(self):
         """Real bug, found live via Langfuse (trace `e46c97c4`,
@@ -717,7 +699,7 @@ class TestCheckOutput:
         )
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = ecorp.check_output(state)
-        assert {c["marker"] for c in result["likely_misattributed_citations"]} == {"[3]"}
+        assert {c["marker"] for c in result["output_findings"]["misattributed"]} == {"[3]"}
 
     def test_likely_misattributed_ignores_a_genuinely_supported_citation(self):
         citations = [
@@ -734,7 +716,7 @@ class TestCheckOutput:
         )
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = ecorp.check_output(state)
-        assert result["likely_misattributed_citations"] == []
+        assert "misattributed" not in result["output_findings"]
 
     def test_likely_misattributed_flags_even_a_single_word_source(self):
         """Regression case, found live via Langfuse: a one-word memory
@@ -755,7 +737,7 @@ class TestCheckOutput:
         )
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = ecorp.check_output(state)
-        assert {c["marker"] for c in result["likely_misattributed_citations"]} == {"[1]"}
+        assert {c["marker"] for c in result["output_findings"]["misattributed"]} == {"[1]"}
 
     def test_likely_misattributed_ignores_a_citation_with_no_content_words(self):
         """The only legitimate skip left: a source with NOTHING to compare
@@ -766,7 +748,7 @@ class TestCheckOutput:
         content = "Totally unrelated content about baking bread at home [1]."
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = ecorp.check_output(state)
-        assert result["likely_misattributed_citations"] == []
+        assert "misattributed" not in result["output_findings"]
 
     def test_likely_misattributed_ignores_when_only_citing_sentence_is_too_short(self):
         """A marker whose only citing sentence is too short to score isn't
@@ -781,7 +763,7 @@ class TestCheckOutput:
         content = "Sure [1]."
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = ecorp.check_output(state)
-        assert result["likely_misattributed_citations"] == []
+        assert "misattributed" not in result["output_findings"]
 
     def test_likely_misattributed_metric_fires(self):
         citations = [
@@ -820,7 +802,7 @@ class TestDefersInsteadOfActing:
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
-        assert result["deferred_instead_of_acting"] is True
+        assert "deferred" in result["output_findings"]
 
     def test_flags_asking_permission_to_proceed(self):
         content = (
@@ -830,7 +812,7 @@ class TestDefersInsteadOfActing:
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
-        assert result["deferred_instead_of_acting"] is True
+        assert "deferred" in result["output_findings"]
 
     def test_flags_a_bare_offer_with_no_tool_name_mentioned(self):
         """The exact real trace text — no tool name, no "I will", just a
@@ -838,7 +820,7 @@ class TestDefersInsteadOfActing:
         content = "I can look that up for you. Would you like to know more?"
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
-        assert result["deferred_instead_of_acting"] is True
+        assert "deferred" in result["output_findings"]
 
     def test_flags_announcing_a_manual_fallback_without_ever_delivering_it(self):
         """The exact real trace text (Langfuse `9336aaa6`, 2026-09-08): after
@@ -853,7 +835,7 @@ class TestDefersInsteadOfActing:
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
-        assert result["deferred_instead_of_acting"] is True
+        assert "deferred" in result["output_findings"]
 
     def test_flags_narrating_a_correct_script_instead_of_running_it(self):
         """The exact real trace text, found live immediately after fixing
@@ -871,7 +853,7 @@ class TestDefersInsteadOfActing:
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
-        assert result["deferred_instead_of_acting"] is True
+        assert "deferred" in result["output_findings"]
 
     def test_flags_narrating_intent_to_use_a_skill(self):
         """The exact real trace text (qwen2.5:3b, tests/live/
@@ -890,7 +872,7 @@ class TestDefersInsteadOfActing:
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
-        assert result["deferred_instead_of_acting"] is True
+        assert "deferred" in result["output_findings"]
 
     def test_ignores_a_negated_apology_for_a_failed_tool_call(self):
         """Real regression, caught by tests/core/test_metrics.py's own
@@ -903,20 +885,20 @@ class TestDefersInsteadOfActing:
         content = "Sorry, I could not run that calculation."
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
-        assert result["deferred_instead_of_acting"] is False
+        assert "deferred" not in result["output_findings"]
 
     def test_ignores_a_negated_contraction(self):
         content = "I can't look that up right now — the service is down."
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
-        assert result["deferred_instead_of_acting"] is False
+        assert "deferred" not in result["output_findings"]
 
     def test_ignores_a_genuine_direct_answer(self):
         content = "Ecorp's support hours are 9am to 5pm on weekdays [1]."
         citations = [{"marker": "[1]", "text": "Ecorp's support hours are 9am to 5pm."}]
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = ecorp.check_output(state)
-        assert result["deferred_instead_of_acting"] is False
+        assert "deferred" not in result["output_findings"]
 
     def test_ignores_a_third_person_description_of_the_agents_own_tools(self):
         """A legitimate answer to a meta-question ("what tools do you
@@ -926,7 +908,7 @@ class TestDefersInsteadOfActing:
         content = "This agent can use the query_employees tool to look up Ecorp staff."
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
-        assert result["deferred_instead_of_acting"] is False
+        assert "deferred" not in result["output_findings"]
 
     def test_metric_fires(self):
         content = "I can look that up for you. Would you like to know more?"
@@ -959,7 +941,7 @@ class TestFabricatesToolOutput:
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
-        assert result["fabricated_tool_output"] is True
+        assert "fabricated" in result["output_findings"]
         assert result["last_retry_reason"] == "fabricated"
 
     def test_ignores_a_single_code_block_explaining_a_formula(self):
@@ -974,14 +956,14 @@ class TestFabricatesToolOutput:
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
-        assert result["fabricated_tool_output"] is False
+        assert "fabricated" not in result["output_findings"]
 
     def test_ignores_a_genuine_answer_with_no_code_at_all(self):
         content = "Ecorp's support hours are 9am to 5pm on weekdays [1]."
         citations = [{"marker": "[1]", "text": "Ecorp's support hours are 9am to 5pm."}]
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = ecorp.check_output(state)
-        assert result["fabricated_tool_output"] is False
+        assert "fabricated" not in result["output_findings"]
 
     def test_ignores_multiple_purely_illustrative_code_blocks(self):
         """Real false positive, found live (Langfuse trace `f8b1675b`,
@@ -1005,7 +987,7 @@ class TestFabricatesToolOutput:
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
-        assert result["fabricated_tool_output"] is False
+        assert "fabricated" not in result["output_findings"]
 
     def test_outranks_deferred_instead_of_acting_when_both_could_apply(self):
         """fabricated is checked before deferred in retry_reason's
@@ -1019,7 +1001,7 @@ class TestFabricatesToolOutput:
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
-        assert result["fabricated_tool_output"] is True
+        assert "fabricated" in result["output_findings"]
         assert result["last_retry_reason"] == "fabricated"
 
     def test_metric_fires(self):
@@ -1043,6 +1025,12 @@ class TestSkippedRequiredSandboxAfterSkill:
     on a wrong number."""
 
     @staticmethod
+    def _check(state):
+        """A domain that HAS the sandbox tool (support, ops, sales). Ecorp does not, which is the
+        point of the last test below."""
+        return ecorp.check_output(state, skill_required_tools=("run_python_in_sandbox",))
+
+    @staticmethod
     def _skill_result(mentions_sandbox: bool = True) -> ToolMessage:
         body = (
             "write a short script and run it with run_python_in_sandbox instead"
@@ -1061,9 +1049,26 @@ class TestSkippedRequiredSandboxAfterSkill:
             ],
             "citations": [],
         }
-        result = ecorp.check_output(state)
-        assert result["skipped_required_tool"] == "run_python_in_sandbox"
+        result = self._check(state)
+        assert result["output_findings"]["skipped_tool"] == "run_python_in_sandbox"
         assert result["last_retry_reason"] == "skipped_tool"
+
+    def test_a_domain_without_the_tool_is_never_told_to_call_it(self):
+        """The same answer, in a domain whose tool set has no sandbox: a skill that names a tool the
+        domain lacks cannot demand it (the model could never satisfy the demand, and would retry
+        until the turn gave up). `build_graph` passes the markers the domain really has."""
+        state = {
+            "messages": [
+                HumanMessage(content="What's the real contract value?"),
+                AIMessage(content="", tool_calls=[{"name": "use_skill", "args": {}, "id": "c1"}]),
+                self._skill_result(),
+                AIMessage(content="Step by step, the total is $141,862.50."),
+            ],
+            "citations": [],
+        }
+        result = ecorp.check_output(state)  # Ecorp: skill_required_tools == ()
+        assert "skipped_tool" not in result["output_findings"]
+        assert result["last_retry_reason"] is None
 
     def test_ignores_it_when_sandbox_was_actually_called(self):
         state = {
@@ -1080,8 +1085,8 @@ class TestSkippedRequiredSandboxAfterSkill:
             ],
             "citations": [],
         }
-        result = ecorp.check_output(state)
-        assert result["skipped_required_tool"] is None
+        result = self._check(state)
+        assert "skipped_tool" not in result["output_findings"]
 
     def test_ignores_it_when_the_loaded_skill_never_mentions_a_tool(self):
         """A skill like support-tier1-triage never names a required
@@ -1095,8 +1100,8 @@ class TestSkippedRequiredSandboxAfterSkill:
             ],
             "citations": [],
         }
-        result = ecorp.check_output(state)
-        assert result["skipped_required_tool"] is None
+        result = self._check(state)
+        assert "skipped_tool" not in result["output_findings"]
 
     def test_ignores_it_when_no_skill_was_loaded_this_turn(self):
         state = {
@@ -1106,8 +1111,8 @@ class TestSkippedRequiredSandboxAfterSkill:
             ],
             "citations": [],
         }
-        result = ecorp.check_output(state)
-        assert result["skipped_required_tool"] is None
+        result = self._check(state)
+        assert "skipped_tool" not in result["output_findings"]
 
     def test_ignores_it_when_the_answer_states_no_dollar_figure(self):
         """A clarifying question or an honest "couldn't compute this" is
@@ -1121,8 +1126,8 @@ class TestSkippedRequiredSandboxAfterSkill:
             ],
             "citations": [],
         }
-        result = ecorp.check_output(state)
-        assert result["skipped_required_tool"] is None
+        result = self._check(state)
+        assert "skipped_tool" not in result["output_findings"]
 
     def test_outranks_deferred_but_not_fabricated(self):
         """skipped_tool ranks between fabricated (worse: invents a fake
@@ -1137,7 +1142,7 @@ class TestSkippedRequiredSandboxAfterSkill:
             ],
             "citations": [],
         }
-        result = ecorp.check_output(state)
+        result = self._check(state)
         assert result["last_retry_reason"] == "skipped_tool"
 
     def test_metric_fires(self):
@@ -1151,7 +1156,7 @@ class TestSkippedRequiredSandboxAfterSkill:
             "citations": [],
         }
         before = metric_value(metrics.agent_skipped_required_tool_total)
-        ecorp.check_output(state)
+        self._check(state)
         assert metric_value(metrics.agent_skipped_required_tool_total) == before + 1
 
 
@@ -1169,7 +1174,7 @@ class TestLeaksSystemPrompt:
         )
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
-        assert result["leaks_system_prompt"] is True
+        assert "leaked_prompt" in result["output_findings"]
 
     def test_flags_a_recitation_starting_mid_prompt(self):
         """The leak doesn't have to start from character 0 of the prompt —
@@ -1180,14 +1185,14 @@ class TestLeaksSystemPrompt:
         content = f"Continuing from your instructions: {mid_chunk}"
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
-        assert result["leaks_system_prompt"] is True
+        assert "leaked_prompt" in result["output_findings"]
 
     def test_ignores_an_ordinary_answer(self):
         content = "Ecorp's support hours are 9am to 5pm on weekdays [1]."
         citations = [{"marker": "[1]", "text": "Ecorp's support hours are 9am to 5pm."}]
         state = {"messages": [AIMessage(content=content)], "citations": citations}
         result = ecorp.check_output(state)
-        assert result["leaks_system_prompt"] is False
+        assert "leaked_prompt" not in result["output_findings"]
 
     def test_flags_a_short_recitation_of_just_the_prompts_opening(self):
         """Real bug, found live (qwen2.5:3b, this app's own real default,
@@ -1201,7 +1206,7 @@ class TestLeaksSystemPrompt:
         content = "You are a helpful assistant."
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
-        assert result["leaks_system_prompt"] is True
+        assert "leaked_prompt" in result["output_findings"]
 
     def test_a_short_coincidental_phrase_overlap_is_not_flagged(self):
         """A model naturally reusing a FEW words from its own instructions
@@ -1210,7 +1215,7 @@ class TestLeaksSystemPrompt:
         content = "I'll be concise and direct: the answer is 42."
         state = {"messages": [AIMessage(content=content)], "citations": []}
         result = ecorp.check_output(state)
-        assert result["leaks_system_prompt"] is False
+        assert "leaked_prompt" not in result["output_findings"]
 
     def test_respects_a_custom_system_prompt_not_the_bare_default(self):
         """build_graph binds check_output to THIS domain's own
@@ -1228,8 +1233,8 @@ class TestLeaksSystemPrompt:
         default_result = ecorp.check_output(state)
         custom_result = ecorp.check_output(state, system_prompt=custom_prompt)
 
-        assert default_result["leaks_system_prompt"] is False
-        assert custom_result["leaks_system_prompt"] is True
+        assert "leaked_prompt" not in default_result["output_findings"]
+        assert "leaked_prompt" in custom_result["output_findings"]
 
     def test_metric_fires(self):
         content = ecorp.ECORP_SYSTEM_PROMPT[:200]
@@ -1248,12 +1253,30 @@ class TestLeaksSystemPrompt:
         assert result["last_retry_reason"] == "leaked_prompt"
 
 
+def _retry(reason, detail=True, content="A sufficiently detailed answer that was sent back."):
+    """`retry_output` for an answer `check_output` rejected for `reason` (with its `detail`)."""
+    state = {
+        "messages": [AIMessage(content=content)],
+        "last_retry_reason": reason,
+        "output_findings": {reason: detail},
+    }
+    return graph_retry.retry_output(state)
+
+
 def test_retry_output_appends_corrective_human_message():
-    result = graph_retry.retry_output({"messages": []})
+    result = _retry("too_short", content="")
     assert len(result["messages"]) == 1
     msg = result["messages"][0]
     assert isinstance(msg, HumanMessage)
     assert "short" in msg.content.lower()
+
+
+def test_retry_output_has_no_default_reason():
+    """A retry nobody can explain is a bug, so it raises instead of sending a generic nudge."""
+    with pytest.raises(ValueError):
+        graph_retry.retry_output({"messages": [AIMessage(content="ok")]})
+    with pytest.raises(KeyError):
+        graph_retry.retry_output({"messages": [], "last_retry_reason": "no_such_reason"})
 
 
 def test_retry_output_tags_the_feedback_and_the_answer_it_rejected_as_retry_artifacts():
@@ -1262,7 +1285,11 @@ def test_retry_output_tags_the_feedback_and_the_answer_it_rejected_as_retry_arti
     turn" can skip them (pattern 5). The rejected answer comes back with its OWN id, so
     `add_messages` replaces it in the thread instead of appending a second copy."""
     rejected = AIMessage(content="ok", id="a1")
-    result = graph_retry.retry_output({"messages": [HumanMessage(content="q", id="h1"), rejected]})
+    state = {
+        "messages": [HumanMessage(content="q", id="h1"), rejected],
+        "last_retry_reason": "too_short",
+    }
+    result = graph_retry.retry_output(state)
     retagged, feedback = result["messages"]
     assert (retagged.id, retagged.content) == ("a1", "ok")
     assert retagged.additional_kwargs[RETRY_ARTIFACT_KEY] is True
@@ -1273,13 +1300,15 @@ def test_retry_output_tags_the_feedback_and_the_answer_it_rejected_as_retry_arti
 def test_retry_output_never_tags_an_answer_that_asked_for_tools():
     """Dropping a tool-calling AIMessage later would orphan its ToolMessages."""
     asked = AIMessage(content="", id="a1", tool_calls=[{"name": "calculator", "args": {}, "id": "c1"}])
-    result = graph_retry.retry_output({"messages": [asked]})
+    result = graph_retry.retry_output({"messages": [asked], "last_retry_reason": "too_short"})
     assert [type(m) for m in result["messages"]] == [HumanMessage]
 
 
 def test_retry_output_does_not_append_a_duplicate_of_an_answer_that_has_no_id():
     """Without an id `add_messages` could not replace it, only append a second copy."""
-    result = graph_retry.retry_output({"messages": [AIMessage(content="ok")]})
+    result = graph_retry.retry_output(
+        {"messages": [AIMessage(content="ok")], "last_retry_reason": "too_short"}
+    )
     assert [type(m) for m in result["messages"]] == [HumanMessage]
 
 
@@ -1289,27 +1318,21 @@ def test_retry_output_too_short_feedback_also_nudges_toward_tool_use():
     round-2 narration (see defers_instead_of_acting). Nudging toward
     tool use directly here, not just "write more," is meant to short-
     circuit that whole narration cycle one round earlier."""
-    result = graph_retry.retry_output({"messages": [AIMessage(content="")]})
-    msg = result["messages"][0]
+    msg = _retry("too_short", content="")["messages"][0]
     assert "tool" in msg.content.lower()
     assert "empty response" in msg.content.lower()
 
 
 def test_retry_output_fabrication_feedback_names_no_specific_tool():
     """The feedback is shared by every domain, and Ecorp has no `run_command_in_sandbox` for it to
-    be told to call (the skipped-required-tool feedback names its tool because state carries it)."""
-    state = {"messages": [AIMessage(content="x" * 200, id="a1")], "fabricated_tool_output": True}
-    feedback = graph_retry.retry_output(state)["messages"][-1].content
+    be told to call (the skipped-required-tool feedback names its tool because the finding carries it)."""
+    feedback = _retry("fabricated")["messages"][-1].content
     assert "invented, not computed" in feedback
     assert "run_command_in_sandbox" not in feedback
 
 
 def test_retry_output_names_the_missing_citation_marker():
-    state = {
-        "messages": [AIMessage(content="A sufficiently detailed but uncited answer.")],
-        "likely_uncited_citations": [{"marker": "[2]", "text": "..."}],
-    }
-    result = graph_retry.retry_output(state)
+    result = _retry("uncited", [{"marker": "[2]", "text": "..."}])
     msg = result["messages"][0]
     assert isinstance(msg, HumanMessage)
     assert "[2]" in msg.content
@@ -1322,57 +1345,21 @@ def test_retry_output_citation_feedback_tells_the_model_not_to_call_tools():
     query instead of just reformatting its existing answer — wasting a
     round and, in one case, pushing the turn over MAX_TOKENS_PER_TURN.
     The feedback has to say this explicitly, not just imply it."""
-    state = {
-        "messages": [AIMessage(content="A sufficiently detailed but uncited answer.")],
-        "likely_uncited_citations": [{"marker": "[1]", "text": "..."}],
-    }
-    result = graph_retry.retry_output(state)
+    result = _retry("uncited", [{"marker": "[1]", "text": "..."}])
     assert "do not call any tools" in result["messages"][0].content.lower()
 
 
-def test_retry_output_prefers_the_length_complaint_when_both_apply():
-    """An answer that's both too short AND flagged as likely-uncited gets
-    the length feedback — the more actionable ask of the two."""
-    state = {
-        "messages": [AIMessage(content="Yes.")],
-        "likely_uncited_citations": [{"marker": "[1]", "text": "..."}],
-    }
-    result = graph_retry.retry_output(state)
-    assert "short" in result["messages"][0].content.lower()
-
-
 def test_retry_output_tells_the_model_never_to_reveal_instructions_on_a_leak():
-    state = {
-        "messages": [AIMessage(content=ecorp.ECORP_SYSTEM_PROMPT[:200])],
-        "leaks_system_prompt": True,
-    }
-    result = graph_retry.retry_output(state)
+    result = _retry("leaked_prompt", content=ecorp.ECORP_SYSTEM_PROMPT[:200])
     msg = result["messages"][0]
     assert isinstance(msg, HumanMessage)
     assert "system prompt" in msg.content.lower() or "instructions" in msg.content.lower()
-    # Deliberately does NOT quote or describe WHICH part leaked — see
-    # retry_output's own comment on this branch.
+    # Deliberately does NOT quote or describe WHICH part leaked: the feedback is a fixed string.
     assert ecorp.ECORP_SYSTEM_PROMPT[:60] not in msg.content
 
 
-def test_retry_output_leak_complaint_outranks_the_length_complaint():
-    """leaks_system_prompt is checked FIRST, ahead of even length — see
-    retry_reason's own docstring for why."""
-    state = {
-        "messages": [AIMessage(content="Yes.")],  # also too short
-        "leaks_system_prompt": True,
-    }
-    result = graph_retry.retry_output(state)
-    assert "short" not in result["messages"][0].content.lower()
-    assert "system prompt" in result["messages"][0].content.lower()
-
-
 def test_retry_output_names_the_misattributed_citation_marker():
-    state = {
-        "messages": [AIMessage(content="A sufficiently detailed but wrongly cited answer.")],
-        "likely_misattributed_citations": [{"marker": "[3]", "text": "..."}],
-    }
-    result = graph_retry.retry_output(state)
+    result = _retry("misattributed", [{"marker": "[3]", "text": "..."}])
     msg = result["messages"][0]
     assert isinstance(msg, HumanMessage)
     assert "[3]" in msg.content
@@ -1380,79 +1367,24 @@ def test_retry_output_names_the_misattributed_citation_marker():
     assert "do not call any tools" in msg.content.lower()
 
 
-def test_retry_output_prefers_uncited_complaint_when_both_citation_issues_apply():
-    """Uncited (a source used with no marker at all) is checked before
-    misattributed (a real marker on unsupported content) — both are
-    citation problems, but a fully missing citation is the more common and
-    more actionable of the two to lead with."""
-    state = {
-        "messages": [AIMessage(content="A sufficiently detailed but confusingly cited answer.")],
-        "likely_uncited_citations": [{"marker": "[1]", "text": "..."}],
-        "likely_misattributed_citations": [{"marker": "[3]", "text": "..."}],
-    }
-    result = graph_retry.retry_output(state)
-    assert "[1]" in result["messages"][0].content
-    assert "[3]" not in result["messages"][0].content
-
-
 def test_retry_output_tells_the_model_to_call_the_tool_when_it_deferred():
     """The OPPOSITE instruction from the citation branches — those say
     "do not call any tools"; this one exists specifically because the
     model AVOIDED calling a tool it needed, so it has to say so."""
-    state = {
-        "messages": [AIMessage(content="I can look that up for you. Would you like to know more?")],
-        "deferred_instead_of_acting": True,
-    }
-    result = graph_retry.retry_output(state)
-    msg = result["messages"][0]
+    msg = _retry("deferred")["messages"][0]
     assert isinstance(msg, HumanMessage)
     assert "call it now" in msg.content.lower()
     assert "do not call any tools" not in msg.content.lower()
-
-
-def test_retry_output_prefers_deferred_complaint_over_citation_complaints():
-    """deferred_instead_of_acting is checked before either citation
-    reason: a model that just narrated tool intent has nothing real to
-    cite yet, so a citation complaint on top would be meaningless noise."""
-    state = {
-        "messages": [AIMessage(content="I can look that up for you. Would you like to know more?")],
-        "deferred_instead_of_acting": True,
-        "likely_uncited_citations": [{"marker": "[1]", "text": "..."}],
-    }
-    result = graph_retry.retry_output(state)
-    assert "call it now" in result["messages"][0].content.lower()
-    assert "[1]" not in result["messages"][0].content
 
 
 def test_retry_output_tells_the_model_its_output_was_never_real_when_fabricated():
     """Distinct feedback from the deferred branch — a model that already
     believes it ran something needs to be told that belief is false, not
     just told to call a tool "now" (implying it hadn't tried yet)."""
-    state = {
-        "messages": [AIMessage(content="Running it now:\n\n```python\nx=1\n```\n\nOutput:\n\n```\n1\n```")],
-        "fabricated_tool_output": True,
-    }
-    result = graph_retry.retry_output(state)
-    msg = result["messages"][0]
+    msg = _retry("fabricated")["messages"][0]
     assert isinstance(msg, HumanMessage)
     assert "invented" in msg.content.lower() or "not actually" in msg.content.lower()
-
-
-def test_retry_output_prefers_fabricated_complaint_over_deferred_complaint():
-    """fabricated_tool_output is checked before deferred_instead_of_acting
-    — presenting invented output as real is a more severe problem than
-    merely narrating intent, so if a message somehow trips both, the
-    fabrication is the one named."""
-    state = {
-        "messages": [
-            AIMessage(content="Let's run this now. Output:\n\n```python\nx=1\n```\n\n```\n1\n```")
-        ],
-        "fabricated_tool_output": True,
-        "deferred_instead_of_acting": True,
-    }
-    result = graph_retry.retry_output(state)
-    assert "invented" in result["messages"][0].content.lower()
-    assert "call it now" not in result["messages"][0].content.lower()
+    assert "call it now" not in msg.content.lower()
 
 
 def test_retry_output_tells_the_model_the_skill_named_a_required_tool():
@@ -1460,45 +1392,60 @@ def test_retry_output_tells_the_model_the_skill_named_a_required_tool():
     deferred (this IS a full, confident answer, not a narrated
     non-answer) — the specific problem is a skill-named tool never
     called, regardless of how right the freehand number reads."""
-    state = {
-        "messages": [AIMessage(content="Step by step, the total is $141,862.50.")],
-        "skipped_required_tool": "run_python_in_sandbox",
-    }
-    result = graph_retry.retry_output(state)
-    msg = result["messages"][0]
+    msg = _retry("skipped_tool", "run_python_in_sandbox")["messages"][0]
     assert isinstance(msg, HumanMessage)
     assert "run_python_in_sandbox" in msg.content
     assert "by hand" in msg.content.lower()
 
 
-def test_retry_output_prefers_skipped_tool_complaint_over_deferred_complaint():
-    """skipped_required_tool is checked before deferred_instead_of_acting
-    — a skill-mandated tool being skipped is more specific and severe
-    than generic narrated intent."""
-    state = {
-        "messages": [AIMessage(content="I will compute this. The total is $141,862.50.")],
-        "skipped_required_tool": "run_python_in_sandbox",
-        "deferred_instead_of_acting": True,
-    }
-    result = graph_retry.retry_output(state)
-    assert "run_python_in_sandbox" in result["messages"][0].content
-    assert "call it now" not in result["messages"][0].content.lower()
+class TestOutputCheckRegistry:
+    """Which reason wins, and what each one says, is the registry in graph/output_checks.py."""
 
+    def test_the_priority_order(self):
+        """Leaked prompt (the only reason with a security dimension) > too short > fabricated >
+        skipped required tool > deferred > uncited > misattributed. The first check that fires
+        names the reason, so feedback targets the most severe or most actionable problem."""
+        assert [c.code for c in output_checks.CHECKS] == [
+            "leaked_prompt",
+            "too_short",
+            "fabricated",
+            "skipped_tool",
+            "deferred",
+            "uncited",
+            "misattributed",
+        ]
 
-def test_retry_output_prefers_fabricated_complaint_over_skipped_tool_complaint():
-    """fabricated_tool_output outranks skipped_required_tool too —
-    inventing a fake tool result is worse than merely skipping the real
-    tool and computing by hand."""
-    state = {
-        "messages": [
-            AIMessage(content="Running it now:\n\n```python\nx=1\n```\n\nOutput:\n\n```\n141862.50\n```")
-        ],
-        "fabricated_tool_output": True,
-        "skipped_required_tool": "run_python_in_sandbox",
-    }
-    result = graph_retry.retry_output(state)
-    assert "invented" in result["messages"][0].content.lower()
-    assert "by hand" not in result["messages"][0].content.lower()
+    def test_every_check_has_feedback_and_a_known_trust_and_fallback(self):
+        for check in output_checks.CHECKS:
+            assert callable(check.feedback)
+            assert isinstance(check.trust_on_exhaust, bool)
+            assert check.fallback is None or isinstance(check.fallback, str)
+
+    def test_only_short_or_uncited_answers_are_trusted_after_repeated_rejection(self):
+        """Short-but-real beats no answer, and a correct answer missing only its marker is an
+        attribution nitpick. Every other reason means the CONTENT is untrustworthy."""
+        trusted = {c.code for c in output_checks.CHECKS if c.trust_on_exhaust}
+        assert trusted == {"too_short", "uncited"}
+        assert output_checks.trusts_content(None)
+
+    def test_a_leak_is_never_described_to_the_user(self):
+        """Confirming a leak attempt registered would just help someone iterate a jailbreak."""
+        assert output_checks.fallback_message("leaked_prompt") == output_checks.GENERIC_NO_ANSWER_MESSAGE
+
+    def test_a_fabricated_and_deferred_answer_is_reported_as_fabricated_with_both_recorded(self):
+        state = {
+            "messages": [
+                AIMessage(content="Let's run this now. Output:\n\n```python\nx=1\n```\n\n```\n1\n```")
+            ],
+            "citations": [],
+        }
+        result = ecorp.check_output(state)
+        assert result["last_retry_reason"] == "fabricated"
+        assert list(result["output_findings"]) == ["fabricated", "deferred"]
+
+    def test_an_unknown_reason_raises_instead_of_getting_a_generic_message(self):
+        with pytest.raises(KeyError):
+            output_checks.fallback_message("no_such_reason")
 
 
 class TestHumanApproval:
@@ -1799,7 +1746,7 @@ class TestCheckOutputWithoutCitationEnforcement:
         relaxed = ecorp.check_output(self._state(content), enforce_citations=False)
         assert "messages" not in relaxed
         assert relaxed["last_retry_reason"] is None
-        assert relaxed["likely_uncited_citations"] == [] and relaxed["likely_misattributed_citations"] == []
+        assert relaxed["output_findings"] == {}
 
     def test_a_misattributed_marker_is_not_flagged_either(self):
         content = "The office dog is called Biscuit and loves Fridays [1]."

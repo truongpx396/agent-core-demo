@@ -1,19 +1,15 @@
-"""Deferral/fabrication/prompt-leak heuristics behind `check_output`
-(`app/agent/graph/routing.py`): narrated-instead-of-acting
-(`defers_instead_of_acting`), fabricated tool output
+"""The heuristics behind `check_output`'s deferral, fabrication, leak and skipped-tool checks:
+narrated-instead-of-acting (`defers_instead_of_acting`), fabricated tool output
 (`fabricates_tool_output`), a fabricated reference-list footer
 (`strip_fabricated_reference_footer`), a skipped skill-required tool
-(`skipped_required_sandbox_after_skill`), a system-prompt leak
-(`reveals_system_prompt`), and priority arbitration across all of these
-plus the citation checks (`retry_reason`). Split out of
-`app/agent/graph/routing.py` for file size (see sibling splits
-`graph/loop_guards.py`/`graph/citations.py`); no behavior change.
+(`skipped_required_sandbox_after_skill`) and a system-prompt leak (`reveals_system_prompt`). Which of
+them wins, and what each says to the model, is `graph/output_checks.py`'s registry; the grounding
+checks are in `graph/citations.py`.
 """
 import re
 
 from app.agent.graph.messages import current_turn_messages
 from app.agent.graph.skill_guards import pending_skill_required_tool
-from app.agent.graph.state import MIN_ANSWER_LENGTH
 
 # Real bug, found live via Langfuse: qwen2.5:3b narrated tool intent
 # ("I will use the `query_employees` tool...") or asked permission ("Would
@@ -176,7 +172,7 @@ def strip_fabricated_reference_footer(content: str) -> str:
 _DOLLAR_FIGURE_RE = re.compile(r"\$[\d,]+(?:\.\d{1,2})?")
 
 
-def skipped_required_sandbox_after_skill(messages: list) -> str | None:
+def skipped_required_sandbox_after_skill(messages: list, required_tools: tuple[str, ...]) -> str | None:
     """The tool name `pending_skill_required_tool` still names, if the
     model's final answer (no more tool_calls) states a specific dollar
     figure without ever calling it — the model ignored a skill's own
@@ -196,7 +192,7 @@ def skipped_required_sandbox_after_skill(messages: list) -> str | None:
     the final answer states a dollar figure — a clarifying question or an
     honest "I couldn't compute this" isn't the problem."""
     turn_messages = current_turn_messages(messages)
-    pending_tool = pending_skill_required_tool(turn_messages)
+    pending_tool = pending_skill_required_tool(turn_messages, required_tools)
     if not pending_tool:
         return None
     last = turn_messages[-1] if turn_messages else None
@@ -260,44 +256,3 @@ def reveals_system_prompt(content: str, system_prompt: str) -> bool:
         if normalized_prompt[i : i + window] in normalized_content:
             return True
     return False
-
-
-def retry_reason(
-    content: str,
-    leaks_prompt: bool,
-    fabricated: bool,
-    skipped_tool: str | None,
-    deferred: bool,
-    likely_uncited: list[dict],
-    likely_misattributed: list[dict],
-) -> str | None:
-    """Which single reason (if any) route_after_check/retry_output would
-    act on this round — same priority order as those two (leaked prompt,
-    length, fabricated, skipped-tool, deferred, uncited, misattributed),
-    centralized so check_output can compare this round's reason against
-    the prior round's (retry_reason_repeat_count) without duplicating the
-    ordering. Returns None when no retry is needed.
-
-    Leaked prompt is checked first — it's the only reason with a real
-    security dimension, and severe enough to trip the leak check that it
-    can't also be merely too-short. Fabricated is checked ahead of
-    deferred (presenting false info as true is worse than merely
-    narrating intent); skipped-tool right after fabricated, still ahead
-    of deferred (the model was explicitly told by a skill to use a tool
-    and didn't, regardless of how the answer reads).
-    """
-    if leaks_prompt:
-        return "leaked_prompt"
-    if isinstance(content, str) and len(content) < MIN_ANSWER_LENGTH:
-        return "too_short"
-    if fabricated:
-        return "fabricated"
-    if skipped_tool:
-        return "skipped_tool"
-    if deferred:
-        return "deferred"
-    if likely_uncited:
-        return "uncited"
-    if likely_misattributed:
-        return "misattributed"
-    return None

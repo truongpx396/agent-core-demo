@@ -27,7 +27,6 @@ from langgraph.prebuilt import tools_condition
 
 from app.agent.graph.citations import (
     count_ungrounded_claims,
-    find_likely_misattributed,
     find_likely_uncited,
     find_used_citations,
     insert_missing_citation_markers,
@@ -36,14 +35,8 @@ from app.agent.graph.loop_guards import (
     consecutive_repeat_count,
     mandatory_gate_reason,
 )
-from app.agent.graph.output_guardrails import (
-    defers_instead_of_acting,
-    fabricates_tool_output,
-    retry_reason,
-    reveals_system_prompt,
-    skipped_required_sandbox_after_skill,
-    strip_fabricated_reference_footer,
-)
+from app.agent.graph.output_checks import CheckContext, run_checks
+from app.agent.graph.output_guardrails import strip_fabricated_reference_footer
 from app.agent.graph.state import (
     MAX_CONSECUTIVE_SAME_RETRY_REASON,
     MAX_ITERATIONS,
@@ -155,15 +148,27 @@ def should_continue(
 # `system_prompt` is the calling domain's own, bound by build_graph via
 # functools.partial, so `reveals_system_prompt` checks an answer against the prompt
 # it was ACTUALLY seeded with. ---
-def check_output(state: State, system_prompt: str, enforce_citations: bool = True) -> dict:
-    """`enforce_citations=False` (a nested subagent run, bound by
-    `build_subagent_graph`) turns the two citation checks off: no uncited or
-    misattributed finding, and no `[n]` marker is ever inserted. A subagent is
-    told NOT to use bracket markers (they would name its own sources, which
-    mean nothing to the parent), so judging or "repairing" its answer by them
-    contradicted its own prompt and put a stray `[1]` in the text handed back.
-    Every other check (footer strip, prompt leak, fabrication, deferral,
-    skipped required tool) still applies."""
+def check_output(
+    state: State,
+    system_prompt: str,
+    enforce_citations: bool = True,
+    skill_required_tools: tuple[str, ...] = (),
+) -> dict:
+    """Judge the final answer: strip a fabricated reference footer, repair a missing citation
+    marker, then run every check in `graph/output_checks.py`'s registry.
+
+    Returns `used_citations`/`ungrounded_claims_count` for the answer as it will be shown,
+    `output_findings` (every check that fired, `{code: detail}`), `last_retry_reason` (the first by
+    priority, or None) and `retry_reason_repeat_count`; plus a corrected `messages` entry when the
+    footer was stripped or a marker inserted.
+
+    `system_prompt`, `enforce_citations` and `skill_required_tools` are the calling domain's, bound by
+    `build_graph` via `functools.partial`. `enforce_citations=False` (a nested subagent run) turns the
+    two citation checks off: no uncited or misattributed finding, and no `[n]` marker is ever
+    inserted. A subagent is told NOT to use bracket markers (they would name its own sources, which
+    mean nothing to the parent), so judging or "repairing" its answer by them contradicted its own
+    prompt and put a stray `[1]` in the text handed back. Every other check still applies.
+    `skill_required_tools` is the subset of `SKILL_REQUIRED_TOOL_MARKERS` this domain actually has."""
     last = state["messages"][-1]
     content = getattr(last, "content", "") or ""
     citations = state.get("citations") or []
@@ -187,44 +192,36 @@ def check_output(state: State, system_prompt: str, enforce_citations: bool = Tru
         # allows citing nothing for either case). route_after_check
         # deliberately doesn't retry on this.
         metrics.agent_zero_citations_total.inc()
-    likely_misattributed = (
-        find_likely_misattributed(content, citations, used) if enforce_citations else []
-    )
-    if likely_misattributed:
-        metrics.agent_misattributed_citations_total.inc()
-    defers = defers_instead_of_acting(content)
-    if defers:
-        metrics.agent_deferred_instead_of_acting_total.inc()
-    fabricated = fabricates_tool_output(content)
-    if fabricated:
-        metrics.agent_fabricated_tool_output_total.inc()
-    skipped_tool = skipped_required_sandbox_after_skill(state["messages"])
-    if skipped_tool:
-        metrics.agent_skipped_required_tool_total.inc()
-    leaks_prompt = reveals_system_prompt(content, system_prompt)
-    if leaks_prompt:
-        metrics.agent_system_prompt_leak_total.inc()
 
     # Auto-correct rather than retry: insert_missing_citation_markers's
     # docstring has the evidence (7 different prompt-level attempts, all
     # failed) for fixing the marker directly instead of routing to
-    # retry_output. `used`/`likely_uncited`/`content` are recomputed
-    # against the CORRECTED text so every returned field reflects what the
-    # user actually sees. Reuses `message_update` so both corrections
-    # (footer strip + marker insert) compose onto the same final message.
-    likely_uncited = find_likely_uncited(content, citations, used) if enforce_citations else []
-    if likely_uncited:
+    # retry_output. `shown`/`shown_used` are what the user will actually see, so every returned
+    # field reflects that. Reuses `message_update` so both corrections (footer strip + marker
+    # insert) compose onto the same final message.
+    shown, shown_used = content, used
+    if enforce_citations and find_likely_uncited(content, citations, used):
         corrected_content, fixed = insert_missing_citation_markers(content, citations, used)
         if fixed:
             metrics.agent_citation_auto_inserted_total.inc()
-            content = corrected_content
-            used = find_used_citations(content, citations)
-            likely_uncited = find_likely_uncited(content, citations, used)
-            message_update["messages"] = [last.model_copy(update={"content": content})]
+            shown = corrected_content
+            shown_used = find_used_citations(shown, citations)
+            message_update["messages"] = [last.model_copy(update={"content": shown})]
 
-    reason = retry_reason(
-        content, leaks_prompt, fabricated, skipped_tool, defers, likely_uncited, likely_misattributed
+    findings = run_checks(
+        CheckContext(
+            content=content,
+            messages=state["messages"],
+            citations=citations,
+            used=used,
+            shown=shown,
+            shown_used=shown_used,
+            system_prompt=system_prompt,
+            enforce_citations=enforce_citations,
+            skill_required_tools=skill_required_tools,
+        )
     )
+    reason = next(iter(findings), None)
     prior_reason = state.get("last_retry_reason")
     if reason is None:
         repeat_count = 0
@@ -234,14 +231,9 @@ def check_output(state: State, system_prompt: str, enforce_citations: bool = Tru
         repeat_count = 1
     return {
         **message_update,
-        "used_citations": used,
-        "ungrounded_claims_count": count_ungrounded_claims(content, citations),
-        "likely_uncited_citations": likely_uncited,
-        "likely_misattributed_citations": likely_misattributed,
-        "deferred_instead_of_acting": defers,
-        "fabricated_tool_output": fabricated,
-        "skipped_required_tool": skipped_tool,
-        "leaks_system_prompt": leaks_prompt,
+        "used_citations": shown_used,
+        "ungrounded_claims_count": count_ungrounded_claims(shown, citations),
+        "output_findings": findings,
         "last_retry_reason": reason,
         "retry_reason_repeat_count": repeat_count,
     }

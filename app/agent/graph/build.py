@@ -62,6 +62,7 @@ from app.agent.graph.retry import (
     retry_output,
 )
 from app.agent.graph.routing import check_output, route_after_check, should_continue
+from app.agent.graph.skill_guards import SKILL_REQUIRED_TOOL_MARKERS
 from app.agent.graph.state import (
     HISTORY_TOKEN_CEILING,
     HISTORY_TOKEN_FLOOR,
@@ -231,6 +232,8 @@ def build_graph(
         domain_tools = [t for t in domain_tools if t.name in allowed]
     tool_capabilities = domain.tool_capabilities()
     valid_tool_names = frozenset(t.name for t in domain_tools)
+    # A skill may name a tool as required; only ones THIS domain has can ever be demanded.
+    skill_required_tools = tuple(m for m in SKILL_REQUIRED_TOOL_MARKERS if m in valid_tool_names)
 
     llm_client = deps.llm or (deps.llm_factory or make_llm)(domain_tools)
     model_alias = deps.model_alias or CHAT_MODEL
@@ -251,6 +254,7 @@ def build_graph(
         check_output,
         system_prompt=manifest.system_prompt,
         enforce_citations=profile.enforce_citations,
+        skill_required_tools=skill_required_tools,
     )
     domain_tool_batch_guard = functools.partial(tool_batch_guard, valid_tool_names=valid_tool_names)
 
@@ -259,6 +263,7 @@ def build_graph(
         model_alias=model_alias,
         kind=deps.meter_kind,
         citation_reminder=profile.enforce_citations,
+        skill_required_tools=skill_required_tools,
     )
     retrieve_context = make_retrieve_context_node(deps.search_docs or default_search)
 
@@ -304,6 +309,7 @@ def build_graph(
             emit_no_answer_message,
             system_prompt=manifest.system_prompt,
             enforce_citations=profile.enforce_citations,
+            skill_required_tools=skill_required_tools,
         ),
     )
 
