@@ -614,9 +614,9 @@ class TestRouteAfterCheck:
     test_nodes.py; these tests are purely about the routing decision
     given an already-computed reason."""
 
-    def test_no_reason_goes_to_suggest_followups(self):
+    def test_no_reason_finishes(self):
         state = {"last_retry_reason": None}
-        assert route_after_check(state) == "suggest_followups"
+        assert route_after_check(state) == "finish"
 
     def test_first_occurrence_of_a_reason_retries(self):
         state = {"last_retry_reason": "too_short", "retry_reason_repeat_count": 1}

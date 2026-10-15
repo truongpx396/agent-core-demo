@@ -183,7 +183,7 @@ A `SecurityCtx` (`tenant`, `principal`, `claims`) is stamped once by `validate_i
 Moved to `COST_GOVERNANCE.md` (the agent's usage meter and spend limits are not graph patterns). The number is kept so earlier references resolve and is never reused or shifted.
 
 ### 27. Clarification and follow-ups without forking the graph
-`ask_clarification` is an ordinary `read_only` tool: its result becomes a `ToolMessage` and `SYSTEM_PROMPT` says to relay it verbatim. Follow-ups are a real node, `suggest_followups`, after `check_output`'s non-retry branch, making one small LLM call for 2–3 questions.
+`ask_clarification` is an ordinary `read_only` tool: its result becomes a `ToolMessage` and `SYSTEM_PROMPT` says to relay it verbatim. Follow-ups are a real node, `suggest_followups`, after `check_output`'s non-retry branch, making one small LLM call for 2–3 questions. It runs in parallel with the cache write-through (22): neither needs the other, so `done` waits for the slower of the two, not their sum.
 - Follow-ups gate on `used_citations`: an answer with nothing derived (a refusal, a clarification, general knowledge) has none, so one signal suppresses all three cases. They are skipped on a cache hit, since an unconditional call would reintroduce an LLM call the hit exists to avoid.
 
 ### 28. Consuming a remote MCP tool catalog
@@ -384,12 +384,11 @@ route_after_validation?  ← valid ctx? last user message (not retry feedback, p
                            │                    artifacts (pattern 5) → agent
                            ├─→ retry_exhausted  (the SAME reason MAX_CONSECUTIVE_SAME_RETRY_REASON times in
                            │                     a row: replaces an untrusted answer with a fallback) → END
-                           └─→ suggest_followups  ← only for a GROUNDED answer (used_citations
-                                │                     non-empty); skipped on a hit (pattern 27)
-                                ↓
-                               write_semantic_cache  ← writes back unless this turn was a hit
-                                ↓                       or called a non-read_only tool (pattern 22)
-                               END
+                           └─→ finish  (the answer stands: two steps in ONE parallel superstep)
+                                ├─→ suggest_followups  ← only for a GROUNDED answer (used_citations
+                                │                         non-empty); skipped on a hit (pattern 27) → END
+                                └─→ write_semantic_cache  ← writes back unless this turn was a hit
+                                                           or called a non-read_only tool (22) → END
 ```
 
 A nested `run_subagent` run (46) is `build_graph` with `SUBAGENT_PROFILE`: the same graph without `check_semantic_cache`,

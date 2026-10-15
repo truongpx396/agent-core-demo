@@ -229,10 +229,13 @@ def check_output(
 
 def route_after_check(
     state: State,
-) -> Literal["retry_output", "retry_exhausted", "suggest_followups"]:
+) -> Literal["retry_output", "retry_exhausted", "finish"]:
+    """Retry, give up, or `"finish"`: the answer stands, and `build_graph` fans out to whichever
+    post-answer steps the graph has (follow-up suggestions, the cache write-through). Those do not
+    depend on each other, so they run in parallel rather than one after the other."""
     reason = state.get("last_retry_reason")
     if reason is None:
-        return "suggest_followups"
+        return "finish"
     if (state.get("retry_reason_repeat_count") or 0) >= MAX_CONSECUTIVE_SAME_RETRY_REASON:
         # The SAME rejection reason fired on consecutive rounds — the
         # model isn't converging (see MAX_CONSECUTIVE_SAME_RETRY_REASON),

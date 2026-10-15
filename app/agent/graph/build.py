@@ -8,7 +8,7 @@
 
 Topology, in order: `validate_input -> moderate_input -> [check_semantic_cache -> (miss)
 [compact_history ->]] retrieve_context -> agent <-> tools`, then `check_output`, which retries,
-gives up, or ends (through `[suggest_followups ->] [write_semantic_cache ->]`). Moderation comes
+gives up, or ends (through `[suggest_followups] || [write_semantic_cache]`, in parallel). Moderation comes
 before anything that spends: a refused or cache-hit turn pays for no compaction (pattern 25).
 GRAPH_PATTERNS.md "Graph Flow" draws it.
 
@@ -341,8 +341,24 @@ def build_graph(
     # Where each stage hands off when the optional ones after it are absent.
     after_cache_miss = "compact_history" if profile.include_compaction else "retrieve_context"
     after_moderation = "check_semantic_cache" if profile.include_cache else after_cache_miss
-    after_followups = "write_semantic_cache" if profile.include_cache else END
-    after_check_ok = "suggest_followups" if profile.include_followups else after_followups
+    # What runs once an answer stands. Neither step needs the other (the cache write reads the
+    # answer and its citations; the follow-ups only add `followups`), so they are one parallel
+    # superstep: `done` no longer waits for the follow-up LLM call and THEN the cache write's
+    # embedding and Redis round trip.
+    finish_steps = [
+        name
+        for name, present in (
+            ("suggest_followups", profile.include_followups),
+            ("write_semantic_cache", profile.include_cache),
+        )
+        if present
+    ]
+
+    def route_after_check_bound(state: State):
+        route = route_after_check(state)
+        if route != "finish":
+            return route
+        return finish_steps or END
 
     builder.add_edge(START, "validate_input")
     builder.add_conditional_edges("validate_input", route_after_validation)
@@ -374,24 +390,23 @@ def build_graph(
 
     builder.add_conditional_edges(
         "check_output",
-        route_after_check,
+        route_after_check_bound,
         {
             "retry_output": "retry_output",
             "retry_exhausted": "retry_exhausted",
-            "suggest_followups": after_check_ok,
+            **{name: name for name in finish_steps},
+            END: END,
         },
     )
     builder.add_edge("retry_output", "agent")
     builder.add_edge("retry_exhausted", END)
     builder.add_edge("no_answer", END)
-    if profile.include_followups:
-        builder.add_edge("suggest_followups", after_followups)
-    if profile.include_cache:
-        builder.add_edge("write_semantic_cache", END)
+    for name in finish_steps:
+        builder.add_edge(name, END)
 
     compiled = builder.compile(checkpointer=checkpointer or MemorySaver())
     # Not LangGraph API — plain attribute stashes so a caller holding the compiled graph (chiefly
-    # app/agent/runtime/core.py's ensure_seeded_async, and tests) can recover which domain built
+    # tests and scripts) can recover which domain built
     # it and which tools it was given, without changing this function's return type.
     compiled.manifest = manifest  # type: ignore[attr-defined]  # deliberate stash, see comment above
     compiled.tools_by_name = {t.name: t for t in domain_tools}  # type: ignore[attr-defined]  # same
