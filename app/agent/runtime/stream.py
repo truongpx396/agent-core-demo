@@ -5,9 +5,7 @@ content assembly (`_build_human_content`), Langfuse trace open
 (`astream_events_turn`, `astream_events_turn_unattended`,
 `astream_events_resume`, `astream_events_continue_turn`, `cancel_run`,
 `get_session_messages`, `get_pending_approval`). Split out
-of `app/agent/runtime/core.py` for file size only (see that module's
-docstring); `runtime/legacy_stream.py` holds the sibling
-`@asynccontextmanager` variant.
+of `app/agent/runtime/core.py` (see that module's docstring).
 
 Reads `init_graph_async`/`_ensure_seeded_async`/`_upsert_session`/
 `_allowance_refusal`/`RECURSION_LIMIT` via

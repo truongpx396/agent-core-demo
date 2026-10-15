@@ -27,9 +27,8 @@ check (`_check_allowance`/`_allowance_refusal`; the rule itself is `app/agent/co
 because each reads/reassigns a module global (`_graph`/`_domain_name`/
 `_seeded`, or config names several tests monkeypatch directly on this
 module) that only works correctly with consumer and binding in one file.
-The streaming entry points live in `app/agent/runtime/stream.py` (and the
-legacy `@asynccontextmanager` path in `runtime/legacy_stream.py`) — both
-access this module's globals via `runtime_module.X` rather than a bare
+The streaming entry points live in `app/agent/runtime/stream.py`, which
+accesses this module's globals via `runtime_module.X` rather than a bare
 import, for the same monkeypatch reason.
 """
 import asyncio

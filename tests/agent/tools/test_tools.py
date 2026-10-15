@@ -31,9 +31,9 @@ from app.agent.tools.builtin import (
     _skill_visible_to_domain,
     add_note,
     ask_clarification,
+    gather_context,
     make_skill_tools,
     query_employees,
-    recall_memories,
     remember,
     search_docs,
     skill_search,
@@ -417,30 +417,38 @@ class TestRememberImpl:
         assert upserted == []
 
 
-class TestRecallMemories:
-    async def test_returns_empty_string_without_ctx(self):
-        assert await recall_memories(None, "coffee") == ""
+class TestMemoryRecallIsScopedToTheOwner:
+    """Recall has one reader, `gather_context` (the automatic pre-fetch). These used to go through a
+    `recall_memories` wrapper nothing in production called; the scoping they pin is the same."""
+
+    @staticmethod
+    def _memory_filters(seen):
+        return [f for f in seen if any(c.key == "kind" and c.match.value == "memory" for c in f.must)]
+
+    async def test_returns_nothing_without_ctx(self):
+        assert await gather_context(None, "coffee") == ("", [])
 
     async def test_scopes_to_tenant_and_owner(self, monkeypatch):
-        captured = {}
+        captured = []
 
         async def fake_hybrid_search(query_text, topic=None, k=None, tenant_filter=None, rerank_results=True, doc_ids=None, min_score=None):
-            captured["tenant_filter"] = tenant_filter
-            captured["rerank_results"] = rerank_results
+            captured.append((tenant_filter, rerank_results))
             return []
 
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
-        await recall_memories(TEST_CTX, "coffee")
+        await gather_context(TEST_CTX, "coffee")
 
-        must = captured["tenant_filter"].must
-        values = {c.key: c.match.value for c in must if c.match is not None}
+        memory_calls = [(f, r) for f, r in captured if self._memory_filters([f])]
+        assert len(memory_calls) == 1
+        memory_filter, rerank = memory_calls[0]
+        values = {c.key: c.match.value for c in memory_filter.must if c.match is not None}
         assert values["tenant"] == TEST_CTX["tenant"]
         assert values["kind"] == "memory"
         assert values["owner"] == TEST_CTX["principal"]
         # Reranking is deliberately skipped for memory recall — see
         # _memory_hits's docstring.
-        assert captured["rerank_results"] is False
+        assert rerank is False
 
     async def test_two_different_principals_get_different_filters(self, monkeypatch):
         """The concrete manifestation of "a memory belongs to whoever wrote
@@ -455,13 +463,14 @@ class TestRecallMemories:
         monkeypatch.setattr(qdrant_store, "hybrid_search", fake_hybrid_search)
 
         other_principal_same_tenant = {**TEST_CTX, "principal": "someone-else"}
-        await recall_memories(TEST_CTX, "coffee")
-        await recall_memories(other_principal_same_tenant, "coffee")
+        await gather_context(TEST_CTX, "coffee")
+        await gather_context(other_principal_same_tenant, "coffee")
 
         owners = [
-            next(c.match.value for c in f.must if c.key == "owner") for f in seen_filters
+            next(c.match.value for c in f.must if c.key == "owner")
+            for f in self._memory_filters(seen_filters)
         ]
-        assert owners[0] != owners[1]
+        assert len(owners) == 2 and owners[0] != owners[1]
 
 
 class TestQueryEmployees:

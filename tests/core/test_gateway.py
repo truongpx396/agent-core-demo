@@ -27,10 +27,8 @@ from app.agent.graph.build import build_graph
 from app.agent.graph.compaction import _estimate_tokens, make_compact_history_node
 from app.agent.graph.core import AGENT_RETRY_POLICY, GraphDeps
 from app.agent.graph.followups import make_suggest_followups_node
-from app.agent.runtime import core as runtime_module
-from app.agent.runtime import legacy_stream as legacy_stream_module
 from app.agent.runtime import stream as stream_module
-from app.core import gateway, metrics, tracing
+from app.core import gateway, metrics
 from app.core.errors import ErrorCode
 from tests.agent.graph.test_graph_integration import _config
 from tests.conftest import TEST_CTX, metric_value
@@ -427,40 +425,3 @@ class TestTheStreamReportsTheBackstopFiring:
 
         assert events[0]["code"] == "internal"
         assert _count() == before
-
-
-class TestTheLegacyStreamAgrees:
-    """`astream_events_turn_ctx` is not wired into a production caller (its module says so) but it
-    shares the contract, and a copy of the error handling that quietly differs is how the two drift."""
-
-    @pytest.fixture
-    def drive(self, monkeypatch):
-        async def init_graph_async():
-            return _RaisingGraph(self.exc)
-
-        async def ensure_seeded(graph, thread_id):
-            return None
-
-        monkeypatch.setattr(runtime_module, "init_graph_async", init_graph_async)
-        monkeypatch.setattr(runtime_module, "_ensure_seeded_async", ensure_seeded)
-        monkeypatch.setattr(tracing, "get_langfuse", lambda: None)
-
-        async def run(exc) -> list[dict]:
-            self.exc = exc
-            return [e async for e in legacy_stream_module.astream_events_turn_ctx("hi", "thread-1", TEST_CTX)]
-
-        return run
-
-    async def test_a_gateway_budget_stop_is_reported_and_counted(self, drive):
-        before = _count()
-
-        events = await drive(_budget_error())
-
-        assert [e["type"] for e in events] == ["error"]
-        assert events[0]["code"] == "provider_budget_exceeded"
-        assert _count() == before + 1
-
-    async def test_an_ordinary_failure_is_still_internal(self, drive):
-        events = await drive(RuntimeError("boom"))
-
-        assert events[0]["code"] == "internal"

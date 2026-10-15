@@ -526,31 +526,13 @@ async def remember(
     )
 
 
-async def recall_memories(ctx: SecurityCtx | None, query: str) -> str:
-    """Fetch this principal's own memories, re-filtered against CURRENT ctx
-    every call — same `_memory_hits` machinery `gather_context` calls for
-    the automatic pre-fetch path; this function has no production caller
-    today, only test coverage. Never called on the model's own initiative.
-    Re-filtering every call (rather than trusting a cached result) means a
-    clearance change takes effect on the very next turn.
-
-    Returns "" on missing ctx or no results — enrichment, never fails the
-    turn.
-    """
-    if not valid_ctx(ctx) or not DEFAULT_POLICY.permit("recall_memory", ctx):
-        return ""
-    hits = await _memory_hits(ctx, query)
-    if not hits:
-        return ""
-    return _format_cited_context(hits)
-
-
 async def gather_context(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]]:
     """Documents + this principal's memories, hybrid-searched and combined
     into ONE continuously-numbered citation sequence — called by
     app/agent/graph/core.py's `_default_search` (the automatic pre-fetch every
-    turn), not the same call recall_memories/_search_docs_impl make on
-    their own, though all three share the same retrieval/Policy machinery.
+    turn), not the same call `_search_docs_impl` makes when the model asks,
+    though both share the same retrieval/Policy machinery. This is the only
+    reader of this principal's memories; `remember` is the only writer.
 
     Degrades to `("", [])` on missing ctx or a retrieval failure —
     enrichment, never fails the turn (see retrieve_context's try/except in
