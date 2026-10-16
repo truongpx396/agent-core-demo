@@ -311,7 +311,7 @@ class TestShouldContinueSubagent:
 class TestShouldContinueBudgetOverrides:
     """should_continue's max_iterations/max_tokens/max_cost_usd params
     (GRAPH_PATTERNS.md pattern 46) — the mechanism
-    app/agent/tools/builtin.py::run_subagent relies on, via
+    app/agent/tools/run_subagent_domain.py::run_subagent relies on, via
     build_graph(max_iterations=..., ...), to bind a nested subagent run to
     its own, smaller MAX_SUBAGENT_* ceiling independent of the parent turn's
     own MAX_ITERATIONS/MAX_TOKENS_PER_TURN/MAX_COST_USD_PER_TURN."""
@@ -363,7 +363,7 @@ class TestMandatoryGateReason:
 class TestShouldContinueMandatoryGate:
     """A mutating/outward tool call must route to human_approval even when
     require_approval is False (the default) — mandatory, not opt-in. See
-    app/agent/tools/builtin.py::TOOL_CAPABILITIES and should_continue's docstring."""
+    app/domains/ecorp/tools.py::TOOL_CAPABILITIES and should_continue's docstring."""
 
     def test_mutating_tool_gates_even_without_require_approval(self):
         state = {

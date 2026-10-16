@@ -17,6 +17,8 @@ shaped DSN, and a library message can echo user input — so it goes to the
 trace/logs and never into an envelope; use `internal_error_envelope` for
 any failure that has no dedicated `ErrorCode`.
 """
+import os
+import traceback
 from dataclasses import asdict, dataclass
 from enum import Enum
 
@@ -55,6 +57,21 @@ INTERNAL_ERROR_MESSAGE = (
     "Something went wrong on our side while handling this request. "
     "Please try again; if it keeps happening, contact support."
 )
+
+
+def error_origin(exc: BaseException) -> str:
+    """Where `exc` was raised, as `app/agent/runtime/stream.py:612 in _run_graph_stream`: the innermost frame in this repo's code
+    (else the innermost frame at all). Never the message: an exception's text can name an internal
+    host, a SQL fragment or a DSN (pattern 30), which is why the logs carry only its class, and the
+    class alone cannot say where a bare `IndexError` came from."""
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return "unknown"
+    ours = [f for f in frames if "/app/" in f.filename.replace(os.sep, "/")]
+    frame = (ours or frames)[-1]
+    path = frame.filename.replace(os.sep, "/")
+    short = path[path.rindex("/app/") + 1 :] if "/app/" in path else os.path.basename(path)
+    return f"{short}:{frame.lineno} in {frame.name}"
 
 
 @dataclass(frozen=True)

@@ -36,7 +36,11 @@ from app.agent.graph.hitl import (
     paused_approval_async,
     resumability_error_async,
 )
-from app.agent.graph.messages import COMPACTION_MARKER_KEY, is_retry_artifact
+from app.agent.graph.messages import (
+    COMPACTION_MARKER_KEY,
+    is_retry_artifact,
+    legacy_retry_artifact_ids,
+)
 from app.agent.runtime import core as runtime_module
 from app.core import gateway, metrics, tracing
 from app.core.config import (
@@ -47,6 +51,7 @@ from app.core.errors import (
     ErrorCode,
     ErrorEnvelope,
     TurnCancelled,
+    error_origin,
     internal_error_envelope,
 )
 from app.core.security import SecurityCtx
@@ -503,7 +508,9 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
         # crosses the trust boundary (Principle V, pattern 30). The full
         # text is on the trace above; the log line below carries the class
         # only, matching the rest of the repo.
-        logger.warning("graph_stream_failed", extra={"error_class": type(exc).__name__})
+        logger.warning(
+            "graph_stream_failed", extra={"error_class": type(exc).__name__, "origin": error_origin(exc)}
+        )
         if outcome == "timeout":
             # asyncio.wait_for's own internal timeout raises a bare
             # TimeoutError with an empty str(exc), so the message is spelled
@@ -531,8 +538,9 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
         # event loop (via init_graph_async()), where only the async
         # accessor is safe (see resumability_error_async's docstring).
         state = await graph.aget_state(cfg)
-        if state.next:
-            pending = state.tasks[0].interrupts[0].value
+        interrupts = [intr for task in state.tasks for intr in task.interrupts] if state.next else []
+        if interrupts:
+            pending = interrupts[0].value
             trace.update(
                 output="".join(final_answer) + " [paused: awaiting approval]"
             )
@@ -540,6 +548,32 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 "type": "approval_required",
                 "tool_calls": pending["tool_calls"],
             }
+        elif state.next:
+            # Nodes are still pending, but none is waiting at an interrupt: the stream ended while
+            # something else was still running on this thread (another message sent into the same
+            # conversation at the same moment: the worker's per-thread lock stops that, but the
+            # Telegram and CLI paths do not take it). This used to index into an interrupt that was
+            # not there, outside every handler above, and escape as a raw IndexError.
+            trace.update(output="[ended with work still pending on this thread]", level="ERROR")
+            await _record_turn_metrics(time.monotonic() - start, "error", state.values)
+            envelope = ErrorEnvelope(
+                code=ErrorCode.THREAD_BUSY,
+                message="Another turn is already in progress on this conversation. Please wait for it to finish.",
+            )
+            terminal_event = {"type": "error", "content": envelope.message, **envelope.to_dict()}
+        elif not final_answer and not isinstance(((state.values or {}).get("messages") or [None])[-1], AIMessage):
+            # The run ended with nothing streamed and no answer message: there is nothing to show,
+            # and the last message is not one to show (the fallback below would stream the PERSON'S
+            # OWN question back as the answer). That is a run with nothing left to run, e.g. a
+            # continuation of a checkpoint whose pending node this build no longer recognises
+            # (tests/agent/graph/test_checkpoint_across_a_topology_change.py).
+            trace.update(output="[no answer: the run ended with nothing left to run]", level="ERROR")
+            await _record_turn_metrics(time.monotonic() - start, "error", state.values)
+            envelope = ErrorEnvelope(
+                code=ErrorCode.CHECKPOINT_INCOMPATIBLE,
+                message="This conversation's saved progress can no longer be continued. Please send your message again.",
+            )
+            terminal_event = {"type": "error", "content": envelope.message, **envelope.to_dict()}
         else:
             used_citations = state.values.get("used_citations") or []
             ungrounded_claims_count = state.values.get("ungrounded_claims_count") or 0
@@ -1029,8 +1063,12 @@ async def get_session_messages(thread_id: str) -> list[dict]:
     graph = await runtime_module.init_graph_async()
     state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
     messages = []
-    for m in state.values.get("messages", []):
-        if is_retry_artifact(m):
+    stored = state.values.get("messages", [])
+    # A thread that had a retry before artifacts were tagged is healed the next time it runs a turn;
+    # until then (and for a replay of a thread nobody has written to) the same ids are skipped here.
+    legacy = legacy_retry_artifact_ids(stored)
+    for m in stored:
+        if is_retry_artifact(m) or m.id in legacy:
             continue  # retry feedback and the answer it rejected were never part of the conversation
         if isinstance(m, HumanMessage):
             role = "user"

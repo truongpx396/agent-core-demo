@@ -1,4 +1,4 @@
-"""The operator CLI for the wallet (scripts/credits.py): what it refuses before it touches anything, what it passes to the wallet, and
+"""The operator CLI for the wallet (src/credit_billing/cli/credits.py): what it refuses before it touches anything, what it passes to the wallet, and
 how it reports each result. The wallet's own behaviour is tests/integration/test_credits_real_postgres.py and
 test_credit_adjust_and_cli_real_postgres.py; here the wallet is replaced so only the CLI's own decisions are under test."""
 from datetime import UTC, datetime, timedelta

@@ -978,7 +978,7 @@ class TestResolveSubagentTools:
 
 
 class TestBuildSubagentGraphTopology:
-    """build_subagent_graph() (app/agent/graph/build_subagent.py) reuses
+    """build_subagent_graph() (app/agent/graph/build.py) reuses
     build_graph()'s own node functions/factories but drops 5 nodes that
     are pure overhead (or worse) for a nested one-shot run — see that
     function's own docstring for the full per-node reasoning. Verified
@@ -1109,6 +1109,42 @@ class TestRunSubagentImpl:
         # larger MAX_ITERATIONS or exhausting the fake's whole queue.
         assert "did not produce a final answer" in result.answer
         assert len(fake_llm.calls) <= MAX_SUBAGENT_ITERATIONS
+
+    async def test_a_safety_net_that_trips_on_a_round_with_narration_beside_the_tool_call_is_still_budget_exceeded(self):
+        """A model often writes a sentence beside its tool request ("Let me check that."). That text is
+        narration of what it is about to do, not an answer. `no_answer_fallback` leaves a subagent's last
+        AIMessage alone (the tool-calling one), so reading that message's content as the answer reported
+        the run as completed, with the narration as the subagent's answer."""
+        from app.agent.graph.state import MAX_SUBAGENT_ITERATIONS
+
+        responses = [
+            AIMessage(
+                content="Let me check that for you.",
+                tool_calls=[{"name": "calculator", "args": {"expression": f"{i}+1"}, "id": f"c{i}"}],
+            )
+            for i in range(MAX_SUBAGENT_ITERATIONS + 5)
+        ]
+        fake_llm = _RecordingFakeLLM(*responses)
+        registry = {"researcher": (_fake_subagent_record(), ("calculator",))}
+
+        before = metric_value(
+            metrics.agent_subagent_run_total, subagent="researcher", outcome="budget_exceeded"
+        )
+        completed_before = metric_value(
+            metrics.agent_subagent_run_total, subagent="researcher", outcome="completed"
+        )
+        result = await run_subagent_impl(
+            "researcher", "never converge", _subagent_cfg(), registry=registry, llm=fake_llm
+        )
+
+        assert "Let me check" not in result.answer
+        assert "did not produce a final answer" in result.answer
+        assert metric_value(
+            metrics.agent_subagent_run_total, subagent="researcher", outcome="budget_exceeded"
+        ) == before + 1
+        assert metric_value(
+            metrics.agent_subagent_run_total, subagent="researcher", outcome="completed"
+        ) == completed_before
 
     async def test_hitting_its_own_no_progress_budget_reports_a_clear_message_not_empty(self):
         """Same identical-tool-call-batch loop MAX_REPEATED_ACTIONS already

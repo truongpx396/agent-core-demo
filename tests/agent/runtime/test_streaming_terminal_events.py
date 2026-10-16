@@ -368,6 +368,34 @@ class TestTheTurnTraceIsNeverLeftWithoutAnOutput:
                 raise ValueError("boom")
 
 
+class TestAStreamThatEndsWithWorkPendingButNoApprovalWaiting:
+    """Nodes still pending, none at an interrupt: the stream ended while something else was still running on
+    this thread (another message into the same conversation at the same moment; the worker's per-thread lock stops
+    that, but the Telegram and CLI paths do not take it). The stream used to index into an interrupt that was not
+    there, from a part of the generator no handler covers, so a raw IndexError escaped it (seen once in #171's CI)."""
+
+    async def test_it_reports_thread_busy_instead_of_raising(self):
+        class _Graph:
+            async def astream_events(self, *args, **kwargs):
+                return
+                yield  # pragma: no cover - makes this an async generator
+
+            async def aget_state(self, config):
+                return SimpleNamespace(
+                    values={"messages": [HumanMessage(content="q")]},
+                    next=("agent",),
+                    tasks=[SimpleNamespace(interrupts=[])],
+                )
+
+        errors_before = metric_value(metrics.agent_requests_total, outcome="error")
+
+        events = [e async for e in stream_module._run_graph_stream(_Graph(), {}, {}, None)]
+
+        assert [e["type"] for e in events] == ["error"]
+        assert events[0]["code"] == "thread_busy"
+        assert metric_value(metrics.agent_requests_total, outcome="error") == errors_before + 1
+
+
 class TestFollowupsEventIsSurfaced:
     """suggest_followups (pattern 27) computes real follow-up questions
     into state["followups"], but this streaming path never sent them to
@@ -914,7 +942,7 @@ class TestAGraphFailureNeverLeaksItsMessageToTheCaller:
 class TestSubagentEventsDontLeakIntoTheMainStream:
     """_run_graph_stream (app/agent/runtime/stream.py) threads this turn's own
     callbacks/metadata into a subagent's NESTED graph.invoke() (see
-    app/agent/tools/builtin.py::run_subagent_impl's `nested_config`) so its
+    app/agent/tools/run_subagent.py::run_subagent_impl's `nested_config`) so its
     internal LLM/tool calls trace correctly — but that nested graph is
     built via this exact same build_graph(), so it ALSO has a node named
     "agent". Without the `metadata.subagent_name` guard added alongside

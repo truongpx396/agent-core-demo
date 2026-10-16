@@ -12,8 +12,8 @@ Constitution Principle VII applies. The default suite must stay hermetic and fas
 
 - Fake LLM, no live Postgres/Redis/Qdrant/ml-service. `pyproject.toml`'s `addopts` excludes every
   marked tier by default; an explicit `-m` on the command line overrides it (it does not AND).
-- `tests/conftest.py` has four autouse guards: `mock_search_docs`, `mock_semantic_cache`,
-  `mock_ml_moderation`, `mock_appdata_postgres`. A test's result must not depend on which
+- `tests/conftest.py` has five autouse guards: `mock_search_docs`, `mock_semantic_cache`,
+  `mock_ml_moderation`, `mock_appdata_postgres`, `no_real_tracing`. A test's result must not depend on which
   containers happen to be running. If you add a live-service call on the turn path, add an
   autouse mock for it there. Inject a specific fake with `GraphDeps(search_docs=fake)` or the
   node-level `make_*_node(fake)` factories — that bypasses the default mock.
@@ -21,6 +21,7 @@ Constitution Principle VII applies. The default suite must stay hermetic and fas
   `sql_store.get_connection` — `from X import Y` makes a separate reference.
 - `asyncio_mode = "auto"`: write `async def test_...` and `await` directly. Don't wrap bodies in
   `asyncio.run(...)`.
+- `tests/core/test_doc_references.py` fails when a repo doc (or a rules file) names a file, or a function in it, that is gone. Update the reference; if it is MEANT to point at something retired, add it to that test's `INTENTIONAL` set with the reason.
 - Name tests as sentences describing the behavior, e.g.
   `test_add_comment_a_repeated_tool_call_id_is_a_no_op_not_a_duplicate`.
 - A bug fix needs a regression test that fails without the fix.
@@ -33,6 +34,7 @@ Constitution Principle VII applies. The default suite must stay hermetic and fas
   crawl4ai/ollama()`. Each starts its own testcontainer and the test self-skips (never fails) when
   Docker is unreachable.
 - A test that re-applies a `postgres-init/*.sql` migration to the shared database goes through `tests/integration/schema_reapply.py::reapply`, never a bare `execute(sql)`: DDL takes table locks (even `ADD COLUMN IF NOT EXISTS` when nothing changes) and deadlocks with other workers' writes, and the other worker's test is the one that fails (pattern 60).
+- `faulthandler_timeout = 300` (`pyproject.toml`) prints every thread's stack for a test that runs that long and lets it continue. To see an integration run's progress when its output is piped to a file, use `PYTHONUNBUFFERED=1 ... -v` (the default is block-buffered and hides the tail).
 - Under `pytest -n auto` containers are shared across workers via a fixed cache dir, and
   `AsyncPostgresSaver.setup()` runs once under a lock before any test can race it. Don't call
   `.setup()` per worker. Integration runs use `--dist=loadgroup`.

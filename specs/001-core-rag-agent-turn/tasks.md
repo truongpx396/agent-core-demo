@@ -207,7 +207,7 @@ confirm whole-turn trimming, summary accumulation, and the named over-budget out
 
 - [x] T069 [US5] `compact_history` — `_messages_to_trim` (ceiling 24 000 → floor 4 000 est. tokens via `tiktoken`, whole turns, never the system prompt or current turn), cumulative `history_summary`, `COMPACTION_MARKER_KEY` breadcrumb in `app/agent/graph_compaction.py`
 - [x] T070 [US5] `route_after_compaction` + `context_window_exceeded` (summary > `MAX_HISTORY_SUMMARY_CHARS = 4000` ⇒ named terminal message, counter) in `app/agent/graph.py`
-- [x] T071 [US5] `_ensure_seeded_async` (checks stored messages; `_seeded` is only a fast path) in `app/agent/runtime.py`
+- [x] T071 [US5] `_ensure_seeded_async` (checks stored messages; `_seeded` is only a fast path) in `app/agent/runtime.py` *(superseded by #171: the prompt is prepended on every call, no longer seeded; pattern 19)*
 - [x] T072 [US5] `resumability_error_async`, `_resumability_error_from_state` (paused = `state.tasks[i].interrupts`, not `state.next`; schema mismatch only; a build-SHA difference alone is not an error), `paused_approval_async` in `app/agent/graph_hitl.py` *(approval behavior itself is feature 003)*
 - [x] T073 [P] [US5] `get_session_messages` / `get_pending_approval` in `app/agent/runtime_stream.py`; session directory in `app/agent/sessions.py` with `postgres-init/06-chat-sessions.sql` and `postgres-init/11-chat-sessions-domain.sql` *(ownership/scoping semantics are feature 002)*
 

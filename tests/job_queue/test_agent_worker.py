@@ -8,11 +8,14 @@ a real graph/LLM.
 """
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from app.agent.graph.messages import RETRY_ARTIFACT_KEY
+from app.core import metrics
 from app.job_queue import agent_worker
 from app.job_queue.queue import (
     CONSUMER_GROUP,
@@ -219,6 +222,25 @@ class TestProcessRequestTurn:
         await agent_worker.process_request(client, entry_id, fields)
 
         assert captured["images"] is None
+
+    async def test_a_failure_is_logged_with_where_it_was_raised_and_not_what_it_said(self, monkeypatch, caplog):
+        """The class alone cannot say where a bare IndexError came from (it could not be traced in #171's CI);
+        the message cannot be logged (pattern 30), so the origin is: file, line and function, innermost in `app/`."""
+
+        async def failing_turn(text, thread_id, ctx, require_approval=False, images=None, cancel_check=None):
+            raise IndexError("list index out of range, in internal-db-host.example")
+            yield  # pragma: no cover - makes this a generator
+
+        monkeypatch.setattr(agent_worker, "astream_events_turn", failing_turn)
+        entry_id, fields = _entry(request_id="r9")
+
+        with caplog.at_level(logging.WARNING, logger="app.job_queue.agent_worker"):
+            await agent_worker.process_request(FakeRedis(), entry_id, fields)
+
+        (record,) = [r for r in caplog.records if r.getMessage() == "agent_worker_turn_failed"]
+        assert record.error_class == "IndexError"
+        assert record.origin.startswith("app/job_queue/agent_worker.py:")
+        assert "internal-db-host" not in record.origin and "out of range" not in record.origin
 
     async def test_a_failure_publishes_an_error_event_and_still_acks(self, monkeypatch):
         async def failing_turn(text, thread_id, ctx, require_approval=False, images=None, cancel_check=None):
@@ -753,9 +775,10 @@ class FakeGraph:
     `graph/hitl.py::_resumability_error_from_state`'s own docstring on why
     both are checked, not `state.next` alone)."""
 
-    def __init__(self, states: dict | None = None, paused: set | None = None):
+    def __init__(self, states: dict | None = None, paused: set | None = None, drained: set | None = None):
         self._states = states or {}
         self._paused = paused or set()
+        self._drained = drained or set()
 
     async def aget_state(self, config):
         thread_id = config["configurable"]["thread_id"]
@@ -765,7 +788,10 @@ class FakeGraph:
             return SimpleNamespace(
                 values={"messages": messages}, next=("human_approval",), tasks=[task]
             )
-        return SimpleNamespace(values={"messages": messages}, next=(), tasks=[])
+        # A turn that stopped mid-flight has a node still to run; `drained` marks a thread whose
+        # graph has nothing pending (a finished turn, or a checkpoint whose pending node is gone).
+        pending = () if thread_id in self._drained else ("agent",)
+        return SimpleNamespace(values={"messages": messages}, next=pending, tasks=[])
 
 
 class RaisingGraph:
@@ -780,6 +806,46 @@ class TestClassifyReclaimedTurn:
     outward tool call already having run no longer makes it unsafe (it
     just means retry via CONTINUATION, `"retry_continue"`, rather than a
     fresh restart)."""
+
+    async def test_a_crash_while_a_retry_is_in_progress_is_continued_from_the_turns_own_question(self):
+        """`retry_output` writes a tagged AIMessage (the rejected answer) and a tagged HumanMessage (the feedback).
+        Neither is the person's turn, and neither means the turn finished."""
+        graph = FakeGraph({"t1": [
+            HumanMessage(content="what is the refund policy", id="q"),
+            AIMessage(content="I am not sure.", id="a", additional_kwargs={RETRY_ARTIFACT_KEY: True}),
+            HumanMessage(content="cite your sources", id="f", additional_kwargs={RETRY_ARTIFACT_KEY: True}),
+        ]})
+        assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "retry_continue"
+
+    async def test_a_rejected_answer_is_not_a_finished_turn(self):
+        """The state `retry_output` never leaves a checkpoint in today (it writes the answer's tag and the feedback together),
+        but the question 'is this a final answer' must not depend on that: a tagged answer is the one about to be replaced."""
+        graph = FakeGraph({"t1": [
+            HumanMessage(content="what is the refund policy", id="q"),
+            AIMessage(content="I am not sure.", id="a", additional_kwargs={RETRY_ARTIFACT_KEY: True}),
+        ]})
+        assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "retry_continue"
+
+    async def test_a_turn_that_finished_after_a_retry_is_dead_lettered(self):
+        graph = FakeGraph({"t1": [
+            HumanMessage(content="what is the refund policy", id="q"),
+            AIMessage(content="I am not sure.", id="a", additional_kwargs={RETRY_ARTIFACT_KEY: True}),
+            HumanMessage(content="cite your sources", id="f", additional_kwargs={RETRY_ARTIFACT_KEY: True}),
+            AIMessage(content="Refunds are available for thirty days [1].", id="b"),
+        ]})
+        assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "dead_letter"
+
+    async def test_an_unfinished_turn_with_nothing_left_to_run_is_dead_lettered_not_continued(self):
+        """Continuing it would run nothing and end the turn with no answer. This is what a checkpoint whose pending
+        node this build no longer recognises looks like (a renamed router hides it)."""
+        before = _count(metrics.agent_checkpoint_issue_total, reason="nothing_to_continue")
+        graph = FakeGraph(
+            {"t1": [HumanMessage(content="what is my balance", id="q")]},
+            drained={"t1"},
+        )
+
+        assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "dead_letter"
+        assert _count(metrics.agent_checkpoint_issue_total, reason="nothing_to_continue") == before + 1
 
     async def test_no_checkpoint_at_all_is_retried_fresh(self):
         graph = FakeGraph()  # thread never seen -> empty state

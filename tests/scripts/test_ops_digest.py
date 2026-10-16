@@ -1,6 +1,6 @@
 """Tests for scripts/ops_digest.py. `build_digest_prompt` is pure — tested
 directly. `run_digest` is tested with a fake LLM (`llm=` DI, same pattern
-app/agent/tools/builtin.py::run_subagent_impl already uses) and
+app/agent/tools/run_subagent.py::run_subagent_impl already uses) and
 metrics_client/notify monkeypatched, so this stays hermetic (no live
 Prometheus, LLM, or Postgres) — matching the rest of this suite's discipline.
 The call goes through the metering choke point, whose usage-event write is

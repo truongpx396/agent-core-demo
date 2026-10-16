@@ -11,6 +11,10 @@ testpaths = ["tests"]
 # `def test_...` is collected and run exactly as before regardless of this
 # setting, so it changes nothing for the (majority) sync tests in this suite.
 asyncio_mode = "auto"
+# A test that runs this long (the slowest, test_worker_scaling, takes about a minute) dumps every thread's Python stack to
+# stderr, and keeps running. An integration run stalled twice locally with one test never finishing and no way to see where
+# (py-spy needs root on macOS, and the process is idle); with this the next stall names the line it is waiting on.
+faulthandler_timeout = 300
 # `addopts`'s own `-m` default is what actually keeps a bare `pytest -q`
 # fast — every marked test ALSO self-skips (not fails) when Docker/the
 # model it needs isn't reachable (tests/containers.py), but relying on

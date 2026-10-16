@@ -130,8 +130,9 @@ import uuid
 from contextlib import aclosing
 from typing import cast
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage
 
+from app.agent.graph.messages import is_retry_artifact, is_user_message
 from app.agent.runtime.core import close_checkpointer_pool, init_graph_async
 from app.agent.runtime.stream import (
     astream_events_continue_turn,
@@ -147,7 +148,12 @@ from app.core.config import (
     MAX_AUTO_RECLAIM_RETRIES,
     WORKER_RECLAIM_INTERVAL_SECONDS,
 )
-from app.core.errors import ErrorCode, ErrorEnvelope, internal_error_envelope
+from app.core.errors import (
+    ErrorCode,
+    ErrorEnvelope,
+    error_origin,
+    internal_error_envelope,
+)
 from app.core.logging_config import bind_request_id, configure_logging
 from app.core.telemetry import configure_telemetry
 from app.domains.registry import resolve_domain
@@ -379,7 +385,12 @@ async def process_request(client, entry_id: str, fields: dict) -> None:
         except Exception as exc:  # noqa: BLE001 - the queue must keep moving regardless
             logger.warning(
                 "agent_worker_turn_failed",
-                extra={"request_id": request_id, "kind": kind, "error_class": type(exc).__name__},
+                extra={
+                    "request_id": request_id,
+                    "kind": kind,
+                    "error_class": type(exc).__name__,
+                    "origin": error_origin(exc),  # where, not what: see errors.error_origin
+                },
             )
             # Not `str(exc)`: the caller gets the generic envelope, never the exception's own
             # text (an internal hostname, a SQL fragment, a DSN — pattern 30). The worker's own
@@ -418,7 +429,9 @@ def _turn_already_completed(turn_messages: list) -> bool:
     if not turn_messages:
         return False
     last = turn_messages[-1]
-    return isinstance(last, AIMessage) and not last.tool_calls
+    # A rejected answer (tagged by `retry_output`, see messages.RETRY_ARTIFACT_KEY) has no
+    # tool calls either, but it is the answer the turn is about to be asked to replace.
+    return isinstance(last, AIMessage) and not last.tool_calls and not is_retry_artifact(last)
 
 
 async def _classify_reclaimed_turn(graph, thread_id: str) -> str:
@@ -429,7 +442,8 @@ async def _classify_reclaimed_turn(graph, thread_id: str) -> str:
     `get_session_messages`/`resumability_error_async` already use
     elsewhere).
 
-    Finds the LAST `HumanMessage` in the checkpoint: since every turn
+    Finds the last message the PERSON sent (`is_user_message`, not the
+    retry feedback `retry_output` writes as a tagged `HumanMessage`): since every turn
     appends exactly one fresh `HumanMessage` before anything else runs,
     everything after it belongs to the most recent turn only — whether
     that's the crashed one, or (if the crash happened before even that got
@@ -486,8 +500,11 @@ async def _classify_reclaimed_turn(graph, thread_id: str) -> str:
         return "dead_letter"
 
     messages = (state.values or {}).get("messages", []) if state else []
+    # The turn's own question, not `retry_output`'s feedback (a HumanMessage too, tagged): see
+    # messages.is_user_message. Today the two readings agree, because the feedback and the
+    # rejected answer are written together; this keeps them agreeing if that ever changes.
     last_human_index = next(
-        (i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)),
+        (i for i in range(len(messages) - 1, -1, -1) if is_user_message(messages[i])),
         None,
     )
     if last_human_index is None:
@@ -497,6 +514,17 @@ async def _classify_reclaimed_turn(graph, thread_id: str) -> str:
         return "dead_letter"
     if state.next and any(task.interrupts for task in state.tasks):
         return "dead_letter"  # crashed strictly after reaching a real pause
+    if not state.next:
+        # Unfinished (no final answer, checked above), yet nothing is pending to run. A turn
+        # that stopped mid-flight always has a next node, so this is a checkpoint whose pending
+        # node this build no longer recognises: LangGraph names the channel that triggers a node
+        # after the edge feeding it, so a renamed router (or a removed node) hides the pending
+        # one and a resume silently runs nothing (verified: tests/agent/graph/test_checkpoint_across_a_topology_change.py).
+        # "Continuing" it would end the turn with no answer, so it is dead-lettered instead and
+        # the caller is told to retry.
+        metrics.agent_checkpoint_issue_total.labels(reason="nothing_to_continue").inc()
+        logger.warning("agent_worker_reclaim_nothing_to_continue", extra={"thread_id": thread_id})
+        return "dead_letter"
     return "retry_continue"
 
 

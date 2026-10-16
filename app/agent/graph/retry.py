@@ -103,8 +103,8 @@ def make_retry_exhausted_node(emit_message: bool = True):
 # exactly this last message to synthesize a token event.
 #
 # emit_message=False (run_subagent's nested graphs) makes this a no-op:
-# run_subagent (app/agent/tools/builtin.py) already runs the IDENTICAL "empty final
-# AIMessage" check on its own terms to report outcome="budget_exceeded" —
+# run_subagent (app/agent/tools/run_subagent.py) decides on its own terms, from the last
+# AIMessage (no pending tool calls and some text, else "budget_exceeded") —
 # filling in prose here would make that check wrongly see real text and
 # report the run as completed. ---
 def make_no_answer_fallback_node(
@@ -121,7 +121,8 @@ def make_no_answer_fallback_node(
         # (OpenAI-style APIs reject it), so each one is answered here — also for a subagent
         # (emit_message=False), whose thread is discarded but whose graph must not end on a
         # malformed history either. `run_subagent` still reads the last AIMessage, which stays
-        # the empty tool-call one, so it still reports "budget_exceeded".
+        # the tool-calling one; it never counts a message with pending calls as an answer (whatever
+        # text sits beside them), so it still reports "budget_exceeded".
         pending_calls = (last.tool_calls or []) if isinstance(last, AIMessage) else []
         rejections = reject_tool_calls(
             pending_calls,

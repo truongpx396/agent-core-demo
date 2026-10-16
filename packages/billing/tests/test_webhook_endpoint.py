@@ -1,10 +1,10 @@
-"""POST /billing/webhooks/{provider}: the defensive shell around the inbox (app/api/routers/billing.py).
+"""POST /billing/webhooks/{provider}: the defensive shell around the inbox (src/credit_billing/http.py).
 
 The caller is an unauthenticated stranger until a signature verifies, so what is proven here is what the route
 does BEFORE it trusts anything: refuse an unknown provider, refuse an oversized body before reading it, refuse a
 forgery without storing a thing, and answer with a status the provider's retry logic can act on. The inbox, the
 tenant link and the wallet behind it (`webhooks.process_event`) are faked here and proven against a real
-Postgres in tests/integration/test_billing_webhooks_real_postgres.py.
+Postgres in tests/integration/test_webhooks_real_postgres.py.
 
 A real `TestClient` over a tiny app that mounts only this router: the route is read as a Starlette request
 (streamed body, raw headers), which calling the handler as a plain function would not exercise.

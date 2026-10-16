@@ -3,7 +3,7 @@
 The hermetic suite proves the adapter against Polar's documentation and Polar's own SDK (its signature vectors are verified by the SDK's
 verifier; its payload fixtures come from `polar trigger --json`). This proves it against Polar itself, in three ways nothing else can:
 
-  * a Checkout request the real API accepts, whose session has the shape `tests/billing/fake_polar_api.py` assumes, and the fact that
+  * a Checkout request the real API accepts, whose session has the shape `tests/fake_polar_api.py` assumes, and the fact that
     shapes the whole checkout design: **Polar ignores an `Idempotency-Key`** (this file sends one twice and gets two sessions), which is why
     the adapter searches before it creates. The reconciliation is exercised against the real list endpoint;
   * a delivery SIGNED BY POLAR (via `polar listen`, whose secret the CLI prints) verifies with the adapter's code, and the same bytes are

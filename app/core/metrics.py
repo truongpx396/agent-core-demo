@@ -169,6 +169,13 @@ agent_retry_total = Counter(
     "agent_retry_total", "Output-quality retries triggered by route_after_check"
 )
 
+agent_legacy_retry_artifacts_healed_total = Counter(
+    "agent_legacy_retry_artifacts_healed_total",
+    "Messages tagged as retry artifacts in a thread that predates the tagging "
+    "(app/agent/graph/messages.py::heal_legacy_retry_artifacts, run by validate_input). "
+    "It stops growing once no such thread is used any more, which is when that code can be removed",
+)
+
 agent_zero_citations_total = Counter(
     "agent_zero_citations_total",
     "Non-empty final answers with retrieved context available but zero "
@@ -332,9 +339,10 @@ agent_capability_gate_total = Counter(
 
 agent_checkpoint_issue_total = Counter(
     "agent_checkpoint_issue_total",
-    "Resume attempts refused by resumability_error before Command(resume=...)",
+    "Resume attempts refused by resumability_error before Command(resume=...), and reclaimed turns "
+    "that could not be continued (nothing left to run)",
     ["reason"],
-)  # reason: checkpoint_lost | checkpoint_incompatible
+)  # reason: checkpoint_lost | checkpoint_incompatible | nothing_to_continue (a reclaimed turn whose pending node is gone)
 
 agent_missing_ctx_total = Counter(
     "agent_missing_ctx_total",

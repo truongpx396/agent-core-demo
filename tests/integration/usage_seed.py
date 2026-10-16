@@ -1,8 +1,8 @@
 """Seeds `usage_events` rows at an explicit time, for the integration tests that need spend from "two days ago".
 
 The real writer (`usage_events._insert`) stamps `now()`, and the table is append-only (UPDATE is refused by a trigger),
-so a test cannot write a row and age it afterwards the way tests/integration/test_ledger_real_postgres.py ages a ledger
-row. Seeding with the time up front is the same thing without touching the immutability the table exists to guarantee."""
+so a test cannot write a row and age it afterwards, as the tests of the retired `usage_ledger` table did with its rows.
+Seeding with the time up front is the same thing without touching the immutability the table exists to guarantee."""
 import uuid
 from datetime import datetime
 

@@ -182,7 +182,7 @@ class TestPerTurnResetThroughTheGraph:
 
 
 class TestConcatOrResetReducer:
-    """`State.subagent_spend`'s reducer (app/agent/graph/core.py::concat_or_reset). The
+    """`State.subagent_spend`'s reducer (app/agent/graph/state.py::concat_or_reset). The
     concurrency case here is the hermetic twin of
     tests/agent/runtime/test_concurrent_turns.py::TestSubagentCallUnderConcurrency
     (an `integration`-tier test, so not run by `make test`): it proves that

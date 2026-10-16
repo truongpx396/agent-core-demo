@@ -170,7 +170,7 @@ def _echoing_llm(respond: Callable[[list[BaseMessage]], AIMessage]):
     model never trips (`build_graph()` uses `deps.llm` raw, never calling
     `.bind_tools()` on it — only its OWN `make_llm()` production
     construction path does that), but
-    app/agent/tools/builtin.py::run_subagent_impl's fallback DOES call
+    app/agent/tools/run_subagent.py::run_subagent_impl's fallback DOES call
     `ChatOpenAI(...).bind_tools(nested_tools)` on whatever `ChatOpenAI`
     constructs — needed for TestSubagentCallUnderConcurrency, which
     monkeypatches `ChatOpenAI` itself to return one of these. Same
@@ -310,7 +310,7 @@ async def real_semantic_cache_redis(monkeypatch):
 
 
 async def _real_search_docs(query: str, ctx) -> tuple[str, list[dict]]:
-    """The REAL retrieval path (app/agent/graph/core.py::default_search's own
+    """The REAL retrieval path (app/agent/graph/build.py::default_search's own
     wrapper over app/agent/tools/builtin.py::gather_context, reproduced here since
     that real default is exactly what tests/conftest.py's session-wide
     `mock_search_docs` fixture overrides — see `_install_fake_graph`'s own
@@ -735,7 +735,7 @@ class TestSameThreadTurnsAreSerializedNotCorrupted:
 
 
 class TestHITLApprovalUnderConcurrency:
-    """`remember` is declared "mutating" (app/agent/tools/builtin.py::TOOL_CAPABILITIES),
+    """`remember` is declared "mutating" (app/domains/ecorp/tools.py::TOOL_CAPABILITIES),
     so it ALWAYS pauses at the human_approval gate regardless of whether
     the caller opted into require_approval (GRAPH_PATTERNS.md pattern
     15's MANDATORY gate, not the opt-in one). Proves the pause/resume
@@ -772,7 +772,7 @@ class TestHITLApprovalUnderConcurrency:
             last = messages[-1]
             if isinstance(last, ToolMessage):
                 # `remember`'s real return value is the fixed string
-                # "Remembered." (app/agent/tools/builtin.py::_remember_impl), not an
+                # "Remembered." (app/domains/ecorp/store.py::remember_impl), not an
                 # echo of what was remembered — the ORIGINAL human text is
                 # what actually distinguishes this thread from a sibling's,
                 # and it's still the only HumanMessage in this short
@@ -863,7 +863,7 @@ class TestHITLApprovalUnderConcurrency:
 class TestSubagentCallUnderConcurrency:
     """The real `run_subagent` tool (read_only — no HITL pause,
     GRAPH_PATTERNS.md pattern 46) delegates to a genuinely separate,
-    nested `build_graph()` run per call (app/agent/tools/builtin.py::run_subagent_impl)
+    nested `build_graph()` run per call (app/agent/tools/run_subagent.py::run_subagent_impl)
     — its own fresh messages (the delegated task, NOT this conversation's
     history), its own LLM client construction. Proves N concurrent
     top-level turns' own nested subagent runs never cross-wire: each

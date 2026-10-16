@@ -67,7 +67,7 @@ class TestSandboxing:
     this test runs — reachability became a per-call concern, not a
     presence concern, after a real, live bug (see
     sandbox_session.load_raw_sandbox_tools's own docstring) — same fix
-    app/domains/ops/test_domain.py and tests/domains/support/test_domain.py
+    tests/domains/ops/test_domain.py and tests/domains/support/test_domain.py
     already needed for the same reason."""
 
     def test_tool_node_knows_at_least_the_core_sales_domains_tools(self):
@@ -297,7 +297,7 @@ async def test_handoff_to_human_notifies_the_team_channel(monkeypatch):
 
 
 async def test_run_command_in_sandbox_pauses_for_approval_and_runs_once_approved(monkeypatch):
-    """Same shape as app/domains/ops/test_domain.py's own version of this
+    """Same shape as tests/domains/ops/test_domain.py's own version of this
     test — the sandbox trio is always present now, but its impl still
     calls load_raw_sandbox_tools() fresh on every real call, so stub that
     out too, not just run_command_in_sandbox_impl."""

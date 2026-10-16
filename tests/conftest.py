@@ -160,6 +160,17 @@ async def _benign_ml_score(text: str) -> float:
 
 
 @pytest.fixture(autouse=True)
+def no_real_tracing(monkeypatch):
+    """The default suite never builds a real Langfuse client (it starts threads, tries the network, and registers an
+    atexit flush that took ~90 s to give up when Langfuse was down). `get_langfuse()` answers None, so a trace is simply
+    absent; a test of the tracing code itself resets this and brings its own fake SDK (tests/core/test_tracing_client.py)."""
+    from app.core import tracing
+
+    monkeypatch.setattr(tracing, "_client", None)
+    monkeypatch.setattr(tracing, "_settled", True)
+
+
+@pytest.fixture(autouse=True)
 def mock_ml_moderation(monkeypatch):
     monkeypatch.setattr(moderation, "_ml_malicious_score", _benign_ml_score)
 

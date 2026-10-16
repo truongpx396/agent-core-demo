@@ -99,7 +99,7 @@ class TestHealthReady:
 class TestUsage:
     """GET /usage — a thin pass-through to app/agent/cost/spend.py::usage_summary,
     called once all-time and once scoped to the rolling 24h window
-    app/agent/cost/budgets.py::check_tenant_daily itself checks."""
+    app/agent/cost/budgets.py::check_allowance itself checks."""
 
     async def test_reports_all_time_and_rolling_24h_figures(self, monkeypatch):
         calls = []
