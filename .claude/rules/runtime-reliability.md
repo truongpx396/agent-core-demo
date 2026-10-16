@@ -46,6 +46,10 @@ session; `GRAPH_PATTERNS.md` has the full story under the pattern number given.
   docker-compose) — not by `parallel_tool_calls=False`, which was a no-op and has been removed.
   Treat that patch file as load-bearing.
 
+## Streaming turns (`runtime/stream.py`)
+
+- A loop over `astream_events_*` or `_run_graph_stream` that can leave early (an exception, a `return`, a `break`) uses `contextlib.aclosing`. A bare `async for` does not close the generator when it is left, so the turn's own cleanup (the trace, the abandoned-turn metrics, the budget hold) runs a loop turn late, after the failure was handled. A close mid-turn is `GeneratorExit` in `_run_graph_stream` and is recorded as the `abandoned` outcome (pattern 36).
+
 ## Queue and workers (`job_queue/`, `ingest_*`)
 
 - Delivery is at-least-once: ACK only after `process_request` finishes, so every handler MUST be

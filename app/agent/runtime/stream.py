@@ -1,6 +1,6 @@
 """Production streaming path: per-turn metrics/timeout helpers, multimodal
 content assembly (`_build_human_content`), Langfuse trace open
-(`_open_trace`), the `astream_events` event-translation core
+(`_open_trace`, `_turn_trace`), the `astream_events` event-translation core
 (`_run_graph_stream`), and the public streaming entry points
 (`astream_events_turn`, `astream_events_turn_unattended`,
 `astream_events_resume`, `astream_events_continue_turn`, `cancel_run`,
@@ -17,13 +17,16 @@ silently never take effect. Applied uniformly even to names nothing
 patches today, so it doesn't need a per-name judgment call later.
 
 `_open_trace` stays a bare reference here: unlike the names above, both it
-and its callers (`astream_events_turn`, `astream_events_resume`) live in
-this same file, so it already resolves dynamically against this module's
-own globals. Tests patch `app.agent.runtime.stream._open_trace` directly.
+and its caller (`_turn_trace`, the context manager the three streaming entry
+points open their trace through) live in this same file, so it already resolves
+dynamically against this module's own globals. Tests patch
+`app.agent.runtime.stream._open_trace` directly.
 """
 import asyncio
 import logging
 import time
+from collections.abc import Iterator
+from contextlib import aclosing, contextmanager
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
@@ -225,6 +228,58 @@ def _open_trace(name: str, session_id: str, input_text: str):
     return trace, callbacks
 
 
+class _TurnTrace:
+    """One turn's Langfuse trace, or nothing when Langfuse is off or unreachable.
+
+    A null object: `update` is a no-op without a trace, so `_run_graph_stream` has no `if trace:`
+    guard at each of its exits. It also remembers whether an output was ever recorded
+    (`finished`), which is what `_turn_trace` uses to finish a trace that no code path did.
+    Writes pass straight through to the Langfuse client (whose own `update` is a queued,
+    non-blocking call that logs rather than raises), so what reaches it is unchanged.
+    """
+
+    def __init__(self, trace=None):
+        self._trace = trace
+        self.finished = False
+
+    def update(self, **fields) -> None:
+        if "output" in fields:
+            self.finished = True
+        if self._trace is not None:
+            self._trace.update(**fields)
+
+
+@contextmanager
+def _turn_trace(name: str, session_id: str, input_text: str) -> Iterator[tuple[_TurnTrace, list]]:
+    """Opens a turn's trace (`_open_trace`) and guarantees it leaves with an output.
+
+    `_run_graph_stream` finishes the trace on every exit it can see. This is the net under it: a
+    failure between opening the trace and starting the stream (building the input, say), or any
+    exit that `_run_graph_stream` did not handle, would otherwise leave a trace with an input and
+    nothing else, indistinguishable in Langfuse from a turn still in flight. Where the stream
+    already recorded an output (the usual case, including a close mid-stream) this does nothing.
+
+    A plain `contextmanager`, not an async one, on purpose: there is nothing to await on the way
+    out (the update is a queued call, and this module deliberately does not flush per turn: a
+    flush blocks until the queue drains, which would stall the event loop), and cleanup that
+    awaits while an async generator is being closed or cancelled is the fragile part of this
+    code. It wraps `_open_trace` rather than replacing it: that function is the seam tests patch.
+    """
+    raw_trace, callbacks = _open_trace(name, session_id, input_text)
+    trace = _TurnTrace(raw_trace)
+    try:
+        yield trace, callbacks
+    except BaseException as exc:
+        if not trace.finished:
+            if isinstance(exc, GeneratorExit):
+                trace.update(output="[abandoned: stream closed before the turn finished]", level="WARNING")
+            elif isinstance(exc, asyncio.CancelledError):
+                trace.update(output="[cancelled: task cancelled]", level="WARNING")
+            else:
+                trace.update(output=f"error: {exc}", level="ERROR")
+        raise
+
+
 async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
     """Shared core of astream_events_turn/astream_events_resume: drives one
     `graph.astream_events()` call, translates events into this app's typed
@@ -275,11 +330,13 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
     `_iterate_with_timeout`; only `agent_worker.py`'s turn-job dispatch
     passes one today.
     """
+    trace = trace if isinstance(trace, _TurnTrace) else _TurnTrace(trace)
     start = time.monotonic()
     final_answer = []
     used_citations: list[dict] = []
     ungrounded_claims_count = 0
     followups: list[str] = []
+    synthetic_token = ""
     try:
         async for event in _iterate_with_timeout(
             graph.astream_events(graph_input, config=cfg, version="v2"),
@@ -395,10 +452,9 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
     except TurnCancelled:
         # Checked before the generic except below — a deliberate stop gets
         # its own ErrorCode rather than ErrorCode.INTERNAL.
-        if trace:
-            trace.update(
-                output="".join(final_answer) + " [cancelled by user]", level="WARNING"
-            )
+        trace.update(
+            output="".join(final_answer) + " [cancelled by user]", level="WARNING"
+        )
         await _record_unfinished_turn(graph, cfg, start, "cancelled")
         metrics.agent_streaming_cancellation_total.inc()
         envelope = ErrorEnvelope(code=ErrorCode.CANCELLED, message="Cancelled by user.")
@@ -414,17 +470,32 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
         # anything, leaving spans open with raw asyncio internals as the
         # status message). Re-raises after cleanup so the caller (e.g.
         # agent_worker.py's dispatch loop) still sees it.
-        if trace:
-            trace.update(
-                output="".join(final_answer) + " [cancelled: task cancelled]",
-                level="WARNING",
-            )
+        trace.update(
+            output="".join(final_answer) + " [cancelled: task cancelled]",
+            level="WARNING",
+        )
         await _record_unfinished_turn(graph, cfg, start, "cancelled")
         metrics.agent_streaming_cancellation_total.inc()
         raise
+    except GeneratorExit:
+        # The consumer stopped iterating before a terminal event: `aclose()` throws this at
+        # whichever `yield` the generator is suspended on. That is what a cancelled or failed
+        # consumer leaves behind (the worker's `publish_result` raising mid-loop, a task
+        # cancelled while it is awaiting the publish): the cancellation lands in the CONSUMER's
+        # frame, not here, so the branch above never sees it. The trace is finished with what
+        # had streamed, and the turn is counted under its own outcome, "abandoned", not
+        # "cancelled": nobody asked for a stop (`agent_streaming_cancellation_total` is the
+        # POST /chat/cancel counter and stays out of it). No terminal event is possible, since a
+        # generator being closed must not yield; awaiting is allowed, and
+        # `_record_unfinished_turn` is bounded by its own timeout and never raises.
+        trace.update(
+            output="".join(final_answer) + " [abandoned: stream closed before the turn finished]",
+            level="WARNING",
+        )
+        await _record_unfinished_turn(graph, cfg, start, "abandoned")
+        raise
     except Exception as exc:  # noqa: BLE001
-        if trace:
-            trace.update(output=f"error: {exc}", level="ERROR")
+        trace.update(output=f"error: {exc}", level="ERROR")
         outcome = "timeout" if isinstance(exc, TimeoutError) else "error"
         await _record_unfinished_turn(graph, cfg, start, outcome)
         # The caller never sees `str(exc)`: an unexpected exception's text
@@ -462,10 +533,9 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
         state = await graph.aget_state(cfg)
         if state.next:
             pending = state.tasks[0].interrupts[0].value
-            if trace:
-                trace.update(
-                    output="".join(final_answer) + " [paused: awaiting approval]"
-                )
+            trace.update(
+                output="".join(final_answer) + " [paused: awaiting approval]"
+            )
             terminal_event = {
                 "type": "approval_required",
                 "tool_calls": pending["tool_calls"],
@@ -494,10 +564,15 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                     # Langfuse trace blank despite the client getting the
                     # real text (a second real bug).
                     final_answer.append(skipped_text)
-                    yield {"type": "token", "content": skipped_text}
-            if trace:
-                trace.update(output="".join(final_answer))
+                    synthetic_token = skipped_text
+            trace.update(output="".join(final_answer))
             await _record_turn_metrics(time.monotonic() - start, _turn_outcome(state.values), state.values)
+            # Yielded only now, after the turn is recorded: this clause is not covered by the
+            # `except` branches above, so a consumer that closed the stream at this yield used
+            # to leave a finished turn with a blank trace and no metrics. The client still gets
+            # the same events in the same order.
+            if synthetic_token:
+                yield {"type": "token", "content": synthetic_token}
             terminal_event = {"type": "done"}
     # No per-turn flush: the shared client's own background consumer sends
     # events as they arrive and app/core/tracing.py flushes it at process exit.
@@ -603,18 +678,25 @@ async def astream_events_turn(
                 "content": "A previous pending approval on this conversation could not be resumed after an app update; starting a new request.",
             }
         await runtime_module.upsert_session(ctx, thread_id, text)
-        trace, callbacks = _open_trace("chat-turn-stream", thread_id, text)
-        cfg = {
-            "configurable": {"thread_id": thread_id, "ctx": ctx},
-            "callbacks": callbacks,
-            "recursion_limit": runtime_module.RECURSION_LIMIT,
-        }
-        graph_input = {
-            "messages": [HumanMessage(content=_build_human_content(text, images))],
-            "require_approval": require_approval,
-        }
-        async for event in _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=cancel_check):
-            yield event
+        with _turn_trace("chat-turn-stream", thread_id, text) as (trace, callbacks):
+            cfg = {
+                "configurable": {"thread_id": thread_id, "ctx": ctx},
+                "callbacks": callbacks,
+                "recursion_limit": runtime_module.RECURSION_LIMIT,
+            }
+            graph_input = {
+                "messages": [HumanMessage(content=_build_human_content(text, images))],
+                "require_approval": require_approval,
+            }
+            # `aclosing`, here and at the two other call sites: a bare `async for` over a generator does
+            # not close it when the OUTER generator is closed, so the inner one would be finalised
+            # later, by the event loop's own hook (or never, at loop teardown), and its `GeneratorExit`
+            # handling (the trace) would run late. This closes it in the same `aclose()`.
+            async with aclosing(
+                _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=cancel_check)
+            ) as events:
+                async for event in events:
+                    yield event
     finally:
         _release_turn_budget_in_background(ctx, budget_hold)
 
@@ -692,17 +774,22 @@ async def astream_events_turn_unattended(
         nonlocal paused
         paused = False
         pending_tools.clear()
-        async for event in stream:
-            if event.get("type") == "approval_required":
-                paused = True
-                pending_tools.extend(tc.get("name", "?") for tc in event.get("tool_calls", []))
-                continue
-            yield event
+        # `aclosing` here and on the two loops over `_drain` below: this wrapper holds three
+        # generators open at once, and a consumer that stops early closes only the outermost
+        # (see `aclosing` in `astream_events_turn`), so each must close the one it drives.
+        async with aclosing(stream):
+            async for event in stream:
+                if event.get("type") == "approval_required":
+                    paused = True
+                    pending_tools.extend(tc.get("name", "?") for tc in event.get("tool_calls", []))
+                    continue
+                yield event
 
-    async for event in _drain(
-        astream_events_turn(text, thread_id, ctx, require_approval=require_approval, images=images)
-    ):
-        yield event
+    async with aclosing(
+        _drain(astream_events_turn(text, thread_id, ctx, require_approval=require_approval, images=images))
+    ) as events:
+        async for event in events:
+            yield event
 
     declines = 0
     while paused:
@@ -723,8 +810,9 @@ async def astream_events_turn_unattended(
         # admitted=True: this decline is a step of the request that already passed the
         # allowance at its start. Re-checking here could refuse it and leave the
         # conversation paused — the stranded-pause bug this loop exists to prevent.
-        async for event in _drain(astream_events_resume(thread_id, False, ctx, admitted=True)):
-            yield event
+        async with aclosing(_drain(astream_events_resume(thread_id, False, ctx, admitted=True))) as events:
+            async for event in events:
+                yield event
 
 
 async def astream_events_resume(
@@ -786,18 +874,19 @@ async def astream_events_resume(
             yield {"type": "done"}
             return
 
-        trace, callbacks = _open_trace(
+        with _turn_trace(
             "chat-turn-stream-resume", thread_id, f"resume(approved={approved})"
-        )
-        cfg = {
-            "configurable": {"thread_id": thread_id, "ctx": ctx},
-            "callbacks": callbacks,
-            "recursion_limit": runtime_module.RECURSION_LIMIT,
-        }
-        async for event in _run_graph_stream(
-            graph, Command(resume=approved), cfg, trace, cancel_check=cancel_check
-        ):
-            yield event
+        ) as (trace, callbacks):
+            cfg = {
+                "configurable": {"thread_id": thread_id, "ctx": ctx},
+                "callbacks": callbacks,
+                "recursion_limit": runtime_module.RECURSION_LIMIT,
+            }
+            async with aclosing(
+                _run_graph_stream(graph, Command(resume=approved), cfg, trace, cancel_check=cancel_check)
+            ) as events:
+                async for event in events:
+                    yield event
     finally:
         _release_turn_budget_in_background(ctx, budget_hold)
 
@@ -880,14 +969,15 @@ async def _continue_turn_events(thread_id: str, ctx: SecurityCtx, cancel_check):
         yield {"type": "error", "content": envelope.message, **envelope.to_dict()}
         return
 
-    trace, callbacks = _open_trace("chat-turn-stream-continue", thread_id, "continue(crash-recovery)")
-    cfg = {
-        "configurable": {"thread_id": thread_id, "ctx": ctx},
-        "callbacks": callbacks,
-        "recursion_limit": runtime_module.RECURSION_LIMIT,
-    }
-    async for event in _run_graph_stream(graph, None, cfg, trace, cancel_check=cancel_check):
-        yield event
+    with _turn_trace("chat-turn-stream-continue", thread_id, "continue(crash-recovery)") as (trace, callbacks):
+        cfg = {
+            "configurable": {"thread_id": thread_id, "ctx": ctx},
+            "callbacks": callbacks,
+            "recursion_limit": runtime_module.RECURSION_LIMIT,
+        }
+        async with aclosing(_run_graph_stream(graph, None, cfg, trace, cancel_check=cancel_check)) as events:
+            async for event in events:
+                yield event
 
 
 async def cancel_run(thread_id: str, ctx: SecurityCtx) -> bool:

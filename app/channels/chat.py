@@ -16,6 +16,7 @@ import asyncio
 import getpass
 import sys
 import uuid
+from contextlib import aclosing
 
 from langfuse.decorators import langfuse_context
 
@@ -60,24 +61,28 @@ async def _render_stream(events) -> bool:
     Returns True if the run paused awaiting tool-call approval (the caller
     should prompt and call astream_events_resume), False once the turn has
     actually finished (or errored)."""
-    async for event in events:
-        t = event["type"]
-        if t == "token":
-            print(event["content"], end="", flush=True)
-        elif t == "tool_start":
-            call = _format_call(event["tool"], event.get("args", {}))
-            print(f"\n{_DIM}  [▶ {call}]{_RESET}", flush=True)
-        elif t == "tool_end":
-            print(f"{_DIM}  [✓ {event['tool']} done]{_RESET}", flush=True)
-        elif t == "approval_required":
-            print(f"\n{_DIM}  [pending approval:]{_RESET}")
-            for tc in event["tool_calls"]:
-                print(f"{_DIM}    {_format_call(tc['name'], tc['args'])}{_RESET}")
-            return True
-        elif t == "error":
-            print(f"\n{_RED}  [error: {event['content']}]{_RESET}", flush=True)
-        elif t == "done":
-            print()
+    # `aclosing`: `approval_required` returns before the stream is exhausted (it is the stream's
+    # last event, but its generators are still open), and a bare `async for` would leave the
+    # closing of what that return abandoned to the event loop's finalizer.
+    async with aclosing(events) as stream:
+        async for event in stream:
+            t = event["type"]
+            if t == "token":
+                print(event["content"], end="", flush=True)
+            elif t == "tool_start":
+                call = _format_call(event["tool"], event.get("args", {}))
+                print(f"\n{_DIM}  [▶ {call}]{_RESET}", flush=True)
+            elif t == "tool_end":
+                print(f"{_DIM}  [✓ {event['tool']} done]{_RESET}", flush=True)
+            elif t == "approval_required":
+                print(f"\n{_DIM}  [pending approval:]{_RESET}")
+                for tc in event["tool_calls"]:
+                    print(f"{_DIM}    {_format_call(tc['name'], tc['args'])}{_RESET}")
+                return True
+            elif t == "error":
+                print(f"\n{_RED}  [error: {event['content']}]{_RESET}", flush=True)
+            elif t == "done":
+                print()
     return False
 
 

@@ -10,6 +10,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.job_queue import agent_worker
@@ -372,6 +373,52 @@ class TestProcessRequestResume:
         assert events[0]["code"] == "internal"
         assert "checkpoint gone" not in json.dumps(events[0])
         assert client.acked == [entry_id]
+
+
+class TestTheStreamIsClosedBeforeAPublishFailureIsSeen:
+    """`publish_result` can fail mid-loop (a Redis blip), or the task can be cancelled while it
+    awaits the publish. A bare `async for` leaves the generator open when its loop is left that
+    way, so the stream's own cleanup (finishing the trace, recording the turn as abandoned,
+    releasing the budget hold) ran a loop turn AFTER the worker had already handled the failure.
+    Checked straight after the failure surfaces, with no loop turn in between."""
+
+    @pytest.mark.parametrize(
+        ("handler", "entry_point"),
+        [
+            ("_process_turn", "astream_events_turn"),
+            ("_process_turn_continue", "astream_events_continue_turn"),
+            ("_process_resume", "astream_events_resume"),
+        ],
+    )
+    async def test_every_handler_closes_its_stream_when_publishing_fails(self, monkeypatch, handler, entry_point):
+        closed = []
+
+        async def fake_stream(*args, **kwargs):
+            try:
+                yield {"type": "token", "content": "Hel"}
+                yield {"type": "done"}
+            finally:
+                closed.append(True)
+
+        async def failing_publish(client, request_id, event):
+            raise ConnectionError("redis went away")
+
+        async def release_lock():
+            return None
+
+        monkeypatch.setattr(agent_worker, entry_point, fake_stream)
+        monkeypatch.setattr(agent_worker, "publish_result", failing_publish)
+        payload = {
+            "thread_id": "t1",
+            "text": "hi",
+            "approved": True,
+            "ctx": {"tenant": "ecorp", "principal": "p1", "claims": {}},
+        }
+
+        with pytest.raises(ConnectionError):
+            await getattr(agent_worker, handler)(FakeRedis(), "r1", payload, release_lock)
+
+        assert closed == [True]
 
 
 class TestProcessRequestCancel:

@@ -108,6 +108,28 @@ class TestAstreamEventsTurnUnattended:
 
         await _run()
 
+    async def test_a_consumer_that_stops_early_closes_every_stream_it_holds_open(self, monkeypatch):
+        """The wrapper holds a turn's stream open through `_drain`, and a consumer that stops early
+        closes only the outermost generator. Each layer has to close the one it drives, or the
+        turn's own cleanup (its trace, its abandoned-turn metrics, its budget hold) waits for the
+        event loop's finalizer. Checked straight after `aclose()`, with no loop turn in between."""
+        closed = []
+
+        async def fake_turn(text, thread_id, ctx, require_approval=False, images=None):
+            try:
+                yield {"type": "token", "content": "hi"}
+                yield {"type": "done"}
+            finally:
+                closed.append("turn")
+
+        monkeypatch.setattr(stream_module, "astream_events_turn", fake_turn)
+
+        stream = stream_module.astream_events_turn_unattended("q", "t1", TEST_CTX)
+        assert (await stream.__anext__())["type"] == "token"
+        await stream.aclose()
+
+        assert closed == ["turn"]
+
 
 class _ScriptedModel(BaseChatModel):
     """Returns its scripted messages in order. Deliberately has no streaming

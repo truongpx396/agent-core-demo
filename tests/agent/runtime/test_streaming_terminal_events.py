@@ -19,10 +19,12 @@ a monkeypatched `init_graph_async` (bypassing the real durable
 checkpointer — already covered separately by tests/agent/runtime/test_durable_checkpoint.py)
 since only the EVENT SHAPE is under test here.
 """
+import asyncio
 import json
 import uuid
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
@@ -30,8 +32,8 @@ from app.agent.graph.build import GraphDeps
 from app.agent.graph.compaction import _estimate_tokens
 from app.agent.runtime import core as agent_module
 from app.agent.runtime import stream as stream_module
-from app.core import moderation
-from tests.conftest import TEST_CTX
+from app.core import metrics, moderation
+from tests.conftest import TEST_CTX, metric_value
 from tests.ecorp import build_graph
 
 
@@ -155,6 +157,215 @@ class TestTraceOutputMatchesWhatTheClientActuallySaw:
         await _events_for(graph_obj, "what is a checkpointer?", monkeypatch=monkeypatch)
 
         assert fake_trace.updates == [{"output": "A normal, freshly generated answer."}]
+
+
+class TestAStreamClosedBeforeItsTerminalEventStillFinishesTheTrace:
+    """The consumer can stop iterating before the turn ends: the queue worker's `publish_result`
+    raises mid-loop, or its task is cancelled while it awaits the publish. Either way the
+    cancellation lands in the CONSUMER's frame, so the stream's own `CancelledError` branch never
+    runs; the generator is later closed with `GeneratorExit` at the `yield` it was suspended on.
+    That used to match no `except` clause, so the trace kept its input and never got an output or
+    a level, indistinguishable in Langfuse from a turn still in flight."""
+
+    async def test_closing_the_stream_early_records_what_streamed_and_a_warning(self, monkeypatch):
+        fake_trace = _FakeTrace()
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (fake_trace, []))
+        llm = GenericFakeChatModel(
+            messages=iter([AIMessage(content="A normal answer that streams in several tokens.")])
+        )
+        graph_obj = build_graph(GraphDeps(llm=llm))
+
+        async def fake_init_graph_async():
+            return graph_obj
+
+        monkeypatch.setattr(agent_module, "init_graph_async", fake_init_graph_async)
+
+        stream = stream_module.astream_events_turn("what is a checkpointer?", str(uuid.uuid4()), TEST_CTX)
+        first_token = None
+        async for event in stream:
+            if event["type"] == "token":
+                first_token = event["content"]
+                break
+        await stream.aclose()
+
+        assert first_token
+        assert len(fake_trace.updates) == 1
+        update = fake_trace.updates[0]
+        assert update["level"] == "WARNING"
+        assert update["output"].startswith(first_token)
+        assert "[abandoned: stream closed before the turn finished]" in update["output"]
+
+    async def test_closing_the_stream_early_counts_the_turn_as_abandoned_not_cancelled(self, monkeypatch):
+        """The turn's outcome used to be recorded on every exit but this one, so a run
+        whose consumer vanished left no trace in `agent_requests_total` at all. It is counted under
+        its own outcome: nobody asked for a stop, so it is not "cancelled", and the POST /chat/cancel
+        counter stays where it was."""
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (_FakeTrace(), []))
+        llm = GenericFakeChatModel(
+            messages=iter([AIMessage(content="A normal answer that streams in several tokens.")])
+        )
+        graph_obj = build_graph(GraphDeps(llm=llm))
+
+        async def fake_init_graph_async():
+            return graph_obj
+
+        monkeypatch.setattr(agent_module, "init_graph_async", fake_init_graph_async)
+        abandoned = metric_value(metrics.agent_requests_total, outcome="abandoned")
+        cancelled = metric_value(metrics.agent_requests_total, outcome="cancelled")
+        streaming_cancellations = metric_value(metrics.agent_streaming_cancellation_total)
+
+        stream = stream_module.astream_events_turn("what is a checkpointer?", str(uuid.uuid4()), TEST_CTX)
+        async for event in stream:
+            if event["type"] == "token":
+                break
+        await stream.aclose()
+
+        assert metric_value(metrics.agent_requests_total, outcome="abandoned") == abandoned + 1
+        assert metric_value(metrics.agent_requests_total, outcome="cancelled") == cancelled
+        assert metric_value(metrics.agent_streaming_cancellation_total) == streaming_cancellations
+
+    async def test_closing_the_stream_at_a_synthetic_answer_still_records_the_finished_turn(self, monkeypatch):
+        """A turn that never called the model (here a semantic-cache hit) streams its answer as ONE
+        synthetic token. That token used to be yielded BEFORE the trace output and the turn's
+        metrics were written, and that part of the generator is covered by no `except` branch, so
+        a consumer that closed the stream at it left a finished turn with a blank trace and no
+        outcome. The turn is recorded first now; the client still gets the same events."""
+        fake_trace = _FakeTrace()
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (fake_trace, []))
+
+        async def fake_cache_get(ctx, query):
+            return "A cached answer, not freshly generated.", [{"marker": "[1]", "text": "..."}]
+
+        graph_obj = build_graph(GraphDeps(llm=GenericFakeChatModel(messages=iter([])), cache_get=fake_cache_get))
+
+        async def fake_init_graph_async():
+            return graph_obj
+
+        monkeypatch.setattr(agent_module, "init_graph_async", fake_init_graph_async)
+        success = metric_value(metrics.agent_requests_total, outcome="success")
+        abandoned = metric_value(metrics.agent_requests_total, outcome="abandoned")
+
+        stream = stream_module.astream_events_turn("what is a checkpointer?", str(uuid.uuid4()), TEST_CTX)
+        async for event in stream:
+            if event["type"] == "token":
+                break
+        await stream.aclose()
+
+        assert fake_trace.updates == [{"output": "A cached answer, not freshly generated."}]
+        assert metric_value(metrics.agent_requests_total, outcome="success") == success + 1
+        assert metric_value(metrics.agent_requests_total, outcome="abandoned") == abandoned
+
+
+class TestClosingTheStreamStopsTheGraphRun:
+    """`astream_events` runs the graph in a task of its own, and that task stops only when the
+    generator is closed. `_run_graph_stream` does not close the LangGraph iterator itself: it is
+    finalised by the event loop's hook a loop turn after the stream is closed (measured: about a
+    millisecond, with no further model output in between). That is accepted, and this pins what
+    matters about it: a consumer that leaves must not leave the run behind it, still calling the
+    model and its tools, until it finishes on its own."""
+
+    async def test_the_model_stops_shortly_after_the_stream_is_closed(self, monkeypatch):
+        chunks = []
+        stopped = asyncio.Event()
+
+        class _SlowModel(GenericFakeChatModel):
+            async def _astream(self, *args, **kwargs):
+                try:
+                    async for chunk in super()._astream(*args, **kwargs):
+                        chunks.append(chunk)
+                        yield chunk
+                        await asyncio.sleep(0.05)
+                finally:
+                    stopped.set()
+
+        words = " ".join(f"w{i}" for i in range(80))  # about four seconds if nothing stops it
+        graph_obj = build_graph(GraphDeps(llm=_SlowModel(messages=iter([AIMessage(content=words)]))))
+
+        async def fake_init_graph_async():
+            return graph_obj
+
+        monkeypatch.setattr(agent_module, "init_graph_async", fake_init_graph_async)
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (None, []))
+
+        stream = stream_module.astream_events_turn("what is a checkpointer?", str(uuid.uuid4()), TEST_CTX)
+        async for event in stream:
+            if event["type"] == "token":
+                break
+        chunks_at_close = len(chunks)
+        await stream.aclose()
+
+        await asyncio.wait_for(stopped.wait(), timeout=2)
+        assert len(chunks) <= chunks_at_close + 1, "the model kept producing output after the consumer left"
+
+
+class TestTheTurnTraceIsNeverLeftWithoutAnOutput:
+    """`_turn_trace` is the net under `_run_graph_stream`: a failure between opening the trace and
+    starting the stream, or any exit the stream did not handle, used to leave a trace with an input
+    and nothing else, which looks in Langfuse like a turn still running."""
+
+    async def test_a_failure_before_the_stream_starts_finishes_the_trace_as_an_error(self, monkeypatch):
+        fake_trace = _FakeTrace()
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (fake_trace, []))
+
+        def broken_input(text, images):
+            raise RuntimeError("could not decode the attached image")
+
+        monkeypatch.setattr(stream_module, "_build_human_content", broken_input)
+        graph_obj = build_graph(GraphDeps(llm=GenericFakeChatModel(messages=iter([]))))
+
+        async def fake_init_graph_async():
+            return graph_obj
+
+        monkeypatch.setattr(agent_module, "init_graph_async", fake_init_graph_async)
+
+        with pytest.raises(RuntimeError, match="could not decode"):
+            async for _ in stream_module.astream_events_turn("hi", str(uuid.uuid4()), TEST_CTX):
+                pass
+
+        assert fake_trace.updates == [{"output": "error: could not decode the attached image", "level": "ERROR"}]
+
+    def test_each_kind_of_exit_gets_its_own_output_and_level(self, monkeypatch):
+        cases = [
+            (ValueError("boom"), "error: boom", "ERROR"),
+            (GeneratorExit(), "[abandoned: stream closed before the turn finished]", "WARNING"),
+            (asyncio.CancelledError(), "[cancelled: task cancelled]", "WARNING"),
+        ]
+        for exc, output, level in cases:
+            fake_trace = _FakeTrace()
+            monkeypatch.setattr(stream_module, "_open_trace", lambda *a, _t=fake_trace, **k: (_t, []))
+            with pytest.raises(type(exc)):
+                with stream_module._turn_trace("n", "s", "in"):
+                    raise exc
+            assert fake_trace.updates == [{"output": output, "level": level}], type(exc).__name__
+
+    def test_a_trace_the_stream_already_finished_is_not_overwritten(self, monkeypatch):
+        fake_trace = _FakeTrace()
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (fake_trace, []))
+
+        with pytest.raises(GeneratorExit):
+            with stream_module._turn_trace("n", "s", "in") as (trace, _callbacks):
+                trace.update(output="partial answer [abandoned: stream closed before the turn finished]", level="WARNING")
+                raise GeneratorExit
+
+        assert len(fake_trace.updates) == 1
+
+    def test_a_clean_exit_adds_nothing(self, monkeypatch):
+        fake_trace = _FakeTrace()
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (fake_trace, []))
+
+        with stream_module._turn_trace("n", "s", "in"):
+            pass
+
+        assert fake_trace.updates == []
+
+    def test_without_langfuse_updates_are_a_no_op_not_an_error(self, monkeypatch):
+        monkeypatch.setattr(stream_module, "_open_trace", lambda *a, **k: (None, ["metrics-callback"]))
+
+        with pytest.raises(ValueError):
+            with stream_module._turn_trace("n", "s", "in") as (trace, callbacks):
+                assert callbacks == ["metrics-callback"]
+                trace.update(output="anything", level="WARNING")
+                raise ValueError("boom")
 
 
 class TestFollowupsEventIsSurfaced:

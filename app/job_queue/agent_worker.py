@@ -127,6 +127,7 @@ import logging
 import signal
 import socket
 import uuid
+from contextlib import aclosing
 from typing import cast
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -182,6 +183,34 @@ _READ_COUNT = _MAX_CONCURRENCY
 _BLOCK_MS = 5000
 
 
+async def _publish_events(client, request_id: str, events, release_lock) -> None:
+    """Publishes a turn's events to its results stream, releasing the thread lock just before the terminal one.
+
+    The stream is closed on EVERY exit, with `aclosing`: a bare `async for` does not close the
+    generator when its loop is left by an exception (`publish_result` failing on a Redis blip, the
+    task being cancelled while it awaits the publish), so the stream's own cleanup (finishing the
+    trace, recording the turn as abandoned, releasing the budget hold) would run a loop turn
+    AFTER this function's caller had already handled the failure. With it, that cleanup is done
+    before the failure is seen, and does not depend on the event loop's finalizer hook.
+    """
+    async with aclosing(events) as stream:
+        async for event in stream:
+            if event.get("type") in TERMINAL_EVENT_TYPES:
+                # Released BEFORE publishing, not after: publish_result itself
+                # awaits a SECOND Redis round trip after its xadd (a TTL
+                # refresh via `expire`) before returning — a reader polling via
+                # `xread` can already see the xadd'd event and act on it (e.g.
+                # POST /chat/resume fired the moment a client observes
+                # approval_required) while that second round trip, and this
+                # generator's own remaining cleanup, are still in flight.
+                # Releasing first closes the window completely: by the time
+                # ANY client could possibly observe this event, the lock is
+                # already free. See process_request's `release_lock` docstring
+                # for the real failure rate each ordering measured at.
+                await release_lock()
+            await publish_result(client, request_id, event)
+
+
 async def _process_turn(client, request_id: str, payload: dict, release_lock) -> None:
     thread_id = payload["thread_id"]
     # A stale flag from an EARLIER turn on this thread_id (e.g. /chat/cancel
@@ -192,28 +221,19 @@ async def _process_turn(client, request_id: str, payload: dict, release_lock) ->
     async def cancel_check() -> bool:
         return await is_cancelled(client, thread_id)
 
-    async for event in astream_events_turn(
-        payload["text"],
-        thread_id,
-        payload["ctx"],
-        require_approval=payload.get("require_approval", False),
-        images=payload.get("images") or None,
-        cancel_check=cancel_check,
-    ):
-        if event.get("type") in TERMINAL_EVENT_TYPES:
-            # Released BEFORE publishing, not after: publish_result itself
-            # awaits a SECOND Redis round trip after its xadd (a TTL
-            # refresh via `expire`) before returning — a reader polling via
-            # `xread` can already see the xadd'd event and act on it (e.g.
-            # POST /chat/resume fired the moment a client observes
-            # approval_required) while that second round trip, and this
-            # generator's own remaining cleanup, are still in flight.
-            # Releasing first closes the window completely: by the time
-            # ANY client could possibly observe this event, the lock is
-            # already free. See process_request's `release_lock` docstring
-            # for the real failure rate each ordering measured at.
-            await release_lock()
-        await publish_result(client, request_id, event)
+    await _publish_events(
+        client,
+        request_id,
+        astream_events_turn(
+            payload["text"],
+            thread_id,
+            payload["ctx"],
+            require_approval=payload.get("require_approval", False),
+            images=payload.get("images") or None,
+            cancel_check=cancel_check,
+        ),
+        release_lock,
+    )
 
 
 async def _process_turn_continue(client, request_id: str, payload: dict, release_lock) -> None:
@@ -232,12 +252,12 @@ async def _process_turn_continue(client, request_id: str, payload: dict, release
     async def cancel_check() -> bool:
         return await is_cancelled(client, thread_id)
 
-    async for event in astream_events_continue_turn(
-        thread_id, payload["ctx"], cancel_check=cancel_check
-    ):
-        if event.get("type") in TERMINAL_EVENT_TYPES:
-            await release_lock()  # see _process_turn's own comment on this
-        await publish_result(client, request_id, event)
+    await _publish_events(
+        client,
+        request_id,
+        astream_events_continue_turn(thread_id, payload["ctx"], cancel_check=cancel_check),
+        release_lock,
+    )
 
 
 async def _process_resume(client, request_id: str, payload: dict, release_lock) -> None:
@@ -252,12 +272,12 @@ async def _process_resume(client, request_id: str, payload: dict, release_lock) 
     async def cancel_check() -> bool:
         return await is_cancelled(client, thread_id)
 
-    async for event in astream_events_resume(
-        thread_id, payload["approved"], payload["ctx"], cancel_check=cancel_check
-    ):
-        if event.get("type") in TERMINAL_EVENT_TYPES:
-            await release_lock()  # see _process_turn's own comment on this
-        await publish_result(client, request_id, event)
+    await _publish_events(
+        client,
+        request_id,
+        astream_events_resume(thread_id, payload["approved"], payload["ctx"], cancel_check=cancel_check),
+        release_lock,
+    )
 
 
 async def _process_cancel(client, request_id: str, payload: dict, release_lock) -> None:
@@ -270,7 +290,7 @@ async def _process_cancel(client, request_id: str, payload: dict, release_lock) 
         event = {"type": "error", "content": envelope.message, **envelope.to_dict()}
     else:
         event = {"type": "done"}
-    await release_lock()  # single-shot job, always terminal — see _process_turn's own comment
+    await release_lock()  # single-shot job, always terminal — see _publish_events's comment
     await publish_result(client, request_id, event)
 
 
