@@ -544,6 +544,19 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 "type": "approval_required",
                 "tool_calls": pending["tool_calls"],
             }
+        elif not final_answer and not isinstance(((state.values or {}).get("messages") or [None])[-1], AIMessage):
+            # The run ended with nothing streamed and no answer message: there is nothing to show,
+            # and the last message is not one to show (the fallback below would stream the PERSON'S
+            # OWN question back as the answer). That is a run with nothing left to run, e.g. a
+            # continuation of a checkpoint whose pending node this build no longer recognises
+            # (tests/agent/graph/test_checkpoint_across_a_topology_change.py).
+            trace.update(output="[no answer: the run ended with nothing left to run]", level="ERROR")
+            await _record_turn_metrics(time.monotonic() - start, "error", state.values)
+            envelope = ErrorEnvelope(
+                code=ErrorCode.CHECKPOINT_INCOMPATIBLE,
+                message="This conversation's saved progress can no longer be continued. Please send your message again.",
+            )
+            terminal_event = {"type": "error", "content": envelope.message, **envelope.to_dict()}
         else:
             used_citations = state.values.get("used_citations") or []
             ungrounded_claims_count = state.values.get("ungrounded_claims_count") or 0

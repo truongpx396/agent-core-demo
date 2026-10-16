@@ -504,6 +504,17 @@ async def _classify_reclaimed_turn(graph, thread_id: str) -> str:
         return "dead_letter"
     if state.next and any(task.interrupts for task in state.tasks):
         return "dead_letter"  # crashed strictly after reaching a real pause
+    if not state.next:
+        # Unfinished (no final answer, checked above), yet nothing is pending to run. A turn
+        # that stopped mid-flight always has a next node, so this is a checkpoint whose pending
+        # node this build no longer recognises: LangGraph names the channel that triggers a node
+        # after the edge feeding it, so a renamed router (or a removed node) hides the pending
+        # one and a resume silently runs nothing (verified: tests/agent/graph/test_checkpoint_across_a_topology_change.py).
+        # "Continuing" it would end the turn with no answer, so it is dead-lettered instead and
+        # the caller is told to retry.
+        metrics.agent_checkpoint_issue_total.labels(reason="nothing_to_continue").inc()
+        logger.warning("agent_worker_reclaim_nothing_to_continue", extra={"thread_id": thread_id})
+        return "dead_letter"
     return "retry_continue"
 
 

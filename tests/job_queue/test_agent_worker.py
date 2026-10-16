@@ -14,6 +14,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent.graph.messages import RETRY_ARTIFACT_KEY
+from app.core import metrics
 from app.job_queue import agent_worker
 from app.job_queue.queue import (
     CONSUMER_GROUP,
@@ -754,9 +755,10 @@ class FakeGraph:
     `graph/hitl.py::_resumability_error_from_state`'s own docstring on why
     both are checked, not `state.next` alone)."""
 
-    def __init__(self, states: dict | None = None, paused: set | None = None):
+    def __init__(self, states: dict | None = None, paused: set | None = None, drained: set | None = None):
         self._states = states or {}
         self._paused = paused or set()
+        self._drained = drained or set()
 
     async def aget_state(self, config):
         thread_id = config["configurable"]["thread_id"]
@@ -766,7 +768,10 @@ class FakeGraph:
             return SimpleNamespace(
                 values={"messages": messages}, next=("human_approval",), tasks=[task]
             )
-        return SimpleNamespace(values={"messages": messages}, next=(), tasks=[])
+        # A turn that stopped mid-flight has a node still to run; `drained` marks a thread whose
+        # graph has nothing pending (a finished turn, or a checkpoint whose pending node is gone).
+        pending = () if thread_id in self._drained else ("agent",)
+        return SimpleNamespace(values={"messages": messages}, next=pending, tasks=[])
 
 
 class RaisingGraph:
@@ -809,6 +814,18 @@ class TestClassifyReclaimedTurn:
             AIMessage(content="Refunds are available for thirty days [1].", id="b"),
         ]})
         assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "dead_letter"
+
+    async def test_an_unfinished_turn_with_nothing_left_to_run_is_dead_lettered_not_continued(self):
+        """Continuing it would run nothing and end the turn with no answer. This is what a checkpoint whose pending
+        node this build no longer recognises looks like (a renamed router hides it)."""
+        before = _count(metrics.agent_checkpoint_issue_total, reason="nothing_to_continue")
+        graph = FakeGraph(
+            {"t1": [HumanMessage(content="what is my balance", id="q")]},
+            drained={"t1"},
+        )
+
+        assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "dead_letter"
+        assert _count(metrics.agent_checkpoint_issue_total, reason="nothing_to_continue") == before + 1
 
     async def test_no_checkpoint_at_all_is_retried_fresh(self):
         graph = FakeGraph()  # thread never seen -> empty state

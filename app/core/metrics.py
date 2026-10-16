@@ -339,9 +339,10 @@ agent_capability_gate_total = Counter(
 
 agent_checkpoint_issue_total = Counter(
     "agent_checkpoint_issue_total",
-    "Resume attempts refused by resumability_error before Command(resume=...)",
+    "Resume attempts refused by resumability_error before Command(resume=...), and reclaimed turns "
+    "that could not be continued (nothing left to run)",
     ["reason"],
-)  # reason: checkpoint_lost | checkpoint_incompatible
+)  # reason: checkpoint_lost | checkpoint_incompatible | nothing_to_continue (a reclaimed turn whose pending node is gone)
 
 agent_missing_ctx_total = Counter(
     "agent_missing_ctx_total",
