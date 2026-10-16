@@ -19,7 +19,6 @@ Each test uses its own tenant, customer, product and event ids: the container is
 """
 import asyncio
 import json
-import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -36,6 +35,7 @@ from credit_billing.providers.base import BillingEvent, CreditProduct, EventKind
 from tests.conftest import metric_value
 from tests.containers import ensure_postgres
 from tests.contract import HARNESSES, Delivery
+from tests.ids import hex_id
 from tests.integration.schema_reapply import reapply
 
 pytestmark = pytest.mark.integration
@@ -75,11 +75,11 @@ class World:
         # The provider whose deliveries this test plays: the harness's, when the test uses one (so the same assertions hold for every
         # registered adapter), else "fake", which is only a label for tests that hand `process_event` a hand-built event.
         self.provider = provider
-        tag = uuid.uuid4().hex[:10]
+        tag = hex_id(10)  # not uuid4().hex[:10]: see tests/ids.py (a tag containing "4242" failed a leak check)
         self.tenant, self.customer, self.product, self.payment = f"t-{tag}", f"cus_{tag}", f"pack_{tag}", f"pay_{tag}"
 
     def event_id(self, label: str = "e") -> str:
-        return f"evt_{label}_{uuid.uuid4().hex[:8]}"
+        return f"evt_{label}_{hex_id(8)}"
 
     async def connect(self):
         return await psycopg.AsyncConnection.connect(self.url)
