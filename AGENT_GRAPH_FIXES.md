@@ -766,7 +766,7 @@ Recorded so they aren't lost. Each is its own PR later. Propose before starting.
    - Run `suggest_followups` and `write_semantic_cache` in parallel. Today `done` waits for an extra
      LLM call.
    - Run the document and memory searches in `gather_context` with `asyncio.gather`.
-8. Upgrade LangGraph to 1.x (pinned `<0.3`, installed 0.2.76).
+8. Upgrade LangGraph to 1.x (pinned `<0.3`, installed 0.2.76). **Scoped and recorded in GRAPH_PATTERNS.md "Next PR: the LangGraph upgrade" (the ceiling is 1.0.1); the one Part C item still open. Items 1-7 are merged.**
    - Its `Overwrite` replaces the `_concat_or_reset` reducer workaround.
    - The upgrade clears the import-time "incompatible versions of langgraph and checkpoint-postgres"
      warning.

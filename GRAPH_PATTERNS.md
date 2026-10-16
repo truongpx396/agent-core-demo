@@ -445,6 +445,24 @@ Two kinds of duplicate: a **replay** sees the same `tool_call_id` twice; a **re-
 *different* ids used for the same request. What counts as "the same ticket" is a product decision;
 `MutatingToolTimedOut`'s steering is the general mitigation until a domain needs one.
 
+### Next PR: the LangGraph upgrade (decided, not started)
+
+`requirements.txt` pins `langgraph>=0.2.20,<0.3` (0.2.76 installed). The next PR moves it to **1.0.1**, the highest release this stack can
+use, and is deliberately its own PR: it is the only change in this series with a real compatibility risk.
+
+- **Why 1.0.1 and not 1.2.x.** LangGraph 1.0.3 and later need `langchain-core` 1.x. The Langfuse **v2** SDK imports `langchain.callbacks` and
+  `langchain.schema`, which langchain 1.x removed, so it needs `langchain` 0.3, hence `langchain-core<1`, hence LangGraph 1.0.1 at most. Going further is a
+  ladder, not a bump: Langfuse **server** v3 (ClickHouse, Redis, S3 and a worker, where `docker-compose` runs `langfuse/langfuse:2`), then the Langfuse SDK v3,
+  then langchain 1.x, then LangGraph 1.2.x.
+- **What 1.0.1 buys.** It clears the import-time "incompatible versions of langgraph and checkpoint-postgres" warning. It has no `Overwrite`, so
+  `concat_or_reset` (the `subagent_spend` reducer) stays. That is the whole benefit, which is why it is the user's call whether it is worth the risk.
+- **What to verify, none of it assumed.** (1) A thread **paused** under 0.2.76 resumes under the new version (pause under the old code, resume under the new, as was
+  done for #170's `STATE_SCHEMA_VERSION` check). (2) `tests/agent/graph/test_checkpoint_across_a_topology_change.py` still passes: it pins that a renamed router hides a
+  mid-flight node, and LangGraph is the thing that decides that. (3) The `saver.lock = asyncio.Semaphore(...)` workaround in `runtime/core.py` is still needed or can go.
+  (4) `interrupt`/`Command(resume=...)`, `add_messages` replacement by id (retry artifacts and legacy healing rely on it) and parallel fan-out (the `finish` step) behave as before.
+  (5) `make test-integration` and `make test-live`, not only `make test`.
+- **Deploying it:** stop the workers and let in-flight turns finish first (pattern 16): a turn left mid-flight by the old library cannot be assumed to resume.
+
 ### Not built
 
 - **A fallback node** for the primary LLM path.
