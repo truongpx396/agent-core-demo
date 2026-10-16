@@ -49,12 +49,22 @@ def make_retrieve_context_node(
         `asyncio.to_thread` inside `qdrant_store.hybrid_search`.
         """
         last_human = last_human_message(state["messages"])
-        # The turn's question is, right now, the last message in state.
-        # Recording its index here (not re-deriving "last human message"
+        # Record the question's index here (not re-deriving "last human message"
         # later, which would find a synthetic retry_output message after a
-        # few loop rounds) lets agent() anchor history_summary/context to
+        # few loop rounds) so agent() can anchor history_summary/context to
         # a fixed position — see State.context_anchor_index.
-        anchor = len(state["messages"]) - 1
+        #
+        # The question's own index, found by identity: it is NOT always the last message.
+        # `compact_history` runs just before this node and whatever a node returns is
+        # appended, so when compaction fires its breadcrumb sits after the question, and
+        # `len(messages) - 1` anchored the summary and the context AFTER the question (and made
+        # `previous_human_message` see the current question as "the previous turn").
+        messages = state["messages"]
+        anchor = (
+            next((i for i in range(len(messages) - 1, -1, -1) if messages[i] is last_human), len(messages) - 1)
+            if last_human is not None
+            else len(messages) - 1
+        )
         if last_human is None:
             return {"context": "", "citations": [], "context_anchor_index": anchor}
         try:
