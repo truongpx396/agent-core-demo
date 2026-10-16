@@ -149,7 +149,17 @@ def build_subagent_registry(
     return registry
 
 
-_CITATION_MARKER_RE = re.compile(r"\s*\[\d+\]")
+# A citation marker is `[n]` numbered from 1 (builtin.py), written after a clause: separated from
+# it by whitespace, or following punctuation. An INDEX is attached to what it indexes (`items[0]`,
+# `matrix[1][2]`, `f(x)[1]`). So a run of markers is removed together with the whitespace before it,
+# unless it is attached to a preceding word character or closing bracket, and `[0]` never is one.
+# Still a heuristic: "pick element [2]" reads as a marker.
+_CITATION_MARKERS_RE = re.compile(r"(?:\s+|(?<![\w)\]]))(?:\[[1-9]\d*\])+")
+
+
+def strip_citation_markers(text: str) -> str:
+    return _CITATION_MARKERS_RE.sub("", text)
+
 
 _CITATION_MARKER_WARNING = (
     "Do not use '[n]'-style bracket citation markers in your final answer — "
@@ -383,9 +393,9 @@ async def run_subagent_impl(
         content = str(content)
     # Any `[n]` marker names the SUBAGENT's own retrieved sources, which mean nothing to the
     # parent (its `[1]` is a different document), and the parent's citation checks would read
-    # it as theirs. Its prompt says to use none; this removes any that slipped through. The
-    # price is that a literal `[0]` in a subagent's answer (an array index) goes too.
-    content = _CITATION_MARKER_RE.sub("", content).strip()
+    # it as theirs. Its prompt says to use none; this removes any that slipped through, and
+    # leaves an index like `items[0]` alone (see `strip_citation_markers`).
+    content = strip_citation_markers(content).strip()
     # A missing/empty final answer means should_continue's "__end__" fired
     # from one of its safety-net checks (max iterations/tokens/cost, no-
     # progress — pattern 10) before reaching check_output. Rather than
