@@ -217,6 +217,8 @@ turn with the named message.
    freshly restarted process does not seed them a second time, because the stored conversation
    is checked first rather than trusting in-process memory.
 
+   > **Superseded (2026-10-16, #171):** the system prompt is no longer seeded into a thread. The agent node prepends the manifest's prompt on every model call and nothing stores it; `ensure_seeded_async` and `_seeded` are gone (GRAPH_PATTERNS.md pattern 19). Kept as the record of what was decided at the time.
+
 ---
 
 ### User Story 6 - Dependency hiccups degrade the answer, not the turn (Priority: P2)

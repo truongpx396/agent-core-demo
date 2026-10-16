@@ -80,7 +80,7 @@ class BillingSettings(BaseSettings):
     # A refund can arrive before the purchase it reverses. It is held (the provider is told to retry) until the
     # purchase has been applied, but only this long, then quarantined: a wait on a counterparty needs a deadline.
     billing_refund_hold_hours: int = Field(default=24, ge=1)
-    # How long scripts/billing_inbox_sweep.py keeps applied/ignored inbox rows. The floor is not a style choice
+    # How long src/credit_billing/cli/inbox_sweep.py keeps applied/ignored inbox rows. The floor is not a style choice
     # (see BILLING_INBOX_MIN_RETENTION_DAYS). The wallet's own idempotency keys, not these rows, are what stop a
     # late redelivery from granting twice, so the sweep is safe, but the rows are the audit trail of what was received.
     billing_inbox_retention_days: int = Field(default=400, ge=BILLING_INBOX_MIN_RETENTION_DAYS)

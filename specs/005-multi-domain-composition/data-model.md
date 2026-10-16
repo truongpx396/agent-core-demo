@@ -15,7 +15,7 @@ AgentManifest (frozen)                      DomainPlugin (Protocol)
 ```
 
 `build_graph(manifest, domain)` stamps the compiled graph with its manifest; `runtime.py::_ensure_seeded_async` reads
-`graph.manifest.system_prompt` to seed a new thread with the *domain's* prompt rather than the module-level default. Registry (`app/domains/registry.py`):
+`graph.manifest.system_prompt` to seed a new thread with the *domain's* prompt rather than the module-level default *(superseded by #171: the agent node is built with `manifest.system_prompt` and prepends it on every call; nothing seeds a thread; pattern 19)*. Registry (`app/domains/registry.py`):
 
 | Name | Manifest | Plugin | Tools exposed |
 |------|----------|--------|---------------|

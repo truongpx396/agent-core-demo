@@ -21,6 +21,7 @@ Constitution Principle VII applies. The default suite must stay hermetic and fas
   `sql_store.get_connection` — `from X import Y` makes a separate reference.
 - `asyncio_mode = "auto"`: write `async def test_...` and `await` directly. Don't wrap bodies in
   `asyncio.run(...)`.
+- `tests/core/test_doc_references.py` fails when a repo doc (or a rules file) names a file, or a function in it, that is gone. Update the reference; if it is MEANT to point at something retired, add it to that test's `INTENTIONAL` set with the reason.
 - Name tests as sentences describing the behavior, e.g.
   `test_add_comment_a_repeated_tool_call_id_is_a_no_op_not_a_duplicate`.
 - A bug fix needs a regression test that fails without the fix.

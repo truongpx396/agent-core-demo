@@ -200,6 +200,8 @@ Entry format (per the plan skill): **Decision** · **Rationale** · **Alternativ
 - **Evidence**: `app/agent/runtime.py::_ensure_seeded_async`;
   `tests/agent/test_prompt_cache_stability.py`; pattern 19.
 
+> **Superseded (2026-10-16, #171):** the system prompt is no longer seeded into a thread. The agent node prepends the manifest's prompt on every model call and nothing stores it; `ensure_seeded_async` and `_seeded` are gone (GRAPH_PATTERNS.md pattern 19). Kept as the record of what was decided at the time.
+
 ## R13. Durable checkpointing on Postgres, opened on the calling loop
 
 - **Decision**: `AsyncPostgresSaver` over an `AsyncConnectionPool`, in its own `checkpointer`

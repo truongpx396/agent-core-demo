@@ -1,7 +1,7 @@
 """Registered billing-provider adapters, by the `{provider}` path segment of the webhook URL.
 
 Adding a provider is adding a module here and one line in `FACTORIES`; nothing else in `packages/billing/src/credit_billing/`
-changes (SC-004). An adapter that has not passed `tests/billing/contract.py` must not be registered.
+changes (SC-004). An adapter that has not passed `tests/contract.py` must not be registered.
 """
 from collections.abc import Callable, Mapping
 

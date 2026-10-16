@@ -55,7 +55,7 @@
 2. **Iteration 2 (claim verification before finalizing):** (a) SC-002 first said "56 cases"; the contract test has 27 tools × 2 checks + 2 guards, so
    it now says 27 tools; (b) B7's note first said the docstring chose tenant-only scoping "on purpose"; it says only that the docstring *describes*
    the asymmetry; (c) the data model said the compiled graph's manifest is read by the "checkpoint-resume path" — the reader is
-   `runtime.py::_ensure_seeded_async` (seeding a thread with the domain's prompt); (d) A7 first said "18 tools" and "closed enums for the incident status"
+   `runtime.py::_ensure_seeded_async` (seeding a thread with the domain's prompt; removed in #171); (d) A7 first said "18 tools" and "closed enums for the incident status"
    — the count is 31 tool definitions (19 domain tools + 12 sandbox wrappers; 28 affected, 41 fields) and `status` is a free-form `str | None`;
    (e) the quickstart's "no integration test touches these stores" was true but incomplete — the one live test that drives domain tools covers only the
    two crawl tools and says it avoids the stores.

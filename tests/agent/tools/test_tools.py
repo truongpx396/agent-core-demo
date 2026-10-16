@@ -978,7 +978,7 @@ class TestResolveSubagentTools:
 
 
 class TestBuildSubagentGraphTopology:
-    """build_subagent_graph() (app/agent/graph/build_subagent.py) reuses
+    """build_subagent_graph() (app/agent/graph/build.py) reuses
     build_graph()'s own node functions/factories but drops 5 nodes that
     are pure overhead (or worse) for a nested one-shot run — see that
     function's own docstring for the full per-node reasoning. Verified

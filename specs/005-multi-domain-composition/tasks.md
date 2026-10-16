@@ -55,7 +55,7 @@ ask "whose row is this?"; the open test tasks below are the most valuable work i
 - [x] T009 [P] `ActionAllowlistPolicy` (`permit` = in the set **and** a valid ctx; `lower` raises) in `app/domains/policy.py` *(FR-010)*
 - [x] T010 [P] The team-channel sink — never raises; counted by `agent_team_channel_notify_total` — in `app/domains/notify.py`, tested in `tests/domains/test_notify.py` *(FR-010)*
 - [x] T011 [P] `skill_tools_first`, `make_skill_tools` in `app/agent/tools.py`; the per-domain delegation tool (absent when no bundled sub-assistant declares the domain) in `app/agent/subagent_domain_tools.py` *(FR-011, FR-012)*
-- [x] T012 `init_graph_async(manifest, domain)` and thread seeding with the *domain's* prompt (`graph.manifest.system_prompt`) in `app/agent/runtime.py` *(FR-004, FR-006)*
+- [x] T012 `init_graph_async(manifest, domain)` and thread seeding with the *domain's* prompt (`graph.manifest.system_prompt`) in `app/agent/runtime.py` *(FR-004, FR-006)* *(superseded by #171: the prompt is prepended on every call, no longer seeded; pattern 19)*
 
 **Checkpoint**: Foundation ready — a domain can be registered, built and seeded.
 

@@ -1,5 +1,5 @@
 """Money in, against a REAL Postgres (postgres-init/20 and 22; packages/billing/src/credit_billing/webhooks.py, store.py, inbox.py,
-app/api/routers/billing.py): a payment provider's webhook becomes credits exactly once, or a visible refusal.
+src/credit_billing/http.py): a payment provider's webhook becomes credits exactly once, or a visible refusal.
 
 Every guarantee here is database behaviour, so a fake would only echo back what was written (constitution VII:
 reliance on a real constraint, lock or transaction is stated and tested at this tier, not assumed):
@@ -12,7 +12,7 @@ reliance on a real constraint, lock or transaction is stated and tested at this 
   * a trigger makes `applied` and `ignored` terminal, and what an event WAS immutable;
   * a refund after the credits were spent leaves a negative balance and the gate then refuses usage (spec D6).
 
-The shared adapter contract (tests/billing/contract.py) is run here too, for EVERY registered adapter, through the
+The shared adapter contract (tests/contract.py) is run here too, for EVERY registered adapter, through the
 real inbox and wallet: "a replayed payload is applied once" is a claim about a database, not a parser.
 
 Each test uses its own tenant, customer, product and event ids: the container is shared across tests and workers.
@@ -392,8 +392,8 @@ class TestARefund:
         assert outcomes == ["applied"]
         balance = await world.balance()
         assert (balance.available, balance.debt) == (D("-70.000000"), D("70.000000"))
-        # What the agent app's gate refuses on is exactly `available - holds > 0` being false (app/agent/cost/budgets.py::_credit_check); the gate itself
-        # is the host's and is proven against this same wallet in the repo's tests/integration/test_credit_charge_real_postgres.py.
+        # What the agent app's gate refuses on is exactly `available - holds > 0` being false (app/agent/cost/budgets.py::_credit_check). The gate is
+        # the host's: its mapping of the package's answers onto a refusal is tested in the repo's tests/billing/test_credit_gate.py, with a fake gate.
         assert balance.available <= 0, "usage is refused while the tenant is in debt: its available credits are not positive"
         assert metric_value(metrics.agent_credit_overdraft_total) == overdraft_before, "a refund after spend is the policy, not a wallet running dry"
         assert await credits.verify(world.tenant) == []

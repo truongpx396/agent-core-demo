@@ -8,10 +8,10 @@ by default), but it must not grow for ever: this deletes `applied` and `ignored`
 Deleting an applied row cannot make a late redelivery grant twice: the grant's own idempotency key,
 `"{provider}:{event_id}"` in `credit_transactions`, is part of the wallet's financial record and is kept for
 good, so the redelivered event inserts a fresh inbox row and then finds its grant already made (proved against a
-real Postgres in tests/integration/test_billing_webhooks_real_postgres.py). The floor below is therefore about
+real Postgres in tests/integration/test_webhooks_real_postgres.py). The floor below is therefore about
 not racing a provider's retries, not about correctness.
 
-An operator job (`scripts/billing_inbox_sweep.py`), never reachable from a request: like the usage events' sweep (`scripts/usage_events_sweep.py`) it
+An operator job (`src/credit_billing/cli/inbox_sweep.py`), never reachable from a request: like the usage events' sweep (`scripts/usage_events_sweep.py`) it
 spans tenants, because retention is a property of the table. Bounded: a run deletes at most
 `SWEEP_MAX_BATCHES * SWEEP_BATCH_SIZE` rows and the job is idempotent, so the next run continues.
 """

@@ -1,6 +1,6 @@
 """The Stripe adapter (packages/billing/src/credit_billing/providers/stripe.py, specs/010 T029a): what the shared contract suite cannot say about it.
 
-tests/billing/test_provider_contract.py holds every adapter to the same promises (refuse a forgery, name no tenant, store no buyer
+tests/test_provider_contract.py holds every adapter to the same promises (refuse a forgery, name no tenant, store no buyer
 details, echo what checkout set). This file is what is particular to Stripe's wire formats: its signature header, its event and object
 shapes, its checkout request and its error replies. Hermetic: the signing is computed in-process and the HTTP is `httpx.MockTransport`.
 

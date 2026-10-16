@@ -19,7 +19,7 @@
 - Gives the tool executor only the plugin's tools; any other requested name is bounced to the model (feature 003).
 - Uses `manifest.system_prompt` as the system message and as the reference text for the prompt-leak check.
 - Stashes the manifest on the compiled graph (`compiled.manifest`); `runtime.py::_ensure_seeded_async` reads it to seed a new thread with the
-  domain's prompt.
+  domain's prompt *(superseded by #171: the agent node prepends the manifest's prompt on every call; nothing seeds a thread; pattern 19)*.
 - With no arguments it uses `DEFAULT_MANIFEST` / `DEFAULT_DOMAIN_PLUGIN` (the original assistant, unchanged).
 
 ## Registry

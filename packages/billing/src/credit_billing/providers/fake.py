@@ -1,7 +1,7 @@
 """An in-repo provider that signs and parses its own payloads: the port's reference implementation.
 
 It exists so the whole money-in path (signature, inbox, link, catalog, wallet) is exercised end to end
-without a sandbox account, and so `tests/billing/contract.py` has an adapter to hold the contract against
+without a sandbox account, and so `tests/contract.py` has an adapter to hold the contract against
 before any real one exists (D5). It is not a payment provider: nobody is charged anything. A deployment
 should enable it (`BILLING_PROVIDERS=fake`) only for development and tests.
 

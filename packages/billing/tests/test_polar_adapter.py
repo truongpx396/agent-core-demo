@@ -1,6 +1,6 @@
 """The Polar adapter (packages/billing/src/credit_billing/providers/polar.py, specs/010 T029b): what the shared contract suite cannot say about it.
 
-tests/billing/test_provider_contract.py holds every adapter to the same promises. This file is what is particular to Polar's wire
+tests/test_provider_contract.py holds every adapter to the same promises. This file is what is particular to Polar's wire
 formats: its Standard Webhooks signature and the two keys a secret can mean, its Order and event shapes, and a Checkout API that has no
 idempotency, so a retry is made safe by looking before creating. Hermetic: the signing is computed in-process and the HTTP is
 `httpx.MockTransport`.

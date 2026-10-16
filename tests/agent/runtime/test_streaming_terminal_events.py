@@ -942,7 +942,7 @@ class TestAGraphFailureNeverLeaksItsMessageToTheCaller:
 class TestSubagentEventsDontLeakIntoTheMainStream:
     """_run_graph_stream (app/agent/runtime/stream.py) threads this turn's own
     callbacks/metadata into a subagent's NESTED graph.invoke() (see
-    app/agent/tools/builtin.py::run_subagent_impl's `nested_config`) so its
+    app/agent/tools/run_subagent.py::run_subagent_impl's `nested_config`) so its
     internal LLM/tool calls trace correctly — but that nested graph is
     built via this exact same build_graph(), so it ALSO has a node named
     "agent". Without the `metadata.subagent_name` guard added alongside

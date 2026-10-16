@@ -465,7 +465,7 @@ async def adjust_in(
     expires_at: datetime | None = None,
     compare: Collection[str] | None = None,
 ) -> Applied:
-    """A correction made by hand (`scripts/credits.py adjust`), signed: positive adds credits, negative takes them back.
+    """A correction made by hand (`src/credit_billing/cli/credits.py adjust`), signed: positive adds credits, negative takes them back.
 
     A positive adjustment is a grant whose lot source is 'adjustment' (so it repays debt first and can be told apart from
     a purchase or a promo in the lot list); a negative one goes the debit path as kind 'adjust' (earliest-expiring first,

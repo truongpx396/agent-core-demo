@@ -53,7 +53,7 @@ def _config():
         # MAX_ITERATIONS worth of agent<->tools round trips plus the fixed
         # pre/post-loop nodes needs — the same "each iteration is ~2 steps"
         # math app/agent/runtime/core.py's own RECURSION_LIMIT and
-        # app/agent/tools/builtin.py::run_subagent's nested_config already use, so
+        # app/agent/tools/run_subagent_domain.py::run_subagent's nested_config already use, so
         # this test config does too rather than relying on the SDK default
         # coincidentally being just enough.
         "recursion_limit": MAX_ITERATIONS * 2 + 15,
@@ -760,7 +760,7 @@ class TestUseSkillWithoutSearchGate:
 class TestMandatoryCapabilityGate:
     """A mutating tool call must pause at human_approval even when the
     caller never set require_approval=True — see should_continue's
-    docstring and app/agent/tools/builtin.py::TOOL_CAPABILITIES. Contrast with
+    docstring and app/domains/ecorp/tools.py::TOOL_CAPABILITIES. Contrast with
     TestHumanApprovalPath above, which exercises the pre-existing *opt-in*
     gate via a read_only tool."""
 

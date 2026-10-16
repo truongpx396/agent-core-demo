@@ -60,7 +60,7 @@ INTERNAL_ERROR_MESSAGE = (
 
 
 def error_origin(exc: BaseException) -> str:
-    """Where `exc` was raised, as `app/x.py:123 in func`: the innermost frame in this repo's code
+    """Where `exc` was raised, as `app/agent/runtime/stream.py:612 in _run_graph_stream`: the innermost frame in this repo's code
     (else the innermost frame at all). Never the message: an exception's text can name an internal
     host, a SQL fragment or a DSN (pattern 30), which is why the logs carry only its class, and the
     class alone cannot say where a bare `IndexError` came from."""

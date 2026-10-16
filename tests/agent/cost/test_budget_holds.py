@@ -1,6 +1,6 @@
 """Tests for app/agent/cost/budget_holds.py's in-flight budget reservation
 (reserve_budget/release_budget_reservation/in_flight_reservation) — the fix
-for the check-then-act race in app/agent/cost/budgets.py::check_tenant_daily
+for the check-then-act race in app/agent/cost/budgets.py::check_allowance
 (tests/agent/cost/test_tenant_budget.py covers that function itself; this file
 covers the reservation primitives it now reads).
 

@@ -1,8 +1,8 @@
-"""The adapter contract, pure half (tests/billing/contract.py): what every billing-provider adapter must do with a
+"""The adapter contract, pure half (tests/contract.py): what every billing-provider adapter must do with a
 delivery before the app trusts any of it. No database, no network: `parse_webhook` is pure by contract.
 
 The other half, that the same deliveries are applied exactly once through the REAL inbox and wallet, is
-tests/integration/test_billing_webhooks_real_postgres.py, parameterised over the same harnesses.
+tests/integration/test_webhooks_real_postgres.py, parameterised over the same harnesses.
 """
 import json
 import socket

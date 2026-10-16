@@ -4,7 +4,7 @@
 `POST /chat/cancel`'s two-mechanism design (GRAPH_PATTERNS.md pattern 43's
 queue-first HITL). The other half — cancelling a turn already paused at
 human_approval, via `cancel_run` — is already covered by
-tests/agent/runtime/test_durable_checkpoint.py::TestAsyncSeeding; this file is the new
+tests/agent/runtime/test_durable_checkpoint.py::TestAsyncEntryPoints; this file is the new
 mechanism only.
 
 Follows tests/agent/runtime/test_streaming_terminal_events.py's established pattern:

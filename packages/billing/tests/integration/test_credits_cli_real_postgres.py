@@ -1,4 +1,4 @@
-"""Hand-made wallet changes against a REAL Postgres: `credits.adjust_in` and the operator CLI that calls it (scripts/credits.py).
+"""Hand-made wallet changes against a REAL Postgres: `credits.adjust_in` and the operator CLI that calls it (src/credit_billing/cli/credits.py).
 
 A correction made by hand is the entry nobody can re-derive from a usage event, so what holds it together is database behaviour: the
 idempotency key that makes a retried command harmless, the lock that serialises it with the debits racing it, the append-only entries a

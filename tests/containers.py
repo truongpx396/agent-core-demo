@@ -597,7 +597,7 @@ def ensure_ollama(model: str, embed_model: str = "nomic-embed-text") -> dict[str
 
     `embed_model` defaults to `nomic-embed-text` — this app's own production
     `EMBED_MODEL` default (`app/core/config.py`, `docker-compose.yml`'s
-    `pull-models` target) — added after `tests/integration/test_qdrant_real.py`
+    `pull-models` target) — added after `tests/live/test_qdrant_real.py`
     (real `app.retrieval.qdrant_store.hybrid_search`, which calls
     `app.retrieval.embeddings.embed_text` — a REAL dense-embedding API call,
     not something `ensure_qdrant()` alone can satisfy) turned out to need a

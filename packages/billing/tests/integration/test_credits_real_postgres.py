@@ -5,7 +5,7 @@ A wallet is exactly the code a fake cursor cannot test: its guarantees ARE datab
 makes concurrent debits lose nothing, and the triggers and composite foreign keys are what stop a bug
 (or a person with psql) rewriting the books. Each is stated and proven here (constitution VII:
 reliance on a real constraint or lock is tested at this tier, not assumed). The arithmetic that
-decides who is charged is in tests/billing/test_credit_planning.py.
+decides who is charged is in tests/test_credit_planning.py.
 
 Each test uses its own tenant: the container is shared across tests and xdist workers.
 """

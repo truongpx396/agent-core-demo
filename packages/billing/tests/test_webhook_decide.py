@@ -3,7 +3,7 @@ decided from the event and what the app already knows. No database, so every ref
 
 What the database then does with a decision (one grant under duplicate and concurrent delivery, the status and
 the money committing together, a clawback booking debt) is real-Postgres behaviour:
-tests/integration/test_billing_webhooks_real_postgres.py.
+tests/integration/test_webhooks_real_postgres.py.
 """
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal

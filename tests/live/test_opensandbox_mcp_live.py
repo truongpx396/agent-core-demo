@@ -20,7 +20,7 @@ app/domains/sandbox_tools.py safe to wire in eagerly, see that module's
 own docstring) — meaning this test needs only the bridge installed,
 nothing more. Actually creating a sandbox needs a real, reachable,
 authenticated `opensandbox-server` (`make sandbox-up`) — that full round
-trip is covered by tests/live/test_ops_sandbox_session_live.py instead,
+trip is covered by tests/live/test_sandbox_session_live.py instead,
 kept separate from this file's own narrower, always-installable-bridge
 scope.
 """

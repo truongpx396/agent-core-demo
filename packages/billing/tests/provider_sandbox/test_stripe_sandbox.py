@@ -3,7 +3,7 @@
 The hermetic suite proves the adapter against Stripe's DOCUMENTATION: its signatures come from Stripe's own library, its payloads from the
 API reference. This proves it against Stripe itself, in three ways nothing else can:
 
-  * a Checkout request the real API accepts, and the session it returns has the shape `tests/billing/fake_stripe_api.py` assumes (this
+  * a Checkout request the real API accepts, and the session it returns has the shape `tests/fake_stripe_api.py` assumes (this
     file asserts those very behaviours, which is what keeps that fake honest);
   * a delivery SIGNED BY STRIPE (via `stripe listen`, whose secret the CLI prints) verifies with the adapter's code, and the same bytes
     are refused when altered, stale, under another secret, or under only the `v0` label;
