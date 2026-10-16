@@ -36,7 +36,11 @@ from app.agent.graph.hitl import (
     paused_approval_async,
     resumability_error_async,
 )
-from app.agent.graph.messages import COMPACTION_MARKER_KEY, is_retry_artifact
+from app.agent.graph.messages import (
+    COMPACTION_MARKER_KEY,
+    is_retry_artifact,
+    legacy_retry_artifact_ids,
+)
 from app.agent.runtime import core as runtime_module
 from app.core import gateway, metrics, tracing
 from app.core.config import (
@@ -1029,8 +1033,12 @@ async def get_session_messages(thread_id: str) -> list[dict]:
     graph = await runtime_module.init_graph_async()
     state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
     messages = []
-    for m in state.values.get("messages", []):
-        if is_retry_artifact(m):
+    stored = state.values.get("messages", [])
+    # A thread that had a retry before artifacts were tagged is healed the next time it runs a turn;
+    # until then (and for a replay of a thread nobody has written to) the same ids are skipped here.
+    legacy = legacy_retry_artifact_ids(stored)
+    for m in stored:
+        if is_retry_artifact(m) or m.id in legacy:
             continue  # retry feedback and the answer it rejected were never part of the conversation
         if isinstance(m, HumanMessage):
             role = "user"

@@ -169,6 +169,13 @@ agent_retry_total = Counter(
     "agent_retry_total", "Output-quality retries triggered by route_after_check"
 )
 
+agent_legacy_retry_artifacts_healed_total = Counter(
+    "agent_legacy_retry_artifacts_healed_total",
+    "Messages tagged as retry artifacts in a thread that predates the tagging "
+    "(app/agent/graph/messages.py::heal_legacy_retry_artifacts, run by validate_input). "
+    "It stops growing once no such thread is used any more, which is when that code can be removed",
+)
+
 agent_zero_citations_total = Counter(
     "agent_zero_citations_total",
     "Non-empty final answers with retrieved context available but zero "

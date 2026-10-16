@@ -30,6 +30,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import RetryPolicy, default_retry_on
 
 from app.agent.graph.messages import (
+    heal_legacy_retry_artifacts,
     human_has_content,
     human_text,
     last_human_message,
@@ -141,6 +142,13 @@ def validate_input(state: State, config: RunnableConfig) -> dict:
         "moderation_blocked": False,
         "followups": [],
     }
+    # A thread that had a retry before retry artifacts were tagged still holds the feedback as an
+    # untagged HumanMessage. Tagged here, the first time the thread is used again, every reader
+    # (the model's view, the summary, the transcript) treats it as the graph's, not the person's.
+    healed = heal_legacy_retry_artifacts(state.get("messages") or [])
+    if healed:
+        metrics.agent_legacy_retry_artifacts_healed_total.inc(len(healed))
+        updates["messages"] = healed
     return updates
 
 
