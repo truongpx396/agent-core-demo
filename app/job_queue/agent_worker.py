@@ -148,7 +148,12 @@ from app.core.config import (
     MAX_AUTO_RECLAIM_RETRIES,
     WORKER_RECLAIM_INTERVAL_SECONDS,
 )
-from app.core.errors import ErrorCode, ErrorEnvelope, internal_error_envelope
+from app.core.errors import (
+    ErrorCode,
+    ErrorEnvelope,
+    error_origin,
+    internal_error_envelope,
+)
 from app.core.logging_config import bind_request_id, configure_logging
 from app.core.telemetry import configure_telemetry
 from app.domains.registry import resolve_domain
@@ -380,7 +385,12 @@ async def process_request(client, entry_id: str, fields: dict) -> None:
         except Exception as exc:  # noqa: BLE001 - the queue must keep moving regardless
             logger.warning(
                 "agent_worker_turn_failed",
-                extra={"request_id": request_id, "kind": kind, "error_class": type(exc).__name__},
+                extra={
+                    "request_id": request_id,
+                    "kind": kind,
+                    "error_class": type(exc).__name__,
+                    "origin": error_origin(exc),  # where, not what: see errors.error_origin
+                },
             )
             # Not `str(exc)`: the caller gets the generic envelope, never the exception's own
             # text (an internal hostname, a SQL fragment, a DSN — pattern 30). The worker's own

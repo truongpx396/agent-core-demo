@@ -51,6 +51,7 @@ from app.core.errors import (
     ErrorCode,
     ErrorEnvelope,
     TurnCancelled,
+    error_origin,
     internal_error_envelope,
 )
 from app.core.security import SecurityCtx
@@ -507,7 +508,9 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
         # crosses the trust boundary (Principle V, pattern 30). The full
         # text is on the trace above; the log line below carries the class
         # only, matching the rest of the repo.
-        logger.warning("graph_stream_failed", extra={"error_class": type(exc).__name__})
+        logger.warning(
+            "graph_stream_failed", extra={"error_class": type(exc).__name__, "origin": error_origin(exc)}
+        )
         if outcome == "timeout":
             # asyncio.wait_for's own internal timeout raises a bare
             # TimeoutError with an empty str(exc), so the message is spelled
@@ -535,8 +538,9 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
         # event loop (via init_graph_async()), where only the async
         # accessor is safe (see resumability_error_async's docstring).
         state = await graph.aget_state(cfg)
-        if state.next:
-            pending = state.tasks[0].interrupts[0].value
+        interrupts = [intr for task in state.tasks for intr in task.interrupts] if state.next else []
+        if interrupts:
+            pending = interrupts[0].value
             trace.update(
                 output="".join(final_answer) + " [paused: awaiting approval]"
             )
@@ -544,6 +548,19 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
                 "type": "approval_required",
                 "tool_calls": pending["tool_calls"],
             }
+        elif state.next:
+            # Nodes are still pending, but none is waiting at an interrupt: the stream ended while
+            # something else was still running on this thread (another message sent into the same
+            # conversation at the same moment: the worker's per-thread lock stops that, but the
+            # Telegram and CLI paths do not take it). This used to index into an interrupt that was
+            # not there, outside every handler above, and escape as a raw IndexError.
+            trace.update(output="[ended with work still pending on this thread]", level="ERROR")
+            await _record_turn_metrics(time.monotonic() - start, "error", state.values)
+            envelope = ErrorEnvelope(
+                code=ErrorCode.THREAD_BUSY,
+                message="Another turn is already in progress on this conversation. Please wait for it to finish.",
+            )
+            terminal_event = {"type": "error", "content": envelope.message, **envelope.to_dict()}
         elif not final_answer and not isinstance(((state.values or {}).get("messages") or [None])[-1], AIMessage):
             # The run ended with nothing streamed and no answer message: there is nothing to show,
             # and the last message is not one to show (the fallback below would stream the PERSON'S

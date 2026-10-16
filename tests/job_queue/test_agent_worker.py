@@ -8,6 +8,7 @@ a real graph/LLM.
 """
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -221,6 +222,25 @@ class TestProcessRequestTurn:
         await agent_worker.process_request(client, entry_id, fields)
 
         assert captured["images"] is None
+
+    async def test_a_failure_is_logged_with_where_it_was_raised_and_not_what_it_said(self, monkeypatch, caplog):
+        """The class alone cannot say where a bare IndexError came from (it could not be traced in #171's CI);
+        the message cannot be logged (pattern 30), so the origin is: file, line and function, innermost in `app/`."""
+
+        async def failing_turn(text, thread_id, ctx, require_approval=False, images=None, cancel_check=None):
+            raise IndexError("list index out of range, in internal-db-host.example")
+            yield  # pragma: no cover - makes this a generator
+
+        monkeypatch.setattr(agent_worker, "astream_events_turn", failing_turn)
+        entry_id, fields = _entry(request_id="r9")
+
+        with caplog.at_level(logging.WARNING, logger="app.job_queue.agent_worker"):
+            await agent_worker.process_request(FakeRedis(), entry_id, fields)
+
+        (record,) = [r for r in caplog.records if r.getMessage() == "agent_worker_turn_failed"]
+        assert record.error_class == "IndexError"
+        assert record.origin.startswith("app/job_queue/agent_worker.py:")
+        assert "internal-db-host" not in record.origin and "out of range" not in record.origin
 
     async def test_a_failure_publishes_an_error_event_and_still_acks(self, monkeypatch):
         async def failing_turn(text, thread_id, ctx, require_approval=False, images=None, cancel_check=None):
