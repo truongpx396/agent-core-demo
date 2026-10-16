@@ -17,7 +17,9 @@ shared client is flushed and shut down once, at process exit.
 The leak itself is checked against the real SDK, since a counting fake cannot show
 threads; behaviour around it is checked with a fake.
 """
+import logging
 import threading
+import time
 
 import pytest
 
@@ -164,3 +166,37 @@ def test_twenty_real_turns_add_one_clients_threads_not_sixty():
 
     added = threading.active_count() - before
     assert added <= 3, f"{added} threads added by 20 traces; one shared client adds three"
+
+
+def test_a_flush_that_never_returns_does_not_hold_up_process_exit(monkeypatch, caplog):
+    """`flush()` joins the client's queue and the queue retries a batch it cannot deliver, so with Langfuse unreachable it
+    measured ~90 s at exit. Exit waits for it a bounded time, then gives up and says so."""
+    release = threading.Event()
+
+    class _StuckFlush(_FakeLangfuse):
+        def flush(self):
+            release.wait(30)  # a queue that cannot drain
+
+    import langfuse
+
+    monkeypatch.setattr(langfuse, "Langfuse", _StuckFlush)
+    assert tracing.get_langfuse() is not None
+
+    started = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger="app.core.tracing"):
+        tracing.shutdown_langfuse(timeout_seconds=0.2)
+    waited = time.monotonic() - started
+    release.set()
+
+    assert waited < 3, f"exit waited {waited:.1f}s for a flush that was never going to finish"
+    assert [r.getMessage() for r in caplog.records] == ["tracing_client_shutdown_timed_out"]
+    assert caplog.records[0].timeout_seconds == 0.2
+
+
+def test_a_flush_that_finishes_in_time_is_followed_by_the_shutdown(fake_sdk):
+    client = tracing.get_langfuse()
+
+    tracing.shutdown_langfuse(timeout_seconds=5)
+
+    assert (client.flushes, client.shutdowns) == (1, 1)
+

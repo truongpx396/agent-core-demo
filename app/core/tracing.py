@@ -25,6 +25,8 @@ import logging
 import threading
 from typing import Any
 
+from app.core.config import LANGFUSE_SHUTDOWN_TIMEOUT_SECONDS
+
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
@@ -54,21 +56,37 @@ def get_langfuse() -> Any | None:
         return _client
 
 
-def shutdown_langfuse() -> None:
+def shutdown_langfuse(timeout_seconds: float | None = None) -> None:
     """Flush what is queued and stop the client's threads. Idempotent, never
     raises, and leaves tracing off for the rest of the process — a trace opened
     after this would otherwise quietly start new threads during interpreter
-    exit."""
+    exit.
+
+    Bounded: `flush()` joins the client's queue, and the queue retries a batch it
+    cannot deliver, so with Langfuse unreachable it measured about 90 seconds at
+    exit (a one-file pytest run), which for a worker is longer than a container is
+    given to stop. The flush runs on a daemon thread and exit waits for it at most
+    `LANGFUSE_SHUTDOWN_TIMEOUT_SECONDS`; what was not delivered by then is lost, and
+    the warning below is the only record (a counter cannot be exported this late)."""
     global _client, _settled
     with _lock:
         client, _client, _settled = _client, None, True
     if client is None:
         return
-    try:
-        client.flush()
-        client.shutdown()
-    except Exception as exc:  # noqa: BLE001 - best-effort at exit
-        logger.warning("tracing_client_shutdown_failed", extra={"error_class": type(exc).__name__})
+    timeout = LANGFUSE_SHUTDOWN_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
+
+    def flush_and_stop() -> None:
+        try:
+            client.flush()
+            client.shutdown()
+        except Exception as exc:  # noqa: BLE001 - best-effort at exit
+            logger.warning("tracing_client_shutdown_failed", extra={"error_class": type(exc).__name__})
+
+    worker = threading.Thread(target=flush_and_stop, name="langfuse-shutdown", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        logger.warning("tracing_client_shutdown_timed_out", extra={"timeout_seconds": timeout})
 
 
 def _reset_for_tests() -> None:

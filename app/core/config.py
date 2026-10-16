@@ -59,6 +59,10 @@ class Settings(BillingSettings):
     langfuse_host: str = "http://localhost:3000"
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
+    # How long process exit waits for the tracing client to flush its queue (app/core/tracing.py). The flush joins the
+    # queue, which retries a batch it cannot deliver, so with Langfuse unreachable it took about 90 seconds: longer than
+    # a container is given to stop, so the worker was killed instead of exiting. Past this the flush is abandoned.
+    langfuse_shutdown_timeout_seconds: float = 5.0
 
     # Durable checkpointer (app/agent/runtime/core.py) — survives a process restart.
     # Separate DB from the shared Postgres stack (own schema/lifecycle via
@@ -553,6 +557,7 @@ DEFAULT_TENANT = settings.default_tenant
 LANGFUSE_HOST = settings.langfuse_host
 LANGFUSE_PUBLIC_KEY = settings.langfuse_public_key
 LANGFUSE_SECRET_KEY = settings.langfuse_secret_key
+LANGFUSE_SHUTDOWN_TIMEOUT_SECONDS = settings.langfuse_shutdown_timeout_seconds
 CHECKPOINTER_DATABASE_URL = settings.checkpointer_database_url
 SPARSE_MODEL = settings.sparse_model
 ML_SERVICE_URL = settings.ml_service_url
