@@ -130,8 +130,9 @@ import uuid
 from contextlib import aclosing
 from typing import cast
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage
 
+from app.agent.graph.messages import is_retry_artifact, is_user_message
 from app.agent.runtime.core import close_checkpointer_pool, init_graph_async
 from app.agent.runtime.stream import (
     astream_events_continue_turn,
@@ -418,7 +419,9 @@ def _turn_already_completed(turn_messages: list) -> bool:
     if not turn_messages:
         return False
     last = turn_messages[-1]
-    return isinstance(last, AIMessage) and not last.tool_calls
+    # A rejected answer (tagged by `retry_output`, see messages.RETRY_ARTIFACT_KEY) has no
+    # tool calls either, but it is the answer the turn is about to be asked to replace.
+    return isinstance(last, AIMessage) and not last.tool_calls and not is_retry_artifact(last)
 
 
 async def _classify_reclaimed_turn(graph, thread_id: str) -> str:
@@ -429,7 +432,8 @@ async def _classify_reclaimed_turn(graph, thread_id: str) -> str:
     `get_session_messages`/`resumability_error_async` already use
     elsewhere).
 
-    Finds the LAST `HumanMessage` in the checkpoint: since every turn
+    Finds the last message the PERSON sent (`is_user_message`, not the
+    retry feedback `retry_output` writes as a tagged `HumanMessage`): since every turn
     appends exactly one fresh `HumanMessage` before anything else runs,
     everything after it belongs to the most recent turn only — whether
     that's the crashed one, or (if the crash happened before even that got
@@ -486,8 +490,11 @@ async def _classify_reclaimed_turn(graph, thread_id: str) -> str:
         return "dead_letter"
 
     messages = (state.values or {}).get("messages", []) if state else []
+    # The turn's own question, not `retry_output`'s feedback (a HumanMessage too, tagged): see
+    # messages.is_user_message. Today the two readings agree, because the feedback and the
+    # rejected answer are written together; this keeps them agreeing if that ever changes.
     last_human_index = next(
-        (i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)),
+        (i for i in range(len(messages) - 1, -1, -1) if is_user_message(messages[i])),
         None,
     )
     if last_human_index is None:

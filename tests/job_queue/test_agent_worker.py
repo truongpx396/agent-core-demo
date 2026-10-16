@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from app.agent.graph.messages import RETRY_ARTIFACT_KEY
 from app.job_queue import agent_worker
 from app.job_queue.queue import (
     CONSUMER_GROUP,
@@ -780,6 +781,34 @@ class TestClassifyReclaimedTurn:
     outward tool call already having run no longer makes it unsafe (it
     just means retry via CONTINUATION, `"retry_continue"`, rather than a
     fresh restart)."""
+
+    async def test_a_crash_while_a_retry_is_in_progress_is_continued_from_the_turns_own_question(self):
+        """`retry_output` writes a tagged AIMessage (the rejected answer) and a tagged HumanMessage (the feedback).
+        Neither is the person's turn, and neither means the turn finished."""
+        graph = FakeGraph({"t1": [
+            HumanMessage(content="what is the refund policy", id="q"),
+            AIMessage(content="I am not sure.", id="a", additional_kwargs={RETRY_ARTIFACT_KEY: True}),
+            HumanMessage(content="cite your sources", id="f", additional_kwargs={RETRY_ARTIFACT_KEY: True}),
+        ]})
+        assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "retry_continue"
+
+    async def test_a_rejected_answer_is_not_a_finished_turn(self):
+        """The state `retry_output` never leaves a checkpoint in today (it writes the answer's tag and the feedback together),
+        but the question 'is this a final answer' must not depend on that: a tagged answer is the one about to be replaced."""
+        graph = FakeGraph({"t1": [
+            HumanMessage(content="what is the refund policy", id="q"),
+            AIMessage(content="I am not sure.", id="a", additional_kwargs={RETRY_ARTIFACT_KEY: True}),
+        ]})
+        assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "retry_continue"
+
+    async def test_a_turn_that_finished_after_a_retry_is_dead_lettered(self):
+        graph = FakeGraph({"t1": [
+            HumanMessage(content="what is the refund policy", id="q"),
+            AIMessage(content="I am not sure.", id="a", additional_kwargs={RETRY_ARTIFACT_KEY: True}),
+            HumanMessage(content="cite your sources", id="f", additional_kwargs={RETRY_ARTIFACT_KEY: True}),
+            AIMessage(content="Refunds are available for thirty days [1].", id="b"),
+        ]})
+        assert await agent_worker._classify_reclaimed_turn(graph, "t1") == "dead_letter"
 
     async def test_no_checkpoint_at_all_is_retried_fresh(self):
         graph = FakeGraph()  # thread never seen -> empty state

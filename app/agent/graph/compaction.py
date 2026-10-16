@@ -48,7 +48,10 @@ def _message_text(message: BaseMessage) -> str:
 
 
 def _estimate_tokens(messages: list[BaseMessage]) -> int:
-    return sum(len(_TOKEN_ENCODING.encode(_message_text(m))) for m in messages)
+    """What the model will be sent. A retry artifact (a rejected answer and the feedback it drew) stays in the
+    stored history but `agent` drops an earlier turn's before every call, so it is not counted: counting it
+    made a history that fits look over budget, and paid for a summary and a trim earlier than needed."""
+    return sum(len(_TOKEN_ENCODING.encode(_message_text(m))) for m in messages if not is_retry_artifact(m))
 
 
 def _messages_to_trim(
