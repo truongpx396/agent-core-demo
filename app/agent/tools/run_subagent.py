@@ -388,7 +388,11 @@ async def run_subagent_impl(
     total_cost_usd = result_state.get("total_cost_usd", 0.0)
     messages = result_state.get("messages", [])
     final_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
-    content = final_ai.content if final_ai is not None else ""
+    # Text beside a tool request is the model narrating what it is about to do ("Let me check that"),
+    # never an answer. When a safety net trips on such a round, the nested graph leaves that message
+    # last (its calls are answered with rejections after it), so reading its content would report the
+    # narration as the subagent's answer and the run as completed.
+    content = final_ai.content if final_ai is not None and not final_ai.tool_calls else ""
     if not isinstance(content, str):
         content = str(content)
     # Any `[n]` marker names the SUBAGENT's own retrieved sources, which mean nothing to the
