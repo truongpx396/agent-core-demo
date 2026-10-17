@@ -381,6 +381,19 @@ agent_embedding_identity_total = Counter(
     ["outcome", "collection"],
 )  # outcome: verified | adopted (legacy collection trusted, not provable) | mismatch (refused) | unverified (alias unresolvable, counted)
 
+agent_model_route_total = Counter(
+    "agent_model_route_total",
+    "Routing decisions and degradations (app/agent/graph/model_route.py, app/agent/graph/agent_node.py; GRAPH_PATTERNS.md pattern 68). "
+    "Every non-local outcome is a degrade or an opt-in: the turn ran on the local model unless it says `strong`.",
+    ["outcome"],
+)  # outcome: local | strong | no_advice | disabled | strong_unpriced | classifier_error | classifier_timeout | strong_failed_fell_back
+
+agent_model_route_latency_seconds = Histogram(
+    "agent_model_route_latency_seconds",
+    "What the routing step added to a turn: the whole route_model node (the /classify round trip and the price check), in seconds",
+    unit="s",
+)
+
 agent_ingest_total = Counter(
     "agent_ingest_total",
     "Successful ingest_text calls by source kind (app/ingestion/ingestor.py)",

@@ -108,6 +108,33 @@ class Settings(BillingSettings):
     # the same container, hence the generic name — see
     # docker/ml-service/main.py for full reasoning and measured numbers.
     ml_service_url: str = "http://localhost:8083"
+
+    # Model routing (specs/014, GRAPH_PATTERNS pattern 68). OFF by default and inert: with the router off, or no strong alias named,
+    # nothing is asked of the classifier and every call is byte-identical to a build without this feature. `strong_chat_model` is a
+    # gateway ALIAS (deploy/litellm/*.yaml `chat-strong`), never a provider's model id; leaving it empty means no escalation exists.
+    # One operator-wide switch: per-tenant control is a deliberate gap (the spec's "Not built").
+    strong_chat_model: str = ""
+    router_enabled: bool = False
+    # Escalate when the head's score is at or above this. Chosen from the evaluation harness's cost-quality curve, not by feel.
+    router_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    # The classifier call's deadline. A miss is "no advice" and the turn runs on the local model, so this bounds what routing can add
+    # to a turn (the service's own deadline is shorter; this is the backstop). Capped so a typo cannot make routing slower than a turn.
+    router_timeout_seconds: float = Field(default=0.5, gt=0.0, le=5.0)
+
+    @model_validator(mode="after")
+    def _the_router_has_somewhere_to_send_a_turn(self) -> "Settings":
+        # Messages name the variables, never their values: a settings error is printed at import time to a terminal or a container log.
+        if self.router_enabled and not self.strong_chat_model:
+            raise ValueError(
+                "ROUTER_ENABLED=true needs STRONG_CHAT_MODEL (the gateway alias to escalate to, e.g. chat-strong); "
+                "refusing to start rather than run a router that can never escalate"
+            )
+        if self.strong_chat_model and self.strong_chat_model == self.chat_model:
+            raise ValueError(
+                "STRONG_CHAT_MODEL must differ from CHAT_MODEL: a router that can only pick the same model is a misconfiguration"
+            )
+        return self
+
     hybrid_prefetch_limit: int = 20  # candidates pulled per leg (dense, sparse) before fusion
     rerank_top_k: int = 5            # final results returned after rerank
 
@@ -580,6 +607,10 @@ LANGFUSE_SHUTDOWN_TIMEOUT_SECONDS = settings.langfuse_shutdown_timeout_seconds
 CHECKPOINTER_DATABASE_URL = settings.checkpointer_database_url
 SPARSE_MODEL = settings.sparse_model
 ML_SERVICE_URL = settings.ml_service_url
+STRONG_CHAT_MODEL = settings.strong_chat_model
+ROUTER_ENABLED = settings.router_enabled
+ROUTER_THRESHOLD = settings.router_threshold
+ROUTER_TIMEOUT_SECONDS = settings.router_timeout_seconds
 HYBRID_PREFETCH_LIMIT = settings.hybrid_prefetch_limit
 RERANK_TOP_K = settings.rerank_top_k
 SKILLS_DIR = settings.skills_dir
