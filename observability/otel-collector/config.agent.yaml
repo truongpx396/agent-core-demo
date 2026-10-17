@@ -40,6 +40,13 @@ receivers:
           scrape_interval: 15s
           static_configs:
             - targets: ["cadvisor:8080"]
+        # The ML service's own /metrics (per-model load state, embedding and classifier counters). Unlike Qdrant's and LiteLLM's
+        # (deferred above), this port serves no tenant API of its own to weigh, and the alert MlServiceModelDown depends on it: a
+        # model that cannot load is otherwise visible only by reading the container's health endpoint.
+        - job_name: ml-service
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["ml-service:80"]
 
 processors:
   batch:

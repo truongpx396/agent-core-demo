@@ -13,3 +13,7 @@ fastembed==0.8.0
 tokenizers==0.23.2
 huggingface_hub==1.30.0
 numpy==2.5.3
+# The service had no metrics before the package split (specs/014 T013); the routing/fallback and per-model state are only visible
+# from inside it. Pure Python, tiny. Pinned to the same version as requirements-dev.txt and the CI `test` job (a test keeps the
+# three equal): the hermetic suite imports ml_service.metrics from the root environment, which does not carry the image's packages.
+prometheus-client==0.26.0
