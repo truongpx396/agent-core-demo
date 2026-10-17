@@ -310,7 +310,7 @@ before `retrieve_context`, so it never runs for a refused input, a cache hit, or
 `GraphProfile` (on for the parent graph, off for `SUBAGENT_PROFILE`).
 
 **Degrade to local (FR-037).** In the app, not the gateway: if the strong call raises an error classed as "never reached a
-model" (connection/timeout errors and HTTP 502/503/504 before a response; **not** `provider_budget_exceeded`, which
+model" (connection/timeout errors and any HTTP 5xx before a response; a first draft said 502/503/504 and a real LiteLLM in front of an unreachable upstream answers **500**, so it is any 5xx; **not** `provider_budget_exceeded`, which
 `AGENT_RETRY_POLICY` deliberately never retries, and not 4xx), `agent()` counts
 `agent_model_route_total{outcome="strong_failed_fell_back"}` and repeats that one call on the local alias. **Why not
 LiteLLM `fallbacks`:** the ledger would attribute the call to the strong alias's price although the local model served it, and
