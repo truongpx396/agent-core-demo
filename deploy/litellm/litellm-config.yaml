@@ -62,6 +62,19 @@ model_list:
       num_ctx: 32000
       num_predict: 2048
       repeat_penalty: 1.3
+  # The escalation alias (specs/014, contracts/gateway-aliases.md section 1): where the model router sends a turn it judges to need a stronger
+  # model. ALWAYS present so the proxy starts and the alias resolves; INERT until the app is told to use it (STRONG_CHAT_MODEL, ROUTER_ENABLED,
+  # both off by default). In dev it is a bigger LOCAL model, so the whole seam can be exercised with no third party and no key
+  # (`make pull-strong-model`, about 4.7 GB, only needed once the router is on). To point it at a hosted model, edit this one entry: an
+  # OpenAI-compatible endpoint with native tool calls, `stream_options.include_usage`, and a context window of at least 32000. NO `fallbacks`
+  # entry names it, on purpose: the app repeats a failed strong call on `chat` itself, so the usage ledger prices the model that answered.
+  - model_name: chat-strong
+    litellm_params:
+      model: ollama_chat/qwen2.5:7b
+      api_base: http://host.docker.internal:11434
+      num_ctx: 32000
+      num_predict: 2048
+      repeat_penalty: 1.3
   # Vision-capable alias slot (GRAPH_PATTERNS.md pattern 44) — "chat" above
   # (qwen2.5:3b) has no vision capability, so an attached image is carried
   # through the pipeline correctly but the model can't actually see it.
