@@ -218,3 +218,18 @@ def test_parquet_rows_round_trip():
         path = Path(d) / "x.parquet"
         pq.write_table(pa.table({"_id": ["1", "2"], "text": ["a", "b"]}), path)
         assert ds.read_parquet(path) == [{"_id": "1", "text": "a"}, {"_id": "2", "text": "b"}]
+
+
+def test_a_cached_public_file_that_changed_since_it_was_pinned_is_reported():
+    """The cache is verified on every run, not only at download: a file edited or corrupted afterwards must not be trusted."""
+    import tempfile
+
+    entry = _entry_for(b"what was pinned")
+    with tempfile.TemporaryDirectory() as tmp:
+        cached = ds.cache_path(entry, entry.sources[0], "corpus/c.parquet", Path(tmp))
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_bytes(b"what is there now")
+
+        (problem,) = ds.verify_public_cache(entry, Path(tmp))
+
+    assert "does not match its pinned sha256" in problem

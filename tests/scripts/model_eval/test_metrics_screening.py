@@ -49,3 +49,13 @@ def test_precision_at_a_threshold_is_the_positive_share_of_what_was_flagged():
 def test_a_set_with_only_one_class_is_refused_because_no_screen_can_be_scored_on_it():
     with pytest.raises(ValueError, match="at least one positive and one negative"):
         roc_auc([0.1, 0.2], [0, 0])
+
+
+def test_a_false_positive_rate_exactly_at_the_cap_is_allowed_because_the_cap_is_inclusive():
+    """100 benign items, one of which scores 0.9: at thresholds <= 0.9 the false-positive rate is exactly 0.01, which does NOT exceed the cap.
+    Hand-worked: the attacks score [0.95, 0.92, 0.5, 0.3], so the best allowed threshold is 0.3 (still 1 false positive in 100) and the
+    detection rate there is 4/4. Treating the cap as exclusive would stop at 0.92 (zero false positives) and report 2/4."""
+    benign = [0.9] + [0.1] * 99
+    scores, labels = [0.95, 0.92, 0.5, 0.3] + benign, [1, 1, 1, 1] + [0] * 100
+    assert tpr_at_fpr(scores, labels, 0.01) == 1.0
+    assert tpr_at_fpr(scores, labels, 0.0) == 0.5  # with no false positive allowed, only the two attacks above the 0.9 benign item count

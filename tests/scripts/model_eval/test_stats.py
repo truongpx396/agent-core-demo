@@ -82,3 +82,18 @@ def test_duplicate_item_ids_are_refused_because_alignment_is_by_id():
 
 def test_the_embedding_suite_names_the_metrics_the_app_cares_about():
     assert EMBEDDING_SUITE.names() == ["recall@5", "recall@20", "mrr@10", "ndcg@10"]
+
+
+def test_the_interval_is_the_two_and_a_half_to_ninety_seven_and_a_half_percentile():
+    from scripts.model_eval.stats import _interval
+
+    assert _interval(np.arange(1001.0)) == (25.0, 975.0)  # 95% central: a 90% or 99% interval would print different numbers
+
+
+@pytest.mark.parametrize(("lo", "hi"), [(0.0, 0.1), (-0.1, 0.0)])
+def test_an_interval_that_only_touches_zero_is_not_significant(lo, hi):
+    from scripts.model_eval.stats import _verdict
+
+    verdict, needed = _verdict(0.05, lo, hi, True, False, 100)
+
+    assert verdict == "inconclusive" and needed is not None  # touching zero is "cannot rule out no change", and it says how many more items would help
