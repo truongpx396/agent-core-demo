@@ -69,7 +69,12 @@ def test_memory_with_all_models_loaded_leaves_room_for_another_model_inside_the_
     """Production gives this container `mem_limit: 2g`. Measured on this change (docker stats): the old image (reranker + guard) idles at
     574 MiB; the new one (plus bge-small, fp32) idles at 781 MiB (+207 MiB); after 100 concurrent requests, which grow the model
     arenas, it reached 1,069 MiB. That is 52% of the limit at peak, so the bound here is 75% (1,536 MiB): it leaves room for one more
-    model to be enabled (ML_MODELS_ENABLED) and fails if something makes the service grow without bound. The current figure is recorded."""
+    model to be enabled (ML_MODELS_ENABLED) and fails if something makes the service grow without bound. The current figure is recorded.
+
+    The routing change enables `all-MiniLM-L6-v2` by default (it is the classifier's fallback model). Measured the same way on both trees
+    (this test alone, read from the recorded property): 1,070 MiB before, 1,309 MiB after, +239 MiB, which is 64% of the 2 GiB limit and
+    227 MiB under the bound above. That leaves less room for a further model than the 52% above suggests; the bound stays at 75% so that a
+    third model enabled by an operator is what would trip it, which is the intent."""
     import docker
 
     stats = docker.from_env().containers.get(ml_service["container_id"]).stats(stream=False)
