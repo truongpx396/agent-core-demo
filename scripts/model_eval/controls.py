@@ -28,10 +28,17 @@ CONTROL_CANDIDATES: dict[str, dict[str, str]] = {
 # inside the noise, which is `inconclusive`, and that is a pass. Better or worse is the failure.
 ALLOWED = {"no_difference": {"no_difference", "inconclusive"}, "worse": {"worse"}}
 
-# The metrics a degenerate screen is expected to be worse on: the detection side. An always-benign screen has a PERFECT false-positive
-# rate, so the FPR metrics are legitimately better for it and say nothing about whether the harness works.
-_DETECTION_ONLY: dict[str, tuple[str, ...]] = {
-    "screen": ("roc_auc", "tpr@1%fpr", "ml_recall@thr", "app_recall@thr"),
+# The metrics each degenerate screen is expected to be WORSE on. They differ, and the difference is the lesson of the first real run: the
+# first version judged both on the detection side (AUC, TPR at 1% FPR, recall at the threshold), and `make model-eval-verify` failed on the
+# recorded baseline because a screen that scores at random flags about half of everything at the 0.5 threshold, so its RECALL (about 0.5)
+# is as good as a real screen's (0.47 on the committed baseline). Recall at a threshold says nothing about whether a random scorer is
+# useless; its ranking (AUC) and its false alarms (FPR) do. Conversely an always-benign screen has a PERFECT false-positive rate, so its FPR
+# metrics are legitimately better and say nothing about whether the harness works; it is judged on what it cannot do (detect). TPR at 1% FPR
+# is judged for neither: with a few dozen benign items the cap allows ZERO false positives, so a random scorer can reach a non-zero TPR by
+# luck and the verdict depends on the seed.
+_JUDGED_ON: dict[tuple[str, str], tuple[str, ...]] = {
+    ("screen", "random-scores"): ("roc_auc", "ml_fpr_domain@thr", "app_fpr_domain@thr"),
+    ("screen", "always-benign"): ("roc_auc", "tpr@1%fpr", "ml_recall@thr", "app_recall@thr"),
 }
 
 
@@ -67,11 +74,11 @@ def derived_controls(kind: str, suite: Suite, baseline: ItemData, *, seed: int =
     if kind == "screen":
         broken = _copy(baseline)
         broken.arrays["score"] = rng.random(n)  # a screen that scores at random
-        results.append(judge("random-scores", "worse", compare(suite, broken, baseline), _DETECTION_ONLY["screen"]))
+        results.append(judge("random-scores", "worse", compare(suite, broken, baseline), _JUDGED_ON[("screen", "random-scores")]))
         benign = _copy(baseline)
         benign.arrays["score"] = np.zeros(n)  # a screen that never flags anything
         benign.arrays["pattern_hit"] = np.zeros(n)
-        results.append(judge("always-benign", "worse", compare(suite, benign, baseline), _DETECTION_ONLY["screen"]))
+        results.append(judge("always-benign", "worse", compare(suite, benign, baseline), _JUDGED_ON[("screen", "always-benign")]))
     else:
         broken = _copy(baseline)
         broken.arrays = {k: np.zeros(n) for k in baseline.arrays}  # a model that retrieves/ranks nothing relevant
@@ -84,4 +91,4 @@ def judge_candidate_control(name: str, kind: str, deltas: dict[str, Delta]) -> C
     expect = CONTROL_CANDIDATES.get(kind, {}).get(name)
     if expect is None:
         return None
-    return judge(name, expect, deltas, _DETECTION_ONLY.get(kind) if expect == "worse" else None)
+    return judge(name, expect, deltas, _JUDGED_ON.get((kind, name)) if expect == "worse" else None)

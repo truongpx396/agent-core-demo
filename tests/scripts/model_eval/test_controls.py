@@ -68,3 +68,53 @@ def test_a_control_candidate_is_recognised_by_name_and_other_names_are_not_contr
     assert judge_candidate_control("random-vectors", "embedding", deltas).ok
     assert judge_candidate_control("bge-small-en-v1.5", "embedding", deltas) is None
     assert {"baseline-as-candidate"} <= set(CONTROL_CANDIDATES["screen"]) & set(CONTROL_CANDIDATES["embedding"])
+
+
+def _marginal_screen_baseline(n=67, seed=11) -> ItemData:
+    """Shaped like the committed prompt-guard baseline (67 items, 32 attacks): decent ranking but, at the 0.5 threshold, it flags only about
+    half of the attacks. That is the case the first control got wrong."""
+    rng = np.random.default_rng(seed)
+    label = (np.arange(n) < 32).astype(float)
+    score = np.where(label == 1, rng.beta(3, 3.2, n), rng.beta(1.2, 6, n))
+    return ItemData([f"s{i}" for i in range(n)],
+                    {"score": score, "label": label, "domain": (label == 0).astype(float), "pattern_hit": np.zeros(n)})
+
+
+def test_a_random_screen_is_not_judged_on_recall_because_at_the_threshold_it_recalls_about_as_much_as_a_real_one():
+    """Regression: `make model-eval-verify` failed on the committed prompt-guard baseline ("random-scores expected worse, observed
+    inconclusive"). A screen that scores at random flags about half of everything at 0.5, so its recall is ~0.5, which is no worse than a
+    real screen's 0.47. The control was wrong, not the harness: it must be judged on ranking and false alarms."""
+    suite = ScreenSuite(0.5)
+    baseline = _marginal_screen_baseline()
+    point = suite.compute(baseline, np.arange(len(baseline)))
+    assert 0.3 < point["ml_recall@thr"] < 0.7, "test setup: the baseline must be a marginal-recall screen"
+
+    results = {r.name: r for r in derived_controls("screen", suite, baseline)}
+
+    assert results["random-scores"].ok, results["random-scores"].as_dict()
+    broken = ItemData(list(baseline.ids), {**baseline.arrays, "score": np.random.default_rng(20261017).random(len(baseline))})
+    recall = compare(suite, broken, baseline)["ml_recall@thr"]
+    assert recall.verdict != "worse"  # the premise: judged on recall this control would have failed
+
+
+def test_each_degenerate_screen_is_judged_on_what_it_cannot_do():
+    from scripts.model_eval.controls import _JUDGED_ON
+
+    assert set(_JUDGED_ON[("screen", "random-scores")]) == {"roc_auc", "ml_fpr_domain@thr", "app_fpr_domain@thr"}  # ranking and false alarms
+    assert set(_JUDGED_ON[("screen", "always-benign")]) == {"roc_auc", "tpr@1%fpr", "ml_recall@thr", "app_recall@thr"}  # it detects nothing
+    assert "tpr@1%fpr" not in _JUDGED_ON[("screen", "random-scores")]  # a few dozen benign items make it seed-dependent for a random scorer
+
+
+def test_the_random_scores_candidate_control_uses_the_same_metrics_as_the_derived_one():
+    suite = ScreenSuite(0.5)
+    deltas = {m: Delta(-0.3, (-0.4, -0.2), "worse", None) for m in ("roc_auc", "ml_fpr_domain@thr", "app_fpr_domain@thr")}
+    deltas["ml_recall@thr"] = Delta(0.03, (-0.2, 0.25), "inconclusive", 500)  # a random scorer recalls about as much as a real one
+    assert judge_candidate_control("random-scores", "screen", deltas).ok
+    assert set(suite.names()) >= set(deltas)
+
+
+def test_a_degenerate_model_whose_difference_cannot_be_told_from_noise_fails_its_worse_control():
+    """"Worse" must mean worse. A useless model that comes out `inconclusive` (the dataset is too small to separate it) would otherwise pass
+    for a harness that works; the control has to fail so the report is marked invalid and nobody trusts it."""
+    result = judge("random-vectors", "worse", {"ndcg@10": Delta(-0.02, (-0.2, 0.15), "inconclusive", 800)})
+    assert not result.ok and result.observed == "inconclusive"
