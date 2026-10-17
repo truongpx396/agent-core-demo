@@ -107,7 +107,7 @@ class TestAddNoteImpl:
         async def fake_upsert(points):
             captured["points"] = points
 
-        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_document", fake_embed_text)
         monkeypatch.setattr(ecorp_store, "embed_sparse", lambda text: ([1, 2], [0.5, 0.5]))
         # `tools.qdrant_store` is the same module object as the `qdrant_store`
         # imported above (app/agent/tools/builtin.py does `from app.retrieval import qdrant_store`) —
@@ -140,7 +140,7 @@ class TestAddNoteImpl:
         async def fake_embed_text(text):
             return [0.1]
 
-        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_document", fake_embed_text)
 
         def failing_sparse(text):
             raise RuntimeError("model not loaded")
@@ -172,7 +172,7 @@ class TestAddNoteImpl:
         async def fake_upsert(points):
             seen_ids.append(points[0].id)
 
-        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_document", fake_embed_text)
         monkeypatch.setattr(ecorp_store, "embed_sparse", lambda text: ([1], [1.0]))
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
@@ -195,7 +195,7 @@ class TestAddNoteImpl:
         async def fake_upsert(points):
             seen_ids.append(points[0].id)
 
-        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_document", fake_embed_text)
         monkeypatch.setattr(ecorp_store, "embed_sparse", lambda text: ([1], [1.0]))
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
@@ -216,7 +216,7 @@ class TestAddNoteImpl:
         async def fake_upsert(points):
             pass
 
-        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_document", fake_embed_text)
         monkeypatch.setattr(ecorp_store, "embed_sparse", lambda text: ([1], [1.0]))
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
         # No dedup-store mocking needed here: tests/conftest.py's
@@ -393,7 +393,7 @@ class TestRememberImpl:
         async def fake_upsert(points):
             captured.update(points=points)
 
-        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_document", fake_embed_text)
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
         result = await ecorp_store.remember_impl("likes dark roast coffee", TEST_CTX, "call-1")

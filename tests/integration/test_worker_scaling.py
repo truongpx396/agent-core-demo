@@ -189,8 +189,20 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
 
     previous_qdrant_url = qdrant_store.QDRANT_URL
     previous_collection = qdrant_store.COLLECTION
+    previous_identity = qdrant_store.current_identity
     qdrant_store.QDRANT_URL = qdrant["qdrant_url"]
     qdrant_store.COLLECTION = qdrant_collection
+
+    # The collection is named after the embedding identity, and the subprocesses below compute theirs from the same place: the alias
+    # `embed` (the fake server has no /model/info, so it does not resolve and the alias NAME stands in), the dimension the fake
+    # server's /v1/embeddings returns, and no prefixes. This fixture is module-scoped, so it runs BEFORE tests/conftest.py's
+    # function-scoped autouse identity exists; without this it would ask the real embedding endpoint (which is not up yet) for a dimension.
+    async def _identity_of_the_stack_below():
+        from app.retrieval.embedding_identity import EmbeddingIdentity
+
+        return EmbeddingIdentity("embed", None, FAKE_EMBED_DIM, "", "", "")
+
+    qdrant_store.current_identity = _identity_of_the_stack_below  # type: ignore[assignment]  # restored in the `finally` below
     # This fixture is module-scoped and does plain sync subprocess
     # management throughout, so `ensure_collection` (async now) is driven
     # with its own short-lived event loop rather than making the whole
@@ -314,6 +326,8 @@ def scaled_stack(qdrant_collection: str) -> Iterator[str]:
                 proc.wait(timeout=10)
         qdrant_store.QDRANT_URL = previous_qdrant_url
         qdrant_store.COLLECTION = previous_collection
+        qdrant_store.current_identity = previous_identity
+        qdrant_store.reset_identity_cache()
 
 
 @pytest.fixture(scope="module")
@@ -510,7 +524,7 @@ class TestScaledWorkersHandleHITLAndSubagentDelegation:
         for i in range(n):
             principal = f"user-{i}"
             points, _ = client.scroll(
-                collection_name=qdrant_collection,
+                collection_name=qdrant_store.live_name(qdrant_collection),  # the app writes through the `-live` alias
                 scroll_filter=Filter(
                     must=[
                         FieldCondition(key="kind", match=MatchValue(value="memory")),

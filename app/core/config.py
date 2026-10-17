@@ -45,6 +45,21 @@ class Settings(BillingSettings):
     openai_api_key: str = "sk-anything"
     chat_model: str = "chat"
     embed_model: str = "embed"
+    # How the embedding model must be fed (specs/014 FR-016). nomic-embed-text-v1.5's card says its input "must include a task
+    # instruction prefix" (`search_query: ` for a question, `search_document: ` for a stored passage); until these settings existed the
+    # app sent the same raw text for both, because one function (`embed_text`) served both roles. Both default to EMPTY so behavior is
+    # unchanged: a prefix changes the embedding space even though the model does not, so turning one on needs `make reembed` for every
+    # collection, which the embedding identity (app/retrieval/embedding_identity.py) makes impossible to forget. The A/B that says whether
+    # it is worth it is `make model-eval` (specs/014 User Story 1), not an assumption.
+    embed_query_prefix: str = ""
+    embed_document_prefix: str = ""
+    # An operator label folded into the embedding identity. The alias resolver (app/core/model_resolver.py) sees which model an alias
+    # points at, but not that the same name was re-pulled to different weights in place (an Ollama tag moved); bump this when that
+    # happens so the identity changes and the guard demands a re-embed.
+    embed_model_revision: str = ""
+    # How long a collection's embedding identity check is cached, so a search costs no extra round trip. A re-embed's alias swap is
+    # picked up by every process within this long.
+    embed_identity_cache_seconds: float = 10.0
 
     # Qdrant
     qdrant_url: str = "http://localhost:6333"
@@ -551,6 +566,10 @@ OPENAI_API_BASE = settings.openai_api_base
 OPENAI_API_KEY = settings.openai_api_key
 CHAT_MODEL = settings.chat_model
 EMBED_MODEL = settings.embed_model
+EMBED_QUERY_PREFIX = settings.embed_query_prefix
+EMBED_DOCUMENT_PREFIX = settings.embed_document_prefix
+EMBED_MODEL_REVISION = settings.embed_model_revision
+EMBED_IDENTITY_CACHE_SECONDS = settings.embed_identity_cache_seconds
 QDRANT_URL = settings.qdrant_url
 COLLECTION = settings.collection
 DEFAULT_TENANT = settings.default_tenant

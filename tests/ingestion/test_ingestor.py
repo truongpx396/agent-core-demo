@@ -26,7 +26,7 @@ def _mock_embeddings(monkeypatch):
     async def fake_embed_texts(texts):
         return [[0.1, 0.2] for _ in texts]
 
-    monkeypatch.setattr(ingestor, "embed_texts", fake_embed_texts)
+    monkeypatch.setattr(ingestor, "embed_documents", fake_embed_texts)
     monkeypatch.setattr(
         ingestor, "embed_sparse_batch", lambda texts: [([1, 2], [0.5, 0.5]) for _ in texts]
     )
@@ -150,7 +150,7 @@ class TestIngestText:
         async def fake_embed_texts(texts):
             return [[0.1] for _ in texts]
 
-        monkeypatch.setattr(ingestor, "embed_texts", fake_embed_texts)
+        monkeypatch.setattr(ingestor, "embed_documents", fake_embed_texts)
 
         def failing_sparse_batch(texts):
             raise RuntimeError("model not loaded")
@@ -176,7 +176,7 @@ class TestIngestText:
             dense_calls.append(texts)
             return [[0.1] for _ in texts]
 
-        monkeypatch.setattr(ingestor, "embed_texts", fake_embed_texts)
+        monkeypatch.setattr(ingestor, "embed_documents", fake_embed_texts)
         monkeypatch.setattr(
             ingestor,
             "embed_sparse_batch",

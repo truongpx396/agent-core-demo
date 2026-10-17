@@ -18,7 +18,12 @@ import httpx
 import psycopg
 
 from app.core import sql_store
-from app.core.config import CHECKPOINTER_DATABASE_URL, ML_SERVICE_URL
+from app.core.config import (
+    CHECKPOINTER_DATABASE_URL,
+    COLLECTION,
+    ML_SERVICE_URL,
+    SKILLS_COLLECTION,
+)
 from app.job_queue import queue
 from app.retrieval import qdrant_store
 
@@ -99,3 +104,46 @@ async def check_dependencies() -> dict[str, bool]:
         "redis": redis_ok,
         "ml_service": ml_service_ok,
     }
+
+
+_WARNINGS_TIMEOUT_SECONDS = 3.0
+
+
+async def _embedding_identity_warnings() -> list[str]:
+    warnings: list[str] = []
+    for logical in (COLLECTION, SKILLS_COLLECTION):
+        status = await qdrant_store.identity_status(logical)
+        if status.state == "mismatch":
+            warnings.append(
+                f"embedding identity mismatch: {logical} holds {status.found}, this process is configured for {status.expected}; "
+                f"retrieval from it is refused. Run `make reembed COLLECTION_NAME={logical}`."
+            )
+        elif status.state == "adopted":
+            warnings.append(
+                f"embedding identity adopted (unverified): {logical} predates identity tracking; `make reembed COLLECTION_NAME={logical}` makes it verifiable."
+            )
+    return warnings
+
+
+async def _ml_service_warnings() -> list[str]:
+    async with httpx.AsyncClient(timeout=_CHECK_TIMEOUT_SECONDS) as client:
+        resp = await client.get(f"{ML_SERVICE_URL}/health/models")
+    resp.raise_for_status()
+    return [
+        f"ML service model {name} is {info.get('state')}" + (f": {info['reason']}" if info.get("reason") else "")
+        for name, info in resp.json().get("models", {}).items()
+        if info.get("state") != "ready"
+    ]
+
+
+async def readiness_warnings() -> list[str]:
+    """Things a person should know that do not make the API unready. Each source is independent and bounded; one that cannot be read
+    contributes nothing (the dependency check above already reports an unreachable Qdrant or ML service), it never fails the endpoint."""
+    results = await asyncio.gather(
+        *(
+            asyncio.wait_for(source(), timeout=_WARNINGS_TIMEOUT_SECONDS)
+            for source in (_embedding_identity_warnings, _ml_service_warnings)
+        ),
+        return_exceptions=True,
+    )
+    return [w for result in results if isinstance(result, list) for w in result]

@@ -451,6 +451,20 @@ groups:
             its ingest job. The object is cleaned up automatically; the
             underlying storage/Redis issue still needs a look.
 
+      - alert: EmbeddingIdentityMismatch
+        expr: sum(increase(agent_embedding_identity_total{outcome="mismatch"}[10m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Retrieval is being refused: a vector collection was made with a different embedding model"
+          description: >-
+            agent_embedding_identity_total{outcome="mismatch"} is rising: a read or write was refused because the collection's
+            embedding identity (model, dimension, query/document prefixes, EMBED_MODEL_REVISION) differs from this process's
+            configuration. Retrieval from that collection returns nothing (it degrades like an outage) and ingestion into it fails.
+            GET /health/ready names the collection; `make reembed COLLECTION_NAME=<name>` rebuilds it, or restore the previous embedding
+            settings.
+
   - name: agent-core-infra
     rules:
 

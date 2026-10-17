@@ -19,6 +19,7 @@ import uuid
 import pytest
 
 from app.retrieval import semantic_cache
+from app.retrieval.embedding_identity import EmbeddingIdentity
 from tests.containers import ensure_redis
 
 pytestmark = pytest.mark.integration
@@ -34,13 +35,19 @@ async def _fake_embed_text(text: str) -> list[float]:
     return [b / 255.0 for b in hashlib.sha256(text.encode()).digest()]
 
 
+async def _fake_identity():
+    """The identity the cache sizes its index from: dimension 32, because `_fake_embed_text` returns a sha256 digest's 32 bytes."""
+    return EmbeddingIdentity("embed", "test/fake-sha256", 32, "", "", "")
+
+
 @pytest.fixture
 def tenant(monkeypatch):
     info = ensure_redis()
     monkeypatch.setattr(semantic_cache, "REDIS_URL", info["redis_url"])
     monkeypatch.setattr(semantic_cache, "_client", None)
-    monkeypatch.setattr(semantic_cache, "_index_ready", False)
-    monkeypatch.setattr(semantic_cache, "embed_text", _fake_embed_text)
+    monkeypatch.setattr(semantic_cache, "_ready_indexes", set())
+    monkeypatch.setattr(semantic_cache, "embed_query", _fake_embed_text)
+    monkeypatch.setattr(semantic_cache.embedding_identity, "current_identity", _fake_identity)
     return f"acme-{uuid.uuid4().hex[:8]}"
 
 

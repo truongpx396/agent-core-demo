@@ -24,15 +24,37 @@ recorded-not-smoothed-over" policy), both recorded via
 `collection` (default `COLLECTION`) so a second collection with this same
 dense+sparse schema — e.g. `SKILLS_COLLECTION` — gets the identical
 fusion/rerank/degrade pipeline with no duplicated logic.
+
+## Embedding identity, and why every access goes through an alias (GRAPH_PATTERNS.md pattern 67)
+
+A logical collection `docs` is, in Qdrant, a PHYSICAL collection `docs-1a2b3c4d` (the suffix is the first 8 hex digits of the embedding
+identity its vectors were made under, app/retrieval/embedding_identity.py) reached through the ALIAS `docs-live`. Every read and write
+uses the alias, and compares the suffix with the identity this process is configured for:
+
+  * a mismatch is refused (`EmbeddingIdentityMismatch`): reads degrade exactly like a retrieval outage, writes fail visibly. Mixing two
+    embedding spaces in one collection returns confident nonsense and nothing about the vector size can catch it;
+  * switching models is therefore: build `docs-<new hash>` beside the old one, verify it, then repoint the alias in ONE request
+    (Qdrant alias updates are atomic) so there is no moment in which the live collection holds both, and a failure before the repoint
+    leaves the old collection serving (`scripts/reembed.py`);
+  * a collection from before this existed is a physical collection named exactly `docs` with no alias. It is ADOPTED: an alias
+    `docs-live -> docs` is created (non-destructive) and the configured identity is trusted, with a warning and a metric, because
+    nothing records what it was made with. The first re-embed replaces it with a verifiable one.
 """
 import asyncio
 import logging
+import re
+import time
+from dataclasses import dataclass
 from typing import cast
 from uuid import UUID
 
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Condition,
+    CreateAlias,
+    CreateAliasOperation,
+    DeleteAlias,
+    DeleteAliasOperation,
     Distance,
     FieldCondition,
     Filter,
@@ -50,7 +72,18 @@ from qdrant_client.models import (
 )
 
 from app.core import metrics
-from app.core.config import COLLECTION, HYBRID_PREFETCH_LIMIT, QDRANT_URL, RERANK_TOP_K
+from app.core.config import (
+    COLLECTION,
+    EMBED_IDENTITY_CACHE_SECONDS,
+    HYBRID_PREFETCH_LIMIT,
+    QDRANT_URL,
+    RERANK_TOP_K,
+)
+from app.retrieval.embedding_identity import (
+    HASH_LENGTH,
+    EmbeddingIdentityMismatch,
+    current_identity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,29 +95,192 @@ def get_client() -> AsyncQdrantClient:
     return AsyncQdrantClient(url=QDRANT_URL)
 
 
-async def ensure_collection(dim: int, collection: str | None = None) -> None:
-    """(Re)create the collection with a named dense vector (cosine) and a
-    named sparse vector (BM25). Recreating changes the schema — a
-    collection built before hybrid search (a single unnamed dense vector)
-    is incompatible and must be re-ingested (`make ingest`).
+LIVE_SUFFIX = "-live"
+_HASH = re.compile(rf"^[0-9a-f]{{{HASH_LENGTH}}}$")
 
-    `collection` defaults to the main `COLLECTION` (docs) — pass e.g.
-    `SKILLS_COLLECTION` to (re)create a SEPARATE collection with the same
-    dense+sparse schema, as `scripts/index_skills.py` does."""
-    # `Modifier.IDF` is required, not optional tuning: fastembed's
-    # `Qdrant/bm25` model only computes the term-frequency half of BM25
-    # locally; the IDF half is expected to come from Qdrant via this
-    # modifier, from the collection's indexed document frequencies.
-    # Without it, common and rare terms score identically and the "BM25"
-    # leg isn't actually BM25.
+
+def live_name(collection: str | None = None) -> str:
+    """The alias every read and write of a logical collection goes through."""
+    return f"{collection or COLLECTION}{LIVE_SUFFIX}"
+
+
+def physical_name(collection: str, identity_hash: str) -> str:
+    return f"{collection}-{identity_hash}"
+
+
+def identity_hash_of(physical: str, collection: str) -> str | None:
+    """The identity hash a physical collection name carries, or None for a legacy collection (named exactly `collection`) or any name
+    that does not follow the `<collection>-<8 hex>` shape."""
+    prefix = f"{collection}-"
+    if physical.startswith(prefix) and _HASH.match(physical[len(prefix) :]):
+        return physical[len(prefix) :]
+    return None
+
+
+# logical collection -> (monotonic time the answer expires, the physical collection its alias points at, or None if nothing exists yet).
+# Cached so a search costs no extra round trip; a re-embed's alias swap is picked up by every process within
+# EMBED_IDENTITY_CACHE_SECONDS, and the process that performed it clears the entry (`reset_identity_cache`).
+_targets: dict[str, tuple[float, str | None]] = {}
+
+
+def reset_identity_cache() -> None:
+    _targets.clear()
+
+
+async def alias_target(collection: str | None = None) -> str | None:
+    """The physical collection `<collection>-live` points at, or None if the alias does not exist."""
+    wanted = live_name(collection)
+    for alias in (await get_client().get_aliases()).aliases:
+        if alias.alias_name == wanted:
+            return alias.collection_name
+    return None
+
+
+async def ensure_live(collection: str | None = None) -> str | None:
+    """The physical collection behind a logical one, adopting a legacy collection if that is all there is.
+
+    Alias exists -> its target. No alias but a physical collection named exactly `collection` -> create `collection-live -> collection`
+    (non-destructive, atomic) and return it: the deployment predates the alias, and its vectors are trusted to match the configured
+    identity because nothing records otherwise (see the module docstring). Neither exists -> None (a fresh install before `make ingest`).
+    Safe to call from every process at start: losing the race to create the alias is not an error.
+    """
+    logical = collection or COLLECTION
+    target = await alias_target(logical)
+    if target is not None:
+        return target
     client = get_client()
-    await client.recreate_collection(
-        collection_name=collection or COLLECTION,
-        vectors_config={DENSE_VECTOR_NAME: VectorParams(size=dim, distance=Distance.COSINE)},
-        sparse_vectors_config={
+    if not await client.collection_exists(logical):
+        return None
+    try:
+        await client.update_collection_aliases(
+            change_aliases_operations=[
+                CreateAliasOperation(create_alias=CreateAlias(collection_name=logical, alias_name=live_name(logical)))
+            ]
+        )
+        logger.warning(
+            "adopted a pre-identity vector collection; its embedding identity cannot be verified until it is re-embedded",
+            extra={"collection": logical},
+        )
+    except Exception:  # noqa: BLE001 - another process may have created the alias a moment ago; re-read before deciding it failed
+        target = await alias_target(logical)
+        if target is None:
+            raise
+        return target
+    return logical
+
+
+async def _resolve_target(logical: str) -> tuple[str | None, bool]:
+    """(physical collection, whether this call refreshed the cached answer)."""
+    now = time.monotonic()
+    cached = _targets.get(logical)
+    if cached is not None and cached[0] > now:
+        return cached[1], False
+    target = await ensure_live(logical)
+    _targets[logical] = (now + EMBED_IDENTITY_CACHE_SECONDS, target)
+    return target, True
+
+
+async def check_identity(collection: str | None = None, *, write: bool) -> str:
+    """The alias to use for `collection`, after proving its vectors match the embedding identity this process is configured for.
+
+    Raises `EmbeddingIdentityMismatch` otherwise. A legacy (adopted) collection is trusted, not proven, and counted as such. Counted
+    per refresh (verified / adopted / unverified) and per refused call (mismatch), so the alert on a mismatch keeps firing for as long
+    as requests keep being refused.
+    """
+    logical = collection or COLLECTION
+    target, refreshed = await _resolve_target(logical)
+    alias = live_name(logical)
+    if target is None:
+        return alias  # nothing exists yet; the operation reports its own "collection not found"
+    found = identity_hash_of(target, logical)
+    if found is None:
+        if refreshed:
+            metrics.agent_embedding_identity_total.labels(outcome="adopted", collection=logical).inc()
+        return alias
+    identity = await current_identity()
+    expected = identity.hash8()
+    if expected != found:
+        metrics.agent_embedding_identity_total.labels(outcome="mismatch", collection=logical).inc()
+        raise EmbeddingIdentityMismatch(logical, expected, found, write=write)
+    if refreshed:
+        metrics.agent_embedding_identity_total.labels(outcome="verified" if identity.verified else "unverified", collection=logical).inc()
+    return alias
+
+
+@dataclass(frozen=True)
+class IdentityStatus:
+    state: str  # absent | adopted | mismatch | verified | unverified
+    expected: str | None = None
+    found: str | None = None
+
+
+async def identity_status(collection: str | None = None) -> IdentityStatus:
+    """Where a collection stands against the configured identity, for the readiness report. Unlike `check_identity` it never raises over a
+    mismatch and counts nothing: it is an observation, not an access."""
+    logical = collection or COLLECTION
+    target, _ = await _resolve_target(logical)
+    if target is None:
+        return IdentityStatus("absent")
+    found = identity_hash_of(target, logical)
+    if found is None:
+        return IdentityStatus("adopted")
+    identity = await current_identity()
+    expected = identity.hash8()
+    if expected != found:
+        return IdentityStatus("mismatch", expected, found)
+    return IdentityStatus("verified" if identity.verified else "unverified", expected, found)
+
+
+async def _maintenance_alias(collection: str | None) -> str:
+    """The alias for an operation that must keep working on a mismatched collection (a data-subject delete, a count): resolved and
+    adopted like any access, but never refused over the embedding identity, which is about vectors and these touch none."""
+    logical = collection or COLLECTION
+    await _resolve_target(logical)
+    return live_name(logical)
+
+
+def _collection_config() -> dict:
+    return {
+        "vectors_config": {DENSE_VECTOR_NAME: VectorParams(size=0, distance=Distance.COSINE)},
+        "sparse_vectors_config": {
+            # `Modifier.IDF` is required, not optional tuning: fastembed's `Qdrant/bm25` model only computes the term-frequency half of
+            # BM25 locally; the IDF half is expected to come from Qdrant via this modifier, from the collection's indexed document
+            # frequencies. Without it, common and rare terms score identically and the "BM25" leg isn't actually BM25.
             SPARSE_VECTOR_NAME: SparseVectorParams(modifier=Modifier.IDF)
         },
-    )
+    }
+
+
+async def create_physical(physical: str, dim: int) -> None:
+    """(Re)create one PHYSICAL collection with a named dense vector (cosine) and a named sparse vector (BM25). Destructive for a
+    collection of that exact name, which is by construction one of the same embedding identity."""
+    config = _collection_config()
+    config["vectors_config"] = {DENSE_VECTOR_NAME: VectorParams(size=dim, distance=Distance.COSINE)}
+    await get_client().recreate_collection(collection_name=physical, **config)
+
+
+async def repoint_live(collection: str, physical: str) -> None:
+    """Make `<collection>-live` point at `physical`, atomically: one request deletes the old alias (if any) and creates the new one, so
+    no search ever sees a moment without it and none sees both collections."""
+    ops: list = []
+    if await alias_target(collection) is not None:
+        ops.append(DeleteAliasOperation(delete_alias=DeleteAlias(alias_name=live_name(collection))))
+    ops.append(CreateAliasOperation(create_alias=CreateAlias(collection_name=physical, alias_name=live_name(collection))))
+    await get_client().update_collection_aliases(change_aliases_operations=ops)
+    reset_identity_cache()
+
+
+async def ensure_collection(dim: int, collection: str | None = None) -> None:
+    """(Re)create the collection under the CURRENT embedding identity and make it the live one.
+
+    Destructive only for a collection of the same identity (`make ingest` re-seeds from scratch by design); a collection built under
+    another identity is left untouched and simply stops being live, so the old data survives until an operator deletes it.
+    `collection` defaults to the main `COLLECTION` (docs) — pass e.g. `SKILLS_COLLECTION` to (re)create a SEPARATE collection with the
+    same dense+sparse schema, as `scripts/index_skills.py` does."""
+    logical = collection or COLLECTION
+    physical = physical_name(logical, (await current_identity()).hash8())
+    await create_physical(physical, dim)
+    await repoint_live(logical, physical)
 
 
 def build_point(
@@ -120,8 +316,8 @@ _MAX_POINTS_PER_UPSERT_BATCH = 300
 
 
 async def upsert(points: list[PointStruct], collection: str | None = None) -> None:
+    name = await check_identity(collection, write=True)
     client = get_client()
-    name = collection or COLLECTION
     for start in range(0, len(points), _MAX_POINTS_PER_UPSERT_BATCH):
         batch = points[start : start + _MAX_POINTS_PER_UPSERT_BATCH]
         await client.upsert(collection_name=name, points=batch)
@@ -177,7 +373,7 @@ async def hybrid_search(
     comparable, so this is a no-op when `rerank_results=False` or
     reranking degrades.
 
-    `async def`: every leg is real I/O — `embed_text`/`rerank` (HTTP) and
+    `async def`: every leg is real I/O — `embed_query`/`rerank` (HTTP) and
     Qdrant's `query_points` (`AsyncQdrantClient`) are all awaited directly.
     `embed_sparse` is the exception — local ONNX/CPU compute, so it runs
     via `asyncio.to_thread` instead.
@@ -186,9 +382,9 @@ async def hybrid_search(
     from app.retrieval import embeddings
 
     k = k or RERANK_TOP_K
-    coll = collection or COLLECTION
+    coll = await check_identity(collection, write=False)
     query_filter = _build_filter(topic, tenant_filter, doc_ids)
-    dense_vector = await embeddings.embed_text(query_text)
+    dense_vector = await embeddings.embed_query(query_text)
 
     try:
         sparse_indices, sparse_values = await asyncio.to_thread(
@@ -269,7 +465,7 @@ async def delete_by_filter(delete_filter: Filter) -> None:
     retention-sweep script would call directly.
     """
     await get_client().delete(
-        collection_name=COLLECTION, points_selector=FilterSelector(filter=delete_filter)
+        collection_name=await _maintenance_alias(None), points_selector=FilterSelector(filter=delete_filter)
     )
 
 
@@ -279,5 +475,5 @@ async def count_by_filter(count_filter: Filter) -> int:
     deletion removed (Qdrant's `delete` doesn't return a row count, so
     this is called immediately BEFORE deleting the same filter — see that
     function's docstring for the accepted race)."""
-    result = await get_client().count(collection_name=COLLECTION, count_filter=count_filter)
+    result = await get_client().count(collection_name=await _maintenance_alias(None), count_filter=count_filter)
     return result.count
