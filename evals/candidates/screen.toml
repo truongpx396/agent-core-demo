@@ -1,0 +1,41 @@
+# Prompt-injection / jailbreak screens (specs/014). The baseline is what the ML service's /prompt-guard runs today.
+# gravitee-io's ONNX ports are used (not meta-llama's gated originals; see docker/ml-service/ml_service/settings.py). Their licence is the
+# Llama 4 Community License, which is the model's licence, recorded here as text; it is reported, not a reason to refuse to measure.
+
+[[candidate]]
+name = "prompt-guard-2-22m"
+kind = "screen"
+path = "service"
+licence = "Llama-4-Community"
+baseline = true
+notes = "Llama Prompt Guard 2 22M (quantized ONNX) behind the ML service's /prompt-guard, as app/core/moderation.py calls it."
+[candidate.source]
+model = "gravitee-io/Llama-Prompt-Guard-2-22M-onnx"
+
+[[candidate]]
+name = "prompt-guard-2-22m-onnx"
+kind = "screen"
+path = "inprocess"
+licence = "Llama-4-Community"
+notes = "The baseline model loaded here: confirms the service and in-process paths agree."
+[candidate.source]
+repo = "gravitee-io/Llama-Prompt-Guard-2-22M-onnx"
+file = "model.quant.onnx"
+revision = "da68d0f6023c7aeaf6b256eec549de295d5e8740"
+[candidate.prepare]
+max_length = 512
+pad_token = "[PAD]"
+
+[[candidate]]
+name = "prompt-guard-2-86m"
+kind = "screen"
+path = "inprocess"
+licence = "Llama-4-Community"
+notes = "The larger sibling: a higher published detection rate at 4x the size. Whether it also blocks more ordinary questions is what the in-domain false-positive rate says."
+[candidate.source]
+repo = "gravitee-io/Llama-Prompt-Guard-2-86M-onnx"
+file = "model.quant.onnx"
+revision = "45a05fbd5337a864edc608f994911f009c37ca57"
+[candidate.prepare]
+max_length = 512
+pad_token = "[PAD]"

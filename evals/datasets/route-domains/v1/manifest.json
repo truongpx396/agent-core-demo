@@ -1,0 +1,31 @@
+{
+  "domains": [
+    "ecorp",
+    "ops",
+    "sales",
+    "support"
+  ],
+  "kind": "route",
+  "licence": "repository-internal",
+  "name": "route-domains",
+  "provenance": {
+    "generated_at": "2026-10-17",
+    "generator": "ollama/qwen2.5:7b",
+    "note": "prompts only; per-model outcomes are produced per operator into the ignored outcomes/ directory",
+    "prompt_sha256": "3e59d629a14317a7ae5858ad81ff55662d08b43c9fc98e0a9131b8f08096f157"
+  },
+  "schema_version": 1,
+  "splits": {
+    "dev": {
+      "file": "dev.jsonl",
+      "items": 32,
+      "sha256": "2e02101f65fa727ef4c53eeaabf91adada6bb6590921c0d85bb540b506fdbad1"
+    },
+    "test": {
+      "file": "test.jsonl",
+      "items": 91,
+      "sha256": "1cf9fd7dad04f6addedb8ff82e7021447be33021af28e605fb47203340116f92"
+    }
+  },
+  "version": "v1"
+}

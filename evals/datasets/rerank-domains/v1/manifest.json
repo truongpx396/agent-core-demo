@@ -1,0 +1,34 @@
+{
+  "domains": [
+    "ecorp",
+    "general",
+    "ops",
+    "sales",
+    "support"
+  ],
+  "kind": "reranker",
+  "licence": "repository-internal",
+  "list_size": 20,
+  "name": "rerank-domains",
+  "provenance": {
+    "author": "derived from retrieval-domains v1: gold passages plus lexical (BM25) hard negatives, no model involved",
+    "derived_from": {
+      "name": "retrieval-domains",
+      "version": "v1"
+    }
+  },
+  "schema_version": 1,
+  "splits": {
+    "dev": {
+      "file": "dev.jsonl",
+      "items": 48,
+      "sha256": "8d95491d2cf356270de175735c5d8343c847ceb5689699a75f0807ee3b308cb1"
+    },
+    "test": {
+      "file": "test.jsonl",
+      "items": 103,
+      "sha256": "93848cd60fa00d9e164e939f45f7d67fbfab8c748d7c5bae3ad0b4fd003fa05c"
+    }
+  },
+  "version": "v1"
+}

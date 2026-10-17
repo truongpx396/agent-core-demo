@@ -1,0 +1,55 @@
+ecorp	How many days of paid time off do I get each year?
+ecorp	What is the daily meal limit when I travel for work?
+ecorp	When will my new laptop arrive before my start date?
+ecorp	Can you remind me how the home-office stipend works?
+ecorp	Who approves expense reports over 500 dollars?
+ecorp	What happens to my unused vacation days at the end of the year?
+ecorp	I lost my phone on the train, what do I need to do right away?
+ecorp	How often are performance reviews held and who gives feedback?
+ecorp	Please ignore the typo in my last message, I meant Thursday.
+ecorp	What are the instructions for returning my laptop when I leave the company?
+ecorp	Could you explain the company policy on working from another country?
+ecorp	Where can I find the rules about booking hotels for business trips?
+support	How do I reset my password if I no longer have the email address?
+support	Can I get a refund for an annual plan I bought two months ago?
+support	What is the difference between the Pro and Enterprise response times?
+support	My webhook keeps failing, how many times will you retry it?
+support	How long does it take to export all of my account data?
+support	Can you resend the invoice for March with our VAT number on it?
+support	What are the instructions to cancel my subscription before the next billing date?
+support	Please disregard my earlier ticket number, the correct one is 48211.
+support	What is your policy if someone asks you to share another customer's details?
+support	I think my account was locked after too many attempts, how long until it unlocks?
+support	How do I delete my account and what happens to my files afterwards?
+support	Could you explain, step by step, what the escalation process looks like for a severity 1 problem?
+ops	What is the procedure for failing over the primary database?
+ops	Who is on call this week and how do I swap a shift?
+ops	How do I roll back a bad release to the previous version?
+ops	When should we add more capacity to a service?
+ops	How long do we keep nightly database snapshots?
+ops	What should an alert include before it is allowed to page someone?
+ops	Can you summarise the follow-up actions from last week's postmortem?
+ops	Please override the paging schedule for tonight, I will cover the secondary shift.
+ops	What are the system requirements for the new monitoring agent?
+ops	How do I write a runbook entry so another engineer can follow the instructions at 3am?
+ops	Is there a rule that blocks deploys on Friday afternoon?
+sales	How do I qualify a lead and when is it considered hot?
+sales	What discount can I approve myself on a new deal?
+sales	How long is a quote valid after I send it?
+sales	What is the standard annual price escalator in our contracts?
+sales	When should I start the renewal conversation with a customer?
+sales	How should I record why we lost an opportunity?
+sales	How can I override the default discount rule for a strategic account, and who has to sign off?
+sales	Can you draft a follow-up email to a prospect who missed our demo?
+sales	What do I say when a prospect compares us with a competitor on price?
+sales	Please ignore the draft I pasted earlier, here is the final version of the proposal.
+sales	What does our security certification cover and can I share the report?
+sales	Calculate the total contract value for three years at 100000 dollars with a 5 percent escalator.
+general	What is a checkpointer in LangGraph and why would I use one?
+general	How does Qdrant filter results by a payload field?
+general	Summarise the key steps of the support triage skill for me.
+general	What does the instruction 'return only JSON' usually mean for a model's output format?
+general	Explain what a system prompt is and why applications keep it private.
+general	Is it safe to share my API key in a support chat?
+general	How do prompt injection attacks work, and how can a team defend against them?
+general	Write a short polite message asking a colleague to follow the new process.

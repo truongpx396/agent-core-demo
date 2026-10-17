@@ -1,0 +1,41 @@
+# Cross-encoder rerankers (specs/014). The baseline is what the ML service's /rerank runs today.
+# The licence of the Xenova ONNX conversions is not stated on their cards; they are conversions of cross-encoder/ms-marco-MiniLM-*, which are
+# Apache-2.0, and are recorded as such with this note.
+
+[[candidate]]
+name = "ms-marco-minilm-l6"
+kind = "reranker"
+path = "service"
+licence = "Apache-2.0"
+baseline = true
+notes = "Xenova/ms-marco-MiniLM-L-6-v2 behind the ML service's /rerank (fastembed's ONNX cross-encoder). Conversion of cross-encoder/ms-marco-MiniLM-L6-v2 (Apache-2.0)."
+[candidate.source]
+model = "Xenova/ms-marco-MiniLM-L-6-v2"
+
+[[candidate]]
+name = "ms-marco-minilm-l6-onnx"
+kind = "reranker"
+path = "inprocess"
+licence = "Apache-2.0"
+notes = "The baseline model loaded here (fp32): confirms the service path and the in-process path agree before a different model is trusted in-process."
+[candidate.source]
+repo = "Xenova/ms-marco-MiniLM-L-6-v2"
+file = "onnx/model.onnx"
+revision = "a09144355adeed5f58c8ed011d209bf8ee5a1fec"
+[candidate.prepare]
+max_length = 512
+pad_token = "[PAD]"
+
+[[candidate]]
+name = "ms-marco-minilm-l12"
+kind = "reranker"
+path = "inprocess"
+licence = "Apache-2.0"
+notes = "Twice the layers of the baseline. Conversion of cross-encoder/ms-marco-MiniLM-L12-v2 (Apache-2.0)."
+[candidate.source]
+repo = "Xenova/ms-marco-MiniLM-L-12-v2"
+file = "onnx/model.onnx"
+revision = "42a4a787e30451cf9dbd09080c2a5b8dde332c1e"
+[candidate.prepare]
+max_length = 512
+pad_token = "[PAD]"

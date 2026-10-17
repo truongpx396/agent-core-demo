@@ -1,0 +1,34 @@
+{
+  "domains": [
+    "any",
+    "ecorp",
+    "general",
+    "ops",
+    "sales",
+    "support"
+  ],
+  "kind": "screen",
+  "licence": "repository-internal",
+  "name": "screen-domains",
+  "provenance": {
+    "author": "authored by the implementing agent from the failure modes in specs/014; not yet reviewed by a person",
+    "sources": [
+      "evals/sources/screen/attacks.tsv",
+      "evals/sources/screen/benign.tsv"
+    ]
+  },
+  "schema_version": 1,
+  "splits": {
+    "dev": {
+      "file": "dev.jsonl",
+      "items": 37,
+      "sha256": "c430ee1efb2354d15a49f0c194b9eb210d193afcc8c4430f3719316ac034121b"
+    },
+    "test": {
+      "file": "test.jsonl",
+      "items": 67,
+      "sha256": "96ee8df4806d9889617712ab71652e4e9290cd740b0719f1506836368d756311"
+    }
+  },
+  "version": "v1"
+}

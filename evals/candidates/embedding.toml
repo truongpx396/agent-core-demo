@@ -1,0 +1,131 @@
+# Embedding models the harness can evaluate (specs/014). `baseline = true` marks the model in use today; every comparison is made
+# against it. Add a model by adding a [[candidate]] table: never edit metric, dataset or report code.
+#
+# path = "gateway"   the app's own client through the LiteLLM `embed` alias (what the app really gets)
+# path = "service"   the ML service's /v1/embeddings
+# path = "inprocess" load the ONNX file here, through the same tokenise/pool code the ML service serves with
+# An inprocess candidate pins a FULL commit sha (never a branch: a branch moves under you) and names the exact file.
+#
+# NOTE ON FILES: int8/quantized variants were SLOWER than fp32 on the ARM CPU these were first measured on, and the same file may be
+# faster on x86. Measure on the CPU you will deploy to (the report carries a hardware id and never compares latency across ids).
+
+[[candidate]]
+name = "nomic-embed-text-ollama"
+kind = "embedding"
+path = "gateway"
+licence = "Apache-2.0"
+baseline = true
+notes = "The model the stack runs today: Ollama's nomic-embed-text behind the `embed` alias, with NO task prefixes (the app sends raw text)."
+[candidate.source]
+alias = "embed"
+
+[[candidate]]
+name = "nomic-embed-text-ollama-prefixed"
+kind = "embedding"
+path = "gateway"
+licence = "Apache-2.0"
+notes = "The same model and alias with the prefixes its card says it must be given. The A/B that says whether adding EMBED_QUERY_PREFIX / EMBED_DOCUMENT_PREFIX is worth a re-embed."
+[candidate.source]
+alias = "embed"
+[candidate.prepare]
+query_prefix = "search_query: "
+document_prefix = "search_document: "
+
+[[candidate]]
+name = "nomic-embed-text-v1.5-onnx-fp32"
+kind = "embedding"
+path = "inprocess"
+licence = "Apache-2.0"
+notes = "The SAME model as the baseline as an fp32 ONNX file on CPU: the like-for-like cost of moving it off Ollama."
+[candidate.source]
+repo = "nomic-ai/nomic-embed-text-v1.5"
+file = "onnx/model.onnx"
+revision = "e9b6763023c676ca8431644204f50c2b100d9aab"
+[candidate.prepare]
+query_prefix = "search_query: "
+document_prefix = "search_document: "
+pooling = "mean"
+normalize = true
+max_length = 512
+pad_token = "[PAD]"
+
+[[candidate]]
+name = "bge-small-en-v1.5"
+kind = "embedding"
+path = "inprocess"
+licence = "MIT"
+notes = "33M parameters, 384-d. fp32 official ONNX. No query instruction (its card says v1.5 degrades only slightly without one)."
+[candidate.source]
+repo = "BAAI/bge-small-en-v1.5"
+file = "onnx/model.onnx"
+revision = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+[candidate.prepare]
+pooling = "cls"
+normalize = true
+max_length = 512
+pad_token = "[PAD]"
+
+[[candidate]]
+name = "bge-small-en-v1.5-instructed"
+kind = "embedding"
+path = "inprocess"
+licence = "MIT"
+notes = "bge-small with the retrieval instruction its card recommends for short queries against long passages."
+[candidate.source]
+repo = "BAAI/bge-small-en-v1.5"
+file = "onnx/model.onnx"
+revision = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+[candidate.prepare]
+query_prefix = "Represent this sentence for searching relevant passages: "
+pooling = "cls"
+normalize = true
+max_length = 512
+pad_token = "[PAD]"
+
+[[candidate]]
+name = "all-minilm-l6-v2"
+kind = "embedding"
+path = "inprocess"
+licence = "Apache-2.0"
+notes = "22M parameters, 384-d, 6 layers: about twice as fast as bge-small. The classifier's fallback model; also an embedding candidate."
+[candidate.source]
+repo = "sentence-transformers/all-MiniLM-L6-v2"
+file = "onnx/model.onnx"
+revision = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+[candidate.prepare]
+pooling = "mean"
+normalize = true
+max_length = 256
+pad_token = "[PAD]"
+
+[[candidate]]
+name = "gte-modernbert-base-int8"
+kind = "embedding"
+path = "inprocess"
+licence = "Apache-2.0"
+notes = "149M parameters, 768-d, 8k context. The int8 file; see gte-modernbert-base-fp32 for the same model unquantized."
+[candidate.source]
+repo = "Alibaba-NLP/gte-modernbert-base"
+file = "onnx/model_int8.onnx"
+revision = "e7f32e3c00f91d699e8c43b53106206bcc72bb22"
+[candidate.prepare]
+pooling = "cls"
+normalize = true
+max_length = 1024
+pad_token = "[PAD]"
+
+[[candidate]]
+name = "gte-modernbert-base-fp32"
+kind = "embedding"
+path = "inprocess"
+licence = "Apache-2.0"
+notes = "The fp32 file (596 MB) of the same model: the int8-versus-fp32 question, measured rather than assumed."
+[candidate.source]
+repo = "Alibaba-NLP/gte-modernbert-base"
+file = "onnx/model.onnx"
+revision = "e7f32e3c00f91d699e8c43b53106206bcc72bb22"
+[candidate.prepare]
+pooling = "cls"
+normalize = true
+max_length = 1024
+pad_token = "[PAD]"
