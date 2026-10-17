@@ -40,6 +40,34 @@ def test_every_agent_metric_an_alert_names_is_defined_in_the_code():
     assert not unknown, "alerts on metrics nothing records:\n" + "\n".join(unknown)
 
 
+def _ml_service_metrics() -> set[str]:
+    # The ML service is a separate image with its own metrics module (docker/ml-service/ml_service/metrics.py), named `ml_*`.
+    source = (REPO / "docker/ml-service/ml_service/metrics.py").read_text()
+    return set(re.findall(r'(?:Counter|Gauge|Histogram)\(\s*"(ml_[a-z_]+)"', source))
+
+
+def test_every_ml_metric_an_alert_names_is_defined_by_the_ml_service():
+    defined = _ml_service_metrics()
+    assert defined, "test setup: the ML service's metric definitions were not found"
+    unknown = []
+    for rule in _rules():
+        for name in re.findall(r"\b(ml_[a-z_]+?)(?:_bucket|_count|_sum)?\b(?=[\s{\[)(]|$)", rule["expr"]):
+            if name not in defined:
+                unknown.append(f"{rule['alert']}: {name}")
+
+    assert not unknown, "alerts on ML-service metrics nothing records:\n" + "\n".join(unknown)
+
+
+def test_a_model_that_is_down_while_the_ml_service_is_up_has_an_alert():
+    """ScrapeTargetDown only fires when the whole service is unreachable. A model that failed to load leaves the service up and every
+    consumer quietly degrading, so without this rule nobody is told."""
+    rules = {rule["alert"]: rule for rule in _rules()}
+
+    assert "MlServiceModelDown" in rules
+    assert "ml_model_state" in rules["MlServiceModelDown"]["expr"]
+    assert rules["MlServiceModelDown"]["labels"]["severity"] in {"warning", "critical"}
+
+
 def test_a_worker_pool_that_answers_nothing_has_an_alert():
     rules = {rule["alert"]: rule for rule in _rules()}
 

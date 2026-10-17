@@ -16,9 +16,16 @@ the same pytest run still only starts one real container.
 """
 import pytest
 
-from tests.containers import ensure_crawl4ai
+from tests.containers import ensure_crawl4ai, ensure_ml_service
 
 
 @pytest.fixture(scope="session")
 def crawl4ai_server() -> dict[str, str]:
     return ensure_crawl4ai()
+
+
+@pytest.fixture(scope="session")
+def ml_service_url() -> str:
+    """The real ML service image (docker/ml-service.Dockerfile), built and started once per pytest run by the shared
+    `ensure_ml_service()` (its cross-worker cache means every package asking for it still gets one container)."""
+    return ensure_ml_service()["ml_service_url"]

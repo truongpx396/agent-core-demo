@@ -137,7 +137,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      - run: pip install -r requirements-lock.txt pytest-xdist==3.8.0
+      # pyarrow and prometheus-client are not in the lock file (they are dev/aux-image dependencies, specs/014), so the hermetic suite
+      # that imports them needs them named here; tests/core/test_ci_installs_the_model_eval_dependencies.py keeps the pins in step.
+      - run: pip install -r requirements-lock.txt pytest-xdist==3.8.0 pyarrow==26.0.0 prometheus-client==0.26.0
       - run: pytest -n auto -q
 
   # The billing package, installed ALONE into a clean environment (spec 011 D20, FR-016): not the lock file, not the agent app. If its

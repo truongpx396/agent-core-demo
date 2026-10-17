@@ -1,8 +1,8 @@
-# Custom CPU inference microservice (docker/ml-service/main.py) — hosts
+# Custom CPU inference microservice (the `ml_service` package under docker/ml-service/, entry point main.py) — hosts
 # this app's small, latency-critical ONNX models: reranking (originally
 # the only one) and prompt-injection classification (added alongside it,
 # reusing the same container/batching engine rather than standing up a
-# third service). See that file's own module docstring for why each model
+# third service). See the package's batching.py docstring for why each model
 # lives here instead of TEI (architecture-unsupported for MiniLM; no
 # notion of a plain classifier like Prompt Guard at all) or a serving
 # framework (BentoML/Ray Serve/Triton — each ruled out for a concrete,
@@ -32,7 +32,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Dockerfile's own HOME/chown ordering.
 ENV HOME=/home/appuser
 
-COPY docker/ml-service/main.py .
+# The whole service directory: the `ml_service` package, the `main.py` shim `uvicorn main:app` imports, `models.toml` (the declared
+# text models) and `heads/` (classifier heads, specs/014). It used to be the single file main.py; the logic became an importable
+# package so tests and the head trainer can use the very code the service serves with. requirements.txt was copied above for layer caching.
+COPY docker/ml-service/ ./
 
 # The named volume mounted at /home/appuser/.cache (docker-compose.yml)
 # only inherits this chown correctly if the directory already exists at

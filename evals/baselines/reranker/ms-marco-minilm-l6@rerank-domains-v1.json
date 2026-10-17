@@ -1,0 +1,59 @@
+{
+  "candidate": "ms-marco-minilm-l6",
+  "dataset": {
+    "manifest_sha256": "95c0d25e7af046e2b47d0f0a10b8021d17d28ec0315836cb863936c0348450a0",
+    "name": "rerank-domains",
+    "reviewed_share": 0.0,
+    "version": "v1"
+  },
+  "efficiency": {
+    "hw-13437d4f": {
+      "ms_per_chunk": 17.976211151616756,
+      "query_ms": {
+        "p50": 298.69174998020753,
+        "p95": 721.636199811472
+      },
+      "rss_mb": null,
+      "run_seconds": 111.33862062499975
+    }
+  },
+  "hardware": {
+    "cores": 12,
+    "cpu": "Apple M4 Pro",
+    "onnxruntime": "1.29.0",
+    "os": "Darwin 25.4.0",
+    "threads": 12
+  },
+  "kind": "reranker",
+  "model": {
+    "dim": null,
+    "identity": "ml-service:Xenova/ms-marco-MiniLM-L-6-v2",
+    "licence": "Apache-2.0",
+    "revision": null,
+    "size_bytes": null
+  },
+  "path": "service",
+  "per_query": "ms-marco-minilm-l6@rerank-domains-v1.items.json",
+  "per_query_sha256": "3c6ebcf9dc6648038100622ffbf3e687ff5327c20b09e52c9e156d7cd640f29e",
+  "provisional": true,
+  "quality": {
+    "mrr@10": {
+      "ci": [
+        0.9514563106796117,
+        0.9951456310679612
+      ],
+      "mean": 0.9757281553398058
+    },
+    "ndcg@10": {
+      "ci": [
+        0.9641679372399473,
+        0.9964167937239947
+      ],
+      "mean": 0.9820839686199736
+    }
+  },
+  "recorded_at": "2026-10-17",
+  "repo_revision": "3273aa9",
+  "schema_version": 1,
+  "warnings": []
+}

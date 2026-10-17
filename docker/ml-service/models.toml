@@ -1,0 +1,7 @@
+# The text models this service can serve for the embedding endpoint and the routing classifier (specs/014 data-model.md section 8).
+#
+# EMPTY on purpose in the package-split change: /rerank and /prompt-guard have their own loaders (rerank.py, guard.py) and are
+# reported by /health/models alongside whatever is declared here. Entries arrive with the endpoints that serve them.
+#
+# Every entry needs a full 40-hex commit `revision` (never a branch), a `licence`, an explicit `pad_token` and `max_length`, and
+# `roles` drawn from ["embed", "classify"]. `needs_prefix` is documentation for the operator; the server never applies a prefix.

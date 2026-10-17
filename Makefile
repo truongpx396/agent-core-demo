@@ -1,4 +1,4 @@
-.PHONY: test-billing-package help up up-app sandbox-up sandbox-build pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker billing-usage-sweep usage-reconcile usage-reconcile-worker budget-policy litellm-key test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
+.PHONY: model-eval model-eval-all model-eval-baseline model-eval-data model-eval-verify test-billing-package help up up-app sandbox-up sandbox-build pull-models ingest index-skills chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker billing-usage-sweep usage-reconcile usage-reconcile-worker budget-policy litellm-key test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
 
 # Pinned DefectDojo release — see `defectdojo-up`'s own comment for why this
 # is a plain git clone into ~/.cache (NOT vendored into this repo, same
@@ -12,7 +12,9 @@
 # from the compose file's own `:latest` default.
 # The billing package is found by path, not installed: the lock file is a machine-generated freeze of a real install and a path
 # dependency does not belong in it (spec 011 D20). Absolute, so a target that `cd`s into packages/billing still finds it.
-export PYTHONPATH := $(CURDIR)/packages/billing/src$(if $(PYTHONPATH),:$(PYTHONPATH))
+# The billing package and the ML service's `ml_service` package are found by path, not installed (pyproject.toml's pytest `pythonpath` and
+# mypy_path do the same for the tools they run). scripts/model_eval imports ml_service to embed with the code the service serves with.
+export PYTHONPATH := $(CURDIR)/packages/billing/src:$(CURDIR)/docker/ml-service$(if $(PYTHONPATH),:$(PYTHONPATH))
 
 DEFECTDOJO_VERSION := 3.3.100
 DEFECTDOJO_DIR := $(HOME)/.cache/agent-core-demo-defectdojo
@@ -236,6 +238,24 @@ typecheck:  ## Static checks: mypy over app/ and scripts/ — see pyproject.toml
 
 eval:  ## Run the golden-dataset evaluation against the real stack (needs `make up` + `make ingest`)
 	python -m scripts.eval
+
+model-eval:  ## Evaluate ONE model against its recorded baseline: make model-eval KIND=embedding|reranker|screen CANDIDATE=<name> [VIA=gateway|service|inprocess] [DATASET=<name>]. A manual tier like `make eval` (needs models/services); specs/014, evals/README.md
+	@test -n "$(KIND)" -a -n "$(CANDIDATE)" || { echo "usage: make model-eval KIND=embedding CANDIDATE=<name> [VIA=...] [DATASET=...]"; exit 2; }
+	python -m scripts.model_eval run --kind $(KIND) --candidate $(CANDIDATE) $(if $(VIA),--via $(VIA)) $(if $(DATASET),--dataset $(DATASET))
+
+model-eval-all:  ## The same candidate for every kind that declares it: make model-eval-all CANDIDATE=<name> (a control such as baseline-as-candidate runs for all)
+	@test -n "$(CANDIDATE)" || { echo "usage: make model-eval-all CANDIDATE=<name>"; exit 2; }
+	python -m scripts.model_eval run --all-kinds --candidate $(CANDIDATE) $(if $(VIA),--via $(VIA))
+
+model-eval-baseline:  ## RECORD a baseline (immutable; FORCE=1 to replace, ADD_HARDWARE=1 to add this machine's latency): make model-eval-baseline KIND=... CANDIDATE=...
+	@test -n "$(KIND)" -a -n "$(CANDIDATE)" || { echo "usage: make model-eval-baseline KIND=embedding CANDIDATE=<name>"; exit 2; }
+	python -m scripts.model_eval baseline --kind $(KIND) --candidate $(CANDIDATE) $(if $(VIA),--via $(VIA)) $(if $(DATASET),--dataset $(DATASET)) $(if $(FORCE),--force) $(if $(ADD_HARDWARE),--add-hardware)
+
+model-eval-data:  ## Download and verify the pinned public evaluation datasets (needs the network once; offline afterwards)
+	python -m scripts.model_eval fetch
+
+model-eval-verify:  ## Check every committed evaluation dataset, baseline, licence and control, with no model and no network
+	python -m scripts.model_eval verify
 
 promptfoo:  ## Prompt-level regression checks for the domain system prompts against a real Ollama (needs `make up` or a native Ollama with CHAT_MODEL pulled)
 	cd promptfoo && npm install --include=optional

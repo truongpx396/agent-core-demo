@@ -536,7 +536,7 @@ def ensure_ml_service() -> dict[str, str]:
     not a published one) and no pre-built public tag to pull — built once
     here via the `docker` SDK directly, then driven through the generic
     `DockerContainer` API like `ensure_qdrant()`. Both ONNX models this
-    service loads (~22M params each, docker/ml-service/main.py) are small
+    service loads (~22M params each, docker/ml-service/ml_service/) are small
     enough that a cold download inside the container's own healthcheck-
     covered startup stays cheap — unlike `ensure_ollama()`'s multi-GB chat
     model, no extra host-side model cache/`actions/cache` step is needed

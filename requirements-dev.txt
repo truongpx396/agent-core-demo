@@ -84,3 +84,15 @@ google-auth==2.58.0
 # introduces no NEW resolver conflict beyond the pre-existing deepeval/
 # huggingface_hub click one already disclosed above.
 locust==2.46.4
+
+# --- specs/014: the model-evaluation harness and the ML service package (installed by the CI `test` job explicitly; see
+# tests/core/test_ci_installs_the_model_eval_dependencies.py, which keeps these pins, that job and docker/ml-service equal) ---
+# Reads the public parquet datasets in scripts/model_eval (BEIR, deepset/prompt-injections, CLINC150). Dev only: never in
+# requirements.txt or the lock file, so the app image does not carry it.
+pyarrow==26.0.0
+# Imported by docker/ml-service/ml_service/metrics.py, which tests/ml_service imports from the root environment; the service image
+# gets it from docker/ml-service/requirements.txt.
+prometheus-client==0.26.0
+# Validates reports against specs/014 contracts/model-eval.report.schema.json. Already pinned transitively in requirements-lock.txt
+# (4.26.0); declared here so the harness's test does not lose it if that transitive edge ever goes.
+jsonschema==4.26.0

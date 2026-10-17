@@ -1,0 +1,43 @@
+{
+  "corpus": {
+    "chunks": 78,
+    "file": "corpus.jsonl",
+    "sha256": "1d800237ff957fef9263d46485de2c90ebc9b29ced90289497e597204e7eca45"
+  },
+  "domains": [
+    "ecorp",
+    "general",
+    "ops",
+    "sales",
+    "support"
+  ],
+  "kind": "embedding",
+  "licence": "repository-internal",
+  "name": "retrieval-domains",
+  "provenance": {
+    "filters": {
+      "dedupe": true,
+      "dev_share_percent": 30,
+      "max_verbatim_span_chars": 40,
+      "questions_per_chunk": 2
+    },
+    "generated_at": "2026-10-17",
+    "generator": "ollama/qwen2.5:7b",
+    "note": "questions are model-written and NOT yet reviewed by a person; reviewed_share is computed from the items",
+    "prompt_sha256": "193a093c805b7a3b2ca203516ca538aec17f85d2c8e8c63729d603f213af5bf6"
+  },
+  "schema_version": 1,
+  "splits": {
+    "dev": {
+      "file": "dev.jsonl",
+      "items": 48,
+      "sha256": "90870d3496c0eece56b3baf7d6cb97a9f69071022af1abc040bf560763476744"
+    },
+    "test": {
+      "file": "test.jsonl",
+      "items": 103,
+      "sha256": "f9af5c1de6ef7fa06439300270f640c3cecf390463652294fe443825230d57ec"
+    }
+  },
+  "version": "v1"
+}

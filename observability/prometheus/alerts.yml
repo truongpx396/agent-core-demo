@@ -462,3 +462,18 @@ groups:
         annotations:
           summary: "Prometheus scrape target {{ $labels.job }} is down"
           description: "{{ $labels.instance }} (job={{ $labels.job }}) has been unreachable for 5m."
+
+      # The ML service is up (ScrapeTargetDown does not fire) but a model it declares could not be loaded or has failed at run
+      # time. The service retries with a bounded backoff (5 s doubling to 300 s), so a model still down after 5 minutes is not a
+      # start-up blip. Its consumers degrade rather than fail (reranker -> RRF order, guard -> pattern layer only, router -> local
+      # model), which is exactly why nothing else would tell a person.
+      - alert: MlServiceModelDown
+        expr: ml_model_state == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ML service model {{ $labels.model }} is not ready"
+          description: >-
+            ml_model_state{model="{{ $labels.model }}"} has been 0 for 5m: the model failed to load or failed at run time.
+            GET /health/models on the ML service names the reason and when it will be retried.

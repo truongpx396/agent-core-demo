@@ -38,7 +38,10 @@ make chat              # CLI agent; chat-hitl adds approval prompts
 
 `make eval`, `promptfoo`, `garak`, `deepeval`, `test-sandbox`, `test-provider-sandbox` need live models or services and
 are manual by design. Run `make eval` + `make promptfoo` after a prompt, model-alias or
-retrieval change. Don't run `make clean`, `clear-*`, or `restart-all` without being asked —
+retrieval change. `make model-eval KIND=embedding|reranker|screen CANDIDATE=<name>` is the same kind of tier for a
+*model swap*: it judges a candidate against the recorded baseline (`evals/README.md`), and `make model-eval-verify`
+needs no model or network. Run it before changing an embedding, reranker or screening model, and read the report's
+`controls` first. Don't run `make clean`, `clear-*`, or `restart-all` without being asked —
 they delete volumes or kill running processes.
 
 ## Where things live
@@ -77,6 +80,10 @@ they delete volumes or kill running processes.
 - `postgres-init/NN-*.sql` — numbered schema; auto-runs on a fresh volume only.
 - `skills/*/SKILL.md`, `subagents/*/AGENT.md` — the agent's own catalogs (not Claude Code's).
 - `observability/prometheus/alerts.yml` — alert rules over `app/core/metrics.py` metrics.
+- `scripts/model_eval/` + `evals/` — the model-evaluation harness and its frozen data: `evals/{candidates,datasets,baselines,sources}`
+  hold what can be evaluated, the versioned sets, the recorded result of the model in use today, and the text the sets are built
+  from. Datasets are frozen (a manifest records every file's hash; change one by adding `v2/`), and a baseline is immutable.
+  `docker/ml-service/ml_service/` is the ML service as an importable package (on the test/mypy path, not installed).
 - `promptfoo/` — the prompt checks, and the only Node in the repo: its `package.json`, lock file and `node_modules`
   live here, so every `npm`/`npx` runs from this directory (`make promptfoo` does that). The root stays Python-only.
 

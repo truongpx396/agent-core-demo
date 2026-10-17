@@ -1,0 +1,114 @@
+[
+  {
+    "id": "beir-scifact",
+    "kind": "embedding",
+    "licence": "CC-BY-SA-4.0",
+    "licence_source": "Hub cards for BeIR/scifact and BeIR/scifact-qrels (license: cc-by-sa-4.0), read 2026-10-17",
+    "notes": "",
+    "redistribute": false,
+    "sources": [
+      {
+        "files": [
+          {
+            "path": "corpus/corpus-00000-of-00001.parquet",
+            "sha256": "243324b35f03d82bd6d98a5f575966876e86cad7ce16e5333a35b1b793dc4f45"
+          },
+          {
+            "path": "queries/queries-00000-of-00001.parquet",
+            "sha256": "1c37956c5dc8b810b60302323c24d1a9e79e26411ba8f5ad9d0888642e2a9034"
+          }
+        ],
+        "hub_repo": "BeIR/scifact",
+        "revision": "b3b5335604bf5ee3c4447671af975ea25143d4f5"
+      },
+      {
+        "files": [
+          {
+            "path": "test.tsv",
+            "sha256": "0864bb985e0ca2367ba217977e72004d549054b2b06666ed9d4825ac7c21284c"
+          }
+        ],
+        "hub_repo": "BeIR/scifact-qrels",
+        "revision": "2938d17dc3b09882fdb8c12bbbe2e2dc0e75a029"
+      }
+    ]
+  },
+  {
+    "id": "beir-nfcorpus",
+    "kind": "embedding",
+    "licence": "CC-BY-SA-4.0",
+    "licence_source": "Hub cards for BeIR/nfcorpus and BeIR/nfcorpus-qrels (license: cc-by-sa-4.0), read 2026-10-17",
+    "notes": "",
+    "redistribute": false,
+    "sources": [
+      {
+        "files": [
+          {
+            "path": "corpus/corpus-00000-of-00001.parquet",
+            "sha256": "f2a1c0b570a5efdf23cfa36f5e573d062cc113c6e7251e22c69b323a33ea895e"
+          },
+          {
+            "path": "queries/queries-00000-of-00001.parquet",
+            "sha256": "edd2b878b8130fb3b5e3c4b9428ddc1e67fbd6eedf8ae099fca3b87838ba6b29"
+          }
+        ],
+        "hub_repo": "BeIR/nfcorpus",
+        "revision": "b5026a0e96e8a7ac4f95f482a596389289d46269"
+      },
+      {
+        "files": [
+          {
+            "path": "test.tsv",
+            "sha256": "f8fba6ef3d4dd9c3a242a8ba4ae38276fc3622fce7dcbae764766d564542fd2a"
+          }
+        ],
+        "hub_repo": "BeIR/nfcorpus-qrels",
+        "revision": "a451b3b26d3ae1358f259c1a3a4dd61fcea35a65"
+      }
+    ]
+  },
+  {
+    "id": "deepset-prompt-injections",
+    "kind": "screen",
+    "licence": "Apache-2.0",
+    "licence_source": "Hub card for deepset/prompt-injections (license: apache-2.0), read 2026-10-17",
+    "notes": "",
+    "redistribute": false,
+    "sources": [
+      {
+        "files": [
+          {
+            "path": "data/test-00000-of-00001-701d16158af87368.parquet",
+            "sha256": "39ac797cabc157eeed58435a08593b2952bb6cb16fc394a2d383f447cc7b246e"
+          },
+          {
+            "path": "data/train-00000-of-00001-9564e8b05b4757ab.parquet",
+            "sha256": "2e10bc7ab30f542c97e4e83e2a5683000b5057d25ec10908784c631d44124c04"
+          }
+        ],
+        "hub_repo": "deepset/prompt-injections",
+        "revision": "4f61ecb038e9c3fb77e21034b22511b523772cdd"
+      }
+    ]
+  },
+  {
+    "id": "jackhhao-jailbreak",
+    "kind": "screen",
+    "licence": "Apache-2.0",
+    "licence_source": "Hub card for jackhhao/jailbreak-classification (license: apache-2.0), read 2026-10-17",
+    "notes": "",
+    "redistribute": false,
+    "sources": [
+      {
+        "files": [
+          {
+            "path": "balanced/jailbreak_dataset_test_balanced.csv",
+            "sha256": "809ef0d7c82fa05c31e818e9c3ff68f769632ac6d11cc3b43254cada577869a9"
+          }
+        ],
+        "hub_repo": "jackhhao/jailbreak-classification",
+        "revision": "2f2ceeb39658696fd3f462403562b6eea5306287"
+      }
+    ]
+  }
+]

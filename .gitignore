@@ -80,3 +80,6 @@ infra/terraform/crash.log
 # Claude Code personal overrides (the shared .claude/settings.json, hooks/, rules/ and
 # skills/ ARE committed). The agent folder can hold credentials — keep local state out.
 .claude/settings.local.json
+
+# Per-operator routing outcomes (a label is a fact about two specific models, specs/014): produced by `make router-label`, never committed by default.
+evals/datasets/route-domains/*/outcomes/

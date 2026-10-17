@@ -1,0 +1,73 @@
+{
+  "candidate": "nomic-embed-text-ollama",
+  "dataset": {
+    "manifest_sha256": "6500234b0d6c1ddaf69a42183a3f6afbf09e5ab23f70196bc831622735c6c648",
+    "name": "retrieval-domains",
+    "reviewed_share": 0.0,
+    "version": "v1"
+  },
+  "efficiency": {
+    "hw-13437d4f": {
+      "ms_per_chunk": 11.455877666892961,
+      "query_ms": {
+        "p50": 22.185958019690588,
+        "p95": 29.210891993716356
+      },
+      "rss_mb": null,
+      "run_seconds": 9.028579624980921
+    }
+  },
+  "hardware": {
+    "cores": 12,
+    "cpu": "Apple M4 Pro",
+    "onnxruntime": "1.29.0",
+    "os": "Darwin 25.4.0",
+    "threads": 12
+  },
+  "kind": "embedding",
+  "model": {
+    "dim": 768,
+    "identity": "ollama/nomic-embed-text",
+    "licence": "Apache-2.0",
+    "revision": null,
+    "size_bytes": null
+  },
+  "path": "gateway",
+  "per_query": "nomic-embed-text-ollama@retrieval-domains-v1.items.json",
+  "per_query_sha256": "bdaccff860704e407dad0b058a69097301e016549f662b56e0939f70396e7f55",
+  "provisional": true,
+  "quality": {
+    "mrr@10": {
+      "ci": [
+        0.8606593851132687,
+        0.941753640776699
+      ],
+      "mean": 0.9020226537216828
+    },
+    "ndcg@10": {
+      "ci": [
+        0.8956665417674274,
+        0.9567755591513767
+      ],
+      "mean": 0.9268544737096511
+    },
+    "recall@20": {
+      "ci": [
+        1.0,
+        1.0
+      ],
+      "mean": 1.0
+    },
+    "recall@5": {
+      "ci": [
+        0.970873786407767,
+        1.0
+      ],
+      "mean": 0.9902912621359223
+    }
+  },
+  "recorded_at": "2026-10-17",
+  "repo_revision": "3273aa9",
+  "schema_version": 1,
+  "warnings": []
+}
