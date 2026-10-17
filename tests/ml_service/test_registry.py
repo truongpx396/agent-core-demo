@@ -1,6 +1,7 @@
 """The model registry: spec validation and the load state machine (docker/ml-service/ml_service/registry.py). The clock is injected,
 so the whole backoff sequence runs without sleeping."""
 import asyncio
+import threading
 
 import pytest
 
@@ -162,18 +163,27 @@ async def test_a_failed_model_is_retried_only_after_its_backoff_and_recovery_res
 
 
 async def test_loading_is_single_flight():
+    # The first load is held inside its loader until the second call has been made, so "a load is in flight" is true by construction.
+    # (Racing two calls of an instant loader is not a test of this: on a fast machine the loader can finish before the second call
+    # starts, and then there is nothing in flight to leave alone. That is how this test once failed on a CI runner and not on a laptop.)
     registry, _ = _registry()
+    release = threading.Event()
     calls = {"n": 0}
 
     def loader():
         calls["n"] += 1
+        assert release.wait(5), "the test never released the loader"
         return "m"
 
     registry.add(Slot(name="a", roles=("embed",), loader=loader))
 
-    results = await asyncio.gather(registry.load("a"), registry.load("a"))
+    first = asyncio.ensure_future(registry.load("a"))
+    while registry.slot("a").state is not State.LOADING:  # type: ignore[union-attr]
+        await asyncio.sleep(0)
+    second = await registry.load("a")  # returns at once: the slot is loading, so it is left alone
+    release.set()
 
-    assert sorted(results) == [False, True] and calls["n"] == 1
+    assert second is False and await first is True and calls["n"] == 1
 
 
 async def test_an_activation_failure_counts_as_a_failed_load():
