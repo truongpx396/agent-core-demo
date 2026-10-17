@@ -15,7 +15,7 @@ from app.core.config import DEFAULT_TENANT
 from app.core.security import SecurityCtx
 from app.ingestion import ingestor
 from app.retrieval import qdrant_store
-from app.retrieval.embeddings import embed_text
+from app.retrieval.embeddings import embedding_dim
 from scripts.sample_docs import DOCS
 
 # Ingestion needs a real SecurityCtx — `ingest_text` refuses without one
@@ -30,7 +30,7 @@ async def main() -> None:
         # called explicitly once here, never implicitly inside ingest_text
         # (which would wipe prior ingests every call). `dim` comes from a
         # real embed call, never hardcoded.
-        await qdrant_store.ensure_collection(dim=len(await embed_text("dimension probe")))
+        await qdrant_store.ensure_collection(dim=await embedding_dim())
 
         total_chunks = 0
         for doc in DOCS:

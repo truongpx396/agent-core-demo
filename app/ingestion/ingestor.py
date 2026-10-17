@@ -29,7 +29,11 @@ from app.core.url_safety import UnsafeURLError
 from app.core.url_safety import assert_safe_url_async as _assert_safe_url_impl
 from app.ingestion.chunking import chunk_text
 from app.retrieval import qdrant_store
-from app.retrieval.embeddings import EMBED_BATCH_SIZE, embed_sparse_batch, embed_texts
+from app.retrieval.embeddings import (
+    EMBED_BATCH_SIZE,
+    embed_documents,
+    embed_sparse_batch,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,13 +123,13 @@ async def ingest_text(
     checkpoint for progress reporting (~28 checkpoints for 5700 chunks
     instead of one all-or-nothing wait); the ~10x wall-clock win (13min ->
     75s on a real 5700-chunk doc) comes from batching itself
-    (`embed_texts`), not from this splitting.
+    (`embed_documents`), not from this splitting.
 
     `on_progress(chunks_embedded, chunks_total)`, if given, is awaited
     after each dense batch (`app/ingestion/ingest_worker.py` uses this for
     the upload UI's progress bar); never called for 0 chunks. Plain
     `async def` callback, awaited directly — no thread-bridging needed
-    since this function and `embed_texts`/`qdrant_store.upsert` all run on
+    since this function and `embed_documents`/`qdrant_store.upsert` all run on
     the caller's own event loop.
 
     Safe to call twice with byte-identical `text`/`source`/`ctx` — every
@@ -150,7 +154,7 @@ async def ingest_text(
 
     dense_vectors: list[list[float]] = []
     for start in range(0, total, EMBED_BATCH_SIZE):
-        dense_vectors.extend(await embed_texts(child_texts[start : start + EMBED_BATCH_SIZE]))
+        dense_vectors.extend(await embed_documents(child_texts[start : start + EMBED_BATCH_SIZE]))
         if on_progress is not None:
             await on_progress(len(dense_vectors), total)
 

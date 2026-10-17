@@ -41,7 +41,8 @@ def _guard_loader():
 
 
 def _client(**loaders) -> TestClient:
-    return TestClient(create_app(_settings(), loaders={"rerank": _rerank_loader, "prompt-guard": _guard_loader, **loaders}))
+    # specs=[]: no text models declared, so the real models.toml (and a download) never enters a hermetic test
+    return TestClient(create_app(_settings(), specs=[], loaders={"rerank": _rerank_loader, "prompt-guard": _guard_loader, **loaders}))
 
 
 def test_rerank_keeps_the_tei_wire_contract_in_input_order():

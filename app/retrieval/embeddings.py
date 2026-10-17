@@ -23,7 +23,9 @@ from langchain_openai import OpenAIEmbeddings
 from pydantic import SecretStr
 
 from app.core.config import (
+    EMBED_DOCUMENT_PREFIX,
     EMBED_MODEL,
+    EMBED_QUERY_PREFIX,
     ML_SERVICE_URL,
     OPENAI_API_BASE,
     OPENAI_API_KEY,
@@ -37,9 +39,24 @@ embeddings = OpenAIEmbeddings(
     check_embedding_ctx_length=False,  # let the proxy/Ollama handle chunking
 )
 
+# Embedding a QUESTION and embedding a stored PASSAGE are two different operations (specs/014 FR-015). Models trained with task
+# prefixes (nomic-embed-text: `search_query:` / `search_document:`) place the two in different regions on purpose, so one function
+# serving both roles, which is what this module used to do (`embed_text`), cannot be made right by any prefix. The old names are
+# DELETED rather than deprecated: a caller that still uses one is an ImportError, and tests/retrieval/test_embedding_roles.py fails if
+# any module under app/ or scripts/ calls the underlying client around these functions.
+#
+# Both prefixes default to empty (settings: EMBED_QUERY_PREFIX / EMBED_DOCUMENT_PREFIX), so the text sent is byte-identical to before
+# until an operator opts in, with a re-embed (app/retrieval/embedding_identity.py).
 
-async def embed_text(text: str) -> list[float]:
-    return await embeddings.aembed_query(text)
+
+async def embed_query(text: str) -> list[float]:
+    """Embed a search question, or any text compared with other questions (the semantic cache embeds both sides with this)."""
+    return await embeddings.aembed_query(EMBED_QUERY_PREFIX + text)
+
+
+async def embed_document(text: str) -> list[float]:
+    """Embed one stored passage, note, memory or skill description."""
+    return (await embeddings.aembed_documents([EMBED_DOCUMENT_PREFIX + text], chunk_size=EMBED_BATCH_SIZE))[0]
 
 
 # OpenAIEmbeddings.embed_documents sub-batches at `chunk_size` (1000/request
@@ -50,20 +67,37 @@ async def embed_text(text: str) -> list[float]:
 # all succeeded (11-29ms/chunk, no clear win past ~200) — 200 is
 # comfortably below the last known-good size and clear of the 700+ hang
 # zone. Public: `app/ingestion/ingestor.py::ingest_text` reuses this value
-# to drive its own batching loop, one `embed_texts` call per batch, for a
+# to drive its own batching loop, one `embed_documents` call per batch, for a
 # natural per-batch progress checkpoint.
 EMBED_BATCH_SIZE = 200
 
 
-async def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Dense embeddings for MANY texts in one batched round trip — the
-    bulk-ingest counterpart to `embed_text`'s single-query call (see
-    `EMBED_BATCH_SIZE`'s comment for why the batch size is capped).
+async def embed_documents(texts: list[str]) -> list[list[float]]:
+    """Dense embeddings for MANY stored passages in one batched round trip — the bulk-ingest counterpart to `embed_document`'s
+    single call (see `EMBED_BATCH_SIZE`'s comment for why the batch size is capped).
 
     Batching measured ~4x speedup (46ms/chunk one-at-a-time vs ~11ms/chunk
     at 200/request), dominated by per-HTTP-call overhead, not model
     compute — a real 5700-chunk/9.7MB PDF dropped from ~13min to ~75s."""
-    return await embeddings.aembed_documents(texts, chunk_size=EMBED_BATCH_SIZE)
+    return await embeddings.aembed_documents([EMBED_DOCUMENT_PREFIX + t for t in texts], chunk_size=EMBED_BATCH_SIZE)
+
+
+_embedding_dim: int | None = None
+
+
+async def embedding_dim() -> int:
+    """The dimension of the configured embedding model, read from a real call (never hardcoded, so it cannot drift from whatever the
+    alias points at) and cached for the process. Collections, the answer cache and the identity all size themselves from it."""
+    global _embedding_dim
+    if _embedding_dim is None:
+        _embedding_dim = len(await embed_document("dimension probe"))
+    return _embedding_dim
+
+
+def reset_embedding_dim_cache() -> None:
+    """For tests and for a process that has just been told the alias moved; production restarts instead."""
+    global _embedding_dim
+    _embedding_dim = None
 
 
 _sparse_model = None

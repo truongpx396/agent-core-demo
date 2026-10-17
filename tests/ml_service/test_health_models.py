@@ -12,7 +12,7 @@ from tests.ml_service.test_rerank_guard_contract import (
 
 
 def _app(**loaders):
-    return create_app(_settings(), loaders={"rerank": _rerank_loader, "prompt-guard": _guard_loader, **loaders})
+    return create_app(_settings(), specs=[], loaders={"rerank": _rerank_loader, "prompt-guard": _guard_loader, **loaders})
 
 
 def test_health_is_200_even_when_a_model_failed_to_load():

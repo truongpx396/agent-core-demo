@@ -97,6 +97,7 @@ from app.domains.ecorp import store as ecorp_store
 from app.job_queue import agent_worker, queue
 from app.retrieval import embeddings as embeddings_module
 from app.retrieval import qdrant_store, semantic_cache
+from app.retrieval.embedding_identity import EmbeddingIdentity
 from tests.conftest import metric_value as _count
 from tests.containers import ensure_postgres, ensure_qdrant, ensure_redis
 from tests.ecorp import build_graph
@@ -249,6 +250,12 @@ async def run_with_checkpointer_cleanup(coro_fn):
     return await _wrapped()
 
 
+async def _fake_identity():
+    """The identity the semantic cache sizes its Redis index from. Dimension 32 to match `_fake_embed_text`'s sha256-digest vectors;
+    the autouse identity in tests/conftest.py says 3, which would make Redis reject every 32-float vector."""
+    return EmbeddingIdentity("embed", "test/fake-sha256", 32, "", "", "")
+
+
 async def _fake_embed_text(text: str) -> list[float]:
     """Deterministic, network-free stand-in for the REAL embed_text
     (app/retrieval/embeddings.py), which needs a reachable OpenAI-compatible
@@ -303,8 +310,9 @@ async def real_semantic_cache_redis(monkeypatch):
     info = ensure_redis()
     monkeypatch.setattr(semantic_cache, "REDIS_URL", info["redis_url"])
     monkeypatch.setattr(semantic_cache, "_client", None)
-    monkeypatch.setattr(semantic_cache, "_index_ready", False)
-    monkeypatch.setattr(semantic_cache, "embed_text", _fake_embed_text)
+    monkeypatch.setattr(semantic_cache, "_ready_indexes", set())
+    monkeypatch.setattr(semantic_cache, "embed_query", _fake_embed_text)
+    monkeypatch.setattr(semantic_cache.embedding_identity, "current_identity", _fake_identity)
     await semantic_cache._get_client().flushall()
     yield
 
@@ -404,8 +412,8 @@ async def real_qdrant(monkeypatch):
     qdrant = ensure_qdrant()
     monkeypatch.setattr(qdrant_store, "QDRANT_URL", qdrant["qdrant_url"])
     monkeypatch.setattr(qdrant_store, "COLLECTION", f"test-concurrent-turns-{uuid.uuid4().hex}")
-    monkeypatch.setattr(ecorp_store, "embed_text", _fake_embed_text)
-    monkeypatch.setattr(embeddings_module, "embed_text", _fake_embed_text)
+    monkeypatch.setattr(ecorp_store, "embed_document", _fake_embed_text)
+    monkeypatch.setattr(embeddings_module, "embed_query", _fake_embed_text)
     await qdrant_store.ensure_collection(dim=_FAKE_EMBED_DIM)
     yield
 
@@ -840,7 +848,7 @@ class TestHITLApprovalUnderConcurrency:
         for i in range(n):
             principal = f"user-{i}"
             points, _ = await qdrant_store.get_client().scroll(
-                collection_name=qdrant_store.COLLECTION,
+                collection_name=qdrant_store.live_name(),  # the app writes through the `-live` alias; the logical name is not a collection
                 scroll_filter=Filter(
                     must=[
                         FieldCondition(key="kind", match=MatchValue(value="memory")),

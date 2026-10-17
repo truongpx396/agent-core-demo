@@ -71,7 +71,7 @@ def real_qdrant_and_embeddings(monkeypatch, ollama_endpoint):
 
 async def test_hybrid_search_round_trips_through_a_real_server():
     collection = "integration-test-docs"
-    dense_vector = await embeddings.embed_text("checkpointers persist LangGraph state")
+    dense_vector = await embeddings.embed_document("checkpointers persist LangGraph state")
     await qdrant_store.ensure_collection(dim=len(dense_vector), collection=collection)
 
     sparse_indices, sparse_values = embeddings.embed_sparse(
@@ -105,7 +105,7 @@ async def test_a_point_with_no_sparse_vector_is_still_found_via_the_dense_leg():
     `query_points` to just return `[]` and asserts on the call args) can
     exercise."""
     collection = "integration-test-docs-dense-only"
-    dense_vector = await embeddings.embed_text("Ecorp support hours are 9am to 5pm weekdays")
+    dense_vector = await embeddings.embed_document("Ecorp support hours are 9am to 5pm weekdays")
     await qdrant_store.ensure_collection(dim=len(dense_vector), collection=collection)
 
     point = qdrant_store.build_point(

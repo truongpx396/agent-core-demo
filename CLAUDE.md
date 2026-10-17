@@ -7,7 +7,7 @@ unmodified graph. Python 3.13.
 Read these before changing behavior; they hold the reasoning this file deliberately omits:
 - `.specify/memory/constitution.md` — the non-negotiable rules. Principles I, II and IV
   (tenant isolation, mandatory approval, exactly-once side effects) are NON-NEGOTIABLE.
-- `GRAPH_PATTERNS.md` — the graph's numbered patterns (1-66 so far; 49 live there), each with the real bug
+- `GRAPH_PATTERNS.md` — the graph's numbered patterns (1-67 so far; 50 live there), each with the real bug
   that motivated it. "Extending Further" is the honest list of what is and isn't built. A pattern that is
   not about the graph moves out, leaves its number in a table here, and the number is never reused:
   the spend meter and caps are in `COST_GOVERNANCE.md`, two repository lessons in `ENGINEERING_PATTERNS.md`,
@@ -32,6 +32,7 @@ make test-integration  # real Postgres/Redis/Qdrant via testcontainers — needs
 make test-live         # real Ollama + full stack + Playwright — needs Docker
 make up                # docker-compose infra (needs a native Ollama on the host, see README)
 make serve             # FastAPI on :8000 (web UI at /)
+make reembed COLLECTION_NAME=docs   # rebuild a vector collection under the current embedding identity, swap atomically (ARGS=--dry-run first)
 make agent-worker      # queue consumer for the Ecorp domain (also agent-worker-{support,ops,sales})
 make chat              # CLI agent; chat-hitl adds approval prompts
 ```
@@ -63,6 +64,7 @@ they delete volumes or kill running processes.
   with `--project-directory .`; a bare `docker compose up` finds no file. `Dockerfile` stays at the
   root (build context), `docker/` holds the auxiliary image builds.
 - `app/job_queue/` — Redis Streams queue and workers. `app/ingestion/` — chunking, crawl, upload.
+- `app/retrieval/` — Qdrant helpers, embeddings, the answer cache. `embeddings.py` has two roles (`embed_query`, `embed_document(s)`); `embedding_identity.py` is what a collection's vectors were made with, and `qdrant_store.py` refuses to mix two (pattern 67). `docker/ml-service/ml_service/` is the ML service as an importable package (rerank, prompt guard, `/v1/embeddings`, per-model health and metrics); `docker/ml-service/models.toml` declares the text models it can serve.
 - `app/core/` — what every package may use and that depends on none of them: config, security (`SecurityCtx`),
   metrics, errors, scrubbing, resilience, `sql_store.py` (pooled appdata connections), `gateway.py` and
   `model_resolver.py` (the LiteLLM contract), `moderation.py`, and what every tool runs through:

@@ -63,6 +63,9 @@ class Encoded:
     vectors: np.ndarray  # (n, dim) float32, L2-normalised when the model says so
     token_counts: list[int]  # tokens actually fed to the model per item, after truncation
     truncated: int  # how many items were cut to max_length
+    # Which items were cut. Added for the embedding endpoint, whose X-Truncated-Items header counts per REQUEST while a micro-batch mixes
+    # items from several requests, so the batch-wide count above cannot be split back up. Defaulted so existing callers are unaffected.
+    truncated_items: tuple[bool, ...] = ()
 
 
 class OnnxText:
@@ -101,7 +104,7 @@ class OnnxText:
             raise ValueError(f"the graph has no output named {output!r}; it has {output_names}")
         self._output_index = output_names.index(output) if output is not None else 0
 
-    def _run(self, texts: Sequence[str]) -> tuple[np.ndarray, np.ndarray, list[int], int]:
+    def _run(self, texts: Sequence[str]) -> tuple[np.ndarray, np.ndarray, list[int], list[bool]]:
         encodings = self._tokenizer.encode_batch(list(texts))
         ids = np.array([e.ids for e in encodings], dtype=np.int64)
         mask = np.array([e.attention_mask for e in encodings], dtype=np.int64)
@@ -110,25 +113,24 @@ class OnnxText:
             feed["token_type_ids"] = np.zeros_like(ids)
         feed = {name: value for name, value in feed.items() if name in self._input_names}
         output = np.asarray(self._session.run(None, feed)[self._output_index])
-        truncated = sum(
-            1
+        cut = [
+            len(e.ids) >= self._max_length and len(self._probe.encode(text).ids) > self._max_length
             for e, text in zip(encodings, texts, strict=True)
-            if len(e.ids) >= self._max_length and len(self._probe.encode(text).ids) > self._max_length
-        )
-        return output, mask, [int(m.sum()) for m in mask], truncated
+        ]
+        return output, mask, [int(m.sum()) for m in mask], cut
 
     def logits(self, texts: Sequence[str]) -> np.ndarray:
         """Raw first-output values, for a sequence-classification graph (the guard)."""
         if not texts:
             return np.zeros((0, 0), dtype=np.float32)
-        output, _mask, _counts, _truncated = self._run(texts)
+        output, _mask, _counts, _cut = self._run(texts)
         return output
 
     def embed(self, texts: Sequence[str]) -> Encoded:
         """Pooled (and optionally L2-normalised) vectors, float32, in input order."""
         if not texts:
             return Encoded(np.zeros((0, 0), dtype=np.float32), [], 0)
-        output, mask, counts, truncated = self._run(texts)
+        output, mask, counts, cut = self._run(texts)
         if self._pooling == "none":
             vectors = output
         elif self._pooling == "cls":
@@ -142,4 +144,4 @@ class OnnxText:
         if self._normalize:
             norms = np.linalg.norm(vectors, axis=1, keepdims=True)
             vectors = vectors / np.maximum(norms, 1e-12)
-        return Encoded(vectors, counts, truncated)
+        return Encoded(vectors, counts, sum(cut), tuple(cut))

@@ -25,7 +25,12 @@ def crawl4ai_server() -> dict[str, str]:
 
 
 @pytest.fixture(scope="session")
-def ml_service_url() -> str:
+def ml_service() -> dict[str, str]:
     """The real ML service image (docker/ml-service.Dockerfile), built and started once per pytest run by the shared
     `ensure_ml_service()` (its cross-worker cache means every package asking for it still gets one container)."""
-    return ensure_ml_service()["ml_service_url"]
+    return ensure_ml_service()
+
+
+@pytest.fixture(scope="session")
+def ml_service_url(ml_service: dict[str, str]) -> str:
+    return ml_service["ml_service_url"]

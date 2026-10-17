@@ -20,6 +20,7 @@ import json
 import logging
 import re
 import uuid
+from dataclasses import dataclass
 from typing import cast
 
 import numpy as np
@@ -35,11 +36,21 @@ from app.core.config import (
     SEMANTIC_CACHE_TTL_SECONDS,
 )
 from app.core.security import SecurityCtx
-from app.retrieval.embeddings import embed_text
+from app.retrieval import embedding_identity
+from app.retrieval.embeddings import embed_query
 
 logger = logging.getLogger(__name__)
 
-INDEX_NAME = "idx:semantic_cache"
+# The index and the keys are NAMED AFTER THE EMBEDDING IDENTITY (app/retrieval/embedding_identity.py). A cached entry holds a vector, and
+# a vector from a different model, dimension or prefix scheme must never be compared with a new question: it would hit on nonsense
+# (the very failure the identity guard exists for) or, if the dimension changed, make the index unusable. A new identity therefore gets
+# a fresh, correctly sized index and a fresh key prefix, and the old entries are simply never read; they expire through
+# SEMANTIC_CACHE_TTL_SECONDS like any entry, so no flush is needed when the embedding settings change.
+#
+# Operator note: a deployment from before this keeps its old `idx:semantic_cache` index (prefix `cache:`), which also matches the new
+# keys. That is harmless (it just indexes them too, or fails to for a different dimension) and `FT.DROPINDEX idx:semantic_cache`
+# removes it; it is not dropped automatically because an older process still running during a rolling deploy searches it.
+INDEX_PREFIX = "idx:semantic_cache:"
 KEY_PREFIX = "cache:"
 # COSINE distance (RediSearch) is 1 - cosine_similarity: 0 for identical
 # vectors, up to 2 for opposite ones. A cached entry only counts as a hit
@@ -47,7 +58,7 @@ KEY_PREFIX = "cache:"
 _MAX_DISTANCE = 1 - SEMANTIC_CACHE_SIMILARITY_THRESHOLD
 
 _client: redis.Redis | None = None
-_index_ready = False
+_ready_indexes: set[str] = set()
 
 # RediSearch TAG queries treat many characters as syntax, not literal text
 # (e.g. an unescaped tenant like "other-co" raises "Syntax error... near
@@ -76,15 +87,23 @@ def _get_client() -> redis.Redis:
     return _client
 
 
-async def _ensure_index(client: redis.Redis) -> None:
-    """Idempotent: creates the index on first use. Dimension is derived
-    from a real `embed_text()` call, never hardcoded — same approach
-    `scripts/seed.py` uses for Qdrant, so this never drifts out of sync
-    with whatever embedding model is configured."""
-    global _index_ready
-    if _index_ready:
-        return
-    dim = len(await embed_text("dimension probe"))
+@dataclass(frozen=True)
+class _Namespace:
+    index: str  # the RediSearch index this identity searches
+    prefix: str  # the key prefix its entries are written under
+
+
+async def _ensure_index(client: redis.Redis) -> _Namespace:
+    """The index and key prefix for the configured embedding identity, creating the index on first use (idempotent).
+
+    The dimension comes from that identity, which comes from a real embedding call, never a constant, so this cannot drift out of sync
+    with whatever embedding model is configured; the names carry the identity's hash, so a change of model, dimension or prefix scheme
+    is a different index rather than an incompatible one."""
+    identity = await embedding_identity.current_identity()
+    digest = identity.hash8()
+    ns = _Namespace(f"{INDEX_PREFIX}{digest}", f"{KEY_PREFIX}{digest}:")
+    if ns.index in _ready_indexes:
+        return ns
     schema = [
         TagField("$.tenant", as_name="tenant"),
         TagField("$.principal", as_name="principal"),
@@ -97,18 +116,19 @@ async def _ensure_index(client: redis.Redis) -> None:
         VectorField(
             "$.embedding",
             "FLAT",
-            {"TYPE": "FLOAT32", "DIM": dim, "DISTANCE_METRIC": "COSINE"},
+            {"TYPE": "FLOAT32", "DIM": identity.dim, "DISTANCE_METRIC": "COSINE"},
             as_name="embedding",
         ),
     ]
     try:
-        await client.ft(INDEX_NAME).create_index(
-            schema, definition=IndexDefinition(prefix=[KEY_PREFIX], index_type=IndexType.JSON)
+        await client.ft(ns.index).create_index(
+            schema, definition=IndexDefinition(prefix=[ns.prefix], index_type=IndexType.JSON)
         )
     except redis.ResponseError as exc:
         if "already exists" not in str(exc).lower():
             raise
-    _index_ready = True
+    _ready_indexes.add(ns.index)
+    return ns
 
 
 async def get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | None:
@@ -123,8 +143,8 @@ async def get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | N
         return None
     try:
         client = _get_client()
-        await _ensure_index(client)
-        vector = np.array(await embed_text(query), dtype=np.float32).tobytes()
+        ns = await _ensure_index(client)
+        vector = np.array(await embed_query(query), dtype=np.float32).tobytes()
         q = (
             Query(
                 f"(@tenant:{{{_escape_tag(ctx['tenant'])}}} "
@@ -135,7 +155,7 @@ async def get(ctx: SecurityCtx | None, query: str) -> tuple[str, list[dict]] | N
             .return_fields("answer", "citations", "dist")
             .dialect(2)
         )
-        result = await client.ft(INDEX_NAME).search(q, query_params={"vec": vector})
+        result = await client.ft(ns.index).search(q, query_params={"vec": vector})
         if not result.docs or float(result.docs[0].dist) > _MAX_DISTANCE:
             metrics.agent_semantic_cache_total.labels(outcome="miss").inc()
             return None
@@ -157,9 +177,9 @@ async def set(ctx: SecurityCtx | None, query: str, answer: str, citations: list[
         return
     try:
         client = _get_client()
-        await _ensure_index(client)
-        vector = await embed_text(query)
-        key = f"{KEY_PREFIX}{uuid.uuid4().hex}"
+        ns = await _ensure_index(client)
+        vector = await embed_query(query)
+        key = f"{ns.prefix}{uuid.uuid4().hex}"
         await client.json().set(
             key,
             "$",

@@ -49,7 +49,7 @@ def _stub_add_note_io(monkeypatch):
     async def fake_upsert(points):
         return None
 
-    monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+    monkeypatch.setattr(ecorp_store, "embed_document", fake_embed_text)
     monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
 

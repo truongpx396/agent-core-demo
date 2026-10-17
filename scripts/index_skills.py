@@ -16,7 +16,7 @@ import uuid
 from app.agent.tools import skill_catalog as skills_module
 from app.core.config import SKILLS_COLLECTION
 from app.retrieval import qdrant_store
-from app.retrieval.embeddings import embed_sparse, embed_text
+from app.retrieval.embeddings import embed_document, embed_sparse, embedding_dim
 
 
 async def main() -> None:
@@ -30,7 +30,7 @@ async def main() -> None:
 
         # dim comes from a real embed call, same as scripts/seed.py — never hardcoded.
         await qdrant_store.ensure_collection(
-            dim=len(await embed_text("dimension probe")), collection=SKILLS_COLLECTION
+            dim=await embedding_dim(), collection=SKILLS_COLLECTION
         )
 
         points = []
@@ -43,7 +43,7 @@ async def main() -> None:
             points.append(
                 qdrant_store.build_point(
                     point_id=str(uuid.uuid4()),
-                    dense_vector=await embed_text(text),
+                    dense_vector=await embed_document(text),
                     sparse_vector=sparse,
                     payload={"text": text, "name": record.name, "description": record.description},
                 )

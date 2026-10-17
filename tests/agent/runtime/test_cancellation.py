@@ -292,7 +292,7 @@ class TestAstreamEventsResumeCancellation:
         async def fake_upsert(points):
             writes.append(points)
 
-        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_document", fake_embed_text)
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
         llm = GenericFakeChatModel(

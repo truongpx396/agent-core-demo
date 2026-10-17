@@ -780,7 +780,7 @@ class TestMandatoryCapabilityGate:
         async def fake_upsert(points):
             return None
 
-        monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+        monkeypatch.setattr(ecorp_store, "embed_document", fake_embed_text)
         monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
         llm = _fake_llm(

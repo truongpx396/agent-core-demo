@@ -373,6 +373,14 @@ agent_semantic_cache_total = Counter(
     ["outcome"],
 )  # outcome: hit | miss | error (degraded — treated as a miss, recorded separately)
 
+agent_embedding_identity_total = Counter(
+    "agent_embedding_identity_total",
+    "Embedding-identity checks of a vector collection (app/retrieval/qdrant_store.py::check_identity): did the vectors it holds come "
+    "from the embedding model, dimension and prefixes this process is configured to use? A mismatch is REFUSED (reads degrade like a "
+    "retrieval outage, writes fail), never answered with wrong-space results; see GRAPH_PATTERNS.md pattern 67.",
+    ["outcome", "collection"],
+)  # outcome: verified | adopted (legacy collection trusted, not provable) | mismatch (refused) | unverified (alias unresolvable, counted)
+
 agent_ingest_total = Counter(
     "agent_ingest_total",
     "Successful ingest_text calls by source kind (app/ingestion/ingestor.py)",

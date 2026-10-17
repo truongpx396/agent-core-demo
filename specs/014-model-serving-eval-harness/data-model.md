@@ -122,7 +122,7 @@ contaminated, unreviewed share).
 
 ```
 EmbeddingIdentity(alias, resolved_model | None, dim, query_prefix, document_prefix, revision_label)
-hash8 = sha256(canonical_json(resolved_model or <refuse>, dim, query_prefix, document_prefix, revision_label))[:8]
+hash8 = sha256(canonical_json(resolved_model or "alias:<name>", dim, query_prefix, document_prefix, revision_label))[:8]
 ```
 
 | Where recorded | How |
@@ -141,8 +141,10 @@ verified | adopted ──config change──▶ mismatch ──re-embed──▶
 
 - `verified`: suffix equals the configured hash. `adopted`: legacy collection assumed to match (counted, warned). `mismatch`: reads
   raise `EmbeddingIdentityMismatch` (absorbed by the existing degrade callers), writes are refused.
-- If `resolved_model` cannot be obtained, **writes are refused** (the embedding call would fail anyway) and reads proceed, counted
-  `unverified`.
+- If `resolved_model` cannot be obtained, **the alias name stands in for the model** and the check proceeds, counted `unverified`.
+  *(Changed during implementation: this said "writes are refused". That would have broken every deployment whose `OPENAI_API_BASE`
+  points straight at an OpenAI-compatible server with no LiteLLM admin endpoint, which is how the live test tier runs. Weaker, but
+  stable per deployment; `EMBED_MODEL_REVISION` covers the same name re-pulled to different weights.)*
 
 ## 7. Classifier head (FR-028, FR-030, FR-038)
 
