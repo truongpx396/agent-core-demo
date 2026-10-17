@@ -13,7 +13,7 @@ router and builder can depend on it without a cycle.
   to. Their reasoning lives in the comments next to each, and in
   GRAPH_PATTERNS.md patterns 10, 13, 34, 35 and 41.
 """
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
@@ -181,6 +181,10 @@ class State(TypedDict):
     # was already served from cache (GRAPH_PATTERNS.md pattern 22).
     moderation_blocked: bool  # Set by moderate_input — read by
     # route_after_moderation (GRAPH_PATTERNS.md pattern 25).
+    model_route: Literal["local", "strong"] | None  # Set by route_model ONLY (specs/014, pattern 68): which model
+    # answers this turn. `None` = no decision, read as local. Reset to None by validate_input each new turn (never on a resume,
+    # which skips it, so an approval pause keeps its route and /classify is not asked twice). Optional by design: a checkpoint
+    # written before this key existed resumes and runs local, which is why STATE_SCHEMA_VERSION is not bumped for it.
     followups: list[str]  # Set by suggest_followups — 2-3 follow-up
     # questions derived from a grounded answer, or [] when the answer had
     # no citations to derive them from (GRAPH_PATTERNS.md pattern 27).

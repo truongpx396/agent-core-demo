@@ -40,6 +40,9 @@ logger = logging.getLogger(__name__)
 _LATENCY_BUCKETS_SECONDS = (0.5, 1.0, 2.5, 5.0, 10.0, 15.0, 30.0, 60.0, 90.0, 120.0)
 # Matches MAX_ITERATIONS_PER_TURN's realistic range (app/agent/graph/core.py).
 _ITERATION_BUCKETS = (1, 2, 3, 4, 5, 7, 10, 15)
+# The routing step is a local round trip bounded by ROUTER_TIMEOUT_SECONDS (<= 5 s): the turn-latency buckets above start at 0.5 s and would
+# put every healthy decision in the first bucket.
+_ROUTE_BUCKETS_SECONDS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0)
 
 _configured = False
 _provider: MeterProvider | None = None
@@ -98,6 +101,12 @@ def _build_provider(service_name: str) -> MeterProvider:
             instrument_name="agent_iterations",
             aggregation=ExplicitBucketHistogramAggregation(
                 boundaries=_ITERATION_BUCKETS
+            ),
+        ),
+        View(
+            instrument_name="agent_model_route_latency_seconds",
+            aggregation=ExplicitBucketHistogramAggregation(
+                boundaries=_ROUTE_BUCKETS_SECONDS
             ),
         ),
     ]
