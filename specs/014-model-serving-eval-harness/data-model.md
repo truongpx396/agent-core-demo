@@ -153,7 +153,7 @@ Files under `ml_service/heads/` (shipped in the image, or mounted from `ROUTER_H
 
 ```json
 {
-  "schema_version": 1, "model": "bge-small-en-v1.5", "model_repo": "BAAI/bge-small-en-v1.5",
+  "schema_version": 1, "head_version": "2026-10-20.1", "model": "bge-small-en-v1.5", "model_repo": "BAAI/bge-small-en-v1.5",
   "model_revision": "5c38ec7c40…(full sha)", "model_file": "onnx/model.onnx", "dim": 384,
   "labels": {"0": "local_ok", "1": "needs_stronger"},
   "trained_on": {"dataset": "route-domains", "version": "v1", "outcomes_sha256": "…", "judge": "…", "margin": 0.2, "items": 0},
@@ -164,7 +164,7 @@ Files under `ml_service/heads/` (shipped in the image, or mounted from `ROUTER_H
 }
 ```
 
-**Rules.** The service loads a head only if `model_revision`, `model_repo`, `model_file` and `dim` equal the loaded model's **and `accepted` is `true`**,
+**Rules.** The service loads a head only if `model` (the registry name), `model_repo`, `model_file`, `model_revision` (the commit the Hub cache REALLY holds, read from the downloaded file's `snapshots/<sha>/` path and not taken from the registry) and `dim` equal the loaded model's **and `accepted` is the JSON value `true`** (the string "true" or the number 1 is refused), and the files are well formed (`schema_version` 1, `head_version` a non-empty string returned to the caller as `head_version`, `threshold.value` in [0, 1], `w` a finite `float[dim]` and `b` a finite scalar, read with `allow_pickle=False`; a damaged file is `refused: malformed (…)`, never a crash),
 else it is `refused` (`revision mismatch` / `not accepted`) and that model has "no advice". `accepted` is set by a person after the harness
 shows `controls_beaten` — the trainer will not write `accepted: true` itself (FR-038), and a test-only fixture may. The app never reads this file; it receives
 only a score and the `served_by` / `head_version` from `/classify`.

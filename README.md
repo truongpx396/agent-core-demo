@@ -293,6 +293,21 @@ It rebuilds from the text each point already stores, keeps ids, payload (tenant 
 
 **Attaching an ONNX embedding model served by the ML service** (config only, no code change). `GET http://localhost:8083/v1/models` lists what it can serve and what each model expects as a prefix; `docker/ml-service/models.toml` declares them (`ML_MODELS_ENABLED=bge-small-en-v1.5,gte-modernbert-base-int8` loads more than the default). Then: point the gateway's `embed` alias at `openai/<name>` with `api_base: http://ml-service:80/v1` ([the entry](specs/014-model-serving-eval-harness/contracts/gateway-aliases.md)), set the prefixes the model needs, restart the proxy, run `make reembed` for each collection, bake, delete the old collections. Memory, measured: the container idles at 574 MiB without an embedding model and 781 MiB with bge-small enabled, and reached 1,069 MiB under 100 concurrent requests, against the production limit of 2 GiB; enable the other models only after checking the headroom on your hardware. On the CPU this was measured on, the fp32 files were *faster* than int8, so the defaults are fp32.
 
+### Attaching a stronger model, and routing to it
+Optional and **off by default**: with the defaults nothing is asked of any classifier and every call is exactly what it was. The pieces: a gateway alias `chat-strong` (always present in both LiteLLM configs), a small classifier in the ML service (`POST /classify`), and a graph node `route_model` that asks it one question per turn. A turn the classifier scores at or above `ROUTER_THRESHOLD` is answered by `chat-strong` and is priced and recorded as it; every other turn, and every failure of any part, runs on `chat` as before ([pattern 68](GRAPH_PATTERNS.md)). The router can only choose the model: approval, tenant scoping and idempotency are unchanged under either.
+
+```bash
+make pull-strong-model        # dev only: the stand-in is a LOCAL qwen2.5:7b (about 4.7 GB); `make pull-models` still pulls about 2 GB
+# .env
+STRONG_CHAT_MODEL=chat-strong
+ROUTER_ENABLED=true           # refuses to start without STRONG_CHAT_MODEL, or if it equals CHAT_MODEL
+ROUTER_THRESHOLD=0.5          # choose it from `make model-eval KIND=classifier` (the cost-quality curve), not by feel
+```
+
+**Attaching a hosted model** is configuration: edit the one `chat-strong` entry in `deploy/litellm/litellm-config.yaml` (production: set `LLM_STRONG_CHAT_MODEL`, `LLM_STRONG_API_BASE`, `LLM_STRONG_API_KEY`; leave them unset and the alias equals `chat`). A target must provide OpenAI chat completions with `stream_options.include_usage`, native tool calls in the OpenAI shape, a context window of at least the local model's 32 000 tokens, and a price LiteLLM can find (otherwise `model_info` in the config; an unpriced alias keeps every turn local rather than refusing it). Nothing in `app/` names a provider.
+
+**Nothing escalates until a head is accepted.** The classifier is a small trained head over the embedding of the prompt, one per model (`docker/ml-service/heads/README.md`). The trainer writes `"accepted": false`; the service refuses such a head, and one trained for a different model revision, so with none the service answers "no advice" and the router leaves every turn on `chat`. `GET http://localhost:8083/health/models` shows each head's status and which model is answering (`primary`, `fallback`, `none`); `RouterClassifierOnFallback` and `ModelRouteStrongFailing` alert on a long-dead primary and on escalated turns that had to be repeated locally. **Not built:** per-tenant control. The switch is one setting for the whole deployment.
+
 ### MCP, crawling and the sandbox
 
 - **MCP server** (`make mcp-serve`, `make mcp-serve-ops`): exposes `query_employees` and the ops domain's metrics/incidents over stdio. MCP has no header seam, so `tenant`/`principal` are explicit arguments, checked by the same fail-closed policy.
