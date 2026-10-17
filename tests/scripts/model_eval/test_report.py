@@ -128,3 +128,13 @@ def test_the_markdown_view_shows_status_quality_controls_and_tradeoffs(tmp_path)
 
     assert text.startswith("# embedding evaluation: bge-small-en-v1.5") and "**Status: OK**" in text
     assert "| ndcg@10 |" in text and "## Controls" in text and "## Trade-offs" in text
+
+
+def test_a_baseline_recorded_on_a_busy_machine_makes_every_comparison_against_it_say_so(tmp_path):
+    record = {"kind": "embedding", "candidate": "nomic", "dataset": {"name": "retrieval-domains", "version": "v1", "reviewed_share": 1.0},
+              "efficiency": {"hw-aaaaaaaa": _eff(13.0)}, "warnings": ["the machine was busy (1-minute load 14.0 on 12 cores): the latency figures are inflated and noisy"]}
+    baseline = baselines.read_baseline(baselines.write_baseline(tmp_path, record, _data()))
+
+    report = _report(_run(_data()), baseline)
+
+    assert any("baseline's latency was recorded on a busy machine" in w for w in report["warnings"])

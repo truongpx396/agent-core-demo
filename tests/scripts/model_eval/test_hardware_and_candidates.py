@@ -78,3 +78,29 @@ def test_at_most_one_candidate_per_file_may_be_the_baseline():
     assert parse_candidates(one)[0].baseline is True
     with pytest.raises(ValueError, match="exactly one model in use"):
         parse_candidates(two)
+
+
+def test_a_busy_machine_gets_a_warning_and_a_quiet_one_does_not(monkeypatch):
+    monkeypatch.setattr(hardware.os, "cpu_count", lambda: 10)
+    monkeypatch.setattr(hardware.os, "getloadavg", lambda: (12.0, 0.0, 0.0))
+    assert "the machine was busy" in hardware.load_warning() and "latency figures are inflated" in hardware.load_warning()
+    monkeypatch.setattr(hardware.os, "getloadavg", lambda: (2.0, 0.0, 0.0))
+    assert hardware.load_warning() is None
+
+
+def test_no_load_average_on_a_platform_is_not_an_error(monkeypatch):
+    def unavailable():
+        raise OSError("not supported")
+
+    monkeypatch.setattr(hardware.os, "getloadavg", unavailable)
+    assert hardware.load_warning() is None
+
+
+def test_the_load_that_counts_is_the_load_when_the_run_began_not_the_runs_own(monkeypatch):
+    """Regression: the load was read at the END of a run, so a reranker pass that uses every core by design flagged a quiet 12-core machine as
+    busy (1-minute load 3.9 before, 9.9 after) and every baseline carried the warning."""
+    monkeypatch.setattr(hardware.os, "cpu_count", lambda: 12)
+    monkeypatch.setattr(hardware.os, "getloadavg", lambda: (9.9, 0.0, 0.0))  # what the run itself left behind
+
+    assert hardware.load_warning(at_start=3.9) is None  # quiet when it began: no warning, whatever the run did to the average
+    assert "when the run began" in hardware.load_warning(at_start=14.0)  # busy when it began: warn, with the start figure

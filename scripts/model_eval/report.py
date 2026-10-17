@@ -98,6 +98,8 @@ def build_report(
             warnings.append("latency is not compared: the baseline was recorded on different hardware; quality is")
         if baseline.record.get("provisional"):
             warnings.append("the baseline is PROVISIONAL (recorded on an unreviewed dataset)")
+        if any("machine was busy" in w for w in baseline.record.get("warnings", [])):
+            warnings.append("the baseline's latency was recorded on a busy machine, so latency comparisons against it are unreliable")
     controls: list[ControlResult] = derived_controls(run.kind, suite, (baseline.data if baseline else run.data), seed=seed)
     own = judge_candidate_control(run.candidate["name"], run.kind, candidate_deltas) if candidate_deltas else None
     if own is not None:

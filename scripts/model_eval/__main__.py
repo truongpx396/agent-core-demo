@@ -81,7 +81,11 @@ def _execute(args: argparse.Namespace) -> tuple[Candidate, RunOutput]:
     if args.kind not in RUNNERS:
         raise UsageError(f"kind {args.kind!r} has no runner in this build")
     candidate = resolve_candidate(args.kind, args.candidate)
+    load_at_start = hardware.load_snapshot()  # before the run: the run's own load must not count as "the machine was busy"
     output = RUNNERS[args.kind].run(candidate, _settings(args), via=args.via)
+    busy = hardware.load_warning(at_start=load_at_start)
+    if busy:
+        output.warnings.append(busy)
     return candidate, output
 
 
@@ -167,6 +171,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         "quality": {k: {"mean": v.value, "ci": list(v.ci95)} for k, v in measure(suite, output.data).items()},
         "efficiency": {hw["id"]: output.efficiency},
         "hardware": {k: hw[k] for k in ("cpu", "cores", "threads", "onnxruntime", "os")},
+        "warnings": output.warnings,  # kept with the record: a latency taken on a busy machine must not later look authoritative
         "recorded_at": datetime.now(UTC).date().isoformat(),
     }
     path = baselines.write_baseline(BASELINES_DIR, record, output.data, force=args.force)

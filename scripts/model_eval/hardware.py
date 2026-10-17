@@ -49,6 +49,32 @@ def profile(threads: int | None = None) -> dict:
     return {"id": f"hw-{digest}", **body}
 
 
+def load_snapshot() -> float | None:
+    """The 1-minute load average right now, or None where the platform has none. Taken BEFORE a run starts (see `load_warning`)."""
+    try:
+        return os.getloadavg()[0]
+    except OSError:  # not available on this platform
+        return None
+
+
+def load_warning(threshold: float = 0.7, *, at_start: float | None = None) -> str | None:
+    """A warning when the machine was already busy, because a latency measured on a busy machine says nothing about the model.
+
+    Pass the `load_snapshot()` taken BEFORE the run. Reading the load at the END (the first version) measured the run itself: a reranker or
+    an embedding pass uses every core by design, so its own load pushed the 1-minute average from 3.9 to 9.9 on a quiet 12-core machine and
+    every baseline was flagged "busy". The average lags by up to a minute, which errs toward warning (a job that ended 30 s ago still counts),
+    and a warning only asks for a re-run. Quality numbers do not depend on load and are never discounted. With no snapshot the load is read
+    now, which is the old behaviour and is only right for a caller that has not just run something heavy."""
+    one_minute = at_start if at_start is not None else load_snapshot()
+    if one_minute is None:
+        return None
+    per_core = one_minute / (os.cpu_count() or 1)
+    if per_core > threshold:
+        return (f"the machine was busy when the run began (1-minute load {one_minute:.1f} on {os.cpu_count()} cores): the latency figures are "
+                "inflated and noisy; the quality figures are unaffected. Re-run on a quiet machine before recording a baseline")
+    return None
+
+
 def rss_mb() -> float:
     """Resident set size of this process now, in MB (`ps`, so it is the same unit on macOS and Linux)."""
     out = subprocess.check_output(["ps", "-o", "rss=", "-p", str(os.getpid())], text=True, timeout=5)
