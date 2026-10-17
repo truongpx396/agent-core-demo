@@ -176,6 +176,11 @@ services:
     environment:
       RERANK_CPU_BUDGET: "2"
       GUARD_CPU_BUDGET: "1"
+      # Which text models (docker/ml-service/models.toml) to load. Measure the memory headroom before enabling more than the default:
+      # the container idles near 0.8 GiB with bge-small and peaked at 1.07 GiB under load, against this file's 2g limit.
+      ML_MODELS_ENABLED: ${ML_MODELS_ENABLED:-}
+      ML_EMBED_MAX_ITEMS: ${ML_EMBED_MAX_ITEMS:-256}
+      ML_EMBED_MAX_CHARS: ${ML_EMBED_MAX_CHARS:-8000}
     volumes:
       - ml-service:/home/appuser/.cache
     healthcheck:

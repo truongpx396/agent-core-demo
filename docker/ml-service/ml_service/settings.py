@@ -34,6 +34,11 @@ class Settings:
     model_retry_max_s: float
     # Comma list of registry model names to load; empty means "the registry's own `enabled` flags".
     models_enabled: tuple[str, ...]
+    # The embedding endpoint's request ceilings (a request over either is REJECTED, never truncated: a caller must be told its input
+    # did not fit) and how many texts one model pass takes. Every wait and every size has a ceiling (Principle V).
+    embed_max_items: int = 256
+    embed_max_chars: int = 8000
+    embed_batch_size: int = 32
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -49,4 +54,7 @@ class Settings:
             model_retry_base_s=float(env.get("ML_MODEL_RETRY_BASE_S", "5")),
             model_retry_max_s=float(env.get("ML_MODEL_RETRY_MAX_S", "300")),
             models_enabled=enabled,
+            embed_max_items=int(env.get("ML_EMBED_MAX_ITEMS", "256")),
+            embed_max_chars=int(env.get("ML_EMBED_MAX_CHARS", "8000")),
+            embed_batch_size=int(env.get("ML_EMBED_BATCH_SIZE", "32")),
         )

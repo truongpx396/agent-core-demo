@@ -41,13 +41,14 @@ def test_prompt_guard_answers_in_its_wire_shape_and_flags_an_obvious_injection(m
     assert attack["malicious_score"] > benign["malicious_score"]
 
 
-def test_health_is_still_plain_liveness_and_health_models_lists_both_models_ready(ml_service_url):
+def test_health_is_still_plain_liveness_and_health_models_lists_every_model_ready(ml_service_url):
     assert httpx.get(f"{ml_service_url}/health", timeout=10).json() == {"status": "ok"}
 
     body = httpx.get(f"{ml_service_url}/health/models", timeout=10).json()
 
     assert body["status"] == "ok"
-    assert {name: m["state"] for name, m in body["models"].items()} == {"rerank": "ready", "prompt-guard": "ready"}
+    # the two models this service always had, plus the one text model enabled by default (the embedding endpoint)
+    assert {name: m["state"] for name, m in body["models"].items()} == {"rerank": "ready", "prompt-guard": "ready", "bge-small-en-v1.5": "ready"}
 
 
 def test_metrics_exposes_the_per_model_state(ml_service_url):
