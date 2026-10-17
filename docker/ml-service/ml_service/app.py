@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from ml_service import embed, guard, health, rerank
+from ml_service import classify, embed, guard, health, rerank
 from ml_service.metrics import Metrics
 from ml_service.registry import (
     ModelSpec,
@@ -61,11 +61,13 @@ def create_app(
     settings = settings or Settings.from_env()
     metrics = Metrics()
     declared = enabled_specs(load_model_specs(MODELS_TOML) if specs is None else specs, settings.models_enabled)
-    embed_specs = {s.name: s for s in declared if "embed" in s.roles}
+    # A text model is loaded ONCE and serves every role it declares: /v1/embeddings for `embed`, /classify for `classify`.
+    text_specs = {s.name: s for s in declared if {"embed", "classify"} & set(s.roles)}
+    embed_specs = {name: spec for name, spec in text_specs.items() if "embed" in spec.roles}  # what /v1/embeddings and /v1/models serve
     default_loaders: dict[str, Callable[[], Any]] = {
         "rerank": lambda: rerank.load_rerank_service(settings),
         "prompt-guard": lambda: guard.load_guard_service(settings),
-        **{name: partial(embed.load_embed_service, spec, settings) for name, spec in embed_specs.items()},
+        **{name: partial(embed.load_embed_service, spec, settings) for name, spec in text_specs.items()},
     }
     loaders = {**default_loaders, **(loaders or {})}
 
@@ -78,10 +80,14 @@ def create_app(
         )
         for name, roles in (("rerank", ("rerank",)), ("prompt-guard", ("screen",))):
             registry.add(Slot(name=name, roles=roles, loader=loaders[name], activate=_start, deactivate=_stop))
-        for name, spec in embed_specs.items():
+        for name, spec in text_specs.items():
             info = {"licence": spec.licence, "file": spec.file, "revision": spec.revision}  # replaced by the loaded model's own facts
             registry.add(Slot(name=name, roles=spec.roles, loader=loaders[name], info=info, activate=_start, deactivate=_stop))
         app.state.registry = registry
+        classifiers = [spec for spec in text_specs.values() if "classify" in spec.roles]
+        app.state.classifier = classify.Classifier(
+            registry, classifiers, classify.read_heads(settings.router_head_dir, [s.name for s in classifiers]), settings, metrics
+        )
         # Load everything concurrently, tolerating failure: a model that cannot load is that model's `failed` state, not the
         # container's. (Before the split either failure stopped the whole service from starting.)
         await registry.load_all()
@@ -98,6 +104,7 @@ def create_app(
     app.state.embed_specs = embed_specs
     app.include_router(health.router)
     app.include_router(embed.router)
+    app.include_router(classify.router)
     app.include_router(rerank.router)
     app.include_router(guard.router)
     return app

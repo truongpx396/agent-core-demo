@@ -24,6 +24,18 @@ model_list:
     #     input_cost_per_token: 0.0000010
     #     output_cost_per_token: 0.0000040
     #     cache_read_input_token_cost: 0.0000001   # optional; omitted = cached billed as input
+  # The escalation alias (specs/014, contracts/gateway-aliases.md section 1). Compose passes LLM_STRONG_* defaulting to the `chat` values, so
+  # an unset variable cannot stop the proxy and the alias is effectively `chat` until an operator points it somewhere stronger. Inert until
+  # the app is told to use it (STRONG_CHAT_MODEL / ROUTER_ENABLED). No `fallbacks` entry names it: the app repeats a failed strong call on
+  # `chat` so the ledger prices the model that answered. State a price below if the model is one LiteLLM does not know (UNPRICED_MODEL_POLICY=block).
+  - model_name: chat-strong
+    litellm_params:
+      model: os.environ/LLM_STRONG_CHAT_MODEL
+      api_base: os.environ/LLM_STRONG_API_BASE
+      api_key: os.environ/LLM_STRONG_API_KEY
+    #   model_info:
+    #     input_cost_per_token: 0.0000030
+    #     output_cost_per_token: 0.0000150
   - model_name: embed
     litellm_params:
       model: os.environ/LLM_EMBED_MODEL

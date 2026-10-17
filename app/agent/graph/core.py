@@ -140,6 +140,9 @@ def validate_input(state: State, config: RunnableConfig) -> dict:
         "retry_reason_repeat_count": 0,
         "cache_hit": False,
         "moderation_blocked": False,
+        # The routing decision is per turn (route_model sets it, after moderation and the cache). Reset here so a refused or
+        # cache-hit turn never carries the last turn's `strong` into its own accounting, and never on a resume (which skips this node).
+        "model_route": None,
         "followups": [],
     }
     # A thread that had a retry before retry artifacts were tagged still holds the feedback as an
