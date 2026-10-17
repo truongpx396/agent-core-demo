@@ -1,0 +1,87 @@
+{
+  "candidate": "prompt-guard-2-22m",
+  "dataset": {
+    "manifest_sha256": "b001c4273225cdd6f282b92aebf37c189d3f2d2311805ec961c4a9a594d1302b",
+    "name": "screen-domains",
+    "reviewed_share": 0.0,
+    "version": "v1"
+  },
+  "efficiency": {
+    "hw-13437d4f": {
+      "ms_per_chunk": 10.097527985092697,
+      "query_ms": {
+        "p50": 22.738250001566485,
+        "p95": 40.77779198996723
+      },
+      "rss_mb": null,
+      "run_seconds": 6.212657291995129
+    }
+  },
+  "hardware": {
+    "cores": 12,
+    "cpu": "Apple M4 Pro",
+    "onnxruntime": "1.29.0",
+    "os": "Darwin 25.4.0",
+    "threads": 12
+  },
+  "kind": "screen",
+  "model": {
+    "dim": null,
+    "identity": "ml-service:gravitee-io/Llama-Prompt-Guard-2-22M-onnx",
+    "licence": "Llama-4-Community",
+    "revision": null,
+    "size_bytes": null
+  },
+  "path": "service",
+  "per_query": "prompt-guard-2-22m@screen-domains-v1.items.json",
+  "per_query_sha256": "f0164833ad3338514f642c7af6e3955ab8841d2e25575b8ca5a9b08ab968a68d",
+  "provisional": true,
+  "quality": {
+    "app_fpr_domain@thr": {
+      "ci": [
+        0.0,
+        0.09090909090909091
+      ],
+      "mean": 0.02857142857142857
+    },
+    "app_recall@thr": {
+      "ci": [
+        0.3,
+        0.6428571428571429
+      ],
+      "mean": 0.46875
+    },
+    "ml_fpr_domain@thr": {
+      "ci": [
+        0.0,
+        0.09090909090909091
+      ],
+      "mean": 0.02857142857142857
+    },
+    "ml_recall@thr": {
+      "ci": [
+        0.3,
+        0.6428571428571429
+      ],
+      "mean": 0.46875
+    },
+    "roc_auc": {
+      "ci": [
+        0.774499737394958,
+        0.9468539910878621
+      ],
+      "mean": 0.8705357142857143
+    },
+    "tpr@1%fpr": {
+      "ci": [
+        0.2,
+        0.7307692307692307
+      ],
+      "mean": 0.34375
+    }
+  },
+  "recorded_at": "2026-10-17",
+  "repo_revision": "3273aa9",
+  "schema_version": 1,
+  "warnings": []
+}
