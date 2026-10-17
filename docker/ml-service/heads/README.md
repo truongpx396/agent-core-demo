@@ -14,3 +14,8 @@ harness shows the head beats the random and prompt-length routers on held-out da
 
 **No head ships in this repository.** With none, the classifier answers "no advice" and every turn runs on the local model, exactly as
 before. Mount your own directory and point `ROUTER_HEAD_DIR` at it, or copy accepted heads here before building the image.
+
+`GET /health/models` shows each classify model's head as `loaded`, `absent`, `pending: model not ready`, or `refused: <reason>` (`not accepted`,
+`revision mismatch`, `repo mismatch`, `file mismatch`, `model mismatch`, `dimension mismatch`, or `malformed (…)`). Heads are read when the service
+starts, so mount new ones and restart the container. `head_version` in the JSON is what `/classify` returns with every score, so a score can always
+be traced to the head that produced it.

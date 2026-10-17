@@ -20,12 +20,12 @@ async def health_models(request: Request) -> dict:
     return {
         "status": "degraded" if registry.degraded else "ok",
         "models": registry.snapshot(),
-        # Filled by the classifier (specs/014 PR 3); the block is part of the contract from the start so a reader never has to guess.
-        "classifier": {"serving": "none", "heads": {}},
+        "classifier": request.app.state.classifier.snapshot(),
     }
 
 
 @router.get("/metrics")
 async def metrics(request: Request) -> Response:
+    request.app.state.classifier.publish()  # a gauge of CURRENT state, refreshed at scrape time so it cannot go stale between requests
     body, content_type = request.app.state.metrics.render()
     return Response(content=body, media_type=content_type)

@@ -10,8 +10,15 @@ def test_the_three_declared_models_are_present_with_their_licences():
     assert {n: s.licence for n, s in SPECS.items()} == {"bge-small-en-v1.5": "MIT", "all-MiniLM-L6-v2": "Apache-2.0", "gte-modernbert-base-int8": "Apache-2.0"}
 
 
-def test_only_bge_small_loads_by_default_so_a_cold_start_downloads_one_model_not_three():
-    assert [s.name for s in enabled_specs(list(SPECS.values()), ())] == ["bge-small-en-v1.5"]
+def test_the_two_classifier_models_load_by_default_and_the_big_embedder_does_not():
+    assert [s.name for s in enabled_specs(list(SPECS.values()), ())] == ["bge-small-en-v1.5", "all-MiniLM-L6-v2"]
+
+
+def test_the_classify_chain_is_bge_small_then_minilm_in_that_order_and_the_big_embedder_does_not_classify():
+    # the order IS the configuration: the first classify-role model is the primary (contracts/settings.md "Not settings")
+    assert [n for n, s in SPECS.items() if "classify" in s.roles] == ["bge-small-en-v1.5", "all-MiniLM-L6-v2"]
+    assert "embed" in SPECS["bge-small-en-v1.5"].roles and "embed" in SPECS["all-MiniLM-L6-v2"].roles
+    assert SPECS["gte-modernbert-base-int8"].roles == ("embed",)
 
 
 def test_the_environment_override_can_turn_the_others_on():

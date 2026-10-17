@@ -25,7 +25,8 @@ def test_the_default_model_is_served_with_its_pinned_revision_and_dimension(ml_s
     assert bge["state"] == "ready" and bge["dim"] == 384 and bge["licence"] == "MIT"
     assert bge["revision"] == "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
     assert health["models"]["bge-small-en-v1.5"]["state"] == "ready" and health["models"]["bge-small-en-v1.5"]["dim"] == 384
-    assert [m["id"] for m in models] == ["bge-small-en-v1.5"]  # the other two are declared but not enabled by default
+    # the two classifier models are loaded by default and both embed; the big embedder is declared but not enabled
+    assert [m["id"] for m in models] == ["bge-small-en-v1.5", "all-MiniLM-L6-v2"]
 
 
 def test_it_returns_unit_vectors_in_order_with_usage_and_related_texts_are_closer(ml_service_url):
