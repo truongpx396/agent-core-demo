@@ -1,0 +1,438 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model-eval.report.schema.json",
+  "title": "Model evaluation report",
+  "description": "One candidate against one recorded baseline. Contains ids and aggregate numbers only, never item text (specs/014 contracts/model-eval.md).",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "candidate",
+    "dataset",
+    "hardware",
+    "repo_revision",
+    "ran_at",
+    "quality",
+    "efficiency",
+    "controls",
+    "tradeoffs",
+    "warnings"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "enum": [
+        "embedding",
+        "reranker",
+        "screen",
+        "classifier"
+      ]
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "provisional",
+        "invalid"
+      ]
+    },
+    "candidate": {
+      "type": "object",
+      "required": [
+        "name",
+        "identity",
+        "licence",
+        "path"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9._@-]+$"
+        },
+        "identity": {
+          "type": "string"
+        },
+        "revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "licence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "dim": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "path": {
+          "enum": [
+            "gateway",
+            "service",
+            "inprocess"
+          ]
+        }
+      }
+    },
+    "baseline": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "name",
+        "file",
+        "hw_used",
+        "latency_comparable"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "hw_used": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "latency_comparable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "dataset": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "split",
+        "items",
+        "reviewed_share"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "split": {
+          "const": "test"
+        },
+        "items": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reviewed_share": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "public": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "revision",
+              "licence"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "string",
+                "minLength": 7
+              },
+              "licence": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "hardware": {
+      "type": "object",
+      "required": [
+        "id",
+        "cpu",
+        "cores",
+        "threads",
+        "onnxruntime",
+        "os"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^hw-[0-9a-f]{8}$"
+        },
+        "cpu": {
+          "type": "string"
+        },
+        "cores": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "threads": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "onnxruntime": {
+          "type": "string"
+        },
+        "os": {
+          "type": "string"
+        }
+      }
+    },
+    "repo_revision": {
+      "type": "string"
+    },
+    "ran_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "quality": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/measured"
+      }
+    },
+    "efficiency": {
+      "type": "object",
+      "required": [
+        "query_ms"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "query_ms": {
+          "type": "object",
+          "required": [
+            "p50",
+            "p95"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "p50": {
+              "type": "number",
+              "minimum": 0
+            },
+            "p95": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "ms_per_chunk": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "rss_mb": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "run_seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "deltas": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "delta",
+          "ci95",
+          "verdict"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "delta": {
+            "type": "number"
+          },
+          "ci95": {
+            "$ref": "#/$defs/interval"
+          },
+          "verdict": {
+            "enum": [
+              "better",
+              "worse",
+              "inconclusive",
+              "no_difference"
+            ]
+          },
+          "needed_n": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "controls": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "expect",
+          "observed",
+          "ok"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "expect": {
+            "enum": [
+              "no_difference",
+              "worse"
+            ]
+          },
+          "observed": {
+            "enum": [
+              "no_difference",
+              "worse",
+              "better",
+              "inconclusive"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "tradeoffs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "interval": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "measured": {
+      "type": "object",
+      "required": [
+        "value",
+        "ci95"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "type": "number"
+        },
+        "ci95": {
+          "$ref": "#/$defs/interval"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "invalid"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "controls": {
+            "contains": {
+              "properties": {
+                "ok": {
+                  "const": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "dataset": {
+            "properties": {
+              "reviewed_share": {
+                "exclusiveMaximum": 1
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "enum": [
+              "provisional",
+              "invalid"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
