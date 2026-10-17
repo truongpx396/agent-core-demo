@@ -156,7 +156,7 @@ and to any size check, and wrong to every search.
 - **Physical collections are named `<name>-<hash8>`; the app reads and writes through an alias `<name>-live`.**
   Qdrant alias updates are atomic, so a re-embed builds the new physical collection, verifies it, and repoints the alias in one
   request. A failure before the repoint leaves the old collection serving (FR-020).
-- **The check** compares the configured identity's hash with the suffix of the alias's current target (cached ~10 s so a search
+- **The check** (an unresolvable alias falls back to the alias NAME in the hash and is counted `unverified`, never refused; see data-model §6) compares the configured identity's hash with the suffix of the alias's current target (cached ~10 s so a search
   costs no extra round trip, and a swap is picked up within that time). It needs no collection-metadata feature.
 - **Legacy.** An existing deployment has a physical collection named exactly `<name>` and no alias. On first use `ensure_live`
   creates `<name>-live → <name>` (atomic, non-destructive) and treats it as **adopted**: the configured identity is *assumed* to

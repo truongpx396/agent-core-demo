@@ -277,6 +277,22 @@ ingest_text("some pasted text", title="My Notes", ctx=ctx)
 One disclosed gap: a DNS-rebinding race between validation and fetch. Production uploads
 (`POST /ingest/upload`) go to object storage, then a dedicated ingest-worker pool.
 
+### Embedding models, and swapping them
+
+Retrieval embeds a **question** and a **stored passage** as two different operations (`embed_query`, `embed_document(s)` in `app/retrieval/embeddings.py`), because models trained with task prefixes put them in different places on purpose. `EMBED_QUERY_PREFIX` / `EMBED_DOCUMENT_PREFIX` (`.env.example`) default to empty, which is exactly what the app sent before. nomic-embed-text, the default, says its input "must include" `search_query: ` / `search_document: `; whether adding them is worth it is a measurement (`make model-eval`), not a default.
+
+What a collection's vectors were made with (the model the `embed` alias resolves to, the vector size, both prefixes, `EMBED_MODEL_REVISION`) is written into its name, and the app **refuses to mix two**: after any of those change, retrieval from the old collection is refused (it degrades like an outage; `GET /health/ready` lists it under `warnings`, `agent_embedding_identity_total{outcome="mismatch"}` counts it, the `EmbeddingIdentityMismatch` alert fires). The fix is one command per collection:
+
+```bash
+make reembed COLLECTION_NAME=docs ARGS=--dry-run     # the plan: source, target, point count; writes nothing
+make reembed COLLECTION_NAME=docs                     # build beside the live one, verify, swap the alias atomically
+make reembed COLLECTION_NAME=skills                   # the skills collection is separate
+```
+
+It rebuilds from the text each point already stores, keeps ids, payload (tenant and owner included) and sparse vectors, never deletes the old collection (remove it after a bake period), and **stops without swapping if the collection was written to while it ran** (pause ingestion first; exit 4). The answer cache needs nothing: its index follows the identity. A collection from before this existed is *adopted* with a warning (its identity cannot be proven) until its first re-embed.
+
+**Attaching an ONNX embedding model served by the ML service** (config only, no code change). `GET http://localhost:8083/v1/models` lists what it can serve and what each model expects as a prefix; `docker/ml-service/models.toml` declares them (`ML_MODELS_ENABLED=bge-small-en-v1.5,gte-modernbert-base-int8` loads more than the default). Then: point the gateway's `embed` alias at `openai/<name>` with `api_base: http://ml-service:80/v1` ([the entry](specs/014-model-serving-eval-harness/contracts/gateway-aliases.md)), set the prefixes the model needs, restart the proxy, run `make reembed` for each collection, bake, delete the old collections. Memory, measured: the container idles at 574 MiB without an embedding model and 781 MiB with bge-small enabled, and reached 1,069 MiB under 100 concurrent requests, against the production limit of 2 GiB; enable the other models only after checking the headroom on your hardware. On the CPU this was measured on, the fp32 files were *faster* than int8, so the defaults are fp32.
+
 ### MCP, crawling and the sandbox
 
 - **MCP server** (`make mcp-serve`, `make mcp-serve-ops`): exposes `query_employees` and the ops domain's metrics/incidents over stdio. MCP has no header seam, so `tenant`/`principal` are explicit arguments, checked by the same fail-closed policy.
@@ -431,6 +447,7 @@ measurements put acted-on AI comments at roughly 6–19%, so treat it as a promp
 | `make up` · `make down` | Start / stop the dev stack (keeps data) |
 | `make up-app` | `make up` plus the containerized `api`, `agent-worker`s and `ingest-worker` |
 | `make pull-models` · `make ingest` · `make index-skills` | Pull Ollama models · seed docs · index skills |
+| `make reembed COLLECTION_NAME=docs` | Rebuild a vector collection under the current embedding identity and swap it in atomically (`ARGS=--dry-run` first; [Embedding models](#embedding-models-and-swapping-them)) |
 | `make chat` · `make chat-hitl` | CLI agent · CLI with approval prompts |
 | `make serve` | API + web UI on :8000 |
 | `make agent-worker[-support\|-ops\|-sales]` · `make ingest-worker` | Queue consumers |
@@ -505,6 +522,7 @@ shipped proxy alone, the human deciding can be anyone who sets the right headers
 - **A residual duplicate window for team-channel notifications** (support escalation, sales handoff, ops post).
 - **The monthly spend caps are linear in a month's model calls** (about 0.4 s at 2,000,000 events; off by default; the lever is a per-day rollup, not built; pattern 58 in [COST_GOVERNANCE.md](COST_GOVERNANCE.md)).
 - **Nothing alerts that the ledger carry-over was skipped, and nothing schedules `make usage-events-sweep`** (`ARGS=--dry-run` printing `Would carry 0` is the check; wire the sweep to cron once your retention policy is decided).
+- **A pre-existing vector collection is trusted, not verified.** One created before embedding identities existed is adopted with a warning; the first `make reembed` replaces it with a verifiable one. A re-embed does not support writes while it runs (it detects them and stops).
 - **Embedding spend is not metered.** Chat calls (the agent, follow-ups, compaction, the cron scripts) are recorded per call and counted by the caps; embeddings are not, nor attributed at the gateway.
 
 ## Troubleshooting
