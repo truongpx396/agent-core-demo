@@ -7,10 +7,10 @@ unmodified graph. Python 3.13.
 Read these before changing behavior; they hold the reasoning this file deliberately omits:
 - `.specify/memory/constitution.md` — the non-negotiable rules. Principles I, II and IV
   (tenant isolation, mandatory approval, exactly-once side effects) are NON-NEGOTIABLE.
-- `GRAPH_PATTERNS.md` — the graph's numbered patterns (1-67 so far; 50 live there), each with the real bug
+- `GRAPH_PATTERNS.md` — the graph's numbered patterns (1-69 so far; 51 live there), each with the real bug
   that motivated it. "Extending Further" is the honest list of what is and isn't built. A pattern that is
   not about the graph moves out, leaves its number in a table here, and the number is never reused:
-  the spend meter and caps are in `COST_GOVERNANCE.md`, two repository lessons in `ENGINEERING_PATTERNS.md`,
+  the spend meter and caps are in `COST_GOVERNANCE.md`, three repository lessons in `ENGINEERING_PATTERNS.md`,
   and the billing package keeps its own (`packages/billing/docs/PATTERNS.md`, see the constitution's
   "Self-contained packages").
 - `README.md` — architecture, make targets, testing tiers. `WORKER_CONCURRENCY.md` — worker sizing.
@@ -39,10 +39,13 @@ make chat              # CLI agent; chat-hitl adds approval prompts
 
 `make eval`, `promptfoo`, `garak`, `deepeval`, `test-sandbox`, `test-provider-sandbox` need live models or services and
 are manual by design. Run `make eval` + `make promptfoo` after a prompt, model-alias or
-retrieval change. `make model-eval KIND=embedding|reranker|screen CANDIDATE=<name>` is the same kind of tier for a
+retrieval change. `make model-eval KIND=embedding|reranker|screen|classifier CANDIDATE=<name>` is the same kind of tier for a
 *model swap*: it judges a candidate against the recorded baseline (`evals/README.md`), and `make model-eval-verify`
 needs no model or network. Run it before changing an embedding, reranker or screening model, and read the report's
-`controls` first. Don't run `make clean`, `clear-*`, or `restart-all` without being asked —
+`controls` first. The routing classifier has two more manual targets, `make router-label JUDGE=<alias>` (score the local and strong
+model's answers) and `make router-head-train MODEL=<name>` (fit a head; it always writes `accepted: false`, a person accepts it).
+`make reembed COLLECTION_NAME=<c>` rebuilds a vector collection under the current embedding identity and swaps it in atomically; run
+it after changing `EMBED_MODEL`, the prefixes or `EMBED_MODEL_REVISION`. Don't run `make clean`, `clear-*`, or `restart-all` without being asked —
 they delete volumes or kill running processes.
 
 ## Where things live
@@ -86,6 +89,9 @@ they delete volumes or kill running processes.
   hold what can be evaluated, the versioned sets, the recorded result of the model in use today, and the text the sets are built
   from. Datasets are frozen (a manifest records every file's hash; change one by adding `v2/`), and a baseline is immutable.
   `docker/ml-service/ml_service/` is the ML service as an importable package (on the test/mypy path, not installed).
+  `app/retrieval/embedding_identity.py` is what makes mixing two embedding models' vectors impossible (a collection records its model,
+  dimension, prefixes and revision, and the app refuses to read or write one that disagrees); `app/core/routing_advice.py` and
+  `app/agent/graph/model_route.py` are the router's whole footprint in the app, and it can only write `State.model_route`.
 - `promptfoo/` — the prompt checks, and the only Node in the repo: its `package.json`, lock file and `node_modules`
   live here, so every `npm`/`npx` runs from this directory (`make promptfoo` does that). The root stays Python-only.
 

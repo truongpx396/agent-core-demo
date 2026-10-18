@@ -25,7 +25,7 @@ make model-eval-data                                                    # fetch 
 `0` ok · `2` usage/configuration · `3` a model, dataset or service is missing (**no report is written**) · `4` verification failed ·
 `5` a **control** gave the wrong answer: the report is marked `INVALID` and must not be used.
 
-Kinds: `embedding`, `reranker`, `screen` (the prompt-injection screen). The routing classifier arrives with its endpoint.
+Kinds: `embedding`, `reranker`, `screen` (the prompt-injection screen) and `classifier` (the routing head, below).
 
 ## How to read a report
 
@@ -40,6 +40,51 @@ Kinds: `embedding`, `reranker`, `screen` (the prompt-injection screen). The rout
    refuses to compare latency across machines.
 5. **`tradeoffs`.** For an embedding model this states the vector size per million chunks and that **changing the embedding model means
    re-embedding every collection**.
+
+## The routing classifier (kind `classifier`)
+
+A routing head answers one question, "does this prompt need the stronger model?", and what that answer is worth is a fact about **two
+specific models and one judge**, so it can only be measured against labelled outcomes that you produce yourself. Nothing is committed and
+no head ships: until a person accepts one, `/classify` answers `served_by: "none"` and every turn runs on the local model.
+
+```bash
+make router-label JUDGE=judge                                    # 1. score both models' answers to the route prompts (minutes per prompt; resumable)
+make router-head-train MODEL=bge-small-en-v1.5                   # 2. fit a head per classify-role model; also MODEL=all-MiniLM-L6-v2
+make model-eval KIND=classifier CANDIDATE=bge-small-en-v1.5 VIA=inprocess      # 3. read the report on the held-out prompts
+```
+
+1. **Label.** `route-domains` has 32 `dev` and 91 `test` prompts. The labeller runs each through the local alias (`chat`) and the strong
+   alias (`chat-strong`), and has the judge alias score each answer 0-1 against a short written rubric. The judge sees the question and one
+   answer, never which model wrote it. Output: `datasets/route-domains/v1/outcomes/<strong>.jsonl` (`{id, local, strong, judge}`) and a
+   `.meta.json` beside it, both **gitignored**. A score it could not get (timeout, an unusable judge reply twice) is `null`, never `0`.
+   Bounded by a per-call timeout and `DEADLINE`; a re-run keeps finished prompts and retries the missing ones. A file scored by one
+   judge is never extended by another.
+2. **Train.** A prompt is `needs_stronger` when `strong - local >= 0.2` (the margin). Logistic regression over the L2-normalised embedding,
+   numpy only, trained on `dev`, reported on `test`, with the regularisation chosen by seeded cross-validation on `dev` only. It uses the ML
+   service's own loader, so a head is never trained on one pipeline and served on another, and it **refuses to train if the training
+   prompts overlap `test`**. It writes `var/model_eval/heads/head-<model>.{json,npz}` with **`"accepted": false`, always**.
+3. **Read the report.** It needs the head, so use `VIA=inprocess` (the service refuses an unaccepted head). It gives the decision's
+   `accuracy`, `macro_f1` and `ece` and what the decision is for: `apgr` (the average share of the strong-minus-local gap recovered as a
+   function of how many prompts are escalated; a random router scores 0.5), `cpt50` / `cpt90` (the smallest share of prompts that must go to
+   the stronger model to recover half / 90% of the gap; **lower is better**) and `apgr_vs_length` (against a router that escalates the
+   longest prompts first). **A head is worth accepting only if `apgr` is clearly above 0.5 and `apgr_vs_length` has a confidence interval
+   above zero.** The report also times one prompt at a time and warns when p95 exceeds the 50 ms budget (SC-009).
+4. **Accept (a person).** Set `"accepted": true` in the head's JSON, mount the directory as `ROUTER_HEAD_DIR`, restart the ML service,
+   and only then turn the router on (`ROUTER_ENABLED=true`, `STRONG_CHAT_MODEL=chat-strong`). `make model-eval KIND=classifier
+   CANDIDATE=ml-service-classify` then measures what the app really gets, over HTTP.
+
+With **no outcomes** the run ends with `UNMEASURED` (exit 3) and writes no report: routing quality is never a number computed from
+nothing. The same happens if the strong model did not beat the local one on the test prompts, because then there is nothing to recover.
+There is **no recorded baseline** for this kind (nothing is in use until a person accepts a head), so every run says so and compares
+nothing; `baseline-as-candidate`, `constant` and `random-router` are runnable controls whose numbers are the floor. The derived controls
+build the best possible router from the same outcomes and check that the harness tells it from a random and a constant one.
+
+**Method sanity (needs no stronger model).** `make model-eval-data` once, then
+`make model-eval KIND=classifier CANDIDATE=bge-small-en-v1.5 DATASET=clinc-oos-plus`: embeds CLINC150 (`plus`, CC BY 3.0) with the same
+pipeline, trains a multinomial head on the in-scope training examples and reports `accuracy_in_scope`, `macro_f1_in_scope` and
+`ece_in_scope` separately from how well it spots the out-of-scope requests (`oos_recall@thr` against `in_scope_reject@thr`, at a
+rejection threshold chosen on the validation split). A linear probe on an encoder of this size should land in the mid-90s; if it does not,
+the embedding pipeline or the trainer is wrong, and a routing head built on it would be too. It **says nothing about routing quality.**
 
 ## Add a candidate
 
@@ -103,3 +148,7 @@ These cost real time while this was built, and each is now enforced rather than 
   the most valuable addition.
 - Latency is measured on the maintainer's machine; the baselines carry that machine's hardware id until someone records another
   (`make model-eval-baseline ... ADD_HARDWARE=1`).
+- **Routing labels are weak.** The local and strong models answer WITHOUT retrieval, so a prompt about a company policy is scored on how
+  honestly the model handles not knowing it, not on a grounded answer. A judge that is also the strong model favours its own style (use a
+  different judge when one exists). And a head is trained on 32 prompts and reported on 91: it can show whether the method works at all, and
+  it cannot show that routing helps real traffic. Grow the route set (a new `v2/`) before relying on a head.
