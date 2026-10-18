@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from scripts.model_eval import datasets as ds
+from scripts.model_eval.routing import DEFAULT_MARGIN
 
 
 class PrerequisiteMissing(Exception):
@@ -26,6 +27,9 @@ class RunSettings:
     public_root: Path = ds.PUBLIC_CACHE
     public_lock: Path = ds.DATASETS_ROOT / "public.lock.json"
     list_size: int | None = None  # reranker candidate-list size for public sets (the repo-own sets fix theirs)
+    outcomes: Path | None = None  # classifier: the labelled outcomes file (routing.py); None = the one file in the dataset's outcomes/ directory
+    margin: float = DEFAULT_MARGIN  # classifier: strong - local must reach this for a prompt to count as needing the stronger model
+    head_dir: Path = ds.REPO / "var" / "model_eval" / "heads"  # classifier, in-process: where `make router-head-train` wrote the head files
 
 
 def percentiles(samples_ms: Sequence[float]) -> dict[str, float]:

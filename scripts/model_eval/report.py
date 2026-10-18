@@ -33,6 +33,7 @@ class RunOutput:
     data: ItemData
     efficiency: dict  # query_ms {p50, p95}, ms_per_chunk, rss_mb, run_seconds
     warnings: list[str] = field(default_factory=list)
+    tradeoffs: list[str] = field(default_factory=list)  # extra lines the runner knows and the report cannot derive (e.g. the routing controls' curves)
 
 
 def _tradeoffs(report: dict, baseline: baselines.Baseline | None, hw_id: str) -> list[str]:
@@ -126,7 +127,7 @@ def build_report(
         "controls": [c.as_dict() for c in controls],
         "warnings": warnings,
     }
-    report["tradeoffs"] = _tradeoffs(report, baseline, hardware["id"])
+    report["tradeoffs"] = _tradeoffs(report, baseline, hardware["id"]) + list(run.tradeoffs)
     if not report["baseline"]:
         del report["baseline"]
     return report

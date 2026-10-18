@@ -146,11 +146,126 @@ class ScreenSuite(Suite):
         }
 
 
-def suite_for(kind: str, *, screen_threshold: float = 0.5) -> Suite:
+class ClassifierSuite(Suite):
+    """A routing classifier on prompts whose outcomes are known: does it send the right prompts to the stronger model?
+
+    Arrays per item: `score` (the head's probability that the prompt needs the stronger model), `label` (1 iff the strong model scored at least
+    the margin above the local one, `routing.label`), `q_local` and `q_strong` (the judge's 0-1 score of each model's answer), `words` (the
+    prompt's length in words, for the length router it must beat).
+
+    `accuracy`, `macro_f1` and `ece` judge the yes/no decision at the threshold. The routing metrics judge what the decision is FOR: escalate the
+    top share `p` of prompts by score and see how much of the gap between the local and the strong model comes back (RouteLLM's performance gap
+    recovered, PGR). `apgr` averages that over the fixed grid, `cpt50`/`cpt90` are the smallest share of prompts that must go to the stronger
+    model to recover half / 90% of the gap (LOWER is better: the cheaper the better), and `apgr_vs_length` is the head's APGR minus the APGR of
+    a router that escalates the longest prompts first, recomputed on every resample, so "beats the length router" has a confidence interval.
+    A random router recovers exactly the share it escalates (APGR 0.5), so "beats random" is `apgr` above 0.5 and needs no second curve.
+    """
+
+    kind = "classifier"
+    metrics = (
+        MetricSpec("accuracy"),
+        MetricSpec("macro_f1"),
+        MetricSpec("ece", higher_is_better=False),
+        MetricSpec("apgr"),
+        MetricSpec("cpt50", higher_is_better=False),
+        MetricSpec("cpt90", higher_is_better=False),
+        MetricSpec("apgr_vs_length"),
+    )
+
+    def __init__(self, threshold: float = 0.5) -> None:
+        self.threshold = threshold
+
+    def compute(self, data: ItemData, idx: np.ndarray) -> dict[str, float]:
+        score = np.asarray(data.arrays["score"])[idx]
+        label = np.asarray(data.arrays["label"])[idx].astype(int)
+        q_local, q_strong = np.asarray(data.arrays["q_local"])[idx], np.asarray(data.arrays["q_strong"])[idx]
+        words = np.asarray(data.arrays["words"])[idx]
+        predicted = (score >= self.threshold).astype(int)
+        nan = float("nan")
+        ece, _bins = m.expected_calibration_error(np.maximum(score, 1.0 - score), predicted == label)
+        out = {
+            "accuracy": m.accuracy(label.tolist(), predicted.tolist()),
+            "macro_f1": m.macro_f1(label.tolist(), predicted.tolist()).value,
+            "ece": ece,
+            "apgr": nan, "cpt50": nan, "cpt90": nan, "apgr_vs_length": nan,
+        }
+        try:  # a resample on which the strong model happens to be no better has no gap to recover; the percentile skips NaN
+            curve = m.pgr_curve(score, q_local, q_strong)
+            length_curve = m.pgr_curve(words, q_local, q_strong)
+        except ValueError:
+            return out
+        out["apgr"] = m.apgr(curve)
+        out["apgr_vs_length"] = out["apgr"] - m.apgr(length_curve)
+        for name, fraction in (("cpt50", 0.5), ("cpt90", 0.9)):
+            share = m.cpt(curve, fraction)
+            out[name] = nan if share is None else share  # never reaching the fraction is "no value", not "zero"
+        return out
+
+
+INTENT_DATASETS = ("clinc-oos-plus",)  # public sets scored by IntentSuite instead of the routing suite
+
+
+def fast_macro_f1(label: np.ndarray, predicted: np.ndarray) -> float:
+    """`metrics.macro_f1` for many classes, from bin counts. That reference is a pure-Python loop over classes and items, which is exactly right
+    for clarity and far too slow for 150 classes under 2,000 bootstrap resamples; a test pins this to it on random data. Same definition: the
+    mean F1 over the classes that occur in `label`, F1 = 2tp / (true + predicted)."""
+    k = int(max(label.max(), predicted.max())) + 1
+    true_n = np.bincount(label, minlength=k)
+    pred_n = np.bincount(predicted, minlength=k)
+    tp = np.bincount(label[label == predicted], minlength=k)
+    denominator = true_n + pred_n
+    f1 = np.divide(2.0 * tp, denominator, out=np.zeros(k), where=denominator > 0)
+    return float(f1[true_n > 0].mean())
+
+
+class IntentSuite(Suite):
+    """The method-sanity check (specs/014 T072): an embedding model plus a linear head trained on a standard intent set, scored on its test split.
+
+    It says nothing about routing. It answers "does this embedding pipeline plus this way of training a head produce a sensible classifier on a
+    task with a known answer?", which can be checked with no stronger model and no labelling. CLINC's out-of-scope examples are reported SEPARATELY
+    from the in-scope ones: a request that matches no intent is the case a router meets every day.
+
+    Arrays per item: `pred` (predicted intent), `label` (true intent; -1 for an out-of-scope item), `confidence` (the head's top probability),
+    `oos` (1 for an out-of-scope item) and `oos_threshold` (the same value in every row; the confidence below which the head says "none of
+    these", chosen on the validation split, never on the test split).
+    """
+
+    kind = "classifier"
+    metrics = (
+        MetricSpec("accuracy_in_scope"),
+        MetricSpec("macro_f1_in_scope"),
+        MetricSpec("ece_in_scope", higher_is_better=False),
+        MetricSpec("oos_recall@thr"),
+        MetricSpec("in_scope_reject@thr", higher_is_better=False),
+    )
+
+    def compute(self, data: ItemData, idx: np.ndarray) -> dict[str, float]:
+        oos = np.asarray(data.arrays["oos"])[idx].astype(bool)
+        inside = ~oos
+        nan = float("nan")
+        if not inside.any():
+            return dict.fromkeys(self.names(), nan)
+        pred = np.asarray(data.arrays["pred"])[idx].astype(int)[inside]
+        label = np.asarray(data.arrays["label"])[idx].astype(int)[inside]
+        confidence = np.asarray(data.arrays["confidence"])[idx]
+        threshold = float(np.asarray(data.arrays["oos_threshold"])[0])
+        ece, _bins = m.expected_calibration_error(confidence[inside], pred == label)
+        return {
+            "accuracy_in_scope": float((pred == label).mean()),
+            "macro_f1_in_scope": fast_macro_f1(label, pred),
+            "ece_in_scope": ece,
+            "oos_recall@thr": float((confidence[oos] < threshold).mean()) if oos.any() else nan,
+            "in_scope_reject@thr": float((confidence[inside] < threshold).mean()),
+        }
+
+
+def suite_for(kind: str, *, screen_threshold: float = 0.5, dataset: str | None = None) -> Suite:
     if kind == "embedding":
         return EMBEDDING_SUITE
     if kind == "reranker":
         return RERANK_SUITE
     if kind == "screen":
         return ScreenSuite(screen_threshold)
+    if kind == "classifier":
+        return IntentSuite() if dataset in INTENT_DATASETS else ClassifierSuite()
     raise ValueError(f"unknown kind {kind!r}")

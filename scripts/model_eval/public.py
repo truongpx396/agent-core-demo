@@ -61,3 +61,49 @@ def load_prompt_injection(entry: ds.PublicEntry, root: Path = ds.PUBLIC_CACHE) -
         rows = ds.read_csv(ds.cache_path(entry, entry.sources[0], path, root))
         return [LabelledPrompt(f"{entry.id}-{i}", r["prompt"], 1 if r["type"] == "jailbreak" else 0) for i, r in enumerate(rows)]
     raise ds.DatasetError(f"{entry.id}: no reader for {repo}")
+
+
+@dataclass(frozen=True)
+class IntentItem:
+    id: str
+    text: str
+    intent: int  # an index into IntentData.names
+    oos: bool  # the out-of-scope class: a request that belongs to none of the intents
+
+
+@dataclass(frozen=True)
+class IntentData:
+    names: list[str]
+    oos_index: int
+    train: list[IntentItem]
+    validation: list[IntentItem]
+    test: list[IntentItem]
+
+
+def load_clinc(entry: ds.PublicEntry, root: Path = ds.PUBLIC_CACHE) -> IntentData:
+    """clinc/clinc_oos, `plus` configuration. The intent names, and which of them is the out-of-scope class, are read from the parquet file's own
+    schema metadata rather than assumed, so a re-pinned revision that renumbered them cannot silently turn the OOS class into an ordinary intent."""
+    import json
+
+    import pyarrow.parquet as pq
+
+    source = entry.sources[0]
+
+    def path_of(split: str) -> Path:
+        relpath = next(p for p, _sha in source.files if f"/{split}-" in p)
+        return ds.cache_path(entry, source, relpath, root)
+
+    metadata = pq.read_schema(path_of("train")).metadata or {}
+    try:
+        names = json.loads(metadata[b"huggingface"])["info"]["features"]["intent"]["names"]
+    except (KeyError, ValueError) as exc:
+        raise ds.DatasetError(f"{entry.id}: the parquet file carries no intent names; cannot tell which class is out-of-scope") from exc
+    if "oos" not in names:
+        raise ds.DatasetError(f"{entry.id}: no `oos` class among the intent names")
+    oos_index = names.index("oos")
+
+    def items(split: str) -> list[IntentItem]:
+        return [IntentItem(f"{entry.id}-{split}-{i}", str(r["text"]), int(r["intent"]), int(r["intent"]) == oos_index)
+                for i, r in enumerate(ds.read_parquet(path_of(split)))]
+
+    return IntentData(list(names), oos_index, items("train"), items("validation"), items("test"))
