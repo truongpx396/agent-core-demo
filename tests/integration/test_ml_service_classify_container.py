@@ -14,6 +14,7 @@ The heads here are synthetic (a fixed random direction) and are written `"accept
 """
 import json
 import statistics
+import tarfile
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -52,17 +53,61 @@ def synthetic_head(directory: Path, model: str, *, accepted: bool, revision: str
     return w, float(b)
 
 
+@pytest.fixture(scope="module")
+def warm_cache(ml_service, tmp_path_factory) -> Path:
+    """The model cache of the shared, already-settled container, copied once so the containers below start WARM.
+
+    Regression: on the first CI run this file started three containers of its own with an empty cache, which re-downloads four models from
+    the Hub each time (the image does not bake them in). All three sat for the whole 600 s without every model settling, on a CI runner, while
+    the same download had finished for the shared container. The cause was not established from the log (it holds no container output), so
+    the fix removes the dependency instead of guessing at it: a container here makes no Hub request at all, and starts in seconds.
+
+    The copy is made world-writable because the container runs as uid 1000 and the files here belong to whoever runs pytest.
+    """
+    import docker
+
+    dest = tmp_path_factory.mktemp("hf-cache")
+    stream, _ = docker.from_env().containers.get(ml_service["container_id"]).get_archive("/home/appuser/.cache")
+    archive = dest / "cache.tar"
+    with archive.open("wb") as out:
+        for chunk in stream:
+            out.write(chunk)
+    with tarfile.open(archive) as tar:
+        tar.extractall(dest, filter="data")  # the cache is symlinks into blobs/, all relative and inside the tree
+    archive.unlink()
+    root = dest / ".cache"
+    for path in [root, *root.rglob("*")]:
+        if not path.is_symlink():
+            path.chmod(path.stat().st_mode | 0o666 | (0o111 if path.is_dir() else 0))
+    return root
+
+
+def _diagnosis(started, url: str) -> str:
+    """What a person needs when the models never settle: the service's own account of each model, and the tail of its log."""
+    try:
+        health = httpx.get(f"{url}/health/models", timeout=5).text[:1500]
+    except httpx.HTTPError as exc:
+        health = f"/health/models unreachable: {type(exc).__name__}"
+    logs = started.get_wrapped_container().logs(tail=60).decode("utf-8", "replace")
+    return f"/health/models: {health}\n--- last container log lines:\n{logs}"
+
+
 @contextmanager
-def container(ml_service, heads: Path, registry: Path | None = None) -> Iterator[str]:
+def container(cache: Path, heads: Path, registry: Path | None = None) -> Iterator[str]:
     from testcontainers.core.container import DockerContainer
 
-    started = DockerContainer(TAG).with_exposed_ports(80).with_volume_mapping(str(heads), "/app/heads", "ro")
+    started = (
+        DockerContainer(TAG)
+        .with_exposed_ports(80)
+        .with_volume_mapping(str(cache), "/home/appuser/.cache", "rw")
+        .with_volume_mapping(str(heads), "/app/heads", "ro")
+    )
     if registry is not None:
         started = started.with_volume_mapping(str(registry), "/app/models.toml", "ro")
     started.start()
     try:
         url = f"http://{started.get_container_host_ip()}:{int(started.get_exposed_port(80))}"
-        deadline = time.monotonic() + 600  # four models download on a cold container; a loaded machine needs the margin
+        deadline = time.monotonic() + 600  # warm, this takes seconds; the margin is for a loaded machine
         while time.monotonic() < deadline:  # every model has either loaded or failed (a failed one is retried later, not now)
             try:
                 models = httpx.get(f"{url}/health/models", timeout=3).json()["models"]
@@ -72,7 +117,7 @@ def container(ml_service, heads: Path, registry: Path | None = None) -> Iterator
                 pass
             time.sleep(2)
         else:
-            pytest.fail("the container's models never settled")
+            pytest.fail(f"the container's models never settled\n{_diagnosis(started, url)}")
         yield url
     finally:
         started.stop()
@@ -96,12 +141,12 @@ def test_with_no_head_mounted_the_default_container_gives_no_advice(ml_service_u
 
 
 @pytest.fixture(scope="module")
-def accepted_primary(ml_service, tmp_path_factory):
+def accepted_primary(warm_cache, tmp_path_factory):
     """One container with an accepted head for the primary and a head for the fallback that was trained for another revision."""
     heads = tmp_path_factory.mktemp("heads")
     w, b = synthetic_head(heads, PRIMARY, accepted=True)
     synthetic_head(heads, FALLBACK, accepted=True, revision="f" * 40, seed=11)  # trained for a revision that is not the pinned one
-    with container(ml_service, heads) as url:
+    with container(warm_cache, heads) as url:
         # A request that overruns the service's 250 ms deadline is answered by the next model, and here the next model has no usable head,
         # so the answer is "none". The first request after start-up (or any on a machine under load) can overrun: wait until the primary
         # has answered once, which is the steady state the tests below are about.
@@ -154,11 +199,11 @@ async def test_the_whole_routing_call_from_the_app_is_measured_and_answers_nearl
     assert not {"classifier_error", "classifier_timeout"} & set(outcomes) and outcomes.count("advice") >= 180
 
 
-def test_a_head_that_is_not_accepted_gives_no_advice_in_the_real_container(ml_service, tmp_path):
+def test_a_head_that_is_not_accepted_gives_no_advice_in_the_real_container(warm_cache, tmp_path):
     synthetic_head(tmp_path, PRIMARY, accepted=False)
     synthetic_head(tmp_path, FALLBACK, accepted=False, seed=11)
 
-    with container(ml_service, tmp_path) as url:
+    with container(warm_cache, tmp_path) as url:
         body = classify(url)
         classifier = httpx.get(f"{url}/health/models", timeout=10).json()["classifier"]
 
@@ -166,7 +211,7 @@ def test_a_head_that_is_not_accepted_gives_no_advice_in_the_real_container(ml_se
     assert classifier["heads"] == {PRIMARY: "refused: not accepted", FALLBACK: "refused: not accepted"}
 
 
-def test_when_the_primary_cannot_load_the_fallback_answers_and_says_so(ml_service, tmp_path):
+def test_when_the_primary_cannot_load_the_fallback_answers_and_says_so(warm_cache, tmp_path):
     synthetic_head(tmp_path, PRIMARY, accepted=True)
     w, b = synthetic_head(tmp_path, FALLBACK, accepted=True, seed=11)
     registry = tmp_path / "models.toml"
@@ -177,7 +222,7 @@ def test_when_the_primary_cannot_load_the_fallback_answers_and_says_so(ml_servic
         f'revision = "{PINNED[FALLBACK]}"\npooling = "mean"\nmax_length = 256\npad_token = "[PAD]"\nlicence = "Apache-2.0"\n'
     )
 
-    with container(ml_service, tmp_path, registry) as url:
+    with container(warm_cache, tmp_path, registry) as url:
         body = classify(url)
         for _ in range(60):  # a failed model is retried after a backoff, and while that retry is in flight its state is honestly `loading`
             health = httpx.get(f"{url}/health/models", timeout=10).json()
