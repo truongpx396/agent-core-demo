@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -338,6 +339,28 @@ def test_a_head_for_a_different_dimension_is_refused(heads):
     client, _ = make_client(heads)
     with client:
         assert client.get("/health/models").json()["classifier"]["heads"][PRIMARY] == "refused: dimension mismatch"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can search any directory whatever its mode, so there is no unreadable directory to test with")
+def test_a_heads_directory_the_service_cannot_read_is_a_refusal_not_a_crash(heads):
+    """Regression, found by CI and not by a test. pytest makes its temp directories 0700, and a container running as uid 1000 that mounted one
+    got `PermissionError` out of `Path.exists()`: in Python 3.13 it ignores only "not found"-class errors. `read_head` is documented as never
+    raising, but this escaped the lifespan and the WHOLE service failed to start (embeddings, rerank and prompt guard too, not only routing).
+    An operator who mounts the heads with the wrong owner would have taken retrieval down the same way. It is a refusal, visible in
+    /health/models, and every other endpoint keeps working."""
+    heads.chmod(0o000)  # the directory itself: its files can no longer be reached, which is what a directory owned by another uid does
+    try:
+        client, _ = make_client(heads)
+        with client:
+            classifier = client.get("/health/models").json()["classifier"]
+            body = classify(client).json()
+            embeddings = client.post("/v1/embeddings", json={"model": PRIMARY, "input": ["still serving"]})
+    finally:
+        heads.chmod(0o700)  # so pytest can remove it
+
+    assert all(status.startswith("refused: unreadable") for status in classifier["heads"].values()), classifier
+    assert classifier["serving"] == "none" and body["served_by"] == "none"
+    assert embeddings.status_code == 200  # the failure is that one thing's, not the service's
 
 
 @pytest.mark.parametrize("damage", ["json", "npz", "shape", "nan", "no_threshold", "no_version", "schema"])

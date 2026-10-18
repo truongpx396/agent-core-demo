@@ -18,7 +18,8 @@ THREE RULES KEEP A HEAD FROM DOING HARM, and each one is a refusal at load or bi
    from (`TextModel.revision`, taken from the Hub cache path and verified at load; not the declared one), and the dimension. bge-small
    and MiniLM are both 384-d but different spaces; a head over the wrong one returns confident nonsense with no error anywhere.
 3. A head file is data, never code: `np.load(..., allow_pickle=False)`, shapes and finiteness checked, so a damaged or hostile file
-   is a `refused: malformed` line in `/health/models` and nothing else.
+   is a `refused: malformed` line in `/health/models` and nothing else; a directory the service's user cannot read is `refused: unreadable`
+   for each head, and the rest of the service starts and serves as usual.
 
 FAILOVER. The classify-role models in `models.toml` order are the chain: the first is the primary, a later one is the fallback. A model
 is skipped when its head is not usable or it is not `ready`. If the one chosen raises, it goes through the registry's `failed` state
@@ -91,9 +92,15 @@ def read_head(directory: Path, model: str) -> Head | Refused | None:
     """The head for `model` in `directory`: `None` when there is none, `Refused` when there is one that must not be served, else the
     `Head`. Never raises: a bad file is that model's `refused` line, not a crash at start-up."""
     json_path, npz_path = directory / f"head-{model}.json", directory / f"head-{model}.npz"
-    if not json_path.exists() and not npz_path.exists():
+    try:
+        has_json, has_npz = json_path.exists(), npz_path.exists()
+    except OSError as exc:  # Path.exists() swallows only "not found"-class errors; a directory this user may not search raises PermissionError
+        # Found by CI, not by a test: a container running as uid 1000 mounting a 0700 directory. Un-guarded, it escaped the lifespan and the
+        # whole service (embeddings, rerank, prompt guard) failed to start for want of a routing file. It is this model's refusal instead.
+        return Refused(f"unreadable ({type(exc).__name__} looking for {json_path.name}; the directory must be readable by the service's user)")
+    if not has_json and not has_npz:
         return None
-    if not json_path.exists() or not npz_path.exists():
+    if not has_json or not has_npz:
         return Refused(f"malformed (needs both {json_path.name} and {npz_path.name})")
     meta = _meta(json_path)
     if isinstance(meta, Refused):
