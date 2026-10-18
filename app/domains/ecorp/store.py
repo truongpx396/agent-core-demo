@@ -29,7 +29,7 @@ from app.agent.tools.builtin import Topic
 from app.core import sql_store
 from app.core.security import SecurityCtx
 from app.retrieval import qdrant_store
-from app.retrieval.embeddings import embed_sparse, embed_text
+from app.retrieval.embeddings import embed_document, embed_sparse
 
 # Length budget for add_note/remember: bounds the BM25 sparse-embedding cost
 # per write (embed_sparse has no internal truncation, unlike the ml-service
@@ -99,7 +99,7 @@ async def add_note_impl(
     text = f"{title}: {content}"
     point = qdrant_store.build_point(
         point_id=tool_call_point_id(tool_call_id),
-        dense_vector=await embed_text(text),
+        dense_vector=await embed_document(text),
         sparse_vector=await sparse_vector_or_none(text),
         payload={
             "text": text,
@@ -128,7 +128,7 @@ async def remember_impl(content: str, ctx: SecurityCtx, tool_call_id: str) -> st
     """
     point = qdrant_store.build_point(
         point_id=tool_call_point_id(tool_call_id),
-        dense_vector=await embed_text(content),
+        dense_vector=await embed_document(content),
         sparse_vector=await sparse_vector_or_none(content),
         payload={
             "text": content,

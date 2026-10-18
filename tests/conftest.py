@@ -99,6 +99,7 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
 from app.agent.graph import build as graph_build
 from app.core import moderation
+from app.retrieval.embedding_identity import EmbeddingIdentity
 
 TEST_CTX = {"tenant": "ecorp", "principal": "test-user", "claims": {}}
 
@@ -155,6 +156,12 @@ def mock_search_docs(monkeypatch):
     monkeypatch.setattr(graph_build, "default_search", _no_op_search)
 
 
+# What every hermetic test sees as "the configured embedding identity" (see `fixed_embedding_identity`).
+TEST_EMBEDDING_IDENTITY = EmbeddingIdentity(
+    alias="embed", resolved_model="test/embed-model", dim=3, query_prefix="", document_prefix="", revision_label=""
+)
+
+
 async def _benign_ml_score(text: str) -> float:
     return 0.0
 
@@ -168,6 +175,46 @@ def no_real_tracing(monkeypatch):
 
     monkeypatch.setattr(tracing, "_client", None)
     monkeypatch.setattr(tracing, "_settled", True)
+
+
+@pytest.fixture(autouse=True)
+def fixed_embedding_identity(monkeypatch):
+    """The embedding identity is read on every Qdrant read and write (app/retrieval/qdrant_store.py::check_identity), and computing the
+    real one asks LiteLLM which model the `embed` alias resolves to and probes the embedding model for its dimension: two live-service
+    calls. A hermetic test gets a fixed identity instead, and a clean per-process target cache so one test's alias answers never leak
+    into the next. A test that exercises the identity itself (tests/retrieval/test_qdrant_identity.py) supplies its own."""
+    from app.retrieval import embedding_identity, qdrant_store
+
+    async def fixed():
+        return TEST_EMBEDDING_IDENTITY
+
+    monkeypatch.setattr(embedding_identity, "current_identity", fixed)
+    monkeypatch.setattr(qdrant_store, "current_identity", fixed)
+    qdrant_store.reset_identity_cache()
+    yield
+    qdrant_store.reset_identity_cache()
+
+
+@pytest.fixture(autouse=True)
+def no_real_qdrant(request, monkeypatch):
+    """A hermetic test never opens a connection to a real Qdrant.
+
+    `qdrant_store.hybrid_search` and `upsert` now consult Qdrant's aliases BEFORE they embed the query (the embedding-identity check,
+    specs/014), so a test that reaches them without a fake used to fail fast at the embedding call and now reaches the network first:
+    the client's constructor even probes the server, and a developer with Qdrant running locally would have a unit test talk to it
+    (Constitution VII: a test's outcome must not depend on which containers happen to be up). A test that wants Qdrant injects a fake with
+    `monkeypatch.setattr(qdrant_store, "get_client", ...)`; the tiers that really need it (integration, live) are exempt by marker.
+    """
+    if any(request.node.get_closest_marker(m) for m in ("integration", "llm", "e2e", "deepeval", "crawl", "sandbox")):
+        return
+    from app.retrieval import qdrant_store
+
+    def refuse():
+        raise ConnectionError(
+            "the hermetic suite never talks to a real Qdrant: inject a fake with monkeypatch.setattr(qdrant_store, 'get_client', ...)"
+        )
+
+    monkeypatch.setattr(qdrant_store, "get_client", refuse)
 
 
 @pytest.fixture(autouse=True)

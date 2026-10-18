@@ -29,7 +29,7 @@ For logical name `L` and configured identity hash `H`:
 - `ensure_collection(dim, L)` (used by `make ingest` / `make index-skills`, destructive by design): creates `L-H`, replacing an
   existing `L-H` of the same identity only, then repoints `L-live → L-H` atomically. It never touches another identity's collection.
 - `check_identity(L, *, write)`: parses the hash from the target name (a legacy target is `adopted`, trusted) and compares with the
-  configured hash; cached `EMBED_IDENTITY_CACHE_SECONDS`. `write=True` also refuses when `resolved_model` is unknown. Raises
+  configured hash; cached `EMBED_IDENTITY_CACHE_SECONDS`. An identity whose `resolved_model` is unknown hashes the alias name instead and is counted `unverified` (it is never refused for that). Raises
   `EmbeddingIdentityMismatch(collection, expected, found)` (an `AppError`-style exception with an `ErrorCode`), counted as
   `agent_embedding_identity_total{outcome}`.
 - `hybrid_search`, `upsert`, `delete_by_filter`, `count_by_filter` call it; reads for `delete_by_filter`/`count_by_filter` are not
@@ -46,10 +46,10 @@ For logical name `L` and configured identity hash `H`:
 `"embedding identity adopted (unverified): documents"`. **A warning never changes `status` or the HTTP code** (retrieval degrades,
 turns run). `checks` is unchanged.
 
-## `scripts/reembed.py` (`make reembed COLLECTION=<name>` / `python -m scripts.reembed <name> [--dry-run] [--page 256]`)
+## `scripts/reembed.py` (`make reembed COLLECTION_NAME=<name>` / `python -m scripts.reembed <name> [--dry-run] [--page 256]`)
 
 ```
-1. plan:   H' = configured identity; refuse if resolved_model unknown. Print source (target of L-live), L-H', point count.
+1. plan:   H' = configured identity. Print source (target of L-live), L-H', point count.
 2. if L-H' exists and --resume: reuse; else create L-H' with the same dense+sparse schema, dim = embedding_dim().
 3. copy:   scroll the source with payload + named vectors, page by page. For each point:
               dense'  = embed_documents([payload["text"]])   (document role, EMBED_BATCH_SIZE)

@@ -188,6 +188,9 @@ class Registry:
             self._fail(slot, f"{type(exc).__name__}: {exc}")
             return False
         slot.value = value
+        describe = getattr(value, "info", None)
+        if callable(describe):
+            slot.info.update(describe())  # what only the loaded model knows: its dimension, the revision it really read
         slot.reason = None
         slot.failures = 0
         slot.retry_at = None

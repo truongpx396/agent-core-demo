@@ -7,17 +7,26 @@ import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from functools import partial
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
 
-from ml_service import guard, health, rerank
+from ml_service import embed, guard, health, rerank
 from ml_service.metrics import Metrics
-from ml_service.registry import Registry, Slot
+from ml_service.registry import (
+    ModelSpec,
+    Registry,
+    Slot,
+    enabled_specs,
+    load_model_specs,
+)
 from ml_service.settings import Settings
 
 logger = logging.getLogger("ml_service")
 SUPERVISOR_INTERVAL_S = 1.0
+MODELS_TOML = Path(__file__).resolve().parent.parent / "models.toml"
 
 
 async def _supervise(registry: Registry, interval_s: float) -> None:
@@ -41,12 +50,22 @@ async def _stop(value: Any) -> None:
     await value.stop()
 
 
-def create_app(settings: Settings | None = None, *, loaders: dict[str, Callable[[], Any]] | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    loaders: dict[str, Callable[[], Any]] | None = None,
+    specs: list[ModelSpec] | None = None,
+) -> FastAPI:
+    """`loaders` replaces a slot's blocking loader by name and `specs` replaces models.toml, so a test drives the real lifespan,
+    registry and endpoints with fakes and no download."""
     settings = settings or Settings.from_env()
     metrics = Metrics()
+    declared = enabled_specs(load_model_specs(MODELS_TOML) if specs is None else specs, settings.models_enabled)
+    embed_specs = {s.name: s for s in declared if "embed" in s.roles}
     default_loaders: dict[str, Callable[[], Any]] = {
         "rerank": lambda: rerank.load_rerank_service(settings),
         "prompt-guard": lambda: guard.load_guard_service(settings),
+        **{name: partial(embed.load_embed_service, spec, settings) for name, spec in embed_specs.items()},
     }
     loaders = {**default_loaders, **(loaders or {})}
 
@@ -59,6 +78,9 @@ def create_app(settings: Settings | None = None, *, loaders: dict[str, Callable[
         )
         for name, roles in (("rerank", ("rerank",)), ("prompt-guard", ("screen",))):
             registry.add(Slot(name=name, roles=roles, loader=loaders[name], activate=_start, deactivate=_stop))
+        for name, spec in embed_specs.items():
+            info = {"licence": spec.licence, "file": spec.file, "revision": spec.revision}  # replaced by the loaded model's own facts
+            registry.add(Slot(name=name, roles=spec.roles, loader=loaders[name], info=info, activate=_start, deactivate=_stop))
         app.state.registry = registry
         # Load everything concurrently, tolerating failure: a model that cannot load is that model's `failed` state, not the
         # container's. (Before the split either failure stopped the whole service from starting.)
@@ -73,7 +95,9 @@ def create_app(settings: Settings | None = None, *, loaders: dict[str, Callable[
     app = FastAPI(lifespan=lifespan)
     app.state.settings = settings
     app.state.metrics = metrics
+    app.state.embed_specs = embed_specs
     app.include_router(health.router)
+    app.include_router(embed.router)
     app.include_router(rerank.router)
     app.include_router(guard.router)
     return app

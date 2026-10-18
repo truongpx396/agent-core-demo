@@ -96,6 +96,14 @@ class ReadinessResponse(BaseModel):
     checks: dict[str, bool] = Field(
         ..., description="Per-dependency reachability (app/api/health.py::check_dependencies)."
     )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Conditions worth a person's attention that do NOT make the API unready: an embedding-identity mismatch (retrieval from that "
+            "collection is refused and degrades, but turns still run), a legacy collection adopted without proof, an ML-service model "
+            "that is down. Never changes `status` or the HTTP code."
+        ),
+    )
 
 
 class BudgetStatus(BaseModel):

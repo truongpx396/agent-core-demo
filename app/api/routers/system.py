@@ -41,4 +41,6 @@ async def health_ready(response: Response) -> ReadinessResponse:
     checks = await health_checks.check_dependencies()
     ready = all(checks.values())
     response.status_code = 200 if ready else 503
-    return ReadinessResponse(status="ready" if ready else "degraded", checks=checks)
+    # Warnings never change the status or the code: an embedding-identity mismatch makes retrieval degrade, not the API unready.
+    warnings = await health_checks.readiness_warnings()
+    return ReadinessResponse(status="ready" if ready else "degraded", checks=checks, warnings=warnings)

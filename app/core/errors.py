@@ -38,6 +38,7 @@ class ErrorCode(str, Enum):
     INSUFFICIENT_CREDITS = "insufficient_credits"
     PROVIDER_BUDGET_EXCEEDED = "provider_budget_exceeded"
     MODEL_UNPRICED = "model_unpriced"
+    EMBEDDING_IDENTITY_MISMATCH = "embedding_identity_mismatch"
     THREAD_BUSY = "thread_busy"
     NO_PROGRESS = "no_progress"
     WORKER_LOST = "worker_lost"

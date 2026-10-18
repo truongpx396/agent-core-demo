@@ -20,10 +20,31 @@ from qdrant_client.models import Modifier
 
 from app.core.config import COLLECTION
 from app.retrieval import embeddings, qdrant_store
+from tests.conftest import TEST_EMBEDDING_IDENTITY
+from tests.retrieval.fake_qdrant import FakeQdrant
+
+# Every access goes through the `<collection>-live` alias and the physical collection is named after the embedding identity
+# (specs/014, qdrant_store's docstring), so what reaches the client is the alias for reads and writes and the hashed name for creation.
+IDENTITY_HASH = TEST_EMBEDDING_IDENTITY.hash8()
 
 
-class _FakeClient:
+def _live(collection=COLLECTION):
+    return qdrant_store.live_name(collection)
+
+
+def _physical(collection=COLLECTION):
+    return qdrant_store.physical_name(collection, IDENTITY_HASH)
+
+
+class _FakeClient(FakeQdrant):
+    """The shared Qdrant fake, pre-seeded with a live collection for each logical name these tests use (so the identity check finds
+    one built under the configured identity), and recording the names that reach it."""
+
     def __init__(self):
+        super().__init__()
+        for logical in (COLLECTION, "skills"):
+            self.seed(_physical(logical))
+            self.aliases[_live(logical)] = _physical(logical)
         self.recreate_calls: list[str] = []
         self.recreate_kwargs: list[dict] = []
         self.upsert_calls: list[str] = []
@@ -31,10 +52,12 @@ class _FakeClient:
         self.query_points_calls: list[str] = []
 
     async def recreate_collection(self, collection_name, **kwargs):
+        await super().recreate_collection(collection_name, **kwargs)
         self.recreate_calls.append(collection_name)
         self.recreate_kwargs.append(kwargs)
 
     async def upsert(self, collection_name, points):
+        await super().upsert(collection_name, points)
         self.upsert_calls.append(collection_name)
         self.upsert_batch_sizes.append(len(points))
 
@@ -64,12 +87,12 @@ class TestEnsureCollection:
     async def test_defaults_to_the_main_collection(self, monkeypatch):
         client = _fake_client(monkeypatch)
         await qdrant_store.ensure_collection(dim=4)
-        assert client.recreate_calls == [COLLECTION]
+        assert client.recreate_calls == [_physical()]
 
     async def test_targets_a_different_collection_when_given(self, monkeypatch):
         client = _fake_client(monkeypatch)
         await qdrant_store.ensure_collection(dim=4, collection="skills")
-        assert client.recreate_calls == ["skills"]
+        assert client.recreate_calls == [_physical("skills")]
 
     async def test_sparse_vector_config_requests_idf_scoring(self, monkeypatch):
         """The fastembed `Qdrant/bm25` model (app/retrieval/embeddings.py)
@@ -89,13 +112,13 @@ class TestUpsert:
         client = _fake_client(monkeypatch)
         point = qdrant_store.build_point(point_id="1", dense_vector=[0.1, 0.2], payload={})
         await qdrant_store.upsert([point])
-        assert client.upsert_calls == [COLLECTION]
+        assert client.upsert_calls == [_live()]
 
     async def test_targets_a_different_collection_when_given(self, monkeypatch):
         client = _fake_client(monkeypatch)
         point = qdrant_store.build_point(point_id="1", dense_vector=[0.1, 0.2], payload={})
         await qdrant_store.upsert([point], collection="skills")
-        assert client.upsert_calls == ["skills"]
+        assert client.upsert_calls == [_live("skills")]
 
     async def test_a_batch_within_the_limit_is_one_call(self, monkeypatch):
         client = _fake_client(monkeypatch)
@@ -118,32 +141,32 @@ class TestUpsert:
         await qdrant_store.upsert(points)
 
         assert client.upsert_batch_sizes == [limit, 50]
-        assert client.upsert_calls == [COLLECTION, COLLECTION]
+        assert client.upsert_calls == [_live(), _live()]
 
 
 class TestHybridSearchCollection:
     def _mock_embeddings(self, monkeypatch):
-        monkeypatch.setattr(embeddings, "embed_text", _async_embed_text)
+        monkeypatch.setattr(embeddings, "embed_query", _async_embed_text)
         monkeypatch.setattr(embeddings, "embed_sparse", lambda text: ([1], [0.5]))
 
     async def test_defaults_to_the_main_collection(self, monkeypatch):
         client = _fake_client(monkeypatch)
         self._mock_embeddings(monkeypatch)
         await qdrant_store.hybrid_search("query")
-        assert client.query_points_calls == [COLLECTION]
+        assert client.query_points_calls == [_live()]
 
     async def test_targets_a_different_collection_when_given(self, monkeypatch):
         client = _fake_client(monkeypatch)
         self._mock_embeddings(monkeypatch)
         await qdrant_store.hybrid_search("query", collection="skills")
-        assert client.query_points_calls == ["skills"]
+        assert client.query_points_calls == [_live("skills")]
 
     async def test_dense_only_degrade_path_also_respects_collection(self, monkeypatch):
         """The sparse-unavailable degrade branch (a SEPARATE query_points
         call) must target the same collection as the primary fused query —
         not silently fall back to the default COLLECTION."""
         client = _fake_client(monkeypatch)
-        monkeypatch.setattr(embeddings, "embed_text", _async_embed_text)
+        monkeypatch.setattr(embeddings, "embed_query", _async_embed_text)
 
         def broken_sparse(text):
             raise RuntimeError("sparse model unavailable")
@@ -152,7 +175,7 @@ class TestHybridSearchCollection:
 
         await qdrant_store.hybrid_search("query", collection="skills")
 
-        assert client.query_points_calls == ["skills"]
+        assert client.query_points_calls == [_live("skills")]
 
 
 class _FakePoint(SimpleNamespace):
@@ -171,7 +194,7 @@ class TestHybridSearchRerankScore:
     bad batch" apart from "actually relevant"."""
 
     def _mock_embeddings(self, monkeypatch, scores):
-        monkeypatch.setattr(embeddings, "embed_text", _async_embed_text)
+        monkeypatch.setattr(embeddings, "embed_query", _async_embed_text)
         monkeypatch.setattr(embeddings, "embed_sparse", lambda text: ([1], [0.5]))
 
         async def fake_rerank(query, texts):
@@ -225,7 +248,7 @@ class TestHybridSearchRerankScore:
         client = _fake_client(monkeypatch)
         points = self._fake_points(2)
         client.query_points = _fixed_query_points(points)
-        monkeypatch.setattr(embeddings, "embed_text", _async_embed_text)
+        monkeypatch.setattr(embeddings, "embed_query", _async_embed_text)
         monkeypatch.setattr(embeddings, "embed_sparse", lambda text: ([1], [0.5]))
 
         async def broken_rerank(query, texts):

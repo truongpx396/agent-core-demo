@@ -386,13 +386,16 @@ def _a_test_leaves_no_memories_behind(request: pytest.FixtureRequest) -> Iterato
         return
     from qdrant_client import QdrantClient
 
-    from app.core.config import COLLECTION
+    from app.retrieval.qdrant_store import live_name
     from tests.live.memories import forget_memories_not_in, memory_ids
 
+    # The ALIAS, not the logical name: the stack's collection is the physical `docs-<identity hash>` reached through `docs-live`
+    # (specs/014), so a collection literally named `docs` does not exist on a fresh stack and a scroll of it is a 404.
+    collection = live_name()
     client = QdrantClient(url=ensure_qdrant()["qdrant_url"])
-    before = memory_ids(client, COLLECTION)
+    before = memory_ids(client, collection)
     yield
-    forget_memories_not_in(client, COLLECTION, before)
+    forget_memories_not_in(client, collection, before)
 
 
 def _wait_until_ready(base_url: str, api_proc: subprocess.Popen, timeout: float = 120.0) -> None:

@@ -108,7 +108,7 @@ Stop one model (set a bad `file` in a scratch registry): `/health/models` shows 
 
 Follow `contracts/gateway-aliases.md` §2 steps 1–6 on a scratch Qdrant volume. Expect: after the proxy restart `GET /health/ready`
 returns `warnings` naming the mismatch; a question gets no retrieved context (and `agent_embedding_identity_total{outcome="mismatch"}`
-rises); after `make reembed COLLECTION=documents` the same question is answered with citations again; **zero source files changed**.
+rises); after `make reembed COLLECTION_NAME=documents` the same question is answered with citations again; **zero source files changed**.
 
 ## 3. Story 3 — the routing seam
 

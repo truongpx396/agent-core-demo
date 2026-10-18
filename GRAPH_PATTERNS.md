@@ -1,6 +1,6 @@
 # LangGraph patterns
 
-Forty-nine patterns the agent in `app/agent/` applies, each with the bug or gotcha that motivated it. Numbers are stable: code and tests cite them ("pattern 43"), and a number
+Fifty patterns the agent in `app/agent/` applies, each with the bug or gotcha that motivated it. Numbers are stable: code and tests cite them ("pattern 43"), and a number
 is never reused or shifted. **Bug** marks a real defect that was found and fixed; **Gap** marks something disclosed and left open. Patterns that are not about the graph
 (spend, billing, repository lessons) moved out and left their numbers behind: see [51-66](#5166-moved).
 
@@ -9,7 +9,7 @@ is never reused or shifted. **Bug** marks a real defect that was found and fixed
 | Agent loop | 1–7, 9, 10, 34, 35, 39 |
 | Approval and governance | 8, 15, 36 |
 | Tenant security | 12, 17, 25, 30, 32 |
-| Retrieval, memory, caching | 2, 13, 18–20, 22, 24, 33, 41 |
+| Retrieval, memory, caching | 2, 13, 18–20, 22, 24, 33, 41, 67 |
 | Tools and data | 21, 27, 28, 31, 45, 46, 50 |
 | Reliability and scaling | 16, 43, 49, and [exactly-once](#extending-further) |
 | Observability | 11, 14, 37, 38 |
@@ -337,6 +337,19 @@ These are not patterns of the graph, so they live elsewhere. Their numbers are k
 | 59, 60: a settings error must not print its secret; re-applying a migration in a test | [`ENGINEERING_PATTERNS.md`](ENGINEERING_PATTERNS.md) |
 | 52-56, 61, 65, 66: the credit wallet, the webhooks, the export, the reconciliation, the provider adapters | [`packages/billing/docs/PATTERNS.md`](packages/billing/docs/PATTERNS.md) |
 
+### 67. Embedding roles and identity: a question is not a passage, and the same size is not the same space
+Retrieval embeds two different things, a question and a stored passage, and one function (`embed_text`) used to serve both in seven places. The model in use, nomic-embed-text-v1.5, says on its card that its input "must include" `search_query: ` for a question and `search_document: ` for a passage; the app never sent either. Fixing that is not a prefix setting, because **changing what you embed changes the space**, and Qdrant cannot tell: two models of the same dimension (nomic and gte-modernbert-base are both 768-d) accept each other's queries and return confident nonsense with no error anywhere.
+- **Two roles, old names deleted.** `embed_query` / `embed_document` / `embed_documents` replace `embed_text` / `embed_texts` (an `ImportError`, not a deprecation), and an AST test fails if any module under `app/` or `scripts/` calls the raw client around them. The semantic cache embeds with the query role on both sides, because it compares questions with questions. `EMBED_QUERY_PREFIX` / `EMBED_DOCUMENT_PREFIX` default to empty, so the text sent is byte-identical to before; whether a prefix helps is measured (`make model-eval`), not assumed.
+- **Identity in the collection's name.** The identity is (the model the `embed` alias resolves to, the vector size, both prefixes, an operator label `EMBED_MODEL_REVISION`), hashed to 8 hex digits and written into the physical collection name (`docs-1a2b3c4d`). Every read and write goes through the alias `docs-live` and compares the suffix with the configured identity (`qdrant_store.check_identity`, cached `EMBED_IDENTITY_CACHE_SECONDS`). A mismatch is **refused**: a read degrades exactly like a retrieval outage (`retrieve_context` already absorbs one and counts it), a write fails, `agent_embedding_identity_total{outcome="mismatch"}` counts every refused call, `GET /health/ready` names the collection in `warnings` without turning the API unready, and the alert `EmbeddingIdentityMismatch` fires. The refusal comes before the query is embedded, so no spend is wasted. A data-subject delete and a count still work on a mismatched collection.
+- **The swap is the point of the alias.** `scripts/reembed.py` (`make reembed COLLECTION_NAME=docs`) builds `docs-<new hash>` beside the live collection from the text each point already stores (`payload["text"]` is exactly what was embedded), keeping every id, the payload verbatim and the sparse vector as it was, verifies the ids and that a sample finds itself, then repoints the alias in ONE request. Verified against a real Qdrant (1.18.3): a concurrent search never fails across 40 swaps, a write through the alias lands in the target, and `scroll(with_vectors=True)` returns the named sparse vector. The old collection is never deleted by the script. A failure at any earlier step leaves the old one serving.
+- **The answer cache follows the identity.** Its Redis index and key prefix carry the hash, so a new identity gets a fresh, correctly sized index and old entries are never read (they expire by TTL). A dimension change would otherwise have made the old index reject every vector.
+- **`/v1/embeddings` on the ML service** speaks the OpenAI shape, so pointing the gateway's `embed` alias at an ONNX model served there is configuration only. The server never applies a prefix (the request cannot say whether a text is a question or a passage); `/v1/models` echoes what each model expects as documentation. Checked against the official `openai` SDK (whose default really is `encoding_format=base64`) and the LangChain client this app uses. Measured: the container idles at 781 MiB with bge-small enabled (574 MiB before) and reaches 1,069 MiB under 100 concurrent requests, against a 2 GiB production limit.
+- **Bug found by the tests while building it:** the identity check reaches Qdrant *before* the query is embedded, so a hermetic test that used to fail fast at the embedding call began opening a real connection (the client's constructor probes the server; a developer with Qdrant running would have a unit test talk to it). An autouse guard now refuses a real Qdrant connection in the default suite (Constitution VII). And `make reembed COLLECTION=skills` would have exported `COLLECTION=skills` to the script, which is also the Settings variable naming the main collection; the variable is `COLLECTION_NAME`.
+- **Gap: a pre-existing collection cannot be verified.** One from before this existed is a physical collection named exactly `docs` with no alias. It is *adopted* (an alias is created, nothing is moved), the configured identity is trusted, a warning and `outcome="adopted"` say so, and the first `make reembed` replaces it with a verifiable one. An operator who changes the model *and* upgrades in the same step defeats this.
+- **Gap: the resolver is the weak link.** `model_resolver` asks LiteLLM `/model/info` which model an alias is. Where nothing answers (a deployment pointing straight at an OpenAI-compatible server, which is how the live test tier runs), the alias name stands in for the model and the check is counted `unverified`: stable, but it cannot see the same name re-pulled to different weights, which is what `EMBED_MODEL_REVISION` is for.
+- **Gap: writes during a re-embed are not supported.** They are detected, not lost: the run re-reads the source before swapping and stops (exit 4) if it changed. The milliseconds between that read and the alias request remain.
+- **Gap: the default stays the default.** The app's `embed` is still nomic through Ollama; prefixes are off; the ML service serves bge-small but nothing points at it. Whether to switch is a decision for the evaluation harness, with a re-embed afterwards.
+
 ## Graph Flow
 
 ```
@@ -476,6 +489,8 @@ use, and is deliberately its own PR: it is the only change in this series with a
 - **A multi-domain runtime** (partly done, pattern 49). The API routes per request via `X-Domain`, but one process still builds one graph. Serving several would need a per-domain graph registry (the system prompt is no longer a per-thread concern, so that part is already done).
 
 ### Known gaps
+
+- **A pre-existing vector collection is trusted, not verified** (*read from code, reproduced in tests*). `qdrant_store.ensure_live` adopts a collection created before embedding identities existed; nothing records what it was made with. Pattern 67.
 
 From reviewing the as-built system against the constitution; each notes how it was established, and a fix PR
 deletes it from this list.

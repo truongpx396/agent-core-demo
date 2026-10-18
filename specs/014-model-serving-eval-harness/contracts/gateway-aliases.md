@@ -61,7 +61,7 @@ Dev / prod, an alternative to the Ollama (dev) or hosted (prod) entry — **not 
 Procedure to adopt (documented, tested): (1) `make model-eval` says the candidate wins; (2) set the entry above;
 (3) set `EMBED_QUERY_PREFIX` / `EMBED_DOCUMENT_PREFIX` to what the model needs (`GET /v1/models` → `needs_prefix`);
 (4) restart the proxy; (5) the app now reports an identity **mismatch** for every existing collection and the answer cache
-(this is the guard working); (6) run `make reembed COLLECTION=…` for each; (7) bake, then delete the old physical collections.
+(this is the guard working); (6) run `make reembed COLLECTION_NAME=…` for each; (7) bake, then delete the old physical collections.
 
 **To verify with a real proxy (manual; `quickstart.md` step 7):** that LiteLLM forwards `input` as a list, accepts
 `encoding_format=base64` from the app's SDK, and returns usage; with `drop_params: true` a dropped parameter must not change the

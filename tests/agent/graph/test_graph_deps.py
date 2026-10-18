@@ -64,7 +64,7 @@ async def test_an_injected_interrupt_decides_a_mandatory_approval_without_pausin
     async def fake_upsert(points):
         upserts.append(points)
 
-    monkeypatch.setattr(ecorp_store, "embed_text", fake_embed_text)
+    monkeypatch.setattr(ecorp_store, "embed_document", fake_embed_text)
     monkeypatch.setattr(qdrant_store, "upsert", fake_upsert)
 
     payloads = []

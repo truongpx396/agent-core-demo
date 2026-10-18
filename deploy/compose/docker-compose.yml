@@ -163,8 +163,13 @@ services:
       dockerfile: docker/ml-service.Dockerfile
     ports:
       - "8083:80"
+    environment:
+      # Which text models (docker/ml-service/models.toml) to load and the embedding endpoint's ceilings; empty = the defaults.
+      ML_MODELS_ENABLED: ${ML_MODELS_ENABLED:-}
+      ML_EMBED_MAX_ITEMS: ${ML_EMBED_MAX_ITEMS:-256}
+      ML_EMBED_MAX_CHARS: ${ML_EMBED_MAX_CHARS:-8000}
     volumes:
-      - ml-service:/home/appuser/.cache   # model cache (both models) — avoids re-downloading on every restart
+      - ml-service:/home/appuser/.cache   # model cache (every model) — avoids re-downloading on every restart
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:80/health"]
       interval: 10s

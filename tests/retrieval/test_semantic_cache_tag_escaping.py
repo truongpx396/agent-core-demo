@@ -61,14 +61,14 @@ def client(monkeypatch):
     recording = _RecordingClient()
 
     async def no_index(_client):
-        return None
+        return semantic_cache._Namespace("idx:test", "cache:test:")
 
     async def fake_embed(_text):
         return [0.0, 0.0]
 
     monkeypatch.setattr(semantic_cache, "_get_client", lambda: recording)
     monkeypatch.setattr(semantic_cache, "_ensure_index", no_index)
-    monkeypatch.setattr(semantic_cache, "embed_text", fake_embed)
+    monkeypatch.setattr(semantic_cache, "embed_query", fake_embed)
     return recording
 
 
