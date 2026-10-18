@@ -38,10 +38,16 @@ class MeteredCall:
     priced: pricing.PricedCall
 
 
-async def metered_invoke(llm, messages, *, config, kind: str, model_alias: str) -> MeteredCall:
+async def metered_invoke(llm, messages, *, config, kind: str, model_alias: str, invoke_model: str | None = None) -> MeteredCall:
     """`config` is the LangGraph node config (None when a test calls a node directly, in which
-    case no identity is sent and no event is written: there is no tenant to meter to)."""
-    response = await llm.ainvoke(messages, **gateway.identity_from_config(config))
+    case no identity is sent and no event is written: there is no tenant to meter to).
+
+    `invoke_model` is the gateway alias to call INSTEAD of the one `llm` was built with (a per-call `model=` keyword, which the chat client
+    sends in place of its default). It is for the routing seam only (specs/014) and is passed together with `model_alias` set to the same
+    value, so the call is priced and recorded as the model that served it. Left `None`, nothing is added to the call: the request is
+    exactly what it was before this parameter existed."""
+    override = {} if invoke_model is None else {"model": invoke_model}
+    response = await llm.ainvoke(messages, **override, **gateway.identity_from_config(config))
     usage = getattr(response, "usage_metadata", None) or {}
     priced = await pricing.price_call(model_alias, usage)
     configurable = (config or {}).get("configurable") or {}

@@ -40,8 +40,9 @@ def orphan_tool_call_ids(messages):
     ]
 
 
-def scripted_llm(respond, seen=None):
-    """A fake chat model whose reply is a function of its input; records every input in `seen`.
+def scripted_llm(respond, seen=None, kwargs_seen=None):
+    """A fake chat model whose reply is a function of its input; records every input in `seen`, and the per-call keywords it was given
+    (the identity headers, a per-call `model=` from the routing seam) in `kwargs_seen`.
     disable_streaming=True: under astream_events, GenericFakeChatModel's stream path raises
     "No generations found in stream" for a tool-call-only AIMessage."""
 
@@ -49,6 +50,8 @@ def scripted_llm(respond, seen=None):
         def _generate(self, messages, stop=None, run_manager=None, **kwargs):
             if seen is not None:
                 seen.append(list(messages))
+            if kwargs_seen is not None:
+                kwargs_seen.append(dict(kwargs))
             return ChatResult(generations=[ChatGeneration(message=respond(messages))])
 
         def bind_tools(self, tools, **kwargs):
@@ -57,9 +60,9 @@ def scripted_llm(respond, seen=None):
     return _Model(messages=iter([]), disable_streaming=True)
 
 
-def queue_llm(*replies, seen=None):
+def queue_llm(*replies, seen=None, kwargs_seen=None):
     queue = list(replies)
-    return scripted_llm(lambda _messages: queue.pop(0), seen)
+    return scripted_llm(lambda _messages: queue.pop(0), seen, kwargs_seen)
 
 
 class Domain:

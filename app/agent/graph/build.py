@@ -7,9 +7,9 @@
   is `build_graph` with that profile.
 
 Topology, in order: `validate_input -> moderate_input -> [check_semantic_cache -> (miss)
-[compact_history ->]] retrieve_context -> agent <-> tools`, then `check_output`, which retries,
+[compact_history ->]] [route_model ->] retrieve_context -> agent <-> tools`, then `check_output`, which retries,
 gives up, or ends (through `[suggest_followups] || [write_semantic_cache]`, in parallel). Moderation comes
-before anything that spends: a refused or cache-hit turn pays for no compaction (pattern 25).
+before anything that spends: a refused or cache-hit turn pays for no compaction (pattern 25), and none asks the model router either (pattern 68).
 GRAPH_PATTERNS.md "Graph Flow" draws it.
 
 `GraphDeps` bundles the swappable external clients, built once here and threaded into the node
@@ -55,6 +55,7 @@ from app.agent.graph.core import (
 )
 from app.agent.graph.followups import make_suggest_followups_node
 from app.agent.graph.hitl import make_human_approval_node, route_after_approval
+from app.agent.graph.model_route import make_route_model_node
 from app.agent.graph.retrieval import make_retrieve_context_node
 from app.agent.graph.retry import (
     make_no_answer_fallback_node,
@@ -159,15 +160,19 @@ class GraphProfile:
     include_followups: bool = True
     include_compaction: bool = True
     enforce_citations: bool = True
+    # `route_model` (specs/014): may send a turn to the stronger model. On for the conversation; off for a nested run, which has its own
+    # model and budgets and where the user's message is not the delegated task.
+    include_router: bool = True
 
 
 FULL_PROFILE = GraphProfile()
 
-# A nested, one-shot subagent run (pattern 46). The five omitted nodes are pure overhead (or
+# A nested, one-shot subagent run (pattern 46). The omitted stages are pure overhead (or
 # worse) here:
 # - check_semantic_cache / write_semantic_cache: a subagent run shared the top-level
 #   conversation's own cache (keyed by tenant+principal), risking a cross-contaminated hit in
 #   either direction.
+# - route_model: a nested run uses the specialist's own model and the parent's router never saw the delegated task.
 # - suggest_followups: a full extra LLM call whose result the caller simply discarded.
 # - compact_history / context_window_exceeded: provably inert, not just unlikely. Compaction only
 #   fires past HISTORY_TOKEN_CEILING (24000), but a subagent run is hard-capped at
@@ -181,6 +186,7 @@ SUBAGENT_PROFILE = GraphProfile(
     include_followups=False,
     include_compaction=False,
     enforce_citations=False,
+    include_router=False,
 )
 
 
@@ -338,9 +344,12 @@ def build_graph(
     if profile.include_followups:
         # Same: a tool-bound client asked a plain question just answers it.
         add("suggest_followups", make_suggest_followups_node(llm_client, model_alias=model_alias))
+    if profile.include_router:
+        add("route_model", make_route_model_node())
 
     # Where each stage hands off when the optional ones after it are absent.
-    after_cache_miss = "compact_history" if profile.include_compaction else "retrieve_context"
+    before_retrieval = "route_model" if profile.include_router else "retrieve_context"
+    after_cache_miss = "compact_history" if profile.include_compaction else before_retrieval
     after_moderation = "check_semantic_cache" if profile.include_cache else after_cache_miss
     # What runs once an answer stands. Neither step needs the other (the cache write reads the
     # answer and its citations; the follow-ups only add `followups`), so they are one parallel
@@ -380,8 +389,14 @@ def build_graph(
             {"check_output": "check_output", "compact_history": after_cache_miss},
         )
     if profile.include_compaction:
-        builder.add_conditional_edges("compact_history", route_after_compaction)
+        builder.add_conditional_edges(
+            "compact_history",
+            route_after_compaction,
+            {"retrieve_context": before_retrieval, "context_window_exceeded": "context_window_exceeded"},
+        )
         builder.add_edge("context_window_exceeded", END)
+    if profile.include_router:
+        builder.add_edge("route_model", "retrieve_context")
 
     builder.add_edge("retrieve_context", "agent")
     builder.add_conditional_edges("agent", domain_should_continue)

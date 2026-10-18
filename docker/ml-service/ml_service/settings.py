@@ -5,6 +5,7 @@ Every name that existed before the package split keeps its name and default, so 
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 DEFAULT_RERANK_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
 # gravitee-io's ONNX port of meta-llama/Llama-Prompt-Guard-2-22M. NOT the original meta-llama/ repo: that one is gated under the
@@ -15,6 +16,8 @@ DEFAULT_GUARD_REPO = "gravitee-io/Llama-Prompt-Guard-2-22M-onnx"
 GUARD_MODEL_FILE = "model.quant.onnx"
 GUARD_MAX_SEQ_LEN = 512  # this model's own max_position_embeddings (config.json)
 GUARD_LABELS = {0: "BENIGN", 1: "MALICIOUS"}  # this model's own config.json id2label
+# Where `head-<model>.npz/json` are read: beside models.toml in the image (/app/heads), overridable so an operator can mount their own.
+DEFAULT_HEAD_DIR = Path(__file__).resolve().parent.parent / "heads"
 
 
 @dataclass(frozen=True)
@@ -39,6 +42,11 @@ class Settings:
     embed_max_items: int = 256
     embed_max_chars: int = 8000
     embed_batch_size: int = 32
+    # The classifier's bounds. The deadline is the time one model may take before the request moves to the next one (shorter than the app's
+    # own timeout so the app's is a backstop); a request over the character limit is rejected, never truncated.
+    classify_max_chars: int = 4000
+    classify_deadline_ms: float = 250.0
+    router_head_dir: Path = DEFAULT_HEAD_DIR
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -57,4 +65,7 @@ class Settings:
             embed_max_items=int(env.get("ML_EMBED_MAX_ITEMS", "256")),
             embed_max_chars=int(env.get("ML_EMBED_MAX_CHARS", "8000")),
             embed_batch_size=int(env.get("ML_EMBED_BATCH_SIZE", "32")),
+            classify_max_chars=int(env.get("ML_CLASSIFY_MAX_CHARS", "4000")),
+            classify_deadline_ms=float(env.get("ML_CLASSIFY_DEADLINE_MS", "250")),
+            router_head_dir=Path(env["ROUTER_HEAD_DIR"]) if env.get("ROUTER_HEAD_DIR") else DEFAULT_HEAD_DIR,
         )

@@ -141,6 +141,10 @@ services:
       LLM_API_BASE: ${LLM_API_BASE}
       LLM_API_KEY: ${LLM_API_KEY}
       LLM_CHAT_MODEL: ${LLM_CHAT_MODEL}
+      # The escalation alias (`chat-strong`). Unset = the same as `chat`, so the proxy always starts; see deploy/env/prod.env.example.
+      LLM_STRONG_CHAT_MODEL: ${LLM_STRONG_CHAT_MODEL:-${LLM_CHAT_MODEL}}
+      LLM_STRONG_API_BASE: ${LLM_STRONG_API_BASE:-${LLM_API_BASE}}
+      LLM_STRONG_API_KEY: ${LLM_STRONG_API_KEY:-${LLM_API_KEY}}
       LLM_EMBED_MODEL: ${LLM_EMBED_MODEL}
       DATABASE_URL: postgresql://langfuse:${POSTGRES_PASSWORD}@postgres:5432/litellm
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}

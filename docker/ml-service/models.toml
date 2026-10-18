@@ -1,4 +1,4 @@
-# The text models this service can serve for the embedding endpoint (and, from the routing change, the classifier).
+# The text models this service can serve: the embedding endpoint (`embed`) and the routing classifier (`classify`).
 # specs/014 data-model.md section 8, contracts/ml-service.md.
 #
 # Every entry needs a FULL 40-hex commit `revision` (a branch moves under a running service and silently changes what a model returns),
@@ -6,14 +6,16 @@
 # `needs_prefix` is documentation for the operator, echoed by GET /v1/models: THE SERVER NEVER APPLIES A PREFIX (the request cannot say
 # whether a text is a question or a passage; the app prepends EMBED_QUERY_PREFIX / EMBED_DOCUMENT_PREFIX).
 #
-# Only `bge-small-en-v1.5` loads by default. The others load when named in ML_MODELS_ENABLED (comma list), which also overrides `enabled`.
+# `bge-small-en-v1.5` and `all-MiniLM-L6-v2` load by default: they are the routing classifier's primary and fallback, IN THIS ORDER (the
+# first model with the `classify` role is the primary; a head is trained per model, see heads/README.md). A model with several roles is
+# loaded once. `gte-modernbert-base-int8` loads only when named in ML_MODELS_ENABLED (comma list), which also overrides `enabled`.
 # The default files are the fp32 ones: on the CPU this was measured on, fastembed's int8 variants were SLOWER than fp32 (research.md B4).
 # `gte-modernbert-base` ships only a quantized int8 file small enough to be worth serving; measure it with `make model-eval` on the CPU
 # you will actually run it on before relying on it.
 
 [[model]]
 name = "bge-small-en-v1.5"
-roles = ["embed"]
+roles = ["embed", "classify"]
 repo = "BAAI/bge-small-en-v1.5"
 file = "onnx/model.onnx"
 revision = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
@@ -27,7 +29,7 @@ needs_prefix = { query = "Represent this sentence for searching relevant passage
 
 [[model]]
 name = "all-MiniLM-L6-v2"
-roles = ["embed"]
+roles = ["embed", "classify"]
 repo = "sentence-transformers/all-MiniLM-L6-v2"
 file = "onnx/model.onnx"
 revision = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
@@ -36,7 +38,6 @@ normalize = true
 max_length = 256
 pad_token = "[PAD]"
 licence = "Apache-2.0"
-enabled = false
 needs_prefix = { query = "", document = "" }
 
 [[model]]

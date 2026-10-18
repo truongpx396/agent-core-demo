@@ -44,9 +44,11 @@ call  = await metering.metered_invoke(llm, messages, config=config, kind=kind, m
   `alias = model_alias` and `invoke_model=None`. It does not set `model_route` (the turn stays "strong" for accounting; the next
   `agent()` call in the same turn tries strong again and may fall back again, each counted — bounded by the existing iteration
   ceiling).
-- `STRONG_UNREACHABLE` = `openai.APIConnectionError`, `openai.APITimeoutError`, and `openai.APIStatusError` with status 502, 503
-  or 504. **Excluded:** `provider_budget_exceeded` (the gateway's budget stop, recognised by error `type`, never retried), every
-  4xx, and any error after a response began.
+- `STRONG_UNREACHABLE` = `openai.APIConnectionError`, `openai.APITimeoutError`, and `openai.APIStatusError` with **any 5xx** status.
+  A first draft listed 502, 503 and 504; **a real LiteLLM (`main-stable`) in front of an unreachable upstream answers HTTP 500**
+  (`litellm.APIConnectionError: … Cannot connect to host`), and an upstream that is up but lacks the model also answers 500, so that
+  list would never have fired for the failure it exists for. **Excluded:** `provider_budget_exceeded` (the gateway's budget stop,
+  recognised by error `type`, never retried, even when it arrives as a 5xx) and every 4xx (the strong model was reached and refused).
 - Compaction (`compact_history`) and follow-ups keep the local alias: they are not the answer.
 
 ## Invariants the tests pin

@@ -68,6 +68,26 @@ def test_a_model_that_is_down_while_the_ml_service_is_up_has_an_alert():
     assert rules["MlServiceModelDown"]["labels"]["severity"] in {"warning", "critical"}
 
 
+def test_a_classifier_that_has_been_on_its_fallback_for_a_while_has_an_alert():
+    """The fallback keeps routing working, which is exactly why a long-dead primary would otherwise go unnoticed."""
+    rules = {rule["alert"]: rule for rule in _rules()}
+
+    assert "RouterClassifierOnFallback" in rules
+    assert 'ml_classifier_serving{served_by="fallback"}' in rules["RouterClassifierOnFallback"]["expr"]
+    assert rules["RouterClassifierOnFallback"]["for"] == "15m"
+    assert rules["RouterClassifierOnFallback"]["labels"]["severity"] in {"warning", "critical"}
+
+
+def test_an_escalated_turn_that_fell_back_to_the_local_model_has_an_alert():
+    """The person still got an answer, so nothing else would say that every escalated turn is running on the model it was meant to leave."""
+    rules = {rule["alert"]: rule for rule in _rules()}
+
+    assert "ModelRouteStrongFailing" in rules
+    assert 'agent_model_route_total{outcome="strong_failed_fell_back"}' in rules["ModelRouteStrongFailing"]["expr"]
+    assert rules["ModelRouteStrongFailing"]["for"] == "10m"
+    assert rules["ModelRouteStrongFailing"]["labels"]["severity"] in {"warning", "critical"}
+
+
 def test_a_worker_pool_that_answers_nothing_has_an_alert():
     rules = {rule["alert"]: rule for rule in _rules()}
 

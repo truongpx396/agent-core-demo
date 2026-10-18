@@ -47,8 +47,10 @@ def test_health_is_still_plain_liveness_and_health_models_lists_every_model_read
     body = httpx.get(f"{ml_service_url}/health/models", timeout=10).json()
 
     assert body["status"] == "ok"
-    # the two models this service always had, plus the one text model enabled by default (the embedding endpoint)
-    assert {name: m["state"] for name, m in body["models"].items()} == {"rerank": "ready", "prompt-guard": "ready", "bge-small-en-v1.5": "ready"}
+    # the two models this service always had, plus the two text models enabled by default (the embedding endpoint and the classifier)
+    assert {name: m["state"] for name, m in body["models"].items()} == {
+        "rerank": "ready", "prompt-guard": "ready", "bge-small-en-v1.5": "ready", "all-MiniLM-L6-v2": "ready"
+    }
 
 
 def test_metrics_exposes_the_per_model_state(ml_service_url):

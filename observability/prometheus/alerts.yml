@@ -491,3 +491,34 @@ groups:
           description: >-
             ml_model_state{model="{{ $labels.model }}"} has been 0 for 5m: the model failed to load or failed at run time.
             GET /health/models on the ML service names the reason and when it will be retried.
+
+      # The routing classifier's primary model is down and its fallback is answering. Routing still works (the fallback has its own
+      # head), so nothing else would tell a person that the preferred model has been out for a while. ml_classifier_serving is computed
+      # when Prometheus scrapes, so this is right during a quiet hour too. 15m is long enough to ride out a restart and the registry's
+      # first retries (backoff 5 s doubling to 300 s) and short enough to be noticed within the hour; a primary that recovers returns to
+      # being the primary by itself.
+      - alert: RouterClassifierOnFallback
+        expr: ml_classifier_serving{served_by="fallback"} == 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The routing classifier has been answering from its fallback model for 15m"
+          description: >-
+            ml_classifier_serving{served_by="fallback"} has been 1 for 15m: the primary classifier model is not ready or has no usable
+            head. GET /health/models on the ML service names which, and when a failed model will be retried.
+
+      # The model router sent turns to the stronger model and the call to it failed to reach a model, so the turn was repeated on the
+      # local model (specs/014, GRAPH_PATTERNS.md pattern 68). The person got an answer, which is why nothing else would tell an operator
+      # that every escalated turn is quietly running on the model it was meant to escape. Any sustained rate counts: the outcome is only
+      # recorded when the strong alias was actually asked for.
+      - alert: ModelRouteStrongFailing
+        expr: sum(rate(agent_model_route_total{outcome="strong_failed_fell_back"}[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Escalated turns are falling back to the local model"
+          description: >-
+            agent_model_route_total{outcome="strong_failed_fell_back"} has been increasing for 10m: the strong alias (chat-strong) is
+            unreachable or the gateway is returning a 5xx for it (a real LiteLLM answers 500 for an unreachable upstream), so turns the router sent there ran on the local model instead.
