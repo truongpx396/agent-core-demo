@@ -561,14 +561,20 @@ def ensure_ml_service() -> dict[str, str]:
         url = f"http://{host}:{port}"
         # Generous retry budget, mirroring docker-compose.yml's own
         # ml-service healthcheck `start_period` comment: covers a cold
-        # pull of BOTH models on first startup.
-        for attempt in range(90):
+        # pull of EVERY model on first startup. The service answers /health only
+        # once its lifespan has finished, and that includes the downloads. It was
+        # 90 s when there were two models (reranker, prompt guard); spec 014 adds
+        # bge-small (embeddings) and all-MiniLM (the classifier's fallback), and a
+        # cold start of the four measured 101 s on a quiet machine, so 90 s failed
+        # every fixture user at once ("never became healthy") while the container
+        # was in fact fine and became healthy moments later.
+        for attempt in range(300):
             try:
                 if httpx.get(f"{url}/health", timeout=2).status_code == 200:
                     break
             except Exception:  # noqa: BLE001,S110 - retry until the timeout below (same idiom as ensure_qdrant/ensure_postgres above, just checked outside the except since a non-200 response here doesn't raise)
                 pass
-            if attempt == 89:
+            if attempt == 299:
                 raise RuntimeError(f"ml-service never became healthy: {url}/health")
             time.sleep(1)
         return {
