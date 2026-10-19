@@ -39,7 +39,9 @@ MODEL = head.ModelInfo("bge-small-en-v1.5", "BAAI/bge-small-en-v1.5", "onnx/mode
 def env(tmp_path, monkeypatch):
     """A temporary datasets root holding a copy of the committed (verified) route set, an empty outcomes directory and a classifier declaration."""
     root = tmp_path / "datasets"
-    shutil.copytree(ds.DATASETS_ROOT / "route-domains", root / "route-domains")
+    # Without `outcomes/`: that directory is gitignored operator state (a real `make router-label` run leaves a file there), and a test that read it would pass
+    # in CI and fail on a machine where someone had labelled the prompts.
+    shutil.copytree(ds.DATASETS_ROOT / "route-domains", root / "route-domains", ignore=shutil.ignore_patterns("outcomes"))
     (tmp_path / "cand").mkdir()
     (tmp_path / "cand" / "classifier.toml").write_text(TOML)
     monkeypatch.setattr(ds, "DATASETS_ROOT", root)
@@ -332,3 +334,35 @@ def test_an_in_process_run_scores_with_the_head_file_and_warns_that_it_is_not_ac
     assert report["quality"]["accuracy"]["value"] > 0.9 and report["quality"]["apgr"]["value"] > 0.5
     assert any("NOT accepted" in w for w in report["warnings"])
     assert report["candidate"]["identity"].startswith("head:")
+
+
+def write_noisy_outcomes(env, shift=0.03):
+    """The real situation: both models score about the same, with judge noise on a coarse scale, so the strong model's mean advantage is tiny."""
+    rng = np.random.default_rng(1)
+    scale = [0.5, 0.7, 0.8, 0.9, 1.0]
+    rows = [routing.Outcome(p["id"], float(rng.choice(scale)), float(np.clip(rng.choice(scale) + shift, 0, 1)), "judge") for p in env.prompts]
+    routing.write_outcomes(routing.outcomes_dir(env.version) / "chat-strong.jsonl", rows)
+
+
+def test_outcomes_that_cannot_separate_the_models_make_the_report_invalid_and_say_why(env, tmp_path, capsys):
+    """Found by the first real labelling run (the strong model beat the local one by +0.033 on a judge's coarse scale): the controls could not tell
+    a perfect router from a random one, and the report said only "a control did not come out as expected". It must say it is the outcomes."""
+    write_noisy_outcomes(env)
+    out = tmp_path / "reports"
+
+    code = cli.main(run_args("constant", "--out", str(out)))
+
+    report = json.loads(next(out.glob("*.json")).read_text())
+    assert code == cli.CONTROL_FAILED and report["status"] == "invalid"
+    assert any(c["name"] in ("random-router", "constant") and not c["ok"] for c in report["controls"])
+    why = [w for w in report["warnings"] if w.startswith("WHY:")]
+    assert len(why) == 1 and "cannot tell even a PERFECT router from a random one" in why[0] and "property of the labelled outcomes" in why[0]
+
+
+def test_outcomes_that_do_separate_the_models_get_no_such_warning(env, tmp_path):
+    write_outcomes(env)  # a gap of 0.6 on half the prompts
+    out = tmp_path / "reports"
+
+    assert cli.main(run_args("constant", "--out", str(out))) == cli.OK
+
+    assert not any(w.startswith("WHY:") for w in json.loads(next(out.glob("*.json")).read_text())["warnings"])

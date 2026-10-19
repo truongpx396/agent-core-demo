@@ -30,7 +30,10 @@ Kinds: `embedding`, `reranker`, `screen` (the prompt-injection screen) and `clas
 ## How to read a report
 
 1. **`warnings`.** `PROVISIONAL` means part of the evaluation set has not been read by a person (see below). `INVALID` means a control
-   failed. Stop on either.
+   failed. Stop on either. A `WHY:` warning next to `INVALID` on a `classifier` run means the controls failed because of the labelled
+   outcomes, not the harness: the strong model scored so little above the local one on average that even a perfect router cannot be told
+   from a random one (the first real labelling run: +0.032), so no claim about routing quality can be made until the prompts, the judge
+   or the model pair give the strong model a clear win somewhere.
 2. **`controls`.** The baseline against itself must come out indistinguishable; a useless model (random vectors, a screen that flags
    nothing) must come out worse. If they do not, the harness is wrong, and a confident-looking number from a wrong harness is the
    worst outcome.
