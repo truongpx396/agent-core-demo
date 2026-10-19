@@ -1,59 +1,22 @@
-# Routing classifiers (specs/014 Story 3). A candidate here is an EMBEDDING MODEL; the head trained over it (`make router-head-train`) is a file
-# beside it, not a candidate of its own, because a head is bound to exactly one model revision and has no meaning without it.
+# Routing classifiers (specs/014 Story 3). The only declared candidate is the running ML service's /classify, which is what the app actually gets.
 #
-# `source.repo`, `source.file` and `source.revision` are the SAME as the entry of that name in docker/ml-service/models.toml
-# (tests/scripts/model_eval/test_declared_candidates.py pins it), and `source.model` is the registry name the head is trained for. The two
-# classify-role models are the service's primary and fallback, in that order. The degenerate controls (`constant`, which never escalates, and
-# `random-router`) are not declared: they are built into the runner.
+# The degenerate controls (`constant`, which never escalates, and `random-router`) are not declared: they are built into the runner.
+# `baseline = true` marks the candidate that is what the app actually gets; the harness requires exactly one per kind. It does not mean a
+# baseline FILE exists (see below).
 #
-# `baseline = true` marks the model the service uses first. There is NO recorded baseline for this kind, and there will not be one until a
-# person accepts a head: nothing is in use today, so every run says "no baseline recorded" and compares nothing. That is correct, not an omission.
-
-[[candidate]]
-name = "bge-small-en-v1.5"
-kind = "classifier"
-path = "inprocess"
-licence = "MIT"
-baseline = true
-notes = "The classifier's primary model (33M parameters, 384-d). Evaluated with a head FILE from var/model_eval/heads/, so an unaccepted head can be read before a person accepts it."
-
-[candidate.source]
-repo = "BAAI/bge-small-en-v1.5"
-file = "onnx/model.onnx"
-revision = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
-model = "bge-small-en-v1.5"
-
-[candidate.prepare]
-pooling = "cls"
-normalize = true
-max_length = 512
-pad_token = "[PAD]"
-
-[[candidate]]
-name = "all-minilm-l6-v2"
-kind = "classifier"
-path = "inprocess"
-licence = "Apache-2.0"
-notes = "The classifier's fallback model (22M parameters, 384-d, about twice as fast as bge-small). Its head is trained separately: the same 384 dimensions are a different space."
-
-[candidate.source]
-repo = "sentence-transformers/all-MiniLM-L6-v2"
-file = "onnx/model.onnx"
-revision = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
-model = "all-MiniLM-L6-v2"
-
-[candidate.prepare]
-pooling = "mean"
-normalize = true
-max_length = 256
-pad_token = "[PAD]"
+# There is NO recorded baseline for this kind, and nothing is in use today: no head is accepted on the service, so a `service` run stops with
+# "served_by=none" and writes no report. That is correct, not an omission. Embedding models are NOT declared here any more: the in-process
+# candidates existed to evaluate a trained head file, and the head trainer was removed once the first real run showed the labels could not
+# support any router (ENGINEERING_PATTERNS.md pattern 69). A new router (for example rules plus topic labels) is evaluated by handing a
+# `ClassifierBackend` to `runners.classify.run(backend=...)`, and gets a declaration here when it is wired to a command.
 
 [[candidate]]
 name = "ml-service-classify"
 kind = "classifier"
 path = "service"
 licence = "MIT (primary) / Apache-2.0 (fallback)"
-notes = "Whatever the running ML service's /classify answers, which is what the app actually gets and includes the HTTP round trip. It only answers once a head is ACCEPTED there; before that use the in-process candidates."
+baseline = true
+notes = "Whatever the running ML service's /classify answers, which is what the app actually gets and includes the HTTP round trip. It only answers once a head is ACCEPTED there."
 
 [candidate.source]
 model = "classify"

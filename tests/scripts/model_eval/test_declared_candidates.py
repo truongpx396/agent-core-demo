@@ -34,20 +34,12 @@ def test_a_missing_candidates_file_is_an_empty_declaration_not_an_error(tmp_path
     assert load_candidates(tmp_path / "nothing.toml", expected_kind="classifier") == []
 
 
-def test_the_classifier_declarations_are_the_models_the_service_serves_for_that_role():
-    """If the harness evaluated a different revision from the one the service loads, a head would be trained and judged on one model and served on another."""
-    from ml_service.registry import load_model_specs
+def test_the_only_declared_classifier_candidate_is_the_service_path():
+    """The in-process candidates existed to evaluate trained head files and went with the head trainer; a new router is handed to the runner and
+    gets a declaration when it is wired to a command. This pins the removal so a stale declaration cannot come back unnoticed."""
+    declared = cli.declared("classifier")
 
-    served = {s.name: s for s in load_model_specs(cli.REPO / "docker" / "ml-service" / "models.toml") if "classify" in s.roles}
-    declared = {c.source.model: c for c in cli.declared("classifier") if c.path == "inprocess"}
-
-    assert set(declared) == set(served), "every classify-role model must be declared as a classifier candidate, and nothing else"
-    for name, candidate in declared.items():
-        spec = served[name]
-        assert (candidate.source.repo, candidate.source.file, candidate.source.revision) == (spec.repo, spec.file, spec.revision), name
-        assert (candidate.prepare.pooling, candidate.prepare.normalize, candidate.prepare.max_length, candidate.prepare.pad_token) == (
-            spec.pooling, spec.normalize, spec.max_length, spec.pad_token), name
-        assert candidate.licence == spec.licence, name
+    assert [(c.name, c.path) for c in declared] == [("ml-service-classify", "service")]
 
 
 def test_the_screen_baseline_is_scored_at_the_apps_own_threshold():

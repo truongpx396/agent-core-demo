@@ -42,8 +42,8 @@ are manual by design. Run `make eval` + `make promptfoo` after a prompt, model-a
 retrieval change. `make model-eval KIND=embedding|reranker|screen|classifier CANDIDATE=<name>` is the same kind of tier for a
 *model swap*: it judges a candidate against the recorded baseline (`evals/README.md`), and `make model-eval-verify`
 needs no model or network. Run it before changing an embedding, reranker or screening model, and read the report's
-`controls` first. The routing classifier has two more manual targets, `make router-label JUDGE=<alias>` (score the local and strong
-model's answers) and `make router-head-train MODEL=<name>` (fit a head; it always writes `accepted: false`, a person accepts it).
+`controls` first. The routing classifier has one more manual target, `make router-label JUDGE=<alias>` (score the local and strong
+model's answers, the outcomes any router is judged on); there is no head trainer (`evals/README.md`).
 `make reembed COLLECTION_NAME=<c>` rebuilds a vector collection under the current embedding identity and swaps it in atomically; run
 it after changing `EMBED_MODEL`, the prefixes or `EMBED_MODEL_REVISION`. Don't run `make clean`, `clear-*`, or `restart-all` without being asked —
 they delete volumes or kill running processes.

@@ -1,7 +1,7 @@
-"""The routing half of the CLI: `route-label`, `head train` and `run --kind classifier`, end to end with fakes (specs/014 T070-T072).
+"""The routing half of the CLI: `route-label` and `run --kind classifier`, end to end with fakes (specs/014 T071-T072).
 
 The classifier runner is exercised for real through the two CONTROL candidates (`constant`, `random-router`), which need no model; the gateway
-is a fake chat function; the embedder is a fake. Paths are redirected to a temporary copy of the committed route dataset.
+is a fake chat function; a new router is a fake backend. Paths are redirected to a temporary copy of the committed route dataset.
 """
 import dataclasses
 import hashlib
@@ -14,25 +14,18 @@ import pytest
 
 from scripts.model_eval import __main__ as cli
 from scripts.model_eval import datasets as ds
-from scripts.model_eval import head, route_label, routing
+from scripts.model_eval import route_label, routing
 from scripts.model_eval.runners import classify
-from scripts.model_eval.runners.base import PrerequisiteMissing
 
-SHA = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
-TOML = f"""
+TOML = """
 [[candidate]]
-name = "bge-small-en-v1.5"
+name = "ml-service-classify"
 kind = "classifier"
-path = "inprocess"
+path = "service"
 licence = "MIT"
-baseline = true
 [candidate.source]
-repo = "BAAI/bge-small-en-v1.5"
-file = "onnx/model.onnx"
-revision = "{SHA}"
-model = "bge-small-en-v1.5"
+model = "classify"
 """
-MODEL = head.ModelInfo("bge-small-en-v1.5", "BAAI/bge-small-en-v1.5", "onnx/model.onnx", SHA, 8)
 
 
 @pytest.fixture
@@ -220,22 +213,13 @@ def test_route_label_uses_the_strong_id_as_the_file_name(env, monkeypatch):
     assert (routing.outcomes_dir(env.version) / "qwen2.5-7b.jsonl").exists()
 
 
-# ---- head train --------------------------------------------------------------------------------------------------------------------
+# ---- a router handed to the runner -------------------------------------------------------------------------------------------------
 def parity(text):
     return int(hashlib.sha256(text.encode()).hexdigest()[:8], 16) % 2
 
 
-def fake_embed(texts):
-    out = []
-    for text in texts:
-        rng = np.random.default_rng(int(hashlib.sha256(text.encode()).hexdigest()[8:16], 16))
-        v = rng.normal(size=8) * 0.2
-        v[0] += 3.0 if parity(text) else -3.0
-        out.append(v)
-    return np.array(out)
-
-
 def write_separable_outcomes(env):
+    """The strong model clearly wins on the prompts whose text hashes to an odd number, and does not on the others."""
     by_id = {p["id"]: p["text"] for p in env.prompts}
     rows = [routing.Outcome(i, 0.3, 0.9 if parity(t) else 0.32, "judge") for i, t in by_id.items()]
     path = routing.outcomes_dir(env.version) / "chat-strong.jsonl"
@@ -243,97 +227,28 @@ def write_separable_outcomes(env):
     return path
 
 
-def train_args(env, *extra):
-    return ["head", "train", "--model", "bge-small-en-v1.5", "--out", str(env.tmp / "heads"), *extra]
+class PerfectRouter:
+    """A stand-in for any new router (rules, topic labels, both): it only has to expose `scores(texts)` and the identity fields."""
+
+    identity, revision, size_bytes, rss_mb = "perfect-router", "r1", 1234, 5.0
+
+    def scores(self, texts):
+        return [0.9 if parity(t) else 0.1 for t in texts]
 
 
-def test_head_train_writes_an_unaccepted_head_and_says_a_person_must_accept_it(env, capsys, monkeypatch):
+def test_a_router_handed_to_the_runner_is_scored_timed_and_compared_like_any_other(env, tmp_path, monkeypatch):
+    """The extension point the next router plugs into: nothing but `scores(texts)` is required, and it gets the same numbers, curves and controls."""
     write_separable_outcomes(env)
-    monkeypatch.setattr(head, "service_embedder", lambda name: (fake_embed, MODEL))
-
-    assert cli.main(train_args(env)) == cli.OK
-
-    out = capsys.readouterr().out
-    doc = json.loads((env.tmp / "heads" / "head-bge-small-en-v1.5.json").read_text())
-    assert doc["accepted"] is False and "accepted: false" in out and "a person's decision" in out
-    assert doc["trained_on"]["dataset"] == "route-domains" and doc["trained_on"]["judge"] == "judge" and doc["heldout"]["accuracy"] > 0.9
-
-
-def test_head_train_without_outcomes_exits_three_and_names_the_command_that_makes_them(env, capsys):
-    assert cli.main(train_args(env)) == cli.MISSING
-    assert "make router-label" in capsys.readouterr().err
-
-
-def test_head_train_with_one_label_everywhere_is_refused_with_exit_two(env, capsys, monkeypatch):
-    rows = [routing.Outcome(p["id"], 0.3, 0.31, "judge") for p in env.prompts]  # the strong model never helps by the margin
-    routing.write_outcomes(routing.outcomes_dir(env.version) / "chat-strong.jsonl", rows)
-    monkeypatch.setattr(head, "service_embedder", lambda name: (fake_embed, MODEL))
-
-    assert cli.main(train_args(env)) == cli.USAGE
-    assert "same label" in capsys.readouterr().err
-    assert not (env.tmp / "heads").exists()
-
-
-def test_a_contaminated_training_set_is_a_verification_failure_exit_four(env, capsys, monkeypatch):
-    write_separable_outcomes(env)
-    monkeypatch.setattr(head, "service_embedder", lambda name: (fake_embed, MODEL))
-
-    def refuse(**_kwargs):
-        raise head.ContaminatedTrainingSet("the training prompts overlap the held-out split")
-
-    monkeypatch.setattr(head, "train_head", refuse)
-
-    assert cli.main(train_args(env)) == cli.VERIFY_FAILED
-
-
-def test_head_train_will_not_replace_an_accepted_head_without_force(env, capsys, monkeypatch):
-    write_separable_outcomes(env)
-    monkeypatch.setattr(head, "service_embedder", lambda name: (fake_embed, MODEL))
-    assert cli.main(train_args(env)) == cli.OK
-    path = env.tmp / "heads" / "head-bge-small-en-v1.5.json"
-    doc = json.loads(path.read_text())
-    doc["accepted"] = True
-    path.write_text(json.dumps(doc))
-
-    assert cli.main(train_args(env)) == cli.USAGE
-    assert json.loads(path.read_text())["accepted"] is True
-    assert cli.main(train_args(env, "--force")) == cli.OK
-    assert json.loads(path.read_text())["accepted"] is False
-
-
-def test_the_head_command_needs_a_subcommand():
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["head"])
-    assert exc.value.code == 2
-
-
-def test_a_head_the_service_would_refuse_is_refused_in_process_too(env, tmp_path, monkeypatch):
-    """The in-process evaluation must not score with a head bound to another revision: the app could never get those scores."""
-    write_separable_outcomes(env)
-    monkeypatch.setattr(head, "service_embedder", lambda name: (fake_embed, MODEL))
-    cli.main(train_args(env))
-    other = head.ModelInfo(MODEL.name, MODEL.repo, MODEL.file, "f" * 40, MODEL.dim)
-    monkeypatch.setattr(classify, "service_embedder", lambda name: (fake_embed, other))
-    candidate = cli.resolve_candidate("classifier", "bge-small-en-v1.5")
-
-    with pytest.raises(PrerequisiteMissing, match="not trained for the model just loaded"):
-        classify.InProcessClassifier(candidate, env.tmp / "heads")
-
-
-def test_an_in_process_run_scores_with_the_head_file_and_warns_that_it_is_not_accepted(env, tmp_path, monkeypatch):
-    write_separable_outcomes(env)
-    monkeypatch.setattr(head, "service_embedder", lambda name: (fake_embed, MODEL))
-    cli.main(train_args(env))
-    monkeypatch.setattr(classify, "service_embedder", lambda name: (fake_embed, MODEL))
+    monkeypatch.setattr(classify, "build_backend", lambda candidate, settings, via=None: PerfectRouter())
     out = tmp_path / "reports"
 
-    code = cli.main(run_args("bge-small-en-v1.5", "--via", "inprocess", "--head-dir", str(env.tmp / "heads"), "--out", str(out)))
+    assert cli.main(run_args("ml-service-classify", "--out", str(out))) == cli.OK
 
-    assert code == cli.OK
     report = json.loads(next(out.glob("*.json")).read_text())
+    assert report["candidate"]["identity"] == "perfect-router" and report["candidate"]["revision"] == "r1"
     assert report["quality"]["accuracy"]["value"] > 0.9 and report["quality"]["apgr"]["value"] > 0.5
-    assert any("NOT accepted" in w for w in report["warnings"])
-    assert report["candidate"]["identity"].startswith("head:")
+    assert report["status"] != "invalid" and all(c["ok"] for c in report["controls"])  # "provisional": the route prompts are unreviewed
+    assert {"p50", "p95"} <= set(report["efficiency"]["query_ms"])
 
 
 def write_noisy_outcomes(env, shift=0.03):

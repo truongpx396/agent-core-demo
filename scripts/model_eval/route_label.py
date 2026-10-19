@@ -13,7 +13,7 @@ THE JUDGE sees the question and one answer and nothing else: not which model wro
 (not JSON, not a number in [0, 1], or out of range) is retried ONCE; if the retry fails too, the score is recorded as missing (`null`), never
 as zero. A model call that times out or errors is missing too. Nothing here logs a prompt or an answer: counts and ids only.
 
-KNOWN LIMITS (they bound what a head trained from this can be): the local and strong models answer WITHOUT retrieval, so a prompt about a
+KNOWN LIMITS (they bound what any router judged on this can be): the local and strong models answer WITHOUT retrieval, so a prompt about a
 company policy is scored on how honestly the model handles not knowing it, not on a grounded answer; and a judge that is also the strong
 model favours its own style. Both are disclosed in the PR that adds this, not hidden in a number.
 """

@@ -9,8 +9,8 @@ container can show, and this file does:
 - with no head, and with a head whose JSON says `"accepted": false`, the answer is HTTP 200 `served_by: "none"` (FR-038);
 - with the primary unable to load, the fallback answers and says so.
 
-The heads here are synthetic (a fixed random direction) and are written `"accepted": true` BY THE TEST. The trainer never does that
-(scripts/model_eval/head.py), so no real head is involved and nothing here says anything about routing quality.
+The heads here are synthetic (a fixed random direction) and are written `"accepted": true` BY THE TEST. Nothing in the repository
+writes a head with `accepted: true`, so no real head is involved and nothing here says anything about routing quality.
 """
 import json
 import statistics

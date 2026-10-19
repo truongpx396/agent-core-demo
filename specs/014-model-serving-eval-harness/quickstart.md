@@ -132,8 +132,7 @@ model revision → refused.
 
 ```bash
 make router-label  JUDGE=chat-strong                       # needs Ollama with qwen2.5:3b and :7b
-make router-head-train MODEL=bge-small-en-v1.5             # writes head files, accepted=false
-make router-head-train MODEL=all-MiniLM-L6-v2
+# (the head trainer, `make router-head-train`, was withdrawn: see tasks.md T070 and T076)
 make model-eval KIND=classifier CANDIDATE=bge-small-en-v1.5
 ```
 

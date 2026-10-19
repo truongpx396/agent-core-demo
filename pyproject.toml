@@ -1,7 +1,7 @@
 [tool.pytest.ini_options]
 # The billing package is found through its src directory, not installed: the lock file is a machine-generated freeze
 # of a real install and a path dependency does not belong in it (spec 011 D20). `docker/ml-service` is on the path for the same
-# reason: the ML service's package (`ml_service`) is imported by tests/ml_service and by scripts/model_eval/head.py, which must run
+# reason: the ML service's package (`ml_service`) is imported by tests/ml_service and by the evaluation harness, which must run
 # the very tokenise/pool code the service serves with (specs/014 research.md C1); it is not installed and not in the lock file.
 pythonpath = [".", "packages/billing/src", "docker/ml-service"]
 testpaths = ["tests"]

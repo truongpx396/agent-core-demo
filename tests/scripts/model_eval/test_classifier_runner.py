@@ -112,8 +112,8 @@ def test_the_service_scores_come_back_in_input_order_and_in_batches_of_at_most_s
     assert backend.identity == "ml-service:classify" and backend.revision == "v9"
 
 
-def test_a_service_with_no_accepted_head_is_not_something_to_evaluate_and_the_message_points_at_the_in_process_path():
-    with pytest.raises(PrerequisiteMissing, match="served_by=none.*--via inprocess"):
+def test_a_service_with_no_accepted_head_is_not_something_to_evaluate_and_the_message_points_at_the_extension_point():
+    with pytest.raises(PrerequisiteMissing, match=r"served_by=none.*run\(backend=\.\.\.\)"):
         classify.ServiceClassifier(CANDIDATE, client=FakeClient(served_by="none"))
 
 

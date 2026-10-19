@@ -219,15 +219,19 @@ def fast_macro_f1(label: np.ndarray, predicted: np.ndarray) -> float:
 
 
 class IntentSuite(Suite):
-    """The method-sanity check (specs/014 T072): an embedding model plus a linear head trained on a standard intent set, scored on its test split.
+    """Scores an intent / topic classifier on a standard intent set, out-of-scope examples apart from in-scope ones (specs/014 T072).
 
-    It says nothing about routing. It answers "does this embedding pipeline plus this way of training a head produce a sensible classifier on a
-    task with a known answer?", which can be checked with no stronger model and no labelling. CLINC's out-of-scope examples are reported SEPARATELY
-    from the in-scope ones: a request that matches no intent is the case a router meets every day.
+    It says nothing about routing. It answers "does this classifier produce a sensible answer on a task with a known answer?", which can be checked
+    with no stronger model and no labelling. CLINC's out-of-scope examples are reported SEPARATELY from the in-scope ones: a request that matches no
+    intent is the case a router meets every day, and "none of these" must be a possible answer.
 
-    Arrays per item: `pred` (predicted intent), `label` (true intent; -1 for an out-of-scope item), `confidence` (the head's top probability),
-    `oos` (1 for an out-of-scope item) and `oos_threshold` (the same value in every row; the confidence below which the head says "none of
-    these", chosen on the validation split, never on the test split).
+    NO RUNNER USES THIS YET. The runner that trained a head on CLINC to exercise it was removed with the head trainer (pull request 179); the suite,
+    its controls and the pinned dataset (`public.load_clinc`) stay because they are what a topic-label classifier (embedding anchors and a
+    similarity cutoff) is scored with.
+
+    Arrays per item: `pred` (predicted intent), `label` (true intent; -1 for an out-of-scope item), `confidence` (the classifier's top
+    probability or similarity), `oos` (1 for an out-of-scope item) and `oos_threshold` (the same value in every row; the confidence below which
+    the classifier says "none of these", chosen on the validation split, never on the test split).
     """
 
     kind = "classifier"

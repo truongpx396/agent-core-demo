@@ -1,7 +1,7 @@
 """The one tokenise -> run -> pool -> normalise path every text model in this service uses.
 
 The prompt-injection guard, the embedding endpoint and the routing classifier all feed text to an ONNX graph through this module, and
-`scripts/model_eval/head.py` imports it to embed training text. That is deliberate: a classifier head must never be trained on one
+the evaluation harness imports it to embed text outside the service. That is deliberate: a classifier head must never be trained on one
 pipeline and served on another (different pooling, different truncation, a quantized file instead of the fp32 one), because the head
 is a plain vector and silently gives wrong answers on vectors from a different pipeline (specs/014 research.md C1).
 

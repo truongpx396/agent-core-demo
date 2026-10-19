@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
 
-from scripts.model_eval import baselines, hardware, head, route_label, routing
+from scripts.model_eval import baselines, hardware, route_label, routing
 from scripts.model_eval import datasets as ds
 from scripts.model_eval.candidates import Candidate, load_candidates
 from scripts.model_eval.controls import CONTROL_CANDIDATES, derived_controls
@@ -78,9 +78,8 @@ def resolve_candidate(kind: str, name: str, candidates_dir: Path | None = None) 
 def _settings(args: argparse.Namespace) -> RunSettings:
     if args.splits != "test":
         raise UsageError("only the test split is reported; dev is for tuning and is refused for reporting (FR-010)")
-    extra = {"head_dir": Path(args.head_dir)} if args.head_dir else {}
     return RunSettings(split="test", runs=args.runs, seed=args.seed, threads=args.threads, dataset=args.dataset, list_size=args.list_size,
-                       outcomes=Path(args.outcomes) if args.outcomes else None, margin=args.margin, **extra)
+                       outcomes=Path(args.outcomes) if args.outcomes else None, margin=args.margin)
 
 
 def _execute(args: argparse.Namespace) -> tuple[Candidate, RunOutput]:
@@ -239,7 +238,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
 
 def _route_prompts(manifest: ds.Manifest) -> list[dict]:
-    """Every prompt of the committed route set, both splits: the labeller scores them all (dev to train a head, test to report it)."""
+    """Every prompt of the committed route set, both splits: the labeller scores them all (dev to tune a router on, test to report it)."""
     return [{"id": r["id"], "text": r["text"]} for split in sorted(manifest.raw["splits"]) for r in manifest.split_items(split)]
 
 
@@ -270,36 +269,6 @@ def cmd_route_label(args: argparse.Namespace) -> int:
     return OK
 
 
-def cmd_head_train(args: argparse.Namespace) -> int:
-    """Fit a head for one classifier model from labelled outcomes and write it, unaccepted, for a person to read the report on (T070)."""
-    version_dir = latest_version(ds.DATASETS_ROOT, args.dataset)
-    manifest = ds.load_verified(version_dir)
-    outcomes_path = classify.find_outcomes(version_dir, Path(args.outcomes) if args.outcomes else None)
-    if outcomes_path is None:
-        raise PrerequisiteMissing(f"no routing outcomes under {routing.outcomes_dir(version_dir)}; label the prompts first with `make router-label JUDGE=<alias>`")
-    outcomes = routing.read_outcomes(outcomes_path)
-    judges = sorted({o.judge for o in outcomes.values()})
-
-    def pairs(split: str) -> list[tuple[str, routing.Outcome]]:
-        return [(r["text"], outcomes[r["id"]]) for r in manifest.split_items(split) if r["id"] in outcomes]
-
-    embed, info = head.service_embedder(args.model)
-    trained = head.train_head(
-        model=info, embed=embed, train=pairs("dev"), heldout=pairs("test"), margin=args.margin,
-        dataset={"dataset": manifest.name, "version": manifest.version, "judge": ", ".join(judges)}, outcomes_sha256=routing.outcomes_sha256(outcomes_path),
-    )
-    json_path, npz_path = head.write_head(Path(args.out), trained, trained_at=datetime.now(UTC).isoformat(timespec="seconds"), force=args.force)
-    held, beaten = trained.provenance["heldout"], trained.provenance["controls_beaten"]
-    sys.stdout.write(
-        f"wrote {json_path.name} and {npz_path.name} in {json_path.parent}\n"
-        f"held-out ({held['items']} prompts): accuracy {held['accuracy']:.3f}, macro-F1 {held['macro_f1']:.3f}, ECE {held['ece']:.3f}, "
-        f"average gap recovered {held['apgr'] if held['apgr'] is None else round(held['apgr'], 3)}; beats random: {beaten['random']}, beats longest-first: {beaten['length']}\n"
-        "accepted: false. Run `make model-eval KIND=classifier CANDIDATE=<name> VIA=inprocess` and read the report; accepting is a person's decision "
-        "(set \"accepted\": true in the JSON, mount the directory as ROUTER_HEAD_DIR, restart the ML service).\n"
-    )
-    return OK
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m scripts.model_eval", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -316,7 +285,6 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--list-size", type=int, default=None, help="reranker candidate-list size for public sets")
         p.add_argument("--outcomes", default=None, help="classifier: the labelled outcomes file (default: the only one in the dataset's outcomes/)")
         p.add_argument("--margin", type=float, default=routing.DEFAULT_MARGIN, help="classifier: strong minus local must reach this to need the stronger model")
-        p.add_argument("--head-dir", default=None, help="classifier, in-process: the directory `head train` wrote to (default: var/model_eval/heads)")
 
     run = sub.add_parser("run", help="evaluate one candidate and compare it with the recorded baseline")
     run.set_defaults(all_kinds=False)
@@ -346,16 +314,6 @@ def build_parser() -> argparse.ArgumentParser:
     label.add_argument("--limit", type=int, default=None, help="only the first N prompts (a smoke test); finished prompts are kept for the next run")
     label.set_defaults(func=cmd_route_label)
 
-    heads = sub.add_parser("head", help="routing heads")
-    heads_sub = heads.add_subparsers(dest="head_command", required=True)
-    train = heads_sub.add_parser("train", help="fit a head from labelled outcomes and write it, never accepted")
-    train.add_argument("--model", required=True, help="a classify-role model in docker/ml-service/models.toml")
-    train.add_argument("--dataset", default="route-domains")
-    train.add_argument("--outcomes", default=None, help="the outcomes file (default: the only one in the dataset's outcomes/ directory)")
-    train.add_argument("--margin", type=float, default=routing.DEFAULT_MARGIN)
-    train.add_argument("--out", default=str(REPO / "var" / "model_eval" / "heads"), help="where to write head-<model>.json and .npz")
-    train.add_argument("--force", action="store_true", help="replace a head a person has already accepted")
-    train.set_defaults(func=cmd_head_train)
     return parser
 
 
@@ -370,10 +328,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as exc:  # a bad candidate declaration, caught at load
         sys.stderr.write(f"configuration error: {exc}\n")
         return USAGE
-    except head.ContaminatedTrainingSet as exc:
-        sys.stderr.write(f"verification failed: {exc}\n")
-        return VERIFY_FAILED
-    except (head.TrainingRefused, routing.OutcomesError) as exc:
+    except routing.OutcomesError as exc:
         sys.stderr.write(f"refused: {exc}\n")
         return USAGE
     except baselines.BaselineExists as exc:

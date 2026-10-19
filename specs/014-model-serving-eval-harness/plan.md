@@ -180,7 +180,7 @@ over the ~1,000-line ceiling and says so in its description (read each by commit
 | #177 | constitution 1.2.0 (T005-T007); the ML service as an importable package (T008-T018); the harness core, datasets, runners and provisional baselines (T019-T047); pattern 69 (T090) | `make model-eval*`, `evals/`, `scripts/model_eval/` |
 | #176 | embedding roles, the identity guard, atomic re-embed, `/v1/embeddings` and the model registry (T048-T067) | `make reembed`, `app/retrieval/embedding_identity.py` |
 | #178 | `/classify` with failover and heads (T068-T069, T073-T075, T077); the routing seam (T078-T087, T089); pattern 68 | `route_model`, the `chat-strong` alias, two alerts |
-| closing change | the head trainer, labeller and classifier runner (T070-T072); the prefix A/B and the end-to-end walk-through run and recorded (T058, T088); docs and housekeeping (T091-T094) | `make router-label`, `make router-head-train`, `KIND=classifier`, the CLINC method-sanity check |
+| closing change | the labeller and classifier runner (T071, T072; the head trainer T070 was built and then withdrawn); the prefix A/B and the end-to-end walk-through run and recorded (T058, T088); docs and housekeeping (T091-T094) | `make router-label`, `make router-head-train`, `KIND=classifier`, the CLINC method-sanity check |
 
 Setup tasks rode with the first PR that needed them. **94 tasks:** Setup 4, Foundational 14, US1 29, US2 20, US3 22, Polish 5. Open by design: T045, T076 and the T058 decision.
 
