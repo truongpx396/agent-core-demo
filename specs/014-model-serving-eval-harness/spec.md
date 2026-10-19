@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-17
 
-**Status**: Draft
+**Status**: Implemented. The specification is #175; the implementation is #177 (the harness, its data and baselines), #176 (the embedding roles, identity guard and `/v1/embeddings`), #178 (the classifier endpoint and the routing seam) and a closing change (the head trainer, labeller and classifier runner, and the closing docs). Three tasks are human or operator acts and stay open by design: T045 (a person reviews the generated dataset items), T058's decision (adopt the embedding prefixes or not) and T076 (a person accepts a head). With no accepted head the router stays at "no advice" and every turn runs locally, which is the specified default.
 
 **Input**: User description: "Model-serving seams and an evaluation harness for the small models (classification, embedding, reranker, moderation). Three parts, one feature: (1) query classification for model routing, served by the ML service with BAAI/bge-small-en-v1.5 primary and sentence-transformers/all-MiniLM-L6-v2 as automatic fallback, plus a new gateway alias so a stronger model can be attached by configuration only; (2) embedding models done properly: separate query and document embedding with the task prefixes the current model requires, and an OpenAI-compatible embedding endpoint on the ML service so the `embed` alias can point at an ONNX model served there; (3) a model-evaluation harness, built the way published benchmarks and practitioners build them, with recorded baselines for the current models, so that the next model decision is made by running candidates against it."
 
