@@ -91,5 +91,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # The API service is the default role; agent-worker/ingest-worker override
 # this in docker-compose.yml (`command: ["python", "-m", "app.job_queue.agent_worker"]`
 # / `app.ingestion.ingest_worker`) — neither of those binds a port, so EXPOSE/
-# HEALTHCHECK above are meaningful for this default role only.
+# HEALTHCHECK above are meaningful for this default role only. A compose service
+# inherits the image's HEALTHCHECK unless it says otherwise, so each worker also sets
+# `healthcheck: *worker-healthcheck` (disabled) in both compose files; without it every
+# worker reports `unhealthy` for a port it never opens.
 CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

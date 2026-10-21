@@ -23,6 +23,7 @@ from app.agent.graph.loop_guards import (
     consecutive_repeat_count,
     mandatory_gate_reason,
 )
+from app.agent.graph.messages import GATEWAY_REFUSAL_KEY
 from app.agent.graph.output_checks import CheckContext, run_checks
 from app.agent.graph.output_guardrails import (
     strip_closing_offer,
@@ -94,6 +95,12 @@ def should_continue(
     means a safety net tripped" signal `run_subagent` already uses for a
     nested run; this is the top-level equivalent.
     """
+    # The gateway's content guardrail refused the call (`agent` wrote the refusal): that IS the
+    # turn's answer. Routed to `no_answer`, which ends the turn without a retry, follow-ups or a
+    # cache write, so a refusal is never stored as the answer to this question.
+    last = state["messages"][-1] if state.get("messages") else None
+    if isinstance(last, AIMessage) and last.additional_kwargs.get(GATEWAY_REFUSAL_KEY):
+        return "no_answer"
     if state.get("iterations", 0) >= max_iterations:
         return "no_answer"
     # Folds any run_subagent spend THIS turn into the parent's own live

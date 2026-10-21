@@ -6,6 +6,16 @@
 # separately since each adds real host privilege/cost most `make up`
 # users don't need by default (see each service's own comment below).
 
+# The agent-worker and ingest-worker roles run the app's image, which carries the API's HEALTHCHECK
+# (Dockerfile): a probe of http://localhost:8000/health/ready. A worker binds no port, so inheriting it
+# reported every worker `unhealthy` forever (a failing streak in the hundreds), which hides a service
+# that really is unhealthy and would restart-loop one under anything that acts on health. The probe is
+# switched off here rather than replaced: whether a worker pool is alive is an application-level fact
+# the `WorkerUnreachable` alert (observability/prometheus/alerts.yml) already watches, a job that no
+# worker takes. tests/core/test_compose_worker_healthcheck.py fails for a worker added without this.
+x-worker-healthcheck: &worker-healthcheck
+  disable: true
+
 # Shared env for the containerized app roles below (services: api,
 # agent-worker, ingest-worker) — every URL points at the OTHER containers'
 # in-network service names (e.g. `litellm:4000`), not `localhost` — a
@@ -527,6 +537,7 @@ services:
     profiles: ["app"]
     restart: unless-stopped
     command: ["python", "-m", "app.job_queue.agent_worker"]
+    healthcheck: *worker-healthcheck
     environment: *app-env
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -554,6 +565,7 @@ services:
     profiles: ["app"]
     restart: unless-stopped
     command: ["python", "-m", "app.job_queue.agent_worker"]
+    healthcheck: *worker-healthcheck
     environment:
       <<: *app-env
       AGENT_DOMAIN: support
@@ -570,6 +582,7 @@ services:
     profiles: ["app"]
     restart: unless-stopped
     command: ["python", "-m", "app.job_queue.agent_worker"]
+    healthcheck: *worker-healthcheck
     environment:
       <<: *app-env
       AGENT_DOMAIN: ops
@@ -586,6 +599,7 @@ services:
     profiles: ["app"]
     restart: unless-stopped
     command: ["python", "-m", "app.job_queue.agent_worker"]
+    healthcheck: *worker-healthcheck
     environment:
       <<: *app-env
       AGENT_DOMAIN: sales
@@ -602,6 +616,7 @@ services:
     profiles: ["app"]
     restart: unless-stopped
     command: ["python", "-m", "app.ingestion.ingest_worker"]
+    healthcheck: *worker-healthcheck
     environment: *app-env
     extra_hosts:
       - "host.docker.internal:host-gateway"

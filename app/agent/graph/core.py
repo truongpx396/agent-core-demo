@@ -30,6 +30,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import RetryPolicy, default_retry_on
 
 from app.agent.graph.messages import (
+    CANNOT_HELP_MESSAGE,
     heal_legacy_retry_artifacts,
     human_has_content,
     human_text,
@@ -49,17 +50,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 def _retry_agent_on(exc: Exception) -> bool:
-    """LangGraph's own predicate, minus the gateway's budget stop. That refusal repeats until the
-    budget resets, so a retry cannot succeed: it only delays the caller's error by the backoff and
-    adds refused calls to the gateway's log (app/core/gateway.py)."""
-    return not gateway.is_budget_exceeded(exc) and default_retry_on(exc)
+    """LangGraph's own predicate, minus what repeating cannot change. LangGraph's default retries
+    everything that is not a programming error and only excludes `httpx.HTTPStatusError` 4xx, but the
+    OpenAI SDK's status errors are not that class, so a rejected key, an unknown model, a 422 and a
+    content-guardrail 400 were all retried 3 times: seconds of backoff and more refused calls in the
+    gateway's log before the caller learned anything (Langfuse trace `b376e4d8`). The gateway's budget
+    stop repeats until the budget resets, so it is refused a retry whatever status it came with
+    (app/core/gateway.py)."""
+    return (
+        not gateway.is_budget_exceeded(exc)
+        and not gateway.is_permanent_client_error(exc)
+        and default_retry_on(exc)
+    )
 
 
 # Reliability policy for `agent` (see build_graph): retry a transient
-# LLM-endpoint failure (connection error, 5xx) before giving up. LangGraph's
+# LLM-endpoint failure (connection error, 5xx, 429, 408) before giving up. LangGraph's
 # default retry_on excludes programming errors, so this can't mask a real
-# bug as a flaky call (pattern 7); `_retry_agent_on` adds the one failure
-# that is never worth retrying.
+# bug as a flaky call (pattern 7); `_retry_agent_on` adds the failures
+# that are never worth retrying (a budget stop, a permanent 4xx).
 AGENT_RETRY_POLICY = RetryPolicy(max_attempts=3, retry_on=_retry_agent_on)
 
 
@@ -211,9 +220,7 @@ def reject_moderation(state: State) -> dict:
     reject_context above it in the turn."""
     return {
         "messages": [
-            AIMessage(
-                content="I can't help with that request."
-            )
+            AIMessage(content=CANNOT_HELP_MESSAGE)
         ]
     }
 
