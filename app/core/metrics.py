@@ -209,6 +209,14 @@ agent_reference_footer_stripped_total = Counter(
     "is always invented, never a real source the model was actually given.",
 )
 
+agent_closing_offer_stripped_total = Counter(
+    "agent_closing_offer_stripped_total",
+    "Final answers where check_output cut a closing offer (\"Would you like more information or "
+    "should I proceed...?\") off a complete answer instead of rejecting the answer for it (see "
+    "strip_closing_offer). The system prompt forbids that question and the small local model "
+    "writes it anyway, so a steady rate is the model ignoring the prompt, not a fault in the graph.",
+)
+
 agent_citation_auto_inserted_total = Counter(
     "agent_citation_auto_inserted_total",
     "Final answers where check_output mechanically inserted a missing [n] "
