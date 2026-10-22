@@ -40,7 +40,7 @@ def sources(monkeypatch):
 
 
 def gateway_saw(*spend: float, end_user: str | None = None) -> FakeGateway:
-    end_user = end_user or end_user_id("acme")
+    end_user = end_user or end_user_id("acme", "alice")
     return FakeGateway([spend_row(end_user, NOON, amount, f"req-{i}") for i, amount in enumerate(spend)])
 
 
@@ -120,7 +120,7 @@ class TestEveryComparisonStandsOnItsOwn:
 
     async def test_spend_the_gateway_cannot_attribute_is_reported_and_is_never_drift(self, sources):
         sources["events"] = {("acme", DAY): D("1.0")}
-        gateway = FakeGateway([spend_row(end_user_id("acme"), NOON, 1.0, "a"), spend_row(None, NOON, 0.4, "embedding-1")])
+        gateway = FakeGateway([spend_row(end_user_id("acme", "alice"), NOON, 1.0, "a"), spend_row(None, NOON, 0.4, "embedding-1")])
 
         report = await run(gateway)
 
@@ -131,7 +131,7 @@ class TestEveryComparisonStandsOnItsOwn:
 class TestWhatItCannotCompareIsSaidNotSkippedSilently:
     async def test_an_incomplete_gateway_read_is_never_compared_and_is_its_own_outcome(self, sources):
         sources["events"] = {("acme", DAY): D("1.0")}
-        many = FakeGateway([spend_row(end_user_id("acme"), NOON, 0.0, f"r{i}") for i in range(2500)])
+        many = FakeGateway([spend_row(end_user_id("acme", "alice"), NOON, 0.0, f"r{i}") for i in range(2500)])
 
         report = await run(many, max_pages=1)
 

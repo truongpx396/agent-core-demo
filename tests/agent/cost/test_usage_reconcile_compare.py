@@ -1,5 +1,5 @@
 """The pure half of the reconciliation (app/agent/cost/usage_reconcile.py): who is allowed to differ by how much, which window is read, how a
-one-way gateway id becomes a tenant, and what counts as drift. No database and no gateway: the reading of each is in
+gateway end user (a person, or the older one-way tenant id) becomes a tenant, and what counts as drift. No database and no gateway: the reading of each is in
 test_reconcile_gateway.py and packages/billing/tests/integration/test_reconcile_real_postgres.py."""
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal as D
@@ -12,7 +12,7 @@ from app.agent.cost.usage_reconcile import (
     compare,
     default_window,
 )
-from app.core.gateway import end_user_id
+from app.core.gateway import end_user_id, legacy_end_user_id
 
 DAY = date(2026, 10, 6)
 NEXT = date(2026, 10, 7)
@@ -106,16 +106,62 @@ class TestCompare:
 
 
 class TestAttributingTheGateway:
-    def test_a_tenant_is_found_by_hashing_the_ones_this_database_knows(self):
-        raw = {(end_user_id("acme"), DAY): D("1.5"), (end_user_id("globex"), DAY): D("2")}
+    def test_a_tenant_is_read_off_the_end_user_so_no_list_of_known_tenants_is_needed(self):
+        raw = {(end_user_id("acme", "alice"), DAY): D("1.5"), (end_user_id("globex", "carol"), DAY): D("2")}
+
+        attributed, unattributed = attribute_gateway(raw, [])
+
+        assert attributed == {("acme", DAY): D("1.5"), ("globex", DAY): D("2")}
+        assert unattributed == 0
+
+    def test_the_people_of_one_tenant_are_summed_into_its_day(self):
+        """The gateway has one end user per person and the reconciliation is per tenant."""
+        raw = {
+            (end_user_id("acme", "alice"), DAY): D("1"),
+            (end_user_id("acme", "bob"), DAY): D("2"),
+            (end_user_id("acme", "bob"), NEXT): D("4"),
+            (end_user_id("globex", "alice"), DAY): D("8"),  # the same principal string in another tenant is another person
+        }
+
+        attributed, _ = attribute_gateway(raw, ["acme", "globex"])
+
+        assert attributed == {("acme", DAY): D("3"), ("acme", NEXT): D("4"), ("globex", DAY): D("8")}
+
+    def test_a_tenant_with_spend_at_the_gateway_and_no_events_is_attributed_by_name_so_compare_reports_it(self):
+        # The worst shape a lost meter can take: spend at the gateway, no event left. It needs no special case: the tenant is in the id,
+        # and `compare` reports a day present on one side only as a difference from zero.
+        attributed, _ = attribute_gateway({(end_user_id("ghost", "alice"), DAY): D("4")}, ["acme"])
+
+        findings = compare("gateway", {("acme", DAY): D("1")}, attributed, Tolerance(usd=D("0.01"), pct=D("0")))
+
+        assert ("ghost", D("4")) in [(f.tenant, f.drift) for f in findings]
+
+    def test_a_tenant_or_principal_containing_a_delimiter_is_still_attributed_to_the_right_tenant(self):
+        raw = {(end_user_id("a/user:b", "c"), DAY): D("1"), (end_user_id("a", "b/user:c"), DAY): D("2")}
+
+        attributed, _ = attribute_gateway(raw, [])
+
+        assert attributed == {("a/user:b", DAY): D("1"), ("a", DAY): D("2")}
+
+    # --- spend-log rows written before the end user named the person ---
+
+    def test_an_older_tenant_level_id_is_found_by_hashing_the_tenants_this_database_knows(self):
+        raw = {(legacy_end_user_id("acme"), DAY): D("1.5"), (legacy_end_user_id("globex"), DAY): D("2")}
 
         attributed, unattributed = attribute_gateway(raw, ["acme", "globex"])
 
         assert attributed == {("acme", DAY): D("1.5"), ("globex", DAY): D("2")}
         assert unattributed == 0
 
-    def test_spend_for_an_id_in_the_apps_format_that_no_known_tenant_hashes_to_is_still_a_finding(self):
-        # The worst shape a lost meter can take: a tenant with spend at the gateway and no events and no ledger rows at all.
+    def test_both_generations_of_id_in_one_window_land_in_the_same_tenant_day(self):
+        """The window can straddle the day the end user started naming the person."""
+        raw = {(legacy_end_user_id("acme"), DAY): D("1"), (end_user_id("acme", "alice"), DAY): D("2")}
+
+        attributed, _ = attribute_gateway(raw, ["acme"])
+
+        assert attributed == {("acme", DAY): D("3")}
+
+    def test_an_older_id_that_no_known_tenant_hashes_to_is_still_a_finding(self):
         stranger = "tenant_0123456789abcdef"
 
         attributed, unattributed = attribute_gateway({(stranger, DAY): D("4")}, ["acme"])
@@ -125,19 +171,17 @@ class TestAttributingTheGateway:
         assert unattributed == 0
 
     def test_no_identity_and_another_applications_users_are_reported_but_never_drift(self):
-        raw = {("", DAY): D("0.25"), ("some-other-app-user", DAY): D("0.75")}
+        raw = {
+            ("", DAY): D("0.25"),
+            ("some-other-app-user", DAY): D("0.25"),
+            ("tenant:looks-like-ours", DAY): D("0.25"),  # starts the same way but is not the canonical id this app writes
+            ("tenant:acme/user:%61lice", DAY): D("0.25"),  # a non-canonical spelling of ours
+        }
 
         attributed, unattributed = attribute_gateway(raw, ["acme"])
 
         assert attributed == {}
         assert unattributed == D("1.00")
-
-    def test_one_tenants_days_stay_separate_and_sum_per_day(self):
-        raw = {(end_user_id("acme"), DAY): D("1"), (end_user_id("acme"), NEXT): D("2")}
-
-        attributed, _ = attribute_gateway(raw, ["acme"])
-
-        assert attributed == {("acme", DAY): D("1"), ("acme", NEXT): D("2")}
 
 
 def test_the_window_type_is_inclusive_at_both_ends_like_the_gateways_own_filter():

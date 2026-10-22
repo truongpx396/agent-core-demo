@@ -11,15 +11,22 @@ that, and COST_GOVERNANCE.md pattern 74 says why the shipped local models now st
 
 Without it the gateway's spend logs and Langfuse show one anonymous caller, so a runaway bill can
 be found but not attributed. Each call carries:
-  * `user` — LiteLLM's end-user id, recorded on every spend-log row as `end_user`. An opaque,
-    stable hash of the tenant, NOT the tenant's name: whether LiteLLM passes `user` on to the model
-    provider depends on the provider and version (checked against main-stable: an OpenAI-compatible
-    backend received only `model` and `messages`), and an organisation's name has no business
-    leaving for a third party if it does (OpenAI itself recommends a hashed id here). It is also
-    what LiteLLM's per-end-user budgets are keyed by, so `max_end_user_budget_id` in the LiteLLM
-    configs gives every tenant a gateway-side cap (pattern 74): a person-level id here would turn
-    that cap into a per-person one and break `usage_reconcile.attribute_gateway`, which finds a
-    tenant by hashing the names it knows.
+  * `user` — LiteLLM's end-user id, recorded on every spend-log row as `end_user`: the PERSON,
+    readable, as `tenant:<tenant>/user:<principal>` (each part percent-encoded, so neither can
+    contain `:` or `/` and the id parses back, see `parse_end_user_id`). It is what LiteLLM's
+    Customer Usage view filters by and what its per-end-user budgets are keyed by, so
+    `max_end_user_budget_id` in the LiteLLM configs is a default cap PER PERSON (pattern 74); a
+    tenant-wide gateway cap would need the tenant to be the end user, which is the other thing it
+    cannot be at the same time. It used to be a hash of the tenant alone, for one reason: `user` is a
+    standard OpenAI parameter, and whether a gateway passes it on to the model provider depends on
+    the provider and version, while a person's name or an organisation's has no business reaching a
+    third party (OpenAI itself recommends a hashed id). That reason is now an assumption about
+    LiteLLM rather than something this code guarantees, so it is checked: against the pinned 1.94.1
+    image, with a stub backend, `user` reached neither the Ollama route nor an OpenAI-compatible one
+    (nor did the metadata or the session below), and the gateway's own database and Langfuse already
+    hold the readable tenant and principal in `metadata`. The image is pinned by digest for that
+    reason, and bumping it re-runs that check (infra/README.md). A principal can be an email address;
+    this is where it would leave if a future LiteLLM forwarded `user`.
   * `metadata` (inside `extra_body`) — the readable tenant, principal and a `tenant:<name>` tag,
     which LiteLLM records as a `request_tags` entry. It is for the gateway's own database and
     Langfuse, where an operator needs it; it was not forwarded to the backend either.
@@ -54,8 +61,10 @@ policy never repeats it or any other 4xx that repeating cannot change (`is_perma
 Its text names the rule and the phrase that matched, so it never reaches the caller.
 """
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote, unquote
 
 import openai
 from langchain_core.runnables import RunnableConfig
@@ -65,11 +74,36 @@ from app.core.errors import ErrorCode, ErrorEnvelope
 from app.core.security import SecurityCtx, valid_ctx
 
 
-def end_user_id(tenant: str) -> str:
-    """The id the gateway and the model provider see for `tenant`: stable, so a tenant's calls
-    group together, and opaque, so its name never leaves. Operators map it back with
-    `python -m scripts.litellm_key end-user --tenant <name>`; 16 hex characters is 64 bits, ample
-    to keep distinct tenants distinct."""
+def end_user_id(tenant: str, principal: str) -> str:
+    """The gateway's end user for one person: `tenant:<tenant>/user:<principal>`, each part
+    percent-encoded with nothing left unescaped but letters, digits and `_.-~`. Tenants and
+    principals are arbitrary client-supplied strings (an `x-principal-id` header, `telegram:123`,
+    an email), so the encoding is what keeps the id unambiguous: a `:` or `/` inside a part becomes
+    `%3A` / `%2F`, and the two parts always split at the one literal `/`. Readable on purpose, so
+    LiteLLM's Customer Usage dropdown names people; `parse_end_user_id` is the inverse."""
+    return f"tenant:{quote(tenant, safe='')}/user:{quote(principal, safe='')}"
+
+
+_END_USER = re.compile(r"tenant:([A-Za-z0-9_.~%-]*)/user:([A-Za-z0-9_.~%-]*)")
+
+
+def parse_end_user_id(end_user: str) -> tuple[str, str] | None:
+    """`(tenant, principal)` for an id this app made with `end_user_id`, else None. Strict: only
+    the canonical encoding parses, so another application's end user on a shared gateway that
+    merely starts with `tenant:` is not mistaken for ours."""
+    match = _END_USER.fullmatch(end_user)
+    if match is None:
+        return None
+    tenant, principal = unquote(match[1]), unquote(match[2])
+    return (tenant, principal) if end_user_id(tenant, principal) == end_user else None
+
+
+def legacy_end_user_id(tenant: str) -> str:
+    """The end user this app sent BEFORE it named the person: `tenant_` plus 16 hex characters of
+    a hash of the tenant (a one-way id, so the tenant's name never left). Nothing sends it any
+    more; it exists so `usage_reconcile` can still attribute the spend-log rows written under it,
+    and so an operator can read one (`litellm_key end-user --tenant <name>`). Delete it, and the
+    branch in `attribute_gateway`, once the gateway's spend logs no longer hold such rows."""
     return "tenant_" + hashlib.sha256(tenant.encode()).hexdigest()[:16]
 
 
@@ -90,7 +124,7 @@ def call_identity(ctx: SecurityCtx | None, session_id: str | None = None) -> dic
     if session_id:
         metadata["session_id"] = session_id  # the Langfuse session of the proxy's own trace
         extra_body["litellm_session_id"] = session_id  # the "Session ID" in LiteLLM's logs
-    return {"user": end_user_id(ctx["tenant"]), "extra_body": extra_body}
+    return {"user": end_user_id(ctx["tenant"], ctx["principal"]), "extra_body": extra_body}
 
 
 def identity_from_config(config: RunnableConfig | None) -> dict:
@@ -106,7 +140,7 @@ def is_budget_exceeded(exc: BaseException) -> bool:
     """True if `exc` is the gateway refusing a call because a budget it enforces is spent. Every
     gateway budget (key, end user, team, tag) raises the same type, so this does not say WHICH ran
     out; LiteLLM's own message and spend log name it, and the operator reads those, not the caller.
-    (The per-tenant budget of pattern 74 is an END-USER budget: read from the installed LiteLLM,
+    (The per-person budget of pattern 74 is an END-USER budget: read from the installed LiteLLM,
     `_check_end_user_budget` raises `BudgetExceededError`, which `auth_exception_handler` answers
     as this same type; a stop from a live gateway with a real database was not run.)"""
     return isinstance(exc, openai.APIStatusError) and getattr(exc, "type", None) == "budget_exceeded"

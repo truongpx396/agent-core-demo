@@ -114,7 +114,7 @@ def test_run_followup_sweep_tells_the_gateway_whose_call_it_is(monkeypatch):
 
     # Each follow-up's synthetic thread id (`followup-sweep:<item id>`) is its conversation, so one draft is one session at the gateway.
     assert fake_chat.invoked_kwargs == [gateway.call_identity(followup_sweep._CRON_CTX, session_id="followup-sweep:1")]
-    assert fake_chat.invoked_kwargs[0]["user"] == gateway.end_user_id(followup_sweep.DEFAULT_TENANT)
+    assert fake_chat.invoked_kwargs[0]["user"] == gateway.end_user_id(followup_sweep.DEFAULT_TENANT, followup_sweep._CRON_CTX["principal"])
 
 
 def test_run_followup_sweep_records_one_cron_usage_event_per_draft(monkeypatch, usage_event_sink):
