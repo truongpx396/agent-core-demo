@@ -90,7 +90,10 @@ def test_run_digest_tells_the_gateway_whose_call_it_is(monkeypatch):
     fake_chat = _FakeChat(_FakeResponse("Everything is healthy today."))
     asyncio.run(ops_digest.run_digest(llm=fake_chat))
 
-    assert fake_chat.invoked_kwargs == gateway.call_identity(ops_digest._CRON_CTX)
+    # The digest's synthetic thread id (`ops-digest:<date>`) is its conversation: every call of one day's digest is one session at the gateway.
+    session = fake_chat.invoked_kwargs["extra_body"]["litellm_session_id"]
+    assert session.startswith("ops-digest:")
+    assert fake_chat.invoked_kwargs == gateway.call_identity(ops_digest._CRON_CTX, session_id=session)
     assert fake_chat.invoked_kwargs["user"] == gateway.end_user_id(ops_digest.DEFAULT_TENANT)
 
 
