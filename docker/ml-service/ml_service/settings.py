@@ -44,8 +44,10 @@ class Settings:
     embed_max_items: int = 256
     embed_max_chars: int = 8000
     embed_batch_size: int = 32
-    # The classifier's bounds. The deadline is the time one model may take before the request moves to the next one (shorter than the app's
-    # own timeout so the app's is a backstop); a request over the character limit is rejected, never truncated.
+    # The classifier's bounds. The deadline is the time ONE model may take before the request moves to the next one. It is not a bound on the
+    # request: with a primary and a fallback that both overrun, the service can spend twice this, which is the app's whole 0.5 s timeout, so on a
+    # loaded machine the app's timer can fire before the service answers "none" (both degrade to the rules; only the outcome label differs).
+    # A request over the character limit is rejected, never truncated.
     classify_max_chars: int = 4000
     classify_deadline_ms: float = 250.0
     router_head_dir: Path = DEFAULT_HEAD_DIR
