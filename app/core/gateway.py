@@ -1,8 +1,11 @@
 """What the app tells the LLM gateway about each call, and how it reads the gateway saying stop.
 
 The gateway (LiteLLM) sits between the app and the model provider, so it is the one place that
-can bound spend even if everything in the app is wrong: a bug in the allowance, an unpriced model
-(app/agent/cost/pricing.py), a loop. Two things make that work, both here.
+can bound spend even if everything in the app is wrong: a bug in the allowance, a loop. Two things
+make that work, both here. What it cannot cover is a model it has no price for: it prices from the
+same list the app reads (`/model/info`), so an unpriced call is $0 to both and no budget of
+LiteLLM's accumulates it. `UNPRICED_MODEL_POLICY=block` (app/agent/cost/pricing.py) is what covers
+that, and COST_GOVERNANCE.md pattern 74 says why the shipped local models now state a price.
 
 ## Identity on every call
 
@@ -12,10 +15,20 @@ be found but not attributed. Each call carries:
     stable hash of the tenant, NOT the tenant's name: whether LiteLLM passes `user` on to the model
     provider depends on the provider and version (checked against main-stable: an OpenAI-compatible
     backend received only `model` and `messages`), and an organisation's name has no business
-    leaving for a third party if it does (OpenAI itself recommends a hashed id here).
+    leaving for a third party if it does (OpenAI itself recommends a hashed id here). It is also
+    what LiteLLM's per-end-user budgets are keyed by, so `max_end_user_budget_id` in the LiteLLM
+    configs gives every tenant a gateway-side cap (pattern 74): a person-level id here would turn
+    that cap into a per-person one and break `usage_reconcile.attribute_gateway`, which finds a
+    tenant by hashing the names it knows.
   * `metadata` (inside `extra_body`) — the readable tenant, principal and a `tenant:<name>` tag,
     which LiteLLM records as a `request_tags` entry. It is for the gateway's own database and
     Langfuse, where an operator needs it; it was not forwarded to the backend either.
+  * the conversation (`thread_id`), as `litellm_session_id` (LiteLLM's own "Session ID" in its
+    logs) and `metadata.session_id` (the session the proxy's Langfuse trace is filed under). The
+    app's own Langfuse trace uses the same `thread_id` as its session, so the app's turn and the
+    proxy's per-call traces land in one Langfuse session; before, the proxy's traces had a session
+    of their own and nothing joined them. Neither field is a model parameter, so LiteLLM keeps
+    them out of the provider request (checked against a real proxy, pattern 74).
 
 ## Reading "stop"
 
@@ -42,6 +55,7 @@ Its text names the rule and the phrase that matched, so it never reaches the cal
 """
 import hashlib
 from dataclasses import dataclass
+from typing import Any
 
 import openai
 from langchain_core.runnables import RunnableConfig
@@ -59,34 +73,42 @@ def end_user_id(tenant: str) -> str:
     return "tenant_" + hashlib.sha256(tenant.encode()).hexdigest()[:16]
 
 
-def call_identity(ctx: SecurityCtx | None) -> dict:
+def call_identity(ctx: SecurityCtx | None, session_id: str | None = None) -> dict:
     """Keyword arguments to pass to `llm.ainvoke(...)` so the gateway can attribute the call.
-    Empty for an invalid ctx: an unattributable call is sent as it always was."""
+    Empty for an invalid ctx: an unattributable call is sent as it always was. `session_id` (the
+    conversation's `thread_id`) is added when there is one. The cron scripts pass a synthetic
+    thread id of their own (`ops-digest:<date>`, `followup-sweep:<item id>`), so each run is one
+    session at the gateway; a caller with no thread at all simply sends none."""
     if not valid_ctx(ctx):
         return {}
-    return {
-        "user": end_user_id(ctx["tenant"]),
-        "extra_body": {
-            "metadata": {
-                "tenant": ctx["tenant"],
-                "principal": ctx["principal"],
-                "tags": [f"tenant:{ctx['tenant']}"],
-            }
-        },
+    metadata: dict[str, Any] = {
+        "tenant": ctx["tenant"],
+        "principal": ctx["principal"],
+        "tags": [f"tenant:{ctx['tenant']}"],
     }
+    extra_body: dict[str, Any] = {"metadata": metadata}
+    if session_id:
+        metadata["session_id"] = session_id  # the Langfuse session of the proxy's own trace
+        extra_body["litellm_session_id"] = session_id  # the "Session ID" in LiteLLM's logs
+    return {"user": end_user_id(ctx["tenant"]), "extra_body": extra_body}
 
 
 def identity_from_config(config: RunnableConfig | None) -> dict:
-    """`call_identity` for the ctx a LangGraph node finds in its own `config`. `config` is optional
-    because tests and scripts call a node with just a state; LangGraph passes it in a real run."""
-    ctx = ((config or {}).get("configurable") or {}).get("ctx")
-    return call_identity(ctx)
+    """`call_identity` for the ctx and conversation a LangGraph node finds in its own `config`.
+    `config` is optional because tests and scripts call a node with just a state; LangGraph passes
+    it in a real run."""
+    configurable = (config or {}).get("configurable") or {}
+    thread_id = configurable.get("thread_id")
+    return call_identity(configurable.get("ctx"), session_id=thread_id if isinstance(thread_id, str) else None)
 
 
 def is_budget_exceeded(exc: BaseException) -> bool:
     """True if `exc` is the gateway refusing a call because a budget it enforces is spent. Every
     gateway budget (key, end user, team, tag) raises the same type, so this does not say WHICH ran
-    out; LiteLLM's own message and spend log name it, and the operator reads those, not the caller."""
+    out; LiteLLM's own message and spend log name it, and the operator reads those, not the caller.
+    (The per-tenant budget of pattern 74 is an END-USER budget: read from the installed LiteLLM,
+    `_check_end_user_budget` raises `BudgetExceededError`, which `auth_exception_handler` answers
+    as this same type; a stop from a live gateway with a real database was not run.)"""
     return isinstance(exc, openai.APIStatusError) and getattr(exc, "type", None) == "budget_exceeded"
 
 

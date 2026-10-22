@@ -112,7 +112,8 @@ def test_run_followup_sweep_tells_the_gateway_whose_call_it_is(monkeypatch):
     fake_chat = _FakeChat([_FakeResponse("Hi A!")])
     asyncio.run(followup_sweep.run_followup_sweep(llm=fake_chat))
 
-    assert fake_chat.invoked_kwargs == [gateway.call_identity(followup_sweep._CRON_CTX)]
+    # Each follow-up's synthetic thread id (`followup-sweep:<item id>`) is its conversation, so one draft is one session at the gateway.
+    assert fake_chat.invoked_kwargs == [gateway.call_identity(followup_sweep._CRON_CTX, session_id="followup-sweep:1")]
     assert fake_chat.invoked_kwargs[0]["user"] == gateway.end_user_id(followup_sweep.DEFAULT_TENANT)
 
 

@@ -104,6 +104,56 @@ class TestCallIdentity:
         """Never invent an identity: an unattributable call carries none rather than a wrong one."""
         assert gateway.call_identity(ctx) == {}
 
+    def test_a_conversation_is_named_as_both_session_fields(self):
+        """`litellm_session_id` is LiteLLM's own "Session ID"; `metadata.session_id` is the Langfuse session of the proxy's trace. The app's
+        own trace uses the same thread_id as its session (stream.py `_open_trace`), which is what puts the two in one Langfuse session."""
+        identity = gateway.call_identity({"tenant": "acme", "principal": "alice", "claims": {}}, session_id="thread-42")
+
+        assert identity["extra_body"]["litellm_session_id"] == "thread-42"
+        assert identity["extra_body"]["metadata"]["session_id"] == "thread-42"
+
+    @pytest.mark.parametrize("session_id", [None, ""])
+    def test_no_conversation_means_neither_session_field_is_sent(self, session_id):
+        """A caller with no thread must not send an empty session that LiteLLM would file every such call under."""
+        identity = gateway.call_identity({"tenant": "acme", "principal": "alice", "claims": {}}, session_id=session_id)
+
+        assert "litellm_session_id" not in identity["extra_body"]
+        assert "session_id" not in identity["extra_body"]["metadata"]
+
+    def test_the_session_changes_nothing_else_about_who_is_calling(self):
+        """The end user is what the per-tenant budget and the reconciliation key on (pattern 74): a conversation must never reach it."""
+        ctx = {"tenant": "acme", "principal": "alice", "claims": {}}
+        without, with_session = gateway.call_identity(ctx), gateway.call_identity(ctx, session_id="thread-42")
+
+        assert with_session["user"] == without["user"] == gateway.end_user_id("acme")
+        assert {k: v for k, v in with_session["extra_body"]["metadata"].items() if k != "session_id"} == without["extra_body"]["metadata"]
+
+    def test_an_invalid_ctx_sends_no_session_either(self):
+        """A session with no tenant would be an identity the gateway cannot attribute: the rule above holds."""
+        assert gateway.call_identity(None, session_id="thread-42") == {}
+
+
+class TestIdentityFromConfig:
+    CTX = {"tenant": "acme", "principal": "alice", "claims": {}}
+
+    def test_the_conversation_is_the_threads_id(self):
+        identity = gateway.identity_from_config({"configurable": {"ctx": self.CTX, "thread_id": "thread-7"}})
+
+        assert identity == gateway.call_identity(self.CTX, session_id="thread-7")
+
+    def test_a_config_with_no_thread_is_what_it_was_before(self):
+        assert gateway.identity_from_config({"configurable": {"ctx": self.CTX}}) == gateway.call_identity(self.CTX)
+
+    @pytest.mark.parametrize("thread_id", [None, 7, ["thread"]])
+    def test_a_thread_id_that_is_not_text_is_ignored_rather_than_sent(self, thread_id):
+        identity = gateway.identity_from_config({"configurable": {"ctx": self.CTX, "thread_id": thread_id}})
+
+        assert identity == gateway.call_identity(self.CTX)
+
+    @pytest.mark.parametrize("config", [None, {}, {"configurable": None}, {"configurable": {"thread_id": "thread-7"}}])
+    def test_without_a_ctx_there_is_no_identity_whatever_the_thread(self, config):
+        assert gateway.identity_from_config(config) == {}
+
 
 class TestWhatActuallyLeavesTheProcess:
     """Drive a real ChatOpenAI at a mock gateway and read the request it sent."""
@@ -145,6 +195,22 @@ class TestWhatActuallyLeavesTheProcess:
             "principal": TEST_CTX["principal"],
             "tags": [f"tenant:{TEST_CTX['tenant']}"],
         }
+
+    async def test_the_request_body_carries_the_conversation_as_a_session(self):
+        """What the OpenAI SDK actually puts on the wire: `litellm_session_id` at the top level of the body, where LiteLLM reads its own
+        parameters from, and `session_id` inside `metadata`, where its Langfuse logger looks."""
+        seen: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(json.loads(request.content))
+            return httpx.Response(200, json=self._completion())
+
+        config = {"configurable": {"ctx": TEST_CTX, "thread_id": "thread-9"}}
+        await self._llm(handler).ainvoke([HumanMessage(content="hi")], **gateway.identity_from_config(config))
+
+        assert seen[0]["litellm_session_id"] == "thread-9"
+        assert seen[0]["metadata"]["session_id"] == "thread-9"
+        assert seen[0]["user"] == gateway.end_user_id(TEST_CTX["tenant"])
 
     async def test_without_an_identity_the_body_is_what_it_was_before(self):
         seen: list[dict] = []
@@ -226,6 +292,14 @@ class TestTheAgentNodeAttributesItsCalls:
 
         assert llm.kwargs == [gateway.call_identity(TEST_CTX)]
         assert llm.kwargs[0]["user"] == gateway.end_user_id(TEST_CTX["tenant"])
+
+    async def test_a_call_made_in_a_conversation_names_it_to_the_gateway(self):
+        llm = _RecordingLLM(AIMessage(content="hello there"))
+        agent = make_agent_node(llm)
+
+        await agent({"messages": [HumanMessage(content="hi")]}, {"configurable": {"ctx": TEST_CTX, "thread_id": "thread-3"}})
+
+        assert llm.kwargs == [gateway.call_identity(TEST_CTX, session_id="thread-3")]
 
     async def test_a_direct_call_with_no_config_still_works_and_sends_no_identity(self):
         """Tests and scripts call the node with just a state."""

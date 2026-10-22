@@ -293,6 +293,19 @@ It rebuilds from the text each point already stores, keeps ids, payload (tenant 
 
 **Attaching an ONNX embedding model served by the ML service** (config only, no code change). `GET http://localhost:8083/v1/models` lists what it can serve and what each model expects as a prefix; `docker/ml-service/models.toml` declares them (`ML_MODELS_ENABLED=bge-small-en-v1.5,gte-modernbert-base-int8` loads more than the default). Then: point the gateway's `embed` alias at `openai/<name>` with `api_base: http://ml-service:80/v1` ([the entry](specs/014-model-serving-eval-harness/contracts/gateway-aliases.md)), set the prefixes the model needs, restart the proxy, run `make reembed` for each collection, bake, delete the old collections. Memory, measured: the container idles at 574 MiB without an embedding model and 781 MiB with bge-small enabled, and reached 1,069 MiB under 100 concurrent requests, against the production limit of 2 GiB; enable the other models only after checking the headroom on your hardware. On the CPU this was measured on, the fp32 files were *faster* than int8, so the defaults are fp32.
 
+### Model tiers, and what each is priced at
+The gateway serves three chat tiers, each an alias (the app names aliases, never a provider's model id):
+
+| Tier | Alias | Dev (`litellm-config.yaml`) | Production | Used by |
+|---|---|---|---|---|
+| easy | `chat` | qwen2.5:7b, local | `LLM_CHAT_MODEL` | every turn (`CHAT_MODEL=chat`) |
+| medium | `chat-medium` | qwen2.5:7b, local stand-in (the same model as `chat`) | `LLM_MEDIUM_*`; unset = `chat` | nothing automatic yet: a specialist names it in its `AGENT.md` `model:`, or point `CHAT_MODEL` at it |
+| strong | `chat-strong` | qwen2.5:14b, local (`make pull-strong-model`) | `LLM_STRONG_*`; unset = `chat` | the router's escalation target, off by default (below) |
+
+**Attaching Gemini** to the medium or strong tier is configuration: put its key in `.env` (`GEMINI_API_KEY_MEDIUM` / `GEMINI_API_KEY_STRONG`; the dev compose already passes them to LiteLLM), replace that one entry with the Gemini block commented under `chat-medium` in `deploy/litellm/litellm-config.yaml` (production: the three `LLM_MEDIUM_*` / `LLM_STRONG_*` variables, see `deploy/env/prod.env.example`), restart the proxy, then run `make probe-tools ARGS="--alias chat-medium"`. LiteLLM does not know an `openai/<gemini id>`, so state its price in `model_info` too. Not yet tried against a real key: Google documents tool calling and streaming on that endpoint but not the streamed `usage` the app meters from, so send one streamed turn as well.
+
+**Every local alias states a price** in `model_info` (about the order of magnitude hosted providers charge for open-weights models of that size: $0.10 / $0.20 per million input / output tokens for the 7B, $0.20 / $0.40 for the 14B). They are shadow prices, not a bill: without one LiteLLM reports a local model as unpriced or as a flat $0, and no gateway budget can ever trip on a $0 model. Change them to your amortised hardware cost if you like, but keep them above 0 ([pattern 74](COST_GOVERNANCE.md)).
+
 ### Attaching a stronger model, and routing to it
 Optional and **off by default**: with the defaults nothing is asked of any classifier and every call is exactly what it was. The pieces: a gateway alias `chat-strong` (always present in both LiteLLM configs), a small classifier in the ML service (`POST /classify`), and a graph node `route_model` that asks it one question per turn. A turn the classifier scores at or above `ROUTER_THRESHOLD` is answered by `chat-strong` and is priced and recorded as it; every other turn, and every failure of any part, runs on `chat` as before ([pattern 68](GRAPH_PATTERNS.md)). The router can only choose the model: approval, tenant scoping and idempotency are unchanged under either.
 

@@ -177,6 +177,41 @@ dc up -d           # recreates api / agent-worker / ingest-worker with the new k
   raising the budget; `python -m scripts.litellm_key end-user --tenant <name>` maps a name to its id.
 - To roll the key, mint a new one, swap `LITELLM_APP_KEY`, `dc up -d`, then delete the old key in
   LiteLLM's UI.
+- A key lists the aliases it may call. `create` now defaults to every alias the prod config defines
+  (`chat`, `chat-medium`, `chat-strong`, `embed`); a key minted before that lists only `chat,embed` and
+  LiteLLM will refuse `chat-strong` or `chat-medium` for it ("key not allowed to access model"). Re-mint
+  it, or widen it with LiteLLM's `/key/update`, before turning the router on or attaching a tier.
+
+**The per-tenant cap.** The app key's budget is one number for the whole app. LiteLLM also holds a
+*default budget for every tenant* (the app sends `user` = a hash of the tenant): the configs name it
+(`litellm_settings.max_end_user_budget_id: tenant-default`) and **you create it once**; until you do,
+LiteLLM logs "Default end user budget not found in database" on each call and applies no cap at all.
+
+```
+dc exec -e LITELLM_MASTER_KEY api python -m scripts.litellm_key tenant-budget set --max-budget <usd per tenant per window>
+dc exec -e LITELLM_MASTER_KEY api python -m scripts.litellm_key tenant-budget info   # exits 1 if it is missing: run it after every deploy
+```
+
+- Size it **above the largest single tenant's own cap** for the same window, like the key budget: it is a
+  backstop beneath the app's limits (`MAX_COST_USD_PER_TENANT_*`, `budget_policies`), not a copy of them.
+  `set` again changes it; LiteLLM reads it through a 60-second cache.
+- It covers **chat calls only**: embeddings carry no end user yet. A tenant that reaches it gets the same
+  `provider_budget_exceeded` and `GatewayBudgetExceeded` page as the key does; the spend logs' `end_user`
+  (map a name with `end-user --tenant`) says whose it was. Different numbers for different tenants would
+  be one LiteLLM customer per tenant, which duplicates `budget_policies`: prefer the app's overrides.
+
+**Bumping the LiteLLM image.** Both compose files pin `ghcr.io/berriai/litellm:main-stable` by digest, and
+`tests/core/test_compose_litellm_pinned.py` fails if they differ. To move it deliberately:
+
+```
+docker pull ghcr.io/berriai/litellm:main-stable
+docker image inspect ghcr.io/berriai/litellm:main-stable --format '{{index .RepoDigests 0}}'
+docker manifest inspect ghcr.io/berriai/litellm@sha256:<digest>   # must list linux/amd64 AND linux/arm64
+```
+
+Put the digest in both `deploy/compose/docker-compose*.yml`, then run `make probe-tools` and check a
+budget stop, a priced call (`x-litellm-response-cost` above 0) and `/model/info` before shipping: the
+stop's HTTP status changed between releases once, and the app's checks were written against 1.94.1.
 
 ### 7. Point DNS at them (optional)
 

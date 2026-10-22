@@ -140,7 +140,9 @@ services:
       - qdrant:/qdrant/storage
 
   litellm:
-    image: ghcr.io/berriai/litellm:main-stable
+    # Pinned by digest, the same one as docker-compose.yml (a test checks), for the reasons given there. Bump it with infra/README.md
+    # ("Bumping the LiteLLM image").
+    image: ghcr.io/berriai/litellm:main-stable@sha256:28b10a635296730007097390939b55f8696ece548530d4ddda3e31c708b4dc81
     restart: unless-stopped
     cpus: "0.3"
     mem_limit: 512m
@@ -151,6 +153,10 @@ services:
       LLM_API_BASE: ${LLM_API_BASE}
       LLM_API_KEY: ${LLM_API_KEY}
       LLM_CHAT_MODEL: ${LLM_CHAT_MODEL}
+      # The middle tier (`chat-medium`). Unset = the same as `chat`, so the proxy always starts; see deploy/env/prod.env.example.
+      LLM_MEDIUM_CHAT_MODEL: ${LLM_MEDIUM_CHAT_MODEL:-${LLM_CHAT_MODEL}}
+      LLM_MEDIUM_API_BASE: ${LLM_MEDIUM_API_BASE:-${LLM_API_BASE}}
+      LLM_MEDIUM_API_KEY: ${LLM_MEDIUM_API_KEY:-${LLM_API_KEY}}
       # The escalation alias (`chat-strong`). Unset = the same as `chat`, so the proxy always starts; see deploy/env/prod.env.example.
       LLM_STRONG_CHAT_MODEL: ${LLM_STRONG_CHAT_MODEL:-${LLM_CHAT_MODEL}}
       LLM_STRONG_API_BASE: ${LLM_STRONG_API_BASE:-${LLM_API_BASE}}
