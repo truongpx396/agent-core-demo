@@ -5,7 +5,7 @@
 # comment for why this is load-bearing (a real CI run with no cap produced a
 # 40,960-token runaway completion and cascading timeouts), not just defensive.
 providers:
-  - id: "ollama:chat:{{ env.PROMPTFOO_MODEL | default('qwen2.5:3b') }}"
+  - id: "ollama:chat:{{ env.PROMPTFOO_MODEL | default('qwen2.5:7b') }}"
     config:
       temperature: 0
       num_predict: 150
@@ -28,7 +28,7 @@ tests:
   - description: escalates once a lead shows real buying intent, rather than continuing to chat
     # "on the phone" is the load-bearing detail here, not incidental color —
     # verified directly (several hand-probed variants against real Ollama):
-    # against this app's own production CHAT_MODEL (qwen2.5:3b, this
+    # against this app's own production CHAT_MODEL (qwen2.5:3b, then this
     # provider's default), that specific phrase reliably made the model read
     # the request as "place the call myself" and go draft a follow-up-call
     # email instead of escalating — a real, reproducible violation of

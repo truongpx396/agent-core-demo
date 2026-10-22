@@ -5,7 +5,7 @@
 # comment for why this is load-bearing (a real CI run with no cap produced a
 # 40,960-token runaway completion and cascading timeouts), not just defensive.
 providers:
-  - id: "ollama:chat:{{ env.PROMPTFOO_MODEL | default('qwen2.5:3b') }}"
+  - id: "ollama:chat:{{ env.PROMPTFOO_MODEL | default('qwen2.5:7b') }}"
     config:
       temperature: 0
       num_predict: 150

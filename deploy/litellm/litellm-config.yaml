@@ -6,9 +6,15 @@ model_list:
   # Primary chat model. NOTE: use the `ollama_chat/` provider (not `ollama/`) —
   # it hits Ollama's /api/chat endpoint with *native* tool calling. The plain
   # `ollama/` provider fakes tools via prompt injection and loops on tool use.
+  #
+  # The model is qwen2.5:7b, not the 3b this file used to name, because of what each does with this app's tool calls
+  # (`python -m scripts.toolcall_probe`, 22 labelled prompts against the app's real tools and system prompt, temperature 0):
+  # the 3b answered 8/19 correctly at the old repeat_penalty 1.3, 13/19 at 1.1 and 15/19 even at 1.0, the misses mostly silently dropped by Ollama
+  # (the model wrote malformed JSON, Ollama's parser discards a call it cannot read, and the graph sees an empty reply);
+  # the 7b answers 19/19 at 1.1 or 1.0. See GRAPH_PATTERNS.md pattern 73 and the repeat_penalty note below.
   - model_name: chat
     litellm_params:
-      model: ollama_chat/qwen2.5:3b
+      model: ollama_chat/qwen2.5:7b
       # host.docker.internal: this targets a native macOS Ollama on the
       # host, not a docker-compose container — there is no containerized
       # Ollama in this stack. Docker Desktop on Mac can't pass Metal/GPU
@@ -20,7 +26,7 @@ model_list:
       # Ollama, so every model only needs to be pulled once, natively.
       api_base: http://host.docker.internal:11434
       # Ollama's own runtime default (verified via `ollama ps`: 4096, NOT
-      # the 32768 qwen2.5:3b actually supports per `ollama show`) — nothing
+      # the 32768 qwen2.5 actually supports per `ollama show`, 3b and 7b alike) — nothing
       # here overrode it before, and it was tight enough to matter: the
       # system prompt + tool schemas ALONE measure ~2300+ input tokens on a
       # bare first call (real usage_metadata), leaving very little room for
@@ -32,7 +38,7 @@ model_list:
       # change, per this file's own model-alias architecture.
       # app/agent/graph/core.py's HISTORY_TOKEN_CEILING/FLOOR are sized against
       # this exact number — change both together. 32000 is right up
-      # against qwen2.5:3b's own rated max (32768 per `ollama show`) —
+      # against qwen2.5's own rated max (32768 per `ollama show`) —
       # real headroom (768 tokens), not a round-number guess.
       num_ctx: 32000
       # Bounds a SINGLE completion's own length — a real, reproduced gap
@@ -48,35 +54,47 @@ model_list:
       # is generous for this app's own concise assistant answers (a real
       # multi-paragraph reply with a code sample rarely clears a few
       # hundred tokens) while still firmly bounding the worst case.
-      # `repeat_penalty` (Ollama default 1.1) is bumped to make the
-      # repetition loop itself less likely in the first place, not just
-      # capped once it starts — 1.3 is a commonly-used value for reducing
-      # verbatim repetition without visibly hurting normal coherence.
+      # `repeat_penalty` is Ollama's own default, 1.1, and must stay near it. This
+      # used to be 1.3 ("a commonly-used value for reducing verbatim repetition"),
+      # and 1.3 is what broke tool calling: the penalty falls on tokens already in
+      # the context, and a tool call's `":` and quote tokens are in it dozens of
+      # times, so the model drifts off the JSON. Measured with
+      # scripts/toolcall_probe.py: qwen2.5:7b answered 11/19 tool-needing prompts
+      # at 1.3 (the rest came out as fragments like `brtc {"name": "calculator"...`)
+      # and 19/19 at 1.1 and at 1.0; qwen2.5:3b dropped 8 of 22 replies outright at
+      # 1.3 (Ollama discards a call whose JSON it cannot parse, with no error).
+      # The repetition loop 1.3 was added against is a 3b failure: at 1.1 the 3b
+      # looped to the 2048-token cap on "list every kind of database index" (44%
+      # of 6-word runs repeated); the 7b ended all four open-ended prompts it was
+      # tried on by itself, at 1.1 and at 1.0 (at most 10% repeats). So the model
+      # is what fixed the loop, and `num_predict` still bounds the worst case.
+      # Do not change it without running `make probe-tools` (it checks both halves: tool calls and loops).
       num_predict: 2048
-      repeat_penalty: 1.3
+      repeat_penalty: 1.1
   # A second chat entry used purely as a fallback target for "chat".
   - model_name: chat-backup
-    litellm_params:
-      model: ollama_chat/qwen2.5:3b
-      api_base: http://host.docker.internal:11434
-      num_ctx: 32000
-      num_predict: 2048
-      repeat_penalty: 1.3
-  # The escalation alias (specs/014, contracts/gateway-aliases.md section 1): where the model router sends a turn it judges to need a stronger
-  # model. ALWAYS present so the proxy starts and the alias resolves; INERT until the app is told to use it (STRONG_CHAT_MODEL, ROUTER_ENABLED,
-  # both off by default). In dev it is a bigger LOCAL model, so the whole seam can be exercised with no third party and no key
-  # (`make pull-strong-model`, about 4.7 GB, only needed once the router is on). To point it at a hosted model, edit this one entry: an
-  # OpenAI-compatible endpoint with native tool calls, `stream_options.include_usage`, and a context window of at least 32000. NO `fallbacks`
-  # entry names it, on purpose: the app repeats a failed strong call on `chat` itself, so the usage ledger prices the model that answered.
-  - model_name: chat-strong
     litellm_params:
       model: ollama_chat/qwen2.5:7b
       api_base: http://host.docker.internal:11434
       num_ctx: 32000
       num_predict: 2048
-      repeat_penalty: 1.3
+      repeat_penalty: 1.1
+  # The escalation alias (specs/014, contracts/gateway-aliases.md section 1): where the model router sends a turn it judges to need a stronger
+  # model. ALWAYS present so the proxy starts and the alias resolves; INERT until the app is told to use it (STRONG_CHAT_MODEL, ROUTER_ENABLED,
+  # both off by default). In dev it is a bigger LOCAL model, so the whole seam can be exercised with no third party and no key
+  # (`make pull-strong-model`, about 9 GB, only needed once the router is on; it is a size up from `chat`, which is what makes escalating mean
+  # something, tests/core/test_gateway_aliases_config.py). To point it at a hosted model, edit this one entry: an
+  # OpenAI-compatible endpoint with native tool calls, `stream_options.include_usage`, and a context window of at least 32000. NO `fallbacks`
+  # entry names it, on purpose: the app repeats a failed strong call on `chat` itself, so the usage ledger prices the model that answered.
+  - model_name: chat-strong
+    litellm_params:
+      model: ollama_chat/qwen2.5:14b
+      api_base: http://host.docker.internal:11434
+      num_ctx: 32000
+      num_predict: 2048
+      repeat_penalty: 1.1
   # Vision-capable alias slot (GRAPH_PATTERNS.md pattern 44) — "chat" above
-  # (qwen2.5:3b) has no vision capability, so an attached image is carried
+  # (qwen2.5:7b) has no vision capability, so an attached image is carried
   # through the pipeline correctly but the model can't actually see it.
   #
   # IMPORTANT, verified empirically: neither small local Ollama vision
