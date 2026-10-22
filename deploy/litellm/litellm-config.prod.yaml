@@ -24,6 +24,22 @@ model_list:
     #     input_cost_per_token: 0.0000010
     #     output_cost_per_token: 0.0000040
     #     cache_read_input_token_cost: 0.0000001   # optional; omitted = cached billed as input
+  # The middle tier (`chat` is the easy one, `chat-strong` the strong one; the tier table is at the top of litellm-config.yaml). Same
+  # mechanism as `chat-strong` below: compose passes LLM_MEDIUM_* defaulting to the `chat` values, so an unset variable cannot stop the
+  # proxy and the alias is effectively `chat` until an operator points it at a model. Nothing selects it automatically: a delegated
+  # specialist names it in its AGENT.md `model:`, or an operator points CHAT_MODEL at it. No `fallbacks` entry names it, for the reason
+  # given under `chat-strong`. To attach Gemini through Google's OpenAI-compatibility endpoint (still beta, per Google), set in the env file
+  #   LLM_MEDIUM_CHAT_MODEL=openai/<a Gemini flash-class id>   LLM_MEDIUM_API_BASE=https://generativelanguage.googleapis.com/v1beta/openai/
+  #   LLM_MEDIUM_API_KEY=<its own key>
+  # and state the price below, because LiteLLM does not know an `openai/<gemini id>` (UNPRICED_MODEL_POLICY=block refuses it otherwise).
+  - model_name: chat-medium
+    litellm_params:
+      model: os.environ/LLM_MEDIUM_CHAT_MODEL
+      api_base: os.environ/LLM_MEDIUM_API_BASE
+      api_key: os.environ/LLM_MEDIUM_API_KEY
+    #   model_info:
+    #     input_cost_per_token: <USD per token, from Google's pricing page>
+    #     output_cost_per_token: <USD per token>
   # The escalation alias (specs/014, contracts/gateway-aliases.md section 1). Compose passes LLM_STRONG_* defaulting to the `chat` values, so
   # an unset variable cannot stop the proxy and the alias is effectively `chat` until an operator points it somewhere stronger. Inert until
   # the app is told to use it (STRONG_CHAT_MODEL / ROUTER_ENABLED). No `fallbacks` entry names it: the app repeats a failed strong call on
@@ -52,6 +68,11 @@ litellm_settings:
   success_callback: ["prometheus"]
   failure_callback: ["prometheus"]
   require_auth_for_metrics_endpoint: false
+  # A default per-tenant spend cap at the gateway: names a budget OBJECT (in LiteLLM's database, created with
+  # `make litellm-key ARGS="tenant-budget set --max-budget <usd>"`) that applies to every end user, i.e. every tenant (the app sends `user`
+  # = a hash of the tenant), without a budget of its own. Not created yet = LiteLLM logs a warning per call and applies NO cap. See
+  # litellm-config.yaml for the full note and COST_GOVERNANCE.md pattern 74.
+  max_end_user_budget_id: tenant-default
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
