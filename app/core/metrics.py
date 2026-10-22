@@ -526,6 +526,24 @@ agent_gateway_budget_exceeded_total = Counter(
     "ceilings did not stop the spend first, or the backstop is sized too low.",
 )
 
+agent_gateway_content_blocked_total = Counter(
+    "agent_gateway_content_blocked_total",
+    "LLM calls the gateway refused because a content guardrail blocked them (app/core/gateway.py), "
+    "answered with a refusal instead of an error. A policy working as configured, not a fault: "
+    "a rise says people are asking for what the operator chose to refuse. `pre_call` blocked the "
+    "request (the refused message is then replaced in the thread), `post_call`/`during_call` the "
+    "response.",
+    ["mode"],
+)  # mode: pre_call | post_call | during_call | other
+
+agent_unparsed_completion_total = Counter(
+    "agent_unparsed_completion_total",
+    "Model calls that reported output tokens but returned neither text nor a tool call: the provider "
+    "generated something it could not hand back. Seen with Ollama (qwen2.5:3b): a `remember` tool call "
+    "it could not parse was dropped, so the graph saw an empty reply (a `too_short` retry) and the "
+    "write never happened. Nothing in the reply says it happened, so this counter is the only trace.",
+)
+
 agent_unpriced_usage_total = Counter(
     "agent_unpriced_usage_total",
     "LLM calls that spent tokens on a model with no known price (app/agent/cost/pricing.py) — "

@@ -26,6 +26,20 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
+# What the person is told when a request is refused, by the app's own screening (`reject_moderation`) or
+# by the gateway's content guardrail (`agent`). One text, so a refusal reads the same whoever made it
+# and says nothing about which rule fired: naming it would only help someone rephrase around it.
+CANNOT_HELP_MESSAGE = "I can't help with that request."
+
+# Marks the AIMessage `agent` writes when the gateway's guardrail refused the call (`additional_kwargs`,
+# like RETRY_ARTIFACT_KEY below). `should_continue` ends the turn on it, through `no_answer`, so the
+# refusal is the answer: no retry, no follow-ups, no cache write.
+GATEWAY_REFUSAL_KEY = "gateway_refusal"
+
+# Replaces the text of a message the gateway's guardrail refused, in the stored thread. The gateway scans
+# the WHOLE message list on every call, so leaving the refused text in the thread refuses every later turn.
+WITHHELD_MESSAGE = "[This message was withheld: a content policy refused it.]"
+
 # Tags a message the graph wrote into the thread to drive a retry, so the
 # readers below can tell it from conversation. `retry_output` appends its
 # corrective feedback as a HumanMessage (the only role a model will treat as

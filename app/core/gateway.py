@@ -30,8 +30,18 @@ gets its own error code, its own counter and a critical alert.
 It is also never retried (`app/agent/graph/core.py::_retry_agent_on`): it repeats until the budget resets. The
 openai SDK still retries a 429 twice inside one call (measured: 3 requests per `ainvoke`), which is
 harmless — the gateway refuses at authentication, before any provider is called or any money spent.
+
+## Reading "refused"
+
+A content guardrail configured in the gateway (LiteLLM's admin UI keeps them in its own database, not
+in this repo) answers a blocked call with HTTP 400 whose error body carries `provider_specific_fields`
+(`guardrail_name`, `guardrail_mode`, `category`, `matched_phrase`). That is a policy decision, not a
+failure of the app: the agent node turns it into the turn's answer (`content_block`), and the retry
+policy never repeats it or any other 4xx that repeating cannot change (`is_permanent_client_error`).
+Its text names the rule and the phrase that matched, so it never reaches the caller.
 """
 import hashlib
+from dataclasses import dataclass
 
 import openai
 from langchain_core.runnables import RunnableConfig
@@ -100,3 +110,57 @@ def budget_envelope() -> ErrorEnvelope:
             "requests until the limit is raised or resets. This is on our side, not yours."
         ),
     )
+
+
+# Client errors that can pass on a second try: a request timeout, a conflict with a concurrent change,
+# "too early" and a rate limit. Every other 4xx says the request itself is refused, and the same
+# request is refused again.
+_TRANSIENT_CLIENT_STATUSES = frozenset({408, 409, 425, 429})
+
+
+def is_permanent_client_error(exc: BaseException) -> bool:
+    """True if `exc` is the gateway or the provider rejecting the request itself (a 4xx other than a
+    timeout, conflict, "too early" or rate limit), so sending the identical request again cannot
+    succeed. The status is read from the SDK's own exception: LangGraph's default retry predicate
+    only knows `httpx`'s."""
+    if not isinstance(exc, openai.APIStatusError):
+        return False
+    return 400 <= exc.status_code < 500 and exc.status_code not in _TRANSIENT_CLIENT_STATUSES
+
+
+# The values LiteLLM puts in `guardrail_mode`; anything else is counted as "other" so the metric's label
+# set stays bounded whatever a gateway version or a custom guardrail sends.
+_GUARDRAIL_MODES = frozenset({"pre_call", "post_call", "during_call"})
+
+
+@dataclass(frozen=True)
+class ContentBlock:
+    """A content guardrail's refusal. Only `mode` is kept: the guardrail's name, its category and the
+    phrase it matched are the operator's (they are on the gateway's own log), not the caller's."""
+
+    mode: str  # pre_call | post_call | during_call | other
+
+
+def content_block(exc: BaseException) -> ContentBlock | None:
+    """The guardrail refusal in `exc`, or None if it is anything else (a budget stop, another 400, a
+    5xx). Recognised by the structured fields LiteLLM sets (`provider_specific_fields.guardrail_name`),
+    else by the "Content blocked" prefix of its message; never by status alone, since a 400 is also how
+    the gateway reports a malformed request."""
+    if not isinstance(exc, openai.BadRequestError):
+        return None
+    body = exc.body if isinstance(exc.body, dict) else {}
+    fields = body.get("provider_specific_fields")
+    fields = fields if isinstance(fields, dict) else {}
+    if not (fields.get("guardrail_name") or str(body.get("message") or "").startswith("Content blocked")):
+        return None
+    mode = fields.get("guardrail_mode")
+    return ContentBlock(mode=mode if mode in _GUARDRAIL_MODES else "other")
+
+
+def note_content_block(exc: BaseException) -> ContentBlock | None:
+    """If `exc` is a guardrail refusal, count it and return it. The one place the counter is
+    incremented (the same shape as `note_budget_stop`)."""
+    block = content_block(exc)
+    if block is not None:
+        metrics.agent_gateway_content_blocked_total.labels(mode=block.mode).inc()
+    return block

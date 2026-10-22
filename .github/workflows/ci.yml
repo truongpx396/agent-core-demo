@@ -780,6 +780,8 @@ jobs:
           scanners: vuln,secret,misconfig
           severity: CRITICAL
           ignore-unfixed: true
+          # Dated, reasoned exceptions only (see the file); the report step below does not read it.
+          trivyignores: .trivyignore.yaml
           exit-code: "1"
           skip-dirs: .venv,**/node_modules,.mypy_cache,.ruff_cache,.pytest_cache,infra/terraform
 
@@ -826,6 +828,7 @@ jobs:
           image-ref: agent-core-demo:trivy
           severity: CRITICAL
           ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
           exit-code: "1"
           skip-setup-trivy: true
 

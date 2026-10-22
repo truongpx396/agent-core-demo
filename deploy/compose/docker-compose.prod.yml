@@ -28,6 +28,16 @@
 # infra/README.md's first-time-setup section.
 name: agent-core-demo
 
+# The agent-worker and ingest-worker roles run the app's image, which carries the API's HEALTHCHECK
+# (Dockerfile): a probe of http://localhost:8000/health/ready. A worker binds no port, so inheriting it
+# reported every worker `unhealthy` forever (a failing streak in the hundreds), which hides a service
+# that really is unhealthy and would restart-loop one under anything that acts on health. The probe is
+# switched off here rather than replaced: whether a worker pool is alive is an application-level fact
+# the `WorkerUnreachable` alert (observability/prometheus/alerts.yml) already watches, a job that no
+# worker takes. tests/core/test_compose_worker_healthcheck.py fails for a worker added without this.
+x-worker-healthcheck: &worker-healthcheck
+  disable: true
+
 x-app-env: &app-env
   OPENAI_API_BASE: http://litellm:4000/v1
   # The app should hold a SCOPED key, not the master: the master key is gateway admin (it can
@@ -229,6 +239,7 @@ services:
     mem_limit: 768m
     stop_grace_period: 90s # let an in-flight agent turn (LLM calls, tool use) finish rather than being killed mid-turn
     command: ["python", "-m", "app.job_queue.agent_worker"]
+    healthcheck: *worker-healthcheck
     environment: *app-env
     depends_on:
       postgres:
@@ -245,6 +256,7 @@ services:
     mem_limit: 768m
     stop_grace_period: 90s # let an in-flight document parse/embed job finish rather than being killed mid-job
     command: ["python", "-m", "app.ingestion.ingest_worker"]
+    healthcheck: *worker-healthcheck
     environment: *app-env
     depends_on:
       postgres:

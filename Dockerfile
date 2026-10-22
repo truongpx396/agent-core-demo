@@ -41,6 +41,12 @@ RUN apt-get update && apt-get upgrade -y \
 RUN useradd --create-home --uid 1000 appuser
 WORKDIR /app
 
+# pip first: the base image's pip vendors its OWN copy of certifi (pip/_vendor/certifi), which Trivy's image scan reads as a
+# second certifi, and the lock cannot touch it. pip 26.2.1 (what python:3.13-slim shipped) vendored 2026.6.17, which trusts the
+# emSign intermediates GHSA-6q48-6c7w-9gw2 is about; 26.2.2 vendors 2026.10.19. Upgrading also leaves the image's pip with a
+# current CA bundle for the install below. Unpinned on purpose, like the base tag and `apt-get upgrade` above: this layer exists to be fresh.
+RUN pip install --no-cache-dir --upgrade pip
+
 COPY requirements-lock.txt .
 RUN pip install --no-cache-dir -r requirements-lock.txt
 
@@ -91,5 +97,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # The API service is the default role; agent-worker/ingest-worker override
 # this in docker-compose.yml (`command: ["python", "-m", "app.job_queue.agent_worker"]`
 # / `app.ingestion.ingest_worker`) — neither of those binds a port, so EXPOSE/
-# HEALTHCHECK above are meaningful for this default role only.
+# HEALTHCHECK above are meaningful for this default role only. A compose service
+# inherits the image's HEALTHCHECK unless it says otherwise, so each worker also sets
+# `healthcheck: *worker-healthcheck` (disabled) in both compose files; without it every
+# worker reports `unhealthy` for a port it never opens.
 CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

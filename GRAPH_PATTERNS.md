@@ -47,7 +47,7 @@ Flow control lives in explicit state (`iterations`, `context`, …), which is wh
 `ToolNode(handle_tool_errors=friendly_tool_error)` turns a tool exception into a `ToolMessage` the agent sees next turn instead of killing the run. Three failure modes, three policies:
 - A tool fails mid-turn: recover via that message.
 - `retrieve_context` fails: **degrade** to no pre-fetch (the LLM still has `search_docs`).
-- The `agent` node's LLM call fails: automatic **retry** (`AGENT_RETRY_POLICY`). LangGraph's default `retry_on` excludes programming errors, so retry can't mask a bug.
+- The `agent` node's LLM call fails: automatic **retry** (`AGENT_RETRY_POLICY`). LangGraph's default `retry_on` excludes programming errors, so retry can't mask a bug. It did retry every 4xx from the OpenAI SDK, though (a rejected key, an unknown model, a content-guardrail 400); the policy now gives up on a permanent client error and on the gateway's budget stop, and a guardrail refusal is the turn's answer (71).
 
 ### 8. Human-in-the-loop
 `human_approval` calls `interrupt()`, which suspends the node and persists state through the checkpointer; a caller resumes with `Command(resume=True/False)`. Two routes reach it: the opt-in `require_approval` flag, and the mandatory route for any non-`read_only` call (15). `make chat-hitl` is a runnable example.
@@ -377,6 +377,16 @@ Langfuse trace `1e46b2c8` (2026-10-21): "what is working hours of ecorp ?" got a
 - **Gap: the cut is English and a closed list.** The cues are `would you like / do you want / shall I / want me to / should I` ending in "?", and the continuing sentences open with `if so / if yes / if you'd like / if you want / let me know`. "Anything else I can help with?" is not a permission question and is left alone, as before. A model answering in another language is not repaired.
 - **Gap: four distinctive words is a threshold, not a measurement.** An answer that is correct but very short ("It is 9.") followed by an offer is not cut and is rejected as before.
 
+### 71. A refusal is final: not retried, not an error, and not left in the thread
+Langfuse traces `b376e4d8` and `2c8e76a4` (2026-10-21): LiteLLM's "Denied Financial Advice" guardrail (created in its admin UI; no committed config defines it) refused "should i invest in testla stock ?" with an HTTP 400. Three things in the app turned one policy decision into a dead session.
+- **Bug 1: every 4xx was retried.** LangGraph 0.2.76's `default_retry_on` excludes only `httpx.HTTPStatusError` 4xx (checked in the installed source), and the OpenAI SDK's `BadRequestError`, `AuthenticationError`, `NotFoundError` and `UnprocessableEntityError` are not that class, so `AGENT_RETRY_POLICY` made three attempts about five seconds apart. `gateway.is_permanent_client_error` (a 4xx other than 408, 409, 425 or 429) is now refused a retry, next to the budget stop's carve-out; a 429, a 5xx and a dropped connection are retried as before. The comment above the policy said "connection error, 5xx" and the code did more.
+- **Bug 2: a policy decision reached the person as an anonymous `internal` error.** `gateway.content_block` recognises the refusal by the structured fields LiteLLM sets (`provider_specific_fields.guardrail_name`, `guardrail_mode`), else by the "Content blocked" message, and never by the status alone (a malformed request is also a 400). The `agent` node turns it into the turn's answer, "I can't help with that request." (the text `reject_moderation` uses; the rule, the matched phrase and the guardrail's name stay in the gateway's log), marked with `GATEWAY_REFUSAL_KEY`. `should_continue` sends a marked message to `no_answer`, which ends the turn with no retry, no follow-up suggestions (more model calls on the same refused history) and no semantic-cache write (the refusal would be stored as the answer to this question). No new node or edge, no `STATE_SCHEMA_VERSION` bump. Any other 400 (context too long, a bad request) still raises and is reported as `internal`: those are bugs.
+- **Bug 3: the refused message stayed in the thread, and the gateway scans the whole list.** "hey" was refused for an earlier message's "stock + should i", and so was every turn after it. When the guardrail refused the REQUEST (`pre_call`), this turn's message is replaced in the stored thread by a placeholder (same id, which is how the reducer replaces instead of appending); a `post_call` block refused what the model wrote, so the question stays.
+- **Metrics:** `agent_gateway_content_blocked_total{mode}`, with no alert: it is the operator's own policy working. `agent_unparsed_completion_total` is the gap below.
+- **Tests:** `tests/agent/graph/test_gateway_refusal.py` (38; 23 fail on the old code), including the real SDK exception from a `MockTransport` response and the two-turn session that used to end at the first turn. `tests/core/test_compose_worker_healthcheck.py`: every worker role sets `healthcheck: *worker-healthcheck`. Found in the same session: the app image's `HEALTHCHECK` probes the API's port, compose lets a service inherit it, and the workers only overrode `command`, so all of them showed `unhealthy` for as long as they ran. It is disabled for them, not replaced: a worker pool that picks up nothing is what the `WorkerUnreachable` alert already watches.
+- **Gap: a thread whose OLDER messages already match a guardrail stays refused.** The refusal does not say which message matched, so only the message just sent is replaced. A guardrail added after a conversation was written (the session in the traces was already like this) needs a new session.
+- **Gap: nothing probes a worker's liveness at the container level.** The application-level alert covers "picks up nothing"; a worker that is up but stuck on one long turn is not distinguished from a busy one.
+
 ## Graph Flow
 
 ```
@@ -417,8 +427,9 @@ route_after_validation?  ← valid ctx? last user message (not retry feedback, p
                       ↓
                      should_continue?  ← the iteration/token/cost caps are checked first, whatever the model said
                       ├─→ no_answer  (MAX_ITERATIONS, MAX_TOKENS_PER_TURN, MAX_COST_USD_PER_TURN (35) or
-                      │               MAX_REPEATED_ACTIONS identical batches (34)): answers any tool calls
-                      │               pending on the message that tripped it, replaces untrusted text → END
+                      │               MAX_REPEATED_ACTIONS identical batches (34), or the gateway's content
+                      │               guardrail refused the call (71): answers any tool calls pending on the
+                      │               message that tripped it, replaces untrusted text → END
                       ├─→ tool_batch_guard  (too many calls in one response, a name that isn't one of THIS
                       │                      domain's tools, or use_skill before skill_search: answers every
                       │                      pending call with a ToolMessage rejection) → agent
@@ -520,6 +531,7 @@ use, and is deliberately its own PR: it is the only change in this series with a
 
 ### Known gaps
 
+- **Ollama can drop a tool call it cannot parse, which leaves `remember` unreachable on `qwen2.5:3b`** (*reproduced against a real Ollama 0.32.15, the same every run at temperature 0; the dropped tokens were never observed*). With the real tool schemas the model generates 18-23 tokens for "remember that my favourite colour is blue" and Ollama returns `content: ""`, no `tool_calls` and `finish_reason: stop`; only "use the remember tool to save: abc" came back as a call. The same request with `parameters: {}` did come back as a call (with invented argument names), so the schemas reach the template, but why the output is discarded is not established. The graph sees an empty reply (a `too_short` retry), the retry nudge makes the model write prose ending in a colon, that passes every check and is stored, and later turns imitate it. `agent_unparsed_completion_total` now counts the case. Fixing it is a model or serving decision (another model, another Ollama build), not a graph change. Pattern 71.
 - **A pre-existing vector collection is trusted, not verified** (*read from code, reproduced in tests*). `qdrant_store.ensure_live` adopts a collection created before embedding identities existed; nothing records what it was made with. Pattern 67.
 
 From reviewing the as-built system against the constitution; each notes how it was established, and a fix PR
