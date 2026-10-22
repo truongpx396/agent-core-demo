@@ -111,6 +111,34 @@ def test_with_no_head_mounted_the_default_container_gives_no_advice(ml_service_u
     assert classifier == {"serving": "none", "heads": {PRIMARY: "absent", FALLBACK: "absent"}}
 
 
+def test_the_shipped_route_topics_set_is_served_by_the_real_container_and_matches_an_independent_computation(ml_service_url):
+    """`task: "label"` against the image as built: the label set baked into it, both real models, the real tokenisers. The expected similarity is
+    computed here from the vectors `/v1/embeddings` serves (examples and sentences), the set's file and numpy, so the service's index is checked
+    against the arithmetic and not against itself (specs/015 FR-004). The three sentences are ones the primary was measured to place well clear of
+    the cutoff (0.773, 0.839 and 0.682 against 0.709), so this does not depend on a close call."""
+    raw = json.loads((Path(__file__).resolve().parents[2] / "docker" / "ml-service" / "labelsets" / "route-topics.json").read_text())
+    sentences = ["Write a Python function that parses a CSV file into invoices please.", "We received a subpoena for customer records, what do we do?", "qwerty qwerty qwerty"]
+    body: dict = {}
+    for _ in range(30):  # the first request after start-up can overrun the service's 250 ms deadline and be answered "none"
+        body = httpx.post(f"{ml_service_url}/classify", json={"task": "label", "labelset": "route-topics", "texts": sentences}, timeout=30).json()
+        if body.get("served_by") == "primary":
+            break
+        time.sleep(1)
+
+    assert body["served_by"] == "primary" and body["model"] == PRIMARY and body["labelset"] == "route-topics" and len(body["labelset_version"]) == 12
+    labels = list(raw["labels"])
+    centroids = []
+    for name in labels:
+        mean = served_vectors(ml_service_url, raw["labels"][name]).mean(axis=0)
+        centroids.append(mean / np.linalg.norm(mean))
+    similarities = served_vectors(ml_service_url, sentences) @ np.stack(centroids).T
+    np.testing.assert_allclose([r["similarity"] for r in body["results"]], similarities.max(axis=1), atol=1e-4)
+    assert [r["nearest"] for r in body["results"]] == [labels[i] for i in similarities.argmax(axis=1)]
+    assert [r["label"] for r in body["results"]] == ["code", "high_stakes", None]
+    shown = httpx.get(f"{ml_service_url}/health/models", timeout=10).json()["labelsets"]["route-topics"]
+    assert shown["version"] == body["labelset_version"] and shown["models"] == {PRIMARY: "loaded", FALLBACK: "loaded"}
+
+
 @pytest.fixture(scope="module")
 def accepted_primary(ml_service, tmp_path_factory):
     """One container with an accepted head for the primary and a head for the fallback that was trained for another revision."""

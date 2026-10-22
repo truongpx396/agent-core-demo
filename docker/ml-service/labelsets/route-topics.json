@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "name": "route-topics",
+  "description": "What kind of work a user message asks of the assistant, for model routing (specs/015). Eight topics; the app maps each to a model tier (app/core/routing_policy.py LABEL_TIERS). The labels describe the KIND OF WORK, not how hard the message is: a short message can be high_stakes and a long one can be lookup. The examples are authored for this repository's domains (support, operations, sales, internal policy), reviewed by a person before they are trusted, and kept disjoint from evals/datasets/route-topics.",
+  "labels": {
+    "smalltalk": [
+      "Hi there!",
+      "Good morning, how are you today?",
+      "Thanks, that was really helpful.",
+      "Who are you and what can you do?",
+      "Have a great weekend!",
+      "Haha, that's funny.",
+      "You're awesome, thank you so much.",
+      "Hello, is anyone there?",
+      "Nice to meet you.",
+      "Goodbye, talk to you later."
+    ],
+    "lookup": [
+      "What is the refund policy for annual plans?",
+      "How many vacation days does a new employee get?",
+      "Where can I find the invoice for last month?",
+      "What are the support hours on weekends?",
+      "How do I reset my password?",
+      "What does the premium plan cost per user?",
+      "Which regions does the shipping policy cover?",
+      "How do I submit an expense report?",
+      "What is the status of ticket 4821?",
+      "Is there a document describing the on-call rotation?"
+    ],
+    "action": [
+      "Create a support ticket for the broken login page.",
+      "Send an email to the customer confirming their refund.",
+      "Schedule a follow-up call with Northwind for next Tuesday.",
+      "Update the shipping address on order 1182 to the new one.",
+      "Please escalate this case to the billing team.",
+      "Add a note to the account saying the customer called today.",
+      "Cancel the subscription for this customer.",
+      "Book a meeting room for the sales review on Friday.",
+      "Reassign this ticket to Dana.",
+      "Log a new incident for the database outage."
+    ],
+    "drafting": [
+      "Write a polite email asking the client to resend the purchase order.",
+      "Draft a short announcement about the new holiday schedule.",
+      "Rewrite this paragraph so it sounds friendlier.",
+      "Summarize this thread in three bullet points.",
+      "Compose a follow-up message after the demo.",
+      "Turn these meeting notes into a clear summary for the team.",
+      "Help me write an apology for the delayed shipment.",
+      "Make this announcement shorter and more formal.",
+      "Write a job description for a customer support specialist.",
+      "Prepare a thank-you note for our best customers."
+    ],
+    "analysis": [
+      "Compare the starter and enterprise plans and tell me which fits a team of fifty.",
+      "Why did ticket volume rise last month, and what are the likely causes?",
+      "What are the pros and cons of moving support to a four-day schedule?",
+      "Evaluate whether we should offer a discount to customers who churn.",
+      "Look at these three vendor proposals and recommend one.",
+      "What trends do you see in the refund requests this quarter?",
+      "Explain the trade-offs between a phone queue and live chat for support.",
+      "Assess the risks of launching the new pricing in December.",
+      "How do our response times compare with last year, and what explains the difference?",
+      "Which customer segments should the sales team prioritize, and why?"
+    ],
+    "reasoning": [
+      "If we hire four agents at 3,200 a month and handle 30 percent more tickets, what is our cost per ticket?",
+      "Plan a rollout across five regions so that no two share a deploy window.",
+      "A customer paid in three installments with partial refunds; work out how much is still owed step by step.",
+      "Estimate how many agents we need if each handles eight chats an hour and we expect 1,200 chats a day.",
+      "Prove that this discount schedule can never go below our cost.",
+      "Work out the break-even point if the license costs 40 per seat and support costs 12,000 a month.",
+      "Schedule twelve interviews across three rooms with these availability constraints.",
+      "Given these four constraints, find an order of deployments that satisfies all of them.",
+      "Calculate the prorated charge when a customer upgrades on the 19th of a 30-day month.",
+      "Think through the steps needed to migrate the data without any downtime."
+    ],
+    "code": [
+      "Write a Python function that parses these CSV rows into invoices.",
+      "Why does this SQL query return duplicate rows?",
+      "Fix the bug in this JavaScript snippet that crashes on empty input.",
+      "Give me a regular expression that matches order numbers like ORD-12345.",
+      "Explain what this stack trace means.",
+      "Write a bash script to rotate the log files every night.",
+      "How do I call this REST API with curl and a bearer token?",
+      "Convert this function from Python to TypeScript.",
+      "Add unit tests for this class.",
+      "Why is my Docker container exiting right after it starts?"
+    ],
+    "high_stakes": [
+      "Can we legally keep the customer's data after they close the account?",
+      "Is this contract clause enforceable if the vendor misses the deadline?",
+      "An employee reported harassment by a manager; how should we handle the investigation?",
+      "Does this transaction trigger our anti-money-laundering reporting duties?",
+      "We suspect a data breach; what must we tell regulators and by when?",
+      "Should we terminate this employee for repeated policy violations?",
+      "What are the tax consequences of issuing equity to a contractor?",
+      "A customer says our product injured them; how do we respond without creating legal exposure?",
+      "Can we sign this NDA without sending it to legal first?",
+      "How should we handle a subpoena for customer records?"
+    ]
+  },
+  "calibration": {
+    "bge-small-en-v1.5": { "min_similarity": 0.709 },
+    "all-MiniLM-L6-v2": { "min_similarity": 0.247 }
+  }
+}

@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from ml_service import classify, embed, guard, health, rerank
+from ml_service import classify, embed, guard, health, labelsets, rerank
 from ml_service.metrics import Metrics
 from ml_service.registry import (
     ModelSpec,
@@ -29,15 +29,18 @@ SUPERVISOR_INTERVAL_S = 1.0
 MODELS_TOML = Path(__file__).resolve().parent.parent / "models.toml"
 
 
-async def _supervise(registry: Registry, interval_s: float) -> None:
-    """Reload failed models once their backoff has elapsed. A bounded wait per model (the backoff) inside a loop that only ever
-    sleeps one short interval; never raises out (a supervisor that dies would stop all recovery silently)."""
+async def _supervise(registry: Registry, interval_s: float, labeller: labelsets.Labeller | None = None) -> None:
+    """Reload failed models once their backoff has elapsed, then re-index the label sets for any model that came back. A bounded wait per
+    model (the backoff) inside a loop that only ever sleeps one short interval; never raises out (a supervisor that dies would stop all
+    recovery silently)."""
     while True:
         await asyncio.sleep(interval_s)
         try:
             retried = await registry.retry_due()
             if retried:
                 logger.info("retried failed models", extra={"models": retried})
+            if labeller is not None:
+                await labeller.sync()
         except Exception:  # noqa: BLE001 - recovery must keep running whatever one reload does
             logger.warning("model retry tick failed", exc_info=True)
 
@@ -88,10 +91,14 @@ def create_app(
         app.state.classifier = classify.Classifier(
             registry, classifiers, classify.read_heads(settings.router_head_dir, [s.name for s in classifiers]), settings, metrics
         )
+        app.state.labeller = labelsets.Labeller(
+            registry, classifiers, labelsets.read_labelsets(settings.labelset_dir), settings, metrics
+        )
         # Load everything concurrently, tolerating failure: a model that cannot load is that model's `failed` state, not the
         # container's. (Before the split either failure stopped the whole service from starting.)
         await registry.load_all()
-        supervisor = asyncio.create_task(_supervise(registry, SUPERVISOR_INTERVAL_S))
+        await app.state.labeller.sync()  # so the first label request after start finds its index, not "pending"
+        supervisor = asyncio.create_task(_supervise(registry, SUPERVISOR_INTERVAL_S, app.state.labeller))
         try:
             yield
         finally:

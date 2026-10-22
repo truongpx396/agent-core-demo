@@ -35,6 +35,10 @@ class Metrics:
         )
         self.embed_batch = Histogram("ml_embed_batch_size", "Texts per embedding request.", ["model"], buckets=BATCH_BUCKETS, registry=r)
         self.classify_requests = Counter("ml_classify_requests_total", "Classification requests, by who answered.", ["served_by"], registry=r)
+        self.label_requests = Counter(
+            "ml_label_requests_total", "Label-set requests (POST /classify task=label), by set and who answered. The set is a name the service already knows.",
+            ["labelset", "served_by"], registry=r,
+        )
 
     def set_model_state(self, name: str, state: State) -> None:
         self.model_state.labels(model=name).set(1 if state is State.READY else 0)

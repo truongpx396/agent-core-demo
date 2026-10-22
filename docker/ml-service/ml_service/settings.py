@@ -18,6 +18,8 @@ GUARD_MAX_SEQ_LEN = 512  # this model's own max_position_embeddings (config.json
 GUARD_LABELS = {0: "BENIGN", 1: "MALICIOUS"}  # this model's own config.json id2label
 # Where `head-<model>.npz/json` are read: beside models.toml in the image (/app/heads), overridable so an operator can mount their own.
 DEFAULT_HEAD_DIR = Path(__file__).resolve().parent.parent / "heads"
+# Where label sets (`<name>.json`, specs/015) are read: beside models.toml in the image (/app/labelsets), overridable so an operator can mount their own.
+DEFAULT_LABELSET_DIR = Path(__file__).resolve().parent.parent / "labelsets"
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,7 @@ class Settings:
     classify_max_chars: int = 4000
     classify_deadline_ms: float = 250.0
     router_head_dir: Path = DEFAULT_HEAD_DIR
+    labelset_dir: Path = DEFAULT_LABELSET_DIR
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -68,4 +71,5 @@ class Settings:
             classify_max_chars=int(env.get("ML_CLASSIFY_MAX_CHARS", "4000")),
             classify_deadline_ms=float(env.get("ML_CLASSIFY_DEADLINE_MS", "250")),
             router_head_dir=Path(env["ROUTER_HEAD_DIR"]) if env.get("ROUTER_HEAD_DIR") else DEFAULT_HEAD_DIR,
+            labelset_dir=Path(env["LABELSET_DIR"]) if env.get("LABELSET_DIR") else DEFAULT_LABELSET_DIR,
         )
