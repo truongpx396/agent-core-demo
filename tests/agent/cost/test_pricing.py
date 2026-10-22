@@ -286,6 +286,55 @@ class TestPriceUsage:
         assert await pricing.price_usage("gpt", {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}) == 0.0
 
 
+ROUTER_ENTRY = {
+    "model_name": "auto", "model_info": FREE,
+    "litellm_params": {"model": "auto_router/complexity_router", "complexity_router_config": {"tiers": {"SIMPLE": "chat", "COMPLEX": "chat-strong"}}},
+}
+
+
+class TestAGatewaySideRouterIsNotFree:
+    """LiteLLM's own routers choose a model per call, and `/model/info` reports the router alias at 0. Read as "free" that meters every routed call at
+    $0 (a verified fact about 1.94.1, not a guess); read as unknown it is counted, alerted and, under the block policy, refused."""
+
+    def test_a_router_alias_that_litellm_reports_at_zero_is_unknown_not_free(self):
+        assert pricing.parse_model_info([ROUTER_ENTRY]) == {"auto": None}
+
+    @pytest.mark.parametrize("model", ["auto_router/complexity_router", "auto_router/adaptive_router", "auto_router/quality_router", "auto_router/semantic-router-1"])
+    def test_every_kind_of_gateway_router_is_recognised_by_its_model_prefix(self, model):
+        entry = {"model_name": "auto", "model_info": FREE, "litellm_params": {"model": model}}
+
+        assert pricing.parse_model_info([entry]) == {"auto": None}
+
+    def test_a_router_config_alone_is_enough(self):
+        entry = {"model_name": "auto", "model_info": FREE, "litellm_params": {"model": "something-else", "complexity_router_config": {"tiers": {"SIMPLE": "chat"}}}}
+
+        assert pricing.parse_model_info([entry]) == {"auto": None}
+
+    def test_an_alias_with_a_router_among_its_deployments_is_unknown_like_any_unpriced_deployment(self):
+        plain = {"model_name": "auto", "model_info": GPT_4O, "litellm_params": {"model": "openai/gpt-4o"}}
+
+        assert pricing.parse_model_info([plain, ROUTER_ENTRY]) == {"auto": None}
+
+    def test_a_free_local_model_is_still_free(self):
+        local = {"model_name": "chat", "model_info": FREE, "litellm_params": {"model": "ollama_chat/qwen2.5:7b"}}
+
+        assert pricing.parse_model_info([local]) == {"chat": pricing.ModelPrice(0.0, 0.0, None)}
+
+    @pytest.mark.parametrize("params", [None, "ollama", ["a"], 3, {}, {"model": None}, {"model": 7}, {"model": "auto_router"}, {"complexity_router_config": {}}])
+    def test_an_entry_without_a_usable_litellm_params_is_priced_by_its_model_info_as_before(self, params):
+        entry = {"model_name": "chat", "model_info": FREE, "litellm_params": params}
+
+        assert pricing.parse_model_info([entry]) == {"chat": pricing.ModelPrice(0.0, 0.0, None)}
+
+    async def test_under_the_block_policy_a_router_alias_is_refused_and_a_free_local_one_is_not(self, monkeypatch):
+        _patch_fetch(monkeypatch, ROUTER_ENTRY, {"model_name": "local", "model_info": FREE, "litellm_params": {"model": "ollama_chat/qwen2.5:7b"}})
+        pricing.reset_pricing_state()
+        monkeypatch.setattr(pricing, "UNPRICED_MODEL_POLICY", "block")
+
+        assert await pricing.refuse_unpriced("auto") is True
+        assert await pricing.refuse_unpriced("local") is False
+
+
 class TestRefuseUnpriced:
     @pytest.fixture(autouse=True)
     def _priced(self, monkeypatch):

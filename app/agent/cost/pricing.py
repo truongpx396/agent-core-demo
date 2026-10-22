@@ -93,7 +93,26 @@ def _rate(value: object) -> float | None:
     return float(value) if math.isfinite(value) and value >= 0 else None
 
 
+# LiteLLM's own routers are models whose name begins with this prefix: `auto_router/complexity_router`, `adaptive_router`, `quality_router`, and the
+# semantic router (`auto_router/...` with an `auto_router_config`). Read from the 1.94.1 image's source (`router.py`), not assumed.
+GATEWAY_ROUTER_PREFIX = "auto_router/"
+
+
+def _is_gateway_router(entry: Mapping) -> bool:
+    """True for an alias whose model is chosen by the GATEWAY, per call, from a set of models (LiteLLM's complexity, adaptive, quality and semantic
+    routers). Such an alias has no price of its own: `/model/info` reports it at input and output 0, which this module would read as "free" and
+    meter every routed call at $0 while the gateway's own spend log (priced per real model) is right. Verified against a real 1.94.1 gateway, and the
+    reason the app routes in `route_model` instead (GRAPH_PATTERNS.md pattern 68)."""
+    params = entry.get("litellm_params")
+    if not isinstance(params, Mapping):
+        return False
+    model = params.get("model")
+    return (isinstance(model, str) and model.startswith(GATEWAY_ROUTER_PREFIX)) or bool(params.get("complexity_router_config"))
+
+
 def _deployment_price(entry: Mapping) -> ModelPrice | None:
+    if _is_gateway_router(entry):
+        return None  # unknown is not free: the cost depends on which model the gateway picks, which this response does not say
     info = entry.get("model_info") or {}
     input_rate = _rate(info.get("input_cost_per_token"))
     output_rate = _rate(info.get("output_cost_per_token"))
