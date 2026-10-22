@@ -83,7 +83,8 @@ base64 requested and decoded) pointed at the ASGI app in-process returns the sam
 ## `POST /classify` — routing advice (new, FR-027..029)
 
 Request: `{"texts": ["…"], "task": "route"}` (`task` is required and must be `route`; a second task is a later spec's endpoint,
-not a parameter the server guesses). `texts` 1..16 items, each ≤ `ML_CLASSIFY_MAX_CHARS` (default 4000), else `400`.
+not a parameter the server guesses. **Amended by spec 015:** the second task is `label`, named in the request and never inferred; see
+`specs/015-label-sets-and-tiered-routing/contracts/label-sets.md`). `texts` 1..16 items, each ≤ `ML_CLASSIFY_MAX_CHARS` (default 4000), else `400`.
 
 Response `200` (always, including when no model can answer):
 
