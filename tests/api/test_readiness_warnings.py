@@ -84,6 +84,31 @@ async def test_an_ml_service_model_that_is_down_is_a_warning_with_its_reason(mon
     assert warnings == ["ML service model prompt-guard is failed: OSError: no such file"]
 
 
+async def test_a_refused_label_set_is_a_warning_and_a_pending_or_loaded_one_is_not(monkeypatch):
+    monkeypatch.setattr(qdrant_store, "identity_status", _status("verified"))
+    _ml(monkeypatch, {"models": {}, "labelsets": {
+        "route-topics": {"version": "abc", "labels": ["a", "b"], "models": {"bge": "loaded", "minilm": "refused: no calibration for minilm"}},
+        "broken": {"state": "refused: malformed (JSONDecodeError reading broken.json)"},
+        "fresh": {"version": "def", "labels": ["a", "b"], "models": {"bge": "pending: not indexed yet", "minilm": "pending: model not ready"}},
+    }})
+
+    warnings = await health.readiness_warnings()
+
+    assert warnings == [
+        "ML service label set route-topics on minilm is refused: no calibration for minilm",
+        "ML service label set broken is refused: malformed (JSONDecodeError reading broken.json)",
+    ]
+
+
+async def test_an_odd_labelsets_payload_is_ignored_and_does_not_hide_a_valid_warning(monkeypatch):
+    monkeypatch.setattr(qdrant_store, "identity_status", _status("verified"))
+    for odd in (None, [], "x", 3):
+        _ml(monkeypatch, {"models": {"rerank": {"state": "failed", "reason": "boom"}}, "labelsets": odd})
+        assert await health.readiness_warnings() == ["ML service model rerank is failed: boom"]
+    _ml(monkeypatch, {"models": {}, "labelsets": {"a": "refused", "b": None, "c": {"models": None}, "d": {"models": "x"}, "e": {"state": "refused: bad"}}})
+    assert await health.readiness_warnings() == ["ML service label set e is refused: bad"]  # the malformed entries are skipped, the valid one still counts
+
+
 async def test_a_source_that_cannot_be_read_contributes_nothing_and_never_raises(monkeypatch):
     async def boom(_c=None):
         raise ConnectionError("qdrant unreachable")

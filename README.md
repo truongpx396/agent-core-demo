@@ -324,6 +324,19 @@ ROUTER_MAX_TIER=strong            # the ceiling: spend is bounded by it
 
 **What is and is not known.** The label set is measured (in-scope accuracy 0.83 on 96 held-out sentences; about half of the "none of these" sentences still get a label; on the repository's own prompts it routes about 5% of turns up a tier, mostly pricing and case-study questions it misreads as analysis; `make model-eval KIND=classifier CANDIDATE=labelset-bge-small-en-v1.5 DATASET=route-topics`), but **nothing measured says the tiers it picks give better answers**: the label table and the rules are policy, and the only routing outcomes that exist could not tell a perfect router from a random one (`specs/015-label-sets-and-tiered-routing/research.md`). That is what `shadow` is for. `GET http://localhost:8083/health/models` shows each label set's status per model; `ModelRouterLabelUnavailable` alerts when the router is deciding from rules alone and `ModelRoutedTierFailing` on routed turns that had to be repeated locally. **Not built:** per-tenant control. The switch and the ceiling are one setting for the whole deployment.
 
+### Picking one of a few predefined choices, in any agent step
+"Does this message ask us to send an email, or only to look something up?" and "which of these queues does it belong to?" are classification problems with a handful of known answers. They need no model call to a paid API and no training: write a **label set** (a reviewed JSON file of the choices with about ten example sentences each, [`docker/ml-service/labelsets/README.md`](docker/ml-service/labelsets/README.md)), choose its cutoff for each serving model on sentences whose answers are known (`make labelset-calibrate`, [`evals/README.md`](evals/README.md)), and ask:
+
+```python
+from app.core import classification
+
+answer = await classification.label("email-intent", message_text)      # never raises; the first 2,000 characters are sent, nothing else
+if answer.outcome == "labelled" and answer.label == "send_email":       # label is None when the text is near none of the choices
+    ...                                                                 # any other outcome (timeout, error, no_answer): decide without it
+```
+
+The service answers with the nearest choice, how near it was and how clearly it beat the runner-up; what a choice *means* stays in the caller (the model router's table is `app/core/routing_policy.py::LABEL_TIERS`). A fixed, typed tool still gates every write: a label may choose a path, never authorise an action ([constitution](.specify/memory/constitution.md) principles II and III). The call has the router's deadline (`ROUTER_TIMEOUT_SECONDS`) and the same failure behaviour, so a step that depends on a label needs a rule for "no label" before it ships.
+
 ### MCP, crawling and the sandbox
 
 - **MCP server** (`make mcp-serve`, `make mcp-serve-ops`): exposes `query_employees` and the ops domain's metrics/incidents over stdio. MCP has no header seam, so `tenant`/`principal` are explicit arguments, checked by the same fail-closed policy.
