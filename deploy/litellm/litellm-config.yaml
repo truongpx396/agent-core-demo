@@ -1,14 +1,39 @@
 # LiteLLM proxy configuration.
 # Demonstrates: model aliases/routing, chat + embedding models, retries,
 # fallbacks, and shipping every call to Langfuse from the proxy itself.
+#
+# Three chat tiers, each a gateway ALIAS (the app names aliases, never a provider's model id):
+#
+#   tier    alias         dev stand-in (this file)       attach a hosted model by
+#   easy    chat          qwen2.5:7b, local               it already is the day-to-day model
+#   medium  chat-medium   qwen2.5:7b, local (as chat)     editing that ONE entry (a Gemini block is ready under it); prod: LLM_MEDIUM_*
+#   strong  chat-strong   qwen2.5:14b, local              editing that ONE entry (same block); prod: LLM_STRONG_*
+#
+# Nothing in the app asks for `chat-medium` yet (a delegated specialist can: its AGENT.md `model:` names an alias), and `chat-strong` is
+# the router's escalation target (STRONG_CHAT_MODEL, off by default). Every dev stand-in is local so the stack needs no third party and no key.
+#
+# PRICES. Every local alias below states a price in `model_info`. A local model costs no money, but without a price LiteLLM reports it as
+# either unknown (`null`: the app counts every call as unpriced and `UNPRICED_MODEL_POLICY=block` would refuse it) or a known $0 (and a
+# model whose two prices are both 0 skips budget checks, per LiteLLM's budget docs, so neither the app key's `max_budget` nor the per-tenant
+# budget below could ever trip on it; measured on the 1.94.1 image before this change: chat, chat-backup and embed reported 0, vision null).
+# These are SHADOW prices, not a bill: the order of magnitude hosted providers charge for open-weights models of the same
+# size (USD per token: 0.0000001 is $0.10 per million). They make the meter, the caps and LiteLLM's own spend log see local usage as
+# non-zero; swap in your amortised hardware cost if you want real numbers, but keep them above 0. YAML note: write decimals, because
+# PyYAML reads `1e-7` as a string. Two aliases on one underlying model should state the same price (a deployment with none inherits it).
 
 model_list:
   # Primary chat model. NOTE: use the `ollama_chat/` provider (not `ollama/`) —
   # it hits Ollama's /api/chat endpoint with *native* tool calling. The plain
   # `ollama/` provider fakes tools via prompt injection and loops on tool use.
+  #
+  # The model is qwen2.5:7b, not the 3b this file used to name, because of what each does with this app's tool calls
+  # (`python -m scripts.toolcall_probe`, 22 labelled prompts against the app's real tools and system prompt, temperature 0):
+  # the 3b answered 8/19 correctly at the old repeat_penalty 1.3, 13/19 at 1.1 and 15/19 even at 1.0, the misses mostly silently dropped by Ollama
+  # (the model wrote malformed JSON, Ollama's parser discards a call it cannot read, and the graph sees an empty reply);
+  # the 7b answers 19/19 at 1.1 or 1.0. See GRAPH_PATTERNS.md pattern 73 and the repeat_penalty note below.
   - model_name: chat
     litellm_params:
-      model: ollama_chat/qwen2.5:3b
+      model: ollama_chat/qwen2.5:7b
       # host.docker.internal: this targets a native macOS Ollama on the
       # host, not a docker-compose container — there is no containerized
       # Ollama in this stack. Docker Desktop on Mac can't pass Metal/GPU
@@ -20,7 +45,7 @@ model_list:
       # Ollama, so every model only needs to be pulled once, natively.
       api_base: http://host.docker.internal:11434
       # Ollama's own runtime default (verified via `ollama ps`: 4096, NOT
-      # the 32768 qwen2.5:3b actually supports per `ollama show`) — nothing
+      # the 32768 qwen2.5 actually supports per `ollama show`, 3b and 7b alike) — nothing
       # here overrode it before, and it was tight enough to matter: the
       # system prompt + tool schemas ALONE measure ~2300+ input tokens on a
       # bare first call (real usage_metadata), leaving very little room for
@@ -32,7 +57,7 @@ model_list:
       # change, per this file's own model-alias architecture.
       # app/agent/graph/core.py's HISTORY_TOKEN_CEILING/FLOOR are sized against
       # this exact number — change both together. 32000 is right up
-      # against qwen2.5:3b's own rated max (32768 per `ollama show`) —
+      # against qwen2.5's own rated max (32768 per `ollama show`) —
       # real headroom (768 tokens), not a round-number guess.
       num_ctx: 32000
       # Bounds a SINGLE completion's own length — a real, reproduced gap
@@ -48,35 +73,88 @@ model_list:
       # is generous for this app's own concise assistant answers (a real
       # multi-paragraph reply with a code sample rarely clears a few
       # hundred tokens) while still firmly bounding the worst case.
-      # `repeat_penalty` (Ollama default 1.1) is bumped to make the
-      # repetition loop itself less likely in the first place, not just
-      # capped once it starts — 1.3 is a commonly-used value for reducing
-      # verbatim repetition without visibly hurting normal coherence.
+      # `repeat_penalty` is Ollama's own default, 1.1, and must stay near it. This
+      # used to be 1.3 ("a commonly-used value for reducing verbatim repetition"),
+      # and 1.3 is what broke tool calling: the penalty falls on tokens already in
+      # the context, and a tool call's `":` and quote tokens are in it dozens of
+      # times, so the model drifts off the JSON. Measured with
+      # scripts/toolcall_probe.py: qwen2.5:7b answered 11/19 tool-needing prompts
+      # at 1.3 (the rest came out as fragments like `brtc {"name": "calculator"...`)
+      # and 19/19 at 1.1 and at 1.0; qwen2.5:3b dropped 8 of 22 replies outright at
+      # 1.3 (Ollama discards a call whose JSON it cannot parse, with no error).
+      # The repetition loop 1.3 was added against is a 3b failure: at 1.1 the 3b
+      # looped to the 2048-token cap on "list every kind of database index" (44%
+      # of 6-word runs repeated); the 7b ended all four open-ended prompts it was
+      # tried on by itself, at 1.1 and at 1.0 (at most 10% repeats). So the model
+      # is what fixed the loop, and `num_predict` still bounds the worst case.
+      # Do not change it without running `make probe-tools` (it checks both halves: tool calls and loops).
       num_predict: 2048
-      repeat_penalty: 1.3
+      repeat_penalty: 1.1
+    # Tier "easy". Shadow price, see the PRICES note at the top: $0.10 per million input tokens, $0.20 per million output.
+    model_info:
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000002
   # A second chat entry used purely as a fallback target for "chat".
   - model_name: chat-backup
-    litellm_params:
-      model: ollama_chat/qwen2.5:3b
-      api_base: http://host.docker.internal:11434
-      num_ctx: 32000
-      num_predict: 2048
-      repeat_penalty: 1.3
-  # The escalation alias (specs/014, contracts/gateway-aliases.md section 1): where the model router sends a turn it judges to need a stronger
-  # model. ALWAYS present so the proxy starts and the alias resolves; INERT until the app is told to use it (STRONG_CHAT_MODEL, ROUTER_ENABLED,
-  # both off by default). In dev it is a bigger LOCAL model, so the whole seam can be exercised with no third party and no key
-  # (`make pull-strong-model`, about 4.7 GB, only needed once the router is on). To point it at a hosted model, edit this one entry: an
-  # OpenAI-compatible endpoint with native tool calls, `stream_options.include_usage`, and a context window of at least 32000. NO `fallbacks`
-  # entry names it, on purpose: the app repeats a failed strong call on `chat` itself, so the usage ledger prices the model that answered.
-  - model_name: chat-strong
     litellm_params:
       model: ollama_chat/qwen2.5:7b
       api_base: http://host.docker.internal:11434
       num_ctx: 32000
       num_predict: 2048
-      repeat_penalty: 1.3
+      repeat_penalty: 1.1
+    # The same underlying model as `chat`, so the same price: a fallback must not change what a call is priced at.
+    model_info:
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000002
+  # Tier "medium": between `chat` and `chat-strong`. Nothing selects it automatically yet; a delegated specialist names it in its AGENT.md
+  # `model:` (priced by its own alias), and an operator can point CHAT_MODEL at it. The dev stand-in is the SAME local model as `chat`, so
+  # it works with no extra download and no key; it is a placeholder for a hosted model, not a different one, exactly like a production
+  # alias whose LLM_MEDIUM_* variables are unset (it then equals `chat`). To attach Gemini, replace this entry's `litellm_params` and
+  # `model_info` with the block below. NO `fallbacks` entry names it, on purpose: a gateway fallback would price a call at the model that
+  # did not answer it (the same reason `chat-strong` has none; tests/core/test_model_tiers_config.py).
+  #
+  #   litellm_params:
+  #     model: openai/<a Gemini flash-class model id from https://ai.google.dev/gemini-api/docs/models>
+  #     api_base: https://generativelanguage.googleapis.com/v1beta/openai/   # Google's OpenAI-compatibility endpoint (still beta, per Google)
+  #     api_key: os.environ/GEMINI_API_KEY_MEDIUM                            # set it in .env; docker-compose.yml already passes it in
+  #   model_info:                                                            # LiteLLM does not know an `openai/<gemini id>`: state the price
+  #     input_cost_per_token: <USD per token, from Google's pricing page>
+  #     output_cost_per_token: <USD per token>
+  #
+  # Drop the Ollama-only options (`num_ctx`, `repeat_penalty`) when you do: they are not part of an OpenAI-shaped request. Before relying
+  # on it, run `make probe-tools ARGS="--alias chat-medium"` (native tool calls) and send one streamed turn to see that the final chunk
+  # carries `usage` (the app needs it to meter the call). Neither was run here: there is no key yet.
+  - model_name: chat-medium
+    litellm_params:
+      model: ollama_chat/qwen2.5:7b
+      api_base: http://host.docker.internal:11434
+      num_ctx: 32000
+      num_predict: 2048
+      repeat_penalty: 1.1
+    model_info:
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000002
+  # The escalation alias (specs/014, contracts/gateway-aliases.md section 1): where the model router sends a turn it judges to need a stronger
+  # model. ALWAYS present so the proxy starts and the alias resolves; INERT until the app is told to use it (STRONG_CHAT_MODEL, ROUTER_ENABLED,
+  # both off by default). In dev it is a bigger LOCAL model, so the whole seam can be exercised with no third party and no key
+  # (`make pull-strong-model`, about 9 GB, only needed once the router is on; it is a size up from `chat`, which is what makes escalating mean
+  # something, tests/core/test_gateway_aliases_config.py). To point it at a hosted model, edit this one entry: an
+  # OpenAI-compatible endpoint with native tool calls, `stream_options.include_usage`, and a context window of at least 32000. NO `fallbacks`
+  # entry names it, on purpose: the app repeats a failed strong call on `chat` itself, so the usage ledger prices the model that answered.
+  - model_name: chat-strong
+    litellm_params:
+      model: ollama_chat/qwen2.5:14b
+      api_base: http://host.docker.internal:11434
+      num_ctx: 32000
+      num_predict: 2048
+      repeat_penalty: 1.1
+    # Tier "strong". A size up from `chat`, so a shadow price a size up: $0.20 per million input tokens, $0.40 per million output. To attach
+    # Gemini here, use the block under `chat-medium` (with its own key, e.g. GEMINI_API_KEY_STRONG, and a Pro-class model id).
+    model_info:
+      input_cost_per_token: 0.0000002
+      output_cost_per_token: 0.0000004
   # Vision-capable alias slot (GRAPH_PATTERNS.md pattern 44) — "chat" above
-  # (qwen2.5:3b) has no vision capability, so an attached image is carried
+  # (qwen2.5:7b) has no vision capability, so an attached image is carried
   # through the pipeline correctly but the model can't actually see it.
   #
   # IMPORTANT, verified empirically: neither small local Ollama vision
@@ -102,11 +180,21 @@ model_list:
       # small-model risk, independent of whether an image is attached.
       num_predict: 2048
       repeat_penalty: 1.3
+    # A 3B-class model, priced below `chat`: $0.05 per million input tokens, $0.10 per million output. It was the only local alias with no
+    # price at all (null), so a vision call was unpriced where a chat call was a known $0.
+    model_info:
+      input_cost_per_token: 0.00000005
+      output_cost_per_token: 0.0000001
   # Embedding model (alias "embed" -> Ollama nomic-embed-text)
   - model_name: embed
     litellm_params:
       model: ollama/nomic-embed-text
       api_base: http://host.docker.internal:11434
+    # An embedding has no output tokens, so only the input is priced: $0.01 per million. Embeddings are not metered by the app yet
+    # (COST_GOVERNANCE.md pattern 26), so this is what LiteLLM's own spend log and the app key's budget see of them.
+    model_info:
+      input_cost_per_token: 0.00000001
+      output_cost_per_token: 0.0
 
 litellm_settings:
   drop_params: true                    # silently drop params Ollama doesn't support (e.g. encoding_format)
@@ -114,6 +202,14 @@ litellm_settings:
   request_timeout: 600
   # If "chat" fails, transparently retry on "chat-backup".
   fallbacks: [{"chat": ["chat-backup"]}]
+  # A default per-tenant spend cap at the gateway (COST_GOVERNANCE.md pattern 74). The app sends every call with `user` = a hash of the
+  # tenant (app/core/gateway.py), which LiteLLM keeps as the call's END USER; this names a budget OBJECT that applies to every end user
+  # without a budget of its own, including ones LiteLLM has not seen yet. The id is only a name: the budget itself lives in LiteLLM's
+  # database and is created with `make litellm-key ARGS="tenant-budget set --max-budget <usd>"`. Until that is run LiteLLM finds no
+  # such budget, logs "Default end user budget not found in database" on each call and applies NO per-tenant cap (it fails open).
+  # It is a backstop above the app's own limits (size it above your largest tenant's monthly cap), not a copy of them, and it covers
+  # chat calls only: embeddings carry no end user yet. Keep it equal to scripts/litellm_key.py's TENANT_BUDGET_ID (a test checks).
+  max_end_user_budget_id: tenant-default
   # Log every request/response to Langfuse from the proxy layer, and expose
   # LiteLLM's own built-in request/latency/token metrics for Prometheus to
   # scrape at GET /metrics (see docker-compose.observability.yml's

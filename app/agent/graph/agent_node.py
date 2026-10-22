@@ -4,24 +4,51 @@ turn's real question.
 """
 import logging
 
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.agent.cost import metering
 from app.agent.graph.messages import (
+    CANNOT_HELP_MESSAGE,
+    GATEWAY_REFUSAL_KEY,
+    WITHHELD_MESSAGE,
     current_turn_messages,
     is_legacy_prompt,
     is_retry_artifact,
     is_user_message,
+    last_human_message,
 )
 from app.agent.graph.model_route import strong_unreachable
 from app.agent.graph.skill_guards import pending_skill_required_tool
 from app.agent.graph.state import State
-from app.core import metrics
+from app.core import gateway, metrics
 from app.core.config import CHAT_MODEL, STRONG_CHAT_MODEL
 from app.core.untrusted import frame_untrusted
 
 logger = logging.getLogger(__name__)
+
+
+def _refusal_update(state: State, block: "gateway.ContentBlock") -> dict:
+    """The turn's answer when the gateway's content guardrail refused the call.
+
+    The refusal is flagged (`GATEWAY_REFUSAL_KEY`) so `should_continue` ends the turn on it. If the
+    guardrail refused the REQUEST (`pre_call`), the person's message is replaced in the stored thread:
+    the gateway scans every message on every call, so a refused message left in the thread refuses
+    every later turn too (Langfuse trace `2c8e76a4`: "hey" was refused for an earlier message's
+    "stock + should i"). Only this turn's message is replaced, the one just sent; the guardrail does
+    not say which message matched, so a thread whose OLDER messages already match (a guardrail added
+    after they were written) stays refused. A `post_call` block refused what the model wrote, so the
+    question stays. The replacement keeps the message's id, which is how the reducer replaces it
+    instead of appending a second one."""
+    refusal = AIMessage(content=CANNOT_HELP_MESSAGE, additional_kwargs={GATEWAY_REFUSAL_KEY: True})
+    messages: list = [refusal]
+    asked = last_human_message(state["messages"]) if block.mode == "pre_call" else None
+    if asked is not None and asked.id is not None:
+        withheld = HumanMessage(
+            content=WITHHELD_MESSAGE, id=asked.id, additional_kwargs=dict(asked.additional_kwargs)
+        )
+        messages.insert(0, withheld)
+    return {"messages": messages, "iterations": state.get("iterations", 0) + 1}
 
 
 # --- Node: agent ---
@@ -218,27 +245,8 @@ def make_agent_node(
         # model (a call that failed records nothing), and the next call this turn tries the strong alias again. This lives here and not in
         # the gateway's `fallbacks` because a gateway fallback would be priced and recorded as the strong alias that did not answer.
         strong = STRONG_CHAT_MODEL if state.get("model_route") == "strong" and STRONG_CHAT_MODEL else None
-        if strong is None:
-            call = await metering.metered_invoke(
-                llm,
-                messages,
-                config=config,
-                kind=kind,
-                model_alias=model_alias,
-            )
-        else:
-            try:
-                call = await metering.metered_invoke(
-                    llm, messages, config=config, kind=kind, model_alias=strong, invoke_model=strong
-                )
-            except Exception as exc:  # noqa: BLE001 - classified by strong_unreachable; anything that is not "never reached a model" is re-raised unchanged
-                if not strong_unreachable(exc):
-                    raise
-                metrics.agent_model_route_total.labels(outcome="strong_failed_fell_back").inc()
-                logger.warning(
-                    "strong model unreachable; repeating the call on the local model",
-                    extra={"alias": strong, "error_class": type(exc).__name__, "run_id": state.get("run_id", "-")},
-                )
+        try:
+            if strong is None:
                 call = await metering.metered_invoke(
                     llm,
                     messages,
@@ -246,7 +254,46 @@ def make_agent_node(
                     kind=kind,
                     model_alias=model_alias,
                 )
+            else:
+                try:
+                    call = await metering.metered_invoke(
+                        llm, messages, config=config, kind=kind, model_alias=strong, invoke_model=strong
+                    )
+                except Exception as exc:  # noqa: BLE001 - classified by strong_unreachable; anything that is not "never reached a model" is re-raised unchanged
+                    if not strong_unreachable(exc):
+                        raise
+                    metrics.agent_model_route_total.labels(outcome="strong_failed_fell_back").inc()
+                    logger.warning(
+                        "strong model unreachable; repeating the call on the local model",
+                        extra={"alias": strong, "error_class": type(exc).__name__, "run_id": state.get("run_id", "-")},
+                    )
+                    call = await metering.metered_invoke(
+                        llm,
+                        messages,
+                        config=config,
+                        kind=kind,
+                        model_alias=model_alias,
+                    )
+        except Exception as exc:  # noqa: BLE001 - only the gateway's content-guardrail refusal becomes the turn's answer; every other failure is re-raised unchanged for the retry policy and the stream to classify
+            block = gateway.note_content_block(exc)
+            if block is None:
+                raise
+            return _refusal_update(state, block)
         response, usage = call.response, call.usage
+        if (
+            usage.get("output_tokens")
+            and not response.content
+            and not response.tool_calls
+            and not response.invalid_tool_calls
+        ):
+            # The provider generated something and handed back nothing: not text, not a tool call, not
+            # even a malformed one (those arrive as `invalid_tool_calls`). Seen with Ollama dropping a
+            # tool call it could not parse. The graph reads this as an empty reply, so say it happened.
+            metrics.agent_unparsed_completion_total.inc()
+            logger.warning(
+                "model produced output tokens but no text and no tool call",
+                extra={"output_tokens": usage.get("output_tokens"), "run_id": state.get("run_id", "-")},
+            )
 
         # usage_metadata is populated only when the model/proxy reports it
         # (not guaranteed) — missing usage just means the budget never trips.

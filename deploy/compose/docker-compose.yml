@@ -6,6 +6,16 @@
 # separately since each adds real host privilege/cost most `make up`
 # users don't need by default (see each service's own comment below).
 
+# The agent-worker and ingest-worker roles run the app's image, which carries the API's HEALTHCHECK
+# (Dockerfile): a probe of http://localhost:8000/health/ready. A worker binds no port, so inheriting it
+# reported every worker `unhealthy` forever (a failing streak in the hundreds), which hides a service
+# that really is unhealthy and would restart-loop one under anything that acts on health. The probe is
+# switched off here rather than replaced: whether a worker pool is alive is an application-level fact
+# the `WorkerUnreachable` alert (observability/prometheus/alerts.yml) already watches, a job that no
+# worker takes. tests/core/test_compose_worker_healthcheck.py fails for a worker added without this.
+x-worker-healthcheck: &worker-healthcheck
+  disable: true
+
 # Shared env for the containerized app roles below (services: api,
 # agent-worker, ingest-worker) — every URL points at the OTHER containers'
 # in-network service names (e.g. `litellm:4000`), not `localhost` — a
@@ -46,7 +56,12 @@ x-app-env: &app-env
 services:
   # --- LiteLLM proxy: single OpenAI-compatible endpoint for the app ---
   litellm:
-    image: ghcr.io/berriai/litellm:main-stable
+    # Pinned by digest: the tag moves, and the gateway is the one place that holds provider keys and decides what a call costs (its stop
+    # status changed from 400 to 429 between releases, and a LiteLLM release on PyPI was compromised in March 2026). The digest is the
+    # linux/amd64 + linux/arm64 index of what `main-stable` resolved to on 2026-07-30 (LiteLLM 1.94.1), the image the checks in
+    # COST_GOVERNANCE.md ran against. The tag stays for the reader and is ignored by Docker while a digest is present. To move it, see
+    # infra/README.md ("Bumping the LiteLLM image"); docker-compose.prod.yml must carry the same digest (tests/core/test_compose_litellm_pinned.py).
+    image: ghcr.io/berriai/litellm:main-stable@sha256:28b10a635296730007097390939b55f8696ece548530d4ddda3e31c708b4dc81
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     ports:
       - "4000:4000"
@@ -61,6 +76,11 @@ services:
       - ./deploy/litellm/patches:/app/patches:ro
     environment:
       PYTHONPATH: /app/patches
+      # Keys for the hosted tiers, empty until you have them. Nothing reads them while the `chat-medium` and `chat-strong` entries in
+      # litellm-config.yaml are the local stand-ins; when you replace an entry with its Gemini block, that block's `os.environ/GEMINI_API_KEY_*`
+      # reads the variable below. Put the keys in .env (gitignored), never in this file.
+      GEMINI_API_KEY_MEDIUM: ${GEMINI_API_KEY_MEDIUM:-}
+      GEMINI_API_KEY_STRONG: ${GEMINI_API_KEY_STRONG:-}
       # Proxy-level Langfuse logging (falls back to empty if unset).
       LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
@@ -527,6 +547,7 @@ services:
     profiles: ["app"]
     restart: unless-stopped
     command: ["python", "-m", "app.job_queue.agent_worker"]
+    healthcheck: *worker-healthcheck
     environment: *app-env
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -554,6 +575,7 @@ services:
     profiles: ["app"]
     restart: unless-stopped
     command: ["python", "-m", "app.job_queue.agent_worker"]
+    healthcheck: *worker-healthcheck
     environment:
       <<: *app-env
       AGENT_DOMAIN: support
@@ -570,6 +592,7 @@ services:
     profiles: ["app"]
     restart: unless-stopped
     command: ["python", "-m", "app.job_queue.agent_worker"]
+    healthcheck: *worker-healthcheck
     environment:
       <<: *app-env
       AGENT_DOMAIN: ops
@@ -586,6 +609,7 @@ services:
     profiles: ["app"]
     restart: unless-stopped
     command: ["python", "-m", "app.job_queue.agent_worker"]
+    healthcheck: *worker-healthcheck
     environment:
       <<: *app-env
       AGENT_DOMAIN: sales
@@ -602,6 +626,7 @@ services:
     profiles: ["app"]
     restart: unless-stopped
     command: ["python", "-m", "app.ingestion.ingest_worker"]
+    healthcheck: *worker-healthcheck
     environment: *app-env
     extra_hosts:
       - "host.docker.internal:host-gateway"

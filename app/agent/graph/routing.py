@@ -23,8 +23,12 @@ from app.agent.graph.loop_guards import (
     consecutive_repeat_count,
     mandatory_gate_reason,
 )
+from app.agent.graph.messages import GATEWAY_REFUSAL_KEY
 from app.agent.graph.output_checks import CheckContext, run_checks
-from app.agent.graph.output_guardrails import strip_fabricated_reference_footer
+from app.agent.graph.output_guardrails import (
+    strip_closing_offer,
+    strip_fabricated_reference_footer,
+)
 from app.agent.graph.state import (
     MAX_CONSECUTIVE_SAME_RETRY_REASON,
     MAX_ITERATIONS,
@@ -91,6 +95,12 @@ def should_continue(
     means a safety net tripped" signal `run_subagent` already uses for a
     nested run; this is the top-level equivalent.
     """
+    # The gateway's content guardrail refused the call (`agent` wrote the refusal): that IS the
+    # turn's answer. Routed to `no_answer`, which ends the turn without a retry, follow-ups or a
+    # cache write, so a refusal is never stored as the answer to this question.
+    last = state["messages"][-1] if state.get("messages") else None
+    if isinstance(last, AIMessage) and last.additional_kwargs.get(GATEWAY_REFUSAL_KEY):
+        return "no_answer"
     if state.get("iterations", 0) >= max_iterations:
         return "no_answer"
     # Folds any run_subagent spend THIS turn into the parent's own live
@@ -142,13 +152,14 @@ def check_output(
     enforce_citations: bool = True,
     skill_required_tools: tuple[str, ...] = (),
 ) -> dict:
-    """Judge the final answer: strip a fabricated reference footer, repair a missing citation
-    marker, then run every check in `graph/output_checks.py`'s registry.
+    """Judge the final answer: strip a fabricated reference footer, cut a closing offer off a
+    complete answer, repair a missing citation marker, then run every check in
+    `graph/output_checks.py`'s registry.
 
     Returns `used_citations`/`ungrounded_claims_count` for the answer as it will be shown,
     `output_findings` (every check that fired, `{code: detail}`), `last_retry_reason` (the first by
     priority, or None) and `retry_reason_repeat_count`; plus a corrected `messages` entry when the
-    footer was stripped or a marker inserted.
+    footer or a closing offer was stripped or a marker inserted.
 
     `system_prompt`, `enforce_citations` and `skill_required_tools` are the calling domain's, bound by
     `build_graph` via `functools.partial`. `enforce_citations=False` (a nested subagent run) turns the
@@ -171,8 +182,16 @@ def check_output(
         content = cleaned_content
         message_update["messages"] = [last.model_copy(update={"content": content})]
 
-    used = find_used_citations(content, citations)
-    if citations and not used and content:
+    # A closing offer after a complete answer is cut, not sent back: asking the model to rewrite
+    # it does not work (strip_closing_offer's docstring has the trace). `content` stays what the
+    # model wrote, for the checks that must see all of it; `body` is what the rest is judged on.
+    body = strip_closing_offer(content)
+    if body != content:
+        metrics.agent_closing_offer_stripped_total.inc()
+        message_update["messages"] = [last.model_copy(update={"content": body})]
+
+    used = find_used_citations(body, citations)
+    if citations and not used and body:
         # Directional signal only, not enforced — a legitimate
         # general-knowledge/calculator-only answer looks IDENTICAL to a
         # silently dropped mandatory citation (retrieve_context always
@@ -187,9 +206,9 @@ def check_output(
     # retry_output. `shown`/`shown_used` are what the user will actually see, so every returned
     # field reflects that. Reuses `message_update` so both corrections (footer strip + marker
     # insert) compose onto the same final message.
-    shown, shown_used = content, used
-    if enforce_citations and find_likely_uncited(content, citations, used):
-        corrected_content, fixed = insert_missing_citation_markers(content, citations, used)
+    shown, shown_used = body, used
+    if enforce_citations and find_likely_uncited(body, citations, used):
+        corrected_content, fixed = insert_missing_citation_markers(body, citations, used)
         if fixed:
             metrics.agent_citation_auto_inserted_total.inc()
             shown = corrected_content
@@ -199,6 +218,7 @@ def check_output(
     findings = run_checks(
         CheckContext(
             content=content,
+            body=body,
             messages=state["messages"],
             citations=citations,
             used=used,

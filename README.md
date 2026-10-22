@@ -107,7 +107,7 @@ The same code runs in both; only configuration and the compose file differ.
 
 | | Dev — `docker-compose.yml` | Prod — `docker-compose.prod.yml` |
 |---|---|---|
-| **LLM** | Native Ollama on the host (`qwen2.5:3b`, `nomic-embed-text`) via `litellm-config.yaml` | Any OpenAI-compatible endpoint via `litellm-config.prod.yaml`: `LLM_API_BASE`, `LLM_API_KEY`, `LLM_CHAT_MODEL`, `LLM_EMBED_MODEL` |
+| **LLM** | Native Ollama on the host (`qwen2.5:7b`, `nomic-embed-text`) via `litellm-config.yaml` | Any OpenAI-compatible endpoint via `litellm-config.prod.yaml`: `LLM_API_BASE`, `LLM_API_KEY`, `LLM_CHAT_MODEL`, `LLM_EMBED_MODEL` |
 | **Services** | Full stack: Langfuse, MinIO, open-webui, crawl4ai, exporters, opt-in app/sandbox/quality profiles | `api`, `agent-worker`, `ingest-worker`, Postgres, Redis, Qdrant, LiteLLM, `ml-service`, behind Caddy (TLS) |
 | **Object storage** | MinIO container | DigitalOcean Spaces (any S3-compatible store) |
 | **Observability** | Optional `make obs-up` | Separate observability droplet, fed by sidecars over the private VPC |
@@ -134,7 +134,7 @@ cp .env.example .env
 pip install -r requirements.txt
 
 make up              # litellm, qdrant, postgres, redis, minio, ml-service, langfuse, crawl4ai, ...
-make pull-models     # qwen2.5:3b + nomic-embed-text into native Ollama
+make pull-models     # qwen2.5:7b (chat) + qwen2.5:3b (the small model the test tiers default to) + nomic-embed-text into native Ollama
 
 # Langfuse keys: open http://localhost:3000, create a project, paste the keys into .env, then
 docker compose up -d litellm
@@ -293,11 +293,24 @@ It rebuilds from the text each point already stores, keeps ids, payload (tenant 
 
 **Attaching an ONNX embedding model served by the ML service** (config only, no code change). `GET http://localhost:8083/v1/models` lists what it can serve and what each model expects as a prefix; `docker/ml-service/models.toml` declares them (`ML_MODELS_ENABLED=bge-small-en-v1.5,gte-modernbert-base-int8` loads more than the default). Then: point the gateway's `embed` alias at `openai/<name>` with `api_base: http://ml-service:80/v1` ([the entry](specs/014-model-serving-eval-harness/contracts/gateway-aliases.md)), set the prefixes the model needs, restart the proxy, run `make reembed` for each collection, bake, delete the old collections. Memory, measured: the container idles at 574 MiB without an embedding model and 781 MiB with bge-small enabled, and reached 1,069 MiB under 100 concurrent requests, against the production limit of 2 GiB; enable the other models only after checking the headroom on your hardware. On the CPU this was measured on, the fp32 files were *faster* than int8, so the defaults are fp32.
 
+### Model tiers, and what each is priced at
+The gateway serves three chat tiers, each an alias (the app names aliases, never a provider's model id):
+
+| Tier | Alias | Dev (`litellm-config.yaml`) | Production | Used by |
+|---|---|---|---|---|
+| easy | `chat` | qwen2.5:7b, local | `LLM_CHAT_MODEL` | every turn (`CHAT_MODEL=chat`) |
+| medium | `chat-medium` | qwen2.5:7b, local stand-in (the same model as `chat`) | `LLM_MEDIUM_*`; unset = `chat` | nothing automatic yet: a specialist names it in its `AGENT.md` `model:`, or point `CHAT_MODEL` at it |
+| strong | `chat-strong` | qwen2.5:14b, local (`make pull-strong-model`) | `LLM_STRONG_*`; unset = `chat` | the router's escalation target, off by default (below) |
+
+**Attaching Gemini** to the medium or strong tier is configuration: put its key in `.env` (`GEMINI_API_KEY_MEDIUM` / `GEMINI_API_KEY_STRONG`; the dev compose already passes them to LiteLLM), replace that one entry with the Gemini block commented under `chat-medium` in `deploy/litellm/litellm-config.yaml` (production: the three `LLM_MEDIUM_*` / `LLM_STRONG_*` variables, see `deploy/env/prod.env.example`), restart the proxy, then run `make probe-tools ARGS="--alias chat-medium"`. LiteLLM does not know an `openai/<gemini id>`, so state its price in `model_info` too. Not yet tried against a real key: Google documents tool calling and streaming on that endpoint but not the streamed `usage` the app meters from, so send one streamed turn as well.
+
+**Every local alias states a price** in `model_info` (about the order of magnitude hosted providers charge for open-weights models of that size: $0.10 / $0.20 per million input / output tokens for the 7B, $0.20 / $0.40 for the 14B). They are shadow prices, not a bill: without one LiteLLM reports a local model as unpriced or as a flat $0, and no gateway budget can ever trip on a $0 model. Change them to your amortised hardware cost if you like, but keep them above 0 ([pattern 74](COST_GOVERNANCE.md)).
+
 ### Attaching a stronger model, and routing to it
 Optional and **off by default**: with the defaults nothing is asked of any classifier and every call is exactly what it was. The pieces: a gateway alias `chat-strong` (always present in both LiteLLM configs), a small classifier in the ML service (`POST /classify`), and a graph node `route_model` that asks it one question per turn. A turn the classifier scores at or above `ROUTER_THRESHOLD` is answered by `chat-strong` and is priced and recorded as it; every other turn, and every failure of any part, runs on `chat` as before ([pattern 68](GRAPH_PATTERNS.md)). The router can only choose the model: approval, tenant scoping and idempotency are unchanged under either.
 
 ```bash
-make pull-strong-model        # dev only: the stand-in is a LOCAL qwen2.5:7b (about 4.7 GB); `make pull-models` still pulls about 2 GB
+make pull-strong-model        # dev only: the stand-in is a LOCAL qwen2.5:14b (about 9 GB, a size up from the 7B chat model); `make pull-models` pulls about 7 GB
 # .env
 STRONG_CHAT_MODEL=chat-strong
 ROUTER_ENABLED=true           # refuses to start without STRONG_CHAT_MODEL, or if it equals CHAT_MODEL
@@ -404,13 +417,14 @@ Prod runs the same stack on its own droplet ([infra/README.md](infra/README.md))
 | Unit | `make test` | nothing (fake LLM, mocked stores) | gate | Graph, routing, tools, isolation, idempotency logic |
 | Integration | `make test-integration` | Docker (testcontainers; **not** `make up`) | gate | Real Postgres, Redis, Qdrant, ml-service, crawl4ai |
 | Live | `make test-live` | Docker + a small real Ollama model | gate, except advisory tests | Full app + worker stack and a Playwright browser run |
+| Tool-call probe | `make probe-tools` | native Ollama | ~2 min | The chat model emits tool calls the app can use (none silently dropped) and does not loop |
 | Prompt checks | `make promptfoo` | Ollama | fast subset | Domain prompts still refuse to fabricate refunds, changes or sent messages |
 | Quality | `make deepeval` | Docker, `GOOGLE_API_KEY`, `GROQ_API_KEY` | non-blocking job | Faithfulness, relevancy, multi-turn consistency, tool trajectory |
 | Release gate | `make eval` | `make up`, `pull-models`, `ingest` | manual | Golden set, 5 repetitions per case, grounded-claims threshold |
 | Red team | `make promptfoo-redteam`, `make garak` | Ollama; red team also `GOOGLE_API_KEY` | manual | Adversarial prompts; raw-model jailbreak resistance |
 
 `make test-sandbox` (a real `opensandbox-mcp` round trip) and `make test-provider-sandbox` (a payment provider's real sandbox; Polar rate-limits it, so never loop it; see the billing [README](packages/billing/README.md#tests)) are also manual.
-Run `make eval` and `make promptfoo` after any prompt, model-alias or retrieval change.
+Run `make eval` and `make promptfoo` after any prompt, model-alias or retrieval change, and `make probe-tools` after any change to a chat alias's model or `repeat_penalty` (the chat model is chosen by what it does with this app's tool calls: `GRAPH_PATTERNS.md` pattern 73).
 
 - **Advisory live tests.** Two browser tests need the 3B model to chain several tool calls (a skill, a subagent). They are marked `advisory` and run in their own non-blocking CI step, so a model that stops halfway shows in that step's log instead of failing the job. A failed browser test prints the page transcript (pattern 48).
 - **deepeval never gates on a score.** Every case is `flaky=True`, so the job goes red only on a crash. LLM judges disagree with themselves; read the printed reasons. The judges are hosted (Gemini, Groq) with a failover chain across other models and backups (see `.env.example`); the target model stays local.
@@ -544,7 +558,7 @@ shipped proxy alone, the human deciding can be anyone who sets the right headers
 
 - **`make ingest` fails to embed:** run `make up` and `make pull-models` first.
 - **No Langfuse traces:** put the keys in `.env`, run `docker compose up -d litellm`, restart `make chat`.
-- **Turns are slow:** `qwen2.5:3b` is small; set a bigger model in `litellm-config.yaml`. A cold model can exceed `REQUEST_TIMEOUT_SECONDS` (60 s, `app/agent/runtime/core.py`) on the first call; retry.
+- **Turns are slow:** the chat model is `qwen2.5:7b` (about 40 tokens/s on an M4 Pro; a cold load adds about 3 s). A smaller one is faster but silently drops tool calls (`make probe-tools` shows how many), so measure before swapping one in; a bigger one goes in `litellm-config.yaml`. A cold model can exceed `REQUEST_TIMEOUT_SECONDS` (60 s, `app/agent/runtime/core.py`) on the first call; retry.
 - **No Grafana data or a Prometheus target is down:** `make obs-up` and `make up` are independent; both must run. See http://localhost:9090/targets. A target that predates a LiteLLM config change needs `docker compose up -d litellm`.
 - **Readiness returns 503:** the body names the failing dependency, for example `ml-service` still downloading its models on first start.
 - **A prod dashboard is empty:** check the app droplet's relay first: `dc logs otel-collector-agent promtail` (the `dc` alias is defined there) ([infra/README.md](infra/README.md)).

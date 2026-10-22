@@ -1,14 +1,19 @@
 """The heuristics behind `check_output`'s deferral, fabrication, leak and skipped-tool checks:
 narrated-instead-of-acting (`defers_instead_of_acting`), fabricated tool output
 (`fabricates_tool_output`), a fabricated reference-list footer
-(`strip_fabricated_reference_footer`), a skipped skill-required tool
+(`strip_fabricated_reference_footer`), a closing offer after a complete answer
+(`strip_closing_offer`), a skipped skill-required tool
 (`skipped_required_sandbox_after_skill`) and a system-prompt leak (`reveals_system_prompt`). Which of
 them wins, and what each says to the model, is `graph/output_checks.py`'s registry; the grounding
 checks are in `graph/citations.py`.
 """
 import re
 
-from app.agent.graph.messages import current_turn_messages
+from app.agent.graph.messages import (
+    content_words,
+    current_turn_messages,
+    sentence_spans,
+)
 from app.agent.graph.skill_guards import pending_skill_required_tool
 
 # Real bug, found live via Langfuse: qwen2.5:3b narrated tool intent
@@ -59,8 +64,13 @@ _TOOL_INTENT_RE = re.compile(
     r"manually)\b",
     re.IGNORECASE,
 )
+# The whole question, not a 40-character window after the cue: Langfuse trace `1e46b2c8` had "Would
+# you like more information or should I proceed with finding the general business operating hours?",
+# which the window let through while the same offer in fewer words ("...or should I proceed
+# differently?") was caught. Whether it is a polite closing line or the whole reply is decided by
+# what is left without it (`strip_closing_offer`), not by how long it is.
 _PERMISSION_SEEKING_RE = re.compile(
-    r"\b(?:would you like|do you want|shall i|want me to|should i)\b[^.!?\n]{0,40}\?",
+    r"\b(?:would you like|do you want|shall i|want me to|should i)\b[^.!?\n]*\?",
     re.IGNORECASE,
 )
 
@@ -78,6 +88,66 @@ def defers_instead_of_acting(content: str) -> bool:
     if not content or not isinstance(content, str):
         return False
     return bool(_TOOL_INTENT_RE.search(content) or _PERMISSION_SEEKING_RE.search(content))
+
+
+# A sentence that continues an offer ("If so, we can use a tool designed for that."), so it goes with
+# the offer when that is cut. Short on purpose: a long one ("If you want the list, it is: ...") can
+# carry the real answer.
+_OFFER_FOLLOW_ON_RE = re.compile(
+    r"(?:if so|if yes|if you(?:['’]d| would)? (?:like|want)|let me know)\b", re.IGNORECASE
+)
+_MAX_OFFER_FOLLOW_ON_CHARS = 160
+# What must be left for the cut to be a repair and not the loss of the answer: this many distinctive
+# words (`content_words`), so "Sure." or "I found two options." is not an answer worth keeping.
+_MIN_BODY_CONTENT_WORDS = 4
+
+
+def _is_offer(sentence: str) -> bool:
+    return sentence.rstrip().endswith("?") and bool(_PERMISSION_SEEKING_RE.search(sentence))
+
+
+def _is_offer_follow_on(sentence: str) -> bool:
+    return len(sentence) <= _MAX_OFFER_FOLLOW_ON_CHARS and bool(_OFFER_FOLLOW_ON_RE.match(sentence))
+
+
+def strip_closing_offer(content: str) -> str:
+    """`content` without a closing offer ("Would you like more information or should I proceed...?"),
+    or `content` itself when it has none or when cutting it would leave no answer.
+
+    This is a repair, not a verdict, for the same reason `insert_missing_citation_markers` is: the
+    system prompt already forbids the question twice and qwen2.5:3b writes it anyway, and sending the
+    answer back to be rewritten did not remove it (Langfuse trace `1e46b2c8`: three attempts, the same
+    question each time, then a correct answer replaced by "I described what I'd do instead of actually
+    doing it"). The offer is cut only when it is the END of the text (offers, and the short sentences
+    that continue one, from some point to the last character) and what precedes it is itself an answer:
+    at least `_MIN_BODY_CONTENT_WORDS` distinctive words, not a lead-in ending in ":" or a question,
+    no unclosed code fence, and no narrated tool use (`_TOOL_INTENT_RE`). Anything else is returned
+    unchanged, and `defers_instead_of_acting` judges it as before: a reply that is only an offer, or
+    that narrates a tool it never called, is exactly what that check exists for.
+
+    A question in the MIDDLE of an answer, with more answer after it, is never touched."""
+    if not isinstance(content, str) or not content:
+        return content
+    spans = sentence_spans(content)
+    first_offer = None
+    for i in range(len(spans) - 1, -1, -1):
+        sentence = content[spans[i][0] : spans[i][1]]
+        if _is_offer(sentence):
+            first_offer = i
+        elif not _is_offer_follow_on(sentence):
+            break
+    if first_offer is None:
+        return content
+    body = content[: spans[first_offer][0]].rstrip()
+    if (
+        not body
+        or body.endswith(("?", ":"))
+        or body.count("```") % 2
+        or len(content_words(body)) < _MIN_BODY_CONTENT_WORDS
+        or _TOOL_INTENT_RE.search(body)
+    ):
+        return content
+    return body
 
 
 # Two full ```...``` fenced blocks (open+close each) = 4 total ``` markers.

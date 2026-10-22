@@ -7,6 +7,8 @@
 - Answering a tool batch that will not run (`reject_tool_calls`).
 - Building retrieval query text for a vague follow-up (`retrieval_query`, with the crude
   word-overlap helper `content_words` it and the citation checks share).
+- Cutting an answer into sentences the way the citation checks and the closing-offer repair need
+  it (`sentence_spans`, `split_sentences`): a `[n]` marker belongs to the sentence it follows.
 - Normalizing a `HumanMessage`'s content — plain string or multimodal content list
   (pattern 44) — to its text portion (`human_text`, `human_has_content`).
 
@@ -23,6 +25,20 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
+
+# What the person is told when a request is refused, by the app's own screening (`reject_moderation`) or
+# by the gateway's content guardrail (`agent`). One text, so a refusal reads the same whoever made it
+# and says nothing about which rule fired: naming it would only help someone rephrase around it.
+CANNOT_HELP_MESSAGE = "I can't help with that request."
+
+# Marks the AIMessage `agent` writes when the gateway's guardrail refused the call (`additional_kwargs`,
+# like RETRY_ARTIFACT_KEY below). `should_continue` ends the turn on it, through `no_answer`, so the
+# refusal is the answer: no retry, no follow-ups, no cache write.
+GATEWAY_REFUSAL_KEY = "gateway_refusal"
+
+# Replaces the text of a message the gateway's guardrail refused, in the stored thread. The gateway scans
+# the WHOLE message list on every call, so leaving the refused text in the thread refuses every later turn.
+WITHHELD_MESSAGE = "[This message was withheld: a content policy refused it.]"
 
 # Tags a message the graph wrote into the thread to drive a retry, so the
 # readers below can tell it from conversation. `retry_output` appends its
@@ -259,3 +275,31 @@ def content_words(text: str) -> set[str]:
     return {
         w for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS and len(w) > 2
     }
+
+
+# A sentence ends at ./!/? followed by whitespace or the end of the text. A bracket marker written
+# AFTER the full stop on the same line ("... are free. [1]") is part of that sentence, not the start of
+# the next one: models write it both ways, and Langfuse trace `1e46b2c8` showed what binding it
+# forward costs: `[1]` was judged against the NEXT sentence ("[1] Would you like more
+# information...?"), which shares nothing with the source, so a correct citation was reported as
+# misattributed. Horizontal whitespace only: a marker that starts a new line is ambiguous, and a
+# leading marker is how a model lists a source, so it stays with the sentence that follows it and a
+# marker put on the wrong sentence is still seen there.
+_SENTENCE_RE = re.compile(r"\S.*?(?:[.!?](?:[ \t]*\[\d+\])*(?=\s|\Z)|\Z)", re.DOTALL)
+
+
+def sentence_spans(text: str) -> list[tuple[int, int]]:
+    """`(start, end)` of each sentence in `text`: no leading whitespace, a trailing marker included.
+
+    Coarse on purpose, the same posture as `content_words` (no NLP dependency). An abbreviation
+    ("e.g. this") splits as it always did; a decimal point ("3.14") does not, since a boundary needs
+    whitespace after the full stop."""
+    if not isinstance(text, str):
+        return []
+    return [(m.start(), m.end()) for m in _SENTENCE_RE.finditer(text)]
+
+
+def split_sentences(text: str) -> list[str]:
+    """The sentences of `text`, each an exact substring of it and in order (callers locate them
+    again with `text.find`)."""
+    return [text[start:end] for start, end in sentence_spans(text)]

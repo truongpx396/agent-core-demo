@@ -7,7 +7,7 @@ sentence-matching machinery (`_uncited_citation_matches`, `find_likely_uncited`,
 """
 import re
 
-from app.agent.graph.messages import content_words
+from app.agent.graph.messages import content_words, split_sentences
 
 _CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
 
@@ -76,7 +76,7 @@ def _uncited_citation_matches(
     if not content or not citations:
         return []
     used_markers = {c["marker"] for c in used}
-    sentences = _SENTENCE_SPLIT_RE.split(content)
+    sentences = split_sentences(content)
     matches = []
     for citation in citations:
         if citation.get("marker") in used_markers:
@@ -182,12 +182,6 @@ def insert_missing_citation_markers(
     return "".join(parts), fixed_citations
 
 
-# Coarse "good enough" sentence splitter (no NLP dependency), same
-# posture as `content_words`. Splits after ./!/? + whitespace; a marker
-# like "[3]" never contains those chars so it stays attached to its
-# sentence.
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
-
 # Shared by find_likely_uncited and find_likely_misattributed
 # — below this many words a sentence has too little vocabulary for either
 # overlap ratio to mean anything. Judged by the SENTENCE's length, not the
@@ -221,10 +215,14 @@ def find_likely_misattributed(
     the clearest misattribution case there is. `find_likely_uncited`
     was later given the same floor for the same reason, in the other
     direction. Only skipped when a source has NO content words at all.
+
+    The sentences come from `messages.split_sentences`, which keeps a marker written after the full
+    stop ("... are free. [1]") with the sentence it follows. Splitting on the full stop alone judged
+    that `[1]` against the NEXT sentence and flagged a correct citation (Langfuse trace `1e46b2c8`).
     """
     if not content or not used:
         return []
-    sentences = _SENTENCE_SPLIT_RE.split(content)
+    sentences = split_sentences(content)
     flagged = []
     for citation in used:
         marker = citation["marker"]

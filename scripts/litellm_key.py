@@ -18,11 +18,23 @@ the app has failed.
     # the end-user id the gateway shows for a tenant (the app sends a hash, not the name)
     python -m scripts.litellm_key end-user --tenant acme
 
+    # the default per-tenant cap (COST_GOVERNANCE.md pattern 74): create or change it, then read it back
+    LITELLM_MASTER_KEY=sk-... python -m scripts.litellm_key tenant-budget set --max-budget 100 --budget-duration 30d
+    LITELLM_MASTER_KEY=sk-... python -m scripts.litellm_key tenant-budget info
+
 Sizing `--max-budget`: it is the LAST line of defence, so set it ABOVE what the app's own limits can
 legitimately add up to (the sum of your tenants' monthly caps), so it fires only when they have
-failed. A budget below normal use turns routine traffic into an outage.
+failed. A budget below normal use turns routine traffic into an outage. The per-tenant budget is
+sized the same way against ONE tenant: above the largest single tenant's cap for the same window.
 
 The key is printed once, to stdout, and is never logged; put it in LITELLM_APP_KEY.
+
+The per-tenant budget is one budget OBJECT in LiteLLM's database that the configs name
+(`litellm_settings.max_end_user_budget_id`, the same id as TENANT_BUDGET_ID below) and that LiteLLM
+applies to every end user (every tenant: the app sends `user` = a hash of the tenant) with no budget
+of its own. The config only names it. If it does not exist, LiteLLM finds nothing, logs a warning on
+each call and applies NO cap, so `tenant-budget info` exits 1 when it is missing: run it after a
+deploy. It is read through a 60-second cache, so a change takes up to a minute.
 """
 import argparse
 import os
@@ -33,7 +45,14 @@ import httpx
 from app.core.gateway import end_user_id
 from app.core.model_resolver import admin_base_url
 
-DEFAULT_MODELS = "chat,embed"
+# Every alias deploy/litellm/litellm-config.prod.yaml defines (tests/scripts/test_litellm_key.py keeps the two in step). A key lists the
+# aliases it may call, and an alias missing here is refused for the app, so the tiers an operator attaches later would fail with
+# "key not allowed to access model" until the key was re-minted. Naming one the app does not use yet grants nothing: the budget still applies.
+DEFAULT_MODELS = "chat,chat-medium,chat-strong,embed"
+
+# The id of the default per-tenant budget object. The LiteLLM configs name it in `max_end_user_budget_id`; tests/core/test_litellm_config_prices.py
+# checks both do, so the name and the object cannot drift apart.
+TENANT_BUDGET_ID = "tenant-default"
 
 
 def _master_key() -> str:
@@ -61,13 +80,20 @@ def _build_parser() -> argparse.ArgumentParser:
     create.add_argument("--rpm-limit", type=int, help="requests per minute across the key")
     create.add_argument("--tpm-limit", type=int, help="tokens per minute across the key")
     create.add_argument("--max-parallel", type=int, help="concurrent requests across the key")
-    create.add_argument("--models", default=DEFAULT_MODELS, help=f"comma-separated aliases the key may call (default {DEFAULT_MODELS}, the two that deploy/litellm/litellm-config.prod.yaml defines); list every alias the app calls")
+    create.add_argument("--models", default=DEFAULT_MODELS, help=f"comma-separated aliases the key may call (default {DEFAULT_MODELS}, the ones deploy/litellm/litellm-config.prod.yaml defines); list every alias the app calls")
     create.add_argument("--alias", default="agent-core-app", help="a name to find the key by in LiteLLM's UI")
 
     sub.add_parser("info", help="spend, budget and reset time of the key in LITELLM_APP_KEY")
 
     end_user = sub.add_parser("end-user", help="the end-user id the gateway shows for a tenant")
     end_user.add_argument("--tenant", required=True)
+
+    tenant_budget = sub.add_parser("tenant-budget", help=f"the default per-tenant spend cap at the gateway (budget {TENANT_BUDGET_ID!r})")
+    actions = tenant_budget.add_subparsers(dest="action", required=True)
+    set_budget = actions.add_parser("set", help="create the budget, or change it if it exists")
+    set_budget.add_argument("--max-budget", type=float, required=True, help="USD one tenant may spend per window (no default: it is a business number)")
+    set_budget.add_argument("--budget-duration", default="30d", help="how often the spend resets, e.g. 30d (default), 7d, 1mo")
+    actions.add_parser("info", help="read it back; exits 1 if it does not exist (then LiteLLM applies no per-tenant cap)")
     return parser
 
 
@@ -123,9 +149,57 @@ def _end_user(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_tenant_budget(client: httpx.Client) -> tuple[dict | None, httpx.Response]:
+    """The default per-tenant budget row (None when there is none) and the raw answer, so a caller can report a refusal."""
+    response = client.post("/budget/info", json={"budgets": [TENANT_BUDGET_ID]})
+    rows = response.json() if response.status_code == 200 else []
+    return (rows[0] if rows else None), response
+
+
+def _tenant_budget_set(args: argparse.Namespace) -> int:
+    if args.max_budget <= 0:
+        raise SystemExit("error: --max-budget must be above 0 (a cap of 0 would refuse every tenant's second call)")
+    body = {"budget_id": TENANT_BUDGET_ID, "max_budget": args.max_budget, "budget_duration": args.budget_duration}
+    with _client() as client:
+        existing, lookup = _read_tenant_budget(client)
+        if lookup.status_code != 200:
+            print(f"error: LiteLLM refused to look the budget up (HTTP {lookup.status_code}): {lookup.text[:300]}", file=sys.stderr)
+            return 1
+        # /budget/new creates a row and fails on a duplicate id, so an existing budget is updated, not re-created.
+        response = client.post("/budget/update" if existing else "/budget/new", json=body)
+    if response.status_code != 200:
+        print(f"error: LiteLLM refused to save the budget (HTTP {response.status_code}): {response.text[:300]}", file=sys.stderr)
+        return 1
+    print(f"{'Updated' if existing else 'Created'} budget {TENANT_BUDGET_ID!r}: ${args.max_budget:g} per {args.budget_duration} for every tenant without a budget of its own.")
+    print("It applies through litellm_settings.max_end_user_budget_id (both shipped configs name it), covers chat calls only, and a change takes up to 60 s.")
+    return 0
+
+
+def _tenant_budget_info(args: argparse.Namespace) -> int:
+    with _client() as client:
+        budget, response = _read_tenant_budget(client)
+    if response.status_code != 200:
+        print(f"error: LiteLLM refused (HTTP {response.status_code}): {response.text[:300]}", file=sys.stderr)
+        return 1
+    if budget is None:
+        print(f"Budget {TENANT_BUDGET_ID!r}: NOT FOUND.", file=sys.stderr)
+        print("LiteLLM finds no default per-tenant budget, so it applies none (and logs 'Default end user budget not found in database' on every call).", file=sys.stderr)
+        print("Create it: python -m scripts.litellm_key tenant-budget set --max-budget <usd per tenant per window>", file=sys.stderr)
+        return 1
+    max_budget = budget.get("max_budget")
+    print(f"Budget {TENANT_BUDGET_ID!r}")
+    print(f"  cap:       ${max_budget:g} per tenant per {budget.get('budget_duration')}" if isinstance(max_budget, int | float) else "  cap:       NONE (a budget with no max_budget caps nothing)")
+    print(f"  resets at: {budget.get('budget_reset_at')}")
+    return 0
+
+
+def _tenant_budget(args: argparse.Namespace) -> int:
+    return {"set": _tenant_budget_set, "info": _tenant_budget_info}[args.action](args)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    return {"create": _create, "info": _info, "end-user": _end_user}[args.command](args)
+    return {"create": _create, "info": _info, "end-user": _end_user, "tenant-budget": _tenant_budget}[args.command](args)
 
 
 if __name__ == "__main__":

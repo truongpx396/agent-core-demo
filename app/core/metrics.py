@@ -209,6 +209,14 @@ agent_reference_footer_stripped_total = Counter(
     "is always invented, never a real source the model was actually given.",
 )
 
+agent_closing_offer_stripped_total = Counter(
+    "agent_closing_offer_stripped_total",
+    "Final answers where check_output cut a closing offer (\"Would you like more information or "
+    "should I proceed...?\") off a complete answer instead of rejecting the answer for it (see "
+    "strip_closing_offer). The system prompt forbids that question and the small local model "
+    "writes it anyway, so a steady rate is the model ignoring the prompt, not a fault in the graph.",
+)
+
 agent_citation_auto_inserted_total = Counter(
     "agent_citation_auto_inserted_total",
     "Final answers where check_output mechanically inserted a missing [n] "
@@ -516,6 +524,24 @@ agent_gateway_budget_exceeded_total = Counter(
     "LLM calls the gateway refused because the app's key reached its max_budget "
     "(app/core/gateway.py). The gateway is the BACKSTOP: this firing means the app-level "
     "ceilings did not stop the spend first, or the backstop is sized too low.",
+)
+
+agent_gateway_content_blocked_total = Counter(
+    "agent_gateway_content_blocked_total",
+    "LLM calls the gateway refused because a content guardrail blocked them (app/core/gateway.py), "
+    "answered with a refusal instead of an error. A policy working as configured, not a fault: "
+    "a rise says people are asking for what the operator chose to refuse. `pre_call` blocked the "
+    "request (the refused message is then replaced in the thread), `post_call`/`during_call` the "
+    "response.",
+    ["mode"],
+)  # mode: pre_call | post_call | during_call | other
+
+agent_unparsed_completion_total = Counter(
+    "agent_unparsed_completion_total",
+    "Model calls that reported output tokens but returned neither text nor a tool call: the provider "
+    "generated something it could not hand back. Seen with Ollama (qwen2.5:3b): a `remember` tool call "
+    "it could not parse was dropped, so the graph saw an empty reply (a `too_short` retry) and the "
+    "write never happened. Nothing in the reply says it happened, so this counter is the only trace.",
 )
 
 agent_unpriced_usage_total = Counter(

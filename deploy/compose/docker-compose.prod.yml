@@ -28,6 +28,16 @@
 # infra/README.md's first-time-setup section.
 name: agent-core-demo
 
+# The agent-worker and ingest-worker roles run the app's image, which carries the API's HEALTHCHECK
+# (Dockerfile): a probe of http://localhost:8000/health/ready. A worker binds no port, so inheriting it
+# reported every worker `unhealthy` forever (a failing streak in the hundreds), which hides a service
+# that really is unhealthy and would restart-loop one under anything that acts on health. The probe is
+# switched off here rather than replaced: whether a worker pool is alive is an application-level fact
+# the `WorkerUnreachable` alert (observability/prometheus/alerts.yml) already watches, a job that no
+# worker takes. tests/core/test_compose_worker_healthcheck.py fails for a worker added without this.
+x-worker-healthcheck: &worker-healthcheck
+  disable: true
+
 x-app-env: &app-env
   OPENAI_API_BASE: http://litellm:4000/v1
   # The app should hold a SCOPED key, not the master: the master key is gateway admin (it can
@@ -130,7 +140,9 @@ services:
       - qdrant:/qdrant/storage
 
   litellm:
-    image: ghcr.io/berriai/litellm:main-stable
+    # Pinned by digest, the same one as docker-compose.yml (a test checks), for the reasons given there. Bump it with infra/README.md
+    # ("Bumping the LiteLLM image").
+    image: ghcr.io/berriai/litellm:main-stable@sha256:28b10a635296730007097390939b55f8696ece548530d4ddda3e31c708b4dc81
     restart: unless-stopped
     cpus: "0.3"
     mem_limit: 512m
@@ -141,6 +153,10 @@ services:
       LLM_API_BASE: ${LLM_API_BASE}
       LLM_API_KEY: ${LLM_API_KEY}
       LLM_CHAT_MODEL: ${LLM_CHAT_MODEL}
+      # The middle tier (`chat-medium`). Unset = the same as `chat`, so the proxy always starts; see deploy/env/prod.env.example.
+      LLM_MEDIUM_CHAT_MODEL: ${LLM_MEDIUM_CHAT_MODEL:-${LLM_CHAT_MODEL}}
+      LLM_MEDIUM_API_BASE: ${LLM_MEDIUM_API_BASE:-${LLM_API_BASE}}
+      LLM_MEDIUM_API_KEY: ${LLM_MEDIUM_API_KEY:-${LLM_API_KEY}}
       # The escalation alias (`chat-strong`). Unset = the same as `chat`, so the proxy always starts; see deploy/env/prod.env.example.
       LLM_STRONG_CHAT_MODEL: ${LLM_STRONG_CHAT_MODEL:-${LLM_CHAT_MODEL}}
       LLM_STRONG_API_BASE: ${LLM_STRONG_API_BASE:-${LLM_API_BASE}}
@@ -229,6 +245,7 @@ services:
     mem_limit: 768m
     stop_grace_period: 90s # let an in-flight agent turn (LLM calls, tool use) finish rather than being killed mid-turn
     command: ["python", "-m", "app.job_queue.agent_worker"]
+    healthcheck: *worker-healthcheck
     environment: *app-env
     depends_on:
       postgres:
@@ -245,6 +262,7 @@ services:
     mem_limit: 768m
     stop_grace_period: 90s # let an in-flight document parse/embed job finish rather than being killed mid-job
     command: ["python", "-m", "app.ingestion.ingest_worker"]
+    healthcheck: *worker-healthcheck
     environment: *app-env
     depends_on:
       postgres:
