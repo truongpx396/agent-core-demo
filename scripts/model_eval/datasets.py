@@ -39,6 +39,7 @@ TEXT_FIELDS: dict[str, tuple[str, ...]] = {
     "screen": ("text",),
     "classifier": ("text",),
     "route": ("text",),
+    "topics": ("text",),
 }
 
 

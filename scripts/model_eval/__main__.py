@@ -19,7 +19,7 @@ from scripts.model_eval import datasets as ds
 from scripts.model_eval.candidates import Candidate, load_candidates
 from scripts.model_eval.controls import CONTROL_CANDIDATES, derived_controls
 from scripts.model_eval.report import RunOutput, build_report, render_markdown, validate
-from scripts.model_eval.runners import classify, embedding, rerank, screen
+from scripts.model_eval.runners import classify, embedding, rerank, screen, topics
 from scripts.model_eval.runners.base import (
     PrerequisiteMissing,
     RunSettings,
@@ -269,6 +269,20 @@ def cmd_route_label(args: argparse.Namespace) -> int:
     return OK
 
 
+def cmd_labelset_calibrate(args: argparse.Namespace) -> int:
+    """Print the cutoff to put in a label set's `calibration` for one model, chosen on the DEV split (specs/015 FR-012)."""
+    candidate = resolve_candidate("classifier", args.candidate)
+    settings = RunSettings(split="dev", threads=args.threads, dataset=args.labelset)
+    result = topics.calibration_for(candidate, settings, name=args.labelset, keep=args.keep)
+    sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    sys.stdout.write(
+        f"\nput this under `calibration` in docker/ml-service/labelsets/{args.labelset}.json (it keeps {result['in_scope_kept']:.1%} of {result['n_in_scope']} in-scope dev "
+        f"sentences and rejects {result['none_rejected']:.1%} of {result['n_none']} none sentences):\n  "
+        + json.dumps(result["calibration_line"])[1:-1] + "\n"
+    )
+    return OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m scripts.model_eval", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -302,6 +316,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("verify", help="check every committed dataset, baseline, licence and control (no model)").set_defaults(func=cmd_verify)
     sub.add_parser("fetch", help="download and verify the pinned public datasets").set_defaults(func=cmd_fetch)
+
+    calibrate = sub.add_parser("labelset-calibrate", help="choose a label set's no-label cutoff for one model on the dev split (needs the model cached)")
+    calibrate.add_argument("--candidate", required=True, help="a classifier candidate that declares source.model (an in-process model)")
+    calibrate.add_argument("--labelset", default="route-topics")
+    calibrate.add_argument("--keep", type=float, default=topics.DEFAULT_KEEP, help="the share of in-scope dev sentences the cutoff must keep")
+    calibrate.add_argument("--threads", type=int, default=None)
+    calibrate.set_defaults(func=cmd_labelset_calibrate)
 
     label = sub.add_parser("route-label", help="score the route prompts' answers from the local and strong model with a judge (needs the gateway)")
     label.add_argument("--judge", required=True, help="the gateway alias that scores each answer 0-1; it should not be the model being judged")

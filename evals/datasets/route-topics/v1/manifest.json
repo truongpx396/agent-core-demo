@@ -1,0 +1,36 @@
+{
+  "kind": "topics",
+  "labels": [
+    "action",
+    "analysis",
+    "code",
+    "drafting",
+    "high_stakes",
+    "lookup",
+    "reasoning",
+    "smalltalk"
+  ],
+  "licence": "repository-internal",
+  "name": "route-topics",
+  "none_label": "none",
+  "provenance": {
+    "author": "authored by the implementing agent from the topics in docker/ml-service/labelsets/route-topics.json; not yet reviewed by a person",
+    "sources": [
+      "evals/sources/route-topics/prompts.tsv"
+    ]
+  },
+  "schema_version": 1,
+  "splits": {
+    "dev": {
+      "file": "dev.jsonl",
+      "items": 56,
+      "sha256": "ca99d915a7cae07fe7136f26ae65ed7bf2425897a0711c427874aa18eca65b68"
+    },
+    "test": {
+      "file": "test.jsonl",
+      "items": 96,
+      "sha256": "f9758cbb19e34b63e43d58ef62856ee82d14cb542e61d6a7beee35365b721e91"
+    }
+  },
+  "version": "v1"
+}

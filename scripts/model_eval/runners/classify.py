@@ -10,6 +10,9 @@ numbers.
 NO OUTCOMES, NO NUMBER. Without a labelled outcomes file there is nothing to measure routing quality against, and the run ends with the
 reason ("unmeasured") and no report at all: a figure computed from nothing would be worse than none (FR-011).
 
+A LABEL SET IS NOT A ROUTER. `--dataset route-topics` hands the run to `topics.py`, which scores a label set on sentences with a known topic
+(specs/015); everything below is about routers and outcomes.
+
 WHAT CAN BE EVALUATED. Anything with a `scores(texts)` method (`ClassifierBackend`): the two built-in controls (`constant`, `random-router`),
 the ML service's `/classify` (`service`, which only answers once a head has been accepted there), or a backend handed to `run(backend=...)`.
 That last one is the extension point for a new router (for example rules plus topic labels): it is scored, timed and compared exactly like
@@ -30,6 +33,7 @@ from scripts.model_eval import metrics
 from scripts.model_eval.candidates import Candidate
 from scripts.model_eval.report import RunOutput
 from scripts.model_eval.routing import label, outcomes_dir, read_outcomes
+from scripts.model_eval.runners import topics
 from scripts.model_eval.runners.base import (
     PrerequisiteMissing,
     RunSettings,
@@ -181,8 +185,10 @@ def _curve_line(name: str, curve: Sequence[float]) -> str:
 
 
 def run(candidate: Candidate, settings: RunSettings, *, backend: ClassifierBackend | None = None, via: str | None = None) -> RunOutput:
-    started = time.perf_counter()
     name = settings.dataset or DEFAULT_DATASET
+    if name in topics.DATASETS:  # a label set on sentences with a known topic: no stronger model and no labelled outcomes involved
+        return topics.run(candidate, settings, via=via)
+    started = time.perf_counter()
     version_dir = latest_version(settings.dataset_root, name)
     manifest = ds.load_verified(version_dir)
     rows = manifest.split_items(settings.split)

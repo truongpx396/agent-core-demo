@@ -34,12 +34,34 @@ def test_a_missing_candidates_file_is_an_empty_declaration_not_an_error(tmp_path
     assert load_candidates(tmp_path / "nothing.toml", expected_kind="classifier") == []
 
 
-def test_the_only_declared_classifier_candidate_is_the_service_path():
-    """The in-process candidates existed to evaluate trained head files and went with the head trainer; a new router is handed to the runner and
-    gets a declaration when it is wired to a command. This pins the removal so a stale declaration cannot come back unnoticed."""
+def test_the_classifier_candidates_are_the_service_path_and_the_label_set_models():
+    """The in-process HEAD candidates went with the head trainer; what is declared now is the service path (the baseline) and the two models that
+    serve label sets (specs/015). A new router is handed to the runner and gets a declaration when it is wired to a command."""
     declared = cli.declared("classifier")
 
-    assert [(c.name, c.path) for c in declared] == [("ml-service-classify", "service")]
+    assert [(c.name, c.path) for c in declared] == [
+        ("ml-service-classify", "service"), ("labelset-bge-small-en-v1.5", "inprocess"), ("labelset-all-minilm-l6-v2", "inprocess"),
+    ]
+    assert [c.name for c in declared if c.baseline] == ["ml-service-classify"]
+
+
+def test_a_label_set_candidate_is_exactly_the_model_the_ml_service_serves_for_that_role():
+    """The candidate is how the harness loads the model and models.toml is how the service does. If they drift, the report measures a model the
+    service does not run, and the cutoff stored for that name would belong to the other one."""
+    import tomllib
+    from pathlib import Path
+
+    models = {m["name"]: m for m in tomllib.loads((Path(cli.REPO) / "docker" / "ml-service" / "models.toml").read_text())["model"]}
+    candidates = [c for c in cli.declared("classifier") if c.name.startswith("labelset-")]
+
+    assert candidates
+    for c in candidates:
+        served = models[c.source.model]
+        assert "classify" in served["roles"], c.name
+        assert (c.source.repo, c.source.file, c.source.revision) == (served["repo"], served["file"], served["revision"]), c.name
+        assert (c.prepare.pooling, c.prepare.normalize, c.prepare.max_length, c.prepare.pad_token) == (
+            served["pooling"], served.get("normalize", True), served["max_length"], served["pad_token"]), c.name
+        assert not c.prepare.query_prefix and not c.prepare.document_prefix, "examples and sentences are the same kind of text: no prefix"
 
 
 def test_the_screen_baseline_is_scored_at_the_apps_own_threshold():

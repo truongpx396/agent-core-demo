@@ -43,7 +43,9 @@ retrieval change. `make model-eval KIND=embedding|reranker|screen|classifier CAN
 *model swap*: it judges a candidate against the recorded baseline (`evals/README.md`), and `make model-eval-verify`
 needs no model or network. Run it before changing an embedding, reranker or screening model, and read the report's
 `controls` first. The routing classifier has one more manual target, `make router-label JUDGE=<alias>` (score the local and strong
-model's answers, the outcomes any router is judged on); there is no head trainer (`evals/README.md`).
+model's answers, the outcomes any router is judged on); there is no head trainer (`evals/README.md`). A label set (the choices
+`POST /classify task=label` picks between) has `make labelset-calibrate CANDIDATE=labelset-<model>`, which chooses its "none of these" cutoff for one
+model on a dev split, and is judged with `make model-eval KIND=classifier CANDIDATE=labelset-<model> DATASET=route-topics`.
 `make reembed COLLECTION_NAME=<c>` rebuilds a vector collection under the current embedding identity and swaps it in atomically; run
 it after changing `EMBED_MODEL`, the prefixes or `EMBED_MODEL_REVISION`. Don't run `make clean`, `clear-*`, or `restart-all` without being asked —
 they delete volumes or kill running processes.
@@ -89,6 +91,7 @@ they delete volumes or kill running processes.
   hold what can be evaluated, the versioned sets, the recorded result of the model in use today, and the text the sets are built
   from. Datasets are frozen (a manifest records every file's hash; change one by adding `v2/`), and a baseline is immutable.
   `docker/ml-service/ml_service/` is the ML service as an importable package (on the test/mypy path, not installed).
+  `docker/ml-service/labelsets/*.json` are the label sets that service serves (specs/015; the README beside them is the format and the rules).
   `app/retrieval/embedding_identity.py` is what makes mixing two embedding models' vectors impossible (a collection records its model,
   dimension, prefixes and revision, and the app refuses to read or write one that disagrees); `app/core/routing_advice.py` and
   `app/agent/graph/model_route.py` are the router's whole footprint in the app, and it can only write `State.model_route`.
@@ -158,4 +161,4 @@ story. Amend the constitution only through `/speckit-constitution` and a PR.
 Path-scoped guidance loads automatically from `.claude/rules/`: `side-effect-tools.md`,
 `runtime-reliability.md`, `testing.md`.
 
-The billing package's own specs (010-013) live in `packages/billing/specs/`; `specs/` keeps a one-file pointer for each, so Spec Kit still counts the numbers as taken (the next is 015; 014 is the model-serving and evaluation-harness spec).
+The billing package's own specs (010-013) live in `packages/billing/specs/`; `specs/` keeps a one-file pointer for each, so Spec Kit still counts the numbers as taken (the next is 016; 014 is the model-serving and evaluation-harness spec and 015 builds on it: label sets on the ML service and tiered model routing).

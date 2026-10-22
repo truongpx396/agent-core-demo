@@ -20,3 +20,42 @@ notes = "Whatever the running ML service's /classify answers, which is what the 
 
 [candidate.source]
 model = "classify"
+
+# Label sets (specs/015): the model that embeds a set's examples and sentences, scored in-process on `--dataset route-topics`. `source.model` is the name
+# the ML service serves it under, which is the key of the set's `calibration`; repo, file and revision are the entry in docker/ml-service/models.toml
+# (a test keeps them equal), and `prepare` is how that entry pools. No prefix: examples and sentences are the same kind of text, so nothing asymmetric
+# is wanted. They are not routers and have no outcomes: `make model-eval KIND=classifier CANDIDATE=labelset-bge-small-en-v1.5 DATASET=route-topics`.
+
+[[candidate]]
+name = "labelset-bge-small-en-v1.5"
+kind = "classifier"
+path = "inprocess"
+licence = "MIT"
+notes = "The label-set matcher's primary model (the first classify-role model in models.toml)."
+[candidate.source]
+model = "bge-small-en-v1.5"
+repo = "BAAI/bge-small-en-v1.5"
+file = "onnx/model.onnx"
+revision = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+[candidate.prepare]
+pooling = "cls"
+normalize = true
+max_length = 512
+pad_token = "[PAD]"
+
+[[candidate]]
+name = "labelset-all-minilm-l6-v2"
+kind = "classifier"
+path = "inprocess"
+licence = "Apache-2.0"
+notes = "The label-set matcher's fallback model. Its similarities sit on a different scale from the primary's, which is why the cutoff is stored per model."
+[candidate.source]
+model = "all-MiniLM-L6-v2"
+repo = "sentence-transformers/all-MiniLM-L6-v2"
+file = "onnx/model.onnx"
+revision = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+[candidate.prepare]
+pooling = "mean"
+normalize = true
+max_length = 256
+pad_token = "[PAD]"

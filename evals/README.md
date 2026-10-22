@@ -92,6 +92,24 @@ controls fail on such data and the report says why (`WHY:`). The limit is the la
 intent set (CLINC150, `clinc-oos-plus`, pinned in `datasets/public.lock.json`, scored by `suites.IntentSuite`), but no router can be judged
 until the stronger model wins clearly somewhere, with a judge that is not itself that model.
 
+## Label sets (a different question from routing)
+
+A **label set** (`docker/ml-service/labelsets/<name>.json`, specs/015) lists a few choices with example sentences, and the ML service answers
+`POST /classify task=label` with the choice a text is nearest to, or "none of these" below a cutoff that is stored per model. That is a
+classification task with a known right answer, so it is judged on sentences whose topic is known, not on routing outcomes:
+
+```bash
+make labelset-calibrate CANDIDATE=labelset-bge-small-en-v1.5                                  # choose the cutoff on the DEV split; prints the line to paste
+make model-eval KIND=classifier CANDIDATE=labelset-bge-small-en-v1.5 DATASET=route-topics     # report on the TEST split
+```
+
+The report gives in-scope accuracy and macro-F1 (is the nearest label right?), `oos_recall@thr` (the share of "none of these" sentences the cutoff
+rejects) and `in_scope_reject@thr` (the share of real topics it wrongly rejects), the per-topic results and the commonest mix-ups, and the shuffled-
+predictions control. It runs the service's own code on the model in-process, so it needs the model cached and `PYTHONPATH` to include
+`docker/ml-service` (the Makefile sets it). `ece_in_scope` treats a similarity as a probability and is not meaningful for this matcher.
+`evals/datasets/route-topics` is authored, unreviewed and small (96 test sentences), so every report is PROVISIONAL and two good models cannot be
+ranked by a point; what it can tell is a matcher that works from one that does not, and which topics get confused (`specs/015/research.md`).
+
 ## Add a candidate
 
 Add a `[[candidate]]` table to `candidates/<kind>.toml`. A name is `[a-z0-9._-]+` (no `@`: it separates the candidate from the dataset in

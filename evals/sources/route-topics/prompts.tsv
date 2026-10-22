@@ -1,0 +1,152 @@
+smalltalk	dev	Hey! Hope your day is going well.
+smalltalk	dev	Thank you, you've been a great help.
+smalltalk	dev	What's your name?
+smalltalk	dev	lol that made my day
+smalltalk	dev	Morning! Ready to get started.
+smalltalk	dev	Okay cool, bye for now.
+smalltalk	test	Hello again, it's me.
+smalltalk	test	Thanks a lot for the quick answer!
+smalltalk	test	Are you a real person or a bot?
+smalltalk	test	Sorry to bother you so late.
+smalltalk	test	You're the best, really.
+smalltalk	test	Hi, good afternoon.
+smalltalk	test	Alright, see you tomorrow.
+smalltalk	test	That's so kind of you to say.
+smalltalk	test	Happy Friday, everyone!
+smalltalk	test	Wow, that was fast, thanks.
+lookup	dev	What's the deadline to submit my travel receipts?
+lookup	dev	Where do I find the SLA terms for gold support?
+lookup	dev	How long does a standard refund take to arrive?
+lookup	dev	Does the knowledge base explain how to export my data?
+lookup	dev	Which plan includes single sign-on?
+lookup	dev	What time does the on-call shift change?
+lookup	test	How do I update the billing contact on my account?
+lookup	test	Is there a guide for setting up webhooks?
+lookup	test	How many sick days are we allowed per year?
+lookup	test	What is the maximum discount a rep can approve without sign-off?
+lookup	test	Where is the runbook for the database failover?
+lookup	test	Can customers pay by purchase order?
+lookup	test	How do I request a new laptop?
+lookup	test	What does error code 403 mean on the dashboard?
+lookup	test	When does the free trial end?
+lookup	test	What's covered under the standard warranty?
+action	dev	Open a ticket for the checkout page timing out.
+action	dev	Email Priya the updated quote.
+action	dev	Move my meeting with the Contoso team to Thursday.
+action	dev	Change the plan on this account to Pro.
+action	dev	Mark invoice 5530 as paid.
+action	dev	Send the customer a password reset link.
+action	test	Create a follow-up task for the renewal call next week.
+action	test	Please forward this complaint to the quality team.
+action	test	Add the new contact to the CRM under Initech.
+action	test	Refund the last payment for this customer.
+action	test	Page the on-call engineer about the failing deploy.
+action	test	Close ticket 7714, it's resolved.
+action	test	Set a reminder to review the contract on Monday.
+action	test	Post an update to the status page saying we're investigating.
+action	test	Assign the escalation to the platform team.
+action	test	Reply to the customer and let them know we received their documents.
+drafting	dev	Write a short welcome message for new customers.
+drafting	dev	Can you rephrase this reply so it's less blunt?
+drafting	dev	Draft a reminder email about the overdue invoice.
+drafting	dev	Summarize the key points of this contract in plain language.
+drafting	dev	Create a friendly out-of-office message.
+drafting	dev	Write release notes for the latest update.
+drafting	test	Help me phrase a message declining the discount request politely.
+drafting	test	Draft a LinkedIn post announcing our new office.
+drafting	test	Turn this bullet list into a clear paragraph.
+drafting	test	Write an onboarding email for a new sales hire.
+drafting	test	Proofread this email and fix any mistakes.
+drafting	test	Compose a short update for the weekly newsletter.
+drafting	test	Draft a response to a customer review that complains about delivery.
+drafting	test	Shorten this summary to two sentences.
+drafting	test	Write talking points for tomorrow's customer call.
+drafting	test	Prepare a polished version of these rough meeting notes.
+analysis	dev	Which is better for us, monthly or annual billing, and what are the trade-offs?
+analysis	dev	Why might customers be abandoning the checkout flow?
+analysis	dev	Assess whether outsourcing tier-one support would pay off.
+analysis	dev	Review these two proposals and tell me which one is stronger.
+analysis	dev	What patterns show up in last quarter's escalations?
+analysis	dev	How would a price increase affect churn across our segments?
+analysis	test	Weigh the benefits of hiring versus contracting for the support surge.
+analysis	test	Why did conversion drop after the redesign, and what should we test next?
+analysis	test	Analyze our incident history and tell me where the process is weakest.
+analysis	test	Compare the three CRM vendors on cost, features and risk.
+analysis	test	Which accounts are most at risk of not renewing, and what signals suggest it?
+analysis	test	What are the strengths and weaknesses of our current onboarding process?
+analysis	test	Evaluate whether we should expand to the European market this year.
+analysis	test	Explain how the new discount policy might change deal sizes.
+analysis	test	Diagnose why response times got worse in the second half of the month.
+analysis	test	What should we prioritize first given limited budget, and why?
+reasoning	dev	A plan costs 25 per seat and we have 140 seats with a 12 percent discount; what's the annual total?
+reasoning	dev	Figure out the order to restart five services so each starts after its dependencies.
+reasoning	dev	If three agents can close 18 tickets in a day, how many agents close 70 in two days?
+reasoning	dev	Show step by step how to split this bill across four departments by headcount.
+reasoning	dev	Estimate the downtime if each of the six steps takes between 5 and 12 minutes.
+reasoning	dev	Work out the schedule so every engineer is on call exactly once in six weeks.
+reasoning	test	Calculate the commission if the rate is 8 percent up to 50,000 and 12 percent above that, on an 83,000 deal.
+reasoning	test	Given these dependencies between teams, determine a valid launch sequence.
+reasoning	test	Derive how many servers we need to keep latency under 200 ms at double the traffic.
+reasoning	test	If the refund window is 30 days and the customer bought on March 3rd, what is the last day to refund?
+reasoning	test	Reason through whether these three rules ever conflict.
+reasoning	test	Allocate 40 hours of support across five queues so the longest wait is minimized.
+reasoning	test	What is the compound growth rate if revenue went from 1.2 million to 2.1 million in three years?
+reasoning	test	Plan the cutover in phases so no more than 10 percent of users are affected at once.
+reasoning	test	Work out how much we overcharged each customer if the fee was applied twice.
+reasoning	test	Solve for the price that gives us a 35 percent margin after the 3 percent payment fee.
+code	dev	Write a SQL query that returns the ten customers with the most orders.
+code	dev	This Python loop is slow; how can I speed it up?
+code	dev	Why does my regex also match empty strings?
+code	dev	Show me how to parse JSON in Go.
+code	dev	Refactor this function so it doesn't repeat itself.
+code	dev	What does this error mean: KeyError 'user_id'?
+code	test	Write a script that renames all files in a folder to lowercase.
+code	test	How do I paginate results from this API in Python?
+code	test	Fix the off-by-one error in this for loop.
+code	test	Create a Dockerfile for a small Flask app.
+code	test	Explain what this React hook does and why it re-renders.
+code	test	Write a cron expression that runs at 2am on weekdays.
+code	test	How can I debounce a function in JavaScript?
+code	test	Generate a migration that adds a nullable column to the orders table.
+code	test	Why is this async function returning a promise instead of a value?
+code	test	Convert this curl command into a Python requests call.
+high_stakes	dev	Are we allowed to share customer records with a partner without consent?
+high_stakes	dev	A worker says they were fired for reporting a safety issue; what are our obligations?
+high_stakes	dev	Does our refund practice break consumer protection law in the EU?
+high_stakes	dev	What should we do about an employee who may have leaked confidential salary data?
+high_stakes	dev	Is it legal to record support calls without telling the caller?
+high_stakes	dev	Can we terminate this vendor contract early without penalties?
+high_stakes	test	We found unauthorized access to the customer database; what are our disclosure duties?
+high_stakes	test	How do we handle a request under GDPR to delete all of someone's data?
+high_stakes	test	Is this marketing claim misleading enough to expose us to a lawsuit?
+high_stakes	test	A customer threatens to sue over a data error; how should we respond?
+high_stakes	test	What are the liability risks if our software caused a client's financial loss?
+high_stakes	test	Should we report this suspected fraud to the authorities?
+high_stakes	test	Do we have to pay overtime to these contractors under labor law?
+high_stakes	test	Can we use this open source license in our commercial product?
+high_stakes	test	An employee wants medical leave and we're unsure what the law requires.
+high_stakes	test	How do we handle sanctions screening for a customer in a restricted country?
+none	dev	yes
+none	dev	ok do it
+none	dev	the second one
+none	dev	asdfghjkl
+none	dev	12345
+none	dev	hmm
+none	dev	INV-20931
+none	dev	as discussed
+none	test	no
+none	test	go ahead
+none	test	that one
+none	test	qwerty uiop
+none	test	???
+none	test	the thing from before
+none	test	sure, that works
+none	test	...
+none	test	2026-11-04
+none	test	maybe
+none	test	the previous one please
+none	test	yes please
+none	test	ref 88213
+none	test	sorry what
+none	test	right
+none	test	k
