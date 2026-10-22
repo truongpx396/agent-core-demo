@@ -195,10 +195,6 @@ def test_verify_passes_on_a_clean_tree_and_fails_when_a_baseline_item_file_is_ed
     assert "does not match its recorded hash" in capsys.readouterr().out
 
 
-def test_the_unbuilt_commands_say_so_instead_of_pretending(capsys):
-    assert cli.main(["head"]) == cli.USAGE and "not built in this change" in capsys.readouterr().err
-
-
 def test_all_kinds_runs_a_named_candidate_for_every_kind_that_declares_it_and_the_worst_exit_wins(env, capsys):
     use(env, FakeRunner({"default": _data()}))
     cli.main(argv("baseline", "nomic"))

@@ -33,6 +33,7 @@ class RunOutput:
     data: ItemData
     efficiency: dict  # query_ms {p50, p95}, ms_per_chunk, rss_mb, run_seconds
     warnings: list[str] = field(default_factory=list)
+    tradeoffs: list[str] = field(default_factory=list)  # extra lines the runner knows and the report cannot derive (e.g. the routing controls' curves)
 
 
 def _tradeoffs(report: dict, baseline: baselines.Baseline | None, hw_id: str) -> list[str]:
@@ -110,6 +111,15 @@ def build_report(
     status = "invalid" if any(not c.ok for c in controls) else ("provisional" if reviewed < 1.0 else "ok")
     if status == "invalid":
         warnings.append("INVALID: a control did not come out as expected, so this report must not be used")
+        useless = [c for c in controls if c.name in ("random-router", "constant") and not c.ok]
+        if run.kind == "classifier" and useless and "q_local" in run.data.arrays:
+            advantage = float((run.data.arrays["q_strong"] - run.data.arrays["q_local"]).mean())
+            warnings.append(
+                f"WHY: on these {len(run.data)} prompts the strong model scores only {advantage:+.3f} above the local one on average, so the cost-quality curve is "
+                "dominated by noise and the harness cannot tell even a PERFECT router from a random one. That is a property of the labelled outcomes, "
+                "not a bug: no claim about routing quality can be made from them. Label a model pair (or use a judge) that separates the two models, "
+                "or label more prompts, before reading any routing figure"
+            )
     report = {
         "schema_version": 1,
         "kind": run.kind,
@@ -126,7 +136,7 @@ def build_report(
         "controls": [c.as_dict() for c in controls],
         "warnings": warnings,
     }
-    report["tradeoffs"] = _tradeoffs(report, baseline, hardware["id"])
+    report["tradeoffs"] = _tradeoffs(report, baseline, hardware["id"]) + list(run.tradeoffs)
     if not report["baseline"]:
         del report["baseline"]
     return report

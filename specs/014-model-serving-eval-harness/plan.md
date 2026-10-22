@@ -170,23 +170,19 @@ agent/domains/api" rule, and the only new graph module (`model_route.py`) is reg
 
 ## Delivery (CLAUDE.md: one logical change per PR, ≤ ~400 hand-written lines, ~1,000 ceiling)
 
-Order and dependencies are in `research.md` §E. Each PR is independently reviewable, leaves `make lint typecheck test` green, and
-changes no default behavior until the last. Task phases in `tasks.md` map one-to-one to these PRs.
+**As delivered.** The plan proposed nine PRs. At the maintainer's request the work was delivered as three, plus a closing change, so each is far
+over the ~1,000-line ceiling and says so in its description (read each by commit). Order and dependencies are in `research.md` §E; every PR left
+`make lint typecheck test` green and no default behaviour changed.
 
-| PR | Group in `tasks.md` (tasks) | Result a reviewer can run |
+| PR | Contents (tasks) | What it added |
 |---|---|---|
-| 1 | Phase 2A — constitution (T005–T007) | `grep` shows the old rule gone; version 1.2.0; sync-impact report |
-| 2 | Phase 3A — harness core (T019–T031) | `pytest tests/scripts/model_eval`; `model-eval-verify` |
-| 3 | Phase 3B — harness data + runners (T032–T047) | a report for a control candidate; provisional baselines |
-| 4 | Phase 2B — ml-service package split (T008–T018) | the container passes the existing tests unchanged; `/health/models`, `/metrics` |
-| 5 | Phase 4A — embedding roles + identity + re-embed (T048–T060) | quickstart 2a–2c |
-| 6 | Phase 4B — `/v1/embeddings` + registry (T061–T067) | quickstart 2d–2e |
-| 7 | Phase 5A — `/classify` + failover + heads (T068–T077) | quickstart 3b–3c |
-| 8 | Phase 5B — app seam (T078–T089) | quickstart 3a, 3d, 4 |
+| #175 | the specification, plan, research, contracts, quickstart and this task list | `specs/014-model-serving-eval-harness/` |
+| #177 | constitution 1.2.0 (T005-T007); the ML service as an importable package (T008-T018); the harness core, datasets, runners and provisional baselines (T019-T047); pattern 69 (T090) | `make model-eval*`, `evals/`, `scripts/model_eval/` |
+| #176 | embedding roles, the identity guard, atomic re-embed, `/v1/embeddings` and the model registry (T048-T067) | `make reembed`, `app/retrieval/embedding_identity.py` |
+| #178 | `/classify` with failover and heads (T068-T069, T073-T075, T077); the routing seam (T078-T087, T089); pattern 68 | `route_model`, the `chat-strong` alias, two alerts |
+| closing change | the labeller and classifier runner (T071, T072; the head trainer T070 was built and then withdrawn); the prefix A/B and the end-to-end walk-through run and recorded (T058, T088); docs and housekeeping (T091-T094) | `make router-label`, `make router-head-train`, `KIND=classifier`, the CLINC method-sanity check |
 
-| 9 | Phase 6 — closing docs and housekeeping (T090–T094) | the engineering pattern, `CLAUDE.md` commands, final gates, spec status |
-
-Setup tasks ride with the first PR that needs them: **T001 → PR 4, T002–T004 → PR 2.** **94 tasks:** Setup 4, Foundational 14, US1 29, US2 20, US3 22, Polish 5.
+Setup tasks rode with the first PR that needed them. **94 tasks:** Setup 4, Foundational 14, US1 29, US2 20, US3 22, Polish 5. Open by design: T045, T076 and the T058 decision.
 
 ## Complexity Tracking
 

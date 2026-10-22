@@ -39,6 +39,11 @@ ALLOWED = {"no_difference": {"no_difference", "inconclusive"}, "worse": {"worse"
 _JUDGED_ON: dict[tuple[str, str], tuple[str, ...]] = {
     ("screen", "random-scores"): ("roc_auc", "ml_fpr_domain@thr", "app_fpr_domain@thr"),
     ("screen", "always-benign"): ("roc_auc", "tpr@1%fpr", "ml_recall@thr", "app_recall@thr"),
+    # A router that scores at random or never escalates must lose to a perfect router on the decision (accuracy, macro-F1) and on the thing the
+    # decision is for (the share of the strong-minus-local gap recovered). Calibration (ECE) and CPT are not judged: a perfect router's ECE is
+    # set by how confident it is, not by how right, and a CPT that is never reached has no value to compare.
+    ("classifier", "random-router"): ("accuracy", "macro_f1", "apgr"),
+    ("classifier", "constant"): ("accuracy", "macro_f1", "apgr"),
 }
 
 
@@ -67,6 +72,22 @@ def _copy(data: ItemData) -> ItemData:
     return ItemData(list(data.ids), {k: np.array(v, copy=True) for k, v in data.arrays.items()})
 
 
+def _oracle_scores(data: ItemData) -> np.ndarray:
+    """Scores that put every `needs_stronger` prompt above every `local_ok` one and, within each, rank by the true gain (strong minus local):
+    the best a router can do on these outcomes. Decided at 0.5, they reproduce the labels exactly."""
+    gain = np.asarray(data.arrays["q_strong"]) - np.asarray(data.arrays["q_local"])
+    label = np.asarray(data.arrays["label"]).astype(int)
+    scores = np.zeros(len(label))
+    for cls, (low, high) in ((0, (0.05, 0.45)), (1, (0.55, 0.95))):
+        chosen = label == cls
+        count = int(chosen.sum())
+        if count:
+            rank = np.empty(count)
+            rank[np.argsort(gain[chosen], kind="stable")] = np.arange(count)
+            scores[chosen] = low + (high - low) * rank / max(count - 1, 1)
+    return scores
+
+
 def derived_controls(kind: str, suite: Suite, baseline: ItemData, *, seed: int = SEED) -> list[ControlResult]:
     results = [judge("identity", "no_difference", compare(suite, _copy(baseline), baseline))]
     rng = np.random.default_rng(seed)
@@ -79,6 +100,24 @@ def derived_controls(kind: str, suite: Suite, baseline: ItemData, *, seed: int =
         benign.arrays["score"] = np.zeros(n)  # a screen that never flags anything
         benign.arrays["pattern_hit"] = np.zeros(n)
         results.append(judge("always-benign", "worse", compare(suite, benign, baseline), _JUDGED_ON[("screen", "always-benign")]))
+    elif kind == "classifier" and "pred" in baseline.arrays:
+        # The intent method-sanity check: a pipeline that learned anything must beat one whose predictions are shuffled across the items (chance).
+        # Unlike the routing controls this DOES depend on the candidate being sensible, deliberately: this check exists to catch an embedding or a
+        # training method that is not, and "INVALID: not better than chance" is the right way for it to say so.
+        shuffled = _copy(baseline)
+        shuffled.arrays["pred"] = rng.permutation(np.asarray(baseline.arrays["pred"]))
+        results.append(judge("shuffled-predictions", "worse", compare(suite, shuffled, baseline), ("accuracy_in_scope", "macro_f1_in_scope")))
+    elif kind == "classifier":
+        # There is no recorded baseline to compare a routing head with (none is in use until a person accepts one), so these controls cannot lean
+        # on the candidate being any good. They take the real outcomes, build the BEST possible router from them (one that ranks by the true
+        # gain) and two useless ones, and check that the harness tells them apart. A head that is itself no better than random is then reported as
+        # exactly that, in its own numbers, not as a broken harness.
+        oracle = _copy(baseline)
+        oracle.arrays["score"] = _oracle_scores(baseline)
+        for name, scores in (("random-router", rng.random(n)), ("constant", np.zeros(n))):
+            useless = _copy(oracle)
+            useless.arrays["score"] = scores
+            results.append(judge(name, "worse", compare(suite, useless, oracle), _JUDGED_ON[("classifier", name)]))
     else:
         broken = _copy(baseline)
         broken.arrays = {k: np.zeros(n) for k in baseline.arrays}  # a model that retrieves/ranks nothing relevant

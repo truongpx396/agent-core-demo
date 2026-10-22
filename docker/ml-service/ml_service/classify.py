@@ -11,7 +11,7 @@ app treats it as "stay on the local model" (specs/014 research.md C2).
 
 THREE RULES KEEP A HEAD FROM DOING HARM, and each one is a refusal at load or bind time, not a hope at request time:
 
-1. Only a head whose JSON says `"accepted": true` is served. The trainer always writes `false`; a person sets it after the evaluation
+1. Only a head whose JSON says `"accepted": true` is served. A head file is written with `false`; a person sets it after the evaluation
    harness shows the head beats the random and prompt-length routers on held-out data (FR-038). A trained-but-unvalidated head
    therefore cannot influence a turn. The test is `is True`, so the string "true" or the number 1 do not pass.
 2. A head is bound to the exact model it was trained on: registry name, repo, file, the full commit sha the weights were REALLY read

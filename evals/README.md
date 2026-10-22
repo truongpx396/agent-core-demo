@@ -25,12 +25,15 @@ make model-eval-data                                                    # fetch 
 `0` ok · `2` usage/configuration · `3` a model, dataset or service is missing (**no report is written**) · `4` verification failed ·
 `5` a **control** gave the wrong answer: the report is marked `INVALID` and must not be used.
 
-Kinds: `embedding`, `reranker`, `screen` (the prompt-injection screen). The routing classifier arrives with its endpoint.
+Kinds: `embedding`, `reranker`, `screen` (the prompt-injection screen) and `classifier` (the routing head, below).
 
 ## How to read a report
 
 1. **`warnings`.** `PROVISIONAL` means part of the evaluation set has not been read by a person (see below). `INVALID` means a control
-   failed. Stop on either.
+   failed. Stop on either. A `WHY:` warning next to `INVALID` on a `classifier` run means the controls failed because of the labelled
+   outcomes, not the harness: the strong model scored so little above the local one on average that even a perfect router cannot be told
+   from a random one (the first real labelling run: +0.032), so no claim about routing quality can be made until the prompts, the judge
+   or the model pair give the strong model a clear win somewhere.
 2. **`controls`.** The baseline against itself must come out indistinguishable; a useless model (random vectors, a screen that flags
    nothing) must come out worse. If they do not, the harness is wrong, and a confident-looking number from a wrong harness is the
    worst outcome.
@@ -40,6 +43,54 @@ Kinds: `embedding`, `reranker`, `screen` (the prompt-injection screen). The rout
    refuses to compare latency across machines.
 5. **`tradeoffs`.** For an embedding model this states the vector size per million chunks and that **changing the embedding model means
    re-embedding every collection**.
+
+## The routing classifier (kind `classifier`)
+
+A router answers one question per prompt, "does this prompt need the stronger model?", and what that answer is worth is a fact about **two
+specific models and one judge**, so it can only be measured against labelled outcomes that you produce yourself. Nothing is committed and
+no router ships: until a person accepts a head on the ML service, `/classify` answers `served_by: "none"` and every turn runs on the local
+model.
+
+**There is no head trainer.** One was built (a logistic regression over the embedding) and removed once the first real run showed that the
+labels could not support any router (see below and ENGINEERING_PATTERNS.md pattern 69). What stays is everything needed to judge a router
+of any kind: the labeller, the outcomes format, the cost-quality metrics, the controls, and a pluggable runner.
+
+```bash
+make router-label JUDGE=judge                                    # 1. score both models' answers to the route prompts (minutes per prompt; resumable)
+make model-eval KIND=classifier CANDIDATE=random-router          # 2. a control: the floor any router must beat (also: constant)
+make model-eval KIND=classifier CANDIDATE=ml-service-classify    # 3. what the ML service's /classify gives, once a head is accepted there
+```
+
+1. **Label.** `route-domains` has 32 `dev` and 91 `test` prompts. The labeller runs each through the local alias (`chat`) and the strong
+   alias (`chat-strong`), and has the judge alias score each answer 0-1 against a short written rubric. The judge sees the question and one
+   answer, never which model wrote it. Output: `datasets/route-domains/v1/outcomes/<strong>.jsonl` (`{id, local, strong, judge}`) and a
+   `.meta.json` beside it, both **gitignored**. A score it could not get (timeout, an unusable judge reply twice) is `null`, never `0`.
+   Bounded by a per-call timeout and `DEADLINE`; a re-run keeps finished prompts and retries the missing ones. A file scored by one
+   judge is never extended by another. A prompt is `needs_stronger` when `strong - local >= 0.2` (the margin).
+2. **Read the report.** It gives the decision's `accuracy`, `macro_f1` and `ece` and what the decision is for: `apgr` (the average share of
+   the strong-minus-local gap recovered as a function of how many prompts are escalated; a random router scores 0.5), `cpt50` / `cpt90`
+   (the smallest share of prompts that must go to the stronger model to recover half / 90% of the gap; **lower is better**) and
+   `apgr_vs_length` (against a router that escalates the longest prompts first). **A router is worth turning on only if `apgr` is clearly
+   above 0.5 and `apgr_vs_length` has a confidence interval above zero.** The report also times one prompt at a time and warns when p95
+   exceeds the 50 ms budget (SC-009).
+3. **Plug in a new router.** Anything with a `scores(texts)` method (`runners.classify.ClassifierBackend`) can be handed to
+   `runners.classify.run(candidate, settings, backend=...)` and is scored, timed and compared exactly like the controls. The runner is not
+   wired to a command for it yet; a router gets a declaration in `candidates/classifier.toml` when it is.
+4. **Accept (a person).** For the `/classify` endpoint: a head file with `"accepted": true`, mounted as `ROUTER_HEAD_DIR`
+   (`docker/ml-service/heads/README.md`), then `ROUTER_ENABLED=true` and `STRONG_CHAT_MODEL=chat-strong`.
+
+With **no outcomes** the run ends with `UNMEASURED` (exit 3) and writes no report: routing quality is never a number computed from
+nothing. The same happens if the strong model did not beat the local one on the test prompts, because then there is nothing to recover.
+There is **no recorded baseline** for this kind (nothing is in use), so every run says so and compares nothing; `constant` and
+`random-router` are runnable controls whose numbers are the floor. The derived controls build the best possible router from the same
+outcomes and check that the harness tells it from a random and a constant one.
+
+**What the first real run showed.** 123 prompts, `qwen2.5:3b` against `qwen2.5:7b`, judged by the same 7B: the strong model scored only
++0.032 above the local one on the test prompts, on a judge scale that is nearly two-valued. Two heads trained on those labels did no better
+than "never escalate", and the tags the prompts carry (domain, difficulty) predicted nothing about where the stronger model wins. The
+controls fail on such data and the report says why (`WHY:`). The limit is the labels, not the method: a classifier does well on a standard
+intent set (CLINC150, `clinc-oos-plus`, pinned in `datasets/public.lock.json`, scored by `suites.IntentSuite`), but no router can be judged
+until the stronger model wins clearly somewhere, with a judge that is not itself that model.
 
 ## Add a candidate
 
@@ -103,3 +154,7 @@ These cost real time while this was built, and each is now enforced rather than 
   the most valuable addition.
 - Latency is measured on the maintainer's machine; the baselines carry that machine's hardware id until someone records another
   (`make model-eval-baseline ... ADD_HARDWARE=1`).
+- **Routing labels are weak.** The local and strong models answer WITHOUT retrieval, so a prompt about a company policy is scored on how
+  honestly the model handles not knowing it, not on a grounded answer. A judge that is also the strong model favours its own style (use a
+  different judge when one exists). And a head is trained on 32 prompts and reported on 91: it can show whether the method works at all, and
+  it cannot show that routing helps real traffic. Grow the route set (a new `v2/`) before relying on a head.

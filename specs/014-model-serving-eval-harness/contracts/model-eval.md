@@ -16,7 +16,7 @@ the golden-dataset run.
 | `make model-eval-data` | `fetch` | download and verify the public datasets in `public.lock.json` into `var/model_eval/public/` |
 | `make model-eval-verify` | `verify` | recompute every committed dataset/baseline hash; check disjoint splits, licences, controls' expectations (no model needed) |
 | `make router-label` | `route-label` | run the route prompts through the local and strong aliases and a judge; write `outcomes/<strong>.jsonl` (needs live services; requires `--judge`) |
-| `make router-head-train` | `head train` | train and export a head for a classifier model from labelled outcomes; never sets `accepted` |
+| ~~`make router-head-train`~~ (withdrawn) | ~~`head train`~~ | train and export a head for a classifier model from labelled outcomes; never sets `accepted` |
 
 Make passes `VIA=gateway|service|inprocess` as `--path` (never name a make variable `PATH`: it would replace the shell's).
 Flags common to `run`/`baseline`: `--path gateway|service|inprocess` (default: the candidate's declared path), `--splits test`
