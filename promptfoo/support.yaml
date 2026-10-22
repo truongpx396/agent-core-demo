@@ -10,8 +10,8 @@
 # `http://localhost:11434`, this app's own local-Ollama convention; CI sets
 # it to the job's Ollama service container instead — see
 # .github/workflows/ci.yml's `promptfoo` job). `PROMPTFOO_MODEL` overrides
-# the model tag (defaults to this app's own production CHAT_MODEL,
-# qwen2.5:3b, for local runs against `make up`'s real Ollama; CI overrides
+# the model tag (defaults to this app's own dev CHAT model,
+# qwen2.5:7b, for local runs against `make up`'s real Ollama; CI overrides
 # it to the smaller model tests/live/ already uses).
 # `num_predict` (Ollama's own max-tokens option, promptfoo passes it through
 # verbatim to the raw provider) caps generation length — verified directly
@@ -22,7 +22,7 @@
 # compounded that into a ~41-minute job). Same value garak/config.yaml
 # already uses for the identical raw-small-model-no-bound risk.
 providers:
-  - id: "ollama:chat:{{ env.PROMPTFOO_MODEL | default('qwen2.5:3b') }}"
+  - id: "ollama:chat:{{ env.PROMPTFOO_MODEL | default('qwen2.5:7b') }}"
     config:
       temperature: 0
       num_predict: 150

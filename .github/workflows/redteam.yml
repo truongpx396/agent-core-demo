@@ -6,7 +6,7 @@ name: Redteam
 # per-PR check + a comprehensive scan on a schedule, not one job doing
 # both — see https://www.promptfoo.dev/docs/integrations/ci-cd/). This job
 # runs promptfoo/{redteam,sales-redteam,ops-redteam}.yaml against the REAL
-# target model (qwen2.5:3b, this app's own production CHAT_MODEL — not the
+# target model (qwen2.5:3b, the small model CPU runners can afford; the dev CHAT model is now qwen2.5:7b, GRAPH_PATTERNS.md pattern 73 — not the
 # CI-speed 1.5b `promptfoo`/`test-live` use), generated+graded by Gemini
 # 3.1 Flash-Lite (redteam.provider — see promptfoo/redteam.yaml's own
 # UPDATE paragraph for why that's the one deliberate exception to this
