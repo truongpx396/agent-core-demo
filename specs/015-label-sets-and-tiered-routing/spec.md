@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-22
 
-**Status**: Draft (this file is written before the code it describes; `tasks.md` records what was built and what was measured)
+**Status**: Implemented (one pull request, stacked on #179 until that merges; a separate small one guards gateway-side router aliases). `tasks.md` records what was built; `research.md` what was measured. Open, and only a person can close them: T113 (read the authored sentences), T122 (decide `shadow` then `on`), T123 (the constitution wording). **Nothing here shows that routing improves answers**: the router ships off, and `research.md` R4 says what it does to this repository's own prompts.
 
 **Input**: "Properly complete the classification and model-routing work, the way a professional team would": classify a text into a predefined set of choices on the self-hosted ONNX embedding model (for an agent step such as "send an email or not", and for routing), and route a turn to a low, medium or strong model from rules plus those labels, with the policy in the app and the classifier in the ML service.
 
