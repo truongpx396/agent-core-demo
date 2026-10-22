@@ -41,6 +41,7 @@ def test_the_classifier_candidates_are_the_service_path_and_the_label_set_models
 
     assert [(c.name, c.path) for c in declared] == [
         ("ml-service-classify", "service"), ("labelset-bge-small-en-v1.5", "inprocess"), ("labelset-all-minilm-l6-v2", "inprocess"),
+        ("rules-and-labels-bge-small-en-v1.5", "inprocess"),
     ]
     assert [c.name for c in declared if c.baseline] == ["ml-service-classify"]
 
@@ -52,7 +53,7 @@ def test_a_label_set_candidate_is_exactly_the_model_the_ml_service_serves_for_th
     from pathlib import Path
 
     models = {m["name"]: m for m in tomllib.loads((Path(cli.REPO) / "docker" / "ml-service" / "models.toml").read_text())["model"]}
-    candidates = [c for c in cli.declared("classifier") if c.name.startswith("labelset-")]
+    candidates = [c for c in cli.declared("classifier") if c.name.startswith(("labelset-", "rules-and-labels-"))]
 
     assert candidates
     for c in candidates:

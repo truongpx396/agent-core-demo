@@ -59,3 +59,24 @@ pooling = "mean"
 normalize = true
 max_length = 256
 pad_token = "[PAD]"
+
+# The app's own router (spec 015): `routing_policy.decide` (the rules and the label table) with the label from the matcher above, scored on ROUTING outcomes
+# like any other router: `make model-eval KIND=classifier CANDIDATE=rules-and-labels-bge-small-en-v1.5 OUTCOMES=<an outcomes file>`. It needs labelled
+# outcomes (`make router-label`) and the model cached. Declared with the same pins as the label-set candidate it uses (a test keeps both equal to models.toml).
+
+[[candidate]]
+name = "rules-and-labels-bge-small-en-v1.5"
+kind = "classifier"
+path = "inprocess"
+licence = "MIT"
+notes = "The rules and the route-topics label (bge-small-en-v1.5, the primary) combined by max under no ceiling, with all three tiers configured: what route_model decides with ROUTER_MODE=on and both aliases set."
+[candidate.source]
+model = "bge-small-en-v1.5"
+repo = "BAAI/bge-small-en-v1.5"
+file = "onnx/model.onnx"
+revision = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+[candidate.prepare]
+pooling = "cls"
+normalize = true
+max_length = 512
+pad_token = "[PAD]"

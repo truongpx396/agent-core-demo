@@ -58,6 +58,18 @@ def test_the_routing_topics_and_their_dataset_have_the_same_labels_and_share_no_
         assert {i["label"] for i in items} == set(raw["labels"]) | {"none"}, f"the {split} split lacks a topic or `none`"
 
 
+def test_the_routing_label_set_shares_no_sentence_with_the_repositorys_route_prompts():
+    """`route-domains` is what the router's behaviour on this repository's real traffic is read from (specs/015 research.md R4). An example that is
+    also one of those prompts would make the router look right on the very sentence it was copied from."""
+    raw = json.loads((SHIPPED / "route-topics.json").read_text())
+    manifest = ds.load_verified(ds.DATASETS_ROOT / "route-domains" / "v1")
+    prompts = {name: [i["text"] for i in manifest.split_items(name)] for name in ("dev", "test")}
+    examples = [e for ex in raw["labels"].values() for e in ex]
+
+    for name, texts in prompts.items():
+        assert ds.near_duplicates(examples, texts) == [], f"a label-set example is (nearly) a route-domains {name} prompt"
+
+
 def test_the_dataset_source_file_and_the_committed_dataset_agree():
     """The TSV is what a person edits and the JSONL is what is scored: rebuilding from the TSV must give the committed bytes, or someone edited one."""
     raw = json.loads((SHIPPED / "route-topics.json").read_text())

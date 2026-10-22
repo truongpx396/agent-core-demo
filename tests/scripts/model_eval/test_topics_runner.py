@@ -95,7 +95,8 @@ def test_a_perfect_matcher_passes_the_shuffled_predictions_control_and_a_constan
 def test_the_trade_offs_name_the_label_set_the_cutoff_per_topic_results_and_the_worst_mix_ups():
     lines = topics.run(CANDIDATE, settings(), backend=FakeTopics("constant")).tradeoffs
 
-    assert lines[0].startswith("label set route-topics fakeversion1: 8 labels, 80 examples, cutoff 0.6")
+    examples = sum(len(v) for v in LABELSET.labels.values())
+    assert lines[0].startswith(f"label set route-topics fakeversion1: 8 labels, {examples} examples, cutoff 0.6")
     assert any("smalltalk 10/10" in line and "lookup 0/10" in line for line in lines)  # the constant matcher always says the first topic
     assert any("-> smalltalk x10" in line for line in lines if line.startswith("most common mix-ups"))
     assert any("ece_in_scope" in line and "not meaningful" in line for line in lines)

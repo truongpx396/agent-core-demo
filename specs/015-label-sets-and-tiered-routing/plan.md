@@ -27,7 +27,7 @@ separate split. (3) The app routes a turn to one of three tiers from two signals
 ```text
 docker/ml-service/ml_service/labelsets.py      # NEW  parse + index + match + failover for task=label
 docker/ml-service/ml_service/classify.py       # task dispatch; "route" unchanged
-docker/ml-service/labelsets/route-topics.json  # NEW  the shipped set (8 topics, 80 examples, 2 cutoffs); README.md beside it
+docker/ml-service/labelsets/route-topics.json  # NEW  the shipped set (8 topics, 90 examples, 2 cutoffs); README.md beside it
 scripts/model_eval/runners/topics.py           # NEW  score a label set (IntentSuite) and calibrate its cutoff
 scripts/model_eval/build/topics.py             # NEW  build evals/datasets/route-topics from evals/sources/route-topics/prompts.tsv
 app/core/routing_policy.py                     # NEW  (PR 2) rules, label table, decide(): pure

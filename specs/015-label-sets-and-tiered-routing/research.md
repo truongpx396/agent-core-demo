@@ -137,36 +137,41 @@ for k in (3, 5, 10):
 
 **Method.** `make labelset-calibrate` picks each model's cutoff on the 56 **dev** sentences (the cutoff that keeps 95% of the 48 in-scope ones;
 it kept 93.8% because with 48 sentences the 5th percentile falls between two of them); `make model-eval KIND=classifier
-CANDIDATE=<labelset-…> DATASET=route-topics` reports on the 96 **test** sentences (80 in-scope, 16 `none`). The sentences and the 80 examples are
-authored by the implementing agent and are **unreviewed**, so both reports are PROVISIONAL. The label set's version in these runs is `6a3fe2f35057`.
+CANDIDATE=<labelset-…> DATASET=route-topics` reports on the 96 **test** sentences (80 in-scope, 16 `none`). The sentences and the examples are
+authored by the implementing agent and are **unreviewed**, so both reports are PROVISIONAL. Two versions of the set were measured, because the
+first look at real prompts (R4) led to ten more `lookup` examples: `6a3fe2f35057` (80 examples) and the shipped `5b42dff1816d` (90). The
+cutoffs came out the same for both (0.709 and 0.247).
 
-| | bge-small-en-v1.5 (primary) | all-MiniLM-L6-v2 (fallback) |
-|---|---|---|
-| cutoff chosen on dev | 0.709 | 0.247 |
-| in-scope accuracy (nearest label), 95% CI | 0.8125 [0.724, 0.895] | 0.8625 [0.784, 0.936] |
-| in-scope macro-F1 | 0.810 | 0.862 |
-| `none` sentences rejected at the cutoff (n=16) | 56% [31%, 80%] | 50% [26%, 75%] |
-| in-scope sentences wrongly rejected at the cutoff | 22.5% | 16.3% |
-| query latency p50 / p95, one text, in-process | 2.0 / 3.0 ms | 0.9 / 1.1 ms |
-| controls (identity, shuffled predictions) | both pass | both pass |
+| test split, n=96 | bge-small, first (80) | bge-small, **shipped (90)** | MiniLM, first (80) | MiniLM, **shipped (90)** |
+|---|---|---|---|---|
+| in-scope accuracy (nearest label), 95% CI | 0.8125 [0.724, 0.895] | **0.8250 [0.740, 0.903]** | 0.8625 [0.784, 0.936] | **0.8875 [0.810, 0.951]** |
+| in-scope macro-F1 | 0.810 | 0.822 | 0.862 | 0.889 |
+| `none` sentences rejected at the cutoff (n=16) | 56% [31%, 80%] | 56% [31%, 80%] | 50% [26%, 75%] | 50% [26%, 75%] |
+| in-scope sentences wrongly rejected | 22.5% | 23.8% | 16.3% | 15.0% |
+| query latency p50 / p95, one text, in-process | 2.0 / 3.0 ms | same | 0.9 / 1.1 ms | same |
+| controls (identity, shuffled predictions) | pass | pass | pass | pass |
 
-Weak spots, from the per-topic lines in the reports (nearest label correct, of 10 per topic, bge / MiniLM): `smalltalk` 10 / 9, `code` 10 / 8,
-`high_stakes` 10 / 10, `drafting` 8 / 10, `analysis` 8 / 10, `reasoning` 7 / 8, `lookup` 6 / 6, `action` 6 / 8. The mix-ups are mostly among `lookup`,
-`action` and `drafting` ("find out" and "do" and "write" share verbs), plus `lookup` taken for `code` twice on bge.
+Per topic (nearest label correct, of 10), shipped set, bge / MiniLM: `smalltalk` 10 / 9, `code` 10 / 8, `high_stakes` 10 / 10, `drafting` 8 / 10,
+`analysis` 8 / 10, `reasoning` 7 / 8, `lookup` 8 / 8, `action` 5 / 8. The mix-ups are mostly among `lookup`, `action` and `drafting` ("find out" and
+"do" and "write" share verbs). The ten extra `lookup` examples moved `lookup` from 6 to 8 on both models and `action` from 6 to 5 on bge: all within the
+noise of ten sentences per topic.
 
 **Read.** The matcher separates the topics well enough to be a useful signal and not well enough to be trusted alone, which is how the router
 uses it (one of two signals, abstaining below the cutoff). The two models' accuracies are within each other's confidence interval, so this says
 nothing about which should be primary; the order stays the one `models.toml` already has. About half of the `none` sentences (7 of 16 on bge, 8 of
 16 on MiniLM: "go ahead", "yes please", "2026-11-04", "ref 88213", "...") still receive a label. They land on `smalltalk`, `lookup`, `drafting`, `code`,
-`analysis` and `action`, and **none lands on `reasoning` or `high_stakes`**. Under the tier table in `contracts/tiered-router.md`, one of the 16
-(`...` read as `code` on bge, `2026-11-04` read as `analysis` on MiniLM) would reach the medium tier and none the strong tier. The 22% of in-scope
-sentences wrongly rejected on test, against 6% on dev, is the cost of choosing a cutoff on 48 sentences; a larger dev split would tighten it. None of
-this was tuned on the test split.
+`analysis` and `action`, and **none lands on `reasoning` or `high_stakes`** (first version; not re-counted for the shipped one). Under the tier table in
+`contracts/tiered-router.md`, one of the 16 (`...` read as `code` on bge, `2026-11-04` read as `analysis` on MiniLM) would reach the medium tier and none the
+strong tier. The 24% of in-scope sentences wrongly rejected on test, against 6% on dev, is the cost of choosing a cutoff on 48 sentences; a larger dev
+split would tighten it. None of this was tuned on the test split.
+
+**Limits.** 96 test sentences cannot separate two good models by a point, and 16 `none` sentences give a 25-point-wide interval. The sentences
+are the author's idea of how users write, not real traffic, and are in English only.
 
 ## R3. Would the margin to the runner-up help? (not used; recorded so the next person does not have to rediscover it)
 
-The result carries `margin` (nearest minus second nearest). Descriptively, over all 152 sentences (nothing here was chosen on it): the margin is
-low exactly when the nearest label is wrong or the sentence belongs to no topic.
+The result carries `margin` (nearest minus second nearest). Descriptively, over all 152 route-topics sentences, on the FIRST version of the set (nothing here was
+chosen on it): the margin is low when the nearest label is wrong or the sentence belongs to no topic. **R4 shows the same does not hold on real prompts.**
 
 | | bge-small | MiniLM |
 |---|---|---|
@@ -182,3 +187,40 @@ larger labelled dev set.
 
 **Limits.** 96 test sentences cannot separate two good models by a point, and 16 `none` sentences give a 25-point-wide interval. The sentences
 are the author's idea of how users write, not real traffic, and are in English only.
+
+## R4. What the router does with this repository's own prompts (the finding that changed the shipped set)
+
+`route-domains` holds 123 prompts the repository's agents are really asked (32 dev, 91 test; mostly knowledge-base lookups, none of them tenant data).
+They have no topic labels, but they are the closest thing to real traffic, and what a router does with them is its cost. The tier spread was computed
+with the app's own `decide` (rules + label, bge-small, all three tiers configured, no ceiling); the rules fired on **none** of the 123 (they are short,
+plain questions), so every escalation came from the label.
+
+**First look (80 examples), all 123 prompts: 13 routed up (9 medium, 4 strong), 11%.** Reading them, nearly all are ordinary lookups the label set
+misread: "What's the minimum order quantity for your services?" as `reasoning` (strong), "How often do you offer volume discounts?" and "Do you have any
+case studies or success stories?" as `analysis` (medium), "Could you check if there's a runbook for the database failure?" as `code`. The fallback model
+(MiniLM) routed 19 of 123 up (15%). The margin does not help here, unlike on the authored sentences (R3): the routed-up prompts had a median margin of
+0.029 against 0.028 for the ones correctly labelled local, so a margin cutoff removes right and wrong labels in equal measure. The cause is coverage: ten
+`lookup` examples do not span how this app's users ask about pricing, discounts, case studies, runbooks and procedures.
+
+**What was done, and under what hygiene.** The errors were read on the route-domains **dev** split only (6 of 32 routed up). Ten `lookup` examples were
+written from the *kinds* of question they show, not copied (a test now fails if an example is a near-duplicate of any route-domains prompt), the cutoffs
+were re-chosen on the route-topics dev split (unchanged), and two things were measured: route-topics **test** for regression (R2: none) and
+route-domains **test**, which had not informed any example.
+
+| routed up by the label signal (bge-small) | before (80 examples) | after (90 examples) |
+|---|---|---|
+| route-domains dev (32), in-sample: these informed the examples | 6 (19%) | 1 (3%) |
+| route-domains **test** (91), held out | **7 (8%)** | **5 (5%)** |
+
+**Read.** One round of "read what shadow shows, add examples, recalibrate" cut the held-out false escalation from 8% to 5%; it is a small effect on 91
+prompts (7 to 5) and should not be read as more than that. What is left on test is one `high_stakes` ("What's the procedure to report a security
+vulnerability?", an escalation the policy might even want) and four `analysis` ("How does your pricing compare to competitors for similar services?",
+"Do you offer any special deals for new clients?", "How does your pricing scale with the number of users?", "Do you have any case studies ... I can
+review?"): sales questions that sit next to "compare the plans" in meaning. Fixing those further on this test split would be tuning on it. The workflow is
+the deliverable, not the number: an operator running `ROUTER_MODE=shadow` reads `agent_model_route_tier_total` and the `model_route` log lines (label,
+similarity decile, never the text), finds the misread kinds of question, adds examples, runs `make labelset-calibrate`, and repeats.
+
+**What this does and does not say about cost.** On a workload like this one, at roughly 5-11% of turns routed up by a signal that is often wrong, the
+router would add cost for little or no benefit unless the escalated turns really are answered better, which nothing measured here shows (the only routing
+outcomes that exist could not tell a perfect router from a random one; the harness run of this router on them gives an average gap recovered of 0.42
+against 0.50 for random, interval -0.43 to 1.22, and is INVALID for that reason). `ROUTER_MAX_TIER=medium` bounds the strong share, and the default stays off.

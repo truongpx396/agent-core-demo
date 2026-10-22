@@ -25,7 +25,17 @@
       "Which regions does the shipping policy cover?",
       "How do I submit an expense report?",
       "What is the status of ticket 4821?",
-      "Is there a document describing the on-call rotation?"
+      "Is there a document describing the on-call rotation?",
+      "Do you offer discounts if we pay annually?",
+      "What is the minimum number of seats for the team plan?",
+      "Is there a runbook for restarting the nightly import job?",
+      "Is there a guide for fixing slow page loads?",
+      "Can you point me to customer stories from retail clients?",
+      "What is the process for escalating a complaint about a wrong delivery?",
+      "How often are invoices issued?",
+      "What is the minimum contract length for enterprise customers?",
+      "Which integrations does the starter plan include?",
+      "What is the procedure for reporting a lost badge?"
     ],
     "action": [
       "Create a support ticket for the broken login page.",
