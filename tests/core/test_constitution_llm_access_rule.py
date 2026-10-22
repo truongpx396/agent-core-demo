@@ -1,8 +1,8 @@
 """The constitution's LLM-access rule and the guidance that restates it must agree (spec 014 FR-040, Governance).
 
-Spec 014 added one optional, operator-configured escalation alias (`STRONG_CHAT_MODEL`). The old wording ("a cloud model MAY be used
+Spec 014 added one optional, operator-configured escalation alias (`STRONG_CHAT_MODEL`) and spec 015 a second routed tier (`MEDIUM_CHAT_MODEL`). The old wording ("a cloud model MAY be used
 only for eval and red-team grading roles, never as the target model or a runtime dependency") forbade even that, so the constitution
-was amended to 1.2.0. The Governance section says the guidance files MUST NOT contradict it; these tests fail on the two ways that
+was amended to 1.2.0 (and to 1.3.0 for the second alias). The Governance section says the guidance files MUST NOT contradict it; these tests fail on the two ways that
 can drift: the amendment losing the clause that makes the seam lawful (or the offline guarantee it must not weaken), and a guidance
 file still carrying the superseded sentence.
 
@@ -30,13 +30,14 @@ def _flat(text: str) -> str:
     return " ".join(text.split())
 
 
-def test_the_constitution_permits_exactly_one_optional_escalation_alias():
+def test_the_constitution_permits_exactly_two_optional_routed_aliases():
     text = _flat(CONSTITUTION.read_text())
-    assert "`STRONG_CHAT_MODEL`" in text
-    assert "ONE optional, operator-configured escalation alias" in text
+    assert "`MEDIUM_CHAT_MODEL`" in text and "`STRONG_CHAT_MODEL`" in text
+    assert "one of TWO optional, operator-configured routed aliases" in text
     # What keeps the seam lawful: off by default, never a dependency, a failure degrades to the local model.
-    assert "It is off unless an operator sets it" in text
+    assert "Each is off unless an operator sets it" in text
     assert "a failure of it MUST degrade to the local model" in text
+    assert "ONE optional" not in text, "the 1.2.0 wording (a single escalation alias) is superseded"
 
 
 def test_the_amendment_does_not_weaken_the_offline_guarantee_or_the_advisory_limit():

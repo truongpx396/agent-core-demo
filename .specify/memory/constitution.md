@@ -173,13 +173,14 @@ cannot be judged or safely changed later.
 - **LLM access**: every chat and embedding call goes through the LiteLLM proxy
   (`OPENAI_API_BASE`) using model aliases (`chat`, `embed`), never a provider model name. The core
   MUST run fully offline against local Ollama. Cloud use for evaluation and red-team grading
-  roles is unchanged. A turn MAY be served by ONE optional, operator-configured escalation alias
-  (`STRONG_CHAT_MODEL`, by convention `chat-strong`). It is off unless an operator sets it and is
-  never a dependency: with it unset or unreachable the core MUST run on the local model, and a
-  failure of it MUST degrade to the local model. The routing decision is advisory only and MUST
-  NOT change a tool's capability tier, human approval, tenant scoping, idempotency or moderation
-  (Principles I, II, IV and VI). The alias's shipped default MUST be no more external than
-  `chat` (a larger local model in the local stack, the `chat` model itself in production).
+  roles is unchanged. A turn MAY be served by one of TWO optional, operator-configured routed
+  aliases (`MEDIUM_CHAT_MODEL` and `STRONG_CHAT_MODEL`, by convention `chat-medium` and
+  `chat-strong`). Each is off unless an operator sets it and is never a dependency: with it unset
+  or unreachable the core MUST run on the local model, and a failure of it MUST degrade to the
+  local model. The routing decision is advisory only and MUST NOT change a tool's capability
+  tier, human approval, tenant scoping, idempotency or moderation (Principles I, II, IV and VI).
+  A routed alias's shipped default MUST be no more external than `chat` (a larger local model in
+  the local stack, the `chat` model itself in production).
 - **Stores**: Postgres (`appdata`, plus a dedicated checkpointer database), Qdrant (hybrid
   dense + BM25 retrieval, with the cross-encoder rerank layered on top), Redis (Streams queues,
   semantic cache), MinIO (uploads).
@@ -274,4 +275,4 @@ states the intent and the conflicting document MUST be corrected.
 - **Runtime guidance**: day-to-day development guidance for agents and contributors lives in
   `CLAUDE.md` and `.claude/rules/`; those files MUST NOT contradict this constitution.
 
-**Version**: 1.2.0 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-10-17
+**Version**: 1.3.0 | **Ratified**: 2026-10-01 | **Last Amended**: 2026-10-22
