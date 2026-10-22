@@ -181,10 +181,11 @@ class State(TypedDict):
     # was already served from cache (GRAPH_PATTERNS.md pattern 22).
     moderation_blocked: bool  # Set by moderate_input — read by
     # route_after_moderation (GRAPH_PATTERNS.md pattern 25).
-    model_route: Literal["local", "strong"] | None  # Set by route_model ONLY (specs/014, pattern 68): which model
+    model_route: Literal["local", "medium", "strong"] | None  # Set by route_model ONLY (specs/014, specs/015, pattern 68): which tier
     # answers this turn. `None` = no decision, read as local. Reset to None by validate_input each new turn (never on a resume,
     # which skips it, so an approval pause keeps its route and /classify is not asked twice). Optional by design: a checkpoint
-    # written before this key existed resumes and runs local, which is why STATE_SCHEMA_VERSION is not bumped for it.
+    # written before this key existed resumes and runs local, which is why STATE_SCHEMA_VERSION is not bumped for it. `medium` was
+    # added later: code that predates it reads it as "not strong", which is local, so a rollback cannot send a turn anywhere new.
     followups: list[str]  # Set by suggest_followups — 2-3 follow-up
     # questions derived from a grounded answer, or [] when the answer had
     # no citations to derive them from (GRAPH_PATTERNS.md pattern 27).

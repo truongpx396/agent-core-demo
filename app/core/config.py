@@ -4,12 +4,15 @@ Values are read from the environment / .env. A single `Settings` instance is
 created and its fields are also re-exported as module constants so existing
 imports (`from app.core.config import QDRANT_URL`) keep working.
 """
+import os
 from decimal import Decimal
 from typing import Literal
 
 from dotenv import load_dotenv
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import SettingsConfigDict
+
+from app.core.routing_policy import DEFAULT_LONG_PROMPT_CHARS
 
 # The billing package's own settings (specs/011-billing-module-boundary, specs/013-billing-owns-the-meter): every billing variable (providers,
 # webhooks, credentials, the rate, the gate, the export, the wallet reconciliation) is defined in the package, with its validators. `Settings`
@@ -109,29 +112,41 @@ class Settings(BillingSettings):
     # docker/ml-service/main.py for full reasoning and measured numbers.
     ml_service_url: str = "http://localhost:8083"
 
-    # Model routing (specs/014, GRAPH_PATTERNS pattern 68). OFF by default and inert: with the router off, or no strong alias named,
-    # nothing is asked of the classifier and every call is byte-identical to a build without this feature. `strong_chat_model` is a
-    # gateway ALIAS (deploy/litellm/*.yaml `chat-strong`), never a provider's model id; leaving it empty means no escalation exists.
-    # One operator-wide switch: per-tenant control is a deliberate gap (the spec's "Not built").
+    # Model routing (specs/014, specs/015, GRAPH_PATTERNS pattern 68). OFF by default and inert: with `router_mode` "off" nothing is asked of the classifier
+    # and every call is byte-identical to a build without this feature. "shadow" decides, counts and logs every turn's tier but runs the turn on the
+    # local model, so an operator reads what the router WOULD have spent before it spends anything; "on" acts. The tiers are gateway ALIASES
+    # (deploy/litellm/*.yaml `chat-medium`, `chat-strong`), never a provider's model id; an empty alias means that tier does not exist and a decision for it
+    # steps down to the next tier below. One operator-wide ceiling and switch: per-tenant control is a deliberate gap (the spec's "Not built").
+    router_mode: Literal["off", "shadow", "on"] = "off"
+    medium_chat_model: str = ""
     strong_chat_model: str = ""
-    router_enabled: bool = False
-    # Escalate when the head's score is at or above this. Chosen from the evaluation harness's cost-quality curve, not by feel.
-    router_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-    # The classifier call's deadline. A miss is "no advice" and the turn runs on the local model, so this bounds what routing can add
-    # to a turn (the service's own deadline is shorter; this is the backstop). Capped so a typo cannot make routing slower than a turn.
+    router_max_tier: Literal["local", "medium", "strong"] = "strong"
+    # The ML service label set asked for the label signal (docker/ml-service/labelsets/); empty means rules only.
+    router_labelset: str = "route-topics"
+    # The `long_prompt` rule fires at this many characters. Not below 200: a rule that fires on an ordinary question is a router that always escalates.
+    router_long_prompt_chars: int = Field(default=DEFAULT_LONG_PROMPT_CHARS, ge=200)
+    # The label call's deadline. A miss leaves the rules to decide, so this bounds what routing can add to a turn (the service's own deadline is
+    # shorter; this is the backstop). Capped so a typo cannot make routing slower than a turn.
     router_timeout_seconds: float = Field(default=0.5, gt=0.0, le=5.0)
 
     @model_validator(mode="after")
-    def _the_router_has_somewhere_to_send_a_turn(self) -> "Settings":
+    def _the_router_is_configured_to_do_something_it_can(self) -> "Settings":
         # Messages name the variables, never their values: a settings error is printed at import time to a terminal or a container log.
-        if self.router_enabled and not self.strong_chat_model:
+        # ROUTER_ENABLED was the two-valued seam's switch. Ignoring it silently would turn a router someone believed was on into one that is off,
+        # so a truthy leftover is refused; a false one (and ROUTER_THRESHOLD, which meant nothing without it) changes nothing and is ignored.
+        if os.environ.get("ROUTER_ENABLED", "").strip().lower() in ("1", "true", "yes", "on"):
+            raise ValueError("ROUTER_ENABLED was replaced by ROUTER_MODE=off|shadow|on (specs/015); refusing to start rather than ignore it")
+        aliases = {"CHAT_MODEL": self.chat_model, "MEDIUM_CHAT_MODEL": self.medium_chat_model, "STRONG_CHAT_MODEL": self.strong_chat_model}
+        named = [(name, alias) for name, alias in aliases.items() if alias]
+        if len({alias for _name, alias in named}) != len(named):
             raise ValueError(
-                "ROUTER_ENABLED=true needs STRONG_CHAT_MODEL (the gateway alias to escalate to, e.g. chat-strong); "
-                "refusing to start rather than run a router that can never escalate"
+                "CHAT_MODEL, MEDIUM_CHAT_MODEL and STRONG_CHAT_MODEL must name three different gateway aliases (or leave the last two empty): "
+                "a router that can only pick the same model is a misconfiguration"
             )
-        if self.strong_chat_model and self.strong_chat_model == self.chat_model:
+        if self.router_mode != "off" and not (self.medium_chat_model or self.strong_chat_model):
             raise ValueError(
-                "STRONG_CHAT_MODEL must differ from CHAT_MODEL: a router that can only pick the same model is a misconfiguration"
+                "ROUTER_MODE=shadow|on needs MEDIUM_CHAT_MODEL or STRONG_CHAT_MODEL (a gateway alias to route to, e.g. chat-strong); "
+                "refusing to start rather than run a router that can never route anywhere"
             )
         return self
 
@@ -607,9 +622,12 @@ LANGFUSE_SHUTDOWN_TIMEOUT_SECONDS = settings.langfuse_shutdown_timeout_seconds
 CHECKPOINTER_DATABASE_URL = settings.checkpointer_database_url
 SPARSE_MODEL = settings.sparse_model
 ML_SERVICE_URL = settings.ml_service_url
+MEDIUM_CHAT_MODEL = settings.medium_chat_model
 STRONG_CHAT_MODEL = settings.strong_chat_model
-ROUTER_ENABLED = settings.router_enabled
-ROUTER_THRESHOLD = settings.router_threshold
+ROUTER_MODE = settings.router_mode
+ROUTER_MAX_TIER = settings.router_max_tier
+ROUTER_LABELSET = settings.router_labelset
+ROUTER_LONG_PROMPT_CHARS = settings.router_long_prompt_chars
 ROUTER_TIMEOUT_SECONDS = settings.router_timeout_seconds
 HYBRID_PREFETCH_LIMIT = settings.hybrid_prefetch_limit
 RERANK_TOP_K = settings.rerank_top_k

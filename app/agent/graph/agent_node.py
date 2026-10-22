@@ -18,11 +18,11 @@ from app.agent.graph.messages import (
     is_user_message,
     last_human_message,
 )
-from app.agent.graph.model_route import strong_unreachable
+from app.agent.graph.model_route import routed_unreachable, tier_alias
 from app.agent.graph.skill_guards import pending_skill_required_tool
 from app.agent.graph.state import State
 from app.core import gateway, metrics
-from app.core.config import CHAT_MODEL, STRONG_CHAT_MODEL
+from app.core.config import CHAT_MODEL
 from app.core.untrusted import frame_untrusted
 
 logger = logging.getLogger(__name__)
@@ -239,14 +239,14 @@ def make_agent_node(
         # event. The in-run ceiling below and the event all come from that one pricing, so the ceiling and the bill can never
         # disagree about what a turn cost (pattern 35).
         #
-        # A turn the router sent to the stronger model (`route_model`, specs/014) calls the strong alias in place of this client's own,
-        # and is priced and recorded as the alias that served. Every other turn makes exactly the call it always did, with no extra
-        # keyword. If the strong call never reaches a model, THAT ONE CALL is repeated on the local alias: the ledger then names the local
-        # model (a call that failed records nothing), and the next call this turn tries the strong alias again. This lives here and not in
-        # the gateway's `fallbacks` because a gateway fallback would be priced and recorded as the strong alias that did not answer.
-        strong = STRONG_CHAT_MODEL if state.get("model_route") == "strong" and STRONG_CHAT_MODEL else None
+        # A turn the router sent to the medium or strong tier (`route_model`, specs/014, specs/015) calls that tier's alias in place of this client's
+        # own, and is priced and recorded as the alias that served. Every other turn makes exactly the call it always did, with no extra keyword. If the
+        # routed call never reaches a model, THAT ONE CALL is repeated on the local alias: the ledger then names the local model (a call that failed
+        # records nothing), and the next call this turn tries the routed alias again. This lives here and not in the gateway's `fallbacks` because a
+        # gateway fallback would be priced and recorded as the routed alias that did not answer.
+        routed = tier_alias(state.get("model_route"))
         try:
-            if strong is None:
+            if routed is None:
                 call = await metering.metered_invoke(
                     llm,
                     messages,
@@ -257,15 +257,15 @@ def make_agent_node(
             else:
                 try:
                     call = await metering.metered_invoke(
-                        llm, messages, config=config, kind=kind, model_alias=strong, invoke_model=strong
+                        llm, messages, config=config, kind=kind, model_alias=routed, invoke_model=routed
                     )
-                except Exception as exc:  # noqa: BLE001 - classified by strong_unreachable; anything that is not "never reached a model" is re-raised unchanged
-                    if not strong_unreachable(exc):
+                except Exception as exc:  # noqa: BLE001 - classified by routed_unreachable; anything that is not "never reached a model" is re-raised unchanged
+                    if not routed_unreachable(exc):
                         raise
-                    metrics.agent_model_route_total.labels(outcome="strong_failed_fell_back").inc()
+                    metrics.agent_model_route_total.labels(outcome="routed_unreachable_fell_back").inc()
                     logger.warning(
-                        "strong model unreachable; repeating the call on the local model",
-                        extra={"alias": strong, "error_class": type(exc).__name__, "run_id": state.get("run_id", "-")},
+                        "routed model unreachable; repeating the call on the local model",
+                        extra={"alias": routed, "error_class": type(exc).__name__, "run_id": state.get("run_id", "-")},
                     )
                     call = await metering.metered_invoke(
                         llm,

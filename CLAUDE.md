@@ -93,7 +93,8 @@ they delete volumes or kill running processes.
   `docker/ml-service/ml_service/` is the ML service as an importable package (on the test/mypy path, not installed).
   `docker/ml-service/labelsets/*.json` are the label sets that service serves (specs/015; the README beside them is the format and the rules).
   `app/retrieval/embedding_identity.py` is what makes mixing two embedding models' vectors impossible (a collection records its model,
-  dimension, prefixes and revision, and the app refuses to read or write one that disagrees); `app/core/routing_advice.py` and
+  dimension, prefixes and revision, and the app refuses to read or write one that disagrees); `app/core/routing_policy.py` (the rules, the label table and
+  `decide`: pure, the evaluation harness runs it too), `app/core/classification.py` (the client for the ML service's label sets) and
   `app/agent/graph/model_route.py` are the router's whole footprint in the app, and it can only write `State.model_route`.
 - `promptfoo/` — the prompt checks, and the only Node in the repo: its `package.json`, lock file and `node_modules`
   live here, so every `npm`/`npx` runs from this directory (`make promptfoo` does that). The root stays Python-only.

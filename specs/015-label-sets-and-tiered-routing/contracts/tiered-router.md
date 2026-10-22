@@ -28,8 +28,9 @@ code that only knows `local` and `strong` reads `medium` as "not strong", i.e. l
 | `ROUTER_TIMEOUT_SECONDS` | `0.5` | the label call's deadline; a miss leaves the rules to decide |
 
 **Fail fast at import.** `ROUTER_MODE` other than the three values; `shadow` or `on` with neither a medium nor a strong alias; two tiers sharing an
-alias (the local one included); a leftover `ROUTER_ENABLED` or `ROUTER_THRESHOLD` (removed; the message names `ROUTER_MODE`, because a switch that is
-silently ignored is worse than a refusal). Messages name variables, never their values.
+alias (the local one included); a leftover `ROUTER_ENABLED=true` (the old switch; the message names `ROUTER_MODE`, because a switch that is silently ignored would turn a router
+someone believed was on into one that is off). `ROUTER_ENABLED=false` and `ROUTER_THRESHOLD` changed nothing without it and are ignored. Messages
+name variables, never their values.
 
 ## The decision (`app/core/routing_policy.py`: pure, imports nothing from the app)
 
@@ -66,13 +67,14 @@ An unknown label, `null` and a failed call are all local.
 3. rules = evaluate(text)                   (microseconds, cannot fail)
 4. label = POST /classify task=label within ROUTER_TIMEOUT_SECONDS, first 2000 characters, if ROUTER_LABELSET is set
               served_by none | timeout | error -> no label; outcome=label_none | label_timeout | label_error (the rules decide)
+              a label the app has no tier for  -> no label; outcome=label_unknown
 5. decision = decide(...)
 6. for the chosen tier above local: refuse_unpriced(alias) -> step down one tier and look again; outcome=tier_unpriced
 7. mode == shadow -> record the decision, return local   |   mode == on -> return the tier
 ```
 
-One `agent_model_route_total{outcome}` increment per turn, the first that applies of `error`, `tier_unpriced`, `label_timeout|label_error|label_none`,
-else `decided`. One `agent_model_route_tier_total{tier, mode, decided_by}` increment per turn that got past step 2: the tier chosen (in `shadow`, the
+One `agent_model_route_total{outcome}` increment per turn, the first that applies of `error`, `tier_unpriced`, `label_timeout|label_error|label_none|label_unknown`,
+else `decided` (`disabled` and `no_text` end the node earlier). One `agent_model_route_tier_total{tier, mode, decided_by}` increment per turn that got past step 2: the tier chosen (in `shadow`, the
 tier that WOULD have been used). The log line carries `outcome, mode, tier, asked, decided_by, limited_by, rules` (ids), `label`, `similarity_decile`,
 `served_by`, `labelset_version`, `latency_ms`, `run_id`: never the text, the similarity itself, or anything about who asked.
 
@@ -106,5 +108,5 @@ alert names is one the code increments.)
 | 6 | The routed alias is the one priced and recorded; a routed failure falls back once, counted, priced as local; a budget stop and a 4xx do not | unit |
 | 7 | Tool gating, approval, tenant scope and idempotency are identical under all three tiers | graph |
 | 8 | A resumed turn keeps its tier and makes no label call; a checkpoint with no tier, or with `medium` read by older code, runs local | graph / unit |
-| 9 | The default suite makes no label call (the autouse guard), and `ROUTER_MODE`'s validation rules each have a test | meta / unit |
+| 9 | The default suite makes no label call (the autouse guard), and each of `ROUTER_MODE`'s validation rules has a test | meta / unit |
 | 10 | The text never reaches a log or a metric label | unit |

@@ -391,14 +391,22 @@ agent_embedding_identity_total = Counter(
 
 agent_model_route_total = Counter(
     "agent_model_route_total",
-    "Routing decisions and degradations (app/agent/graph/model_route.py, app/agent/graph/agent_node.py; GRAPH_PATTERNS.md pattern 68). "
-    "Every non-local outcome is a degrade or an opt-in: the turn ran on the local model unless it says `strong`.",
+    "What happened to a turn's routing decision, one outcome per turn (app/agent/graph/model_route.py, app/agent/graph/agent_node.py; GRAPH_PATTERNS.md "
+    "pattern 68; specs/015 contracts/tiered-router.md). `decided` is the normal case; every other outcome is a degradation or a step down, and the turn "
+    "ran on the tier it says or lower.",
     ["outcome"],
-)  # outcome: local | strong | no_advice | disabled | strong_unpriced | classifier_error | classifier_timeout | strong_failed_fell_back
+)  # outcome: decided | disabled | no_text | label_none | label_timeout | label_error | label_unknown | tier_unpriced | error | routed_unreachable_fell_back
+
+agent_model_route_tier_total = Counter(
+    "agent_model_route_tier_total",
+    "The tier each routed turn was given, by mode and by which signal asked for it (app/agent/graph/model_route.py). In `shadow` mode this is the tier the "
+    "turn WOULD have used and it ran on the local model; in `on` it is the tier used. Read the share per tier here before turning the router on.",
+    ["tier", "mode", "decided_by"],
+)  # tier: local | medium | strong; mode: shadow | on; decided_by: none | rules | label | both
 
 agent_model_route_latency_seconds = Histogram(
     "agent_model_route_latency_seconds",
-    "What the routing step added to a turn: the whole route_model node (the /classify round trip and the price check), in seconds",
+    "What the routing step added to a turn: the whole route_model node (the label round trip and the price check), in seconds",
     unit="s",
 )
 

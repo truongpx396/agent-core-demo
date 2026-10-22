@@ -23,8 +23,8 @@ import httpx
 import numpy as np
 import pytest
 
-from app.core import routing_advice
-from tests.conftest import REAL_ADVISE
+from app.core import classification
+from tests.conftest import REAL_LABEL
 
 pytestmark = pytest.mark.integration
 
@@ -172,30 +172,29 @@ def test_an_accepted_head_scores_the_vectors_the_embedding_endpoint_serves_and_b
     assert classifier == {"serving": "primary", "heads": {PRIMARY: "loaded", FALLBACK: "refused: revision mismatch"}}
 
 
-async def test_the_whole_routing_call_from_the_app_is_measured_and_answers_nearly_every_call(accepted_primary, monkeypatch, record_property):
-    """SC-009's budget is 50 ms at p95 on the reference machine (specs/014 tasks T088); that figure is MEASURED and recorded here and quoted
+async def test_the_whole_label_call_from_the_app_is_measured_and_answers_nearly_every_call(ml_service_url, monkeypatch, record_property):
+    """The budget is 50 ms at p95 on the reference machine (specs/014 SC-009, specs/015 SC-003); that figure is MEASURED and recorded here and quoted
     in the PR, not asserted, because a CI runner's speed says nothing about the reference machine. What is asserted is the part that must hold
-    anywhere: no call is an error or a timeout of the app's own deadline, and nearly all of them are answered with advice."""
-    url, _w, _b = accepted_primary
-    monkeypatch.setattr(routing_advice, "advise", REAL_ADVISE)  # the suite's autouse guard replaced it with "no advice"
-    monkeypatch.setattr(routing_advice, "ML_SERVICE_URL", url)
-    monkeypatch.setattr(routing_advice, "ROUTER_TIMEOUT_SECONDS", 0.5)
+    anywhere: no call is an error or a timeout of the app's own deadline, and nearly all of them are answered with a label."""
+    monkeypatch.setattr(classification, "label", REAL_LABEL)  # the suite's autouse guard replaced it with "no answer"
+    monkeypatch.setattr(classification, "ML_SERVICE_URL", ml_service_url)
+    monkeypatch.setattr(classification, "ROUTER_TIMEOUT_SECONDS", 0.5)
 
-    await routing_advice.advise(TEXTS[0])  # warm-up: the first request pays for connection set-up and the first model pass
+    await classification.label("route-topics", TEXTS[0])  # warm-up: the first request pays for connection set-up and the first model pass
     timings, outcomes = [], []
     for i in range(200):
         started = time.perf_counter()
-        advice = await routing_advice.advise(f"{TEXTS[i % 2]} ({i})")
+        answer = await classification.label("route-topics", f"{TEXTS[i % 2]} ({i})")
         timings.append((time.perf_counter() - started) * 1000)
-        outcomes.append(advice.outcome)
+        outcomes.append(answer.outcome)
 
     p50, p95 = statistics.median(timings), sorted(timings)[int(len(timings) * 0.95) - 1]
-    record_property("advise_p50_ms", round(p50, 1))
-    record_property("advise_p95_ms", round(p95, 1))
-    print(f"advise() over {len(timings)} sequential calls: p50={p50:.1f} ms p95={p95:.1f} ms")
-    # No call may be an error or a timeout of the app's own deadline. A "no_advice" is the service's own 250 ms deadline being overrun with no
-    # fallback head to answer (see the fixture), which a loaded machine can cause now and then; it is allowed for at most one call in ten.
-    assert not {"classifier_error", "classifier_timeout"} & set(outcomes) and outcomes.count("advice") >= 180
+    record_property("label_p50_ms", round(p50, 1))
+    record_property("label_p95_ms", round(p95, 1))
+    print(f"label() over {len(timings)} sequential calls: p50={p50:.1f} ms p95={p95:.1f} ms")
+    # No call may be an error or a timeout of the app's own deadline. A "no_answer" is the service's own 250 ms deadline being overrun on both
+    # models, which a loaded machine can cause now and then; it is allowed for at most one call in ten.
+    assert not {"error", "timeout"} & set(outcomes) and outcomes.count("labelled") >= 180
 
 
 def test_a_head_that_is_not_accepted_gives_no_advice_in_the_real_container(ml_service, tmp_path):

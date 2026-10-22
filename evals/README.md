@@ -77,7 +77,7 @@ make model-eval KIND=classifier CANDIDATE=ml-service-classify    # 3. what the M
    `runners.classify.run(candidate, settings, backend=...)` and is scored, timed and compared exactly like the controls. The runner is not
    wired to a command for it yet; a router gets a declaration in `candidates/classifier.toml` when it is.
 4. **Accept (a person).** For the `/classify` endpoint: a head file with `"accepted": true`, mounted as `ROUTER_HEAD_DIR`
-   (`docker/ml-service/heads/README.md`), then `ROUTER_ENABLED=true` and `STRONG_CHAT_MODEL=chat-strong`.
+   (`docker/ml-service/heads/README.md`). The app does not ask for a head's score any more (spec 015 routes from rules and labels), so an accepted head is evaluated here but not used by `route_model`.
 
 With **no outcomes** the run ends with `UNMEASURED` (exit 3) and writes no report: routing quality is never a number computed from
 nothing. The same happens if the strong model did not beat the local one on the test prompts, because then there is nothing to recover.

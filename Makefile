@@ -57,7 +57,7 @@ pull-models:  ## Download the chat model (qwen2.5:7b, about 4.7 GB), the small m
 	ollama pull qwen2.5:3b
 	ollama pull nomic-embed-text
 
-pull-strong-model:  ## Download the dev stand-in for the escalation alias (chat-strong): a LOCAL 14B model, about 9 GB (a size up from the 7B chat model). Only needed once ROUTER_ENABLED=true
+pull-strong-model:  ## Download the dev stand-in for the escalation alias (chat-strong): a LOCAL 14B model, about 9 GB (a size up from the 7B chat model). Only needed once ROUTER_MODE is shadow or on
 	ollama pull qwen2.5:14b
 
 probe-tools:  ## Does the configured chat model emit tool calls the app can use? 22 labelled prompts against the app's real tools plus 4 open-ended ones that must not loop; about 2 minutes on a native Ollama (`ARGS=--no-loops` is the seconds-long tool half). Run it after ANY change to a chat alias's model or repeat_penalty: make probe-tools [ARGS="--alias chat-strong"] [ARGS="--model qwen2.5:7b --repeat-penalty 1.3 1.1"] (GRAPH_PATTERNS.md pattern 73)
