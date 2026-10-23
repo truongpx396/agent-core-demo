@@ -25,6 +25,13 @@ x-worker-healthcheck: &worker-healthcheck
 # overridden here).
 x-app-env: &app-env
   OPENAI_API_BASE: http://litellm:4000/v1
+  # The key the app presents to LiteLLM. A container does NOT read `.env` (compose only uses it to fill in `${...}` like this one), so before
+  # this line every containerized role (api, the workers, ingest-worker) sent the app's built-in default, `sk-anything`, which is the dev
+  # MASTER key: a scoped key minted with `make litellm-key ARGS="create ..."` and put in `.env` as OPENAI_API_KEY was never used by the
+  # containers, so its budget never moved and the spend log showed `default_user_id` as the caller. The name is LITELLM_APP_KEY, as in
+  # docker-compose.prod.yml and `scripts/litellm_key.py`; a host process (`make serve`, `make agent-worker`) still reads OPENAI_API_KEY from
+  # `.env`. Unset, this falls back to the dev master key (`sk-anything`, set on the litellm service below), which is today's behaviour.
+  OPENAI_API_KEY: ${LITELLM_APP_KEY:-sk-anything}
   QDRANT_URL: http://qdrant:6333
   ML_SERVICE_URL: http://ml-service:80
   CHECKPOINTER_DATABASE_URL: postgresql://langfuse:langfuse@postgres:5432/checkpointer
