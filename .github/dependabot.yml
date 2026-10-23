@@ -3,7 +3,10 @@
 # with our secrets), but it also never updates itself: without this file the pins freeze at
 # today's versions and quietly miss security fixes in the actions themselves.
 #
-# Deliberately github-actions ONLY. The pip ecosystem is left out on purpose:
+# github-actions and docker. The docker entry reads the two Dockerfiles' pinned `FROM` lines (the Python base image and uv, each
+# pinned by digest, ENGINEERING_PATTERNS.md pattern 76) and proposes a new digest weekly: that is what keeps a pinned base image
+# fresh. The compose files are NOT read (the `docker-compose` ecosystem would also propose postgres major versions); the LiteLLM
+# image digest there is bumped by hand, with `make gateway-check`. The pip ecosystem is left out on purpose:
 # requirements-lock.txt is machine-generated from requirements.txt (regenerate, don't hand-edit —
 # CLAUDE.md), and a Dependabot PR would hand-edit exactly that file. Revisit if/when the lock is
 # produced by a tool Dependabot understands.
@@ -25,4 +28,26 @@ updates:
         patterns: ["*"]
     commit-message:
       # Matches the repo's commit prefixes (fix:/feat:/test:/docs:/infra:/chore:).
+      prefix: infra
+
+  - package-ecosystem: docker
+    # Both directories: the root Dockerfile and docker/ml-service.Dockerfile, which pin the same two digests (a test keeps them equal).
+    # docker/ also holds the sandbox images, whose bases are not pinned by digest: they stay as they are, and are not what this is for.
+    directories:
+      - /
+      - /docker
+    schedule:
+      interval: weekly
+    # A release has to be two weeks old before it is proposed: uv's 0.13 line was days old when the pin was chosen, and a base image
+    # tag that was rebuilt yesterday is not yet something to run in production.
+    cooldown:
+      default-days: 14
+    # The Python MINOR is a decision (3.13 is what the lock was resolved for), not a bump: only digest refreshes of the same tag.
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    groups:
+      docker-images:
+        patterns: ["*"]
+    commit-message:
       prefix: infra

@@ -16,20 +16,34 @@
 # opt-in docker-compose services (`docker compose --profile app up -d`,
 # `make up-app`) alongside the existing infra-only `make up` default.
 #
-# Two stages (ENGINEERING_PATTERNS.md pattern 76). `builder` installs the lock into a virtualenv with uv and is thrown
-# away; `runtime`, the LAST stage and so what `docker build .` produces, is what ships: the same base, the OS package the
-# app needs, that virtualenv copied in, and the app. Nothing that installs software is in the shipped image: not uv, not pip.
-# Needs BuildKit (the default builder since Docker 23): `RUN --mount` is BuildKit's.
+# Stages (ENGINEERING_PATTERNS.md pattern 76). `base` is the one place the Python image is pinned and `uv` the one place the
+# installer is; `builder` installs the lock into a virtualenv with uv and is thrown away; `runtime`, the LAST stage and so what
+# `docker build .` produces, is what ships: the base, the OS package the app needs, that virtualenv copied in, and the app.
+# Nothing that installs software is in the shipped image: not uv, not pip. Needs BuildKit (the default builder since Docker 23):
+# `RUN --mount` is BuildKit's. docker/ml-service.Dockerfile, the other image production runs, is built the same way and pinned
+# to the same two digests (tests/core/test_dockerfile_build.py keeps them equal).
+
+# ---- base: the Python image, pinned by digest -------------------------------------------------------------------------------
+# The multi-architecture INDEX of python:3.13-slim (linux/amd64 and linux/arm64, read with `docker manifest inspect`) as of
+# 2026-10-23. It floated before, on purpose, for fresh OS patches; a floating tag also means two builds of one commit can differ,
+# and a scanner result can change under a PR that touched nothing. What keeps it fresh now: Dependabot proposes a new digest weekly
+# (.github/dependabot.yml, with a cooldown), `apt-get upgrade` below runs whenever that layer is rebuilt, and CI's Trivy image gate
+# fails if the pinned base ages into a fixable CRITICAL. Bump it by merging that PR, or by hand: take the new index digest,
+# change it here and in docker/ml-service.Dockerfile, and run `docker build .`.
+FROM python:3.13-slim@sha256:57b29a7c050c4e679e4bea572e14b3965cf4b5839de2da49d55e49ffc4024f39 AS base
+
+# ---- uv: the installer, as a single static binary from its own image, pinned by digest ---------------------------------------
+# The multi-architecture index of 0.12.24 (linux/amd64 and linux/arm64, read with `docker buildx imagetools inspect`): the build
+# downloads and runs it, so a moving tag would let an upstream change decide what runs here, which is the reason the LiteLLM image
+# is pinned the same way. 0.12.24 rather than the newest because the 0.13 line was days old when this was written (Dependabot's
+# cooldown now applies that rule to its own bumps). It is copied into the builder stage only. As its own named stage so that
+# Dependabot, which reads `FROM` lines, can see and bump it.
+FROM ghcr.io/astral-sh/uv:0.12.24@sha256:3af4716e991d6956a41e573eab705d0ee08500cd829ed30293eb8472f372c65a AS uv
 
 # ---- builder: dependencies only, never shipped ------------------------------------------------------------------------------
-FROM python:3.13-slim AS builder
+FROM base AS builder
 
-# uv, copied in as a single static binary from its own image, PINNED BY DIGEST (the multi-architecture index of 0.12.24,
-# linux/amd64 and linux/arm64, read with `docker buildx imagetools inspect`): the build downloads and runs it, so a moving tag
-# would let an upstream change decide what runs here, which is the reason the LiteLLM image is pinned the same way. 0.12.24
-# rather than the newest because the 0.13 line was days old when this was written. It exists in THIS stage only. To bump it:
-# inspect the new tag's digest, change both halves below, and run `docker build .` (CI's `docker-build` job runs the result).
-COPY --from=ghcr.io/astral-sh/uv:0.12.24@sha256:3af4716e991d6956a41e573eab705d0ee08500cd829ed30293eb8472f372c65a /uv /usr/local/bin/uv
+COPY --from=uv /uv /usr/local/bin/uv
 
 # COMPILE_BYTECODE: write the .pyc files now, so the first import in a container does not (a non-root process in a container
 #   would otherwise compile on every start, since it cannot write under the root-owned virtualenv).
@@ -61,7 +75,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --no-deps /tmp/billing
 
 # ---- runtime: what ships -----------------------------------------------------------------------------------------------------
-FROM python:3.13-slim AS runtime
+FROM base AS runtime
 
 # libgomp1: onnxruntime's runtime dependency (fastembed's BM25/rerank
 # models) — not bundled in its wheel, and the slim base doesn't ship it.
