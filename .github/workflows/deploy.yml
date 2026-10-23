@@ -55,12 +55,18 @@ jobs:
         with:
           context: .
           file: Dockerfile
+          # The stage that ships, named: a reordered Dockerfile must not publish the builder (pattern 76).
+          target: runtime
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/agent-core-demo:${{ steps.tag.outputs.value }}
             ghcr.io/${{ github.repository_owner }}/agent-core-demo:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # What a pulled image can be audited against: a software bill of materials and SLSA build provenance, attached to the
+          # image as attestations (BuildKit's own scanner, a floating image: pinning it is listed as a gap in pattern 76).
+          provenance: mode=max
+          sbom: true
 
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -72,6 +78,10 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/agent-core-demo-ml-service:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # What a pulled image can be audited against: a software bill of materials and SLSA build provenance, attached to the
+          # image as attestations (BuildKit's own scanner, a floating image: pinning it is listed as a gap in pattern 76).
+          provenance: mode=max
+          sbom: true
 
   deploy:
     needs: build-and-push
