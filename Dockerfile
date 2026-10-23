@@ -15,7 +15,53 @@
 # deployable artifact for anyone running this stack for real, wired up as
 # opt-in docker-compose services (`docker compose --profile app up -d`,
 # `make up-app`) alongside the existing infra-only `make up` default.
-FROM python:3.13-slim AS base
+#
+# Two stages (ENGINEERING_PATTERNS.md pattern 76). `builder` installs the lock into a virtualenv with uv and is thrown
+# away; `runtime`, the LAST stage and so what `docker build .` produces, is what ships: the same base, the OS package the
+# app needs, that virtualenv copied in, and the app. Nothing that installs software is in the shipped image: not uv, not pip.
+# Needs BuildKit (the default builder since Docker 23): `RUN --mount` is BuildKit's.
+
+# ---- builder: dependencies only, never shipped ------------------------------------------------------------------------------
+FROM python:3.13-slim AS builder
+
+# uv, copied in as a single static binary from its own image, PINNED BY DIGEST (the multi-architecture index of 0.12.24,
+# linux/amd64 and linux/arm64, read with `docker buildx imagetools inspect`): the build downloads and runs it, so a moving tag
+# would let an upstream change decide what runs here, which is the reason the LiteLLM image is pinned the same way. 0.12.24
+# rather than the newest because the 0.13 line was days old when this was written. It exists in THIS stage only. To bump it:
+# inspect the new tag's digest, change both halves below, and run `docker build .` (CI's `docker-build` job runs the result).
+COPY --from=ghcr.io/astral-sh/uv:0.12.24@sha256:3af4716e991d6956a41e573eab705d0ee08500cd829ed30293eb8472f372c65a /uv /usr/local/bin/uv
+
+# COMPILE_BYTECODE: write the .pyc files now, so the first import in a container does not (a non-root process in a container
+#   would otherwise compile on every start, since it cannot write under the root-owned virtualenv).
+# LINK_MODE=copy: the cache mount below is a different filesystem from /opt/venv, where uv's default hard links cannot work
+#   (it falls back to copying anyway, and warns); asking for the copy says so.
+# PYTHON_DOWNLOADS=never: use the base image's interpreter, the one the runtime stage runs, never a downloaded one.
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH
+
+RUN uv venv --python /usr/local/bin/python "$VIRTUAL_ENV"
+
+# The lock is bind-mounted rather than COPY'd (no layer holds it) and BuildKit still keys the cache on its CONTENT, so this
+# step reruns exactly when the lock changes and not otherwise. The cache mount keeps uv's wheel cache BETWEEN builds in the
+# builder (it is never part of an image), so a lock change downloads only the packages that changed instead of all 189:
+# `pip install --no-cache-dir`, which this replaces, re-downloaded everything on every miss.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=requirements-lock.txt,target=/tmp/requirements-lock.txt \
+    uv pip install -r /tmp/requirements-lock.txt
+
+# The billing package (spec 011): installed from its own directory, NOT through the lock file, which is a machine-generated freeze of a
+# real install of requirements.txt. --no-deps because everything it needs is already in the lock above. It is COPY'd, not
+# bind-mounted, because building it writes into its source tree; and the old `rm -rf ./packages` has nothing left to do, since this
+# stage is not the one that ships.
+COPY packages/billing/ /tmp/billing/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --no-deps /tmp/billing
+
+# ---- runtime: what ships -----------------------------------------------------------------------------------------------------
+FROM python:3.13-slim AS runtime
 
 # libgomp1: onnxruntime's runtime dependency (fastembed's BM25/rerank
 # models) — not bundled in its wheel, and the slim base doesn't ship it.
@@ -41,19 +87,17 @@ RUN apt-get update && apt-get upgrade -y \
 RUN useradd --create-home --uid 1000 appuser
 WORKDIR /app
 
-# pip first: the base image's pip vendors its OWN copy of certifi (pip/_vendor/certifi), which Trivy's image scan reads as a
-# second certifi, and the lock cannot touch it. pip 26.2.1 (what python:3.13-slim shipped) vendored 2026.6.17, which trusts the
-# emSign intermediates GHSA-6q48-6c7w-9gw2 is about; 26.2.2 vendors 2026.10.19. Upgrading also leaves the image's pip with a
-# current CA bundle for the install below. Unpinned on purpose, like the base tag and `apt-get upgrade` above: this layer exists to be fresh.
-RUN pip install --no-cache-dir --upgrade pip
+# No pip in the shipped image. The base image's pip vendors its OWN copy of certifi (pip/_vendor/certifi), which Trivy's image
+# scan reads as a second certifi that the lock cannot touch (GHSA-6q48-6c7w-9gw2 was exactly that); this Dockerfile used to
+# upgrade pip to get a fresh bundled copy. Nothing in the running app installs anything (the sandbox prompts tell the model NOT to
+# pip install), and the virtualenv below is made by uv and has no pip of its own, so the shipped image simply carries none: the
+# vendored certifi, and any future pip finding, are gone with it. tests/core/test_trivy_ignore.py pins this.
+RUN python -m pip uninstall -y pip setuptools wheel
 
-COPY requirements-lock.txt .
-RUN pip install --no-cache-dir -r requirements-lock.txt
-
-# The billing package (spec 011): installed from its own directory, NOT through the lock file, which is a machine-generated freeze of a
-# real install of requirements.txt. --no-deps because everything it needs is already in the lock above.
-COPY packages/billing/ ./packages/billing/
-RUN pip install --no-cache-dir --no-deps ./packages/billing && rm -rf ./packages
+# The dependencies, as built above. The same path in both stages (a virtualenv's scripts name their interpreter by absolute
+# path) and the same base image, so the interpreter it links to is the one it was built for.
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
 
 # fastembed/huggingface_hub cache their downloaded BM25/rerank models under
 # $HOME on first use — set BEFORE the final chown, so anything written as

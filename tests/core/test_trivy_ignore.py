@@ -4,8 +4,9 @@ On 2026-10-21/22 CI's `trivy` job went red on every PR without any of them touch
 vulnerability database learned about four CRITICAL findings in packages the lock already pinned.
 
   * certifi 2026.7.22 (GHSA-6q48-6c7w-9gw2): the bundle trusts emSign intermediates whose keys are compromised.
-    Fixed by pinning 2026.10.19, and by upgrading pip in the image, whose vendored copy (pip/_vendor/certifi)
-    Trivy's image scan reads as a second certifi that the lock cannot reach.
+    Fixed by pinning 2026.10.19, and by keeping pip out of the shipped image: its vendored copy
+    (pip/_vendor/certifi) is what Trivy's image scan read as a second certifi that the lock cannot reach. (The image
+    first upgraded pip for a fresh copy; the two-stage build removes it, ENGINEERING_PATTERNS.md pattern 76.)
   * pillow 12.3.0 (CVE-2026-112403, -112393, -112900): fixed only in 13.0.0, and fastembed, which the app uses
     for sparse retrieval, declares `pillow<13.0` in every release through 0.9.0. They cannot be installed
     together, so `.trivyignore.yaml` carries a dated, reasoned exception instead of a lock that pip would reject.
@@ -45,12 +46,17 @@ def test_the_lock_pins_the_fixed_certifi():
     assert Version(_lock()["certifi"]) >= Version("2026.10.19"), "GHSA-6q48-6c7w-9gw2 is fixed in 2026.10.19"
 
 
-def test_the_image_upgrades_pip_before_it_installs_the_lock():
-    """pip vendors its own certifi; the lock cannot change it, only a newer pip can."""
+def test_the_shipped_image_has_no_pip():
+    """pip vendors its own certifi, which the lock cannot change. The image used to upgrade pip to get a fresh copy; the
+    runtime stage now removes pip altogether (the virtualenv uv builds has none), so there is no vendored certifi, and no
+    future pip finding, to carry. The stage that ships is the LAST one, and it must not reinstall an installer."""
     dockerfile = (REPO / "Dockerfile").read_text()
-    upgrade = dockerfile.find("pip install --no-cache-dir --upgrade pip")
-    install = dockerfile.find("pip install --no-cache-dir -r requirements-lock.txt")
-    assert 0 <= upgrade < install, "the Dockerfile must upgrade pip first (see the comment above that line)"
+    runtime = dockerfile.split("AS runtime", 1)[1]
+    instructions = "\n".join(line for line in runtime.splitlines() if not line.lstrip().startswith("#"))
+
+    assert "python -m pip uninstall -y pip" in instructions, "the runtime stage must remove the base image's pip"
+    assert "pip install" not in instructions and "uv pip" not in instructions, "the shipped stage must not run an installer"
+    assert "astral-sh/uv" not in instructions, "uv belongs to the builder stage; the shipped stage must not copy it"
 
 
 class TestEveryExceptionIsDatedAndReasoned:
