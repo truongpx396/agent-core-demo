@@ -145,3 +145,40 @@ def test_the_ml_service_keeps_what_its_healthcheck_and_its_model_cache_volume_ne
     assert re.search(r"\bcurl\b", install), "curl must be INSTALLED: the word also appears in the HEALTHCHECK, which fails without the binary"
     assert "curl -sf http://localhost:80/health" in runtime
     assert "mkdir -p /home/appuser/.cache" in runtime and "chown -R appuser:appuser /home/appuser" in runtime
+
+
+# --- the test harness must build with BuildKit ----------------------------------------------------------------------------------
+#
+# The first push of pattern 76 failed `test-integration` and `test-live` with "the --mount option requires BuildKit": tests/containers.py built
+# the ML service image through the `docker` SDK's `images.build`, whose builder is the legacy one. The Dockerfiles use BuildKit's cache mounts,
+# so anything that builds them must be BuildKit.
+
+
+def test_no_test_builds_an_image_through_the_sdks_legacy_builder():
+    offenders = [
+        str(path.relative_to(REPO))
+        for path in sorted((REPO / "tests").rglob("*.py"))
+        if path != Path(__file__) and re.search(r"\.images\.build\(", path.read_text())
+    ]
+
+    assert not offenders, f"these build with the legacy builder, which rejects `RUN --mount`: {offenders}"
+
+
+def test_the_harness_builds_with_the_docker_cli_and_buildkit_and_reports_a_failure_with_its_output(monkeypatch):
+    from tests import containers
+
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return type("Result", (), {"returncode": 1, "stdout": "step 3", "stderr": "boom from the builder"})()
+
+    monkeypatch.setattr(containers.subprocess, "run", fake_run)
+    monkeypatch.setattr(containers.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    with pytest.raises(RuntimeError, match="boom from the builder"):
+        containers._build_image("docker/ml-service.Dockerfile", "tag:test")
+
+    (argv, kwargs), = calls
+    assert argv[:2] == ["/usr/bin/docker", "build"] and "--file" in argv and "docker/ml-service.Dockerfile" in argv and "tag:test" in argv
+    assert kwargs["env"]["DOCKER_BUILDKIT"] == "1" and kwargs["check"] is False

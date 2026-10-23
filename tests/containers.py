@@ -58,6 +58,8 @@ any container — works correctly.
 import hashlib
 import json
 import os
+import shutil
+import subprocess
 import tempfile
 import time
 from collections.abc import Callable
@@ -519,6 +521,29 @@ def ensure_crawl4ai() -> dict[str, str]:
     return _acquire("crawl4ai", _start)
 
 
+def _build_image(dockerfile: str, tag: str) -> None:
+    """Build `dockerfile` (repo-relative) as `tag` with the Docker CLI, which is BuildKit, and not with the `docker` SDK.
+
+    The SDK's `images.build` drives the LEGACY builder, which rejects `RUN --mount` ("the --mount option requires BuildKit"); the Dockerfiles
+    use BuildKit's cache mounts, as `docker build` and `docker compose` build them by default (ENGINEERING_PATTERNS.md pattern 76). The first
+    push of that change failed every test that starts the ML service, in the integration tier and in the live tier, on exactly this.
+    """
+    docker_cli = shutil.which("docker")
+    if docker_cli is None:
+        raise RuntimeError("the docker CLI is needed to build the image (the daemon is reachable, so this is a PATH problem)")
+    result = subprocess.run(  # noqa: S603 - a fixed argv of this repo's own paths, no shell
+        [docker_cli, "build", "--file", dockerfile, "--tag", tag, str(_REPO_ROOT)],
+        env={**os.environ, "DOCKER_BUILDKIT": "1"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"`docker build --file {dockerfile}` failed ({result.returncode}):\n{result.stdout[-1500:]}\n{result.stderr[-3500:]}"
+        )
+
+
 def ensure_ml_service() -> dict[str, str]:
     """Real reranker + prompt-injection-classifier service — the same
     image docker-compose.yml's own `ml-service` builds from
@@ -534,7 +559,7 @@ def ensure_ml_service() -> dict[str, str]:
 
     No first-party testcontainers module (this is this repo's own image,
     not a published one) and no pre-built public tag to pull — built once
-    here via the `docker` SDK directly, then driven through the generic
+    here with the Docker CLI (BuildKit, see `_build_image`), then driven through the generic
     `DockerContainer` API like `ensure_qdrant()`. Both ONNX models this
     service loads (~22M params each, docker/ml-service/ml_service/) are small
     enough that a cold download inside the container's own healthcheck-
@@ -548,12 +573,8 @@ def ensure_ml_service() -> dict[str, str]:
         import httpx
         from testcontainers.core.container import DockerContainer
 
-        import docker
-
         tag = "agent-core-demo-ml-service:test"
-        docker.from_env().images.build(
-            path=str(_REPO_ROOT), dockerfile="docker/ml-service.Dockerfile", tag=tag
-        )
+        _build_image("docker/ml-service.Dockerfile", tag)
         container = DockerContainer(tag).with_exposed_ports(80)
         container.start()
         host = container.get_container_host_ip()
