@@ -95,7 +95,7 @@ until the stronger model wins clearly somewhere, with a judge that is not itself
 ## Label sets (a different question from routing)
 
 A **label set** (`docker/ml-service/labelsets/<name>.json`, specs/015) lists a few choices with example sentences, and the ML service answers
-`POST /classify task=label` with the choice a text is nearest to, or "none of these" below a cutoff that is stored per model. That is a
+`POST /v1/decide` (a `choice` question named after the set) with the choice a text is nearest to, or "none of these" below a cutoff that is stored per model. That is a
 classification task with a known right answer, so it is judged on sentences whose topic is known, not on routing outcomes:
 
 ```bash

@@ -44,7 +44,7 @@ retrieval change. `make model-eval KIND=embedding|reranker|screen|classifier CAN
 needs no model or network. Run it before changing an embedding, reranker or screening model, and read the report's
 `controls` first. The routing classifier has one more manual target, `make router-label JUDGE=<alias>` (score the local and strong
 model's answers, the outcomes any router is judged on); there is no head trainer (`evals/README.md`). A label set (the choices
-`POST /classify task=label` picks between) has `make labelset-calibrate CANDIDATE=labelset-<model>`, which chooses its "none of these" cutoff for one
+`POST /v1/decide` picks between) has `make labelset-calibrate CANDIDATE=labelset-<model>`, which chooses its "none of these" cutoff for one
 model on a dev split, and is judged with `make model-eval KIND=classifier CANDIDATE=labelset-<model> DATASET=route-topics`.
 `make reembed COLLECTION_NAME=<c>` rebuilds a vector collection under the current embedding identity and swaps it in atomically; run
 it after changing `EMBED_MODEL`, the prefixes or `EMBED_MODEL_REVISION`. Don't run `make clean`, `clear-*`, or `restart-all` without being asked —
@@ -162,4 +162,4 @@ story. Amend the constitution only through `/speckit-constitution` and a PR.
 Path-scoped guidance loads automatically from `.claude/rules/`: `side-effect-tools.md`,
 `runtime-reliability.md`, `testing.md`.
 
-The billing package's own specs (010-013) live in `packages/billing/specs/`; `specs/` keeps a one-file pointer for each, so Spec Kit still counts the numbers as taken (the next is 016; 014 is the model-serving and evaluation-harness spec and 015 builds on it: label sets on the ML service and tiered model routing).
+The billing package's own specs (010-013) live in `packages/billing/specs/`; `specs/` keeps a one-file pointer for each, so Spec Kit still counts the numbers as taken (the next is 017; 014 is the model-serving and evaluation-harness spec, 015 builds on it with label sets on the ML service and tiered model routing, and 016 puts that behind a decision interface shaped like the hosted Jev one).
