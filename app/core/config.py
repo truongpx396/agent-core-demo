@@ -121,8 +121,8 @@ class Settings(BillingSettings):
     medium_chat_model: str = ""
     strong_chat_model: str = ""
     router_max_tier: Literal["local", "medium", "strong"] = "strong"
-    # The ML service label set asked for the label signal (docker/ml-service/labelsets/); empty means rules only.
-    router_labelset: str = "route-topics"
+    # Whether the router asks the ML service for the topic of the message (POST /v1/decide, the `route-topics` question); false means rules only.
+    router_labels: bool = True
     # The `long_prompt` rule fires at this many characters. Not below 200: a rule that fires on an ordinary question is a router that always escalates.
     router_long_prompt_chars: int = Field(default=DEFAULT_LONG_PROMPT_CHARS, ge=200)
     # The label call's deadline. A miss leaves the rules to decide, so this bounds what routing can add to a turn (the service's own deadline is
@@ -626,7 +626,7 @@ MEDIUM_CHAT_MODEL = settings.medium_chat_model
 STRONG_CHAT_MODEL = settings.strong_chat_model
 ROUTER_MODE = settings.router_mode
 ROUTER_MAX_TIER = settings.router_max_tier
-ROUTER_LABELSET = settings.router_labelset
+ROUTER_LABELS = settings.router_labels
 ROUTER_LONG_PROMPT_CHARS = settings.router_long_prompt_chars
 ROUTER_TIMEOUT_SECONDS = settings.router_timeout_seconds
 HYBRID_PREFETCH_LIMIT = settings.hybrid_prefetch_limit

@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from ml_service import classify, embed, guard, health, labelsets, rerank
+from ml_service import classify, decide, embed, guard, health, labelsets, rerank
 from ml_service.metrics import Metrics
 from ml_service.registry import (
     ModelSpec,
@@ -112,6 +112,7 @@ def create_app(
     app.include_router(health.router)
     app.include_router(embed.router)
     app.include_router(classify.router)
+    app.include_router(decide.router)
     app.include_router(rerank.router)
     app.include_router(guard.router)
     return app

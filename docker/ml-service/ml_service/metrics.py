@@ -36,7 +36,7 @@ class Metrics:
         self.embed_batch = Histogram("ml_embed_batch_size", "Texts per embedding request.", ["model"], buckets=BATCH_BUCKETS, registry=r)
         self.classify_requests = Counter("ml_classify_requests_total", "Classification requests, by who answered.", ["served_by"], registry=r)
         self.label_requests = Counter(
-            "ml_label_requests_total", "Label-set requests (POST /classify task=label), by set and who answered. The set is a name the service already knows.",
+            "ml_label_requests_total", "Decisions asked of a label set (POST /v1/decide, one per question), by set and who answered (served_by none = a 503). The set is a name the service already knows.",
             ["labelset", "served_by"], registry=r,
         )
 

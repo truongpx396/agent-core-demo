@@ -1,7 +1,10 @@
-"""app/core/classification.py: one question out, one validated answer back, and every failure a value (specs/015 FR-024).
+"""app/core/classification.py: one typed question out, one validated answer back, and every failure a value (specs/015 FR-024, specs/016).
 
-`httpx.MockTransport` stands in for the ML service, so the REAL client, the real deadline handling and the real parsing run; only the network is
-replaced.
+`httpx.MockTransport` stands in for the decision service, so the REAL client, the real deadline handling and the real parsing run; only the network
+is replaced. Two kinds of answer are fed in: the local service's (with its `x_` evidence), and one built from the hosted System One / Jev interface's
+DOCUMENTATION (Opper's compatibility page: `choice`, `confidence`, `probabilities`, `usage`). The second is not a recording of a real response, which
+nobody has made yet; it pins the fields the swap relies on, so a change that made the client need an `x_` field would fail here before it failed in
+front of a hosted service.
 """
 import asyncio
 import json
@@ -11,21 +14,32 @@ import httpx
 import pytest
 
 from app.core import classification
-from app.core.classification import NO_ANSWER, Labelled
-from tests.conftest import REAL_LABEL
+from app.core.classification import NO_ANSWER, Choice, Labelled
+from tests.conftest import REAL_CHOOSE
 
 REAL_CLIENT = httpx.AsyncClient
-GOOD = {
-    "served_by": "primary", "model": "bge-small-en-v1.5", "labelset": "route-topics", "labelset_version": "6a3fe2f35057",
-    "results": [{"index": 0, "label": "code", "nearest": "code", "similarity": 0.773, "runner_up": "lookup", "margin": 0.041, "truncated": False}],
+QUESTION = Choice(
+    "route-topics", "What kind of work does the message ask for?",
+    {"code": "writing or fixing code", "lookup": "finding a written fact", "smalltalk": "courtesy with no task"},
+)
+LOCAL = {
+    "model": "bge-small-en-v1.5", "x_served_by": "primary", "usage": {"input_tokens": 9, "output_tokens": 0},
+    "answers": {"route-topics": {
+        "type": "choice", "choice": "code", "x_labelset_version": "6a3fe2f35057",
+        "x_evidence": {"nearest": "code", "similarity": 0.773, "runner_up": "lookup", "margin": 0.041, "truncated": False},
+    }},
+}
+HOSTED = {  # built from the documented fields only
+    "model": "typesafe/jev-1.13.0", "usage": {"input_tokens": 61, "output_tokens": 0},
+    "answers": {"route-topics": {"type": "choice", "choice": "lookup", "confidence": 0.91, "probabilities": {"code": 0.04, "lookup": 0.91, "smalltalk": 0.05}}},
 }
 
 
 @pytest.fixture
 def serve(monkeypatch):
-    """Install a handler as the ML service; returns the list of requests it saw. The suite's autouse guard replaced `label`, so the real one is put back."""
+    """Install a handler as the service; returns the list of requests it saw. The suite's autouse guard replaced `choose`, so the real one is put back."""
     seen: list[httpx.Request] = []
-    monkeypatch.setattr(classification, "label", REAL_LABEL)
+    monkeypatch.setattr(classification, "choose", REAL_CHOOSE)
 
     def install(handler):
         def recording(request: httpx.Request) -> httpx.Response:
@@ -39,37 +53,54 @@ def serve(monkeypatch):
 
 
 async def ask(text="prove it"):
-    return await classification.label("route-topics", text)
+    return await classification.choose(QUESTION, text)
 
 
-async def test_a_healthy_answer_becomes_a_label(serve):
-    serve(lambda request: httpx.Response(200, json=GOOD))
+def with_answer(**fields):
+    return {**LOCAL, "answers": {"route-topics": {**LOCAL["answers"]["route-topics"], **fields}}}
+
+
+async def test_a_healthy_local_answer_becomes_a_label_with_its_evidence(serve):
+    serve(lambda request: httpx.Response(200, json=LOCAL))
 
     assert await ask() == Labelled("labelled", "code", "code", 0.773, 0.041, "primary", "6a3fe2f35057")
 
 
-async def test_the_request_carries_the_set_name_and_the_users_message_and_nothing_else(serve):
-    seen = serve(lambda request: httpx.Response(200, json=GOOD))
+async def test_an_answer_with_only_the_documented_fields_works_too_which_is_what_makes_the_swap_a_config_change(serve):
+    serve(lambda request: httpx.Response(200, json=HOSTED))
+
+    got = await ask()
+
+    assert got == Labelled("labelled", "lookup", None, None, None, "remote", None, 0.91)
+    assert got.label == "lookup" and got.confidence == 0.91
+
+
+async def test_the_request_is_the_question_and_the_users_message_and_nothing_else(serve):
+    seen = serve(lambda request: httpx.Response(200, json=LOCAL))
 
     await ask("what is 2+2?")
 
     (request,) = seen
-    assert request.method == "POST" and request.url.path == "/classify"
-    assert json.loads(request.content) == {"task": "label", "labelset": "route-topics", "texts": ["what is 2+2?"]}  # no tenant, principal, history, tools or context
+    assert request.method == "POST" and request.url.path == "/v1/decide"
+    assert json.loads(request.content) == {  # no tenant, principal, history, tools or context; no `model`, so the service's default answers
+        "state": "what is 2+2?",
+        "questions": {"route-topics": {
+            "type": "choice", "instructions": QUESTION.instructions, "criteria": dict(QUESTION.options),
+        }},
+    }
     assert {"authorization", "x-tenant-id", "x-principal-id"}.isdisjoint({k.lower() for k in request.headers})
 
 
 async def test_a_long_message_is_cut_to_its_opening_not_refused(serve):
-    seen = serve(lambda request: httpx.Response(200, json=GOOD))
+    seen = serve(lambda request: httpx.Response(200, json=LOCAL))
 
     await ask("word " * 2000)
 
-    assert len(json.loads(seen[0].content)["texts"][0]) == classification.MAX_CHARS == 2000
+    assert len(json.loads(seen[0].content)["state"]) == classification.MAX_CHARS == 2000
 
 
-async def test_an_abstention_is_a_label_of_none_with_the_nearest_still_reported(serve):
-    abstained = {**GOOD, "results": [{**GOOD["results"][0], "label": None, "nearest": "smalltalk", "similarity": 0.4, "margin": 0.0}]}
-    serve(lambda request: httpx.Response(200, json=abstained))
+async def test_an_abstention_is_a_choice_of_none_with_the_nearest_still_reported(serve):
+    serve(lambda request: httpx.Response(200, json=with_answer(choice=None, x_evidence={"nearest": "smalltalk", "similarity": 0.4, "margin": 0.0})))
 
     got = await ask()
 
@@ -77,51 +108,60 @@ async def test_an_abstention_is_a_label_of_none_with_the_nearest_still_reported(
 
 
 async def test_the_fallback_models_answer_is_an_answer_too_and_says_who_gave_it(serve):
-    serve(lambda request: httpx.Response(200, json={**GOOD, "served_by": "fallback"}))
+    serve(lambda request: httpx.Response(200, json={**LOCAL, "x_served_by": "fallback"}))
 
     assert (await ask()).served_by == "fallback"
 
 
-async def test_none_served_is_no_answer_not_an_error(serve):
-    nothing = {"served_by": "none", "model": None, "labelset": "route-topics", "labelset_version": None,
-               "results": [{"index": 0, "label": None, "nearest": None, "similarity": None, "runner_up": None, "margin": None, "truncated": False}]}
-    serve(lambda request: httpx.Response(200, json=nothing))
+async def test_unavailable_is_no_answer_not_an_error(serve):
+    serve(lambda request: httpx.Response(503, json={"error": {"code": "model_unavailable", "message": "no model can answer these questions right now"}}))
 
     assert await ask() == NO_ANSWER
-
-
-def with_result(**fields):
-    return {**GOOD, "results": [{**GOOD["results"][0], **fields}]}
 
 
 @pytest.mark.parametrize(
     "response",
     [
+        httpx.Response(503, json={"error": {"code": "overloaded"}}),  # a 503 that is not the interface's own "cannot answer now" is a failure
+        httpx.Response(503, content=b"<html>Bad gateway</html>"),
+        httpx.Response(503, json=["not", "an", "error"]),
         httpx.Response(500, json={"error": {"code": "internal"}}),
-        httpx.Response(503, json=GOOD),  # a proxy's error page that happens to carry a valid-looking body is still not an answer
-        httpx.Response(201, json=GOOD),
-        httpx.Response(400, json={"error": {"code": "unknown_labelset"}}),
+        httpx.Response(500, json={"error": {"code": "model_unavailable"}}),  # the code means "cannot answer now" only on the 503 that carries it
+        httpx.Response(529, json={"error": {"code": "overloaded"}}),
+        httpx.Response(201, json=LOCAL),
+        httpx.Response(400, json={"error": {"code": "criteria_mismatch"}}),
         httpx.Response(200, content=b"not json"),
         httpx.Response(200, json=["a", "list"]),
-        httpx.Response(200, json={"served_by": "primary"}),
-        httpx.Response(200, json={**GOOD, "results": []}),
-        httpx.Response(200, json={**GOOD, "results": [GOOD["results"][0], GOOD["results"][0]]}),
-        httpx.Response(200, json={**GOOD, "served_by": "somebody-else"}),
-        httpx.Response(200, json={**GOOD, "labelset": "another-set"}),  # an answer for a set that was not asked about
-        httpx.Response(200, json=with_result(similarity="high")),
-        httpx.Response(200, json=with_result(similarity=True)),
-        httpx.Response(200, json=with_result(similarity=1.5)),
-        httpx.Response(200, json=with_result(similarity=None)),
-        httpx.Response(200, json=with_result(margin=-0.1)),
-        httpx.Response(200, json=with_result(label=3)),
-        httpx.Response(200, json=with_result(nearest=None)),
-        httpx.Response(200, content=b'{"served_by": "primary", "results": [{"similarity": NaN, "margin": 0, "nearest": "a", "label": "a"}]}'),
+        httpx.Response(200, json={}),
+        httpx.Response(200, json={**LOCAL, "answers": []}),
+        httpx.Response(200, json={**LOCAL, "answers": {}}),
+        httpx.Response(200, json={**LOCAL, "answers": {"another-question": LOCAL["answers"]["route-topics"]}}),  # an answer to a question that was not asked
+        httpx.Response(200, json=with_answer(type="noul")),
+        httpx.Response(200, json=with_answer(type=None)),
+        httpx.Response(200, json=with_answer(choice="hacking")),  # not one of the options offered
+        httpx.Response(200, json=with_answer(choice=3)),
+        httpx.Response(200, json=with_answer(choice="")),
+        httpx.Response(200, json={**LOCAL, "x_served_by": "somebody-else"}),
+        httpx.Response(200, json=with_answer(x_evidence={"nearest": "code", "similarity": "high", "margin": 0.1})),
+        httpx.Response(200, json=with_answer(x_evidence={"nearest": "code", "similarity": True, "margin": 0.1})),
+        httpx.Response(200, json=with_answer(x_evidence={"nearest": "code", "similarity": 1.5, "margin": 0.1})),
+        httpx.Response(200, json=with_answer(x_evidence={"nearest": "code", "similarity": 0.5, "margin": -0.1})),
+        httpx.Response(200, json=with_answer(confidence=1.5)),
+        httpx.Response(200, json=with_answer(confidence="sure")),
+        httpx.Response(200, json=with_answer(confidence=True)),
+        httpx.Response(200, content=b'{"answers": {"route-topics": {"type": "choice", "choice": "code", "x_evidence": {"similarity": NaN}}}}'),
     ],
 )
 async def test_anything_but_the_documented_answer_is_an_error_never_a_label(serve, response):
     serve(lambda request: response)
 
     assert (await ask()).outcome == "error"
+
+
+async def test_evidence_is_optional_but_if_offered_it_is_checked(serve):
+    serve(lambda request: httpx.Response(200, json=with_answer(x_evidence=None)))
+
+    assert await ask() == Labelled("labelled", "code", None, None, None, "primary", "6a3fe2f35057")
 
 
 async def test_a_refused_connection_is_an_error(serve):

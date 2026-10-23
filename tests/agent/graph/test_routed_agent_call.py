@@ -368,10 +368,10 @@ async def _mutating_turn(monkeypatch, label: str):
     monkeypatch.setattr(model_route, "MEDIUM_CHAT_MODEL", MEDIUM)
     monkeypatch.setattr(model_route, "STRONG_CHAT_MODEL", STRONG)
 
-    async def classify(labelset, text):
+    async def classify(question, text):
         return Labelled("labelled", label, label, 0.9, 0.1, "primary", "v1")
 
-    monkeypatch.setattr(classification, "label", classify)
+    monkeypatch.setattr(classification, "choose", classify)
     kwargs_seen: list = []
     llm = queue_llm(call("add_note", {"title": "Refunds", "content": "30 days.", "topic": "company"}, "call_1"),
                     AIMessage(content="I've added a note about the refund policy."), kwargs_seen=kwargs_seen)
@@ -410,10 +410,10 @@ async def test_an_unpriced_alias_under_the_block_policy_steps_the_turn_down_and_
     monkeypatch.setattr(pricing, "UNPRICED_MODEL_POLICY", "block")
     monkeypatch.setattr(pricing, "get_price", get_price)
 
-    async def classify(labelset, text):
+    async def classify(question, text):
         return Labelled("labelled", label, label, 0.9, 0.1, "primary", "v1")
 
-    monkeypatch.setattr(classification, "label", classify)
+    monkeypatch.setattr(classification, "choose", classify)
     monkeypatch.setattr(model_route, "ROUTER_MODE", "on")
     monkeypatch.setattr(model_route, "MEDIUM_CHAT_MODEL", MEDIUM)
     monkeypatch.setattr(model_route, "STRONG_CHAT_MODEL", STRONG)
@@ -438,10 +438,10 @@ async def test_a_shadow_router_changes_no_gateway_call_and_no_ledger_row_compare
             tiers.append((kw["tier"], kw["mode"], kw["decided_by"]))
             return type("_Bound", (), {"inc": staticmethod(lambda amount=1: None)})()
 
-    async def classify(labelset, text):
+    async def classify(question, text):
         return Labelled("labelled", "reasoning", "reasoning", 0.9, 0.1, "primary", "v1")
 
-    monkeypatch.setattr(classification, "label", classify)
+    monkeypatch.setattr(classification, "choose", classify)
     monkeypatch.setattr(model_route.metrics, "agent_model_route_tier_total", _Tiers())
     monkeypatch.setattr(model_route, "MEDIUM_CHAT_MODEL", MEDIUM)
     monkeypatch.setattr(model_route, "STRONG_CHAT_MODEL", STRONG)

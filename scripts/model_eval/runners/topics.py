@@ -7,7 +7,7 @@ answers handed to the wrong sentences is reported INVALID.
 
 IT RUNS THE SERVICE'S OWN CODE. The candidate loads its ONNX file here (`InProcessEmbedding`, the same tokenise/pool code the ML service
 serves with), embeds the set's examples and the sentences, and calls `ml_service.labelsets.build_index` and `label_results`, the functions
-`POST /classify task=label` calls. What is measured is what would be served, without a container and without the HTTP hop. The cutoff is the
+`POST /v1/decide` calls. What is measured is what would be served, without a container and without the HTTP hop. The cutoff is the
 one stored in the label set for this candidate's model (`source.model`); a model with no entry cannot be scored, exactly as the service
 refuses to serve it.
 

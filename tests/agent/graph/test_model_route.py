@@ -1,7 +1,7 @@
 """`route_model` (app/agent/graph/model_route.py): the contract in specs/015 contracts/tiered-router.md, step by step, and where it sits in the graph.
 
 The node is decision logic over three collaborators, each replaced here by a recording fake so the tests see exactly what crossed the boundary:
-`classification.label` (the ML service), `pricing.refuse_unpriced` (is this alias priced) and the metrics counters. The decision itself is
+`classification.choose` (the ML service), `pricing.refuse_unpriced` (is this alias priced) and the metrics counters. The decision itself is
 `routing_policy.decide`, tested on its own (tests/core/test_routing_policy.py); what is tested here is the node around it: the three modes, what is
 sent, what each failure of the label call becomes, the price step-down, what is counted and logged, and that it never raises.
 The graph tests then prove the placement: after moderation, the cache and compaction; never on a refused input, a cache hit, a resumed turn, or in
@@ -33,7 +33,7 @@ def labelled(label: str | None, *, nearest: str | None = None, similarity: float
 class Recorder:
     """The router's collaborators, recording what they were asked and what was counted."""
 
-    def __init__(self, monkeypatch, *, mode="on", medium=MEDIUM, strong=STRONG, ceiling="strong", labelset="route-topics", answer=None, unpriced=()):
+    def __init__(self, monkeypatch, *, mode="on", medium=MEDIUM, strong=STRONG, ceiling="strong", labels=True, answer=None, unpriced=()):
         self.asked: list[tuple[str, str]] = []
         self.unpriced_asked: list[str] = []
         self.outcomes: list[str] = []
@@ -45,8 +45,8 @@ class Recorder:
         monkeypatch.setattr(model_route, "MEDIUM_CHAT_MODEL", medium)
         monkeypatch.setattr(model_route, "STRONG_CHAT_MODEL", strong)
         monkeypatch.setattr(model_route, "ROUTER_MAX_TIER", ceiling)
-        monkeypatch.setattr(model_route, "ROUTER_LABELSET", labelset)
-        monkeypatch.setattr(classification, "label", self._label)
+        monkeypatch.setattr(model_route, "ROUTER_LABELS", labels)
+        monkeypatch.setattr(classification, "choose", self._choose)
         monkeypatch.setattr(model_route.pricing, "refuse_unpriced", self._refuse_unpriced)
         recorder = self
 
@@ -67,8 +67,8 @@ class Recorder:
                             _Counter(lambda kw: recorder.tiers.append((kw["tier"], kw["mode"], kw["decided_by"]))))
         monkeypatch.setattr(model_route.metrics, "agent_model_route_latency_seconds", _Histogram())
 
-    async def _label(self, labelset, text):
-        self.asked.append((labelset, text))
+    async def _choose(self, question, text):
+        self.asked.append((question.name, text))
         if isinstance(self.answer, BaseException):
             raise self.answer
         return self.answer
@@ -131,12 +131,20 @@ async def test_only_the_users_current_message_is_sent_not_history_or_context(mon
     assert rec.asked == [("route-topics", "the current question")]
 
 
-async def test_the_configured_label_set_is_the_one_asked(monkeypatch):
-    rec = Recorder(monkeypatch, labelset="email-intent")
+async def test_the_question_asked_is_the_route_topics_question_with_the_policy_tables_options(monkeypatch):
+    asked = []
+
+    async def capture(question, text):
+        asked.append(question)
+        return classification.NO_ANSWER
+
+    Recorder(monkeypatch)
+    monkeypatch.setattr(classification, "choose", capture)
 
     await run(state())
 
-    assert [name for name, _ in rec.asked] == ["email-intent"]
+    assert asked == [model_route.ROUTE_QUESTION] and asked[0].name == "route-topics"
+    assert set(asked[0].options) == set(model_route.routing_policy.LABEL_TIERS)
 
 
 async def test_an_empty_message_asks_nothing_and_routes_local(monkeypatch):
@@ -146,8 +154,8 @@ async def test_an_empty_message_asks_nothing_and_routes_local(monkeypatch):
     assert rec.asked == [] and rec.unpriced_asked == [] and rec.outcomes == ["no_text"] and rec.tiers == []
 
 
-async def test_with_no_label_set_named_only_the_rules_decide_and_no_call_is_made(monkeypatch):
-    rec = Recorder(monkeypatch, labelset="", answer=labelled("reasoning"))
+async def test_with_labels_switched_off_only_the_rules_decide_and_no_call_is_made(monkeypatch):
+    rec = Recorder(monkeypatch, labels=False, answer=labelled("reasoning"))
 
     assert await run(state(HumanMessage(content=LONG_TEXT))) == {"model_route": "medium"}
     assert rec.asked == [] and rec.outcomes == ["decided"] and rec.tiers == [("medium", "on", "rules")]

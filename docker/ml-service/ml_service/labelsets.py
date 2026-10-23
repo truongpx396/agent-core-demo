@@ -1,4 +1,5 @@
-"""`POST /classify` with `task: "label"`: which of a few predefined choices is this text closest to? (specs/015, contracts/label-sets.md).
+"""Which of a few predefined choices is this text closest to? The matcher behind `POST /v1/decide` (decide.py; specs/015 contracts/label-sets.md,
+specs/016 contracts/decide.md). This module knows nothing of HTTP or of the wire shape: sets, indexes, cutoffs, failover.
 
 WHAT IT IS. A *label set* is a reviewed JSON file: a name, a handful of labels, a few example sentences per label, and for each serving
 model the similarity below which a text is "none of these". Nothing is trained. For each model the service embeds the examples with that
@@ -25,8 +26,10 @@ FOUR RULES KEEP A SET FROM DOING HARM, each a refusal at load or build time rath
    a model choice, an email or anything else belongs to the caller (specs/015 D4).
 
 FAILOVER is the classifier's: the `classify`-role models in `models.toml` order are the chain, a model that raises goes through the registry's
-`failed` state, one that only overruns `ML_CLASSIFY_DEADLINE_MS` is skipped for that request and stays `ready`, and when nothing can answer the
-reply is HTTP 200 `served_by: "none"`, never a 5xx the caller has to interpret.
+`failed` state, one that only overruns `ML_CLASSIFY_DEADLINE_MS` is skipped for that request and stays `ready`, and when nothing can answer
+`decide()` is None, which decide.py turns into 503 `model_unavailable` (the code the System One interface uses for "cannot answer now").
+A request that names several sets is answered by ONE model that holds an index for all of them; the deadline is per model, so a primary and a
+fallback that both overrun can spend twice it.
 
 NO TEXT IS LOGGED. A request text is user data. Logs carry a set's name and a model's name and an exception's class; metrics carry the
 set's name and `served_by`.
@@ -174,6 +177,25 @@ class Answer:
     results: list[dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class Decided:
+    """What `POST /v1/decide` is built from: one text, answered against one or more sets by one model."""
+
+    served_by: str  # "primary" | "fallback"
+    model: str
+    versions: dict[str, str]  # set name -> the set's version
+    results: dict[str, dict[str, Any]]  # set name -> the result for the one text
+    tokens: int  # tokens the serving model actually embedded (after truncation)
+
+
+@dataclass(frozen=True)
+class _Hit:
+    served_by: str
+    model: str
+    embedded: list[Any]
+    results: dict[str, list[dict[str, Any]]]  # set name -> one result per embedded text
+
+
 def _unit(vectors: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     return vectors / np.where(norms == 0.0, 1.0, norms)
@@ -306,18 +328,37 @@ class Labeller:
         empty = {"label": None, "nearest": None, "similarity": None, "runner_up": None, "margin": None, "truncated": False}
         return Answer("none", None, None, [{"index": i, **empty} for i in range(count)])
 
-    async def label(self, set_name: str, texts: list[str]) -> Answer:
+    def labels_of(self, set_name: str) -> tuple[str, ...] | None:
+        """The labels of a set that parsed, else None (unknown, or refused: a refused set has no labels to compare a caller's options with)."""
         labelset = self._sets.get(set_name)
-        if not isinstance(labelset, LabelSet):
-            return self._none(len(texts))
+        return tuple(labelset.labels) if isinstance(labelset, LabelSet) else None
+
+    def _indexes_for(self, names: list[str], model: str, service: Any) -> dict[str, Index] | None:
+        """An index for EVERY named set, each built from the revision of `model` that is loaded now, else None. A model that is missing one
+        of them is skipped as a whole: answering a request's questions from two different models would make `model` in the reply a lie."""
+        if service is None:
+            return None
+        found: dict[str, Index] = {}
+        for name in names:
+            index, _ = self._state(name, model)
+            if index is None or index.revision != service.model.revision:
+                return None  # not indexed for the model that is loaded now: the next sync() rebuilds, and the next model answers meanwhile
+            found[name] = index
+        return found
+
+    async def _answer(self, names: list[str], texts: list[str]) -> "_Hit | None":
+        """The first model in the chain that holds an index for every set in `names` embeds `texts` ONCE and answers them against each of the
+        sets. None when no model can: a set that is unknown or refused (it has no index), every model skipped, failed, slow or non-finite."""
+        if not names:
+            return None
         for position, model in enumerate(self._order):
-            index, _ = self._state(set_name, model)
             service = self._registry.ready_value(model)
-            if index is None or service is None or service.model.revision != index.revision:
-                continue  # not indexed for the model that is loaded now: the next sync() rebuilds, and the next model answers meanwhile
+            indexes = self._indexes_for(names, model, service)
+            if indexes is None or service is None:
+                continue
             try:
                 embedded = await asyncio.wait_for(service.embed(texts), timeout=self._deadline_s)
-                results = label_results(embedded, index)
+                results = {name: label_results(embedded, index) for name, index in indexes.items()}
             except TimeoutError:
                 logger.warning("label model overran its deadline", extra={"model": model, "deadline_ms": self._deadline_s * 1000})
                 continue
@@ -325,5 +366,25 @@ class Labeller:
                 self._registry.fail(model, f"{type(exc).__name__} during labelling")
                 logger.warning("label model failed", extra={"model": model, "error_class": type(exc).__name__})
                 continue
-            return Answer(ROLES[min(position, 1)], model, labelset.version, results)
-        return self._none(len(texts))
+            return _Hit(ROLES[min(position, 1)], model, embedded, results)
+        return None
+
+    def _version(self, set_name: str) -> str | None:
+        labelset = self._sets.get(set_name)
+        return labelset.version if isinstance(labelset, LabelSet) else None
+
+    async def label(self, set_name: str, texts: list[str]) -> Answer:
+        hit = await self._answer([set_name], texts)
+        if hit is None:
+            return self._none(len(texts))
+        return Answer(hit.served_by, hit.model, self._version(set_name), hit.results[set_name])
+
+    async def decide(self, set_names: list[str], text: str) -> "Decided | None":
+        """One text against several sets with ONE embedding pass: what `POST /v1/decide` needs. None means nobody could answer."""
+        hit = await self._answer(set_names, [text])
+        if hit is None:
+            return None
+        return Decided(
+            hit.served_by, hit.model, {name: self._version(name) or "" for name in set_names},
+            {name: results[0] for name, results in hit.results.items()}, sum(e.tokens for e in hit.embedded),
+        )

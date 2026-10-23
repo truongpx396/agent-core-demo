@@ -41,7 +41,7 @@ from app.agent.graph.state import State
 from app.core import classification, gateway, metrics, routing_policy
 from app.core.config import (
     MEDIUM_CHAT_MODEL,
-    ROUTER_LABELSET,
+    ROUTER_LABELS,
     ROUTER_LONG_PROMPT_CHARS,
     ROUTER_MAX_TIER,
     ROUTER_MODE,
@@ -50,6 +50,10 @@ from app.core.config import (
 from app.core.routing_policy import Tier
 
 logger = logging.getLogger(__name__)
+
+# The one question this node asks of the decision interface. Named after the ML service's label set; the options are exactly LABEL_TIERS' keys
+# (tests/core/test_routing_policy.py), so a topic the app has no tier for cannot be offered, and one the set lacks is refused by the service.
+ROUTE_QUESTION = classification.Choice("route-topics", routing_policy.ROUTE_INSTRUCTIONS, routing_policy.LABEL_DESCRIPTIONS)
 
 Route = Tier
 
@@ -101,7 +105,7 @@ async def _decide(state: State) -> _Result:
     text = human_text(last_human_message(list(state.get("messages") or [])))
     if not text.strip():
         return _Result("no_text")
-    labelled = await classification.label(ROUTER_LABELSET, text) if ROUTER_LABELSET else None
+    labelled = await classification.choose(ROUTE_QUESTION, text) if ROUTER_LABELS else None
     label = labelled.label if labelled is not None and labelled.outcome == "labelled" else None
     configured = configured_tiers()
     decision = routing_policy.decide(

@@ -23,8 +23,9 @@ import httpx
 import numpy as np
 import pytest
 
-from app.core import classification
-from tests.conftest import REAL_LABEL
+from app.agent.graph import model_route
+from app.core import classification, routing_policy
+from tests.conftest import REAL_CHOOSE
 
 pytestmark = pytest.mark.integration
 
@@ -112,31 +113,37 @@ def test_with_no_head_mounted_the_default_container_gives_no_advice(ml_service_u
 
 
 def test_the_shipped_route_topics_set_is_served_by_the_real_container_and_matches_an_independent_computation(ml_service_url):
-    """`task: "label"` against the image as built: the label set baked into it, both real models, the real tokenisers. The expected similarity is
+    """`POST /v1/decide` against the image as built: the label set baked into it, both real models, the real tokenisers. The expected similarity is
     computed here from the vectors `/v1/embeddings` serves (examples and sentences), the set's file and numpy, so the service's index is checked
     against the arithmetic and not against itself (specs/015 FR-004). The three sentences are ones the primary was measured to place well clear of
     the cutoff (0.773, 0.839 and 0.682 against 0.709), so this does not depend on a close call."""
     raw = json.loads((Path(__file__).resolve().parents[2] / "docker" / "ml-service" / "labelsets" / "route-topics.json").read_text())
     sentences = ["Write a Python function that parses a CSV file into invoices please.", "We received a subpoena for customer records, what do we do?", "qwerty qwerty qwerty"]
-    body: dict = {}
-    for _ in range(30):  # the first request after start-up can overrun the service's 250 ms deadline and be answered "none"
-        body = httpx.post(f"{ml_service_url}/classify", json={"task": "label", "labelset": "route-topics", "texts": sentences}, timeout=30).json()
-        if body.get("served_by") == "primary":
-            break
-        time.sleep(1)
-
-    assert body["served_by"] == "primary" and body["model"] == PRIMARY and body["labelset"] == "route-topics" and len(body["labelset_version"]) == 12
+    question = {"type": "choice", "instructions": routing_policy.ROUTE_INSTRUCTIONS, "criteria": dict(routing_policy.LABEL_DESCRIPTIONS)}
+    answers: list[dict] = []
+    for sentence in sentences:
+        body: dict = {}
+        for _ in range(30):  # the first request after start-up can overrun the service's 250 ms deadline and be answered 503
+            response = httpx.post(f"{ml_service_url}/v1/decide", json={"state": sentence, "questions": {"route-topics": question}}, timeout=30)
+            body = response.json()
+            if response.status_code == 200 and body.get("x_served_by") == "primary":
+                break
+            time.sleep(1)
+        assert body["x_served_by"] == "primary" and body["model"] == PRIMARY and body["usage"]["output_tokens"] == 0 and body["usage"]["input_tokens"] > 0
+        answers.append(body["answers"]["route-topics"])
+    assert all(len(a["x_labelset_version"]) == 12 for a in answers)
+    evidence = [a["x_evidence"] for a in answers]
     labels = list(raw["labels"])
     centroids = []
     for name in labels:
         mean = served_vectors(ml_service_url, raw["labels"][name]).mean(axis=0)
         centroids.append(mean / np.linalg.norm(mean))
     similarities = served_vectors(ml_service_url, sentences) @ np.stack(centroids).T
-    np.testing.assert_allclose([r["similarity"] for r in body["results"]], similarities.max(axis=1), atol=1e-4)
-    assert [r["nearest"] for r in body["results"]] == [labels[i] for i in similarities.argmax(axis=1)]
-    assert [r["label"] for r in body["results"]] == ["code", "high_stakes", None]
+    np.testing.assert_allclose([e["similarity"] for e in evidence], similarities.max(axis=1), atol=1e-4)
+    assert [e["nearest"] for e in evidence] == [labels[i] for i in similarities.argmax(axis=1)]
+    assert [a["choice"] for a in answers] == ["code", "high_stakes", None]
     shown = httpx.get(f"{ml_service_url}/health/models", timeout=10).json()["labelsets"]["route-topics"]
-    assert shown["version"] == body["labelset_version"] and shown["models"] == {PRIMARY: "loaded", FALLBACK: "loaded"}
+    assert shown["version"] == answers[0]["x_labelset_version"] and shown["models"] == {PRIMARY: "loaded", FALLBACK: "loaded"}
 
 
 @pytest.fixture(scope="module")
@@ -176,15 +183,15 @@ async def test_the_whole_label_call_from_the_app_is_measured_and_answers_nearly_
     """The budget is 50 ms at p95 on the reference machine (specs/014 SC-009, specs/015 SC-003); that figure is MEASURED and recorded here and quoted
     in the PR, not asserted, because a CI runner's speed says nothing about the reference machine. What is asserted is the part that must hold
     anywhere: no call is an error, and nearly all of them (nine in ten) are answered with a label."""
-    monkeypatch.setattr(classification, "label", REAL_LABEL)  # the suite's autouse guard replaced it with "no answer"
+    monkeypatch.setattr(classification, "choose", REAL_CHOOSE)  # the suite's autouse guard replaced it with "no answer"
     monkeypatch.setattr(classification, "ML_SERVICE_URL", ml_service_url)
     monkeypatch.setattr(classification, "ROUTER_TIMEOUT_SECONDS", 0.5)
 
-    await classification.label("route-topics", TEXTS[0])  # warm-up: the first request pays for connection set-up and the first model pass
+    await classification.choose(model_route.ROUTE_QUESTION, TEXTS[0])  # warm-up: the first request pays for connection set-up and the first model pass
     timings, outcomes = [], []
     for i in range(200):
         started = time.perf_counter()
-        answer = await classification.label("route-topics", f"{TEXTS[i % 2]} ({i})")
+        answer = await classification.choose(model_route.ROUTE_QUESTION, f"{TEXTS[i % 2]} ({i})")
         timings.append((time.perf_counter() - started) * 1000)
         outcomes.append(answer.outcome)
 

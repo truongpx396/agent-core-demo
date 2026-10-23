@@ -11,7 +11,7 @@ instead — via `GraphDeps(search_docs=fake)`/`GraphDeps(cache_get=fake, ...)`
 bypasses these defaults.
 
 `mock_classification` is the same guarantee for the model router's one live call (`app/core/classification.py`, a POST to the ML service's
-/classify): every hermetic test sees "no answer", whatever the environment says.
+/v1/decide): every hermetic test sees "no answer", whatever the environment says.
 
 The usage event's model-alias lookup against LiteLLM is guarded the same way, inside `usage_event_sink` (the only caller of
 `model_resolver.resolve_model` since the per-turn ledger write was retired).
@@ -226,20 +226,20 @@ def mock_ml_moderation(monkeypatch):
 
 
 # Kept so the one test that proves this guard works (tests/core/test_default_suite_makes_no_classify_call.py) can put the real function back.
-REAL_LABEL = classification.label
+REAL_CHOOSE = classification.choose
 
 
-async def _no_answer(labelset: str, text: str):
+async def _no_answer(question, text: str):
     return classification.NO_ANSWER
 
 
 @pytest.fixture(autouse=True)
 def mock_classification(monkeypatch):
-    """`route_model` asks the ML service's /classify for a label (app/core/classification.py). The router is OFF by default, so an ordinary
+    """`route_model` asks the ML service's /v1/decide for a topic (app/core/classification.py). The router is OFF by default, so an ordinary
     test never reaches it; but a test that turns it on, or one that builds the whole graph with a setting leaking in from a developer's
     own environment, must not make a real HTTP call to whatever happens to be listening on :8083 (Constitution VII). Every hermetic test
-    therefore sees "no answer". A test of the router supplies its own `label` (or its own transport), which simply replaces this."""
-    monkeypatch.setattr(classification, "label", _no_answer)
+    therefore sees "no answer". A test of the router supplies its own `choose` (or its own transport), which simply replaces this."""
+    monkeypatch.setattr(classification, "choose", _no_answer)
 
 
 @pytest.fixture(autouse=True)

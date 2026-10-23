@@ -14,7 +14,7 @@ Constitution Principle VII applies. The default suite must stay hermetic and fas
   marked tier by default; an explicit `-m` on the command line overrides it (it does not AND).
 - `tests/conftest.py` has eight autouse guards: `mock_search_docs`, `mock_semantic_cache`,
   `mock_ml_moderation`, `mock_appdata_postgres`, `no_real_tracing`, `fixed_embedding_identity`, `no_real_qdrant`,
-  `mock_classification` (the model router's /classify call). A test's result must not depend on which
+  `mock_classification` (the model router's /v1/decide call). A test's result must not depend on which
   containers happen to be running. If you add a live-service call on the turn path, add an
   autouse mock for it there. Inject a specific fake with `GraphDeps(search_docs=fake)` or the
   node-level `make_*_node(fake)` factories — that bypasses the default mock.
