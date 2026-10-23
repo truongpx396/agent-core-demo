@@ -192,3 +192,28 @@ class TestLoops:
         asked.clear()
         tp.main(["--no-loops"], _client(lambda p, body: _ok_reply(p), open_ended))
         assert asked == []
+
+
+class TestStrictTools:
+    """`--strict` sends the form the app sends under TOOL_CALLS_STRICT (pattern 74) and still judges the reply by the app's own rules."""
+
+    def test_strict_sends_strict_schemas_and_not_strict_sends_the_plain_ones(self):
+        sent = {}
+
+        def reply(p, body):
+            sent["strict"] = [t["function"].get("strict") for t in body["tools"]]
+            return _ok_reply(p)
+
+        tp.main(["--strict", "--no-loops"], _client(reply))
+        assert all(sent["strict"])
+        tp.main(["--no-strict", "--no-loops"], _client(reply))
+        assert not any(sent["strict"])
+
+    def test_leaving_out_an_optional_argument_is_still_ok_under_strict(self):
+        """The strict form lists every argument as required, but the tool's own validation accepts an omitted optional one."""
+        def reply(p, body):
+            if p.expected == "query_employees":
+                return {"message": _call("query_employees", {}), "eval_count": 12}
+            return _ok_reply(p)
+
+        assert tp.main(["--strict", "--no-loops"], _client(reply)) == 0
