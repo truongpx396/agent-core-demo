@@ -1,5 +1,8 @@
 # Contract: new application settings
 
+> **Router rows superseded by spec 015:** `ROUTER_ENABLED` and `ROUTER_THRESHOLD` are gone; see `specs/015-label-sets-and-tiered-routing/contracts/tiered-router.md` for `ROUTER_MODE`,
+> `MEDIUM_CHAT_MODEL`, `ROUTER_MAX_TIER`, `ROUTER_LABELSET` and `ROUTER_LONG_PROMPT_CHARS`. The embedding rows stand.
+
 Each goes in `app/core/config.py` `Settings` (module-level constant beside the others) **and** `.env.example`
 (Constitution: Configuration). Defaults preserve today's behavior exactly (SC-005, SC-008).
 

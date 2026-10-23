@@ -1,4 +1,4 @@
-.PHONY: model-eval model-eval-all model-eval-baseline model-eval-data model-eval-verify router-label test-billing-package help up up-app sandbox-up sandbox-build pull-models pull-strong-model probe-tools ingest index-skills reembed chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker billing-usage-sweep usage-reconcile usage-reconcile-worker budget-policy litellm-key gateway-check test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
+.PHONY: model-eval model-eval-all model-eval-baseline model-eval-data model-eval-verify router-label labelset-calibrate test-billing-package help up up-app sandbox-up sandbox-build pull-models pull-strong-model probe-tools ingest index-skills reembed chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker billing-usage-sweep usage-reconcile usage-reconcile-worker budget-policy litellm-key gateway-check test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
 
 # Pinned DefectDojo release — see `defectdojo-up`'s own comment for why this
 # is a plain git clone into ~/.cache (NOT vendored into this repo, same
@@ -57,7 +57,7 @@ pull-models:  ## Download the chat model (qwen2.5:7b, about 4.7 GB), the small m
 	ollama pull qwen2.5:3b
 	ollama pull nomic-embed-text
 
-pull-strong-model:  ## Download the dev stand-in for the escalation alias (chat-strong): a LOCAL 14B model, about 9 GB (a size up from the 7B chat model). Only needed once ROUTER_ENABLED=true
+pull-strong-model:  ## Download the dev stand-in for the escalation alias (chat-strong): a LOCAL 14B model, about 9 GB (a size up from the 7B chat model). Only needed once ROUTER_MODE is shadow or on
 	ollama pull qwen2.5:14b
 
 probe-tools:  ## Does the configured chat model emit tool calls the app can use? 22 labelled prompts against the app's real tools plus 4 open-ended ones that must not loop; about 2 minutes on a native Ollama (`ARGS=--no-loops` is the seconds-long tool half). Run it after ANY change to a chat alias's model or repeat_penalty: make probe-tools [ARGS="--alias chat-strong"] [ARGS="--model qwen2.5:7b --repeat-penalty 1.3 1.1"] (GRAPH_PATTERNS.md pattern 73)
@@ -255,7 +255,7 @@ typecheck:  ## Static checks: mypy over app/ and scripts/ — see pyproject.toml
 eval:  ## Run the golden-dataset evaluation against the real stack (needs `make up` + `make ingest`)
 	python -m scripts.eval
 
-model-eval:  ## Evaluate ONE model against its recorded baseline: make model-eval KIND=embedding|reranker|screen|classifier CANDIDATE=<name> [VIA=gateway|service|inprocess] [DATASET=<name>] [OUTCOMES=<file>]. A manual tier like `make eval` (needs models/services); specs/014, evals/README.md
+model-eval:  ## Evaluate ONE model against its recorded baseline: make model-eval KIND=embedding|reranker|screen|classifier CANDIDATE=<name> [VIA=gateway|service|inprocess] [DATASET=<name>] [OUTCOMES=<file>] (a label set: KIND=classifier CANDIDATE=labelset-bge-small-en-v1.5 DATASET=route-topics). A manual tier like `make eval` (needs models/services); specs/014, evals/README.md
 	@test -n "$(KIND)" -a -n "$(CANDIDATE)" || { echo "usage: make model-eval KIND=embedding CANDIDATE=<name> [VIA=...] [DATASET=...]"; exit 2; }
 	python -m scripts.model_eval run --kind $(KIND) --candidate $(CANDIDATE) $(if $(VIA),--via $(VIA)) $(if $(DATASET),--dataset $(DATASET)) $(if $(OUTCOMES),--outcomes $(OUTCOMES))
 
@@ -272,6 +272,10 @@ model-eval-data:  ## Download and verify the pinned public evaluation datasets (
 
 model-eval-verify:  ## Check every committed evaluation dataset, baseline, licence and control, with no model and no network
 	python -m scripts.model_eval verify
+
+labelset-calibrate:  ## Choose a label set's "none of these" cutoff for ONE model on the dev split (needs the model cached): make labelset-calibrate CANDIDATE=labelset-bge-small-en-v1.5 [LABELSET=route-topics] [KEEP=0.95]. Prints the line to put under `calibration` in docker/ml-service/labelsets/<set>.json; specs/015
+	@test -n "$(CANDIDATE)" || { echo "usage: make labelset-calibrate CANDIDATE=<a classifier candidate with source.model, e.g. labelset-bge-small-en-v1.5>"; exit 2; }
+	python -m scripts.model_eval labelset-calibrate --candidate $(CANDIDATE) $(if $(LABELSET),--labelset $(LABELSET)) $(if $(KEEP),--keep $(KEEP))
 
 router-label:  ## Score the route prompts' answers from the local and strong model with a judge (minutes per prompt; needs the gateway): make router-label JUDGE=<alias> [LOCAL=chat] [STRONG=chat-strong] [DEADLINE=<seconds>] [LIMIT=<n>]. Writes the ignored outcomes/ file; resumable
 	@test -n "$(JUDGE)" || { echo "usage: make router-label JUDGE=<gateway alias that scores the answers>"; exit 2; }

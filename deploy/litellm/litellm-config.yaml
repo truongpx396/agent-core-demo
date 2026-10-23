@@ -135,7 +135,7 @@ model_list:
       input_cost_per_token: 0.0000001
       output_cost_per_token: 0.0000002
   # The escalation alias (specs/014, contracts/gateway-aliases.md section 1): where the model router sends a turn it judges to need a stronger
-  # model. ALWAYS present so the proxy starts and the alias resolves; INERT until the app is told to use it (STRONG_CHAT_MODEL, ROUTER_ENABLED,
+  # model. ALWAYS present so the proxy starts and the alias resolves; INERT until the app is told to use it (STRONG_CHAT_MODEL, ROUTER_MODE,
   # both off by default). In dev it is a bigger LOCAL model, so the whole seam can be exercised with no third party and no key
   # (`make pull-strong-model`, about 9 GB, only needed once the router is on; it is a size up from `chat`, which is what makes escalating mean
   # something, tests/core/test_gateway_aliases_config.py). To point it at a hosted model, edit this one entry: an

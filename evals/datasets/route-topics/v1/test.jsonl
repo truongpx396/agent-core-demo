@@ -1,0 +1,96 @@
+{"id": "top-007", "label": "smalltalk", "reviewed": false, "text": "Hello again, it's me."}
+{"id": "top-008", "label": "smalltalk", "reviewed": false, "text": "Thanks a lot for the quick answer!"}
+{"id": "top-009", "label": "smalltalk", "reviewed": false, "text": "Are you a real person or a bot?"}
+{"id": "top-010", "label": "smalltalk", "reviewed": false, "text": "Sorry to bother you so late."}
+{"id": "top-011", "label": "smalltalk", "reviewed": false, "text": "You're the best, really."}
+{"id": "top-012", "label": "smalltalk", "reviewed": false, "text": "Hi, good afternoon."}
+{"id": "top-013", "label": "smalltalk", "reviewed": false, "text": "Alright, see you tomorrow."}
+{"id": "top-014", "label": "smalltalk", "reviewed": false, "text": "That's so kind of you to say."}
+{"id": "top-015", "label": "smalltalk", "reviewed": false, "text": "Happy Friday, everyone!"}
+{"id": "top-016", "label": "smalltalk", "reviewed": false, "text": "Wow, that was fast, thanks."}
+{"id": "top-023", "label": "lookup", "reviewed": false, "text": "How do I update the billing contact on my account?"}
+{"id": "top-024", "label": "lookup", "reviewed": false, "text": "Is there a guide for setting up webhooks?"}
+{"id": "top-025", "label": "lookup", "reviewed": false, "text": "How many sick days are we allowed per year?"}
+{"id": "top-026", "label": "lookup", "reviewed": false, "text": "What is the maximum discount a rep can approve without sign-off?"}
+{"id": "top-027", "label": "lookup", "reviewed": false, "text": "Where is the runbook for the database failover?"}
+{"id": "top-028", "label": "lookup", "reviewed": false, "text": "Can customers pay by purchase order?"}
+{"id": "top-029", "label": "lookup", "reviewed": false, "text": "How do I request a new laptop?"}
+{"id": "top-030", "label": "lookup", "reviewed": false, "text": "What does error code 403 mean on the dashboard?"}
+{"id": "top-031", "label": "lookup", "reviewed": false, "text": "When does the free trial end?"}
+{"id": "top-032", "label": "lookup", "reviewed": false, "text": "What's covered under the standard warranty?"}
+{"id": "top-039", "label": "action", "reviewed": false, "text": "Create a follow-up task for the renewal call next week."}
+{"id": "top-040", "label": "action", "reviewed": false, "text": "Please forward this complaint to the quality team."}
+{"id": "top-041", "label": "action", "reviewed": false, "text": "Add the new contact to the CRM under Initech."}
+{"id": "top-042", "label": "action", "reviewed": false, "text": "Refund the last payment for this customer."}
+{"id": "top-043", "label": "action", "reviewed": false, "text": "Page the on-call engineer about the failing deploy."}
+{"id": "top-044", "label": "action", "reviewed": false, "text": "Close ticket 7714, it's resolved."}
+{"id": "top-045", "label": "action", "reviewed": false, "text": "Set a reminder to review the contract on Monday."}
+{"id": "top-046", "label": "action", "reviewed": false, "text": "Post an update to the status page saying we're investigating."}
+{"id": "top-047", "label": "action", "reviewed": false, "text": "Assign the escalation to the platform team."}
+{"id": "top-048", "label": "action", "reviewed": false, "text": "Reply to the customer and let them know we received their documents."}
+{"id": "top-055", "label": "drafting", "reviewed": false, "text": "Help me phrase a message declining the discount request politely."}
+{"id": "top-056", "label": "drafting", "reviewed": false, "text": "Draft a LinkedIn post announcing our new office."}
+{"id": "top-057", "label": "drafting", "reviewed": false, "text": "Turn this bullet list into a clear paragraph."}
+{"id": "top-058", "label": "drafting", "reviewed": false, "text": "Write an onboarding email for a new sales hire."}
+{"id": "top-059", "label": "drafting", "reviewed": false, "text": "Proofread this email and fix any mistakes."}
+{"id": "top-060", "label": "drafting", "reviewed": false, "text": "Compose a short update for the weekly newsletter."}
+{"id": "top-061", "label": "drafting", "reviewed": false, "text": "Draft a response to a customer review that complains about delivery."}
+{"id": "top-062", "label": "drafting", "reviewed": false, "text": "Shorten this summary to two sentences."}
+{"id": "top-063", "label": "drafting", "reviewed": false, "text": "Write talking points for tomorrow's customer call."}
+{"id": "top-064", "label": "drafting", "reviewed": false, "text": "Prepare a polished version of these rough meeting notes."}
+{"id": "top-071", "label": "analysis", "reviewed": false, "text": "Weigh the benefits of hiring versus contracting for the support surge."}
+{"id": "top-072", "label": "analysis", "reviewed": false, "text": "Why did conversion drop after the redesign, and what should we test next?"}
+{"id": "top-073", "label": "analysis", "reviewed": false, "text": "Analyze our incident history and tell me where the process is weakest."}
+{"id": "top-074", "label": "analysis", "reviewed": false, "text": "Compare the three CRM vendors on cost, features and risk."}
+{"id": "top-075", "label": "analysis", "reviewed": false, "text": "Which accounts are most at risk of not renewing, and what signals suggest it?"}
+{"id": "top-076", "label": "analysis", "reviewed": false, "text": "What are the strengths and weaknesses of our current onboarding process?"}
+{"id": "top-077", "label": "analysis", "reviewed": false, "text": "Evaluate whether we should expand to the European market this year."}
+{"id": "top-078", "label": "analysis", "reviewed": false, "text": "Explain how the new discount policy might change deal sizes."}
+{"id": "top-079", "label": "analysis", "reviewed": false, "text": "Diagnose why response times got worse in the second half of the month."}
+{"id": "top-080", "label": "analysis", "reviewed": false, "text": "What should we prioritize first given limited budget, and why?"}
+{"id": "top-087", "label": "reasoning", "reviewed": false, "text": "Calculate the commission if the rate is 8 percent up to 50,000 and 12 percent above that, on an 83,000 deal."}
+{"id": "top-088", "label": "reasoning", "reviewed": false, "text": "Given these dependencies between teams, determine a valid launch sequence."}
+{"id": "top-089", "label": "reasoning", "reviewed": false, "text": "Derive how many servers we need to keep latency under 200 ms at double the traffic."}
+{"id": "top-090", "label": "reasoning", "reviewed": false, "text": "If the refund window is 30 days and the customer bought on March 3rd, what is the last day to refund?"}
+{"id": "top-091", "label": "reasoning", "reviewed": false, "text": "Reason through whether these three rules ever conflict."}
+{"id": "top-092", "label": "reasoning", "reviewed": false, "text": "Allocate 40 hours of support across five queues so the longest wait is minimized."}
+{"id": "top-093", "label": "reasoning", "reviewed": false, "text": "What is the compound growth rate if revenue went from 1.2 million to 2.1 million in three years?"}
+{"id": "top-094", "label": "reasoning", "reviewed": false, "text": "Plan the cutover in phases so no more than 10 percent of users are affected at once."}
+{"id": "top-095", "label": "reasoning", "reviewed": false, "text": "Work out how much we overcharged each customer if the fee was applied twice."}
+{"id": "top-096", "label": "reasoning", "reviewed": false, "text": "Solve for the price that gives us a 35 percent margin after the 3 percent payment fee."}
+{"id": "top-103", "label": "code", "reviewed": false, "text": "Write a script that renames all files in a folder to lowercase."}
+{"id": "top-104", "label": "code", "reviewed": false, "text": "How do I paginate results from this API in Python?"}
+{"id": "top-105", "label": "code", "reviewed": false, "text": "Fix the off-by-one error in this for loop."}
+{"id": "top-106", "label": "code", "reviewed": false, "text": "Create a Dockerfile for a small Flask app."}
+{"id": "top-107", "label": "code", "reviewed": false, "text": "Explain what this React hook does and why it re-renders."}
+{"id": "top-108", "label": "code", "reviewed": false, "text": "Write a cron expression that runs at 2am on weekdays."}
+{"id": "top-109", "label": "code", "reviewed": false, "text": "How can I debounce a function in JavaScript?"}
+{"id": "top-110", "label": "code", "reviewed": false, "text": "Generate a migration that adds a nullable column to the orders table."}
+{"id": "top-111", "label": "code", "reviewed": false, "text": "Why is this async function returning a promise instead of a value?"}
+{"id": "top-112", "label": "code", "reviewed": false, "text": "Convert this curl command into a Python requests call."}
+{"id": "top-119", "label": "high_stakes", "reviewed": false, "text": "We found unauthorized access to the customer database; what are our disclosure duties?"}
+{"id": "top-120", "label": "high_stakes", "reviewed": false, "text": "How do we handle a request under GDPR to delete all of someone's data?"}
+{"id": "top-121", "label": "high_stakes", "reviewed": false, "text": "Is this marketing claim misleading enough to expose us to a lawsuit?"}
+{"id": "top-122", "label": "high_stakes", "reviewed": false, "text": "A customer threatens to sue over a data error; how should we respond?"}
+{"id": "top-123", "label": "high_stakes", "reviewed": false, "text": "What are the liability risks if our software caused a client's financial loss?"}
+{"id": "top-124", "label": "high_stakes", "reviewed": false, "text": "Should we report this suspected fraud to the authorities?"}
+{"id": "top-125", "label": "high_stakes", "reviewed": false, "text": "Do we have to pay overtime to these contractors under labor law?"}
+{"id": "top-126", "label": "high_stakes", "reviewed": false, "text": "Can we use this open source license in our commercial product?"}
+{"id": "top-127", "label": "high_stakes", "reviewed": false, "text": "An employee wants medical leave and we're unsure what the law requires."}
+{"id": "top-128", "label": "high_stakes", "reviewed": false, "text": "How do we handle sanctions screening for a customer in a restricted country?"}
+{"id": "top-137", "label": "none", "reviewed": false, "text": "no"}
+{"id": "top-138", "label": "none", "reviewed": false, "text": "go ahead"}
+{"id": "top-139", "label": "none", "reviewed": false, "text": "that one"}
+{"id": "top-140", "label": "none", "reviewed": false, "text": "qwerty uiop"}
+{"id": "top-141", "label": "none", "reviewed": false, "text": "???"}
+{"id": "top-142", "label": "none", "reviewed": false, "text": "the thing from before"}
+{"id": "top-143", "label": "none", "reviewed": false, "text": "sure, that works"}
+{"id": "top-144", "label": "none", "reviewed": false, "text": "..."}
+{"id": "top-145", "label": "none", "reviewed": false, "text": "2026-11-04"}
+{"id": "top-146", "label": "none", "reviewed": false, "text": "maybe"}
+{"id": "top-147", "label": "none", "reviewed": false, "text": "the previous one please"}
+{"id": "top-148", "label": "none", "reviewed": false, "text": "yes please"}
+{"id": "top-149", "label": "none", "reviewed": false, "text": "ref 88213"}
+{"id": "top-150", "label": "none", "reviewed": false, "text": "sorry what"}
+{"id": "top-151", "label": "none", "reviewed": false, "text": "right"}
+{"id": "top-152", "label": "none", "reviewed": false, "text": "k"}

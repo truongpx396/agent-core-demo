@@ -18,6 +18,8 @@ GUARD_MAX_SEQ_LEN = 512  # this model's own max_position_embeddings (config.json
 GUARD_LABELS = {0: "BENIGN", 1: "MALICIOUS"}  # this model's own config.json id2label
 # Where `head-<model>.npz/json` are read: beside models.toml in the image (/app/heads), overridable so an operator can mount their own.
 DEFAULT_HEAD_DIR = Path(__file__).resolve().parent.parent / "heads"
+# Where label sets (`<name>.json`, specs/015) are read: beside models.toml in the image (/app/labelsets), overridable so an operator can mount their own.
+DEFAULT_LABELSET_DIR = Path(__file__).resolve().parent.parent / "labelsets"
 
 
 @dataclass(frozen=True)
@@ -42,11 +44,14 @@ class Settings:
     embed_max_items: int = 256
     embed_max_chars: int = 8000
     embed_batch_size: int = 32
-    # The classifier's bounds. The deadline is the time one model may take before the request moves to the next one (shorter than the app's
-    # own timeout so the app's is a backstop); a request over the character limit is rejected, never truncated.
+    # The classifier's bounds. The deadline is the time ONE model may take before the request moves to the next one. It is not a bound on the
+    # request: with a primary and a fallback that both overrun, the service can spend twice this, which is the app's whole 0.5 s timeout, so on a
+    # loaded machine the app's timer can fire before the service answers "none" (both degrade to the rules; only the outcome label differs).
+    # A request over the character limit is rejected, never truncated.
     classify_max_chars: int = 4000
     classify_deadline_ms: float = 250.0
     router_head_dir: Path = DEFAULT_HEAD_DIR
+    labelset_dir: Path = DEFAULT_LABELSET_DIR
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -68,4 +73,5 @@ class Settings:
             classify_max_chars=int(env.get("ML_CLASSIFY_MAX_CHARS", "4000")),
             classify_deadline_ms=float(env.get("ML_CLASSIFY_DEADLINE_MS", "250")),
             router_head_dir=Path(env["ROUTER_HEAD_DIR"]) if env.get("ROUTER_HEAD_DIR") else DEFAULT_HEAD_DIR,
+            labelset_dir=Path(env["LABELSET_DIR"]) if env.get("LABELSET_DIR") else DEFAULT_LABELSET_DIR,
         )

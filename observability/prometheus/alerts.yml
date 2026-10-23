@@ -509,17 +509,35 @@ groups:
             ml_classifier_serving{served_by="fallback"} has been 1 for 15m: the primary classifier model is not ready or has no usable
             head. GET /health/models on the ML service names which, and when a failed model will be retried.
 
-      # The model router sent turns to the stronger model and the call to it failed to reach a model, so the turn was repeated on the
-      # local model (specs/014, GRAPH_PATTERNS.md pattern 68). The person got an answer, which is why nothing else would tell an operator
-      # that every escalated turn is quietly running on the model it was meant to escape. Any sustained rate counts: the outcome is only
-      # recorded when the strong alias was actually asked for.
-      - alert: ModelRouteStrongFailing
-        expr: sum(rate(agent_model_route_total{outcome="strong_failed_fell_back"}[10m])) > 0
+      # The model router sent turns to a medium or strong model and the call to it failed to reach a model, so the turn was repeated on the
+      # local model (specs/014, specs/015, GRAPH_PATTERNS.md pattern 68). The person got an answer, which is why nothing else would tell an
+      # operator that every routed turn is quietly running on the model it was meant to leave. Any sustained rate counts: the outcome is only
+      # recorded when a routed alias was actually asked for.
+      - alert: ModelRoutedTierFailing
+        expr: sum(rate(agent_model_route_total{outcome="routed_unreachable_fell_back"}[10m])) > 0
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "Escalated turns are falling back to the local model"
+          summary: "Routed turns are falling back to the local model"
           description: >-
-            agent_model_route_total{outcome="strong_failed_fell_back"} has been increasing for 10m: the strong alias (chat-strong) is
-            unreachable or the gateway is returning a 5xx for it (a real LiteLLM answers 500 for an unreachable upstream), so turns the router sent there ran on the local model instead.
+            agent_model_route_total{outcome="routed_unreachable_fell_back"} has been increasing for 10m: the medium or strong alias (chat-medium,
+            chat-strong) is unreachable or the gateway is returning a 5xx for it (a real LiteLLM answers 500 for an unreachable upstream), so turns the router sent there ran on the local model instead.
+
+      # The router asks the ML service for a label and decides from the rules alone when it cannot get one (specs/015). That is a safe
+      # degradation and a quiet one: turns still route, only by rules, so a classifier that has been silent for a quarter of an hour would
+      # otherwise go unnoticed. Half of the routed turns, because a service restart costs a handful of misses and is not worth a page.
+      - alert: ModelRouterLabelUnavailable
+        expr: >-
+          sum(rate(agent_model_route_total{outcome=~"label_none|label_timeout|label_error|label_unknown"}[15m]))
+          / sum(rate(agent_model_route_total{outcome!="disabled"}[15m])) > 0.5
+          and sum(rate(agent_model_route_total{outcome!="disabled"}[15m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The router is deciding from rules alone"
+          description: >-
+            More than half of the routed turns for 15m found no usable label (agent_model_route_total outcomes label_none, label_timeout,
+            label_error, label_unknown). GET /health/models on the ML service names why: a label set refused or pending, a model not ready, or a
+            set whose labels the app's table does not know.

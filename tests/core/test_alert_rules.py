@@ -78,14 +78,26 @@ def test_a_classifier_that_has_been_on_its_fallback_for_a_while_has_an_alert():
     assert rules["RouterClassifierOnFallback"]["labels"]["severity"] in {"warning", "critical"}
 
 
-def test_an_escalated_turn_that_fell_back_to_the_local_model_has_an_alert():
-    """The person still got an answer, so nothing else would say that every escalated turn is running on the model it was meant to leave."""
+def test_a_routed_turn_that_fell_back_to_the_local_model_has_an_alert():
+    """The person still got an answer, so nothing else would say that every routed turn is running on the model it was meant to leave."""
     rules = {rule["alert"]: rule for rule in _rules()}
 
-    assert "ModelRouteStrongFailing" in rules
-    assert 'agent_model_route_total{outcome="strong_failed_fell_back"}' in rules["ModelRouteStrongFailing"]["expr"]
-    assert rules["ModelRouteStrongFailing"]["for"] == "10m"
-    assert rules["ModelRouteStrongFailing"]["labels"]["severity"] in {"warning", "critical"}
+    assert "ModelRoutedTierFailing" in rules
+    assert 'agent_model_route_total{outcome="routed_unreachable_fell_back"}' in rules["ModelRoutedTierFailing"]["expr"]
+    assert rules["ModelRoutedTierFailing"]["for"] == "10m"
+    assert rules["ModelRoutedTierFailing"]["labels"]["severity"] in {"warning", "critical"}
+
+
+def test_a_router_that_has_lost_its_label_signal_has_an_alert_that_is_silent_when_the_router_is_off():
+    """Routing keeps working from the rules alone, which is exactly why a dead classifier would otherwise go unnoticed. A disabled router (no
+    routed turns at all) must not divide by zero into an alert, so the expression requires traffic."""
+    rules = {rule["alert"]: rule for rule in _rules()}
+
+    assert "ModelRouterLabelUnavailable" in rules
+    expr = " ".join(str(rules["ModelRouterLabelUnavailable"]["expr"]).split())
+    assert "label_none|label_timeout|label_error|label_unknown" in expr and 'outcome!="disabled"' in expr
+    assert expr.endswith('and sum(rate(agent_model_route_total{outcome!="disabled"}[15m])) > 0')
+    assert rules["ModelRouterLabelUnavailable"]["for"] == "15m" and rules["ModelRouterLabelUnavailable"]["labels"]["severity"] in {"warning", "critical"}
 
 
 def test_a_worker_pool_that_answers_nothing_has_an_alert():

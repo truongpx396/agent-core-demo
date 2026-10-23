@@ -129,11 +129,25 @@ async def _ml_service_warnings() -> list[str]:
     async with httpx.AsyncClient(timeout=_CHECK_TIMEOUT_SECONDS) as client:
         resp = await client.get(f"{ML_SERVICE_URL}/health/models")
     resp.raise_for_status()
-    return [
+    body = resp.json()
+    warnings = [
         f"ML service model {name} is {info.get('state')}" + (f": {info['reason']}" if info.get("reason") else "")
-        for name, info in resp.json().get("models", {}).items()
+        for name, info in body.get("models", {}).items()
         if info.get("state") != "ready"
     ]
+    # A label set (specs/015) that is refused is otherwise a quiet line nobody reads, and the router then decides from its rules alone. `pending` is
+    # not reported: a set is indexed within seconds of a model becoming ready, and a model that cannot index is already a model warning above.
+    labelsets = body.get("labelsets")
+    for name, info in (labelsets.items() if isinstance(labelsets, dict) else ()):
+        if not isinstance(info, dict):
+            continue
+        if str(info.get("state", "")).startswith("refused"):
+            warnings.append(f"ML service label set {name} is {info['state']}")
+        models = info.get("models")
+        for model, status in (models.items() if isinstance(models, dict) else ()):
+            if str(status).startswith("refused"):
+                warnings.append(f"ML service label set {name} on {model} is {status}")
+    return warnings
 
 
 async def readiness_warnings() -> list[str]:

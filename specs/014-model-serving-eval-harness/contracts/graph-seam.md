@@ -1,5 +1,9 @@
 # Contract: the routing seam in the graph
 
+> **Superseded in part by spec 015** (`specs/015-label-sets-and-tiered-routing/contracts/tiered-router.md`): `route_model`'s steps 1-6 (one strong alias, a head's score
+> against `ROUTER_THRESHOLD`) and the metric outcomes below are replaced by three tiers, two signals and `ROUTER_MODE`; the invariants about what the router may not touch,
+> where it sits and how a routed call falls back still hold. Kept as the record of spec 014.
+
 The only place this feature touches `app/agent/`. Everything below is checked by a named test in `tasks.md`; the invariants are the
 spec's FR-031..037.
 

@@ -21,6 +21,7 @@ async def health_models(request: Request) -> dict:
         "status": "degraded" if registry.degraded else "ok",
         "models": registry.snapshot(),
         "classifier": request.app.state.classifier.snapshot(),
+        "labelsets": request.app.state.labeller.snapshot(),
     }
 
 

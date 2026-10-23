@@ -10,6 +10,9 @@ numbers.
 NO OUTCOMES, NO NUMBER. Without a labelled outcomes file there is nothing to measure routing quality against, and the run ends with the
 reason ("unmeasured") and no report at all: a figure computed from nothing would be worse than none (FR-011).
 
+A LABEL SET IS NOT A ROUTER. `--dataset route-topics` hands the run to `topics.py`, which scores a label set on sentences with a known topic
+(specs/015); everything below is about routers and outcomes.
+
 WHAT CAN BE EVALUATED. Anything with a `scores(texts)` method (`ClassifierBackend`): the two built-in controls (`constant`, `random-router`),
 the ML service's `/classify` (`service`, which only answers once a head has been accepted there), or a backend handed to `run(backend=...)`.
 That last one is the extension point for a new router (for example rules plus topic labels): it is scored, timed and compared exactly like
@@ -19,17 +22,19 @@ any router (ENGINEERING_PATTERNS.md pattern 69); it is in the history of the pul
 LATENCY. p50/p95 of one prompt at a time, and a warning when p95 exceeds 50 ms: SC-009's budget for the whole routing call on the reference machine.
 """
 import time
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import Protocol
 
 import numpy as np
 
+from app.core.routing_policy import Tier
 from scripts.model_eval import datasets as ds
 from scripts.model_eval import metrics
 from scripts.model_eval.candidates import Candidate
 from scripts.model_eval.report import RunOutput
 from scripts.model_eval.routing import label, outcomes_dir, read_outcomes
+from scripts.model_eval.runners import topics
 from scripts.model_eval.runners.base import (
     PrerequisiteMissing,
     RunSettings,
@@ -81,8 +86,58 @@ class RandomRouter:
         return [float(seeded_rng(self.seed, t).random()) for t in texts]
 
 
+TIERED_ROUTERS = ("rules-and-labels-bge-small-en-v1.5",)  # candidates that are the app's own router, not a head: built by `build_tiered_router`
+TIE_JITTER = 1e-3  # the width of the seeded noise that breaks ties between prompts the router puts in the same tier
+
+
+class TieredRouter:
+    """CANDIDATE: the app's own rules-and-labels router (spec 015): `routing_policy.decide`, the very function `route_model` runs, with the label
+    taken from the label-set matcher exactly as the ML service would give it (nearest label, `None` below the model's cutoff).
+
+    A router with three tiers scores many prompts identically, and the cost-quality curve breaks ties by input order, which would make the result
+    depend on how the dataset happens to be ordered. So each prompt's score is its tier plus a small seeded noise that depends only on the prompt:
+    a random tie-break, reproducible. Local scores fall in [0, 0.001), medium in [0.5, 0.501) and strong in [0.999, 1.0), so the order of tiers is
+    never disturbed and `medium` counts as "needs a stronger model" at the suite's 0.5 decision threshold (any routed tier does)."""
+
+    revision: str | None = None
+    size_bytes: int | None = None
+    rss_mb: float | None = None
+
+    def __init__(self, topics_backend, *, seed: int = 20261017, ceiling: Tier = "strong", configured: Collection[str] = ("local", "medium", "strong"),
+                 long_prompt_chars: int | None = None) -> None:
+        from app.core import routing_policy
+
+        self._policy = routing_policy
+        self._topics = topics_backend
+        self._seed, self._ceiling, self._configured = seed, ceiling, tuple(configured)
+        self._long = long_prompt_chars or routing_policy.DEFAULT_LONG_PROMPT_CHARS
+        self.identity = f"rules-and-labels:{topics_backend.identity}"
+        self.revision, self.size_bytes, self.rss_mb = topics_backend.revision, topics_backend.size_bytes, topics_backend.rss_mb
+
+    def decisions(self, texts: Sequence[str]) -> list:
+        """The app's own `Decision` for each text."""
+        cutoff = self._topics.min_similarity
+        out = []
+        for text, (index, similarity) in zip(texts, self._topics.nearest(texts), strict=True):
+            label = self._topics.labels[index] if cutoff is not None and similarity >= cutoff else None
+            out.append(self._policy.decide(text, label, ceiling=self._ceiling, configured=self._configured, long_prompt_chars=self._long))
+        return out
+
+    def scores(self, texts: Sequence[str]) -> list[float]:
+        base = {"local": 0.0, "medium": 0.5, "strong": 1.0 - TIE_JITTER}
+        return [base[d.tier] + TIE_JITTER * float(seeded_rng(self._seed, text).random()) for text, d in zip(texts, self.decisions(texts), strict=True)]
+
+
+def build_tiered_router(candidate: Candidate, settings: RunSettings) -> TieredRouter:
+    labelset = topics.load_labelset("route-topics")
+    backend = topics.InProcessTopics(candidate, labelset, settings.threads)
+    if backend.min_similarity is None:
+        raise PrerequisiteMissing(f"the label set has no calibration for {candidate.source.model!r}; run `make labelset-calibrate CANDIDATE={candidate.name}`")
+    return TieredRouter(backend, seed=settings.seed)
+
+
 class ServiceClassifier:
-    """The ML service's /classify, as app/core/routing_advice.py calls it. It answers only for an ACCEPTED head; otherwise `served_by` is "none"."""
+    """The ML service's /classify `route` task (a head's score). The app no longer calls it (spec 015 routes from rules and labels); it answers only for an ACCEPTED head, otherwise `served_by` is "none"."""
 
     revision: str | None = None
     size_bytes: int | None = None
@@ -127,9 +182,11 @@ def build_backend(candidate: Candidate, settings: RunSettings, via: str | None =
         return ConstantRouter()
     if candidate.name == "random-router":
         return RandomRouter(settings.seed)
+    if candidate.name in TIERED_ROUTERS:
+        return build_tiered_router(candidate, settings)
     if path == "service":
         return ServiceClassifier(candidate)
-    raise PrerequisiteMissing(f"a router is evaluated through the controls or path 'service', not {path!r}; to evaluate another router pass it to run(backend=...)")
+    raise PrerequisiteMissing(f"a router is evaluated through the controls, the app's own router or path 'service', not {path!r}; to evaluate another router pass it to run(backend=...)")
 
 
 def find_outcomes(dataset_dir: Path, explicit: Path | None) -> Path | None:
@@ -181,8 +238,10 @@ def _curve_line(name: str, curve: Sequence[float]) -> str:
 
 
 def run(candidate: Candidate, settings: RunSettings, *, backend: ClassifierBackend | None = None, via: str | None = None) -> RunOutput:
-    started = time.perf_counter()
     name = settings.dataset or DEFAULT_DATASET
+    if name in topics.DATASETS:  # a label set on sentences with a known topic: no stronger model and no labelled outcomes involved
+        return topics.run(candidate, settings, via=via)
+    started = time.perf_counter()
     version_dir = latest_version(settings.dataset_root, name)
     manifest = ds.load_verified(version_dir)
     rows = manifest.split_items(settings.split)

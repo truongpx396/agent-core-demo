@@ -202,7 +202,7 @@ class ClassifierSuite(Suite):
         return out
 
 
-INTENT_DATASETS = ("clinc-oos-plus",)  # public sets scored by IntentSuite instead of the routing suite
+INTENT_DATASETS = ("clinc-oos-plus", "route-topics")  # datasets scored by IntentSuite instead of the routing suite (route-topics: runners/topics.py)
 
 
 def fast_macro_f1(label: np.ndarray, predicted: np.ndarray) -> float:
@@ -225,9 +225,8 @@ class IntentSuite(Suite):
     with no stronger model and no labelling. CLINC's out-of-scope examples are reported SEPARATELY from the in-scope ones: a request that matches no
     intent is the case a router meets every day, and "none of these" must be a possible answer.
 
-    NO RUNNER USES THIS YET. The runner that trained a head on CLINC to exercise it was removed with the head trainer (pull request 179); the suite,
-    its controls and the pinned dataset (`public.load_clinc`) stay because they are what a topic-label classifier (embedding anchors and a
-    similarity cutoff) is scored with.
+    The runner for a label set is `runners/topics.py` (`route-topics`, specs/015). The CLINC pin (`public.load_clinc`) has no runner: the one that trained
+    a head on it was removed with the head trainer (pull request 179), and the measurement that chose the centroid is reproduced in specs/015/research.md.
 
     Arrays per item: `pred` (predicted intent), `label` (true intent; -1 for an out-of-scope item), `confidence` (the classifier's top
     probability or similarity), `oos` (1 for an out-of-scope item) and `oos_threshold` (the same value in every row; the confidence below which

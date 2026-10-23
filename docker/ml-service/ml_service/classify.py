@@ -1,5 +1,9 @@
 """POST /classify: routing advice from a small trained head over a text embedding (specs/014 FR-027..030, contracts/ml-service.md).
 
+TWO TASKS, NAMED. `task: "route"` is this module (a head's probability that a prompt needs a stronger model). `task: "label"` is `labelsets.py`
+(which of a few predefined choices a text is nearest to, specs/015); this module only validates the request and hands it over. A task is
+always named by the caller and never guessed from the shape of the body.
+
 WHAT IT IS. The app asks one question per turn: "does this prompt need a stronger model?". This service answers with a probability,
 `sigmoid(w . x + b)` over the L2-normalised embedding `x` of the prompt, where `(w, b)` is a head trained offline for ONE embedding
 model. The embedder is the same `EmbedService` that serves `/v1/embeddings`, so the classifier's vectors are the served vectors by
@@ -49,6 +53,7 @@ from ml_service.settings import Settings
 logger = logging.getLogger("ml_service.classify")
 
 MAX_ITEMS = 16
+TASKS = ("route", "label")
 HEAD_SCHEMA_VERSION = 1
 ROLES = ("primary", "fallback")
 
@@ -244,11 +249,24 @@ class _Reject(Exception):
         self.code, self.message = code, message
 
 
-def _validate(body: Any, settings: Settings) -> list[str]:
+@dataclass(frozen=True)
+class Parsed:
+    task: str  # "route" | "label"
+    texts: list[str]
+    labelset: str | None = None
+
+
+def _validate(body: Any, settings: Settings) -> Parsed:
     if not isinstance(body, dict):
         raise _Reject("invalid_input", "the request body must be a JSON object")
-    if body.get("task") != "route":
-        raise _Reject("invalid_task", '`task` is required and must be "route"')
+    task = body.get("task")
+    if task not in TASKS:
+        raise _Reject("invalid_task", '`task` is required and must be "route" or "label"')  # a task is named, never inferred from the shape of the request
+    labelset = None
+    if task == "label":
+        labelset = body.get("labelset")
+        if not isinstance(labelset, str) or not labelset:
+            raise _Reject("invalid_input", '`labelset` is required for task "label" and must be the name of a label set')
     texts = body.get("texts")
     if not isinstance(texts, list) or not texts or not all(isinstance(t, str) and t for t in texts):
         raise _Reject("invalid_input", "`texts` must be a non-empty list of non-empty strings")
@@ -257,7 +275,7 @@ def _validate(body: Any, settings: Settings) -> list[str]:
     for index, text in enumerate(texts):
         if len(text) > settings.classify_max_chars:
             raise _Reject("input_too_long", f"text {index} has {len(text)} characters; the limit is {settings.classify_max_chars}")
-    return texts
+    return Parsed(task, texts, labelset)
 
 
 router = APIRouter()
@@ -271,13 +289,29 @@ async def classify(request: Request):
     except ValueError:
         return error(400, "invalid_input", "the request body is not valid JSON")
     try:
-        texts = _validate(body, app.state.settings)
+        parsed = _validate(body, app.state.settings)
     except _Reject as rejected:
         return error(400, rejected.code, rejected.message)
     started = time.perf_counter()
-    answer = await app.state.classifier.classify(texts)
+    if parsed.task == "label":
+        return await _label(app, parsed, started)
+    answer = await app.state.classifier.classify(parsed.texts)
     app.state.metrics.classify_requests.labels(served_by=answer.served_by).inc()
-    logger.debug("classified", extra={"served_by": answer.served_by, "items": len(texts), "ms": round((time.perf_counter() - started) * 1000, 1)})
+    logger.debug("classified", extra={"served_by": answer.served_by, "items": len(parsed.texts), "ms": round((time.perf_counter() - started) * 1000, 1)})
     return JSONResponse(
         {"served_by": answer.served_by, "model": answer.model, "head_version": answer.head_version, "results": answer.results}
+    )
+
+
+async def _label(app, parsed: Parsed, started: float) -> JSONResponse:
+    """`task: "label"` (labelsets.py). An unknown set is the caller's mistake and a 400; a known set that cannot answer yet or at all is `served_by: "none"`."""
+    labeller = app.state.labeller
+    name = parsed.labelset or ""
+    if not labeller.knows(name):
+        return error(400, "unknown_labelset", f"no label set named {name!r}; GET /health/models lists the sets this service has")
+    answer = await labeller.label(name, parsed.texts)
+    app.state.metrics.label_requests.labels(labelset=name, served_by=answer.served_by).inc()
+    logger.debug("labelled", extra={"labelset": name, "served_by": answer.served_by, "items": len(parsed.texts), "ms": round((time.perf_counter() - started) * 1000, 1)})
+    return JSONResponse(
+        {"served_by": answer.served_by, "model": answer.model, "labelset": name, "labelset_version": answer.labelset_version, "results": answer.results}
     )

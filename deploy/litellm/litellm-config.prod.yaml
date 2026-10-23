@@ -42,7 +42,7 @@ model_list:
     #     output_cost_per_token: <USD per token>
   # The escalation alias (specs/014, contracts/gateway-aliases.md section 1). Compose passes LLM_STRONG_* defaulting to the `chat` values, so
   # an unset variable cannot stop the proxy and the alias is effectively `chat` until an operator points it somewhere stronger. Inert until
-  # the app is told to use it (STRONG_CHAT_MODEL / ROUTER_ENABLED). No `fallbacks` entry names it: the app repeats a failed strong call on
+  # the app is told to use it (STRONG_CHAT_MODEL / ROUTER_MODE). No `fallbacks` entry names it: the app repeats a failed strong call on
   # `chat` so the ledger prices the model that answered. State a price below if the model is one LiteLLM does not know (UNPRICED_MODEL_POLICY=block).
   - model_name: chat-strong
     litellm_params:

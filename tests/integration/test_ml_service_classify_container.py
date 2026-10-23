@@ -23,8 +23,8 @@ import httpx
 import numpy as np
 import pytest
 
-from app.core import routing_advice
-from tests.conftest import REAL_ADVISE
+from app.core import classification
+from tests.conftest import REAL_LABEL
 
 pytestmark = pytest.mark.integration
 
@@ -111,6 +111,34 @@ def test_with_no_head_mounted_the_default_container_gives_no_advice(ml_service_u
     assert classifier == {"serving": "none", "heads": {PRIMARY: "absent", FALLBACK: "absent"}}
 
 
+def test_the_shipped_route_topics_set_is_served_by_the_real_container_and_matches_an_independent_computation(ml_service_url):
+    """`task: "label"` against the image as built: the label set baked into it, both real models, the real tokenisers. The expected similarity is
+    computed here from the vectors `/v1/embeddings` serves (examples and sentences), the set's file and numpy, so the service's index is checked
+    against the arithmetic and not against itself (specs/015 FR-004). The three sentences are ones the primary was measured to place well clear of
+    the cutoff (0.773, 0.839 and 0.682 against 0.709), so this does not depend on a close call."""
+    raw = json.loads((Path(__file__).resolve().parents[2] / "docker" / "ml-service" / "labelsets" / "route-topics.json").read_text())
+    sentences = ["Write a Python function that parses a CSV file into invoices please.", "We received a subpoena for customer records, what do we do?", "qwerty qwerty qwerty"]
+    body: dict = {}
+    for _ in range(30):  # the first request after start-up can overrun the service's 250 ms deadline and be answered "none"
+        body = httpx.post(f"{ml_service_url}/classify", json={"task": "label", "labelset": "route-topics", "texts": sentences}, timeout=30).json()
+        if body.get("served_by") == "primary":
+            break
+        time.sleep(1)
+
+    assert body["served_by"] == "primary" and body["model"] == PRIMARY and body["labelset"] == "route-topics" and len(body["labelset_version"]) == 12
+    labels = list(raw["labels"])
+    centroids = []
+    for name in labels:
+        mean = served_vectors(ml_service_url, raw["labels"][name]).mean(axis=0)
+        centroids.append(mean / np.linalg.norm(mean))
+    similarities = served_vectors(ml_service_url, sentences) @ np.stack(centroids).T
+    np.testing.assert_allclose([r["similarity"] for r in body["results"]], similarities.max(axis=1), atol=1e-4)
+    assert [r["nearest"] for r in body["results"]] == [labels[i] for i in similarities.argmax(axis=1)]
+    assert [r["label"] for r in body["results"]] == ["code", "high_stakes", None]
+    shown = httpx.get(f"{ml_service_url}/health/models", timeout=10).json()["labelsets"]["route-topics"]
+    assert shown["version"] == body["labelset_version"] and shown["models"] == {PRIMARY: "loaded", FALLBACK: "loaded"}
+
+
 @pytest.fixture(scope="module")
 def accepted_primary(ml_service, tmp_path_factory):
     """One container with an accepted head for the primary and a head for the fallback that was trained for another revision."""
@@ -144,30 +172,32 @@ def test_an_accepted_head_scores_the_vectors_the_embedding_endpoint_serves_and_b
     assert classifier == {"serving": "primary", "heads": {PRIMARY: "loaded", FALLBACK: "refused: revision mismatch"}}
 
 
-async def test_the_whole_routing_call_from_the_app_is_measured_and_answers_nearly_every_call(accepted_primary, monkeypatch, record_property):
-    """SC-009's budget is 50 ms at p95 on the reference machine (specs/014 tasks T088); that figure is MEASURED and recorded here and quoted
+async def test_the_whole_label_call_from_the_app_is_measured_and_answers_nearly_every_call(ml_service_url, monkeypatch, record_property):
+    """The budget is 50 ms at p95 on the reference machine (specs/014 SC-009, specs/015 SC-003); that figure is MEASURED and recorded here and quoted
     in the PR, not asserted, because a CI runner's speed says nothing about the reference machine. What is asserted is the part that must hold
-    anywhere: no call is an error or a timeout of the app's own deadline, and nearly all of them are answered with advice."""
-    url, _w, _b = accepted_primary
-    monkeypatch.setattr(routing_advice, "advise", REAL_ADVISE)  # the suite's autouse guard replaced it with "no advice"
-    monkeypatch.setattr(routing_advice, "ML_SERVICE_URL", url)
-    monkeypatch.setattr(routing_advice, "ROUTER_TIMEOUT_SECONDS", 0.5)
+    anywhere: no call is an error, and nearly all of them (nine in ten) are answered with a label."""
+    monkeypatch.setattr(classification, "label", REAL_LABEL)  # the suite's autouse guard replaced it with "no answer"
+    monkeypatch.setattr(classification, "ML_SERVICE_URL", ml_service_url)
+    monkeypatch.setattr(classification, "ROUTER_TIMEOUT_SECONDS", 0.5)
 
-    await routing_advice.advise(TEXTS[0])  # warm-up: the first request pays for connection set-up and the first model pass
+    await classification.label("route-topics", TEXTS[0])  # warm-up: the first request pays for connection set-up and the first model pass
     timings, outcomes = [], []
     for i in range(200):
         started = time.perf_counter()
-        advice = await routing_advice.advise(f"{TEXTS[i % 2]} ({i})")
+        answer = await classification.label("route-topics", f"{TEXTS[i % 2]} ({i})")
         timings.append((time.perf_counter() - started) * 1000)
-        outcomes.append(advice.outcome)
+        outcomes.append(answer.outcome)
 
     p50, p95 = statistics.median(timings), sorted(timings)[int(len(timings) * 0.95) - 1]
-    record_property("advise_p50_ms", round(p50, 1))
-    record_property("advise_p95_ms", round(p95, 1))
-    print(f"advise() over {len(timings)} sequential calls: p50={p50:.1f} ms p95={p95:.1f} ms")
-    # No call may be an error or a timeout of the app's own deadline. A "no_advice" is the service's own 250 ms deadline being overrun with no
-    # fallback head to answer (see the fixture), which a loaded machine can cause now and then; it is allowed for at most one call in ten.
-    assert not {"classifier_error", "classifier_timeout"} & set(outcomes) and outcomes.count("advice") >= 180
+    record_property("label_p50_ms", round(p50, 1))
+    record_property("label_p95_ms", round(p95, 1))
+    print(f"label() over {len(timings)} sequential calls: p50={p50:.1f} ms p95={p95:.1f} ms")
+    # No call may be an error: the service is reachable and speaks the contract. A "timeout" and a "no_answer" are both the designed answer
+    # of a slow machine, not a defect: the service gives each model 250 ms, so a primary and a fallback that both overrun can spend the app's
+    # whole 0.5 s, and the app's timer then fires first. The first CI run saw 7 of 200 (p50 149 ms, p95 426 ms on a shared runner, against 2-3 ms
+    # in-process), and asserting zero timeouts asserted the runner's speed, which this docstring says it does not. Together they may be at most
+    # one call in ten; the latency itself is recorded above, not judged.
+    assert "error" not in outcomes and outcomes.count("labelled") >= 180
 
 
 def test_a_head_that_is_not_accepted_gives_no_advice_in_the_real_container(ml_service, tmp_path):
