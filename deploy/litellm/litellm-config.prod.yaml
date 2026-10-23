@@ -68,11 +68,11 @@ litellm_settings:
   success_callback: ["prometheus"]
   failure_callback: ["prometheus"]
   require_auth_for_metrics_endpoint: false
-  # A default per-tenant spend cap at the gateway: names a budget OBJECT (in LiteLLM's database, created with
-  # `make litellm-key ARGS="tenant-budget set --max-budget <usd>"`) that applies to every end user, i.e. every tenant (the app sends `user`
-  # = a hash of the tenant), without a budget of its own. Not created yet = LiteLLM logs a warning per call and applies NO cap. See
-  # litellm-config.yaml for the full note and COST_GOVERNANCE.md pattern 74.
-  max_end_user_budget_id: tenant-default
+  # A default per-PERSON spend cap at the gateway: names a budget OBJECT (in LiteLLM's database, created with
+  # `make litellm-key ARGS="person-budget set --max-budget <usd>"`) that applies to every end user, i.e. every person (the app sends
+  # `user` = `tenant:<tenant>/user:<principal>`), without a budget of its own. Not created yet = LiteLLM logs a warning per call and
+  # applies NO cap. See litellm-config.yaml for the full note and COST_GOVERNANCE.md pattern 74.
+  max_end_user_budget_id: person-default
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

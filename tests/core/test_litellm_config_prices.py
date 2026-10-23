@@ -1,8 +1,8 @@
-"""Every local model in the dev gateway config states a price, and the per-tenant budget the configs name is the one the script creates.
+"""Every local model in the dev gateway config states a price, and the per-person budget the configs name is the one the script creates.
 
 Why a price at all: a local model costs no money, but a model LiteLLM has no price for is `null` to the app (every call counted unpriced, and
 `UNPRICED_MODEL_POLICY=block` would refuse it), and a model priced at exactly 0 is skipped by LiteLLM's budget checks, so neither the app key's
-`max_budget` nor the per-tenant budget could trip on it. Measured on the 1.94.1 image before the prices were added: `chat`, `chat-backup` and
+`max_budget` nor the per-person budget could trip on it. Measured on the 1.94.1 image before the prices were added: `chat`, `chat-backup` and
 `embed` reported 0 and `vision` null. These are shadow prices, not a bill (litellm-config.yaml says so at the top); this file keeps them
 real, plain numbers the app can read.
 
@@ -87,9 +87,9 @@ def test_the_app_reads_every_dev_price_through_its_own_parser():
         assert (price.input_per_token, price.output_per_token) == _prices(entry)
 
 
-def test_both_configs_name_the_per_tenant_budget_the_script_creates():
+def test_both_configs_name_the_per_person_budget_the_script_creates():
     for path in (DEV, PROD):
-        assert _config(path)["litellm_settings"]["max_end_user_budget_id"] == litellm_key.TENANT_BUDGET_ID, path.name
+        assert _config(path)["litellm_settings"]["max_end_user_budget_id"] == litellm_key.PERSON_BUDGET_ID, path.name
 
 
 def test_neither_config_uses_the_retired_float_setting_for_the_same_thing():

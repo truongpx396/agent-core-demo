@@ -67,37 +67,106 @@ def _count() -> float:
 
 
 class TestEndUserId:
-    def test_it_is_stable_so_a_tenants_calls_group_together(self):
-        assert gateway.end_user_id("acme") == gateway.end_user_id("acme")
+    """The gateway's end user names the PERSON, readably: `tenant:<tenant>/user:<principal>`, each part percent-encoded. Readable on purpose
+    (LiteLLM's Customer Usage dropdown lists these), which is safe only while the gateway does not forward `user` to a model provider: that was
+    checked against the pinned image, not assumed (pattern 74), and is re-checked whenever the image is bumped."""
 
-    def test_it_differs_per_tenant(self):
-        assert gateway.end_user_id("acme") != gateway.end_user_id("globex")
+    def test_it_names_the_person_readably(self):
+        assert gateway.end_user_id("acme", "alice") == "tenant:acme/user:alice"
 
-    def test_it_never_contains_the_tenant_name(self):
-        """LiteLLM forwards `user` to the model provider; a customer's name must not leave."""
+    def test_it_is_stable_so_a_persons_calls_group_together(self):
+        assert gateway.end_user_id("acme", "alice") == gateway.end_user_id("acme", "alice")
+
+    def test_it_tells_two_people_of_one_tenant_apart(self):
+        assert gateway.end_user_id("acme", "alice") != gateway.end_user_id("acme", "bob")
+
+    def test_it_tells_one_principal_in_two_tenants_apart(self):
+        """The same principal string in two tenants is two people: tenant isolation is the first rule of this repo."""
+        assert gateway.end_user_id("acme", "alice") != gateway.end_user_id("globex", "alice")
+
+    @pytest.mark.parametrize(
+        ("tenant", "principal", "expected"),
+        [
+            ("ecorp", "telegram:123456", "tenant:ecorp/user:telegram%3A123456"),
+            ("acme", "bob@example.com", "tenant:acme/user:bob%40example.com"),
+            ("acme", "a/b", "tenant:acme/user:a%2Fb"),
+            ("acme corp", "alice smith", "tenant:acme%20corp/user:alice%20smith"),
+            ("acme", "local:truong", "tenant:acme/user:local%3Atruong"),
+            ("acme", "zoë", "tenant:acme/user:zo%C3%AB"),
+        ],
+    )
+    def test_the_parts_are_percent_encoded_so_a_delimiter_inside_one_cannot_move_the_split(self, tenant, principal, expected):
+        assert gateway.end_user_id(tenant, principal) == expected
+
+    def test_a_part_that_looks_like_the_other_half_cannot_forge_another_person(self):
+        """Tenants and principals are client-supplied strings. If `/user:` could appear inside a part, two different people could share an
+        id, and one tenant's spend and budget would be another's."""
+        assert gateway.end_user_id("a/user:b", "c") != gateway.end_user_id("a", "b/user:c")
+        assert gateway.parse_end_user_id(gateway.end_user_id("a/user:b", "c")) == ("a/user:b", "c")
+        assert gateway.parse_end_user_id(gateway.end_user_id("a", "b/user:c")) == ("a", "b/user:c")
+
+    @pytest.mark.parametrize(
+        ("tenant", "principal"),
+        [("acme", "alice"), ("ecorp", "telegram:123"), ("a b", "c/d"), ("t:1", "p:2"), ("acme", "zoë"), ("%41", "%2F"), ("acme", "x" * 300)],
+    )
+    def test_it_parses_back_to_what_it_was_made_from(self, tenant, principal):
+        assert gateway.parse_end_user_id(gateway.end_user_id(tenant, principal)) == (tenant, principal)
+
+    @pytest.mark.parametrize(
+        "other",
+        [
+            "",
+            "alice",
+            "default_user_id",
+            "tenant_0123456789abcdef",  # the older, hashed id: not this format
+            "tenant:acme",  # no person
+            "tenant:acme/user:alice/extra",
+            "tenant:acme/user:alice:bob",
+            "tenant:acme corp/user:alice",  # an unencoded space is not ours
+            "tenant:acme/user:%61lice",  # a different spelling of `alice`: only the canonical form is ours
+            "tenant:acme/user:a%3ab",  # lower-case hex: `quote` writes %3A
+            "TENANT:acme/user:alice",
+        ],
+    )
+    def test_another_applications_end_user_is_not_mistaken_for_ours(self, other):
+        """A shared gateway holds other applications' end users too; the reconciliation must put them in `unattributed`, not in a tenant."""
+        assert gateway.parse_end_user_id(other) is None
+
+    def test_the_older_tenant_level_id_is_kept_only_to_read_old_spend_logs(self):
+        """Nothing sends it any more (`call_identity`), but spend-log rows written under it are still in the gateway, and the reconciliation
+        attributes them by hashing the tenants it knows."""
         tenant = "very-secret-customer-name"
-        end_user = gateway.end_user_id(tenant)
+        legacy = gateway.legacy_end_user_id(tenant)
 
-        assert tenant not in end_user
-        assert end_user == "tenant_" + hashlib.sha256(tenant.encode()).hexdigest()[:16]
+        assert tenant not in legacy
+        assert legacy == "tenant_" + hashlib.sha256(tenant.encode()).hexdigest()[:16]
+        assert gateway.parse_end_user_id(legacy) is None
 
 
 class TestCallIdentity:
-    def test_a_valid_ctx_names_the_tenant_to_the_gateway(self):
+    def test_a_valid_ctx_names_the_person_to_the_gateway(self):
         identity = gateway.call_identity({"tenant": "acme", "principal": "alice", "claims": {}})
 
-        assert identity["user"] == gateway.end_user_id("acme")
+        assert identity["user"] == gateway.end_user_id("acme", "alice") == "tenant:acme/user:alice"
         assert identity["extra_body"]["metadata"] == {
             "tenant": "acme",
             "principal": "alice",
             "tags": ["tenant:acme"],
         }
 
-    def test_the_provider_facing_field_carries_no_readable_name(self):
-        """`user` goes to the provider; only `metadata` (gateway-only) may be readable."""
-        identity = gateway.call_identity({"tenant": "acme", "principal": "alice", "claims": {}})
+    def test_the_end_user_is_the_person_not_the_tenant_so_a_persons_spend_is_filterable_in_litellm(self):
+        ctx = {"tenant": "acme", "claims": {}}
+        alice = gateway.call_identity({**ctx, "principal": "alice"})["user"]
+        bob = gateway.call_identity({**ctx, "principal": "bob"})["user"]
 
-        assert "acme" not in identity["user"] and "alice" not in identity["user"]
+        assert alice != bob
+
+    def test_the_end_user_is_made_of_the_tenant_and_the_principal_only(self):
+        """Not of the conversation, a timestamp or anything else that would give one person many end users and many budgets."""
+        a = gateway.call_identity({"tenant": "acme", "principal": "alice", "claims": {}}, session_id="thread-1")["user"]
+        b = gateway.call_identity({"tenant": "acme", "principal": "alice", "claims": {}}, session_id="thread-2")["user"]
+
+        assert a == b
 
     @pytest.mark.parametrize("ctx", [None, {}, {"tenant": "", "principal": "alice"}, {"tenant": "acme"}])
     def test_an_invalid_ctx_sends_the_call_as_it_always_was(self, ctx):
@@ -121,11 +190,11 @@ class TestCallIdentity:
         assert "session_id" not in identity["extra_body"]["metadata"]
 
     def test_the_session_changes_nothing_else_about_who_is_calling(self):
-        """The end user is what the per-tenant budget and the reconciliation key on (pattern 74): a conversation must never reach it."""
+        """The end user is what the per-person budget and the reconciliation key on (pattern 74): a conversation must never reach it."""
         ctx = {"tenant": "acme", "principal": "alice", "claims": {}}
         without, with_session = gateway.call_identity(ctx), gateway.call_identity(ctx, session_id="thread-42")
 
-        assert with_session["user"] == without["user"] == gateway.end_user_id("acme")
+        assert with_session["user"] == without["user"] == gateway.end_user_id("acme", "alice")
         assert {k: v for k, v in with_session["extra_body"]["metadata"].items() if k != "session_id"} == without["extra_body"]["metadata"]
 
     def test_an_invalid_ctx_sends_no_session_either(self):
@@ -189,7 +258,7 @@ class TestWhatActuallyLeavesTheProcess:
         await self._llm(handler).ainvoke([HumanMessage(content="hi")], **gateway.call_identity(TEST_CTX))
 
         body = seen[0]
-        assert body["user"] == gateway.end_user_id(TEST_CTX["tenant"])
+        assert body["user"] == gateway.end_user_id(TEST_CTX["tenant"], TEST_CTX["principal"])
         assert body["metadata"] == {
             "tenant": TEST_CTX["tenant"],
             "principal": TEST_CTX["principal"],
@@ -210,7 +279,7 @@ class TestWhatActuallyLeavesTheProcess:
 
         assert seen[0]["litellm_session_id"] == "thread-9"
         assert seen[0]["metadata"]["session_id"] == "thread-9"
-        assert seen[0]["user"] == gateway.end_user_id(TEST_CTX["tenant"])
+        assert seen[0]["user"] == gateway.end_user_id(TEST_CTX["tenant"], TEST_CTX["principal"])
 
     async def test_without_an_identity_the_body_is_what_it_was_before(self):
         seen: list[dict] = []
@@ -291,7 +360,7 @@ class TestTheAgentNodeAttributesItsCalls:
         await agent({"messages": [HumanMessage(content="hi")]}, {"configurable": {"ctx": TEST_CTX}})
 
         assert llm.kwargs == [gateway.call_identity(TEST_CTX)]
-        assert llm.kwargs[0]["user"] == gateway.end_user_id(TEST_CTX["tenant"])
+        assert llm.kwargs[0]["user"] == gateway.end_user_id(TEST_CTX["tenant"], TEST_CTX["principal"])
 
     async def test_a_call_made_in_a_conversation_names_it_to_the_gateway(self):
         llm = _RecordingLLM(AIMessage(content="hello there"))
@@ -320,7 +389,7 @@ class TestTheAgentNodeAttributesItsCalls:
         await graph.ainvoke({"messages": [HumanMessage(content="what is a checkpointer?")]}, config=_config())
 
         assert llm.kwargs, "the graph never reached the LLM"
-        assert all(call.get("user") == gateway.end_user_id(TEST_CTX["tenant"]) for call in llm.kwargs)
+        assert all(call.get("user") == gateway.end_user_id(TEST_CTX["tenant"], TEST_CTX["principal"]) for call in llm.kwargs)
 
 
 class _RaisingLLM:

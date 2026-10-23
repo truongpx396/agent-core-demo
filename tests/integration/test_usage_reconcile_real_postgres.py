@@ -22,7 +22,7 @@ from app.agent.cost import usage_events
 from app.agent.cost import usage_reconcile as reconcile
 from app.agent.cost.pricing import ModelPrice, PricedCall
 from app.agent.cost.usage_reconcile import Tolerance, Window
-from app.core.gateway import end_user_id
+from app.core.gateway import end_user_id, legacy_end_user_id
 from tests.agent.fake_gateway import FakeGateway, spend_row
 from tests.containers import ensure_postgres
 from tests.integration.usage_seed import seed_event
@@ -55,19 +55,19 @@ def tenant_name() -> str:
     return f"t-{uuid.uuid4().hex[:10]}"
 
 
-def ctx_for(tenant: str) -> dict:
-    return {"tenant": tenant, "principal": "alice", "claims": {}}
+def ctx_for(tenant: str, principal: str = "alice") -> dict:
+    return {"tenant": tenant, "principal": principal, "claims": {}}
 
 
 def priced(cost_usd: float) -> PricedCall:
     return PricedCall(100, 50, 0, 150, cost_usd, ModelPrice(0.0001, 0.0002))
 
 
-async def turn(tenant: str, cost_usd: float) -> str:
+async def turn(tenant: str, cost_usd: float, principal: str = "alice") -> str:
     """One model call the way the app records it: a usage event (which is also what the dollar caps sum)."""
     message_id = uuid.uuid4().hex
     await usage_events.record_call(
-        ctx_for(tenant), thread_id="t", message_id=message_id, kind="chat", model_alias="chat", priced=priced(cost_usd)
+        ctx_for(tenant, principal), thread_id="t", message_id=message_id, kind="chat", model_alias="chat", priced=priced(cost_usd)
     )
     return usage_events.event_id_for(tenant, message_id)
 
@@ -84,11 +84,14 @@ def window() -> Window:
 
 
 async def gateway_seen(url: str, *tenants: str) -> FakeGateway:
-    """What a faithful gateway would hold for these tenants RIGHT NOW: one spend row per usage event they have."""
+    """What a faithful gateway would hold for these tenants RIGHT NOW: one spend row per usage event they have, under the end user the app
+    sends for that event's person."""
     rows = []
     for tenant in tenants:
-        for event_id, occurred_at, cost in await fetch(url, "SELECT event_id, occurred_at, cost_usd FROM usage_events WHERE tenant = %s", tenant):
-            rows.append(spend_row(end_user_id(tenant), occurred_at, float(cost), f"req-{event_id}"))
+        for event_id, occurred_at, cost, principal in await fetch(
+            url, "SELECT event_id, occurred_at, cost_usd, principal FROM usage_events WHERE tenant = %s", tenant
+        ):
+            rows.append(spend_row(end_user_id(tenant, principal), occurred_at, float(cost), f"req-{event_id}"))
     return FakeGateway(rows)
 
 
@@ -152,26 +155,43 @@ class TestADeletedEvent:
         assert [f.tenant for f in await reconcile_for(gateway, mine)] == [mine]
         assert await reconcile_for(gateway, other) == []
 
-    async def test_a_tenant_whose_every_event_is_gone_is_named_by_its_gateway_id(self, appdata_url):
-        """Since the ledger stopped being compared there is nothing left in the database that knows such a tenant's name (a ledger
-        row used to), so the gateway's one-way id is all the report can give. That is the documented fallback: the runbook
-        says how to turn the hash back into a name (`litellm_key end-user --tenant <name>`)."""
+    async def test_a_tenant_whose_every_event_is_gone_is_named_because_the_gateways_end_user_carries_its_name(self, appdata_url):
+        """The end user names the person (`tenant:<tenant>/user:<principal>`), so the tenant is read off the id: nothing in the database has to
+        remember it. This is the worst shape a lost meter takes (spend at the gateway, no event left), and it is reported by name."""
         gone = tenant_name()
         only = await turn(gone, 0.05)
         gateway = await gateway_seen(appdata_url, gone)
         await delete_event(appdata_url, only)
 
-        findings = await reconcile_for(gateway, f"{end_user_id(gone)} (no tenant in this database hashes to it)")
+        findings = await reconcile_for(gateway, gone)
 
         assert [(f.kind, f.drift) for f in findings] == [("gateway", D("0.05"))]
 
-    async def test_a_tenant_with_earlier_events_and_none_in_the_window_is_named_not_left_as_a_hash(self, appdata_url):
-        """The tenant is known to the database by an event from before the window, which is how the gateway's one-way id is mapped back."""
+    async def test_one_tenants_people_are_summed_into_one_tenant_day(self, appdata_url):
+        """The gateway has one end user per person; the reconciliation is per tenant, so two people's spend meets two people's events."""
+        tenant = tenant_name()
+        await turn(tenant, 0.05, principal="alice")
+        await turn(tenant, 0.07, principal="bob")
+        gateway = await gateway_seen(appdata_url, tenant)
+
+        assert await reconcile_for(gateway, tenant) == []
+
+    async def test_a_tenant_with_earlier_events_and_none_in_the_window_is_named_not_left_as_a_hash_in_an_older_spend_log(self, appdata_url):
+        """Spend-log rows written before the end user named the person carry the one-way `tenant_<hash>` id. The tenant is known to the
+        database by an event from before the window, which is how that id is mapped back."""
         tenant = tenant_name()
         async with await psycopg.AsyncConnection.connect(appdata_url) as conn:
             await seed_event(conn, tenant, occurred_at=datetime.now(UTC) - timedelta(days=10))
-        gateway = FakeGateway([spend_row(end_user_id(tenant), datetime.now(UTC), 0.30, "orphan-call")])
+        gateway = FakeGateway([spend_row(legacy_end_user_id(tenant), datetime.now(UTC), 0.30, "orphan-call")])
 
         findings = await reconcile_for(gateway, tenant)
 
         assert [(f.kind, f.drift) for f in findings] == [("gateway", D("0.3"))]
+
+    async def test_an_older_hashed_id_no_tenant_hashes_to_is_still_a_finding_named_by_that_id(self, appdata_url):
+        gone = tenant_name()
+        gateway = FakeGateway([spend_row(legacy_end_user_id(gone), datetime.now(UTC), 0.20, "old-orphan")])
+
+        findings = await reconcile_for(gateway, f"{legacy_end_user_id(gone)} (no tenant in this database hashes to it)")
+
+        assert [(f.kind, f.drift) for f in findings] == [("gateway", D("0.2"))]

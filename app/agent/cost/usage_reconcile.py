@@ -4,7 +4,7 @@ half of this module moved to the billing package with specs/013).
 Two independent records of the same spending exist, and each can drift from the other for a reason nobody sees until a customer does:
 
   * `usage_events`: one row per model call, the meter AND the spend the dollar caps sum (postgres-init/19);
-  * the gateway's own spend log (LiteLLM, `end_user` = `gateway.end_user_id(tenant)`): what the provider was actually
+  * the gateway's own spend log (LiteLLM, `end_user` = `gateway.end_user_id(tenant, principal)`): what the provider was actually
     asked to spend. It is written by another process from the request itself, which is what makes it an independent
     second meter (research G5) and the only detector for a call whose event was never written (spec 010 plan: "a model
     call that returns just before a crash is not recorded; the reconciliation is the detector, not a prevention").
@@ -24,7 +24,8 @@ an operator can go straight to "acme, 2026-10-06, $0.76 of spend the gateway saw
     calls are in the events and not yet in the log.
   * **Embeddings.** They are not metered and carry no identity (research G2), so the gateway attributes them to nobody.
     That spend lands in `unattributed_usd`, which is reported but is not drift: it is a known, separate gap.
-  * **Another application's end users** on a shared gateway (an `end_user` that is not `tenant_<hash>`): same bucket.
+  * **Another application's end users** on a shared gateway (an `end_user` that is neither this app's `tenant:<tenant>/user:<principal>`
+    nor its older `tenant_<hash>`): same bucket.
 
 ## Known noise (disclosed, not hidden)
 
@@ -226,16 +227,24 @@ def attribute_gateway(
 ) -> tuple[dict[Key, Decimal], Decimal]:
     """Gateway spend keyed by tenant, plus the spend that belongs to no tenant of this app.
 
-    The gateway holds a ONE-WAY id (`tenant_<hash>`), so tenants are found by hashing the ones this database knows.
-    An id in the app's own format that matches none of them is still a finding, named by that id: it is spend for a
-    tenant that has no events at all, which is the worst shape a lost meter can take. Anything else
-    (no identity, or another application's end users) is `unattributed`: reported, never drift."""
-    names = {gateway.end_user_id(tenant): tenant for tenant in tenants}
+    The gateway's end user names the PERSON (`tenant:<tenant>/user:<principal>`), and the reconciliation is per tenant, so
+    each person's spend is summed into their tenant's day; the tenant is read off the id, not looked up. A tenant the gateway
+    spent for and this database has no events for needs no special case: `compare` already reports a day present on one
+    side only as a difference from zero, which is the worst shape a lost meter can take.
+
+    Rows written before the end user named the person carry the older one-way id (`tenant_<hash>`, `gateway.legacy_end_user_id`),
+    which is still in the spend logs for as long as the gateway keeps them: those tenants are found by hashing the ones this
+    database knows, and one that matches none is still a finding, named by that id. Anything else (no identity, or another
+    application's end users) is `unattributed`: reported, never drift."""
+    legacy = {gateway.legacy_end_user_id(tenant): tenant for tenant in tenants}
     attributed: dict[Key, Decimal] = {}
     unattributed = ZERO
     for (end_user, day), amount in raw.items():
-        if end_user in names:
-            tenant = names[end_user]
+        person = gateway.parse_end_user_id(end_user)
+        if person is not None:
+            tenant = person[0]
+        elif end_user in legacy:
+            tenant = legacy[end_user]
         elif end_user.startswith("tenant_"):
             tenant = f"{end_user} (no tenant in this database hashes to it)"
         else:

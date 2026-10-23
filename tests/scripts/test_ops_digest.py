@@ -94,7 +94,7 @@ def test_run_digest_tells_the_gateway_whose_call_it_is(monkeypatch):
     session = fake_chat.invoked_kwargs["extra_body"]["litellm_session_id"]
     assert session.startswith("ops-digest:")
     assert fake_chat.invoked_kwargs == gateway.call_identity(ops_digest._CRON_CTX, session_id=session)
-    assert fake_chat.invoked_kwargs["user"] == gateway.end_user_id(ops_digest.DEFAULT_TENANT)
+    assert fake_chat.invoked_kwargs["user"] == gateway.end_user_id(ops_digest.DEFAULT_TENANT, ops_digest._CRON_CTX["principal"])
 
 
 def test_run_digest_records_usage_when_tokens_are_reported(monkeypatch, usage_event_sink):

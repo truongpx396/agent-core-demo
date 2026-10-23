@@ -177,30 +177,30 @@ class TestInfo:
         assert "404" in capsys.readouterr().err
 
 
-class TestTenantBudget:
-    """The default per-tenant cap (pattern 74). Only what is ASKED of LiteLLM is pinned here. The three endpoints' real shapes were exercised by
+class TestPersonBudget:
+    """The default per-person cap (pattern 74). Only what is ASKED of LiteLLM is pinned here. The three endpoints' real shapes were exercised by
     hand against a live 1.94.1 proxy when this was written (missing -> exit 1, create, update, read back, delete); that LiteLLM then ENFORCES
     the budget was read from its source (`get_default_end_user_budget`, `_check_end_user_budget`) and is not something a mock can show."""
 
-    EXISTING = {"budget_id": litellm_key.TENANT_BUDGET_ID, "max_budget": 100.0, "budget_duration": "30d", "budget_reset_at": "2026-11-20T00:00:00Z"}
+    EXISTING = {"budget_id": litellm_key.PERSON_BUDGET_ID, "max_budget": 100.0, "budget_duration": "30d", "budget_reset_at": "2026-11-20T00:00:00Z"}
 
     def test_a_missing_budget_is_created_under_the_id_the_configs_name(self, gateway_calls, capsys):
         gateway_calls.replies["/budget/info"] = httpx.Response(200, json=[])
 
-        code = litellm_key.main(["tenant-budget", "set", "--max-budget", "100", "--budget-duration", "7d"])
+        code = litellm_key.main(["person-budget", "set", "--max-budget", "100", "--budget-duration", "7d"])
 
         look_up, save = gateway_calls.requests
         assert code == 0
-        assert look_up.url.path == "/budget/info" and json.loads(look_up.content) == {"budgets": ["tenant-default"]}
+        assert look_up.url.path == "/budget/info" and json.loads(look_up.content) == {"budgets": ["person-default"]}
         assert save.url.path == "/budget/new"
-        assert json.loads(save.content) == {"budget_id": "tenant-default", "max_budget": 100.0, "budget_duration": "7d"}
+        assert json.loads(save.content) == {"budget_id": "person-default", "max_budget": 100.0, "budget_duration": "7d"}
         assert "Created" in capsys.readouterr().out
 
     def test_an_existing_budget_is_updated_not_created_again(self, gateway_calls, capsys):
         """/budget/new is a plain insert: run twice it would fail on the duplicate id, so the second run would look like an outage."""
         gateway_calls.replies["/budget/info"] = httpx.Response(200, json=[self.EXISTING])
 
-        code = litellm_key.main(["tenant-budget", "set", "--max-budget", "250"])
+        code = litellm_key.main(["person-budget", "set", "--max-budget", "250"])
 
         assert code == 0
         assert [r.url.path for r in gateway_calls.requests] == ["/budget/info", "/budget/update"]
@@ -210,26 +210,26 @@ class TestTenantBudget:
     def test_the_duration_defaults_to_thirty_days_like_the_key(self, gateway_calls):
         gateway_calls.replies["/budget/info"] = httpx.Response(200, json=[])
 
-        litellm_key.main(["tenant-budget", "set", "--max-budget", "100"])
+        litellm_key.main(["person-budget", "set", "--max-budget", "100"])
 
         assert json.loads(gateway_calls.requests[1].content)["budget_duration"] == "30d"
 
     @pytest.mark.parametrize("budget", ["0", "-5"])
     def test_a_budget_that_is_not_positive_is_refused_before_any_request(self, gateway_calls, budget):
         with pytest.raises(SystemExit, match="above 0"):
-            litellm_key.main(["tenant-budget", "set", "--max-budget", budget])
+            litellm_key.main(["person-budget", "set", "--max-budget", budget])
 
         assert gateway_calls.requests == []
 
     def test_there_is_no_default_amount(self, gateway_calls):
         """A business number, like the key's: a guess is either an outage or no protection."""
         with pytest.raises(SystemExit):
-            litellm_key.main(["tenant-budget", "set"])
+            litellm_key.main(["person-budget", "set"])
 
     def test_it_authenticates_with_the_master_key_and_never_echoes_it(self, gateway_calls, capsys):
         gateway_calls.replies["/budget/info"] = httpx.Response(200, json=[])
 
-        litellm_key.main(["tenant-budget", "set", "--max-budget", "100"])
+        litellm_key.main(["person-budget", "set", "--max-budget", "100"])
 
         out = capsys.readouterr()
         assert all(r.headers["authorization"] == f"Bearer {MASTER}" for r in gateway_calls.requests)
@@ -239,7 +239,7 @@ class TestTenantBudget:
         """Saving blind could create a second budget row or overwrite one the operator meant to keep."""
         gateway_calls.replies["/budget/info"] = httpx.Response(500, text="No db connected")
 
-        code = litellm_key.main(["tenant-budget", "set", "--max-budget", "100"])
+        code = litellm_key.main(["person-budget", "set", "--max-budget", "100"])
 
         assert code == 1
         assert [r.url.path for r in gateway_calls.requests] == ["/budget/info"]
@@ -249,40 +249,46 @@ class TestTenantBudget:
         gateway_calls.replies["/budget/info"] = httpx.Response(200, json=[])
         gateway_calls.replies["/budget/new"] = httpx.Response(400, text="bad budget")
 
-        assert litellm_key.main(["tenant-budget", "set", "--max-budget", "100"]) == 1
+        assert litellm_key.main(["person-budget", "set", "--max-budget", "100"]) == 1
         assert "400" in capsys.readouterr().err
 
     def test_info_reads_the_cap_and_the_reset(self, gateway_calls, capsys):
         gateway_calls.replies["/budget/info"] = httpx.Response(200, json=[self.EXISTING])
 
-        code = litellm_key.main(["tenant-budget", "info"])
+        code = litellm_key.main(["person-budget", "info"])
 
         out = capsys.readouterr().out
         assert code == 0
-        assert "$100 per tenant per 30d" in out and "2026-11-20" in out
+        assert "$100 per person per 30d" in out and "2026-11-20" in out
 
     def test_info_on_a_missing_budget_fails_and_says_nothing_is_capped(self, gateway_calls, capsys):
         """The silent state: LiteLLM logs a warning and applies no cap. It must read as a failure to an operator and to a script."""
         gateway_calls.replies["/budget/info"] = httpx.Response(200, json=[])
 
-        code = litellm_key.main(["tenant-budget", "info"])
+        code = litellm_key.main(["person-budget", "info"])
 
         err = capsys.readouterr().err
         assert code == 1
-        assert "NOT FOUND" in err and "applies none" in err and "tenant-budget set" in err
+        assert "NOT FOUND" in err and "applies none" in err and "person-budget set" in err
 
     def test_info_on_a_refusal_is_a_failure(self, gateway_calls, capsys):
         gateway_calls.replies["/budget/info"] = httpx.Response(401, text="Authentication Error")
 
-        assert litellm_key.main(["tenant-budget", "info"]) == 1
+        assert litellm_key.main(["person-budget", "info"]) == 1
         assert "401" in capsys.readouterr().err
 
 
 class TestEndUser:
-    def test_it_prints_the_id_the_gateway_shows_for_a_tenant(self, capsys):
-        """Needs no gateway and no credentials: it is a pure hash, and operators run it to read a
-        spend log that only shows the opaque id."""
+    def test_it_prints_the_id_the_gateway_shows_for_a_person(self, capsys):
+        """Needs no gateway and no credentials: it is the same function the app calls, so what an operator types into LiteLLM's Customer
+        Usage filter or a `/customer/new` is exactly what the app sends, encoding included."""
+        code = litellm_key.main(["end-user", "--tenant", "acme", "--principal", "telegram:123"])
+
+        assert code == 0
+        assert capsys.readouterr().out.strip() == gateway.end_user_id("acme", "telegram:123") == "tenant:acme/user:telegram%3A123"
+
+    def test_without_a_principal_it_prints_the_older_tenant_level_id_that_old_spend_logs_carry(self, capsys):
         code = litellm_key.main(["end-user", "--tenant", "acme"])
 
         assert code == 0
-        assert capsys.readouterr().out.strip() == gateway.end_user_id("acme")
+        assert capsys.readouterr().out.strip() == gateway.legacy_end_user_id("acme")

@@ -337,8 +337,9 @@ groups:
             are being refused until it resets or is raised. The gateway is the BACKSTOP
             behind the per-turn, per-tenant and per-person ceilings, so this means those
             did not stop the spend first (or the backstop is sized too low). Find who
-            spent it (LiteLLM spend logs, grouped by `end_user` / the `tenant:<name>`
-            tag) before raising it. The app's key shows its spend and reset time with
+            spent it (LiteLLM spend logs or its Customer Usage view, grouped by
+            `end_user`, which is `tenant:<tenant>/user:<principal>`, a person; or the
+            `tenant:<name>` tag for a whole tenant) before raising it. The app's key shows its spend and reset time with
             `python -m scripts.litellm_key info`; it covers chat and embeddings, so
             retrieval degrades along with answers.
 

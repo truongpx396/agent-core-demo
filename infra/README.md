@@ -182,23 +182,34 @@ dc up -d           # recreates api / agent-worker / ingest-worker with the new k
   LiteLLM will refuse `chat-strong` or `chat-medium` for it ("key not allowed to access model"). Re-mint
   it, or widen it with LiteLLM's `/key/update`, before turning the router on or attaching a tier.
 
-**The per-tenant cap.** The app key's budget is one number for the whole app. LiteLLM also holds a
-*default budget for every tenant* (the app sends `user` = a hash of the tenant): the configs name it
-(`litellm_settings.max_end_user_budget_id: tenant-default`) and **you create it once**; until you do,
-LiteLLM logs "Default end user budget not found in database" on each call and applies no cap at all.
+**The per-person cap, and who a person is.** The app key's budget is one number for the whole app. The
+app also sends every call with `user` = `tenant:<tenant>/user:<principal>` (for example
+`tenant:acme/user:alice`; a `:` or `/` inside a name is written `%3A` / `%2F`), which LiteLLM keeps as the
+call's *end user*: it is what the **Customer Usage** view in the admin UI filters by, so spend can be read
+per person (`python -m scripts.litellm_key end-user --tenant acme --principal alice` prints exactly what
+the app sends). LiteLLM also holds a *default budget for every end user*, i.e. every person: the configs
+name it (`litellm_settings.max_end_user_budget_id: person-default`) and **you create it once**; until you
+do, LiteLLM logs "Default end user budget not found in database" on each call and applies no cap at all.
 
 ```
-dc exec -e LITELLM_MASTER_KEY api python -m scripts.litellm_key tenant-budget set --max-budget <usd per tenant per window>
-dc exec -e LITELLM_MASTER_KEY api python -m scripts.litellm_key tenant-budget info   # exits 1 if it is missing: run it after every deploy
+dc exec -e LITELLM_MASTER_KEY api python -m scripts.litellm_key person-budget set --max-budget <usd per person per window>
+dc exec -e LITELLM_MASTER_KEY api python -m scripts.litellm_key person-budget info   # exits 1 if it is missing: run it after every deploy
 ```
 
-- Size it **above the largest single tenant's own cap** for the same window, like the key budget: it is a
-  backstop beneath the app's limits (`MAX_COST_USD_PER_TENANT_*`, `budget_policies`), not a copy of them.
-  `set` again changes it; LiteLLM reads it through a 60-second cache.
-- It covers **chat calls only**: embeddings carry no end user yet. A tenant that reaches it gets the same
+- It caps **each person**, not a tenant: a tenant with many people can spend many times it, and a tenant's own
+  limits are the app's (`MAX_COST_USD_PER_TENANT_*`, `budget_policies`). There is **no tenant-wide cap at the
+  gateway**; that would need the tenant to be the end user, or a key per tenant.
+- Size it **above the largest single person's legitimate spend** for the same window, like the key budget: it
+  is a backstop beneath the app's limits (`MAX_COST_USD_PER_PRINCIPAL_*` are off by default), not a copy of
+  them. `set` again changes it; LiteLLM reads it through a 60-second cache.
+- It covers **chat calls only**: embeddings carry no end user yet. A person who reaches it gets the same
   `provider_budget_exceeded` and `GatewayBudgetExceeded` page as the key does; the spend logs' `end_user`
-  (map a name with `end-user --tenant`) says whose it was. Different numbers for different tenants would
-  be one LiteLLM customer per tenant, which duplicates `budget_policies`: prefer the app's overrides.
+  says whose it was. A different number for one person is a LiteLLM customer with its own budget
+  (`/customer/new`, `user_id` = the id above), which duplicates the app's `budget_policies`: prefer those.
+- **The end user is readable on purpose, so it is only safe while LiteLLM does not forward `user` to a model
+  provider.** Checked against the pinned image (nothing reached a stub backend, on the Ollama and the
+  OpenAI-compatible routes); re-run that check whenever the image is bumped (below). If you created the
+  earlier `tenant-default` budget, it is no longer referenced: delete it in LiteLLM's UI or with `/budget/delete`.
 
 **Bumping the LiteLLM image.** Both compose files pin `ghcr.io/berriai/litellm:main-stable` by digest, and
 `tests/core/test_compose_litellm_pinned.py` fails if they differ. To move it deliberately:
@@ -209,8 +220,12 @@ docker image inspect ghcr.io/berriai/litellm:main-stable --format '{{index .Repo
 docker manifest inspect ghcr.io/berriai/litellm@sha256:<digest>   # must list linux/amd64 AND linux/arm64
 ```
 
-Put the digest in both `deploy/compose/docker-compose*.yml`, then run `make probe-tools` and check a
-budget stop, a priced call (`x-litellm-response-cost` above 0) and `/model/info` before shipping: the
+Put the digest in both `deploy/compose/docker-compose*.yml`, then run **`make gateway-check`** (the new
+image on the shipped dev config and a stub model backend; Docker only, about a minute) and `make
+probe-tools`, and check a budget stop by hand before shipping. `gateway-check` fails if an alias is
+unpriced, if the gateway's cost is not tokens x the configured price, or **if the end user, tenant,
+principal, conversation or metadata reaches the model backend**: the end user is readable on purpose, which
+is only safe while LiteLLM keeps it to itself, and that is a property of the image, not of this repo. The
 stop's HTTP status changed between releases once, and the app's checks were written against 1.94.1.
 
 ### 7. Point DNS at them (optional)
@@ -327,7 +342,8 @@ dc run -d --no-deps --name billing-export   api python -m credit_billing.cli.exp
 |---|---|---|
 | `gateway`, drift **above** zero | the gateway spent more than the events record: a call whose event was never written (`UsageEventWriteFailing`), an unpriced call (the note says how many), or spend the app does not meter | check the alert history for that day; `usage_event_unpriced_total`; the pricing of the model. A call with no event is also a call no dollar cap counted |
 | `gateway`, drift **below** zero | events with no call behind them, or spend the gateway lost | check the gateway database and its spend-log write queue |
-| a tenant named `tenant_<hash> (no tenant in this database hashes to it)` | the gateway spent for someone with no events at all, the worst shape a lost meter takes | look the hash up with `python -m scripts.litellm_key end-user --tenant <name>`; check it is not another deployment sharing the gateway |
+| a tenant you do not recognise, with `gateway` drift above zero | the gateway spent for a tenant with no events at all, the worst shape a lost meter takes (the tenant is read off the end user `tenant:<tenant>/user:<principal>`, so it is named) | check it is not another deployment sharing the gateway (its end users that are not this app's format go to `unattributed`, never here) |
+| a tenant named `tenant_<hash> (no tenant in this database hashes to it)` | the same, in a spend-log row written before the end user named the person (the older one-way id) | look the hash up with `python -m scripts.litellm_key end-user --tenant <name>`; these age out with the gateway's spend logs |
 
 **Tolerance.** A difference is drift only above the larger of `USAGE_RECONCILE_TOLERANCE_USD` and `_PCT` of the larger figure. A small
 **persistent** gap on every tenant is a price mismatch between the app and the gateway for one of your models, not a loss: tune the percentage

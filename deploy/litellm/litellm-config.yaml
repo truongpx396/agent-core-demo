@@ -14,7 +14,7 @@
 #
 # PRICES. Every local alias below states a price in `model_info`. A local model costs no money, but without a price LiteLLM reports it as
 # either unknown (`null`: the app counts every call as unpriced and `UNPRICED_MODEL_POLICY=block` would refuse it) or a known $0 (and a
-# model whose two prices are both 0 skips budget checks, per LiteLLM's budget docs, so neither the app key's `max_budget` nor the per-tenant
+# model whose two prices are both 0 skips budget checks, per LiteLLM's budget docs, so neither the app key's `max_budget` nor the per-person
 # budget below could ever trip on it; measured on the 1.94.1 image before this change: chat, chat-backup and embed reported 0, vision null).
 # These are SHADOW prices, not a bill: the order of magnitude hosted providers charge for open-weights models of the same
 # size (USD per token: 0.0000001 is $0.10 per million). They make the meter, the caps and LiteLLM's own spend log see local usage as
@@ -202,14 +202,16 @@ litellm_settings:
   request_timeout: 600
   # If "chat" fails, transparently retry on "chat-backup".
   fallbacks: [{"chat": ["chat-backup"]}]
-  # A default per-tenant spend cap at the gateway (COST_GOVERNANCE.md pattern 74). The app sends every call with `user` = a hash of the
-  # tenant (app/core/gateway.py), which LiteLLM keeps as the call's END USER; this names a budget OBJECT that applies to every end user
-  # without a budget of its own, including ones LiteLLM has not seen yet. The id is only a name: the budget itself lives in LiteLLM's
-  # database and is created with `make litellm-key ARGS="tenant-budget set --max-budget <usd>"`. Until that is run LiteLLM finds no
-  # such budget, logs "Default end user budget not found in database" on each call and applies NO per-tenant cap (it fails open).
-  # It is a backstop above the app's own limits (size it above your largest tenant's monthly cap), not a copy of them, and it covers
-  # chat calls only: embeddings carry no end user yet. Keep it equal to scripts/litellm_key.py's TENANT_BUDGET_ID (a test checks).
-  max_end_user_budget_id: tenant-default
+  # A default per-PERSON spend cap at the gateway (COST_GOVERNANCE.md pattern 74). The app sends every call with `user` =
+  # `tenant:<tenant>/user:<principal>` (app/core/gateway.py), which LiteLLM keeps as the call's END USER (its Customer Usage view filters
+  # by it); this names a budget OBJECT that applies to every end user without a budget of its own, including ones LiteLLM has not seen
+  # yet. The id is only a name: the budget itself lives in LiteLLM's database and is created with
+  # `make litellm-key ARGS="person-budget set --max-budget <usd>"`. Until that is run LiteLLM finds no such budget, logs "Default end
+  # user budget not found in database" on each call and applies NO per-person cap (it fails open). It caps each PERSON, so a tenant
+  # with many people can spend many times it: the tenant's own limits are the app's. It is a backstop above the app's own limits (size
+  # it above your largest person's legitimate spend), not a copy of them, and it covers chat calls only: embeddings carry no end user
+  # yet. Keep it equal to scripts/litellm_key.py's PERSON_BUDGET_ID (a test checks).
+  max_end_user_budget_id: person-default
   # Log every request/response to Langfuse from the proxy layer, and expose
   # LiteLLM's own built-in request/latency/token metrics for Prometheus to
   # scrape at GET /metrics (see docker-compose.observability.yml's
