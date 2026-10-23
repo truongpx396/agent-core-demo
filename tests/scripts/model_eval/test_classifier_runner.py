@@ -9,7 +9,7 @@ from scripts.model_eval.runners import classify
 from scripts.model_eval.runners.base import PrerequisiteMissing
 from scripts.model_eval.suites import ClassifierSuite, ItemData
 
-CANDIDATE = Candidate("ml-service-classify", "classifier", "service", "MIT", Source(model="classify"))
+CANDIDATE = Candidate("some-router", "classifier", "service", "MIT", Source(model="classify"))
 
 
 # ---- the suite ----------------------------------------------------------------------------------------------------------------------
@@ -70,63 +70,11 @@ def test_higher_is_better_is_declared_for_every_metric_and_lower_for_the_three_t
     assert [n for n in suite.names() if not suite.higher_is_better(n)] == ["ece", "cpt50", "cpt90"]
 
 
-# ---- the service path ---------------------------------------------------------------------------------------------------------------
-class FakeResponse:
-    def __init__(self, body, status=200):
-        self._body, self.status = body, status
-
-    def raise_for_status(self):
-        if self.status >= 400:
-            raise RuntimeError(f"HTTP {self.status}")
-
-    def json(self):
-        return self._body
-
-
-class FakeClient:
-    """A /classify that scores a text by its length / 100 and records every request."""
-
-    def __init__(self, served_by="primary", fail=False, none_after=None):
-        self.requests, self.served_by, self.fail, self.none_after = [], served_by, fail, none_after
-
-    def post(self, url, json):
-        if self.fail:
-            raise ConnectionError("refused")
-        self.requests.append(json)
-        served_by = "none" if self.none_after is not None and len(self.requests) > self.none_after else self.served_by
-        results = [{"index": i, "decision": "x", "score": None if served_by == "none" else len(t) / 100} for i, t in reversed(list(enumerate(json["texts"])))]
-        return FakeResponse({"served_by": served_by, "head_version": "v9", "results": results})
-
-
-def test_the_service_scores_come_back_in_input_order_and_in_batches_of_at_most_sixteen():
-    client = FakeClient()
-    backend = classify.ServiceClassifier(CANDIDATE, client=client)
-    texts = ["x" * n for n in range(1, 41)]
-    client.requests.clear()
-
-    scores = backend.scores(texts)
-
-    assert scores == [n / 100 for n in range(1, 41)]  # the fake answers in reverse; the order is restored by `index`
-    assert [len(r["texts"]) for r in client.requests] == [16, 16, 8]
-    assert all(r["task"] == "route" for r in client.requests)
-    assert backend.identity == "ml-service:classify" and backend.revision == "v9"
-
-
-def test_a_service_with_no_accepted_head_is_not_something_to_evaluate_and_the_message_points_at_the_extension_point():
-    with pytest.raises(PrerequisiteMissing, match=r"served_by=none.*run\(backend=\.\.\.\)"):
-        classify.ServiceClassifier(CANDIDATE, client=FakeClient(served_by="none"))
-
-
-def test_an_unreachable_service_is_a_missing_prerequisite_not_a_traceback():
-    with pytest.raises(PrerequisiteMissing, match="did not answer /classify"):
-        classify.ServiceClassifier(CANDIDATE, client=FakeClient(fail=True))
-
-
-def test_a_service_that_stops_giving_scores_part_way_ends_the_run_instead_of_scoring_with_holes():
-    backend = classify.ServiceClassifier(CANDIDATE, client=FakeClient(none_after=2))  # the probe and the first batch are fine
-
-    with pytest.raises(PrerequisiteMissing, match="stopped giving scores"):
-        backend.scores(["x"] * 40)
+# ---- the backends -------------------------------------------------------------------------------------------------------------------
+def test_the_service_path_is_gone_with_the_trained_head_and_the_message_says_what_to_do_instead():
+    with pytest.raises(PrerequisiteMissing, match=r"no longer serves a trained routing head.*run\(backend=\.\.\.\)"):
+        classify.build_backend(CANDIDATE, classify.RunSettings(), via="service")
+    assert not hasattr(classify, "ServiceClassifier")
 
 
 # ---- finding the outcomes -----------------------------------------------------------------------------------------------------------

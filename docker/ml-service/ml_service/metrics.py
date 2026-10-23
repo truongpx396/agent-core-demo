@@ -24,9 +24,6 @@ class Metrics:
         self.registry = CollectorRegistry()
         r = self.registry
         self.model_state = Gauge("ml_model_state", "1 when the named model is ready, else 0.", ["model"], registry=r)
-        self.classifier_serving = Gauge(
-            "ml_classifier_serving", "1 for the classifier model currently answering (served_by primary|fallback), else 0.", ["served_by"], registry=r
-        )
         self.embed_requests = Counter("ml_embed_requests_total", "Embedding requests accepted.", ["model"], registry=r)
         self.embed_items = Counter("ml_embed_items_total", "Texts embedded.", ["model"], registry=r)
         self.embed_errors = Counter("ml_embed_errors_total", "Embedding requests that failed.", ["model", "code"], registry=r)
@@ -34,9 +31,8 @@ class Metrics:
             "ml_embed_latency_seconds", "Wall time of an embedding request.", ["model"], buckets=LATENCY_BUCKETS, registry=r
         )
         self.embed_batch = Histogram("ml_embed_batch_size", "Texts per embedding request.", ["model"], buckets=BATCH_BUCKETS, registry=r)
-        self.classify_requests = Counter("ml_classify_requests_total", "Classification requests, by who answered.", ["served_by"], registry=r)
         self.label_requests = Counter(
-            "ml_label_requests_total", "Label-set requests (POST /classify task=label), by set and who answered. The set is a name the service already knows.",
+            "ml_label_requests_total", "Decisions asked of a label set (POST /v1/decide, one per question), by set and who answered (served_by none = a 503). The set is a name the service already knows.",
             ["labelset", "served_by"], registry=r,
         )
 

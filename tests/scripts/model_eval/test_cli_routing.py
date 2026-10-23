@@ -19,7 +19,7 @@ from scripts.model_eval.runners import classify
 
 TOML = """
 [[candidate]]
-name = "ml-service-classify"
+name = "stub-router"
 kind = "classifier"
 path = "service"
 licence = "MIT"
@@ -242,7 +242,7 @@ def test_a_router_handed_to_the_runner_is_scored_timed_and_compared_like_any_oth
     monkeypatch.setattr(classify, "build_backend", lambda candidate, settings, via=None: PerfectRouter())
     out = tmp_path / "reports"
 
-    assert cli.main(run_args("ml-service-classify", "--out", str(out))) == cli.OK
+    assert cli.main(run_args("stub-router", "--out", str(out))) == cli.OK
 
     report = json.loads(next(out.glob("*.json")).read_text())
     assert report["candidate"]["identity"] == "perfect-router" and report["candidate"]["revision"] == "r1"

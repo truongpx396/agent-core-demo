@@ -1,5 +1,7 @@
 # Contract: the tiered router in the graph
 
+> **Superseded in part by spec 016 (`specs/016-decide-api/`).** The wire described here, `POST /classify` with `task: "label"`, no longer exists, nor does `/classify` at all (the unused trained-head path went too); the same matcher is now asked through `POST /v1/decide` (`specs/016-decide-api/contracts/decide.md`), and `ROUTER_LABELSET` became `ROUTER_LABELS`. The label-set file format, cutoffs, indexes and failover below are unchanged.
+
 Replaces steps 1-6 of `specs/014-model-serving-eval-harness/contracts/graph-seam.md` (`route_model`) and the router rows of that spec's
 `contracts/settings.md`. Everything else in the 014 seam stands and keeps its tests: `route_model` writes only `State.model_route`; it cannot touch
 tool gating, approval, tenant scope or idempotency (014 FR-031..037); it is never reached for a refused input, a cache hit or a resumed turn; a

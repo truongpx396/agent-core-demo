@@ -48,6 +48,20 @@ LABEL_TIERS: dict[str, Tier] = {
     "high_stakes": "strong",
 }
 
+# What each label means, in words: sent as the `criteria` of the `route-topics` question. The ML service matches by example sentences and ignores
+# these; a hosted implementation of the same interface reads them, so they are written for a reader that has only these words. Same keys as LABEL_TIERS.
+ROUTE_INSTRUCTIONS = "What kind of work does the user's message ask of an assistant? Judge the kind of work, not how long or hard the message is."
+LABEL_DESCRIPTIONS: dict[str, str] = {
+    "smalltalk": "a greeting, thanks or other courtesy with no task in it",
+    "lookup": "finding a fact, a policy, a price or a status that is written down somewhere",
+    "action": "asking the assistant to do something in a system: create, update, send, book or cancel",
+    "drafting": "writing or rewriting a short text such as an email, a summary or a reply",
+    "analysis": "weighing several considerations, comparing options or explaining why something happened",
+    "reasoning": "a multi-step calculation, a piece of logic or an argument that has to be worked through",
+    "code": "writing, explaining or fixing code, a query or a configuration",
+    "high_stakes": "a question where a wrong answer could cost money, safety, legal standing or a person's job",
+}
+
 # The words people use when they want a model to reason rather than recall. Two distinct ones ask for the middle tier, three for the strongest
 # (LiteLLM's complexity router treats two as the top tier; here a single common word like "compare" is not enough on its own, because "compare the
 # plans" is an ordinary support question). Word-bounded, so "improve" does not contain "prove".

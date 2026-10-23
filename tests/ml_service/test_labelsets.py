@@ -1,5 +1,6 @@
-"""POST /classify with `task: "label"`: which predefined choice is this text nearest to, and the rules that keep a label set from doing harm
-(specs/015 FR-001..007).
+"""POST /v1/decide asked a `choice` question of a label set: which predefined choice is this text nearest to, and the rules that keep a label
+set from doing harm (specs/015 FR-001..007, specs/016 contracts/decide.md). The first tests pin the wire shape, the table of
+rejected requests its errors, and the rest what the matcher does behind it.
 
 The real app, lifespan, registry, supervisor and label-set files are used; only the two text models are fakes, because what is under test is the
 set's validation, the per-model index and cutoff, and the failover, not the ONNX pass. The geometry is chosen so every expected number is worked
@@ -11,27 +12,32 @@ The rules pinned here, each with the failure it prevents:
 - the examples are embedded by the serving model, and re-embedded when that model's revision changes (a stale vector is confident nonsense);
 - a malformed set is that set's `refused` line and nothing else (a bad file must not stop embeddings, the reranker or the guard);
 - a primary that raises, overruns its deadline or returns NaN hands the request to the fallback, with the fallback's own cutoff;
-- with no model usable the answer is HTTP 200 `served_by: "none"`, never a 5xx;
+- the questions of one request are answered by one model, with one embedding pass;
+- with no model usable the answer is 503 `model_unavailable`, never a 500 and never a guess;
 - no request text reaches a log.
 """
 import asyncio
 import json
 import logging
 import math
+import time
 from pathlib import Path
 
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+import ml_service.app as app_module
 from ml_service import labelsets
+from ml_service.app import create_app
 from ml_service.embed import Embedded
 from ml_service.labelsets import Labeller, Refused, parse_labelset, read_labelsets
 from ml_service.registry import Registry, Slot
-from tests.ml_service.test_classify_failover import (
+from tests.ml_service.fakes import (
     FALLBACK,
     PRIMARY,
     FakeText,
+    loaders_for,
     make_client,
     settings,
     spec,
@@ -87,53 +93,62 @@ def sets(tmp_path: Path) -> Path:
 
 def client_for(tmp_path: Path, sets_dir: Path, *, services: dict[str, FakeLabelText] | None = None, **kw):
     services = services or {PRIMARY: FakeLabelText(PRIMARY), FALLBACK: FakeLabelText(FALLBACK)}
-    client, services = make_client(tmp_path, services=services, labelset_dir=sets_dir, **kw)  # type: ignore[arg-type]  # FakeLabelText is a FakeText
+    client, services = make_client(services=services, labelset_dir=sets_dir, **kw)  # type: ignore[arg-type]  # FakeLabelText is a FakeText
     return client, services
 
 
-def label(client: TestClient, texts=(NEAR_ALPHA,), labelset: str = "mood", **extra):
-    return client.post("/classify", json={"task": "label", "labelset": labelset, "texts": list(texts), **extra})
+def decide(client: TestClient, text: str = NEAR_ALPHA, *, name: str = "mood", **extra):
+    """One `choice` question named after the label set, in the System One request shape (specs/016 contracts/decide.md)."""
+    options = {label: f"the {label} topic" for label in AXES}
+    question = {"type": "choice", "instructions": "Which topic is this about?", "criteria": options}
+    return client.post("/v1/decide", json={"state": text, "questions": {name: question}, **extra})
+
+
+def answer_of(client: TestClient, text: str = NEAR_ALPHA) -> dict:
+    return decide(client, text).json()["answers"]["mood"]
 
 
 # ---- the primary answers ----------------------------------------------------------------------------------------------------
 def test_a_text_near_one_label_gets_it_with_the_similarity_and_the_runner_up(tmp_path, sets):
     client, _ = client_for(tmp_path, sets)
     with client:
-        body = label(client).json()
+        body = decide(client).json()
 
-    assert body["served_by"] == "primary" and body["model"] == PRIMARY and body["labelset"] == "mood"
-    result = body["results"][0]
-    assert result["index"] == 0 and result["label"] == "alpha" and result["nearest"] == "alpha"
-    assert result["similarity"] == pytest.approx(3 / math.sqrt(10))  # 0.9487
-    assert result["runner_up"] == "beta" and result["margin"] == pytest.approx(3 / math.sqrt(10) - 1 / math.sqrt(10))
-    assert result["truncated"] is False
+    assert body["x_served_by"] == "primary" and body["model"] == PRIMARY
+    answer = body["answers"]["mood"]
+    assert answer["type"] == "choice" and answer["choice"] == "alpha"
+    evidence = answer["x_evidence"]
+    assert evidence["nearest"] == "alpha" and evidence["similarity"] == pytest.approx(3 / math.sqrt(10))  # 0.9487
+    assert evidence["runner_up"] == "beta" and evidence["margin"] == pytest.approx(3 / math.sqrt(10) - 1 / math.sqrt(10))
+    assert evidence["truncated"] is False
+    assert body["usage"] == {"input_tokens": 3, "output_tokens": 0}, "the embedder's token count, and nothing generated"
+
+
+def test_the_answer_carries_no_confidence_and_no_probabilities_because_a_cosine_is_neither(tmp_path, sets):
+    client, _ = client_for(tmp_path, sets)
+    with client:
+        answer = decide(client).json()["answers"]["mood"]
+
+    assert "confidence" not in answer and "probabilities" not in answer
+    assert set(answer) == {"type", "choice", "x_evidence", "x_labelset_version"}, "everything this service adds is prefixed x_"
 
 
 def test_the_version_is_the_sets_content_and_is_stable(tmp_path, sets):
     client, _ = client_for(tmp_path, sets)
     with client:
-        first = label(client).json()["labelset_version"]
-        second = label(client).json()["labelset_version"]
+        first = answer_of(client)["x_labelset_version"]
+        second = answer_of(client)["x_labelset_version"]
 
     assert first == second and len(first) == 12 and int(first, 16) >= 0
 
 
-def test_a_text_below_the_cutoff_gets_no_label_but_still_reports_what_was_nearest(tmp_path, sets):
+def test_a_text_below_the_cutoff_has_no_choice_but_still_reports_what_was_nearest(tmp_path, sets):
     client, _ = client_for(tmp_path, sets)
     with client:
-        result = label(client, [BETWEEN]).json()["results"][0]
+        answer = answer_of(client, BETWEEN)
 
-    assert result["label"] is None and result["nearest"] == "alpha"
-    assert result["similarity"] == pytest.approx(1 / math.sqrt(2)) and result["margin"] == pytest.approx(0.0, abs=1e-6)
-
-
-def test_results_come_back_in_request_order(tmp_path, sets):
-    client, _ = client_for(tmp_path, sets)
-    with client:
-        results = label(client, [NEAR_ALPHA, EVERYWHERE, BETWEEN]).json()["results"]
-
-    assert [r["index"] for r in results] == [0, 1, 2]
-    assert [r["label"] for r in results] == ["alpha", None, None]
+    assert answer["choice"] is None and answer["x_evidence"]["nearest"] == "alpha"
+    assert answer["x_evidence"]["similarity"] == pytest.approx(1 / math.sqrt(2)) and answer["x_evidence"]["margin"] == pytest.approx(0.0, abs=1e-6)
 
 
 def test_the_cutoff_is_inclusive(tmp_path, sets):
@@ -143,9 +158,33 @@ def test_the_cutoff_is_inclusive(tmp_path, sets):
         service.vectors["four three"] = np.array([4.0, 3.0, 0.0], dtype=np.float32)
     client, _ = client_for(tmp_path, sets, services=services)
     with client:
-        result = label(client, ["four three"]).json()["results"][0]
+        answer = answer_of(client, "four three")
 
-    assert result["similarity"] == PRIMARY_CUTOFF == 0.8 and result["label"] == "alpha"
+    assert answer["x_evidence"]["similarity"] == PRIMARY_CUTOFF == 0.8 and answer["choice"] == "alpha"
+
+
+def test_two_questions_in_one_request_are_answered_by_one_model_with_one_embedding_pass(tmp_path, sets):
+    write_set(sets, "mood-too")
+    client, services = client_for(tmp_path, sets)
+    with client:
+        body = client.post("/v1/decide", json={"state": NEAR_ALPHA, "questions": {"mood": GOOD, "mood-too": GOOD}}).json()
+
+    assert body["x_served_by"] == "primary" and set(body["answers"]) == {"mood", "mood-too"}
+    assert [a["choice"] for a in body["answers"].values()] == ["alpha", "alpha"]
+    assert services[PRIMARY].calls.count([NEAR_ALPHA]) == 1, "the text is embedded once, however many questions ask about it"
+    assert body["usage"]["input_tokens"] == 3, "and its tokens are counted once"
+
+
+def test_questions_are_never_split_across_models(tmp_path, sets):
+    """`mood-too` has a cutoff for the fallback only, so the primary cannot serve it; the whole request goes to the fallback, because a reply
+    that said `model: primary` for one answer and fallback for the other would be a lie about which scale each cutoff was applied on."""
+    write_set(sets, "mood-too", calibration={FALLBACK: {"min_similarity": FALLBACK_CUTOFF}})
+    client, _ = client_for(tmp_path, sets)
+    with client:
+        body = client.post("/v1/decide", json={"state": BETWEEN, "questions": {"mood": GOOD, "mood-too": GOOD}}).json()
+
+    assert body["x_served_by"] == "fallback" and body["model"] == FALLBACK
+    assert [a["choice"] for a in body["answers"].values()] == ["alpha", "alpha"]  # 0.7071 clears the fallback's 0.5 for both
 
 
 # ---- failover: each model has its own index and its own cutoff -----------------------------------------------------------------
@@ -155,11 +194,11 @@ def test_a_primary_that_fails_hands_over_and_the_fallback_uses_its_own_cutoff(tm
     client, _ = client_for(tmp_path, sets, services=services)
     with client:
         services[PRIMARY].mode = mode  # after the start-up index build, so the failure is at request time
-        body = label(client, [BETWEEN]).json()
+        body = decide(client, BETWEEN).json()
         state = client.get("/health/models").json()["models"][PRIMARY]["state"]
 
-    assert body["served_by"] == "fallback" and body["model"] == FALLBACK
-    assert body["results"][0]["label"] == "alpha"  # 0.7071 is below the primary's 0.8 and above the fallback's 0.5
+    assert body["x_served_by"] == "fallback" and body["model"] == FALLBACK
+    assert body["answers"]["mood"]["choice"] == "alpha"  # 0.7071 is below the primary's 0.8 and above the fallback's 0.5
     # A model that RAISES is `failed` (and reloaded after a backoff); one that is only slow stays `ready` (the next test).
     assert state == ("ready" if mode == "hang" else "failed")
 
@@ -169,23 +208,21 @@ def test_a_slow_primary_is_skipped_for_the_request_but_stays_ready(tmp_path, set
     client, _ = client_for(tmp_path, sets, services=services)
     with client:
         services[PRIMARY].mode = "hang"
-        assert label(client).json()["served_by"] == "fallback"
+        assert decide(client).json()["x_served_by"] == "fallback"
         services[PRIMARY].mode = "ok"
-        assert label(client).json()["served_by"] == "primary"
+        assert decide(client).json()["x_served_by"] == "primary"
         assert client.get("/health/models").json()["models"][PRIMARY]["state"] == "ready"
 
 
-def test_when_no_model_can_answer_it_is_a_200_with_served_by_none(tmp_path, sets):
+def test_when_no_model_can_answer_it_is_a_503_model_unavailable_with_retry_after(tmp_path, sets):
     services = {PRIMARY: FakeLabelText(PRIMARY), FALLBACK: FakeLabelText(FALLBACK)}
     client, _ = client_for(tmp_path, sets, services=services)
     with client:
         services[PRIMARY].mode = services[FALLBACK].mode = "raise"
-        response = label(client, [NEAR_ALPHA, BETWEEN])
+        response = decide(client)
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["served_by"] == "none" and body["model"] is None and body["labelset_version"] is None
-    assert body["results"] == [{"index": i, "label": None, "nearest": None, "similarity": None, "runner_up": None, "margin": None, "truncated": False} for i in (0, 1)]
+    assert response.status_code == 503 and response.headers["retry-after"] == "1"
+    assert response.json() == {"error": {"code": "model_unavailable", "message": "no model can answer these questions right now"}}
 
 
 def test_a_model_with_no_cutoff_for_the_set_does_not_serve_it(tmp_path):
@@ -193,20 +230,78 @@ def test_a_model_with_no_cutoff_for_the_set_does_not_serve_it(tmp_path):
     write_set(sets_dir, calibration={FALLBACK: {"min_similarity": FALLBACK_CUTOFF}})  # nothing for the primary
     client, services = client_for(tmp_path, sets_dir)
     with client:
-        body = label(client).json()
+        body = decide(client).json()
         shown = client.get("/health/models").json()["labelsets"]["mood"]["models"]
 
-    assert body["served_by"] == "fallback" and body["model"] == FALLBACK
+    assert body["x_served_by"] == "fallback" and body["model"] == FALLBACK
     assert shown[PRIMARY] == f"refused: no calibration for {PRIMARY}" and shown[FALLBACK] == "loaded"
     assert len(services[PRIMARY].calls) == 0, "a model that cannot serve the set must not even be asked to embed its examples"
 
 
-def test_with_no_cutoff_for_any_model_the_answer_is_none(tmp_path):
+def test_with_no_cutoff_for_any_model_the_answer_is_unavailable(tmp_path):
     sets_dir = tmp_path / "labelsets"
     write_set(sets_dir, calibration={"some-other-model": {"min_similarity": 0.5}})
     client, _ = client_for(tmp_path, sets_dir)
     with client:
-        assert label(client).json()["served_by"] == "none"
+        assert decide(client).status_code == 503
+
+
+def test_the_primary_is_used_again_after_it_recovers(tmp_path, sets, monkeypatch):
+    monkeypatch.setattr(app_module, "SUPERVISOR_INTERVAL_S", 0.01)
+    first, healthy = FakeLabelText(PRIMARY), FakeLabelText(PRIMARY)
+    reloads = iter([first, healthy])
+    client, _ = client_for(tmp_path, sets, loaders={PRIMARY: lambda: next(reloads)})
+    with client:
+        first.mode = "raise"  # after the start-up index build, so the break is at request time
+        assert decide(client).json()["x_served_by"] == "fallback"  # the first call breaks it ...
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and decide(client).json().get("x_served_by") != "primary":
+            time.sleep(0.02)  # ... the supervisor reloads it after the (shortened) backoff, and it is the primary again
+        served_by = decide(client).json()["x_served_by"]
+
+    assert served_by == "primary"
+
+
+def test_a_model_without_the_classify_role_is_never_asked(tmp_path, sets):
+    services = {PRIMARY: FakeLabelText(PRIMARY), FALLBACK: FakeLabelText(FALLBACK)}
+    app = create_app(
+        settings(labelset_dir=sets),
+        specs=[spec(PRIMARY, roles=("embed",)), spec(FALLBACK)],  # the primary only embeds: the fallback is the only matcher
+        loaders=loaders_for(services),
+    )
+    with TestClient(app) as client:
+        body = decide(client).json()
+
+    assert services[PRIMARY].calls == []
+    assert body["x_served_by"] == "primary" and body["model"] == FALLBACK  # the first matcher IS the primary, whatever its name
+
+
+def test_a_model_is_loaded_once_and_serves_every_role_it_declares_but_only_those(tmp_path, sets):
+    services = {PRIMARY: FakeLabelText(PRIMARY), FALLBACK: FakeLabelText(FALLBACK)}
+    app = create_app(
+        settings(labelset_dir=sets),
+        specs=[spec(PRIMARY), spec(FALLBACK, roles=("classify",))],  # the fallback decides but does not embed
+        loaders=loaders_for(services),
+    )
+    with TestClient(app) as client:
+        listed = {m["id"] for m in client.get("/v1/models").json()["data"]}
+        embedded = client.post("/v1/embeddings", json={"model": PRIMARY, "input": NEAR_ALPHA})
+        refused = client.post("/v1/embeddings", json={"model": FALLBACK, "input": NEAR_ALPHA})
+        decided = decide(client).json()
+
+    assert listed == {PRIMARY}
+    assert embedded.status_code == 200  # the same slot answers /v1/embeddings ...
+    assert decided["x_served_by"] == "primary"  # ... and /v1/decide
+    assert refused.status_code == 404 and refused.json()["error"]["code"] == "model_not_found"
+
+
+def test_truncation_is_reported_in_the_evidence(tmp_path, sets):
+    services = {PRIMARY: FakeLabelText(PRIMARY, truncated=True), FALLBACK: FakeLabelText(FALLBACK)}
+    client, _ = client_for(tmp_path, sets, services=services)
+    with client:
+        evidence = answer_of(client)["x_evidence"]
+
+    assert evidence["truncated"] is True
 
 
 # ---- the index follows the model --------------------------------------------------------------------------------------------
@@ -219,7 +314,7 @@ async def test_examples_are_embedded_again_when_the_models_revision_changes(tmp_
     await registry.load_all()
     from ml_service.metrics import Metrics
 
-    labeller = Labeller(registry, [spec(PRIMARY)], read_labelsets(tmp_path), settings(tmp_path), Metrics())
+    labeller = Labeller(registry, [spec(PRIMARY)], read_labelsets(tmp_path), settings(), Metrics())
     await labeller.sync()
     await labeller.sync()  # nothing changed: no second embedding pass
     assert len(service.calls) == 1 and len(service.calls[0]) == 9
@@ -234,6 +329,22 @@ async def test_examples_are_embedded_again_when_the_models_revision_changes(tmp_
 
 
 @pytest.mark.asyncio
+async def test_asking_about_no_sets_is_no_answer_and_costs_no_model_pass(tmp_path):
+    write_set(tmp_path)
+    service = FakeLabelText(PRIMARY)
+    registry = Registry()
+    registry.add(Slot(name=PRIMARY, roles=("embed", "classify"), loader=lambda: service))
+    await registry.load_all()
+    from ml_service.metrics import Metrics
+
+    labeller = Labeller(registry, [spec(PRIMARY)], read_labelsets(tmp_path), settings(), Metrics())
+    await labeller.sync()
+    before = len(service.calls)
+
+    assert await labeller.decide([], NEAR_ALPHA) is None and len(service.calls) == before
+
+
+@pytest.mark.asyncio
 async def test_before_the_first_index_a_set_is_pending_not_wrong(tmp_path):
     write_set(tmp_path)
     registry = Registry()
@@ -241,7 +352,7 @@ async def test_before_the_first_index_a_set_is_pending_not_wrong(tmp_path):
     await registry.load_all()
     from ml_service.metrics import Metrics
 
-    labeller = Labeller(registry, [spec(PRIMARY)], read_labelsets(tmp_path), settings(tmp_path), Metrics())
+    labeller = Labeller(registry, [spec(PRIMARY)], read_labelsets(tmp_path), settings(), Metrics())
 
     assert labeller.snapshot()["mood"]["models"][PRIMARY] == "pending: not indexed yet"
     assert (await labeller.label("mood", [NEAR_ALPHA])).served_by == "none"
@@ -256,7 +367,7 @@ async def test_an_indexing_failure_is_the_pairs_status_and_the_models_failed_sta
     await registry.load_all()
     from ml_service.metrics import Metrics
 
-    labeller = Labeller(registry, [spec(PRIMARY)], read_labelsets(tmp_path), settings(tmp_path), Metrics())
+    labeller = Labeller(registry, [spec(PRIMARY)], read_labelsets(tmp_path), settings(), Metrics())
     await labeller.sync()
 
     assert labeller.snapshot()["mood"]["models"][PRIMARY] == "pending: indexing failed (RuntimeError)"
@@ -264,36 +375,102 @@ async def test_an_indexing_failure_is_the_pairs_status_and_the_models_failed_sta
 
 
 # ---- the request ------------------------------------------------------------------------------------------------------------
+GOOD = {"type": "choice", "instructions": "Which topic?", "criteria": {label: f"the {label} topic" for label in AXES}}
+
+
 @pytest.mark.parametrize(
-    ("body", "code"),
+    ("body", "status", "code"),
     [
-        ({"task": "label", "texts": ["x"]}, "invalid_input"),
-        ({"task": "label", "labelset": "", "texts": ["x"]}, "invalid_input"),
-        ({"task": "label", "labelset": 3, "texts": ["x"]}, "invalid_input"),
-        ({"task": "label", "labelset": "mood", "texts": []}, "invalid_input"),
-        ({"task": "label", "labelset": "mood", "texts": ["x"] * 17}, "batch_too_large"),
-        ({"task": "label", "labelset": "mood", "texts": ["x" * 41]}, "input_too_long"),
-        ({"task": "label", "labelset": "nope", "texts": ["x"]}, "unknown_labelset"),
-        ({"task": "labels", "labelset": "mood", "texts": ["x"]}, "invalid_task"),
-        ({"labelset": "mood", "texts": ["x"]}, "invalid_task"),
+        ("not an object", 400, "invalid_input"),
+        ({"questions": {"mood": GOOD}}, 400, "invalid_input"),  # no state
+        ({"state": "", "questions": {"mood": GOOD}}, 400, "invalid_input"),
+        ({"state": "   ", "questions": {"mood": GOOD}}, 400, "invalid_input"),
+        ({"state": 3, "questions": {"mood": GOOD}}, 400, "invalid_input"),
+        ({"state": {"a": 1}, "questions": {"mood": GOOD}}, 422, "unsupported_state"),
+        ({"state": ["a"], "questions": {"mood": GOOD}}, 422, "unsupported_state"),
+        ({"state": "x" * 41, "questions": {"mood": GOOD}}, 413, "input_too_long"),
+        ({"state": "x"}, 400, "invalid_input"),  # no questions
+        ({"state": "x", "questions": {}}, 400, "invalid_input"),
+        ({"state": "x", "questions": [GOOD]}, 400, "invalid_input"),
+        ({"state": "x", "questions": {f"q{i}": GOOD for i in range(9)}}, 400, "too_many_questions"),
+        ({"state": "x", "questions": {"mood": {**GOOD, "criteria": {f"o{i}": "d" for i in range(256)}}}}, 400, "invalid_input"),  # the interface's 255 options
+        ({"state": "x", "questions": {"mood": {**GOOD, "criteria": {f"o{i}": "d" for i in range(255)}}}}, 400, "criteria_mismatch"),  # 255 is allowed, and then is not the set
+        ({"state": "x", "questions": {"mood": GOOD}, "temperature": 0}, 400, "invalid_input"),
+        ({"state": "x", "questions": {"mood": GOOD}, "assets": {}}, 422, "unsupported_field"),
+        ({"state": "x", "questions": {"mood": GOOD}, "model": "typesafe/jev-1.13.0"}, 400, "unknown_model"),
+        ({"state": "x", "questions": {"bad name!": GOOD}}, 400, "invalid_input"),
+        ({"state": "x", "questions": {"mood": "choice"}}, 400, "invalid_input"),
+        ({"state": "x", "questions": {"mood": {**GOOD, "extra": 1}}}, 400, "invalid_input"),
+        ({"state": "x", "questions": {"mood": {**GOOD, "type": "banana"}}}, 400, "invalid_input"),
+        ({"state": "x", "questions": {"mood": {**GOOD, "type": "noul"}}}, 422, "unsupported_question_type"),
+        ({"state": "x", "questions": {"mood": {**GOOD, "type": "score", "criteria": ["a", "b"]}}}, 422, "unsupported_question_type"),
+        ({"state": "x", "questions": {"mood": {**GOOD, "instructions": ""}}}, 400, "invalid_input"),
+        ({"state": "x", "questions": {"mood": {"type": "choice", "instructions": "i"}}}, 400, "invalid_input"),  # no criteria
+        ({"state": "x", "questions": {"mood": {**GOOD, "criteria": {}}}}, 400, "invalid_input"),
+        ({"state": "x", "questions": {"mood": {**GOOD, "criteria": ["alpha", "beta", "gamma"]}}}, 400, "invalid_input"),
+        ({"state": "x", "questions": {"mood": {**GOOD, "criteria": {"alpha": 1, "beta": "b", "gamma": "g"}}}}, 400, "invalid_input"),
+        ({"state": "x", "questions": {"nope": GOOD}}, 400, "unknown_decision"),
+        ({"state": "x", "questions": {"mood": {**GOOD, "criteria": {"alpha": "a", "beta": "b"}}}}, 400, "criteria_mismatch"),
+        ({"state": "x", "questions": {"mood": {**GOOD, "criteria": {**GOOD["criteria"], "delta": "d"}}}}, 400, "criteria_mismatch"),
     ],
 )
-def test_a_malformed_label_request_is_a_400_with_a_stable_code(tmp_path, sets, body, code):
+def test_a_malformed_request_is_rejected_with_a_stable_code_before_it_reaches_a_model(tmp_path, sets, body, status, code):
     client, services = client_for(tmp_path, sets)
     with client:
         before = len(services[PRIMARY].calls)
-        response = client.post("/classify", json=body)
+        response = client.post("/v1/decide", json=body)
 
-    assert response.status_code == 400 and response.json()["error"]["code"] == code
+    assert response.status_code == status and response.json()["error"]["code"] == code
     assert len(services[PRIMARY].calls) == before, "a rejected request must not reach a model"
 
 
-def test_the_route_task_is_unchanged_by_the_presence_of_label_sets(tmp_path, sets):
+def test_the_limits_are_inclusive(tmp_path, sets):
+    """A state of exactly the limit (40 here) and exactly eight questions are accepted; one more of either is the rejection above."""
+    for i in range(7):
+        write_set(sets, f"mood-{i}")
     client, _ = client_for(tmp_path, sets)
     with client:
-        body = client.post("/classify", json={"task": "route", "texts": ["x"]}).json()
+        at_the_limit = decide(client, "x" * 40)
+        eight = client.post("/v1/decide", json={"state": NEAR_ALPHA, "questions": {"mood": GOOD, **{f"mood-{i}": GOOD for i in range(7)}}})
 
-    assert body["served_by"] == "none" and "head_version" in body and "labelset" not in body
+    assert at_the_limit.status_code == 200 and eight.status_code == 200 and len(eight.json()["answers"]) == 8
+
+
+def test_a_body_that_is_not_json_is_a_400(tmp_path, sets):
+    client, _ = client_for(tmp_path, sets)
+    with client:
+        response = client.post("/v1/decide", content=b"{nope", headers={"content-type": "application/json"})
+
+    assert response.status_code == 400 and response.json()["error"]["code"] == "invalid_input"
+
+
+def test_a_mismatched_criteria_says_what_differs(tmp_path, sets):
+    client, _ = client_for(tmp_path, sets)
+    with client:
+        message = client.post("/v1/decide", json={"state": "x", "questions": {"mood": {**GOOD, "criteria": {"alpha": "a", "delta": "d"}}}}).json()["error"]["message"]
+
+    assert "missing ['beta', 'gamma']" in message and "not in the set ['delta']" in message
+
+
+def test_local_is_an_accepted_model_name_and_leaving_it_out_is_the_same(tmp_path, sets):
+    client, _ = client_for(tmp_path, sets)
+    with client:
+        named = client.post("/v1/decide", json={"model": "local", "state": NEAR_ALPHA, "questions": {"mood": GOOD}})
+        unnamed = client.post("/v1/decide", json={"state": NEAR_ALPHA, "questions": {"mood": GOOD}})
+
+    assert named.status_code == unnamed.status_code == 200 and named.json()["answers"] == unnamed.json()["answers"]
+
+
+@pytest.mark.parametrize("task", ["label", "route"])
+def test_classify_is_gone_whatever_task_it_names(tmp_path, sets, task):
+    """`/classify` served a trained routing head (spec 014, never accepted) and then the first draft of the topic matcher (spec 015); both are
+    `/v1/decide` or nothing now. A caller still posting to it must be told by a 404, not answered by something that happens to look similar."""
+    client, _ = client_for(tmp_path, sets)
+    with client:
+        response = client.post("/classify", json={"task": task, "labelset": "mood", "texts": ["x"]})
+        paths = set(client.get("/openapi.json").json()["paths"])
+
+    assert response.status_code == 404 and "/classify" not in paths and "/v1/decide" in paths
 
 
 # ---- a bad file is that set's problem, and only that set's -----------------------------------------------------------------------
@@ -302,13 +479,13 @@ def test_a_malformed_set_is_refused_in_health_and_the_good_one_still_serves(tmp_
     client, _ = client_for(tmp_path, sets)
     with client:
         health = client.get("/health/models").json()
-        good = label(client).json()
-        broken = label(client, labelset="broken").json()
+        good = decide(client).json()
+        broken = decide(client, name="broken")
 
     assert health["labelsets"]["broken"]["state"].startswith("refused: malformed")
     assert health["labelsets"]["mood"]["models"][PRIMARY] == "loaded"
-    assert good["served_by"] == "primary"
-    assert broken["served_by"] == "none", "a known but refused set is 'no answer', not a 400 or a 500"
+    assert good["x_served_by"] == "primary"
+    assert broken.status_code == 503, "a known but refused set is 'cannot answer', not a 400 (its labels are unknown) or a 500"
 
 
 def test_a_missing_label_set_directory_is_an_empty_list_not_a_failed_start(tmp_path):
@@ -316,7 +493,7 @@ def test_a_missing_label_set_directory_is_an_empty_list_not_a_failed_start(tmp_p
     with client:
         assert client.get("/health").status_code == 200
         assert client.get("/health/models").json()["labelsets"] == {}
-        assert label(client).json()["error"]["code"] == "unknown_labelset"
+        assert decide(client).json()["error"]["code"] == "unknown_decision"
 
 
 def test_an_unreadable_label_set_directory_is_a_refusal_not_a_failed_start(tmp_path, monkeypatch):
@@ -422,10 +599,11 @@ def test_no_request_text_reaches_a_log_even_when_a_model_fails(tmp_path, sets, c
     client, _ = client_for(tmp_path, sets, services=services)
     caplog.set_level(logging.DEBUG)
     with client:
+        decide(client, secret)  # 35 characters, under the test limit of 40, so it reaches the model
         services[PRIMARY].mode = "raise"
-        label(client, [secret])
+        decide(client, secret)
         services[PRIMARY].mode = "hang"
-        label(client, [secret])
+        decide(client, secret)
 
     rendered = " ".join(f"{r.getMessage()} {r.__dict__}" for r in caplog.records)
     assert "secret sentence" not in rendered and "4711" not in rendered
@@ -434,12 +612,23 @@ def test_no_request_text_reaches_a_log_even_when_a_model_fails(tmp_path, sets, c
 def test_the_request_counter_is_labelled_by_set_and_answerer_and_an_unknown_name_adds_no_series(tmp_path, sets):
     client, _ = client_for(tmp_path, sets)
     with client:
-        label(client)
-        label(client, labelset="not-a-set-4711")
+        decide(client)
+        decide(client, name="not-a-set-4711")
         scraped = client.get("/metrics").text
 
     assert 'ml_label_requests_total{labelset="mood",served_by="primary"} 1.0' in scraped
     assert "not-a-set-4711" not in scraped
+
+
+def test_an_unavailable_answer_is_counted_as_none(tmp_path, sets):
+    services = {PRIMARY: FakeLabelText(PRIMARY), FALLBACK: FakeLabelText(FALLBACK)}
+    client, _ = client_for(tmp_path, sets, services=services)
+    with client:
+        services[PRIMARY].mode = services[FALLBACK].mode = "raise"
+        decide(client)
+        scraped = client.get("/metrics").text
+
+    assert 'ml_label_requests_total{labelset="mood",served_by="none"} 1.0' in scraped
 
 
 # ---- the centroid ------------------------------------------------------------------------------------------------------------------

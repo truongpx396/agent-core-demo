@@ -1,8 +1,8 @@
-"""The hermetic suite never calls the ML service's /classify, even when a test turns the router ON.
+"""The hermetic suite never calls the ML service's /v1/decide, even when a test turns the router ON.
 
 `tests/conftest.py::mock_classification` is the guard (Constitution VII: a new live-service call on the turn path gets an autouse mock). A
 guard nobody tests is a comment, so this proves two things: with it in place a full-graph turn with the router on makes no HTTP request at
-all, and with the real `label` put back the same turn WOULD make one (so the first claim could have failed).
+all, and with the real `choose` put back the same turn WOULD make one (so the first claim could have failed).
 """
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage
@@ -11,7 +11,7 @@ from app.agent.graph import model_route
 from app.agent.graph.build import GraphDeps
 from app.core import classification
 from tests.agent.fakes import cfg, queue_llm
-from tests.conftest import REAL_LABEL
+from tests.conftest import REAL_CHOOSE
 from tests.ecorp import build_graph
 
 
@@ -26,7 +26,7 @@ def _record_http(monkeypatch) -> list[httpx.Request]:
 
     def recording(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return httpx.Response(200, json={"served_by": "none", "results": [{"index": 0, "label": None, "nearest": None, "similarity": None}]})
+        return httpx.Response(503, json={"error": {"code": "model_unavailable", "message": "no model can answer these questions right now"}})
 
     monkeypatch.setattr(classification.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(recording), **kw))
     return seen
@@ -40,7 +40,7 @@ async def _one_turn():
 async def test_a_full_turn_with_the_router_on_makes_no_classify_request_in_the_default_suite(monkeypatch):
     _router_on(monkeypatch)
     requests = _record_http(monkeypatch)
-    assert classification.label is not REAL_LABEL, "the autouse mock_classification guard is not in place"
+    assert classification.choose is not REAL_CHOOSE, "the autouse mock_classification guard is not in place"
 
     result = await _one_turn()
 
@@ -50,8 +50,8 @@ async def test_a_full_turn_with_the_router_on_makes_no_classify_request_in_the_d
 async def test_the_same_turn_would_call_classify_if_the_guard_were_removed(monkeypatch):
     _router_on(monkeypatch)
     requests = _record_http(monkeypatch)
-    monkeypatch.setattr(classification, "label", REAL_LABEL)
+    monkeypatch.setattr(classification, "choose", REAL_CHOOSE)
 
     await _one_turn()
 
-    assert [r.url.path for r in requests] == ["/classify"]
+    assert [r.url.path for r in requests] == ["/v1/decide"]

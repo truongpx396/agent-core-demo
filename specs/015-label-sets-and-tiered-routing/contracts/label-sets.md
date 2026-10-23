@@ -1,5 +1,7 @@
 # Contract: label sets on the ML service
 
+> **Superseded in part by spec 016 (`specs/016-decide-api/`).** The wire described here, `POST /classify` with `task: "label"`, no longer exists, nor does `/classify` at all (the unused trained-head path went too); the same matcher is now asked through `POST /v1/decide` (`specs/016-decide-api/contracts/decide.md`), and `ROUTER_LABELSET` became `ROUTER_LABELS`. The label-set file format, cutoffs, indexes and failover below are unchanged.
+
 Amends `specs/014-model-serving-eval-harness/contracts/ml-service.md`, whose `/classify` section said "a second task is a later spec's endpoint, not
 a parameter the server guesses". This is that second task. It is a **named** `task` value on the same endpoint (one validation path, one failover
 chain, one deadline), never inferred from the shape of a request; `task: "route"` is unchanged.

@@ -1,5 +1,7 @@
 # Contract: the routing seam in the graph
 
+> **Superseded in part.** The trained routing head and `POST /classify` described here were deleted in spec 016 (`specs/016-decide-api/`); the app's router is rules plus a topic label (spec 015), asked through `POST /v1/decide`. This document is kept as the record of what was built and why.
+
 > **Superseded in part by spec 015** (`specs/015-label-sets-and-tiered-routing/contracts/tiered-router.md`): `route_model`'s steps 1-6 (one strong alias, a head's score
 > against `ROUTER_THRESHOLD`) and the metric outcomes below are replaced by three tiers, two signals and `ROUTER_MODE`; the invariants about what the router may not touch,
 > where it sits and how a routed call falls back still hold. Kept as the record of spec 014.

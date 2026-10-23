@@ -37,6 +37,14 @@ def test_the_label_table_names_exactly_the_labels_of_the_shipped_set():
     assert set(LABEL_TIERS.values()) <= set(TIERS)
 
 
+def test_every_label_has_a_description_for_a_reader_that_has_only_words():
+    """The question sent to /v1/decide offers these as its options, and the service refuses a question whose options are not exactly the set's labels,
+    so a label with no words (or words for a label that is gone) would turn every routed turn's label call into a 400."""
+    assert set(rp.LABEL_DESCRIPTIONS) == set(LABEL_TIERS)
+    assert all(isinstance(words, str) and 10 <= len(words) <= 120 for words in rp.LABEL_DESCRIPTIONS.values())
+    assert rp.ROUTE_INSTRUCTIONS.strip()
+
+
 def test_the_label_table_sends_distinctive_work_up_and_everyday_work_nowhere():
     assert {label: tier for label, tier in LABEL_TIERS.items() if tier == "local"} == {
         "smalltalk": "local", "lookup": "local", "action": "local", "drafting": "local"}

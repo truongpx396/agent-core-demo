@@ -1,8 +1,8 @@
 # Label sets
 
-A **label set** is a reviewed file that names a handful of choices and gives a few example sentences for each. `POST /classify` with
-`{"task": "label", "labelset": "<name>", "texts": [...]}` answers which choice each text is nearest to, or `null` when it is near none of them
-(specs/015). Nothing is trained: the service embeds the examples with the model that serves the request and compares.
+A **label set** is a reviewed file that names a handful of choices and gives a few example sentences for each. `POST /v1/decide` with a
+`choice` question named after the set (`{"state": "...", "questions": {"<name>": {"type": "choice", "instructions": "...", "criteria": {"<label>": "<what it means>", ...}}}}`)
+answers which choice the text is nearest to, or `null` when it is near none of them (specs/015, specs/016; the `criteria` keys must be exactly the set's labels). Nothing is trained: the service embeds the examples with the model that serves the request and compares.
 
 The shipped set is `route-topics.json` (what kind of work a message asks for; the app turns each topic into a model tier). To add another, for
 example "does this message ask us to send an email?", add `<name>.json` here, or mount your own directory and point `LABELSET_DIR` at it.

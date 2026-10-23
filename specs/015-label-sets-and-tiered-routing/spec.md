@@ -1,5 +1,7 @@
 # Feature Specification: Label Sets and Tiered Model Routing
 
+> **Superseded in part by spec 016 (`specs/016-decide-api/`).** The wire described here, `POST /classify` with `task: "label"`, no longer exists, nor does `/classify` at all (the unused trained-head path went too); the same matcher is now asked through `POST /v1/decide` (`specs/016-decide-api/contracts/decide.md`), and `ROUTER_LABELSET` became `ROUTER_LABELS`. The label-set file format, cutoffs, indexes and failover below are unchanged.
+
 **Feature Branch**: `015-label-sets-and-tiered-routing`
 
 **Created**: 2026-10-22

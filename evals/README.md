@@ -25,7 +25,7 @@ make model-eval-data                                                    # fetch 
 `0` ok · `2` usage/configuration · `3` a model, dataset or service is missing (**no report is written**) · `4` verification failed ·
 `5` a **control** gave the wrong answer: the report is marked `INVALID` and must not be used.
 
-Kinds: `embedding`, `reranker`, `screen` (the prompt-injection screen) and `classifier` (the routing head, below).
+Kinds: `embedding`, `reranker`, `screen` (the prompt-injection screen) and `classifier` (the router and the label sets, below).
 
 ## How to read a report
 
@@ -48,8 +48,7 @@ Kinds: `embedding`, `reranker`, `screen` (the prompt-injection screen) and `clas
 
 A router answers one question per prompt, "does this prompt need the stronger model?", and what that answer is worth is a fact about **two
 specific models and one judge**, so it can only be measured against labelled outcomes that you produce yourself. Nothing is committed and
-no router ships: until a person accepts a head on the ML service, `/classify` answers `served_by: "none"` and every turn runs on the local
-model.
+no router is on: the app's own (rules plus a topic label, spec 015) ships off, and every turn runs on the local model.
 
 **There is no head trainer.** One was built (a logistic regression over the embedding) and removed once the first real run showed that the
 labels could not support any router (see below and ENGINEERING_PATTERNS.md pattern 69). What stays is everything needed to judge a router
@@ -58,7 +57,7 @@ of any kind: the labeller, the outcomes format, the cost-quality metrics, the co
 ```bash
 make router-label JUDGE=judge                                    # 1. score both models' answers to the route prompts (minutes per prompt; resumable)
 make model-eval KIND=classifier CANDIDATE=random-router          # 2. a control: the floor any router must beat (also: constant)
-make model-eval KIND=classifier CANDIDATE=ml-service-classify    # 3. what the ML service's /classify gives, once a head is accepted there
+make model-eval KIND=classifier CANDIDATE=rules-and-labels-bge-small-en-v1.5   # 3. the app's own router (needs the outcomes from step 1 and the model cached)
 ```
 
 1. **Label.** `route-domains` has 32 `dev` and 91 `test` prompts. The labeller runs each through the local alias (`chat`) and the strong
@@ -76,8 +75,8 @@ make model-eval KIND=classifier CANDIDATE=ml-service-classify    # 3. what the M
 3. **Plug in a new router.** Anything with a `scores(texts)` method (`runners.classify.ClassifierBackend`) can be handed to
    `runners.classify.run(candidate, settings, backend=...)` and is scored, timed and compared exactly like the controls. The runner is not
    wired to a command for it yet; a router gets a declaration in `candidates/classifier.toml` when it is.
-4. **Accept (a person).** For the `/classify` endpoint: a head file with `"accepted": true`, mounted as `ROUTER_HEAD_DIR`
-   (`docker/ml-service/heads/README.md`). The app does not ask for a head's score any more (spec 015 routes from rules and labels), so an accepted head is evaluated here but not used by `route_model`.
+4. **There is nothing to accept.** The ML service used to serve a trained head once a person marked it accepted; that endpoint and its files were deleted
+   in spec 016. Turning the app's router on is `ROUTER_MODE` (shadow first, `specs/015.../tasks.md` T122), not a file.
 
 With **no outcomes** the run ends with `UNMEASURED` (exit 3) and writes no report: routing quality is never a number computed from
 nothing. The same happens if the strong model did not beat the local one on the test prompts, because then there is nothing to recover.
@@ -95,7 +94,7 @@ until the stronger model wins clearly somewhere, with a judge that is not itself
 ## Label sets (a different question from routing)
 
 A **label set** (`docker/ml-service/labelsets/<name>.json`, specs/015) lists a few choices with example sentences, and the ML service answers
-`POST /classify task=label` with the choice a text is nearest to, or "none of these" below a cutoff that is stored per model. That is a
+`POST /v1/decide` (a `choice` question named after the set) with the choice a text is nearest to, or "none of these" below a cutoff that is stored per model. That is a
 classification task with a known right answer, so it is judged on sentences whose topic is known, not on routing outcomes:
 
 ```bash

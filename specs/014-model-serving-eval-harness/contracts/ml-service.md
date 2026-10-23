@@ -1,5 +1,7 @@
 # Contract: ml-service endpoints
 
+> **Superseded in part.** The trained routing head and `POST /classify` described here were deleted in spec 016 (`specs/016-decide-api/`); the app's router is rules plus a topic label (spec 015), asked through `POST /v1/decide`. This document is kept as the record of what was built and why.
+
 Base URL: `ML_SERVICE_URL` (dev `http://localhost:8083`, in-network `http://ml-service:80`). No authentication (internal network,
 as today). `/rerank` and `/prompt-guard` are **unchanged**; this file defines what is new or changed.
 

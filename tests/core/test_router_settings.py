@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from app.core.config import Settings
 
 ROUTER_VARIABLES = (
-    "ROUTER_MODE", "ROUTER_ENABLED", "ROUTER_THRESHOLD", "ROUTER_MAX_TIER", "ROUTER_LABELSET", "ROUTER_LONG_PROMPT_CHARS", "ROUTER_TIMEOUT_SECONDS",
+    "ROUTER_MODE", "ROUTER_ENABLED", "ROUTER_THRESHOLD", "ROUTER_MAX_TIER", "ROUTER_LABELS", "ROUTER_LONG_PROMPT_CHARS", "ROUTER_TIMEOUT_SECONDS",
     "MEDIUM_CHAT_MODEL", "STRONG_CHAT_MODEL", "CHAT_MODEL",
 )
 
@@ -23,7 +23,7 @@ def test_the_router_is_off_and_names_no_routed_model_by_default():
     settings = Settings(_env_file=None)
 
     assert (settings.router_mode, settings.medium_chat_model, settings.strong_chat_model) == ("off", "", "")
-    assert (settings.router_max_tier, settings.router_labelset) == ("strong", "route-topics")
+    assert (settings.router_max_tier, settings.router_labels) == ("strong", True)
     assert (settings.router_long_prompt_chars, settings.router_timeout_seconds) == (1500, 0.5)
 
 
@@ -107,7 +107,7 @@ def test_two_hundred_characters_is_the_lowest_allowed_threshold():
 
 
 def test_an_empty_label_set_means_rules_only_and_is_allowed():
-    assert Settings(_env_file=None, router_labelset="").router_labelset == ""
+    assert Settings(_env_file=None, router_labels=False).router_labels is False
 
 
 @pytest.mark.parametrize("seconds", [0, -1, 5.01, 60])

@@ -30,7 +30,7 @@ def test_health_models_lists_every_model_and_is_ok_when_all_are_ready():
     assert body["status"] == "ok"
     assert {name: m["state"] for name, m in body["models"].items()} == {"rerank": "ready", "prompt-guard": "ready"}
     assert body["models"]["rerank"]["roles"] == ["rerank"]
-    assert body["classifier"] == {"serving": "none", "heads": {}}  # present from the start; filled when the classifier lands
+    assert "classifier" not in body and "labelsets" in body  # the trained-head path is gone (spec 016); label sets are what the matcher serves
 
 
 def test_health_models_reports_a_failed_model_with_its_reason_and_when_it_will_be_retried():
