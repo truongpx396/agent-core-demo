@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from ml_service import classify, decide, embed, guard, health, labelsets, rerank
+from ml_service import decide, embed, guard, health, labelsets, rerank
 from ml_service.metrics import Metrics
 from ml_service.registry import (
     ModelSpec,
@@ -64,7 +64,7 @@ def create_app(
     settings = settings or Settings.from_env()
     metrics = Metrics()
     declared = enabled_specs(load_model_specs(MODELS_TOML) if specs is None else specs, settings.models_enabled)
-    # A text model is loaded ONCE and serves every role it declares: /v1/embeddings for `embed`, /classify for `classify`.
+    # A text model is loaded ONCE and serves every role it declares: /v1/embeddings for `embed`, /v1/decide for `classify`.
     text_specs = {s.name: s for s in declared if {"embed", "classify"} & set(s.roles)}
     embed_specs = {name: spec for name, spec in text_specs.items() if "embed" in spec.roles}  # what /v1/embeddings and /v1/models serve
     default_loaders: dict[str, Callable[[], Any]] = {
@@ -88,9 +88,6 @@ def create_app(
             registry.add(Slot(name=name, roles=spec.roles, loader=loaders[name], info=info, activate=_start, deactivate=_stop))
         app.state.registry = registry
         classifiers = [spec for spec in text_specs.values() if "classify" in spec.roles]
-        app.state.classifier = classify.Classifier(
-            registry, classifiers, classify.read_heads(settings.router_head_dir, [s.name for s in classifiers]), settings, metrics
-        )
         app.state.labeller = labelsets.Labeller(
             registry, classifiers, labelsets.read_labelsets(settings.labelset_dir), settings, metrics
         )
@@ -111,7 +108,6 @@ def create_app(
     app.state.embed_specs = embed_specs
     app.include_router(health.router)
     app.include_router(embed.router)
-    app.include_router(classify.router)
     app.include_router(decide.router)
     app.include_router(rerank.router)
     app.include_router(guard.router)

@@ -20,20 +20,24 @@ import asyncio
 import json
 import logging
 import math
+import time
 from pathlib import Path
 
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+import ml_service.app as app_module
 from ml_service import labelsets
+from ml_service.app import create_app
 from ml_service.embed import Embedded
 from ml_service.labelsets import Labeller, Refused, parse_labelset, read_labelsets
 from ml_service.registry import Registry, Slot
-from tests.ml_service.test_classify_failover import (
+from tests.ml_service.fakes import (
     FALLBACK,
     PRIMARY,
     FakeText,
+    loaders_for,
     make_client,
     settings,
     spec,
@@ -89,7 +93,7 @@ def sets(tmp_path: Path) -> Path:
 
 def client_for(tmp_path: Path, sets_dir: Path, *, services: dict[str, FakeLabelText] | None = None, **kw):
     services = services or {PRIMARY: FakeLabelText(PRIMARY), FALLBACK: FakeLabelText(FALLBACK)}
-    client, services = make_client(tmp_path, services=services, labelset_dir=sets_dir, **kw)  # type: ignore[arg-type]  # FakeLabelText is a FakeText
+    client, services = make_client(services=services, labelset_dir=sets_dir, **kw)  # type: ignore[arg-type]  # FakeLabelText is a FakeText
     return client, services
 
 
@@ -242,6 +246,64 @@ def test_with_no_cutoff_for_any_model_the_answer_is_unavailable(tmp_path):
         assert decide(client).status_code == 503
 
 
+def test_the_primary_is_used_again_after_it_recovers(tmp_path, sets, monkeypatch):
+    monkeypatch.setattr(app_module, "SUPERVISOR_INTERVAL_S", 0.01)
+    first, healthy = FakeLabelText(PRIMARY), FakeLabelText(PRIMARY)
+    reloads = iter([first, healthy])
+    client, _ = client_for(tmp_path, sets, loaders={PRIMARY: lambda: next(reloads)})
+    with client:
+        first.mode = "raise"  # after the start-up index build, so the break is at request time
+        assert decide(client).json()["x_served_by"] == "fallback"  # the first call breaks it ...
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and decide(client).json().get("x_served_by") != "primary":
+            time.sleep(0.02)  # ... the supervisor reloads it after the (shortened) backoff, and it is the primary again
+        served_by = decide(client).json()["x_served_by"]
+
+    assert served_by == "primary"
+
+
+def test_a_model_without_the_classify_role_is_never_asked(tmp_path, sets):
+    services = {PRIMARY: FakeLabelText(PRIMARY), FALLBACK: FakeLabelText(FALLBACK)}
+    app = create_app(
+        settings(labelset_dir=sets),
+        specs=[spec(PRIMARY, roles=("embed",)), spec(FALLBACK)],  # the primary only embeds: the fallback is the only matcher
+        loaders=loaders_for(services),
+    )
+    with TestClient(app) as client:
+        body = decide(client).json()
+
+    assert services[PRIMARY].calls == []
+    assert body["x_served_by"] == "primary" and body["model"] == FALLBACK  # the first matcher IS the primary, whatever its name
+
+
+def test_a_model_is_loaded_once_and_serves_every_role_it_declares_but_only_those(tmp_path, sets):
+    services = {PRIMARY: FakeLabelText(PRIMARY), FALLBACK: FakeLabelText(FALLBACK)}
+    app = create_app(
+        settings(labelset_dir=sets),
+        specs=[spec(PRIMARY), spec(FALLBACK, roles=("classify",))],  # the fallback decides but does not embed
+        loaders=loaders_for(services),
+    )
+    with TestClient(app) as client:
+        listed = {m["id"] for m in client.get("/v1/models").json()["data"]}
+        embedded = client.post("/v1/embeddings", json={"model": PRIMARY, "input": NEAR_ALPHA})
+        refused = client.post("/v1/embeddings", json={"model": FALLBACK, "input": NEAR_ALPHA})
+        decided = decide(client).json()
+
+    assert listed == {PRIMARY}
+    assert embedded.status_code == 200  # the same slot answers /v1/embeddings ...
+    assert decided["x_served_by"] == "primary"  # ... and /v1/decide
+    assert refused.status_code == 404 and refused.json()["error"]["code"] == "model_not_found"
+
+
+def test_truncation_is_reported_in_the_evidence(tmp_path, sets):
+    services = {PRIMARY: FakeLabelText(PRIMARY, truncated=True), FALLBACK: FakeLabelText(FALLBACK)}
+    client, _ = client_for(tmp_path, sets, services=services)
+    with client:
+        evidence = answer_of(client)["x_evidence"]
+
+    assert evidence["truncated"] is True
+
+
 # ---- the index follows the model --------------------------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_examples_are_embedded_again_when_the_models_revision_changes(tmp_path):
@@ -252,7 +314,7 @@ async def test_examples_are_embedded_again_when_the_models_revision_changes(tmp_
     await registry.load_all()
     from ml_service.metrics import Metrics
 
-    labeller = Labeller(registry, [spec(PRIMARY)], read_labelsets(tmp_path), settings(tmp_path), Metrics())
+    labeller = Labeller(registry, [spec(PRIMARY)], read_labelsets(tmp_path), settings(), Metrics())
     await labeller.sync()
     await labeller.sync()  # nothing changed: no second embedding pass
     assert len(service.calls) == 1 and len(service.calls[0]) == 9
@@ -275,7 +337,7 @@ async def test_asking_about_no_sets_is_no_answer_and_costs_no_model_pass(tmp_pat
     await registry.load_all()
     from ml_service.metrics import Metrics
 
-    labeller = Labeller(registry, [spec(PRIMARY)], read_labelsets(tmp_path), settings(tmp_path), Metrics())
+    labeller = Labeller(registry, [spec(PRIMARY)], read_labelsets(tmp_path), settings(), Metrics())
     await labeller.sync()
     before = len(service.calls)
 
@@ -290,7 +352,7 @@ async def test_before_the_first_index_a_set_is_pending_not_wrong(tmp_path):
     await registry.load_all()
     from ml_service.metrics import Metrics
 
-    labeller = Labeller(registry, [spec(PRIMARY)], read_labelsets(tmp_path), settings(tmp_path), Metrics())
+    labeller = Labeller(registry, [spec(PRIMARY)], read_labelsets(tmp_path), settings(), Metrics())
 
     assert labeller.snapshot()["mood"]["models"][PRIMARY] == "pending: not indexed yet"
     assert (await labeller.label("mood", [NEAR_ALPHA])).served_by == "none"
@@ -305,7 +367,7 @@ async def test_an_indexing_failure_is_the_pairs_status_and_the_models_failed_sta
     await registry.load_all()
     from ml_service.metrics import Metrics
 
-    labeller = Labeller(registry, [spec(PRIMARY)], read_labelsets(tmp_path), settings(tmp_path), Metrics())
+    labeller = Labeller(registry, [spec(PRIMARY)], read_labelsets(tmp_path), settings(), Metrics())
     await labeller.sync()
 
     assert labeller.snapshot()["mood"]["models"][PRIMARY] == "pending: indexing failed (RuntimeError)"
@@ -399,20 +461,16 @@ def test_local_is_an_accepted_model_name_and_leaving_it_out_is_the_same(tmp_path
     assert named.status_code == unnamed.status_code == 200 and named.json()["answers"] == unnamed.json()["answers"]
 
 
-def test_the_old_label_task_is_refused_and_says_where_it_went(tmp_path, sets):
+@pytest.mark.parametrize("task", ["label", "route"])
+def test_classify_is_gone_whatever_task_it_names(tmp_path, sets, task):
+    """`/classify` served a trained routing head (spec 014, never accepted) and then the first draft of the topic matcher (spec 015); both are
+    `/v1/decide` or nothing now. A caller still posting to it must be told by a 404, not answered by something that happens to look similar."""
     client, _ = client_for(tmp_path, sets)
     with client:
-        response = client.post("/classify", json={"task": "label", "labelset": "mood", "texts": ["x"]})
+        response = client.post("/classify", json={"task": task, "labelset": "mood", "texts": ["x"]})
+        paths = set(client.get("/openapi.json").json()["paths"])
 
-    assert response.status_code == 400 and response.json()["error"]["code"] == "invalid_task" and "/v1/decide" in response.json()["error"]["message"]
-
-
-def test_the_route_task_is_unchanged_by_the_presence_of_label_sets(tmp_path, sets):
-    client, _ = client_for(tmp_path, sets)
-    with client:
-        body = client.post("/classify", json={"task": "route", "texts": ["x"]}).json()
-
-    assert body["served_by"] == "none" and "head_version" in body and "labelset" not in body
+    assert response.status_code == 404 and "/classify" not in paths and "/v1/decide" in paths
 
 
 # ---- a bad file is that set's problem, and only that set's -----------------------------------------------------------------------

@@ -5,7 +5,7 @@ WHAT IT IS. A *label set* is a reviewed JSON file: a name, a handful of labels, 
 model the similarity below which a text is "none of these". Nothing is trained. For each model the service embeds the examples with that
 model, averages each label's unit vectors into one unit vector (the *centroid*), and answers a text with the label whose centroid it is
 nearest to by cosine, or `null` when even the nearest is below the model's cutoff. The embedder is the `EmbedService` that serves
-`/v1/embeddings` and `/classify route`, so one model loaded for three roles is loaded once.
+`/v1/embeddings`, so one model loaded for two roles is loaded once.
 
 WHY A CENTROID. Measured, not chosen by taste: on CLINC150 with bge-small and the first k training examples of each intent as anchors, the
 centroid beat "the single nearest example" and "the mean of the two nearest" at every k (accuracy 0.863 against 0.806 and 0.834 at k=10),
@@ -21,7 +21,7 @@ FOUR RULES KEEP A SET FROM DOING HARM, each a refusal at load or build time rath
    would be wrong whenever the fallback answers. A model with no entry in `calibration` does not serve that set (`refused: no calibration
    for <model>`); it is never given a guessed default (specs/015 D2).
 3. A set file is data, never code: strict JSON, every field checked. A bad file is `refused: <reason>` for that one set in `/health/models`
-   and nothing else; the other sets, `/v1/embeddings`, `/classify route`, the reranker and the guard start and serve as usual.
+   and nothing else; the other sets, `/v1/embeddings`, the reranker and the guard start and serve as usual.
 4. The service returns FACTS (`label`, `similarity`, `runner_up`, `margin`), never a decision about what to do with them. What a label means for
    a model choice, an email or anything else belongs to the caller (specs/015 D4).
 

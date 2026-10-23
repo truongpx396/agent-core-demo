@@ -68,14 +68,13 @@ def test_a_model_that_is_down_while_the_ml_service_is_up_has_an_alert():
     assert rules["MlServiceModelDown"]["labels"]["severity"] in {"warning", "critical"}
 
 
-def test_a_classifier_that_has_been_on_its_fallback_for_a_while_has_an_alert():
-    """The fallback keeps routing working, which is exactly why a long-dead primary would otherwise go unnoticed."""
+def test_the_head_specific_fallback_alert_is_gone_with_the_head_and_the_model_down_alert_remains():
+    """`ml_classifier_serving` went with the trained-head path (spec 016), so an alert on it would be silent forever. A model that is out is
+    still reported by MlServiceModelDown after 5 minutes, which is earlier than the 15 the fallback alert waited."""
     rules = {rule["alert"]: rule for rule in _rules()}
 
-    assert "RouterClassifierOnFallback" in rules
-    assert 'ml_classifier_serving{served_by="fallback"}' in rules["RouterClassifierOnFallback"]["expr"]
-    assert rules["RouterClassifierOnFallback"]["for"] == "15m"
-    assert rules["RouterClassifierOnFallback"]["labels"]["severity"] in {"warning", "critical"}
+    assert "RouterClassifierOnFallback" not in rules and "MlServiceModelDown" in rules
+    assert not any("ml_classifier_serving" in rule["expr"] for rule in _rules())
 
 
 def test_a_routed_turn_that_fell_back_to_the_local_model_has_an_alert():

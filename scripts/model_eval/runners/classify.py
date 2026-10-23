@@ -14,7 +14,7 @@ A LABEL SET IS NOT A ROUTER. `--dataset route-topics` hands the run to `topics.p
 (specs/015); everything below is about routers and outcomes.
 
 WHAT CAN BE EVALUATED. Anything with a `scores(texts)` method (`ClassifierBackend`): the two built-in controls (`constant`, `random-router`),
-the ML service's `/classify` (`service`, which only answers once a head has been accepted there), or a backend handed to `run(backend=...)`.
+the app's own router (`rules-and-labels-*`), or a backend handed to `run(backend=...)`.
 That last one is the extension point for a new router (for example rules plus topic labels): it is scored, timed and compared exactly like
 the others. The trained-head trainer that used to be here was removed on purpose once the first real run showed the labels could not support
 any router (ENGINEERING_PATTERNS.md pattern 69); it is in the history of the pull request that removed it.
@@ -47,7 +47,6 @@ from scripts.model_eval.suites import ItemData
 
 DEFAULT_DATASET = "route-domains"
 LATENCY_BUDGET_MS = 50.0  # SC-009: the whole routing call, p95, on the reference machine
-BATCH = 16  # /classify accepts at most sixteen texts per request
 
 
 class ClassifierBackend(Protocol):
@@ -136,46 +135,6 @@ def build_tiered_router(candidate: Candidate, settings: RunSettings) -> TieredRo
     return TieredRouter(backend, seed=settings.seed)
 
 
-class ServiceClassifier:
-    """The ML service's /classify `route` task (a head's score). The app no longer calls it (spec 015 routes from rules and labels); it answers only for an ACCEPTED head, otherwise `served_by` is "none"."""
-
-    revision: str | None = None
-    size_bytes: int | None = None
-    rss_mb: float | None = None
-
-    def __init__(self, candidate: Candidate, client=None) -> None:
-        import httpx
-
-        from app.core.config import ML_SERVICE_URL
-
-        self._client = client or httpx.Client(base_url=ML_SERVICE_URL, timeout=60)
-        self.identity = f"ml-service:{candidate.source.model or candidate.name}"
-        try:
-            probe = self._post(["probe"])
-        except Exception as exc:  # noqa: BLE001 - unreachable or not ready: this path is unavailable
-            raise PrerequisiteMissing(f"the ML service did not answer /classify ({type(exc).__name__}: {exc}); is it up (`make up`)?") from exc
-        if probe["served_by"] == "none":
-            raise PrerequisiteMissing(
-                "the ML service answers /classify with served_by=none: no head is ACCEPTED there, so it has no score to give. There is nothing for "
-                "this path to evaluate until a head is accepted; to evaluate another router, pass it to `run(backend=...)`."
-            )
-        self.revision = probe.get("head_version")
-
-    def _post(self, texts: Sequence[str]) -> dict:
-        response = self._client.post("/classify", json={"task": "route", "texts": list(texts)})
-        response.raise_for_status()
-        return response.json()
-
-    def scores(self, texts: Sequence[str]) -> list[float]:
-        out: list[float] = []
-        for start in range(0, len(texts), BATCH):
-            body = self._post(texts[start : start + BATCH])
-            if body["served_by"] == "none" or any(r["score"] is None for r in body["results"]):
-                raise PrerequisiteMissing("the ML service stopped giving scores part-way through (served_by=none); the run is not usable")
-            out.extend(float(r["score"]) for r in sorted(body["results"], key=lambda r: r["index"]))
-        return out
-
-
 def build_backend(candidate: Candidate, settings: RunSettings, via: str | None = None) -> ClassifierBackend:
     path = via or candidate.path
     if candidate.name == "constant":
@@ -184,9 +143,10 @@ def build_backend(candidate: Candidate, settings: RunSettings, via: str | None =
         return RandomRouter(settings.seed)
     if candidate.name in TIERED_ROUTERS:
         return build_tiered_router(candidate, settings)
-    if path == "service":
-        return ServiceClassifier(candidate)
-    raise PrerequisiteMissing(f"a router is evaluated through the controls, the app's own router or path 'service', not {path!r}; to evaluate another router pass it to run(backend=...)")
+    raise PrerequisiteMissing(
+        f"a router is evaluated through the controls or the app's own router, not through path {path!r}: the ML service no longer serves a trained "
+        "routing head (spec 016); to evaluate another router pass it to run(backend=...)"
+    )
 
 
 def find_outcomes(dataset_dir: Path, explicit: Path | None) -> Path | None:

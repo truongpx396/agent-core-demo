@@ -1,25 +1,11 @@
-# Routing classifiers (specs/014 Story 3). The only declared candidate is the running ML service's /classify, which is what the app actually gets.
+# Routing classifiers (specs/014 Story 3, specs/015). The declared router is the app's own (`rules-and-labels-*`, below), which is what the app decides with
+# when `ROUTER_MODE=on`. The ML service no longer serves a trained routing head (spec 016), so there is no `service` candidate.
 #
 # The degenerate controls (`constant`, which never escalates, and `random-router`) are not declared: they are built into the runner.
 # `baseline = true` marks the candidate that is what the app actually gets; the harness requires exactly one per kind. It does not mean a
-# baseline FILE exists (see below).
-#
-# There is NO recorded baseline for this kind, and nothing is in use today: no head is accepted on the service, so a `service` run stops with
-# "served_by=none" and writes no report. That is correct, not an omission. Embedding models are NOT declared here any more: the in-process
-# candidates existed to evaluate a trained head file, and the head trainer was removed once the first real run showed the labels could not
-# support any router (ENGINEERING_PATTERNS.md pattern 69). A new router (for example rules plus topic labels) is evaluated by handing a
-# `ClassifierBackend` to `runners.classify.run(backend=...)`, and gets a declaration here when it is wired to a command.
-
-[[candidate]]
-name = "ml-service-classify"
-kind = "classifier"
-path = "service"
-licence = "MIT (primary) / Apache-2.0 (fallback)"
-baseline = true
-notes = "Whatever the running ML service's /classify answers, which is what the app actually gets and includes the HTTP round trip. It only answers once a head is ACCEPTED there."
-
-[candidate.source]
-model = "classify"
+# baseline FILE exists: there is NO recorded baseline for this kind (the only routing outcomes that exist cannot tell a perfect router from a random
+# one, ENGINEERING_PATTERNS.md pattern 69). Embedding models are not declared as routers: the in-process head candidates went with the head trainer.
+# A new router is evaluated by handing a `ClassifierBackend` to `runners.classify.run(backend=...)`, and gets a declaration here when it is wired to a command.
 
 # Label sets (specs/015): the model that embeds a set's examples and sentences, scored in-process on `--dataset route-topics`. `source.model` is the name
 # the ML service serves it under, which is the key of the set's `calibration`; repo, file and revision are the entry in docker/ml-service/models.toml
@@ -69,6 +55,7 @@ name = "rules-and-labels-bge-small-en-v1.5"
 kind = "classifier"
 path = "inprocess"
 licence = "MIT"
+baseline = true
 notes = "The rules and the route-topics label (bge-small-en-v1.5, the primary) combined by max under no ceiling, with all three tiers configured: what route_model decides with ROUTER_MODE=on and both aliases set."
 [candidate.source]
 model = "bge-small-en-v1.5"

@@ -1,16 +1,14 @@
-"""POST /classify against the REAL image: real models, real Hub cache layout, head files mounted the way an operator mounts them.
+"""POST /v1/decide against the REAL image: real models, real Hub cache layout, the label set baked into the image.
 
-The hermetic tests (tests/ml_service/test_classify_failover.py) prove the routing and the refusal rules with fake models. What only a real
-container can show, and this file does:
+The hermetic tests (tests/ml_service/test_labelsets.py) prove the matcher, the cutoffs, the failover and the wire with fake models. What only a
+real container can show, and this file does:
 
-- the revision a head is bound to is the commit the Hub cache really holds (`snapshots/<sha>/…`), so a head trained on the pinned
-  revision loads and one trained on any other is refused (specs/014 research.md C1, the claim that was "to verify");
-- `/classify` scores the SAME vectors `/v1/embeddings` serves: an independent computation from the served vectors reproduces the score;
-- with no head, and with a head whose JSON says `"accepted": false`, the answer is HTTP 200 `served_by: "none"` (FR-038);
-- with the primary unable to load, the fallback answers and says so.
+- the shipped `route-topics` set is served by both real models through the real tokenisers, and the similarity it reports is reproduced by an
+  independent computation from the vectors `/v1/embeddings` serves (a service that agreed only with itself would pass the hermetic tests);
+- with the primary unable to load, the fallback answers, says so, and applies its OWN cutoff;
+- the whole call from the app's client is timed, and nearly all of it answers.
 
-The heads here are synthetic (a fixed random direction) and are written `"accepted": true` BY THE TEST. Nothing in the repository
-writes a head with `accepted: true`, so no real head is involved and nothing here says anything about routing quality.
+Nothing here says anything about routing quality.
 """
 import json
 import statistics
@@ -33,24 +31,8 @@ TAG = "agent-core-demo-ml-service:test"
 PRIMARY, FALLBACK = "bge-small-en-v1.5", "all-MiniLM-L6-v2"
 REPOS = {PRIMARY: "BAAI/bge-small-en-v1.5", FALLBACK: "sentence-transformers/all-MiniLM-L6-v2"}
 PINNED = {PRIMARY: "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a", FALLBACK: "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"}
-DIM = 384
 TEXTS = ["How do I reset my password?", "Prove that the square root of two is irrational, then generalise to every prime."]
-
-
-def sigmoid(x):
-    return 1 / (1 + np.exp(-x))
-
-
-def synthetic_head(directory: Path, model: str, *, accepted: bool, revision: str | None = None, seed: int = 7) -> tuple[np.ndarray, float]:
-    rng = np.random.default_rng(seed)
-    w = (rng.normal(size=DIM) / np.sqrt(DIM) * 8).astype(np.float32)
-    b = np.float32(0.25)
-    np.savez(directory / f"head-{model}.npz", w=w, b=b)
-    (directory / f"head-{model}.json").write_text(json.dumps({
-        "schema_version": 1, "model": model, "model_repo": REPOS[model], "model_revision": revision or PINNED[model],
-        "model_file": "onnx/model.onnx", "dim": DIM, "head_version": f"synthetic-{model}", "threshold": {"value": 0.5}, "accepted": accepted,
-    }))
-    return w, float(b)
+CODE_SENTENCE = "Write a Python function that parses a CSV file into invoices please."
 
 
 def _diagnosis(started, url: str) -> str:
@@ -64,17 +46,15 @@ def _diagnosis(started, url: str) -> str:
 
 
 @contextmanager
-def container(ml_service, heads: Path, registry: Path | None = None) -> Iterator[str]:
+def container(ml_service, registry: Path | None = None) -> Iterator[str]:
     from testcontainers.core.container import DockerContainer
 
-    # The service runs as uid 1000 in the container; pytest makes its temp directories 0700 and the files 0600-0644, owned by whoever runs pytest.
-    # On Docker Desktop (macOS) a bind mount ignores that, so this passed locally; on a Linux CI runner the service got `PermissionError` on the
-    # heads directory and exited at start-up (the first two CI runs, diagnosed from the container log that `_diagnosis` now prints).
-    heads.chmod(0o755)
-    for head_file in heads.iterdir():
-        head_file.chmod(0o644)
-    started = DockerContainer(TAG).with_exposed_ports(80).with_volume_mapping(str(heads), "/app/heads", "ro")
+    started = DockerContainer(TAG).with_exposed_ports(80)
     if registry is not None:
+        # The service runs as uid 1000 in the container; pytest makes its temp files 0600. On Docker Desktop (macOS) a bind mount ignores that, so
+        # this passed locally; on a Linux CI runner the service got `PermissionError` and exited at start-up (found by CI in the first runs of
+        # spec 014, diagnosed from the container log that `_diagnosis` prints).
+        registry.chmod(0o644)
         started = started.with_volume_mapping(str(registry), "/app/models.toml", "ro")
     started.start()
     try:
@@ -95,21 +75,14 @@ def container(ml_service, heads: Path, registry: Path | None = None) -> Iterator
         started.stop()
 
 
-def classify(url: str, texts=TEXTS) -> dict:
-    return httpx.post(f"{url}/classify", json={"task": "route", "texts": texts}, timeout=30).json()
+def decide(url: str, text: str) -> httpx.Response:
+    question = {"type": "choice", "instructions": routing_policy.ROUTE_INSTRUCTIONS, "criteria": dict(routing_policy.LABEL_DESCRIPTIONS)}
+    return httpx.post(f"{url}/v1/decide", json={"state": text, "questions": {"route-topics": question}}, timeout=30)
 
 
 def served_vectors(url: str, texts=TEXTS, model=PRIMARY) -> np.ndarray:
     body = httpx.post(f"{url}/v1/embeddings", json={"model": model, "input": texts}, timeout=60).json()
     return np.array([d["embedding"] for d in body["data"]])
-
-
-def test_with_no_head_mounted_the_default_container_gives_no_advice(ml_service_url):
-    body = classify(ml_service_url)
-
-    assert body["served_by"] == "none" and [r["decision"] for r in body["results"]] == ["none", "none"]
-    classifier = httpx.get(f"{ml_service_url}/health/models", timeout=10).json()["classifier"]
-    assert classifier == {"serving": "none", "heads": {PRIMARY: "absent", FALLBACK: "absent"}}
 
 
 def test_the_shipped_route_topics_set_is_served_by_the_real_container_and_matches_an_independent_computation(ml_service_url):
@@ -118,13 +91,12 @@ def test_the_shipped_route_topics_set_is_served_by_the_real_container_and_matche
     against the arithmetic and not against itself (specs/015 FR-004). The three sentences are ones the primary was measured to place well clear of
     the cutoff (0.773, 0.839 and 0.682 against 0.709), so this does not depend on a close call."""
     raw = json.loads((Path(__file__).resolve().parents[2] / "docker" / "ml-service" / "labelsets" / "route-topics.json").read_text())
-    sentences = ["Write a Python function that parses a CSV file into invoices please.", "We received a subpoena for customer records, what do we do?", "qwerty qwerty qwerty"]
-    question = {"type": "choice", "instructions": routing_policy.ROUTE_INSTRUCTIONS, "criteria": dict(routing_policy.LABEL_DESCRIPTIONS)}
+    sentences = [CODE_SENTENCE, "We received a subpoena for customer records, what do we do?", "qwerty qwerty qwerty"]
     answers: list[dict] = []
     for sentence in sentences:
         body: dict = {}
         for _ in range(30):  # the first request after start-up can overrun the service's 250 ms deadline and be answered 503
-            response = httpx.post(f"{ml_service_url}/v1/decide", json={"state": sentence, "questions": {"route-topics": question}}, timeout=30)
+            response = decide(ml_service_url, sentence)
             body = response.json()
             if response.status_code == 200 and body.get("x_served_by") == "primary":
                 break
@@ -144,39 +116,6 @@ def test_the_shipped_route_topics_set_is_served_by_the_real_container_and_matche
     assert [a["choice"] for a in answers] == ["code", "high_stakes", None]
     shown = httpx.get(f"{ml_service_url}/health/models", timeout=10).json()["labelsets"]["route-topics"]
     assert shown["version"] == answers[0]["x_labelset_version"] and shown["models"] == {PRIMARY: "loaded", FALLBACK: "loaded"}
-
-
-@pytest.fixture(scope="module")
-def accepted_primary(ml_service, tmp_path_factory):
-    """One container with an accepted head for the primary and a head for the fallback that was trained for another revision."""
-    heads = tmp_path_factory.mktemp("heads")
-    w, b = synthetic_head(heads, PRIMARY, accepted=True)
-    synthetic_head(heads, FALLBACK, accepted=True, revision="f" * 40, seed=11)  # trained for a revision that is not the pinned one
-    with container(ml_service, heads) as url:
-        # A request that overruns the service's 250 ms deadline is answered by the next model, and here the next model has no usable head,
-        # so the answer is "none". The first request after start-up (or any on a machine under load) can overrun: wait until the primary
-        # has answered once, which is the steady state the tests below are about.
-        for _ in range(30):
-            if classify(url)["served_by"] == "primary":
-                break
-            time.sleep(1)
-        yield url, w, b
-
-
-def test_an_accepted_head_scores_the_vectors_the_embedding_endpoint_serves_and_binds_to_the_real_revision(accepted_primary):
-    url, w, b = accepted_primary
-
-    body = classify(url)
-    classifier = httpx.get(f"{url}/health/models", timeout=10).json()["classifier"]
-    vectors = served_vectors(url)
-
-    expected = sigmoid(vectors @ w.astype(np.float64) + b)
-    assert body["served_by"] == "primary" and body["model"] == PRIMARY and body["head_version"] == f"synthetic-{PRIMARY}"
-    # The independent computation: the served unit vectors, the head, a sigmoid. The classifier used the same embedder, not a copy of it.
-    np.testing.assert_allclose([r["score"] for r in body["results"]], expected, atol=1e-4)
-    assert [r["decision"] for r in body["results"]] == ["needs_stronger" if s >= 0.5 else "local_ok" for s in expected]
-    # The primary's head matches the commit the real Hub cache holds; the other was trained for a different one and is refused
-    assert classifier == {"serving": "primary", "heads": {PRIMARY: "loaded", FALLBACK: "refused: revision mismatch"}}
 
 
 async def test_the_whole_label_call_from_the_app_is_measured_and_answers_nearly_every_call(ml_service_url, monkeypatch, record_property):
@@ -207,21 +146,7 @@ async def test_the_whole_label_call_from_the_app_is_measured_and_answers_nearly_
     assert "error" not in outcomes and outcomes.count("labelled") >= 180
 
 
-def test_a_head_that_is_not_accepted_gives_no_advice_in_the_real_container(ml_service, tmp_path):
-    synthetic_head(tmp_path, PRIMARY, accepted=False)
-    synthetic_head(tmp_path, FALLBACK, accepted=False, seed=11)
-
-    with container(ml_service, tmp_path) as url:
-        body = classify(url)
-        classifier = httpx.get(f"{url}/health/models", timeout=10).json()["classifier"]
-
-    assert body["served_by"] == "none" and all(r["score"] is None for r in body["results"])
-    assert classifier["heads"] == {PRIMARY: "refused: not accepted", FALLBACK: "refused: not accepted"}
-
-
 def test_when_the_primary_cannot_load_the_fallback_answers_and_says_so(ml_service, tmp_path):
-    synthetic_head(tmp_path, PRIMARY, accepted=True)
-    w, b = synthetic_head(tmp_path, FALLBACK, accepted=True, seed=11)
     registry = tmp_path / "models.toml"
     registry.write_text(
         f'[[model]]\nname = "{PRIMARY}"\nroles = ["embed", "classify"]\nrepo = "{REPOS[PRIMARY]}"\nfile = "onnx/this-file-does-not-exist.onnx"\n'
@@ -230,15 +155,18 @@ def test_when_the_primary_cannot_load_the_fallback_answers_and_says_so(ml_servic
         f'revision = "{PINNED[FALLBACK]}"\npooling = "mean"\nmax_length = 256\npad_token = "[PAD]"\nlicence = "Apache-2.0"\n'
     )
 
-    with container(ml_service, tmp_path, registry) as url:
-        body = classify(url)
-        for _ in range(60):  # a failed model is retried after a backoff, and while that retry is in flight its state is honestly `loading`
-            health = httpx.get(f"{url}/health/models", timeout=10).json()
-            if health["models"][PRIMARY]["state"] == "failed":
+    with container(ml_service, registry) as url:
+        body: dict = {}
+        for _ in range(60):  # the fallback's index is built on the first start-up sync; until a model has one the answer is a 503
+            response = decide(url, CODE_SENTENCE)
+            body = response.json()
+            if response.status_code == 200:
                 break
             time.sleep(1)
-        vectors = served_vectors(url, model=FALLBACK)
+        health = httpx.get(f"{url}/health/models", timeout=10).json()
 
-    assert health["models"][PRIMARY]["state"] == "failed" and health["classifier"]["serving"] == "fallback"
-    assert body["served_by"] == "fallback" and body["model"] == FALLBACK
-    np.testing.assert_allclose([r["score"] for r in body["results"]], sigmoid(vectors @ w.astype(np.float64) + b), atol=1e-4)
+    assert health["models"][PRIMARY]["state"] == "failed"
+    assert body["x_served_by"] == "fallback" and body["model"] == FALLBACK
+    assert health["labelsets"]["route-topics"]["models"][FALLBACK] == "loaded"
+    answer = body["answers"]["route-topics"]  # which topic MiniLM picks is not asserted (it was not measured); that it answered on its own scale is
+    assert answer["choice"] in (*routing_policy.LABEL_DESCRIPTIONS, None) and answer["x_evidence"]["nearest"] in routing_policy.LABEL_DESCRIPTIONS

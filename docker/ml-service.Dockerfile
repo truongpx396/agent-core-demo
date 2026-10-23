@@ -69,8 +69,8 @@ ENV PATH=/opt/venv/bin:$PATH
 ENV HOME=/home/appuser
 
 # The whole service directory: the `ml_service` package, the `main.py` shim `uvicorn main:app` imports, `models.toml` (the declared
-# text models) and `heads/` (classifier heads, specs/014). It used to be the single file main.py; the logic became an importable
-# package so tests and the head trainer can use the very code the service serves with.
+# text models) and `labelsets/` (the reviewed choices `POST /v1/decide` matches against, specs/015-016). It used to be the single file
+# main.py; the logic became an importable package so tests and the evaluation harness can use the very code the service serves with.
 COPY docker/ml-service/ ./
 
 # The named volume mounted at /home/appuser/.cache (docker-compose.yml)

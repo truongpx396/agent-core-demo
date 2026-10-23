@@ -34,16 +34,16 @@ def test_a_missing_candidates_file_is_an_empty_declaration_not_an_error(tmp_path
     assert load_candidates(tmp_path / "nothing.toml", expected_kind="classifier") == []
 
 
-def test_the_classifier_candidates_are_the_service_path_and_the_label_set_models():
-    """The in-process HEAD candidates went with the head trainer; what is declared now is the service path (the baseline) and the two models that
-    serve label sets (specs/015). A new router is handed to the runner and gets a declaration when it is wired to a command."""
+def test_the_classifier_candidates_are_the_label_set_models_and_the_apps_own_router():
+    """The in-process HEAD candidates went with the head trainer and the `service` candidate with the head path (spec 016); what is declared is the
+    two models that serve label sets (specs/015) and the app's own router, which is the baseline. A new router is handed to the runner and gets a
+    declaration when it is wired to a command."""
     declared = cli.declared("classifier")
 
     assert [(c.name, c.path) for c in declared] == [
-        ("ml-service-classify", "service"), ("labelset-bge-small-en-v1.5", "inprocess"), ("labelset-all-minilm-l6-v2", "inprocess"),
-        ("rules-and-labels-bge-small-en-v1.5", "inprocess"),
+        ("labelset-bge-small-en-v1.5", "inprocess"), ("labelset-all-minilm-l6-v2", "inprocess"), ("rules-and-labels-bge-small-en-v1.5", "inprocess"),
     ]
-    assert [c.name for c in declared if c.baseline] == ["ml-service-classify"]
+    assert [c.name for c in declared if c.baseline] == ["rules-and-labels-bge-small-en-v1.5"]
 
 
 def test_a_label_set_candidate_is_exactly_the_model_the_ml_service_serves_for_that_role():
