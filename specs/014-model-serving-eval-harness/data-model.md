@@ -1,5 +1,7 @@
 # Data Model: Model Serving Seams and an Evaluation Harness
 
+> **Superseded in part.** The trained routing head and `POST /classify` described here were deleted in spec 016 (`specs/016-decide-api/`); the app's router is rules plus a topic label (spec 015), asked through `POST /v1/decide`. This document is kept as the record of what was built and why.
+
 Shapes only — fields, rules, states. How they are produced is in `research.md`; the wire formats are in `contracts/`.
 JSON examples are abbreviated. Every record that is stored carries a `schema_version` so the harness can refuse one it does not
 understand rather than misread it.

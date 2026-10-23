@@ -1,5 +1,7 @@
 # Quickstart: validating the feature end to end
 
+> **Superseded in part.** The trained routing head and `POST /classify` described here were deleted in spec 016 (`specs/016-decide-api/`); the app's router is rules plus a topic label (spec 015), asked through `POST /v1/decide`. This document is kept as the record of what was built and why.
+
 Runnable scenarios that prove each story, in the order the PRs land. Each names what it proves (FR/SC) and what you should see.
 Nothing here is a test body — the tests are in `tasks.md`. Commands assume `source .venv/bin/activate` and the repo root.
 

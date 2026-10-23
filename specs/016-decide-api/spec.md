@@ -12,8 +12,14 @@ shape another implementation also answers, and the day a hosted one is wanted th
 ## What changes
 
 1. **`POST /v1/decide`** on the ML service answers `choice` questions in the System One / Jev request and answer shape, from the label sets of spec 015
-   (contract: `contracts/decide.md`). `task: "label"` on `/classify` is removed (it was never released: #185 was open); a request that names it gets a 400
-   that says where it went. `/classify task="route"` (an accepted head) is untouched and still has no caller; deleting it remains the owner's decision.
+   (contract: `contracts/decide.md`).
+1a. **`/classify` is deleted** (the owner's word, 2026-10-24: "delete leftover for now"). It served `task: "label"` (never released) and `task: "route"`, a
+   trained routing head that spec 014 built, no person ever accepted and the app stopped asking for in spec 015. Gone with it: `classify.py`, the head
+   files and `docker/ml-service/heads/`, `ROUTER_HEAD_DIR`, the metrics `ml_classifier_serving` and `ml_classify_requests_total`, the `classifier` key of
+   `/health/models`, the alert `RouterClassifierOnFallback` (`MlServiceModelDown` still alerts when either model is out, after 5 minutes instead of 15),
+   the harness's `service` backend and its candidate `ml-service-classify` (the app's own router is now the classifier baseline), and the head tests. The
+   `classify` ROLE in `models.toml` and the `ML_CLASSIFY_*` settings stay: they name the models that serve decisions and their bounds, and renaming them is
+   churn for operators with nothing gained.
 2. **The app asks through a `Choice`** (`app/core/classification.py::choose`): a name, instructions and an option-to-description map. The model router's
    question is `routing_policy.ROUTE_INSTRUCTIONS` and `LABEL_DESCRIPTIONS` (same keys as `LABEL_TIERS`, pinned by a test).
 3. **`ROUTER_LABELSET` becomes `ROUTER_LABELS`** (true/false: ask for the topic, or decide from rules alone). The name of a set was never a free choice: the
@@ -49,4 +55,3 @@ shape another implementation also answers, and the day a hosted one is wanted th
   an ordered scale needs a different matcher. Both are 422 until something needs them.
 - **Settings to point the app at another URL.** One client function changes at swap time, with the privacy and spend decisions beside it; shipping the
   knobs first would ship a way to send user text to a third party without those decisions.
-- **Deleting `/classify task="route"`.**

@@ -7,4 +7,4 @@
 - [X] T205 Docs: this spec and `contracts/decide.md`; README, pattern 68 and ENGINEERING_PATTERNS 77; the 015 contracts marked superseded
 - [ ] T206 **HUMAN** Add a card to the Opper account (or use TypeSafe's own key), run the call in `contracts/decide.md` once, record the real response and add it to `tests/core/test_classification.py`
 - [ ] T207 **HUMAN** Decide the privacy and spend questions in the contract's swap checklist before any hosted implementation serves a turn
-- [ ] T208 **HUMAN** Delete `/classify task="route"` and the head code, or keep it for an accepted head (open since spec 015)
+- [X] T208 Delete `/classify` (the trained-head path nobody accepted or called) with its head files, metrics, alert, harness `service` backend and tests; the shared test fakes move to `tests/ml_service/fakes.py` and the still-relevant failover tests are ported to the decision path (recovery of a failed primary, a model without the `classify` role is never asked, one model serves several roles, truncation in the evidence)
