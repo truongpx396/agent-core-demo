@@ -15,7 +15,67 @@
 # deployable artifact for anyone running this stack for real, wired up as
 # opt-in docker-compose services (`docker compose --profile app up -d`,
 # `make up-app`) alongside the existing infra-only `make up` default.
-FROM python:3.13-slim AS base
+#
+# Stages (ENGINEERING_PATTERNS.md pattern 76). `base` is the one place the Python image is pinned and `uv` the one place the
+# installer is; `builder` installs the lock into a virtualenv with uv and is thrown away; `runtime`, the LAST stage and so what
+# `docker build .` produces, is what ships: the base, the OS package the app needs, that virtualenv copied in, and the app.
+# Nothing that installs software is in the shipped image: not uv, not pip. Needs BuildKit (the default builder since Docker 23):
+# `RUN --mount` is BuildKit's. docker/ml-service.Dockerfile, the other image production runs, is built the same way and pinned
+# to the same two digests (tests/core/test_dockerfile_build.py keeps them equal).
+
+# ---- base: the Python image, pinned by digest -------------------------------------------------------------------------------
+# The multi-architecture INDEX of python:3.13-slim (linux/amd64 and linux/arm64, read with `docker manifest inspect`) as of
+# 2026-10-23. It floated before, on purpose, for fresh OS patches; a floating tag also means two builds of one commit can differ,
+# and a scanner result can change under a PR that touched nothing. What keeps it fresh now: Dependabot proposes a new digest weekly
+# (.github/dependabot.yml, with a cooldown), `apt-get upgrade` below runs whenever that layer is rebuilt, and CI's Trivy image gate
+# fails if the pinned base ages into a fixable CRITICAL. Bump it by merging that PR, or by hand: take the new index digest,
+# change it here and in docker/ml-service.Dockerfile, and run `docker build .`.
+FROM python:3.13-slim@sha256:57b29a7c050c4e679e4bea572e14b3965cf4b5839de2da49d55e49ffc4024f39 AS base
+
+# ---- uv: the installer, as a single static binary from its own image, pinned by digest ---------------------------------------
+# The multi-architecture index of 0.12.24 (linux/amd64 and linux/arm64, read with `docker buildx imagetools inspect`): the build
+# downloads and runs it, so a moving tag would let an upstream change decide what runs here, which is the reason the LiteLLM image
+# is pinned the same way. 0.12.24 rather than the newest because the 0.13 line was days old when this was written (Dependabot's
+# cooldown now applies that rule to its own bumps). It is copied into the builder stage only. As its own named stage so that
+# Dependabot, which reads `FROM` lines, can see and bump it.
+FROM ghcr.io/astral-sh/uv:0.12.24@sha256:3af4716e991d6956a41e573eab705d0ee08500cd829ed30293eb8472f372c65a AS uv
+
+# ---- builder: dependencies only, never shipped ------------------------------------------------------------------------------
+FROM base AS builder
+
+COPY --from=uv /uv /usr/local/bin/uv
+
+# COMPILE_BYTECODE: write the .pyc files now, so the first import in a container does not (a non-root process in a container
+#   would otherwise compile on every start, since it cannot write under the root-owned virtualenv).
+# LINK_MODE=copy: the cache mount below is a different filesystem from /opt/venv, where uv's default hard links cannot work
+#   (it falls back to copying anyway, and warns); asking for the copy says so.
+# PYTHON_DOWNLOADS=never: use the base image's interpreter, the one the runtime stage runs, never a downloaded one.
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH
+
+RUN uv venv --python /usr/local/bin/python "$VIRTUAL_ENV"
+
+# The lock is bind-mounted rather than COPY'd (no layer holds it) and BuildKit still keys the cache on its CONTENT, so this
+# step reruns exactly when the lock changes and not otherwise. The cache mount keeps uv's wheel cache BETWEEN builds in the
+# builder (it is never part of an image), so a lock change downloads only the packages that changed instead of all 189:
+# `pip install --no-cache-dir`, which this replaces, re-downloaded everything on every miss.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=requirements-lock.txt,target=/tmp/requirements-lock.txt \
+    uv pip install -r /tmp/requirements-lock.txt
+
+# The billing package (spec 011): installed from its own directory, NOT through the lock file, which is a machine-generated freeze of a
+# real install of requirements.txt. --no-deps because everything it needs is already in the lock above. It is COPY'd, not
+# bind-mounted, because building it writes into its source tree; and the old `rm -rf ./packages` has nothing left to do, since this
+# stage is not the one that ships.
+COPY packages/billing/ /tmp/billing/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --no-deps /tmp/billing
+
+# ---- runtime: what ships -----------------------------------------------------------------------------------------------------
+FROM base AS runtime
 
 # libgomp1: onnxruntime's runtime dependency (fastembed's BM25/rerank
 # models) — not bundled in its wheel, and the slim base doesn't ship it.
@@ -41,19 +101,17 @@ RUN apt-get update && apt-get upgrade -y \
 RUN useradd --create-home --uid 1000 appuser
 WORKDIR /app
 
-# pip first: the base image's pip vendors its OWN copy of certifi (pip/_vendor/certifi), which Trivy's image scan reads as a
-# second certifi, and the lock cannot touch it. pip 26.2.1 (what python:3.13-slim shipped) vendored 2026.6.17, which trusts the
-# emSign intermediates GHSA-6q48-6c7w-9gw2 is about; 26.2.2 vendors 2026.10.19. Upgrading also leaves the image's pip with a
-# current CA bundle for the install below. Unpinned on purpose, like the base tag and `apt-get upgrade` above: this layer exists to be fresh.
-RUN pip install --no-cache-dir --upgrade pip
+# No pip in the shipped image. The base image's pip vendors its OWN copy of certifi (pip/_vendor/certifi), which Trivy's image
+# scan reads as a second certifi that the lock cannot touch (GHSA-6q48-6c7w-9gw2 was exactly that); this Dockerfile used to
+# upgrade pip to get a fresh bundled copy. Nothing in the running app installs anything (the sandbox prompts tell the model NOT to
+# pip install), and the virtualenv below is made by uv and has no pip of its own, so the shipped image simply carries none: the
+# vendored certifi, and any future pip finding, are gone with it. tests/core/test_trivy_ignore.py pins this.
+RUN python -m pip uninstall -y pip setuptools wheel
 
-COPY requirements-lock.txt .
-RUN pip install --no-cache-dir -r requirements-lock.txt
-
-# The billing package (spec 011): installed from its own directory, NOT through the lock file, which is a machine-generated freeze of a
-# real install of requirements.txt. --no-deps because everything it needs is already in the lock above.
-COPY packages/billing/ ./packages/billing/
-RUN pip install --no-cache-dir --no-deps ./packages/billing && rm -rf ./packages
+# The dependencies, as built above. The same path in both stages (a virtualenv's scripts name their interpreter by absolute
+# path) and the same base image, so the interpreter it links to is the one it was built for.
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
 
 # fastembed/huggingface_hub cache their downloaded BM25/rerank models under
 # $HOME on first use — set BEFORE the final chown, so anything written as

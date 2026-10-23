@@ -60,6 +60,36 @@ x-app-env: &app-env
   # own header for the full reasoning).
   OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4318
 
+# Build target for every service that builds the root Dockerfile: the stage that ships, NAMED, so a reordered Dockerfile cannot
+# silently make the builder stage (which has uv in it) the thing that runs (ENGINEERING_PATTERNS.md pattern 76).
+x-app-build: &app-build
+  context: .
+  target: runtime
+
+# Runtime hardening for the images this repo builds (api, the workers, ml-service). Nothing here changes what the app does; each line
+# removes something the process never needed:
+#   init                    a real PID 1: reaps the sandbox bridge's child processes and forwards SIGTERM, so `stop_grace_period` is honoured
+#   no-new-privileges       a process cannot gain privileges through a setuid binary
+#   cap_drop: ALL           the app runs as uid 1000 and binds a port above 1024 (ml-service binds 80, which Docker's
+#                           net.ipv4.ip_unprivileged_port_start=0 allows without a capability): it needs none
+#   read_only + tmpfs       the image's filesystem is not written at runtime. What does get written is small and goes to RAM: uploads spool to
+#                           /tmp, and libraries write dot-directories under $HOME (fastembed/huggingface under ~/.cache, and crawl4ai makes
+#                           ~/.crawl4ai the moment it is IMPORTED: the first version of this block gave only ~/.cache a tmpfs and the api
+#                           crashed at start with 'Read-only file system', found by running the image this way). So $HOME itself is a tmpfs
+#                           owned by the app user, which covers the next library's dot-directory too. Both are capped, because tmpfs counts
+#                           against the container's memory limit; what lives there is re-created after a restart. ml-service keeps a named
+#                           volume for its models, so it overrides `tmpfs` to /tmp only.
+x-hardened: &hardened
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  read_only: true
+  tmpfs:
+    - /tmp:size=128m
+    - /home/appuser:size=64m,uid=1000,gid=1000
+
 services:
   # --- LiteLLM proxy: single OpenAI-compatible endpoint for the app ---
   litellm:
@@ -185,9 +215,13 @@ services:
   # ONNX model to that SAME already-running container is a marginal cost,
   # not a new one.
   ml-service:
+    <<: *hardened
+    tmpfs:
+      - /tmp:size=128m  # the models live in the named volume below, not in tmpfs
     build:
       context: .
       dockerfile: docker/ml-service.Dockerfile
+      target: runtime
     ports:
       - "8083:80"
     environment:
@@ -535,7 +569,15 @@ services:
   # them by accident. Bring them up explicitly with `make up-app` (or
   # `docker compose --profile app up -d --build`).
   api:
-    build: .
+    <<: *hardened
+    build: *app-build
+    # The one role that receives uploads (up to 5 x 25 MB per request, app/api/routers/ingest.py): the multipart parser spools every file to
+    # /tmp BEFORE the handler runs. A tmpfs would hold that in RAM, against this container's memory limit, and fill at the second concurrent
+    # large upload; so this role's /tmp is a disk-backed anonymous volume (not the image's read-only layer) and only $HOME is tmpfs.
+    tmpfs:
+      - /home/appuser:size=64m,uid=1000,gid=1000
+    volumes:
+      - /tmp
     profiles: ["app"]
     restart: unless-stopped
     ports:
@@ -550,7 +592,8 @@ services:
         condition: service_healthy
 
   agent-worker:
-    build: .
+    <<: *hardened
+    build: *app-build
     profiles: ["app"]
     restart: unless-stopped
     command: ["python", "-m", "app.job_queue.agent_worker"]
@@ -578,7 +621,8 @@ services:
   # logs into Loki (observability/promtail/promtail-config.yaml's service
   # allowlist keys off these exact compose service names).
   agent-worker-support:
-    build: .
+    <<: *hardened
+    build: *app-build
     profiles: ["app"]
     restart: unless-stopped
     command: ["python", "-m", "app.job_queue.agent_worker"]
@@ -595,7 +639,8 @@ services:
         condition: service_healthy
 
   agent-worker-ops:
-    build: .
+    <<: *hardened
+    build: *app-build
     profiles: ["app"]
     restart: unless-stopped
     command: ["python", "-m", "app.job_queue.agent_worker"]
@@ -612,7 +657,8 @@ services:
         condition: service_healthy
 
   agent-worker-sales:
-    build: .
+    <<: *hardened
+    build: *app-build
     profiles: ["app"]
     restart: unless-stopped
     command: ["python", "-m", "app.job_queue.agent_worker"]
@@ -629,7 +675,8 @@ services:
         condition: service_healthy
 
   ingest-worker:
-    build: .
+    <<: *hardened
+    build: *app-build
     profiles: ["app"]
     restart: unless-stopped
     command: ["python", "-m", "app.ingestion.ingest_worker"]
