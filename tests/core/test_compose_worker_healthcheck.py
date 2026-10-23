@@ -21,7 +21,11 @@ COMPOSE_FILES = sorted((REPO / "deploy" / "compose").glob("docker-compose*.yml")
 
 def _runs_the_app_image(spec: dict) -> bool:
     image = str(spec.get("image") or "")
-    return spec.get("build") == "." or image.startswith("${APP_IMAGE}")
+    build = spec.get("build")
+    # `build: .`, or the same build with a named target (`{context: ., target: runtime}`, pattern 76); a build that names its own
+    # Dockerfile (the ML service) is another image.
+    builds_the_root_dockerfile = build == "." or (isinstance(build, dict) and build.get("context") == "." and "dockerfile" not in build)
+    return builds_the_root_dockerfile or image.startswith("${APP_IMAGE}")
 
 
 def _non_api_roles(compose: dict) -> dict[str, dict]:
