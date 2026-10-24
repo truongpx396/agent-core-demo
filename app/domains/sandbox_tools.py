@@ -81,6 +81,9 @@ _OPENSANDBOX_RETRY_BASE_DELAY_SECONDS = 1.0
 # opensandbox-mcp/opensandbox packages are guaranteed available.
 _BRIDGE_SCRIPT = str(Path(__file__).resolve().parent.parent.parent / "scripts" / "opensandbox_mcp_bridge.py")
 
+# The variable the OpenSandbox SDK falls back to when no `--api-key` is given (opensandbox.config.ConnectionConfig).
+OPEN_SANDBOX_API_KEY_ENV = "OPEN_SANDBOX_API_KEY"
+
 
 async def load_sandbox_tools() -> tuple[list[BaseTool], dict[str, str]]:
     """Connects to `opensandbox-mcp` and returns its tool catalog as
@@ -98,11 +101,12 @@ async def load_sandbox_tools() -> tuple[list[BaseTool], dict[str, str]]:
         return await arun_with_timeout(
             mcp_client.load_remote_tools,
             command=sys.executable,
-            args=[
-                _BRIDGE_SCRIPT,
-                "--domain", OPENSANDBOX_MCP_DOMAIN, "--protocol", "http",
-                "--api-key", OPENSANDBOX_API_KEY,
-            ],
+            args=[_BRIDGE_SCRIPT, "--domain", OPENSANDBOX_MCP_DOMAIN, "--protocol", "http"],
+            # The key travels in the child's ENVIRONMENT, not its argument list: argv is readable by every user on the
+            # host through the process table (`ps`), the environment of a process is not. The bridge asks for it with
+            # no flag given (`ConnectionConfig.get_api_key`: the argument, else OPEN_SANDBOX_API_KEY), and the SDK adds
+            # this to its small default child environment (PATH, HOME, ...) rather than inheriting the app's own.
+            env={OPEN_SANDBOX_API_KEY_ENV: OPENSANDBOX_API_KEY} if OPENSANDBOX_API_KEY else None,
             capability_overrides={},  # explicit: never trust OpenSandbox's
             # own capability annotations (see module docstring).
             _timeout_seconds=_SANDBOX_LIST_TIMEOUT_SECONDS,

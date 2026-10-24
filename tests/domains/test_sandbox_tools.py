@@ -38,7 +38,7 @@ def _fresh_breaker(monkeypatch):
     monkeypatch.setattr(sandbox_tools, "_OPENSANDBOX_RETRY_BASE_DELAY_SECONDS", 0.001)
 
 
-async def test_passes_the_configured_domain_protocol_and_api_key_to_the_bridge(monkeypatch):
+async def test_passes_the_configured_domain_and_protocol_to_the_bridge(monkeypatch):
     captured = {}
 
     async def fake_load_remote_tools(**kwargs):
@@ -58,8 +58,44 @@ async def test_passes_the_configured_domain_protocol_and_api_key_to_the_bridge(m
     assert captured["args"] == [
         sandbox_tools._BRIDGE_SCRIPT,
         "--domain", sandbox_tools.OPENSANDBOX_MCP_DOMAIN, "--protocol", "http",
-        "--api-key", sandbox_tools.OPENSANDBOX_API_KEY,
     ]
+
+
+async def test_the_api_key_goes_to_the_bridge_in_its_environment_never_on_its_command_line(monkeypatch):
+    """Regression (specs/009 A5): the key used to be `--api-key <value>`, readable by every user on the host in a process
+    listing. The bridge falls back to OPEN_SANDBOX_API_KEY when no flag is given, so the environment carries it."""
+    secret = "sk-test-not-a-real-key-4f3a"
+    monkeypatch.setattr(sandbox_tools, "OPENSANDBOX_API_KEY", secret)
+    captured = {}
+
+    async def fake_load_remote_tools(**kwargs):
+        captured.update(kwargs)
+        return [], {}
+
+    monkeypatch.setattr(mcp_client, "load_remote_tools", fake_load_remote_tools)
+
+    await sandbox_tools.load_sandbox_tools()
+
+    assert captured["env"] == {"OPEN_SANDBOX_API_KEY": secret}
+    assert "--api-key" not in captured["args"]
+    assert secret not in " ".join(captured["args"])
+
+
+async def test_with_no_key_configured_the_bridge_gets_no_empty_variable(monkeypatch):
+    """An empty OPEN_SANDBOX_API_KEY would shadow nothing but would read as 'configured, and blank' to anyone inspecting the
+    child; with no key the child gets the SDK's own default environment."""
+    monkeypatch.setattr(sandbox_tools, "OPENSANDBOX_API_KEY", "")
+    captured = {}
+
+    async def fake_load_remote_tools(**kwargs):
+        captured.update(kwargs)
+        return [], {}
+
+    monkeypatch.setattr(mcp_client, "load_remote_tools", fake_load_remote_tools)
+
+    await sandbox_tools.load_sandbox_tools()
+
+    assert captured["env"] is None
 
 
 async def test_never_supplies_capability_overrides_so_every_tool_defaults_to_outward(monkeypatch):
