@@ -150,13 +150,56 @@ async def _ml_service_warnings() -> list[str]:
     return warnings
 
 
+# Every table the app itself reads or writes, and the `postgres-init/` script that creates it. The directory runs
+# automatically on a FRESH volume only (README, "Upgrading"), so a database that predates a script is missing its tables and
+# nothing said so: `check_ticket_status` raised `UndefinedTable` on a missing `support_ticket_comments`, the exactly-once
+# guard ran degraded (`tool_call_dedup_degraded`), no model call was metered and the budget check failed open on every turn,
+# each as a warning in a log nobody was reading, while this endpoint said "ready" (Langfuse traces `e0ca1456`, `de85f4e8`).
+# Not listed: `12-tenant-budget-reservations` (superseded by `16`, nothing reads it) and the billing package's own scripts
+# (`20`, `22`, `24`, `25`), which ship their own tool (`make billing-migrate-status`). A test keeps this list equal to what
+# the scripts create. Tables only: a column added to an existing table (`11`, `14`) is not seen.
+APPDATA_TABLES: tuple[tuple[str, str], ...] = (
+    ("employees", "02-appdata.sql"),
+    ("usage_ledger", "03-meter.sql"),
+    ("chat_sessions", "06-chat-sessions.sql"),
+    ("support_tickets", "07-support-tickets.sql"),
+    ("crm_leads", "08-crm.sql"),
+    ("crm_followups", "08-crm.sql"),
+    ("ops_incidents", "10-ops-incidents.sql"),
+    ("tool_call_dedup", "13-tool-call-dedup.sql"),
+    ("support_ticket_comments", "15-append-notes-as-rows.sql"),
+    ("crm_lead_notes", "15-append-notes-as-rows.sql"),
+    ("tenant_budget_holds", "16-tenant-budget-holds.sql"),
+    ("budget_policies", "18-budget-policies.sql"),
+    ("usage_events", "19-usage-events.sql"),
+)
+
+
+async def _appdata_schema_warnings() -> list[str]:
+    async with sql_store.get_connection() as conn:
+        cursor = await conn.execute(
+            "SELECT name FROM unnest(%s::text[]) AS t(name) WHERE to_regclass(quote_ident('public') || '.' || quote_ident(name)) IS NULL",
+            ([name for name, _ in APPDATA_TABLES],),
+        )
+        missing = {row[0] for row in await cursor.fetchall()}
+    if not missing:
+        return []
+    scripts = list(dict.fromkeys(script for name, script in APPDATA_TABLES if name in missing))
+    names = ", ".join(name for name, _ in APPDATA_TABLES if name in missing)
+    caution = " Read the README's note on 15 first: it drops the `notes` columns without carrying their data over." if "15-append-notes-as-rows.sql" in scripts else ""
+    return [
+        f"appdata is missing {len(missing)} table(s) the app uses: {names}. Their features fail or run degraded "
+        f"(no metering, no budget limits, no duplicate-call guard). Apply, in this order: {', '.join('postgres-init/' + s for s in scripts)}.{caution}"
+    ]
+
+
 async def readiness_warnings() -> list[str]:
     """Things a person should know that do not make the API unready. Each source is independent and bounded; one that cannot be read
     contributes nothing (the dependency check above already reports an unreachable Qdrant or ML service), it never fails the endpoint."""
     results = await asyncio.gather(
         *(
             asyncio.wait_for(source(), timeout=_WARNINGS_TIMEOUT_SECONDS)
-            for source in (_embedding_identity_warnings, _ml_service_warnings)
+            for source in (_embedding_identity_warnings, _ml_service_warnings, _appdata_schema_warnings)
         ),
         return_exceptions=True,
     )

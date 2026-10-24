@@ -1,7 +1,7 @@
 """Generic infrastructure helpers with no dependency on any node's own logic:
 `instrumented` (structured lifecycle logging wrapper applied at graph-registration time),
-`friendly_tool_error` (ToolNode's error-recovery formatter) and `make_llm` (the production
-`ChatOpenAI` client factory).
+`friendly_tool_error` (ToolNode's error-recovery formatter), `make_llm` (the production
+`ChatOpenAI` client factory) and `without_tools` (the same client with the tool schemas taken off).
 
 `make_llm` takes the model, endpoint and key as arguments, defaulting to the configured ones. A
 caller that wants a different endpoint (a test pointing the graph at a local Ollama) passes it:
@@ -13,6 +13,8 @@ import functools
 import logging
 import time
 
+import psycopg
+from langchain_core.runnables import RunnableBinding
 from langchain_openai import ChatOpenAI
 from langgraph.errors import GraphBubbleUp
 from pydantic import SecretStr
@@ -158,7 +160,39 @@ def friendly_tool_error(error: Exception) -> str:
             "happened, using a read-only tool for this domain (e.g. a status/"
             "list tool), and only retry if it clearly did not."
         )
+    if isinstance(error, psycopg.Error):
+        # The driver's message carries the failing statement ("LINE 1: ... FROM support_tickets t LEFT
+        # JOIN support_ti...") and names tables and columns. The model repeats what it is told to the
+        # person, so that went to the user's screen (Langfuse trace `e0ca1456`). Only the class goes;
+        # the full message stays on the tool's own span for whoever runs the system. And "try a
+        # different approach" is wrong advice for a store that rejected a correct request.
+        return (
+            f"Tool failed ({type(error).__name__}): the data store rejected a valid request, so this is a fault "
+            "on the service's side and not in your arguments. Do not retry it or try another query. Tell the "
+            "person plainly that this lookup is unavailable right now."
+        )
     return f"Tool failed ({type(error).__name__}: {error}). Try a different approach."
+
+
+# What `bind_tools` puts on a client; `without_tools` takes exactly these back off.
+_TOOL_KWARGS = frozenset({"tools", "tool_choice", "parallel_tool_calls", "functions", "function_call"})
+
+
+def without_tools(llm):
+    """`llm` with the tool schemas `make_llm` bound taken off, for a call that has no use for tools.
+
+    `make_llm` binds the domain's tools to the one client every node is given. A node that sends a
+    single prompt and wants plain text back (the follow-up suggestions, the history summary) used to
+    send all of them too: 15 schemas, 2,869 prompt tokens, for a one-sentence prompt (Langfuse trace
+    `475b073a`). That is cost on every such call, and a prefix of its own that shares nothing with the
+    chat calls', so the server reads it cold: 15 of that turn's 40 seconds, after the answer was done.
+    A model offered tools may also answer a follow-up request with a tool call. Any other binding
+    (a per-client keyword) is kept; a client that is not a binding is returned unchanged."""
+    if not isinstance(llm, RunnableBinding):
+        return llm
+    kept = {k: v for k, v in llm.kwargs.items() if k not in _TOOL_KWARGS}
+    inner = without_tools(llm.bound)
+    return inner.bind(**kept) if kept else inner
 
 
 def make_llm(

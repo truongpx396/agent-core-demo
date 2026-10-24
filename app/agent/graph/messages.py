@@ -155,6 +155,36 @@ def last_human_message(messages: list[BaseMessage]) -> HumanMessage | None:
     return next((m for m in reversed(messages) if is_user_message(m)), None)
 
 
+def with_turn_notes(question: HumanMessage, before: list[str], after: list[str]) -> HumanMessage:
+    """A copy of `question` that carries this call's notes: `before` (reference material: the
+    retrieved context, the summary of earlier turns) ahead of what the person wrote, `after` (the
+    short reminders) behind it. Same id and `additional_kwargs`; the copy goes to the model and is
+    never written back to the thread, so the stored question stays exactly what was typed.
+
+    Why a user message and not system messages (GRAPH_PATTERNS.md pattern 79): Ollama's chat
+    template has one system slot at the top of the prompt and no branch for a system message
+    anywhere else, and the server hoists EVERY system message in the list into that slot. Retrieved
+    context and reminders sent as system messages therefore never sat next to the question, and
+    because they change on every turn they changed the start of the prompt on every turn, so the
+    server's prompt cache matched only the domain's system prompt and re-read the whole history
+    (Langfuse trace `889b5405`: 5,448 of 6,360 tokens, 17 of the call's 18.5 seconds). Everything
+    before the question is now identical from one call to the next.
+
+    Multimodal content (pattern 44) keeps its image parts; the notes become text parts around them."""
+    lead, tail = "\n\n".join(before), "\n\n".join(after)
+    content = question.content
+    new_content: str | list[str | dict]
+    if isinstance(content, str):
+        new_content = "\n\n".join(part for part in (lead, content, tail) if part)
+    else:
+        new_content = [
+            *([{"type": "text", "text": lead}] if lead else []),
+            *content,
+            *([{"type": "text", "text": tail}] if tail else []),
+        ]
+    return question.model_copy(update={"content": new_content})
+
+
 def previous_human_message(messages: list[BaseMessage], before_index: int) -> HumanMessage | None:
     """The HumanMessage immediately before `before_index` — the prior
     turn's question, used by `retrieval_query` to enrich a vague

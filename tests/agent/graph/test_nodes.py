@@ -1367,6 +1367,60 @@ def test_retry_output_names_the_misattributed_citation_marker():
     assert "do not call any tools" in msg.content.lower()
 
 
+class TestAToolThatFailedIsNotADeferral:
+    """Langfuse trace `de85f4e8` (GRAPH_PATTERNS.md pattern 81): the sandbox was unreachable, so the
+    model counted by hand and said so. The narration pattern matched ("let's ... manually"), two retries
+    later the correct count was replaced by "I described what I'd do instead of actually doing it", and
+    the person never learned the sandbox was down."""
+
+    COUNTED = (
+        "Let's manually count the occurrences of 'db_timeout' in the error log you provided:\n\n"
+        "```\ndb_timeout at 09:12, retry ok,\ndb_timeout at 09:14,\nauth_failed at 09:15\n```\n\n"
+        "From this, we can see that 'db_timeout' appears **2** times."
+    )
+    EXPLAINED = (
+        "I encountered an issue while trying to run the script. It seems there might be a network "
+        "connectivity problem. Let's try another approach: I'll manually count the occurrences for you."
+    )
+
+    @staticmethod
+    def _turn(answer, tool_status):
+        return {
+            "messages": [
+                HumanMessage(content="run this log through a script and count db_timeout"),
+                AIMessage(content="", tool_calls=[{"name": "run_python_in_sandbox", "args": {}, "id": "c1"}]),
+                ToolMessage(
+                    content="Tool failed (SandboxCallFailed: ...). Try a different approach.",
+                    tool_call_id="c1",
+                    name="run_python_in_sandbox",
+                    status=tool_status,
+                ),
+                AIMessage(content=answer),
+            ],
+            "citations": [],
+        }
+
+    def test_the_account_of_a_failed_tool_is_not_sent_back_as_a_deferral(self):
+        for answer in (self.COUNTED, self.EXPLAINED):
+            result = ecorp.check_output(self._turn(answer, "error"))
+            assert "deferred" not in result["output_findings"], answer
+            assert result["last_retry_reason"] is None
+
+    def test_the_same_words_after_a_tool_that_worked_are_still_a_deferral(self):
+        """The control: the exemption is the failure, not the wording."""
+        result = ecorp.check_output(self._turn(self.COUNTED, "success"))
+        assert "deferred" in result["output_findings"]
+
+    def test_the_same_words_with_no_tool_call_at_all_are_still_a_deferral(self):
+        state = {"messages": [HumanMessage(content="count db_timeout"), AIMessage(content=self.COUNTED)], "citations": []}
+        assert "deferred" in ecorp.check_output(state)["output_findings"]
+
+    def test_a_tool_that_failed_in_an_EARLIER_turn_does_not_excuse_this_one(self):
+        state = self._turn(self.COUNTED, "error")
+        state["messages"] += [HumanMessage(content="and now count auth_failed"), AIMessage(content=self.COUNTED)]
+        assert "deferred" in ecorp.check_output(state)["output_findings"]
+
+
 def test_retry_output_tells_the_model_to_call_the_tool_when_it_deferred():
     """The OPPOSITE instruction from the citation branches — those say
     "do not call any tools"; this one exists specifically because the
