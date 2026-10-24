@@ -126,13 +126,19 @@ def alias_settings(alias: str, config: Path = CONFIG) -> tuple[str, str, dict[st
     return model, base, {k: params[k] for k in FORWARDED if k in params}
 
 
+def _nullable(spec: dict) -> bool:
+    return any(branch.get("type") == "null" for branch in spec.get("anyOf", []))
+
+
 def valid_args(schema: dict, args: object) -> bool:
-    """Does `args` satisfy the tool's parameter schema as far as the app depends on it: an object, every required key present,
-    no key the schema does not declare, and any enum respected."""
+    """Does `args` satisfy the tool's parameter schema as far as the app depends on it: an object, every required key present
+    (a nullable one may be left out: `ToolArgs` fills it with None, so the call runs), no key the schema does not declare, and
+    any enum respected."""
     if not isinstance(args, dict):
         return False
     props = schema.get("properties", {})
-    if any(key not in args for key in schema.get("required", [])) or any(key not in props for key in args):
+    missing = [key for key in schema.get("required", []) if key not in args and not _nullable(props.get(key, {}))]
+    if missing or any(key not in props for key in args):
         return False
     for key, value in args.items():
         spec = props[key]
@@ -185,8 +191,8 @@ def ask(client: httpx.Client, base: str, model: str, options: dict, system: str,
 
 def probe(client: httpx.Client, base: str, model: str, options: dict, strict: bool | None = None) -> list[tuple[Probe, str]]:
     tools, system = app_tools_and_prompt(strict)
-    # A reply is judged against the schema the app ENFORCES, not the one it sent: the strict form lists every argument as
-    # required, but a tool's own validation still accepts an omitted optional one, so omitting it is not a bad call.
+    # A reply is judged against the schema the app ENFORCES, not the one it sent: `valid_args` lets a nullable argument be left
+    # out, which is what the tools accept (`ToolArgs`) and what a model that ignores "required" does.
     schemas = {t["function"]["name"]: t["function"].get("parameters", {}) for t in app_tools_and_prompt(False)[0]}
     results = []
     for p in PROBES:

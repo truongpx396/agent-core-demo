@@ -110,7 +110,8 @@ def _ok_reply(probe: tp.Probe) -> dict:
     args = {}
     for key in schema.get("required", []):
         spec = schema["properties"][key]
-        args[key] = (spec.get("enum") or ["x"])[0]
+        nullable = any(branch.get("type") == "null" for branch in spec.get("anyOf", []))
+        args[key] = None if nullable else (spec.get("enum") or ["x"])[0]
     return {"message": _call(probe.expected, args), "eval_count": 20}
 
 
@@ -209,11 +210,10 @@ class TestStrictTools:
         tp.main(["--no-strict", "--no-loops"], _client(reply))
         assert not any(sent["strict"])
 
-    def test_leaving_out_an_optional_argument_is_still_ok_under_strict(self):
-        """The strict form lists every argument as required, but the tool's own validation accepts an omitted optional one."""
-        def reply(p, body):
-            if p.expected == "query_employees":
-                return {"message": _call("query_employees", {}), "eval_count": 12}
-            return _ok_reply(p)
-
-        assert tp.main(["--strict", "--no-loops"], _client(reply)) == 0
+    def test_leaving_a_nullable_argument_out_is_fine_and_leaving_a_plain_one_out_is_not(self):
+        """The tools list every argument as required, but accept a call that leaves a nullable one out (`ToolArgs` fills it
+        with None): qwen2.5:7b does exactly that. A required argument with no null, or a value outside an enum, is still bad."""
+        employees = tp.Probe("who works in engineering?", "query_employees")
+        assert tp.classify(employees, _call("query_employees", {"department": "Engineering"}), 21, SCHEMAS) == tp.OK
+        assert tp.classify(employees, _call("query_employees", {"department": "Engineering", "name_contains": None}), 21, SCHEMAS) == tp.OK
+        assert tp.classify(employees, _call("query_employees", {"department": "Marketing"}), 21, SCHEMAS) == tp.BAD_ARGS

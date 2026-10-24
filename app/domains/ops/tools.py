@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.core.security import SecurityCtx, valid_ctx
 from app.core.tool_idempotency import idempotent
 from app.core.tool_runtime import arun_with_timeout
+from app.core.tool_schema import ToolArgs
 from app.core.untrusted import frame_untrusted
 from app.domains import notify, sandbox_session
 from app.domains.ops import metrics_client, store
@@ -136,10 +137,11 @@ async def post_to_team_channel(
     )
 
 
-class LogIncidentArgs(BaseModel):
+class LogIncidentArgs(ToolArgs):
     summary: str = Field(..., description="Short summary of what's wrong.")
+    # Required but nullable (see ToolArgs).
     detail: str | None = Field(
-        default=None, description="Optional: the specific numbers/evidence behind this incident."
+        ..., description="The specific numbers/evidence behind this incident. Pass null if there is none."
     )
     tool_call_id: Annotated[str, InjectedToolCallId]
 
@@ -180,10 +182,8 @@ async def log_incident(
     )
 
 
-class ListRecentIncidentsArgs(BaseModel):
-    status: str | None = Field(
-        default=None, description="Optional filter: 'open' or 'resolved'. Omit for both."
-    )
+class ListRecentIncidentsArgs(ToolArgs):
+    status: str | None = Field(..., description="Filter: 'open' or 'resolved'. Pass null for both.")
 
 
 async def list_recent_incidents_impl(status: str | None) -> str:

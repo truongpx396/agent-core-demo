@@ -2,22 +2,29 @@
 
 What a strict provider needs is checked on the REAL tools of every domain, not on examples, because the failure was found
 that way: LangChain's `strict=True` left six tools in a form the provider would refuse (an optional argument not in
-`required`; for a tool whose arguments are all optional, the object not even closed). A tool added tomorrow with the same
-shape fails here, not at a provider's 400. What a provider then DOES with the schema needs a live strict provider and is
-not claimed here.
+`required`; for a tool whose arguments are all optional, the object not even closed). Those six now declare the argument
+as required and nullable themselves (`test_no_tool_has_an_optional_argument...`); the conversion still has to move defaults and
+length bounds out of what the provider sees. A tool added tomorrow with either shape fails here, not at a provider's 400.
+What a provider then DOES with the schema needs a live strict provider and is not claimed here.
 """
-from typing import Annotated
+import inspect
+from types import NoneType
+from typing import Annotated, get_args
 
 import pytest
 from langchain_core.tools import tool
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.agent.graph.utils import make_llm
-from app.agent.tools.builtin import SearchDocsArgs, Topic
+from app.agent.tools.builtin import SearchDocsArgs
 from app.core.config import Settings, settings
-from app.core.tool_schema import strict_tool_schema
+from app.core.tool_schema import ToolArgs, strict_tool_schema
+from app.domains.ecorp.tools import QueryEmployeesArgs
+from app.domains.ops.tools import ListRecentIncidentsArgs, LogIncidentArgs
 from app.domains.registry import DOMAINS
+from app.domains.sales.tools import ListPendingFollowupsArgs
+from app.domains.support.tools import CreateTicketArgs, TicketPriority
 
 
 def _all_tools() -> dict:
@@ -58,22 +65,91 @@ def test_every_tool_of_every_domain_fits_strict_mode(name):
     assert not problems, f"{name}: {problems}"
 
 
+@pytest.mark.parametrize("name", sorted(ALL_TOOLS))
+def test_no_tool_has_an_optional_argument_only_required_nullable_ones(name):
+    """The rule the strict form rests on: "no filter" is `null`, never an absent argument (pattern 74). A new tool with
+    `Field(default=None)` fails here and not at a strict provider; write `Field(..., ...)` on a `T | None` instead."""
+    schema = convert_to_openai_tool(ALL_TOOLS[name])["function"]["parameters"]
+    optional = sorted(set(schema.get("properties", {})) - set(schema.get("required", [])))
+    assert not optional, f"{name}: optional argument(s) {optional}; make them required and nullable"
+
+
+NULLABLE_ARGS = [
+    (SearchDocsArgs, {"query": "hours"}, ("topic", "doc_ids")),
+    (QueryEmployeesArgs, {}, ("department", "name_contains")),
+    (ListRecentIncidentsArgs, {}, ("status",)),
+    (ListPendingFollowupsArgs, {}, ("contact",)),
+    (LogIncidentArgs, {"summary": "s", "tool_call_id": "t"}, ("detail",)),
+]
+
+
+@pytest.mark.parametrize(("args_schema", "kwargs", "nullable"), NULLABLE_ARGS)
+def test_a_call_that_leaves_a_nullable_argument_out_is_accepted_as_null_though_the_schema_requires_it(args_schema, kwargs, nullable):
+    """What qwen2.5:7b does (it sends only the arguments it needs, and 7 of 19 probe prompts failed when that was refused)."""
+    parsed = args_schema(**kwargs)
+    assert all(getattr(parsed, name) is None for name in nullable)
+    assert set(nullable) <= set(args_schema.model_json_schema()["required"])
+
+
+def test_a_ticket_left_without_a_priority_is_normal_and_the_schema_still_requires_one():
+    assert CreateTicketArgs(subject="s", description="d", tool_call_id="t").priority is TicketPriority.normal
+    assert "priority" in CreateTicketArgs.model_json_schema()["required"]
+
+
+def test_what_has_no_null_and_no_stated_default_is_still_refused():
+    with pytest.raises(ValidationError, match="query"):
+        SearchDocsArgs()  # type: ignore[call-arg]  # the point: `query` is missing
+
+
+@pytest.mark.parametrize("name", sorted(ALL_TOOLS))
+def test_the_function_defaults_whatever_a_call_may_leave_out(name):
+    """LangChain passes the function only the keys the call contained, so validation filling `None` is not enough: without
+    `= None` in the signature the tool dies with a TypeError on the very call the schema just accepted."""
+    t = ALL_TOOLS[name]
+    schema = t.args_schema
+    if not (isinstance(schema, type) and issubclass(schema, ToolArgs)):
+        return
+    params = inspect.signature(t.coroutine or t.func).parameters
+    tolerated = [n for n, f in schema.model_fields.items() if n in schema.omitted_defaults or (f.is_required() and NoneType in get_args(f.annotation))]
+    assert tolerated, f"{name} is a ToolArgs that tolerates nothing: use BaseModel"
+    assert all(params[n].default is not inspect.Parameter.empty for n in tolerated), f"{name}: {tolerated} need a default in the signature"
+
+
+async def test_a_tool_whose_function_has_no_default_fails_on_the_call_validation_accepted():
+    class Filter(ToolArgs):
+        f: str | None = Field(..., description="Pass null for none.")
+
+    @tool(args_schema=Filter)
+    def with_default(f: str | None = None) -> str:
+        """Ok."""
+        return repr(f)
+
+    @tool(args_schema=Filter)
+    def without_default(f: str | None) -> str:
+        """Not ok."""
+        return repr(f)
+
+    assert await with_default.ainvoke({}) == "None"
+    with pytest.raises(TypeError):
+        await without_default.ainvoke({})
+
+
 def test_langchains_own_strict_conversion_is_not_enough_which_is_why_this_module_exists():
-    """If LangChain ever closes an all-optional tool and requires every property, this module can be deleted: this test
-    then fails, and says so."""
-    raw = convert_to_openai_tool(ALL_TOOLS["query_employees"], strict=True)["function"]["parameters"]
-    assert "required" not in raw and "additionalProperties" not in raw
-    fixed = strict_tool_schema(ALL_TOOLS["query_employees"])["function"]["parameters"]
-    assert fixed["required"] == ["department", "name_contains"] and fixed["additionalProperties"] is False
+    """It sets the flag and closes objects, nothing else: a non-null default and a length bound survive it. If LangChain
+    ever rewrites those, this module can be deleted: this test then fails, and says so."""
+    raw = convert_to_openai_tool(_sample, strict=True)["function"]["parameters"]
+    assert raw["properties"]["name"]["maxLength"] == 20 and raw["properties"]["priority"]["default"] == "normal"
+    assert "nick" not in raw["required"]
+    fixed = strict_tool_schema(_sample)["function"]["parameters"]
+    assert "maxLength" not in fixed["properties"]["name"] and fixed["required"] == list(fixed["properties"])
 
 
 def test_converting_a_tool_does_not_change_the_schema_the_app_enforces():
-    """The strict copy is a copy: the same tool still accepts a call that omits its optional arguments."""
-    before = ALL_TOOLS["search_docs"].args_schema.model_json_schema()
-    strict_tool_schema(ALL_TOOLS["search_docs"])
-    assert ALL_TOOLS["search_docs"].args_schema.model_json_schema() == before
-    assert SearchDocsArgs(query="hours").topic is None
-    assert SearchDocsArgs(query="hours", topic=Topic.company).topic is Topic.company
+    """The strict copy is a copy: the tool's own `args_schema` (bounds included) is what still validates a call."""
+    before = ALL_TOOLS["add_note"].args_schema.model_json_schema()
+    strict_tool_schema(ALL_TOOLS["add_note"])
+    assert ALL_TOOLS["add_note"].args_schema.model_json_schema() == before
+    assert before["properties"]["title"]["maxLength"] == 200
 
 
 class _Args(BaseModel):
@@ -142,9 +218,9 @@ class TestMakeLlmSwitch:
         assert sent[0]["function"]["parameters"]["required"] == ["query", "topic", "doc_ids"]
 
     def test_not_strict_binds_the_tools_as_before(self):
-        sent = self._sent(make_llm(self.TOOLS, strict=False))
-        assert not any("strict" in t["function"] for t in sent)
-        assert sent[0]["function"]["parameters"]["required"] == ["query"]
+        sent = self._sent(make_llm([ALL_TOOLS["add_note"]], strict=False))
+        assert "strict" not in sent[0]["function"]
+        assert sent[0]["function"]["parameters"]["properties"]["title"]["maxLength"] == 200  # the bound is still in the schema
 
     def test_the_default_follows_the_setting(self, monkeypatch):
         monkeypatch.setattr(settings, "tool_calls_strict", True)
