@@ -18,21 +18,60 @@ again on every run. The rewrite, and how well each part is known:
   length bounds for strings. They have NOT been run against a live strict provider (none is configured here), and the SDK's
   converter does not touch them. If a provider accepts them, this loses the model a hint, not correctness.
 
-Only the copy sent to the model is rewritten. A tool's `args_schema` is untouched, so a call from a model (or a provider) that
-does not honour `strict` is validated exactly as before, an omitted optional argument and a real length bound included. That
-is why this sits beside the tools and not in them: the schema a provider sees and the schema the app enforces are two
-documents, and only the first has a dialect to fit.
+Only the copy sent to the model is rewritten. A tool's `args_schema` is untouched, so a real length bound is still enforced
+when a call arrives, and a call from a model (or provider) that ignores `strict` is validated as before; `ToolArgs` below
+is what makes that call fine when it leaves a nullable argument out. The schema a provider sees and the schema the app
+enforces are two documents, and only the first has a dialect to fit.
 """
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any
+from types import NoneType
+from typing import Any, ClassVar, get_args
 
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
+from pydantic import BaseModel, model_validator
 
 # (JSON Schema keyword, sentence appended to the property's description). The keyword is removed from the schema.
 _BOUNDS_AS_TEXT = (("minLength", "At least {} characters."), ("maxLength", "At most {} characters."))
+
+
+class ToolArgs(BaseModel):
+    """Base of a tool's `args_schema`: every argument is REQUIRED in the schema, and a call may still leave out the ones that
+    have a natural "nothing" (pattern 74).
+
+    A strict provider needs every property listed in `required`, and `null` is the unmistakable way to say "no filter". So a
+    filter is declared `T | None = Field(..., description="... Pass null for ...")`: required, nullable, no default, and that
+    is what every model sees, strict provider or not. But the local models do not follow "required": `qwen2.5:7b` sends only the
+    arguments it needs (`{'query': 'support hours', 'topic': 'company'}`) and, with the tools declared strictly, 7 of the probe's 19
+    tool prompts failed validation, a retry round trip each. Nothing in a prompt or a description fixed that reliably
+    (best case 18 of 19, and only with all of them stacked; the smaller models got worse). So the model's omission is accepted
+    here: a missing nullable argument is filled with `None`, and `omitted_defaults` names the value for one that is not nullable
+    (a closed choice like a priority has no null).
+
+    Validation passing is not enough: LangChain hands the tool function only the keys the call CONTAINED
+    (`BaseTool._parse_input` keeps `k in tool_input`), so the function's own signature still needs `= None` (or the default
+    here). That default and this class say the same thing in two places, and `tests/core/test_tool_schema.py` calls every such tool
+    with the arguments left out.
+    """
+
+    omitted_defaults: ClassVar[dict[str, Any]] = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_omitted_arguments(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        filled = dict(data)
+        for name, field in cls.model_fields.items():
+            if name in filled or not field.is_required():
+                continue
+            if name in cls.omitted_defaults:
+                filled[name] = cls.omitted_defaults[name]
+            elif NoneType in get_args(field.annotation):
+                filled[name] = None
+        return filled
 
 
 def strict_tool_schema(tool: BaseTool) -> dict[str, Any]:

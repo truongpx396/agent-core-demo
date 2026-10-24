@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.core.security import SecurityCtx, valid_ctx
 from app.core.tool_idempotency import idempotent
 from app.core.tool_runtime import arun_with_timeout
+from app.core.tool_schema import ToolArgs
 from app.core.untrusted import frame_untrusted
 from app.domains import notify, sandbox_session
 from app.domains.policy import ActionAllowlistPolicy
@@ -271,10 +272,9 @@ async def handoff_to_human(
     )
 
 
-class ListPendingFollowupsArgs(BaseModel):
+class ListPendingFollowupsArgs(ToolArgs):
     contact: str | None = Field(
-        default=None,
-        description="Optional: narrow to one lead's follow-ups. Omit to see the whole pending queue.",
+        ..., description="Narrow to one lead's follow-ups. Pass null to see the whole pending queue."
     )
 
 
@@ -291,7 +291,7 @@ async def _list_pending_followups_impl(contact: str | None, ctx: SecurityCtx) ->
 @tool(args_schema=ListPendingFollowupsArgs)
 async def list_pending_followups(config: RunnableConfig, contact: str | None = None) -> str:
     """List pending follow-ups, most-imminent first — the whole queue, or
-    just one lead's if `contact` is given. Use this to see what's coming
+    just one lead's if `contact` is not null. Use this to see what's coming
     up rather than guessing whether a lead already has one scheduled."""
     ctx = ctx_or_refuse(config, "list_pending_followups")
     if ctx is None:

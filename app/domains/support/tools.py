@@ -12,7 +12,7 @@ touching Postgres. All tools are `async def`, matching that module's
 async-first design.
 """
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Any, ClassVar
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolCallId, tool
@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.core.security import SecurityCtx, valid_ctx
 from app.core.tool_idempotency import idempotent
 from app.core.tool_runtime import arun_with_timeout
+from app.core.tool_schema import ToolArgs
 from app.core.untrusted import frame_untrusted
 from app.domains import notify, sandbox_session
 from app.domains.policy import ActionAllowlistPolicy
@@ -71,10 +72,14 @@ class TicketPriority(str, Enum):
     urgent = "urgent"
 
 
-class CreateTicketArgs(BaseModel):
+class CreateTicketArgs(ToolArgs):
+    omitted_defaults: ClassVar[dict[str, Any]] = {"priority": TicketPriority.normal}
     subject: str = Field(..., description="Short summary of the customer's issue.")
     description: str = Field(..., description="Full description, including anything the customer already told you.")
-    priority: TicketPriority = Field(default=TicketPriority.normal)
+    # Required in the schema (see ToolArgs). A closed choice has no null, so a call that leaves it out gets `normal`.
+    priority: TicketPriority = Field(
+        ..., description="One of low, normal, high, urgent. Use normal unless the customer's words clearly say otherwise."
+    )
     tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("subject", "description")
