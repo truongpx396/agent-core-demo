@@ -569,8 +569,16 @@ class Settings(BillingSettings):
     # from a real error. `make sandbox-up` publishes this exact port.
     opensandbox_mcp_domain: str = "localhost:8090"
 
+    # Who a PUBLISHED MCP server (app/mcp/server.py, ops_server.py) acts for — set by whoever
+    # launches it (the `env` block of Claude Desktop's / Cursor's server entry, or this file for
+    # `make mcp-serve`), never by a tool argument the connected model would fill in
+    # (app/mcp/identity.py, GRAPH_PATTERNS.md pattern 21). Empty means the server refuses to start.
+    # The operations server's data is not tenant-scoped, so it needs only the principal.
+    mcp_tenant: str = ""
+    mcp_principal: str = ""
+
     # Bearer token `opensandbox-mcp` sends OpenSandbox's server
-    # (sandbox_tools.py appends `--api-key`). docker-compose.yml's
+    # (sandbox_tools.py hands it over in the bridge's environment). docker-compose.yml's
     # opensandbox-server sets the same value via OPENSANDBOX_SERVER_API_KEY,
     # which overrides the TOML's `server.api_key`. Required: current
     # opensandbox-server releases refuse to start without one set — no
