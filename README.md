@@ -394,6 +394,9 @@ omission, not a policy check, is what "sandboxed" means. Skills (`skills/*/SKILL
 
 `postgres-init/*.sql` runs automatically on a **fresh** volume only, in dev and prod. On an existing
 volume, apply each file you lack by hand, in order (`psql -U langfuse -d appdata -f postgres-init/NN-….sql`).
+`GET /health/ready` lists the tables the app uses that the database lacks, and the scripts that create them, under `warnings` (it stays `ready`: the tables are
+spread over features, and a restart cannot fix one). Without that, a database that predates a script failed one tool at a time (`UndefinedTable`), ran the
+duplicate-call guard degraded, metered nothing and let the budget check fail open on every turn, each a warning in a log. It checks tables, not columns (`11`, `14`).
 The four billing scripts (`20`, `22`, `24`, `25`) are the billing package's, which ships a tool for them: `make billing-migrate` (see [Credit billing](#credit-billing-optional)). Run it before deploying a version that changes them.
 Upgrading across the move of the meter into the package (spec 013) has an order of its own: [packages/billing/docs/RUNBOOK.md](packages/billing/docs/RUNBOOK.md#upgrading-from-the-apps-own-billing-spec-013).
 
