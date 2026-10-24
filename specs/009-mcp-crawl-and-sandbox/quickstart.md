@@ -36,7 +36,7 @@ pytest tests/mcp tests/domains/test_sandbox_session.py tests/domains/test_sandbo
 | FR-024 refuse without an identity; closed department enum; tenant passes through | `tests/mcp/test_mcp_server.py`, `test_ops_server.py` |
 | FR-012 page-readers outward and gated | `…test_fetch_external_reference_pauses_for_approval_as_an_outward_tool` (support), `…test_enrich_lead_from_website_pauses…` (sales), `…test_check_vendor_status_page_pauses…` (ops) |
 
-**Not covered here**: FR-009 (B24), FR-010 (B23), FR-011 and FR-020's output cases (A3), FR-014 (B26), FR-015 (B27), FR-016 (A1), FR-022 (B25), FR-025 and FR-026 (A4, A5), FR-028 (A7), FR-029 (A8).
+**Not covered here**: FR-009 (B24), FR-010 (B23), FR-020's output cases, FR-014 (B26), FR-015 (B27), FR-016 (A1), FR-022 (B25), FR-025 and FR-026 (A4, A5), FR-028 (A7), FR-029 (A8).
 
 ---
 
@@ -101,9 +101,9 @@ A standalone script; nothing is fetched.
 
 **Observed 2026-10-03**: the longest heartbeat gap was **0.51 s**. **Fixed when** the gap stays near 10 ms.
 
-## Check — A3: the result is not capped (hermetic)
+## Check — A3: the result is not capped (hermetic) — *resolved; this is the reproduction as it was*
 
-`from app.domains.sandbox_session import _format_execution`; `len(_format_execution({"exit_code": 0, "logs": {"stdout": [{"text": "x" * 1_000_000}], "stderr": []}}))` → **1,000,021** (no cap).
+`from app.domains.sandbox_session import _format_execution`; `len(_format_execution({"exit_code": 0, "logs": {"stdout": [{"text": "x" * 1_000_000}], "stderr": []}}))` → **1,000,021** (no cap) at the time of the review. Since the MCP-hardening change the same call returns the head and tail of each stream, about `MCP_TOOL_OUTPUT_MAX_CHARS` characters plus a marker saying how much was left out (`tests/domains/test_sandbox_session.py::TestSandboxResultsAreBounded`).
 
 ---
 
@@ -115,7 +115,7 @@ A standalone script; nothing is fetched.
 4. Support product: ask it to read a public docs page. **Expected**: an approval pause showing the **address**; approve; markdown no longer than 20,000 characters.
 5. Ask it to read `https://127.0.0.1/`. **Expected**: refused with a clear message before any browser starts.
 6. Stop the sandbox service and repeat step 2. **Expected**: "OpenSandbox is not reachable right now…", the turn continues; start it again and the next call works.
-7. Run `make mcp-serve` and call `query_employees` from an MCP client with and without a tenant. **Expected**: refused without; scoped with — and note that *you* chose the tenant (A4).
+7. Run `make mcp-serve` and call `query_employees` from an MCP client with and without a tenant. **Expected**: the server starts only with `MCP_TENANT` and `MCP_PRINCIPAL` set (without them it exits and says why), the tool has no tenant argument, and every result is scoped to the tenant it was launched with — a tenant in the call is ignored (A4, resolved for stdio).
 
 ## Troubleshooting
 
