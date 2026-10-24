@@ -195,6 +195,15 @@ class Settings(BillingSettings):
     # not just eventually removed by delete_memories (pattern 33).
     memory_retention_days: int = 365
 
+    # Send every tool to the chat model as a strict-mode schema (app/core/tool_schema.py). A provider that supports OpenAI's
+    # "strict" function calling then decodes the arguments against it (only real enum values, only declared fields). The local
+    # Ollama path does not: LiteLLM hands `tools` to it untouched and it ignores the key, so there strict buys nothing and
+    # costs something. It lists every argument as required (an optional one as nullable), and the smallest model CI runs
+    # (`qwen2.5:1.5b`) answered 9 of the probe's 19 tool prompts with it against 12 without (`qwen2.5:7b`, which `chat` is: 19 and
+    # 19). So it is OFF until the chat alias points at a provider that enforces it; turn it on together with that change
+    # (pattern 74). The tools' own validation is the same either way.
+    tool_calls_strict: bool = False
+
     # Per-run cost ceiling (graph/routing.py::should_continue, pattern 35) —
     # a HARD stop before the next tool/LLM call, independent of
     # MAX_TOKENS_PER_TURN (a token cap bounds work; a dollar cap bounds what

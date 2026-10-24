@@ -41,6 +41,8 @@ import yaml
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from app.agent.runtime.core import DEFAULT_DOMAIN
+from app.core.config import settings as app_settings
+from app.core.tool_schema import strict_tool_schema
 from app.domains.registry import resolve_domain
 
 CONFIG = Path(__file__).resolve().parents[1] / "deploy" / "litellm" / "litellm-config.yaml"
@@ -156,13 +158,15 @@ def classify(probe: Probe, message: dict, eval_count: int, schemas: dict[str, di
     return OK if probe.expected is None else PROSE
 
 
-def app_tools_and_prompt() -> tuple[list[dict], str]:
-    """The tool schemas and system prompt the Ecorp graph sends, built the way `build_graph` builds them."""
+def app_tools_and_prompt(strict: bool | None = None) -> tuple[list[dict], str]:
+    """The tool schemas and system prompt the Ecorp graph sends, built the way `build_graph` builds them. `strict=None` follows
+    TOOL_CALLS_STRICT, so by default the probe sends the form the app sends (pattern 74)."""
     manifest, domain = resolve_domain(DEFAULT_DOMAIN)
     tools = domain.tools()
     if manifest.allowed_tools:
         tools = [t for t in tools if t.name in set(manifest.allowed_tools)]
-    return [convert_to_openai_tool(t) for t in tools], manifest.system_prompt
+    use_strict = app_settings.tool_calls_strict if strict is None else strict
+    return [strict_tool_schema(t) if use_strict else convert_to_openai_tool(t) for t in tools], manifest.system_prompt
 
 
 def chat(client: httpx.Client, base: str, model: str, options: dict, messages: list[dict], tools: list[dict] | None = None) -> dict:
@@ -179,9 +183,11 @@ def ask(client: httpx.Client, base: str, model: str, options: dict, system: str,
     return body["message"], body.get("eval_count", 0)
 
 
-def probe(client: httpx.Client, base: str, model: str, options: dict) -> list[tuple[Probe, str]]:
-    tools, system = app_tools_and_prompt()
-    schemas = {t["function"]["name"]: t["function"].get("parameters", {}) for t in tools}
+def probe(client: httpx.Client, base: str, model: str, options: dict, strict: bool | None = None) -> list[tuple[Probe, str]]:
+    tools, system = app_tools_and_prompt(strict)
+    # A reply is judged against the schema the app ENFORCES, not the one it sent: the strict form lists every argument as
+    # required, but a tool's own validation still accepts an omitted optional one, so omitting it is not a bad call.
+    schemas = {t["function"]["name"]: t["function"].get("parameters", {}) for t in app_tools_and_prompt(False)[0]}
     results = []
     for p in PROBES:
         message, eval_count = ask(client, base, model, options, system, tools, p.text)
@@ -211,6 +217,8 @@ def main(argv: list[str] | None = None, client: httpx.Client | None = None) -> i
     parser.add_argument("--model", help="an Ollama model tag to use instead of the alias's")
     parser.add_argument("--repeat-penalty", type=float, nargs="+", help="override repeat_penalty; several values run one pass each")
     parser.add_argument("--no-loops", action="store_true", help="skip the open-ended repetition check (most of the run time)")
+    parser.add_argument("--strict", action=argparse.BooleanOptionalAction, default=None,
+                        help="send the tools as strict-mode schemas (default: whatever TOOL_CALLS_STRICT says, i.e. what the app sends)")
     parser.add_argument("--min-ok", type=float, default=0.9, help="fail below this share of tool-needing prompts answered OK (default 0.9)")
     args = parser.parse_args(argv)
 
@@ -220,9 +228,9 @@ def main(argv: list[str] | None = None, client: httpx.Client | None = None) -> i
     with client or httpx.Client() as client:
         for penalty in args.repeat_penalty or [options.get("repeat_penalty")]:
             settings = {**options, **({"repeat_penalty": penalty} if penalty is not None else {})}
-            results = probe(client, base, model, settings)
+            results = probe(client, base, model, settings, args.strict)
             ok, needed, counts = summarize(results)
-            print(f"{model}  {settings}\n  tool-needing prompts OK: {ok}/{needed}   classes: {dict(sorted(counts.items()))}")
+            print(f"{model}  {settings}  strict={app_settings.tool_calls_strict if args.strict is None else args.strict}\n  tool-needing prompts OK: {ok}/{needed}   classes: {dict(sorted(counts.items()))}")
             for p, cls in results:
                 if cls != OK:
                     print(f"    {cls:22s} want={p.expected or '(no tool)':16s} {p.text}")

@@ -17,8 +17,9 @@ from langchain_openai import ChatOpenAI
 from langgraph.errors import GraphBubbleUp
 from pydantic import SecretStr
 
-from app.core.config import CHAT_MODEL, OPENAI_API_BASE, OPENAI_API_KEY
+from app.core.config import CHAT_MODEL, OPENAI_API_BASE, OPENAI_API_KEY, settings
 from app.core.tool_idempotency import MutatingToolTimedOut
+from app.core.tool_schema import strict_tool_schema
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +167,11 @@ def make_llm(
     model: str = CHAT_MODEL,
     base_url: str = OPENAI_API_BASE,
     api_key: str = OPENAI_API_KEY,
+    strict: bool | None = None,
 ):
+    # `strict=None` follows TOOL_CALLS_STRICT. The tools are bound as dicts only when strict, so the off position is the
+    # exact call this function made before the setting existed.
+    use_strict = settings.tool_calls_strict if strict is None else strict
     return ChatOpenAI(
         model=model,
         base_url=base_url,
@@ -179,7 +184,7 @@ def make_llm(
         # response.usage_metadata is silently None under --stream mode:
         # MAX_TOKENS_PER_TURN never trips, and Langfuse shows 0 tokens.
         stream_usage=True,
-    ).bind_tools(tools)
+    ).bind_tools([strict_tool_schema(t) for t in tools] if use_strict else tools)
     # No `parallel_tool_calls=False` here (removed 2026-09-09) — genuine
     # multi-tool-call turns are fully supported now.
     #
