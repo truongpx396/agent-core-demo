@@ -13,6 +13,7 @@ import functools
 import logging
 import time
 
+import psycopg
 from langchain_core.runnables import RunnableBinding
 from langchain_openai import ChatOpenAI
 from langgraph.errors import GraphBubbleUp
@@ -158,6 +159,17 @@ def friendly_tool_error(error: Exception) -> str:
             "app's own duplicate-call detection. First check whether it already "
             "happened, using a read-only tool for this domain (e.g. a status/"
             "list tool), and only retry if it clearly did not."
+        )
+    if isinstance(error, psycopg.Error):
+        # The driver's message carries the failing statement ("LINE 1: ... FROM support_tickets t LEFT
+        # JOIN support_ti...") and names tables and columns. The model repeats what it is told to the
+        # person, so that went to the user's screen (Langfuse trace `e0ca1456`). Only the class goes;
+        # the full message stays on the tool's own span for whoever runs the system. And "try a
+        # different approach" is wrong advice for a store that rejected a correct request.
+        return (
+            f"Tool failed ({type(error).__name__}): the data store rejected a valid request, so this is a fault "
+            "on the service's side and not in your arguments. Do not retry it or try another query. Tell the "
+            "person plainly that this lookup is unavailable right now."
         )
     return f"Tool failed ({type(error).__name__}: {error}). Try a different approach."
 

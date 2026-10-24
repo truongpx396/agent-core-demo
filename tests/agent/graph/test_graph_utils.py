@@ -34,3 +34,40 @@ class TestFriendlyToolError:
 
         assert "TimeoutError" in message
         assert "try a different approach" in message.lower()
+
+
+class TestADatabaseFailureDoesNotLeakItsStatement:
+    """Langfuse trace `e0ca1456`: `check_ticket_status` raised `UndefinedTable` and the model was told
+    `relation "support_ticket_comments" does not exist  LINE 1: ... FROM support_tickets t LEFT JOIN
+    support_ti...`, which it paraphrased to the person. GRAPH_PATTERNS.md pattern 81."""
+
+    def _error(self):
+        import psycopg
+
+        return psycopg.errors.UndefinedTable(
+            'relation "support_ticket_comments" does not exist\n'
+            "LINE 1: ...ted_at) AS notes FROM support_tickets t LEFT JOIN support_ti...\n"
+        )
+
+    def test_the_statement_and_the_names_in_it_stay_out_of_the_message(self):
+        message = friendly_tool_error(self._error())
+
+        assert "UndefinedTable" in message
+        for leaked in ("support_ticket_comments", "support_tickets", "LINE 1", "LEFT JOIN"):
+            assert leaked not in message
+
+    def test_the_model_is_told_not_to_retry_and_to_say_the_lookup_is_unavailable(self):
+        message = friendly_tool_error(self._error()).lower()
+
+        assert "do not retry" in message
+        assert "unavailable" in message
+        assert "different approach" not in message
+
+    def test_a_driver_error_of_any_kind_gets_it(self):
+        import psycopg
+
+        assert "do not retry" in friendly_tool_error(psycopg.OperationalError("connection refused: host=db")).lower()
+        assert "host=db" not in friendly_tool_error(psycopg.OperationalError("connection refused: host=db"))
+
+    def test_other_errors_keep_the_message_the_model_needs_to_fix_its_arguments(self):
+        assert "bad input" in friendly_tool_error(ValueError("bad input"))
