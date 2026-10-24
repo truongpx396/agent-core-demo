@@ -41,6 +41,7 @@ from app.agent.graph.messages import (
     is_retry_artifact,
     legacy_retry_artifact_ids,
 )
+from app.agent.runtime import cancelled_turn
 from app.agent.runtime import core as runtime_module
 from app.core import gateway, metrics, tracing
 from app.core.config import (
@@ -461,6 +462,9 @@ async def _run_graph_stream(graph, graph_input, cfg, trace, cancel_check=None):
             output="".join(final_answer) + " [cancelled by user]", level="WARNING"
         )
         await _record_unfinished_turn(graph, cfg, start, "cancelled")
+        # After the accounting, which reads the thread as it was. Only a stop the person asked for: a
+        # timeout, an error or a closed connection leaves the question in place, so "try again" works.
+        await cancelled_turn.discard_cancelled_turn(graph, cfg)
         metrics.agent_streaming_cancellation_total.inc()
         envelope = ErrorEnvelope(code=ErrorCode.CANCELLED, message="Cancelled by user.")
         terminal_event = {"type": "error", "content": envelope.message, **envelope.to_dict()}
