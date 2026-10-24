@@ -1,13 +1,15 @@
 """Thin wrapper around opensandbox-mcp's own CLI entrypoint that forces
 `ConnectionConfig(use_server_proxy=True)` — GRAPH_PATTERNS.md pattern 50.
 
-Necessary because `opensandbox-mcp==0.1.1`'s CLI only forwards
+Necessary when it was written because `opensandbox-mcp==0.1.1`'s CLI only forwarded
 `api_key`/`domain`/`protocol`/`request_timeout` into `ConnectionConfig` —
-no flag/env var sets `use_server_proxy`, needed because this process runs
+no flag/env var set `use_server_proxy`, needed because this process runs
 as a bare host process (app/domains/sandbox_tools.py spawns it) while the
 containerized `opensandbox-server` and every sandbox container it creates
 live on a Docker bridge network the host can't reach by container IP at
-all (0.1.1 is still latest on PyPI — no newer release fixes this).
+all. Release 1.1 added `--use-server-proxy` (and builds the same
+`ConnectionConfig`), so this wrapper is now redundant; it stays only until
+a change of its own swaps the launch to `python -m opensandbox_mcp`.
 
 Verified directly: without this, `Sandbox.create()` against the
 containerized server hung 44+ seconds (this app's disclosed sandbox
