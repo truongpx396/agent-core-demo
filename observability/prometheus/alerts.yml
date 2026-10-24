@@ -408,6 +408,42 @@ groups:
             going unnotified about real, already-applied business state.
             Check SLACK_WEBHOOK_URL / var/team_channel.log permissions.
 
+      - alert: SandboxToolsUnavailable
+        expr: increase(agent_sandbox_unavailable_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The code sandbox is unavailable; turns are going on without it"
+          description: >-
+            agent_sandbox_unavailable_total{reason} increased for 15m — the sandbox
+            tool catalog could not be loaded (app/domains/sandbox_tools.py), so the
+            ops, support and sales sandbox tools are missing from the turn and the
+            model works without them. reason=connection or timeout: opensandbox-server
+            (`make sandbox-up`) is down or still booting; circuit_open: that has been
+            true for several calls in a row; other: the bridge itself cannot start
+            (scripts/opensandbox_mcp_bridge.py missing from the image, an SDK it cannot
+            import). The turn does not fail, which is why this is an alert and not an
+            error rate. specs/009 A9.
+
+      - alert: McpToolCatalogChanged
+        expr: increase(agent_mcp_tool_pin_failures_total[1h]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A remote MCP server's tools no longer match what this app pinned"
+          description: >-
+            agent_mcp_tool_pin_failures_total{dependency,reason} increased — a tool the
+            app pinned by name and by a hash of its description and input schema is
+            either offered differently (reason=changed) or no longer offered
+            (reason=missing), so it was left out and the feature behind it is off.
+            The usual cause is an upgrade of the dependency that provides the server
+            (opensandbox-mcp): read what changed in its tool descriptions before
+            re-pinning in app/domains/sandbox_tools.py, because that text is what the
+            model is told to do. The test that fails on the same drift is
+            tests/domains/test_sandbox_tool_pins.py.
+
       - alert: WorkerUnreachable
         expr: increase(agent_worker_unreachable_total[10m]) > 0
         for: 5m

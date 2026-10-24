@@ -44,7 +44,7 @@ The result is the **only** value in the sandbox's tag `{"agent_core_thread": <va
 | write | `file_write(sandbox_id, path, content, connect_if_missing=True)` | never retried |
 | read | `file_read(sandbox_id, path, connect_if_missing=True)` | fails against the pinned release right after a write (A6) |
 
-Result rendering: `exit code: <n>`, then `stdout:\n<text>` (or `stdout: (empty)`), then `stderr:\n<text>` only if non-empty. **No size cap** (A3).
+Result rendering: `exit code: <n>`, then `stdout:\n<text>` (or `stdout: (empty)`), then `stderr:\n<text>` only if non-empty. Each stream and a file read are cut to `MCP_TOOL_OUTPUT_MAX_CHARS` (head and tail kept), scrubbed first (A3, resolved).
 
 ## 3. Tool inventory
 
@@ -118,9 +118,9 @@ Breaker state is per process, in memory; transitions increment `agent_circuit_br
 
 | Surface | Direction | Transport | Identity | Notes |
 |---------|-----------|-----------|----------|-------|
-| `app/mcp/client.py` | this app consumes a remote catalogue | stdio, a child process **per call** | n/a | name, description and JSON schema taken from the remote as given; reply scrubbed; remote error → `Remote tool error: …` text; capability from the local caller only |
-| `ecorp-structured-data` (`app/mcp/server.py`) | this app publishes `query_employees` | stdio | `tenant`, `principal` as **caller-supplied arguments** (A4) | missing either → `Refused`; fixed parameterized query; department a closed enum |
-| `ecorp-ops` (`app/mcp/ops_server.py`) | this app publishes two ops tools | stdio | `principal` argument; tenant fixed to the default | read-only; no free-form query |
+| `app/mcp/client.py` | this app consumes a remote catalogue | stdio, **one long-lived child process** per server and event loop | n/a | optionally pinned by hash; reply rendered, scrubbed, bounded; remote error → `Remote tool error: …` text; capability from the local caller only |
+| `ecorp-structured-data` (`app/mcp/server.py`) | this app publishes `query_employees` | stdio | the **launcher's** `MCP_TENANT`/`MCP_PRINCIPAL`, never an argument (A4) | missing either → `Refused`; fixed parameterized query; department a closed enum |
+| `ecorp-ops` (`app/mcp/ops_server.py`) | this app publishes two ops tools | stdio | the launcher's `MCP_PRINCIPAL`; tenant fixed to the default | read-only; no free-form query |
 
 ## 9. Settings
 
@@ -129,7 +129,7 @@ Breaker state is per process, in memory; transitions increment `agent_circuit_br
 | `CRAWL4AI_SERVER_URL` | `http://localhost:11235` (compose: `http://crawl4ai:11235`) | **no** (A8) |
 | `CRAWL4AI_API_TOKEN` | empty; required by the server | yes |
 | `OPENSANDBOX_MCP_DOMAIN` | `localhost:8090` (compose: `opensandbox-server:8090`) | **no** |
-| `OPENSANDBOX_API_KEY` | empty; passed to the bridge on a **command line** (A5) | yes |
+| `OPENSANDBOX_API_KEY` | empty; passed to the bridge in its **environment** (A5, resolved) | yes |
 | `SANDBOX_IMAGE` | `agent-core-demo-sandbox:latest` | **no** |
 | `SANDBOX_TTL_SECONDS` | `1800` | **no** |
 | `CRAWL_TIMEOUT_SECONDS` / `CRAWL_TOOL_TIMEOUT_SECONDS` / `_MAX_MARKDOWN_CHARS` | 30 / 40 / 20,000 | constants, `web_crawler.py` |

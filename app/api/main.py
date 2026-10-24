@@ -70,6 +70,7 @@ from app.core.config import (
 )
 from app.core.logging_config import configure_logging
 from app.core.telemetry import configure_telemetry
+from app.mcp.connection import close_all_connections
 
 # Called at import time, before uvicorn logs anything — without this, the
 # service had no logging handler at all, so every `logger.info(...)` call
@@ -96,6 +97,10 @@ async def lifespan(app: FastAPI):
     billing_http.validate_configuration()
     await init_graph_async()
     yield
+    # Ends the long-lived connections to MCP servers this process opened (the sandbox bridge, app/mcp/connection.py): each is a
+    # child process, and closing here, on the loop that served the requests, terminates it instead of leaving that to the
+    # loop's teardown. No-op if no sandbox tool was ever used.
+    await close_all_connections()
     # Closes the Postgres pool's background worker threads cleanly
     # (core/sql_store.py, pattern 31) — skipping this leaves them running at exit
     # with a "couldn't stop thread" warning. No-op if the pool was never opened.

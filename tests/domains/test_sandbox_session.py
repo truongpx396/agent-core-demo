@@ -445,3 +445,77 @@ class TestCallRawTool:
 
         with pytest.raises(sandbox_session.SandboxCallFailed):
             await sandbox_session._call_raw_tool(raw, "sandbox_list", filter={})
+
+
+class TestSandboxResultsAreBounded:
+    """specs/009 A3: a 1 MB stdout used to come back as a 1,000,021-character string, straight into the model's context."""
+
+    @staticmethod
+    def _raw_running_sandbox(**tools):
+        return _raw(
+            sandbox_list=lambda filter: json.dumps(
+                {"sandbox_infos": [{"id": "sbx_1", "status": {"state": "RUNNING"}, "metadata": filter["metadata"]}], "pagination": {}}
+            ),
+            **tools,
+        )
+
+    async def test_a_huge_stdout_is_cut_but_the_whole_json_reply_still_parses(self, monkeypatch):
+        monkeypatch.setattr(sandbox_session, "MCP_TOOL_OUTPUT_MAX_CHARS", 500)
+        big = "line\n" * 200_000  # 1,000,000 characters, as in the reproduction
+        raw = self._raw_running_sandbox(
+            command_run=lambda **kw: json.dumps({"exit_code": 0, "logs": {"stdout": [{"text": big}], "stderr": []}})
+        )
+
+        result = await sandbox_session.run_command_in_sandbox_impl("yes", "t", raw, tenant="ecorp")
+
+        assert result.startswith("exit code: 0")
+        assert "characters omitted" in result
+        assert len(result) < 1000
+
+    async def test_a_flood_on_stdout_does_not_push_a_short_stderr_out(self, monkeypatch):
+        monkeypatch.setattr(sandbox_session, "MCP_TOOL_OUTPUT_MAX_CHARS", 500)
+        raw = self._raw_running_sandbox(
+            command_run=lambda **kw: json.dumps(
+                {"exit_code": 1, "logs": {"stdout": [{"text": "x" * 50_000}], "stderr": [{"text": "Traceback: the real error"}]}}
+            )
+        )
+
+        result = await sandbox_session.run_command_in_sandbox_impl("python job.py", "t", raw, tenant="ecorp")
+
+        assert "Traceback: the real error" in result
+
+    async def test_a_file_read_is_bounded_too(self, monkeypatch):
+        monkeypatch.setattr(sandbox_session, "MCP_TOOL_OUTPUT_MAX_CHARS", 500)
+        raw = self._raw_running_sandbox(file_read=lambda **kw: json.dumps({"path": kw["path"], "content": "c" * 50_000}))
+
+        result = await sandbox_session.read_sandbox_file_impl("/tmp/big.log", "t", raw, tenant="ecorp")
+
+        assert "characters omitted" in result
+        assert len(result) < 1000
+
+    async def test_a_credential_that_straddles_the_cut_does_not_survive_in_pieces(self, monkeypatch):
+        monkeypatch.setattr(sandbox_session, "MCP_TOOL_OUTPUT_MAX_CHARS", 300)
+        text = "a" * 185 + "sk-abcdefghijklmnopqrstuvwx1234" + "b" * 3000
+        raw = self._raw_running_sandbox(
+            command_run=lambda **kw: json.dumps({"exit_code": 0, "logs": {"stdout": [{"text": text}], "stderr": []}})
+        )
+
+        result = await sandbox_session.run_command_in_sandbox_impl("env", "t", raw, tenant="ecorp")
+
+        assert "sk-abcdef" not in result
+
+    async def test_a_result_inside_the_limit_is_unchanged(self):
+        raw = self._raw_running_sandbox(
+            command_run=lambda **kw: json.dumps({"exit_code": 0, "logs": {"stdout": [{"text": "42\n"}], "stderr": []}})
+        )
+
+        result = await sandbox_session.run_command_in_sandbox_impl("echo 42", "t", raw, tenant="ecorp")
+
+        assert result == "exit code: 0\nstdout:\n42\n"
+
+
+class TestTheSharedArgumentLimit:
+    def test_the_limit_is_the_configured_one(self):
+        from app.core.config import SANDBOX_ARG_MAX_CHARS
+
+        assert sandbox_session.SANDBOX_ARG_LIMIT == SANDBOX_ARG_MAX_CHARS

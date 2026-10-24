@@ -3,56 +3,75 @@
 another agent, `mcp dev`) can reach it — not just this app's own in-process
 LLM (GRAPH_PATTERNS.md pattern 21).
 
-Pinned to `mcp==1.29.0`: the 2.x release removed `mcp.server.fastmcp` in a
-rewrite (ModuleNotFoundError on 2.0.0), so this stays on the last stable
-1.x line with the documented FastMCP API.
+Pinned to the 1.x line of `mcp` (requirements.txt says why: the third-party
+sandbox bridge imports `mcp.server.fastmcp`, which 2.x removed).
 
-## Identity over MCP: explicit arguments, not a RunnableConfig
+## Identity over MCP: the launcher's, never an argument
 
 Every other tool (`app/agent/tools/builtin.py`) reads `SecurityCtx` from
 `RunnableConfig["configurable"]["ctx"]`, sourced from a trusted HTTP header
 (`app/api/deps.py::get_ctx`). MCP has no equivalent channel — nothing
-upstream stamps a tenant/principal for it. This demo's simplification:
-`tenant`/`principal` are explicit tool arguments, checked against the same
-`DEFAULT_POLICY.permit(...)` fail-closed gate, then passed straight through
-to `sql_store.query_employees`'s mandatory `WHERE tenant = %s` — the
-isolation boundary still holds. What this demo does NOT do is authenticate
-the *caller*: a production server would derive tenant/principal from the
-connecting client's verified identity (MCP's OAuth support, or a proxy
-ahead of it), never accept them as caller-supplied arguments. That auth
-wiring is out of scope here; the query-layer tenant scoping is the actual
-content being demonstrated.
+upstream stamps a tenant/principal for it. So the server binds ONE identity
+when it is started (`MCP_TENANT`, `MCP_PRINCIPAL`, see `app/mcp/identity.py`)
+and no tool takes either as an argument. An earlier version did, which meant
+the connected assistant chose the tenant it read: one prompt injection away
+from another tenant's rows. The policy gate (`DEFAULT_POLICY.permit(...)`) and
+`sql_store.query_employees`'s mandatory `WHERE tenant = %s` still run exactly
+as before; only where the tenant comes from changed.
 
-Run with: `make mcp-serve` (stdio transport).
+What this still does NOT do is authenticate the person who starts the
+process. Over stdio that is whoever owns the machine; a networked transport
+would have to derive the identity from each connection's verified credential
+(OAuth 2.1 resource-server behaviour, audience-checked tokens), never from the
+environment or an argument. That is deliberately not built (specs/009 A4).
+
+Run with: `make mcp-serve` (stdio transport; needs MCP_TENANT and MCP_PRINCIPAL).
 """
-from mcp.server.fastmcp import FastMCP
+import sys
 
-from app.core.security import DEFAULT_POLICY, SecurityCtx
+from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
+
+from app.core.logging_config import configure_logging
+from app.core.security import DEFAULT_POLICY
 from app.domains.ecorp.store import Department, query_employees_impl
+from app.mcp.audit import audited
+from app.mcp.identity import LauncherIdentityMissing, launcher_ctx
+
+SERVER_NAME = "ecorp-structured-data"
+
+NO_IDENTITY_REFUSAL = "Refused: this server was started without an identity (MCP_TENANT and MCP_PRINCIPAL)."
 
 mcp = FastMCP(
-    name="ecorp-structured-data",
+    name=SERVER_NAME,
     instructions=(
-        "Query Ecorp's employee directory. tenant/principal identify "
-        "the caller (see this server's module docstring for why they're "
-        "explicit arguments here); department/name_contains are the only "
-        "two optional narrowing filters — there is no free-form query."
+        "Query Ecorp's employee directory for the tenant this server was "
+        "started for. department/name_contains are the only two optional "
+        "narrowing filters — there is no free-form query, and no way to "
+        "choose a different tenant."
     ),
 )
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Look up Ecorp employees",
+    # A hint to the client, not a guarantee it can rely on: it lets a desktop assistant offer the call without a
+    # confirmation prompt. True of all of it: a fixed SELECT, nothing written, nothing outside this deployment's database.
+    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+)
+@audited(SERVER_NAME)
 async def query_employees(
-    tenant: str,
-    principal: str,
     department: str | None = None,
     name_contains: str | None = None,
 ) -> str:
     """Look up Ecorp employees, optionally filtered by department
     (Engineering, Support, or Sales) or a case-insensitive name substring.
-    `tenant`/`principal` identify the caller and scope every result — a
-    fixed, parameterized query, never SQL text the caller supplies."""
-    ctx: SecurityCtx = {"tenant": tenant, "principal": principal, "claims": {}}
+    Results are always scoped to the tenant this server was started for —
+    a fixed, parameterized query, never SQL text the caller supplies."""
+    try:
+        ctx = launcher_ctx()
+    except LauncherIdentityMissing:
+        return NO_IDENTITY_REFUSAL
     if not DEFAULT_POLICY.permit("query_structured_data", ctx):
         return "Refused: tenant and principal are required."
 
@@ -67,5 +86,15 @@ async def query_employees(
     return await query_employees_impl(dept, name_contains, ctx)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    # JSON lines to STDERR (stdout is the protocol channel), and no serving at all without an identity.
+    configure_logging()
+    try:
+        launcher_ctx()
+    except LauncherIdentityMissing as exc:
+        sys.exit(f"{SERVER_NAME}: {exc}")
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

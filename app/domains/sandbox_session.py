@@ -61,8 +61,16 @@ import logging
 
 from langchain_core.tools import BaseTool
 
-from app.core.config import SANDBOX_IMAGE, SANDBOX_TTL_SECONDS
-from app.domains.sandbox_tools import load_sandbox_tools
+from app.core.config import (
+    MCP_TOOL_OUTPUT_MAX_CHARS,
+    SANDBOX_ARG_MAX_CHARS,
+    SANDBOX_IMAGE,
+    SANDBOX_TTL_SECONDS,
+)
+from app.core.output_limits import bound_output
+from app.core.scrubbing import scrub
+from app.domains.sandbox_tools import SANDBOX_DEPENDENCY, load_sandbox_tools
+from app.mcp.client import REMOTE_ERROR_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +94,11 @@ class SandboxCallFailed(Exception):
     handle_tool_errors), not a bug that should surface as a raw
     traceback."""
 
+
+# The longest value of any free-form argument the model may send a sandbox tool (`command`, `script`, `path`, file `content`):
+# the four tools' argument schemas in app/domains/{ops,support,sales}/tools.py all use THIS constant, so there is one number to
+# tune (SANDBOX_ARG_MAX_CHARS) and one place that says why. See also the bound on what comes back, `_bounded` below.
+SANDBOX_ARG_LIMIT = SANDBOX_ARG_MAX_CHARS
 
 _raw_sandbox_tools_cache: dict[str, BaseTool] = {}
 
@@ -127,7 +140,7 @@ async def _call_raw_tool(raw: dict[str, BaseTool], name: str, **kwargs) -> dict:
     SandboxCallFailed on a remote tool error or an unparseable/non-dict
     response, rather than silently returning a wrong shape."""
     raw_text = await raw[name].ainvoke(kwargs)
-    if raw_text.startswith("Remote tool error:"):
+    if raw_text.startswith(REMOTE_ERROR_PREFIX):
         raise SandboxCallFailed(raw_text)
     try:
         parsed = json.loads(raw_text)
@@ -198,14 +211,24 @@ async def get_or_create_sandbox_id(raw: dict[str, BaseTool], thread_id: str, *, 
     return sandbox_id
 
 
+def _bounded(text: str) -> str:
+    """Text that is about to reach the model, scrubbed and then cut to MCP_TOOL_OUTPUT_MAX_CHARS (head and tail kept, a marker
+    for the middle). Scrubbed FIRST: a credential that straddles the cut would otherwise be split into two pieces neither of
+    which the scrubber recognises. Done here, on the parsed parts, because the client hands this module the bridge's whole JSON
+    reply (`cap_output=False`) and a JSON document cut in the middle cannot be parsed (specs/009 A3: a 1 MB stdout used to come
+    back as a 1,000,021-character string)."""
+    return bound_output(scrub(text), MCP_TOOL_OUTPUT_MAX_CHARS, dependency=SANDBOX_DEPENDENCY)
+
+
 def _format_execution(execution: dict) -> str:
     """Execution -> plain-text summary (exit code + stdout + stderr,
     stderr only when non-empty), not raw JSON — keeps the result as simple
-    for the model as any other tool's."""
+    for the model as any other tool's. Each stream is bounded on its own, so
+    a flood on stdout cannot push a short stderr out of the result."""
     exit_code = execution.get("exit_code")
     logs = execution.get("logs") or {}
-    stdout = "".join(m.get("text", "") for m in (logs.get("stdout") or []))
-    stderr = "".join(m.get("text", "") for m in (logs.get("stderr") or []))
+    stdout = _bounded("".join(m.get("text", "") for m in (logs.get("stdout") or [])))
+    stderr = _bounded("".join(m.get("text", "") for m in (logs.get("stderr") or [])))
     lines = [f"exit code: {exit_code}"]
     lines.append(f"stdout:\n{stdout}" if stdout else "stdout: (empty)")
     if stderr:
@@ -283,7 +306,7 @@ async def read_sandbox_file_impl(path: str, thread_id: str, raw: dict[str, BaseT
     # instead of this tool.
     sandbox_id = await get_or_create_sandbox_id(raw, thread_id, tenant=tenant)
     result = await _call_raw_tool(raw, "file_read", sandbox_id=sandbox_id, path=path, connect_if_missing=True)
-    return result.get("content", "")
+    return _bounded(result.get("content", ""))
 
 
 async def write_sandbox_file_impl(

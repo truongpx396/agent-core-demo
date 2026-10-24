@@ -69,6 +69,7 @@ they delete volumes or kill running processes.
   with `--project-directory .`; a bare `docker compose up` finds no file. `Dockerfile` stays at the
   root (build context), `docker/` holds the auxiliary image builds.
 - `app/job_queue/` — Redis Streams queue and workers. `app/ingestion/` — chunking, crawl, upload.
+- `app/mcp/` — MCP in both directions (GRAPH_PATTERNS.md 21, 28, 78). The two published servers (`server.py`, `ops_server.py`) act for their **launcher's** identity (`MCP_TENANT`/`MCP_PRINCIPAL`), never a tool argument; `client.py` consumes a remote catalog (pinned by hash, scrubbed then bounded) over `connection.py`'s one long-lived connection per server, which never replays a call that may have run. `mcp` stays on 1.x because the sandbox bridge imports `mcp.server.fastmcp` (`tests/core/test_mcp_sdk_pin.py`).
 - `app/retrieval/` — Qdrant helpers, embeddings, the answer cache. `embeddings.py` has two roles (`embed_query`, `embed_document(s)`); `embedding_identity.py` is what a collection's vectors were made with, and `qdrant_store.py` refuses to mix two (pattern 67). `docker/ml-service/ml_service/` is the ML service as an importable package (rerank, prompt guard, `/v1/embeddings`, per-model health and metrics); `docker/ml-service/models.toml` declares the text models it can serve.
 - `app/core/` — what every package may use and that depends on none of them: config, security (`SecurityCtx`),
   metrics, errors, scrubbing, resilience, `sql_store.py` (pooled appdata connections), `gateway.py` and

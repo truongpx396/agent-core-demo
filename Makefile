@@ -92,13 +92,13 @@ serve:  ## Start the FastAPI service (http://localhost:8000/docs)
 	# measurably slowing down/timing out ordinary chat turns.
 	uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
 
-mcp-serve:  ## Start the MCP server exposing query_employees (stdio transport; needs `make up`)
+mcp-serve:  ## Start the MCP server exposing query_employees (stdio transport; needs `make up`, and MCP_TENANT + MCP_PRINCIPAL in .env or exported: the identity it acts for, never a tool argument)
 	python -m app.mcp.server
 
-mcp-inspect:  ## Launch the MCP Inspector against app/mcp/server.py for interactive testing
+mcp-inspect:  ## Launch the MCP Inspector against app/mcp/server.py for interactive testing (set MCP_TENANT + MCP_PRINCIPAL first, as for mcp-serve)
 	mcp dev app/mcp/server.py
 
-mcp-serve-ops:  ## Start the MCP server exposing fetch_metrics_summary/list_recent_incidents (stdio transport; needs `make up`) — see app/mcp/ops_server.py
+mcp-serve-ops:  ## Start the MCP server exposing fetch_metrics_summary/list_recent_incidents (stdio transport; needs `make up`, and MCP_PRINCIPAL in .env or exported) — see app/mcp/ops_server.py
 	python -m app.mcp.ops_server
 
 telegram:  ## Start the Telegram bot channel for the Ecorp domain (needs TELEGRAM_BOT_TOKEN in .env; see app/channels/telegram.py)
