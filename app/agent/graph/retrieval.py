@@ -51,13 +51,13 @@ def make_retrieve_context_node(
         last_human = last_human_message(state["messages"])
         # Record the question's index here (not re-deriving "last human message"
         # later, which would find a synthetic retry_output message after a
-        # few loop rounds) so agent() can anchor history_summary/context to
-        # a fixed position — see State.context_anchor_index.
+        # few loop rounds) so agent() can put history_summary/context on the
+        # question — see State.context_anchor_index.
         #
         # The question's own index, found by identity: it is NOT always the last message.
         # `compact_history` runs just before this node and whatever a node returns is
         # appended, so when compaction fires its breadcrumb sits after the question, and
-        # `len(messages) - 1` anchored the summary and the context AFTER the question (and made
+        # `len(messages) - 1` put the summary and the context AFTER the question (and made
         # `previous_human_message` see the current question as "the previous turn").
         messages = state["messages"]
         anchor = (
