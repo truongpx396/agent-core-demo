@@ -105,11 +105,11 @@ Format: **Decision** · **Rationale** · **Alternatives considered** · **Eviden
 - **Consequence recorded as A4**.
 - **Evidence**: `app/mcp/server.py`, `ops_server.py` docstrings; `tests/mcp/test_mcp_server.py` (`…refuses_without_tenant_or_principal`, `…two_different_tenants_get_different_tenant_param`), `test_ops_server.py`.
 
-### R15. Pin `mcp` to the last 1.x
+### R15. `mcp` 2.x, once the sandbox bridge supports it
 
-- **Decision**: `mcp[cli]==1.29.0`.
-- **Rationale**: 2.0 removed `mcp.server.fastmcp` in a rewrite (a `ModuleNotFoundError`); staying on 1.x keeps the documented high-level API.
-- **Evidence**: `requirements.txt`; the server module's docstring.
+- **Decision**: `mcp[cli]==2.3.0` with `opensandbox-mcp==1.1.1` (servers on `MCPServer`, the client on `ClientSession`).
+- **Rationale**: 2.0 removed `mcp.server.fastmcp` (a `ModuleNotFoundError`), which `opensandbox-mcp` imported up to 0.1.1, so the app was first held on the last 1.x (`==1.29.0`, then `==1.30.0`). 1.1 of the bridge requires mcp 2.x. Measured, not assumed: a 2.x client lists the real bridge's catalog; two pinned fingerprints changed only in the return-value sentence; and 2.x reports a call on a dead connection with the same error as one lost in flight, so the connection's replay rules were rewritten around a ping (GRAPH_PATTERNS.md pattern 78).
+- **Evidence**: `requirements.txt`; `app/mcp/connection.py`; `tests/core/test_mcp_sdk_pin.py`, `tests/mcp/test_connection.py`.
 
 ### R16. One breaker per dependency, in process memory
 

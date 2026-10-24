@@ -569,8 +569,25 @@ class Settings(BillingSettings):
     # from a real error. `make sandbox-up` publishes this exact port.
     opensandbox_mcp_domain: str = "localhost:8090"
 
+    # Who a PUBLISHED MCP server (app/mcp/server.py, ops_server.py) acts for — set by whoever
+    # launches it (the `env` block of Claude Desktop's / Cursor's server entry, or this file for
+    # `make mcp-serve`), never by a tool argument the connected model would fill in
+    # (app/mcp/identity.py, GRAPH_PATTERNS.md pattern 21). Empty means the server refuses to start.
+    # The operations server's data is not tenant-scoped, so it needs only the principal.
+    mcp_tenant: str = ""
+    mcp_principal: str = ""
+
+    # The most text one remote MCP tool call (app/mcp/client.py) or one sandbox result (app/domains/sandbox_session.py) may hand
+    # the model; the middle of anything longer is replaced by a marker that says how much (app/core/output_limits.py, specs/009
+    # A3). 20,000 is the page reader's own cap (app/ingestion/web_crawler.py), so no tool returns more than a crawled page can.
+    mcp_tool_output_max_chars: int = Field(default=20_000, ge=200)
+
+    # The longest `command`, `script`, `path` or file `content` the model may send a sandbox tool. A validation error names the
+    # limit, so the model can shorten and retry; unbounded, one runaway generation becomes one runaway call.
+    sandbox_arg_max_chars: int = Field(default=20_000, ge=100)
+
     # Bearer token `opensandbox-mcp` sends OpenSandbox's server
-    # (sandbox_tools.py appends `--api-key`). docker-compose.yml's
+    # (sandbox_tools.py hands it over in the bridge's environment). docker-compose.yml's
     # opensandbox-server sets the same value via OPENSANDBOX_SERVER_API_KEY,
     # which overrides the TOML's `server.api_key`. Required: current
     # opensandbox-server releases refuse to start without one set — no
@@ -695,6 +712,8 @@ MAX_UPLOAD_SIZE_MB = settings.max_upload_size_mb
 MAX_UPLOAD_FILES_PER_REQUEST = settings.max_upload_files_per_request
 OPENSANDBOX_MCP_DOMAIN = settings.opensandbox_mcp_domain
 OPENSANDBOX_API_KEY = settings.opensandbox_api_key
+MCP_TOOL_OUTPUT_MAX_CHARS = settings.mcp_tool_output_max_chars
+SANDBOX_ARG_MAX_CHARS = settings.sandbox_arg_max_chars
 SANDBOX_IMAGE = settings.sandbox_image
 SANDBOX_TTL_SECONDS = settings.sandbox_ttl_seconds
 CRAWL4AI_SERVER_URL = settings.crawl4ai_server_url
