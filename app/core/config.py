@@ -577,6 +577,15 @@ class Settings(BillingSettings):
     mcp_tenant: str = ""
     mcp_principal: str = ""
 
+    # The most text one remote MCP tool call (app/mcp/client.py) or one sandbox result (app/domains/sandbox_session.py) may hand
+    # the model; the middle of anything longer is replaced by a marker that says how much (app/core/output_limits.py, specs/009
+    # A3). 20,000 is the page reader's own cap (app/ingestion/web_crawler.py), so no tool returns more than a crawled page can.
+    mcp_tool_output_max_chars: int = Field(default=20_000, ge=200)
+
+    # The longest `command`, `script`, `path` or file `content` the model may send a sandbox tool. A validation error names the
+    # limit, so the model can shorten and retry; unbounded, one runaway generation becomes one runaway call.
+    sandbox_arg_max_chars: int = Field(default=20_000, ge=100)
+
     # Bearer token `opensandbox-mcp` sends OpenSandbox's server
     # (sandbox_tools.py hands it over in the bridge's environment). docker-compose.yml's
     # opensandbox-server sets the same value via OPENSANDBOX_SERVER_API_KEY,
@@ -703,6 +712,8 @@ MAX_UPLOAD_SIZE_MB = settings.max_upload_size_mb
 MAX_UPLOAD_FILES_PER_REQUEST = settings.max_upload_files_per_request
 OPENSANDBOX_MCP_DOMAIN = settings.opensandbox_mcp_domain
 OPENSANDBOX_API_KEY = settings.opensandbox_api_key
+MCP_TOOL_OUTPUT_MAX_CHARS = settings.mcp_tool_output_max_chars
+SANDBOX_ARG_MAX_CHARS = settings.sandbox_arg_max_chars
 SANDBOX_IMAGE = settings.sandbox_image
 SANDBOX_TTL_SECONDS = settings.sandbox_ttl_seconds
 CRAWL4AI_SERVER_URL = settings.crawl4ai_server_url

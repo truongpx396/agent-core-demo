@@ -25,9 +25,11 @@ import sys
 
 import pytest
 
+from app.core import metrics
 from app.core.resilience import CircuitBreaker
 from app.domains import sandbox_tools
 from app.mcp import client as mcp_client
+from tests.conftest import metric_value
 
 
 @pytest.fixture(autouse=True)
@@ -220,3 +222,71 @@ async def test_circuit_breaker_fails_fast_after_repeated_connection_failures(mon
 
     assert (tools, caps) == ([], {})  # still degrades the same way from the caller's side
     assert calls["count"] == calls_before_breaker_open  # but never touched the network this time
+
+
+async def test_asks_the_client_for_exactly_the_pinned_tools_and_hands_it_the_whole_json_reply(monkeypatch):
+    """Regression (specs/009 A5/A3): the app uses 5 of the bridge's 19 tools and offered all 19 as described; and a client-side
+    cap on the reply would cut the JSON sandbox_session parses, so the client is told not to cap (the session bounds the text)."""
+    captured = {}
+
+    async def fake_load_remote_tools(**kwargs):
+        captured.update(kwargs)
+        return [], {}
+
+    monkeypatch.setattr(mcp_client, "load_remote_tools", fake_load_remote_tools)
+
+    await sandbox_tools.load_sandbox_tools()
+
+    assert captured["pinned"] == sandbox_tools.PINNED_SANDBOX_TOOLS
+    assert set(captured["pinned"]) == {"sandbox_list", "sandbox_create", "command_run", "file_read", "file_write"}
+    assert captured["cap_output"] is False
+    assert captured["dependency"] == "opensandbox_mcp"
+
+
+@pytest.mark.parametrize(
+    "error, reason",
+    [
+        (ConnectionRefusedError("not up"), "connection"),
+        (TimeoutError("hung"), "timeout"),
+        (FileNotFoundError("bridge script missing"), "other"),
+        (RuntimeError("boom"), "other"),
+    ],
+)
+async def test_every_degrade_is_counted_by_why(monkeypatch, error, reason):
+    """Regression (specs/009 A9): a bridge that could not be reached used to leave a log line and nothing else, so no alert could
+    ever fire on 'the sandbox has been off for an hour'."""
+    async def raises(**kwargs):
+        raise error
+
+    monkeypatch.setattr(mcp_client, "load_remote_tools", raises)
+    before = metric_value(metrics.agent_sandbox_unavailable_total, reason=reason)
+
+    assert await sandbox_tools.load_sandbox_tools() == ([], {})
+
+    assert metric_value(metrics.agent_sandbox_unavailable_total, reason=reason) == before + 1
+
+
+async def test_a_breaker_that_is_refusing_to_try_is_counted_as_circuit_open(monkeypatch):
+    async def always_refuses(**kwargs):
+        raise ConnectionRefusedError("unreachable")
+
+    monkeypatch.setattr(mcp_client, "load_remote_tools", always_refuses)
+    for _ in range(3):
+        await sandbox_tools.load_sandbox_tools()
+    before = metric_value(metrics.agent_sandbox_unavailable_total, reason="circuit_open")
+
+    await sandbox_tools.load_sandbox_tools()
+
+    assert metric_value(metrics.agent_sandbox_unavailable_total, reason="circuit_open") == before + 1
+
+
+async def test_a_successful_load_counts_nothing_as_unavailable(monkeypatch):
+    async def fine(**kwargs):
+        return ["command_run"], {"command_run": "outward"}
+
+    monkeypatch.setattr(mcp_client, "load_remote_tools", fine)
+    before = {r: metric_value(metrics.agent_sandbox_unavailable_total, reason=r) for r in ("connection", "timeout", "circuit_open", "other")}
+
+    await sandbox_tools.load_sandbox_tools()
+
+    assert before == {r: metric_value(metrics.agent_sandbox_unavailable_total, reason=r) for r in before}
