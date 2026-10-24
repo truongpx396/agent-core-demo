@@ -30,7 +30,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from langchain_core.messages import ToolMessage
+
 from app.agent.graph.citations import find_likely_misattributed, find_likely_uncited
+from app.agent.graph.messages import current_turn_messages
 from app.agent.graph.output_guardrails import (
     defers_instead_of_acting,
     fabricates_tool_output,
@@ -112,12 +115,26 @@ def _skipped_tool(ctx: CheckContext) -> Any:
     return skipped_required_sandbox_after_skill(ctx.messages, ctx.skill_required_tools)
 
 
+def _tool_failed_this_turn(messages: list) -> bool:
+    return any(isinstance(m, ToolMessage) and m.status == "error" for m in current_turn_messages(messages))
+
+
 def _deferred(ctx: CheckContext) -> Any:
     # The answer narrates intent ("I will use the X tool...") or asks permission ("would you like me
     # to?") instead of acting. Real bug found live: a 3B model repeating this across turns, each
     # "yes" reply just restarting the same cycle. Judged on `body`: a closing offer after a complete
     # answer has already been cut (check_output), so what is left here is a reply that IS the offer
     # or the narration.
+    #
+    # Not when a tool already ran and FAILED this turn: the model acted, and what it says now is an
+    # account of the failure or a workaround, not a promise it has not kept. Langfuse trace `de85f4e8`:
+    # the sandbox was unreachable, the model counted by hand ("Let's manually count ... appears 2
+    # times"), the narration pattern matched "let's ... manually", two retries later the correct count
+    # was replaced by "I described what I'd do instead of actually doing it" (which also told the
+    # person nothing about the outage), and the retry feedback told the model to call a tool it had
+    # just called.
+    if _tool_failed_this_turn(ctx.messages):
+        return None
     return True if defers_instead_of_acting(ctx.body) else None
 
 
