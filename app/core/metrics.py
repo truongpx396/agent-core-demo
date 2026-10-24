@@ -686,6 +686,16 @@ agent_tool_output_truncated_total = Counter(
     ["dependency"],
 )
 
+agent_mcp_connection_events_total = Counter(
+    "agent_mcp_connection_events_total",
+    "Lifecycle of the long-lived stdio connection to a remote MCP server (app/mcp/connection.py): started (first process "
+    "spawned on this event loop), restarted (a new one after the previous was lost), lost (found dead, or recycled after "
+    "three timeouts in a row with no success between), closed (shut down on purpose). Before the connection was kept open "
+    "a process was spawned per call, so this had no meaning; now `restarted` and `lost` are the signal that a bridge keeps "
+    "dying. A call that was in flight when the server died is not replayed, so each `lost` can be one failed tool call.",
+    ["dependency", "event"],
+)  # event: started | restarted | lost | closed
+
 agent_sandbox_unavailable_total = Counter(
     "agent_sandbox_unavailable_total",
     "The sandbox tool catalog could not be loaded (app/domains/sandbox_tools.py::load_sandbox_tools): the feature degrades "

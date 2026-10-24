@@ -174,6 +174,7 @@ from app.job_queue.queue import (
     republish_job,
     requests_stream_key,
 )
+from app.mcp.connection import close_all_connections
 
 logger = logging.getLogger(__name__)
 
@@ -706,6 +707,8 @@ async def run() -> None:
         await asyncio.gather(*in_flight)
     await reclaim_task  # stop_event already set above, so this returns promptly
     await client.aclose()
+    # Same reasoning as app/api/main.py's lifespan shutdown: the MCP bridge a sandbox tool started is a child process of this one.
+    await close_all_connections()
     # Same reasoning as app/api/main.py's lifespan shutdown: a turn may have
     # opened core/sql_store.py's connection pool; leaving it open past exit
     # produces the "couldn't stop thread... within 5.0 seconds" warning

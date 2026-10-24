@@ -46,12 +46,13 @@ escape the pattern that finds it whole) and then bounded to
 reply itself and bounds what goes on to the model passes `cap_output=False`: cutting a
 JSON document in the middle leaves it unparseable.
 
-## One connection per call, for now
+## One connection per server, kept open
 
-Each wrapped tool call opens a fresh stdio connection, calls the tool, and
-closes it — no persistent session. Simpler at the cost of per-call
-latency; a production integration would likely want a persistent,
-reconnecting session instead.
+Every call on an event loop shares one long-lived stdio connection to a given server
+(`app/mcp/connection.py`): the process starts once, not once per call. A connection found
+dead is replaced on the next call, a call that may have reached the server is never sent a
+second time, and `close_all_connections()` ends them at shutdown. That module's docstring
+has the measured behaviour and the reasons.
 """
 import hashlib
 import json
@@ -60,13 +61,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from langchain_core.tools import StructuredTool
-from mcp import ClientSession, types
-from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp import types
+from mcp.client.stdio import StdioServerParameters
 
 from app.core import metrics
 from app.core.config import MCP_TOOL_OUTPUT_MAX_CHARS
 from app.core.output_limits import bound_output
 from app.core.scrubbing import scrub
+from app.mcp.connection import connection_for
 
 logger = logging.getLogger(__name__)
 
@@ -119,18 +121,12 @@ def render_result(result: types.CallToolResult, handling: _Handling) -> str:
 
 
 async def _call_remote_tool(params: StdioServerParameters, tool_name: str, kwargs: dict, handling: _Handling) -> str:
-    async with stdio_client(params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            return render_result(await session.call_tool(tool_name, kwargs), handling)
+    result = await connection_for(params, handling.dependency).call_tool(tool_name, kwargs)
+    return render_result(result, handling)
 
 
-async def _list_remote_tools(params: StdioServerParameters):
-    async with stdio_client(params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.list_tools()
-            return result.tools
+async def _list_remote_tools(params: StdioServerParameters, handling: _Handling):
+    return await connection_for(params, handling.dependency).list_tools()
 
 
 def _wrap_remote_tool(params: StdioServerParameters, remote_tool, handling: _Handling) -> StructuredTool:
@@ -206,7 +202,7 @@ async def load_remote_tools(
     params = StdioServerParameters(command=command, args=args or [], env=env, cwd=cwd)
     handling = _Handling(dependency=dependency, cap_output=cap_output)
 
-    remote_tools = await _list_remote_tools(params)
+    remote_tools = await _list_remote_tools(params, handling)
     if pinned is not None:
         remote_tools = _apply_pins(remote_tools, pinned, dependency)
 
