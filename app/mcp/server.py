@@ -3,8 +3,7 @@
 another agent, `mcp dev`) can reach it — not just this app's own in-process
 LLM (GRAPH_PATTERNS.md pattern 21).
 
-Pinned to the 1.x line of `mcp` (requirements.txt says why: the third-party
-sandbox bridge imports `mcp.server.fastmcp`, which 2.x removed).
+Built on `mcp.server.MCPServer`, the 2.x SDK's server class (what `FastMCP` became there).
 
 ## Identity over MCP: the launcher's, never an argument
 
@@ -29,7 +28,7 @@ Run with: `make mcp-serve` (stdio transport; needs MCP_TENANT and MCP_PRINCIPAL)
 """
 import sys
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
 from app.core.logging_config import configure_logging
@@ -42,7 +41,7 @@ SERVER_NAME = "ecorp-structured-data"
 
 NO_IDENTITY_REFUSAL = "Refused: this server was started without an identity (MCP_TENANT and MCP_PRINCIPAL)."
 
-mcp = FastMCP(
+mcp = MCPServer(
     name=SERVER_NAME,
     instructions=(
         "Query Ecorp's employee directory for the tenant this server was "
@@ -57,7 +56,7 @@ mcp = FastMCP(
     title="Look up Ecorp employees",
     # A hint to the client, not a guarantee it can rely on: it lets a desktop assistant offer the call without a
     # confirmation prompt. True of all of it: a fixed SELECT, nothing written, nothing outside this deployment's database.
-    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False),
 )
 @audited(SERVER_NAME)
 async def query_employees(

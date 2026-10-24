@@ -39,7 +39,7 @@ described: trust on first use, so a caller that loads a server it did not write 
 
 Text blocks are joined; an embedded text resource is included; a link is shown as one;
 an image or audio block, which the model cannot read, becomes a one-line note instead of
-vanishing; a result with no text but with `structuredContent` is that JSON. The result is
+vanishing; a result with no text but with structured content is that JSON. The result is
 credential-scrubbed BEFORE it is cut (a secret that straddles the cut would otherwise
 escape the pattern that finds it whole) and then bounded to
 `MCP_TOOL_OUTPUT_MAX_CHARS` (`app/core/output_limits.py`). A caller that parses the
@@ -86,7 +86,8 @@ class _Handling:
 
 def tool_fingerprint(name: str, description: str | None, input_schema: Mapping) -> str:
     """A stable hash of what the model is shown about one tool: its name, description and input schema. Annotations are not
-    in it: they are never shown to the model and never trusted (see the module docstring)."""
+    in it: they are never shown to the model and never trusted (see the module docstring). The key stays `inputSchema`, MCP's name
+    for it on the wire, whatever the SDK calls the attribute: the pinned hashes are over this exact form."""
     canonical = json.dumps(
         {"name": name, "description": description or "", "inputSchema": input_schema},
         sort_keys=True,
@@ -109,15 +110,15 @@ def render_result(result: types.CallToolResult, handling: _Handling) -> str:
         else:
             parts.append(f"[{block.type} content omitted: this agent cannot read it]")
     text = "\n".join(parts)
-    if not text and result.structuredContent is not None:
-        text = json.dumps(result.structuredContent, ensure_ascii=False, default=str)
+    if not text and result.structured_content is not None:
+        text = json.dumps(result.structured_content, ensure_ascii=False, default=str)
     # Scrubbed here too, not just in-process tools' run_with_timeout — a remote
     # server this app doesn't own is at least as likely to echo a
     # credential-shaped value back (pattern 32). Before the cut, never after.
     text = scrub(text)
     if handling.cap_output:
         text = bound_output(text, MCP_TOOL_OUTPUT_MAX_CHARS, dependency=handling.dependency)
-    return f"{REMOTE_ERROR_PREFIX} {text}" if result.isError else text
+    return f"{REMOTE_ERROR_PREFIX} {text}" if result.is_error else text
 
 
 async def _call_remote_tool(params: StdioServerParameters, tool_name: str, kwargs: dict, handling: _Handling) -> str:
@@ -140,7 +141,7 @@ def _wrap_remote_tool(params: StdioServerParameters, remote_tool, handling: _Han
         coroutine=async_call,
         name=name,
         description=description,
-        args_schema=remote_tool.inputSchema,  # a raw JSON Schema dict —
+        args_schema=remote_tool.input_schema,  # a raw JSON Schema dict —
         # langchain_core 0.3's StructuredTool accepts this directly, so the
         # LLM sees the remote tool's real parameter names/types, not **kwargs.
     )
@@ -157,7 +158,7 @@ def _apply_pins(remote_tools: list, pinned: Mapping[str, str], dependency: str) 
             # Not a failure: the server offers more than this app uses, and the unused tools are the point of pinning.
             logger.debug("mcp_tool_not_pinned", extra={"dependency": dependency, "tool": tool.name})
             continue
-        actual = tool_fingerprint(tool.name, tool.description, tool.inputSchema)
+        actual = tool_fingerprint(tool.name, tool.description, tool.input_schema)
         if actual != expected:
             metrics.agent_mcp_tool_pin_failures_total.labels(dependency=dependency, reason="changed").inc()
             logger.warning(

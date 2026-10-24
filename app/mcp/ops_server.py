@@ -28,7 +28,7 @@ needs MCP_PRINCIPAL).
 """
 import sys
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
 from app.core.config import DEFAULT_TENANT
@@ -46,9 +46,9 @@ SERVER_NAME = "ecorp-ops"
 NO_IDENTITY_REFUSAL = "Refused: this server was started without an identity (MCP_PRINCIPAL)."
 
 # Both tools only read: Prometheus and the incident log, both this deployment's own. See the same note in app/mcp/server.py.
-_READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+_READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 
-mcp = FastMCP(
+mcp = MCPServer(
     name=SERVER_NAME,
     instructions=(
         "Query Ecorp's operational metrics and incident log. The caller's "

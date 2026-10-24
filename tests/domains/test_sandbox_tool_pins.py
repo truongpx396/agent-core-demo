@@ -17,7 +17,7 @@ from app.mcp.client import tool_fingerprint
 
 async def _offered() -> dict[str, str]:
     server = create_server(connection_config=ConnectionConfig(use_server_proxy=True))
-    return {t.name: tool_fingerprint(t.name, t.description, t.inputSchema) for t in await server.list_tools()}
+    return {t.name: tool_fingerprint(t.name, t.description, t.input_schema) for t in await server.list_tools()}
 
 
 async def test_every_pinned_sandbox_tool_still_matches_what_the_installed_bridge_offers():

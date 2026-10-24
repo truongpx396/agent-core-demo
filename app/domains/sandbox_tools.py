@@ -76,9 +76,11 @@ _OPENSANDBOX_RETRY_ATTEMPTS = 2  # 1 initial + 1 retry — enough to ride out
 _OPENSANDBOX_RETRY_BASE_DELAY_SECONDS = 1.0
 
 # scripts/opensandbox_mcp_bridge.py, not the packaged opensandbox-mcp CLI
-# directly: that CLI can't set ConnectionConfig(use_server_proxy=True),
+# directly: opensandbox-mcp<=0.1.1's CLI could not set ConnectionConfig(use_server_proxy=True),
 # needed for this host process to reach sandboxes on the Docker bridge
-# network. Runs under this same interpreter, so the same installed
+# network. Release 1.1 added `--use-server-proxy` (and moved to mcp 2.x), so the wrapper is now redundant: it is kept
+# for this change because it is the launch path that was proven against a live server, and deleting it is a change of its own.
+# Runs under this same interpreter, so the same installed
 # opensandbox-mcp/opensandbox packages are guaranteed available.
 _BRIDGE_SCRIPT = str(Path(__file__).resolve().parent.parent.parent / "scripts" / "opensandbox_mcp_bridge.py")
 
@@ -86,16 +88,16 @@ _BRIDGE_SCRIPT = str(Path(__file__).resolve().parent.parent.parent / "scripts" /
 OPEN_SANDBOX_API_KEY_ENV = "OPEN_SANDBOX_API_KEY"
 
 # The five of the bridge's 19 tools this app uses (sandbox_session.py), each with the fingerprint of its name, description and
-# input schema as `opensandbox-mcp==0.1.1` offers it (app/mcp/client.py::tool_fingerprint). The client keeps exactly these and
+# input schema as `opensandbox-mcp==1.1.1` offers it (app/mcp/client.py::tool_fingerprint). The client keeps exactly these and
 # only while they still match: the other fourteen (kill, renew, move, delete, replace, ...) are never offered to the model, and
 # a release that rewrites one of these five's description, which is text the model obeys, is left out and counted until a
 # person reads the change and updates the hash. tests/domains/test_sandbox_tool_pins.py fails on the same drift in CI, and
 # prints the new values, so this is a two-line change with the diff of the bridge's descriptions next to it.
 PINNED_SANDBOX_TOOLS = {
-    "command_run": "bb1d2d52cbbfce43e20fdf1972d15d7f8ac1fd3078d0add74bd2fe8a6e8c8697",
+    "command_run": "a85c41d3e5e85d5ce01c32baa41708a66c953dc4912bab907227242dce177a5e",
     "file_read": "0fc75b8d353bda9cc1da0ea57163bdc73df48feca09ced886942853e22f80ca9",
     "file_write": "ea0a02e9633235d55615f4e5bfee1a698786f589b5cb514bdf5fd1ab0c67776e",
-    "sandbox_create": "60cdc374fde8d4c6e9687368a1a2e0cd4f7729ae7cccd9e3c809ac50e6cc65d2",
+    "sandbox_create": "a47b3abdc4072394dd95531b9535516003f4ae40ff0d3e3737302fc4d46de807",
     "sandbox_list": "5232c31c63f8b822830defaa2e998cacbd64c4d4e49bc14094cb0a371a707888",
 }
 

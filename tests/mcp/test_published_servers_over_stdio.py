@@ -71,8 +71,8 @@ async def test_over_stdio_the_schema_has_no_identity_argument_and_every_call_is_
         logged = stderr.read()
 
     (tool,) = tools
-    assert set(tool.inputSchema["properties"]) == {"department", "name_contains"}
-    assert tool.annotations.readOnlyHint is True
+    assert set(tool.input_schema["properties"]) == {"department", "name_contains"}
+    assert tool.annotations.read_only_hint is True
     assert result.content[0].text.startswith("Invalid department")
 
     audit = [json.loads(line) for line in logged.splitlines() if line.startswith("{") and "mcp_tool_call" in line]
@@ -95,4 +95,5 @@ async def test_the_operations_server_lists_its_tools_over_stdio_with_only_the_la
                 listed = (await session.list_tools()).tools
 
     assert {t.name for t in listed} == tools
-    assert all("principal" not in t.inputSchema["properties"] for t in listed)
+    assert all("principal" not in t.input_schema["properties"] for t in listed)
+

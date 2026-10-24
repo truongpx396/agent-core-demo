@@ -1,4 +1,4 @@
-"""Tests for app/mcp/ops_server.py — same hermetic FastMCP in-process
+"""Tests for app/mcp/ops_server.py — same hermetic MCPServer in-process
 call_tool/list_tools convention as tests/mcp/test_mcp_server.py, including its
 reason for binding the identity at launch (`launched_as`) instead of taking it
 as an argument.
@@ -21,10 +21,10 @@ from app.mcp import ops_server
 
 
 async def _call(name, arguments=None):
-    """See tests/mcp/test_mcp_server.py's own docstring for why the string
-    result lives in structured_result["result"] for this SDK version."""
-    _, structured = await ops_server.mcp.call_tool(name, arguments or {})
-    return structured["result"]
+    """See tests/mcp/test_mcp_server.py's own docstring for why the string result lives in
+    structured_content["result"]."""
+    result = await ops_server.mcp.call_tool(name, arguments or {})
+    return result.structured_content["result"]
 
 
 async def test_lists_both_ops_tools():
@@ -35,13 +35,13 @@ async def test_lists_both_ops_tools():
 
 async def test_no_tool_takes_a_principal_or_a_tenant_as_an_argument():
     for tool in await ops_server.mcp.list_tools():
-        assert set(tool.inputSchema["properties"]) <= {"status"}, tool.name
+        assert set(tool.input_schema["properties"]) <= {"status"}, tool.name
 
 
 async def test_every_tool_declares_itself_read_only_and_closed_world():
     for tool in await ops_server.mcp.list_tools():
-        assert tool.annotations.readOnlyHint is True, tool.name
-        assert tool.annotations.openWorldHint is False, tool.name
+        assert tool.annotations.read_only_hint is True, tool.name
+        assert tool.annotations.open_world_hint is False, tool.name
         assert tool.title, tool.name
 
 
