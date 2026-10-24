@@ -8,11 +8,13 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.runnables import RunnableConfig
 
 from app.agent.cost import metering
+from app.agent.graph.links import LINK_REMINDER, mentions_link
 from app.agent.graph.messages import (
     CANNOT_HELP_MESSAGE,
     GATEWAY_REFUSAL_KEY,
     WITHHELD_MESSAGE,
     current_turn_messages,
+    human_text,
     is_legacy_prompt,
     is_retry_artifact,
     is_user_message,
@@ -85,6 +87,7 @@ def make_agent_node(
     kind: str = "chat",
     citation_reminder: bool = True,
     skill_required_tools: tuple[str, ...] = (),
+    cannot_open_links: bool = False,
     *,
     system_prompt: str,
 ):
@@ -105,6 +108,9 @@ def make_agent_node(
 
     `skill_required_tools` is the subset of `SKILL_REQUIRED_TOOL_MARKERS` the calling domain
     really has; the "call it now" reminder is only ever about one of those.
+
+    `cannot_open_links` is True for a domain with no tool that reaches an address (`links.cannot_open_links`):
+    a turn whose question contains a link then carries a reminder that it cannot be opened.
 
     `system_prompt` is the calling domain's (`manifest.system_prompt`, bound by `build_graph`).
     It is the first message of EVERY call, taken from the manifest at call time rather than read
@@ -205,6 +211,11 @@ def make_agent_node(
                 "computation the skill you loaded described — do not "
                 "compute the result yourself."
             )
+
+        if cannot_open_links and mentions_link(human_text(last_human_message(state["messages"]))):
+            # Last, so it is the closest thing to generation: measured on the 7b, a reminder behind the
+            # citation reminder was obeyed where the same sentence in the system prompt was not.
+            after.append(LINK_REMINDER)
 
         if before or after:
             asked = _question_index(messages, anchor)
