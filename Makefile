@@ -473,11 +473,23 @@ loadtest-queued-headless:  ## Fixed 20-user, 2-minute headless run of the queued
 		--headless --users 20 --spawn-rate 5 --run-time 2m \
 		--csv loadtest/results-queued/loadtest --html loadtest/results-queued/report.html
 
-strix:  ## Autonomous AI pentest of this repo's SOURCE (static) — needs Docker, `pipx install strix-agent` once (pipx isolates it from this repo's own .venv, the pip-conflict concern `make garak` solves with a second venv instead), and a CLOUD LLM key (STRIX_LLM/LLM_API_KEY — NOT the local Ollama the rest of this app runs on). Only ever point it at a target you own or have written authorization to test.
-	strix --target . --scan-mode quick
+# Strix reads neither `.env` nor anything `make` could hand it: a variable reaches it only when it is exported in the shell
+# (or stored in ~/.strix/cli-config.json), so a STRIX_LLM written in `.env` alone gives "STRIX_LLM is not set". Load JUST the
+# names it documents (the model, its key and base URL, and the two optional web-search keys), not the whole file: the file also
+# carries OPENAI_API_BASE (the local LiteLLM proxy), which Strix reads as an alias of LLM_API_BASE and would send the scan's
+# cloud-model calls to, and every other secret in it, which a pentest agent has no use for. The aliases are unset for the
+# same reason, in case the shell exported them. A non-empty value in `.env` wins over one already exported; an empty
+# `NAME=` line is ignored, and the last of two lines wins. The file is READ, never evaluated: a value is taken literally
+# (one pair of matching quotes is stripped; no `$VAR`, no inline `# comment`), so a key with a space or a `;` in it is data
+# and not a command the shell would run.
+STRIX_ENV = for n in STRIX_LLM LLM_API_KEY LLM_API_BASE EXA_API_KEY PERPLEXITY_API_KEY; do v=$$(sed -n -E "s/^$$n=(.+)$$/\1/p" .env 2>/dev/null | tail -n 1); case "$$v" in \"*\") v=$${v\#\"}; v=$${v%\"};; \'*\') v=$${v\#\'}; v=$${v%\'};; esac; [ -n "$$v" ] && export "$$n=$$v"; done; env -u OPENAI_API_BASE -u LITELLM_BASE_URL -u OLLAMA_API_BASE
+
+# make strix ARGS="--instruction 'This is my own repo; I am the owner and authorize a defensive security review of its source.' --max-budget 1"
+strix:  ## Autonomous AI pentest of this repo's SOURCE (static) — needs Docker, `pipx install strix-agent` once (pipx isolates it from this repo's own .venv, the pip-conflict concern `make garak` solves with a second venv instead), and a CLOUD LLM key (STRIX_LLM/LLM_API_KEY, read from .env or your shell — NOT the local Ollama the rest of this app runs on). Only ever point it at a target you own or have written authorization to test. Extra Strix flags go in ARGS: make strix ARGS="--instruction 'This is my own repo; ...'" (or --instruction-file, --max-budget 1)
+	$(STRIX_ENV) strix --target . --scan-mode quick $(ARGS)
 
 strix-app:  ## Same tool, but black-box against the RUNNING app + its OpenAPI spec (needs `make up` + `make serve`/`make up-app`, and `make ingest` for real data to probe) — dynamic testing, not just a source read
-	strix --target http://localhost:8000/openapi.json --target http://localhost:8000 --scan-mode quick
+	$(STRIX_ENV) strix --target http://localhost:8000/openapi.json --target http://localhost:8000 --scan-mode quick $(ARGS)
 
 strix-view:  ## Open the local dashboard (findings, repro steps, agent graph) for the most recent `make strix`/`make strix-app` run
 	strix view
