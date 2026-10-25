@@ -145,5 +145,5 @@ crawl4ai==0.9.3
 # itself and the opensandbox SDK it brings (`opensandbox>=1.1.1`); the sandbox server and the Docker daemon it
 # drives are operational prerequisites, not Python dependencies.
 # 1.1 is the first release on mcp 2.x and the first whose CLI has `--use-server-proxy`, which the
-# scripts/opensandbox_mcp_bridge.py wrapper existed to add.
+# wrapper script this repo carried until then existed to add.
 opensandbox-mcp==1.1.1

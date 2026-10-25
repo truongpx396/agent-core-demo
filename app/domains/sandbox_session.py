@@ -84,7 +84,7 @@ SANDBOX_CALL_TIMEOUT_SECONDS = 60  # own budget vs TOOL_TIMEOUT_SECONDS:
 # Was briefly bumped to 150s after prod timeouts traced to
 # `ConnectionConfig.use_server_proxy=False` making opensandbox-mcp try to
 # reach each sandbox at its unreachable Docker bridge IP (44s+ retries);
-# fixed via scripts/opensandbox_mcp_bridge.py, so 60s is generous again.
+# fixed by launching the bridge with `--use-server-proxy` (app/domains/sandbox_tools.py), so 60s is generous again.
 
 
 class SandboxCallFailed(Exception):
@@ -304,6 +304,9 @@ async def read_sandbox_file_impl(path: str, thread_id: str, raw: dict[str, BaseT
     # command_run are unaffected. Workaround: each domain's
     # run_command_in_sandbox docstring tells the model to use `cat <path>`
     # instead of this tool.
+    # GONE on release 1.1.1 (server and bridge): a live run (2026-10-26) wrote a file and read it straight back. The docstrings
+    # still say `cat`, deliberately: they are text the model obeys, and changing them is a prompt change that `make eval` and
+    # `make promptfoo` should judge first, not something to fold into a version bump.
     sandbox_id = await get_or_create_sandbox_id(raw, thread_id, tenant=tenant)
     result = await _call_raw_tool(raw, "file_read", sandbox_id=sandbox_id, path=path, connect_if_missing=True)
     return _bounded(result.get("content", ""))

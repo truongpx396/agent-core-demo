@@ -422,7 +422,7 @@ groups:
             model works without them. reason=connection or timeout: opensandbox-server
             (`make sandbox-up`) is down or still booting; circuit_open: that has been
             true for several calls in a row; other: the bridge itself cannot start
-            (scripts/opensandbox_mcp_bridge.py missing from the image, an SDK it cannot
+            (opensandbox-mcp not installed in the image, an SDK it cannot
             import). The turn does not fail, which is why this is an alert and not an
             error rate. specs/009 A9.
 

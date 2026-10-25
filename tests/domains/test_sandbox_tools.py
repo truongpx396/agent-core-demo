@@ -21,6 +21,7 @@ app/core/resilience.py's own docstring for what that breaker does.
 `_OPENSANDBOX_RETRY_BASE_DELAY_SECONDS` is also monkeypatched down to keep
 the retry tests from actually waiting out real backoff delays.
 """
+import subprocess
 import sys
 
 import pytest
@@ -51,16 +52,26 @@ async def test_passes_the_configured_domain_and_protocol_to_the_bridge(monkeypat
 
     await sandbox_tools.load_sandbox_tools()
 
-    # sys.executable + scripts/opensandbox_mcp_bridge.py, NOT the packaged
-    # `opensandbox-mcp` binary directly — see sandbox_tools.py's own
-    # `_BRIDGE_SCRIPT` comment for why (opensandbox-mcp==0.1.1's CLI has no
-    # way to set ConnectionConfig(use_server_proxy=True), which this app's
-    # containerized opensandbox-server deployment needs).
+    # The packaged CLI under this same interpreter, with `--use-server-proxy`: a bare host process cannot reach a sandbox on the
+    # Docker bridge network any other way (see sandbox_tools.py's `_BRIDGE_ARGS` comment). `--transport stdio` is said out loud.
     assert captured["command"] == sys.executable
     assert captured["args"] == [
-        sandbox_tools._BRIDGE_SCRIPT,
-        "--domain", sandbox_tools.OPENSANDBOX_MCP_DOMAIN, "--protocol", "http",
+        "-m", "opensandbox_mcp", "--transport", "stdio", "--protocol", "http", "--use-server-proxy",
+        "--domain", sandbox_tools.OPENSANDBOX_MCP_DOMAIN,
     ]
+
+
+def test_every_flag_the_launch_passes_is_one_the_installed_bridge_accepts():
+    """Launching the packaged CLI directly (no wrapper in between) means a release that renames or drops a flag breaks the
+    launch, and `load_sandbox_tools()` degrades quietly to no sandbox tools. Ask the installed CLI what it accepts."""
+    help_text = subprocess.run(
+        [sys.executable, "-m", "opensandbox_mcp", "--help"], capture_output=True, text=True, timeout=60, check=False
+    ).stdout
+
+    flags = {a for a in [*sandbox_tools._BRIDGE_ARGS, "--domain"] if a.startswith("--")}
+    assert flags >= {"--transport", "--protocol", "--use-server-proxy", "--domain"}
+    missing = {flag for flag in flags if flag not in help_text}
+    assert not missing, f"the installed opensandbox-mcp no longer accepts {sorted(missing)}:\n{help_text}"
 
 
 async def test_the_api_key_goes_to_the_bridge_in_its_environment_never_on_its_command_line(monkeypatch):

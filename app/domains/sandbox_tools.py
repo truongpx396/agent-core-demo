@@ -2,12 +2,12 @@
 over MCP (pattern 50), built on the existing, unmodified
 `app/mcp/client.py::load_remote_tools` (pattern 28). `opensandbox-mcp` is a
 purpose-built stdio MCP server bridging to a containerized
-`opensandbox-server` (`make sandbox-up`). New here: `scripts/
-opensandbox_mcp_bridge.py`, spawned instead of the packaged
-`opensandbox-mcp` binary directly, because that CLI has no way to set
-`ConnectionConfig(use_server_proxy=True)` — without it, a sandbox call
-hangs 40+ seconds against a Docker-internal bridge IP unreachable from the
-host (see that script's docstring).
+`opensandbox-server` (`make sandbox-up`). It is launched as its own packaged
+CLI, `python -m opensandbox_mcp ... --use-server-proxy`: that flag, added in
+release 1.1, is what a sandbox call needs — without it the call hangs 40+
+seconds against a Docker-internal bridge IP unreachable from the host. (Before
+1.1 the CLI could not set it, and `scripts/opensandbox_mcp_bridge.py` was a
+wrapper whose only job was to.)
 
 Historical gotcha: sandbox-creation calls 405'd, root-caused to
 `opensandbox_mcp_domain`'s old port (8080) colliding with
@@ -38,7 +38,7 @@ that hung past `_SANDBOX_LIST_TIMEOUT_SECONDS`) gets one retry via
 out the server still finishing its own boot, the exact scenario
 `sandbox_session.py`'s own "never cache an empty result" comment already
 exists to tolerate on the CALLER's side. Any other exception (e.g.
-`FileNotFoundError` — the bridge script genuinely isn't there) is never
+`FileNotFoundError` — the bridge package genuinely isn't installed) is never
 retried: that failure will look identical a second later. Once
 `_OPENSANDBOX_BREAKER` has seen enough consecutive exhausted-retry failures,
 further calls fail fast (no subprocess spawn at all) until its cooldown
@@ -53,7 +53,6 @@ safety boundary.
 """
 import logging
 import sys
-from pathlib import Path
 
 from langchain_core.tools import BaseTool
 
@@ -75,14 +74,12 @@ _OPENSANDBOX_RETRY_ATTEMPTS = 2  # 1 initial + 1 retry — enough to ride out
 # breaker above is what actually protects a sustained outage.
 _OPENSANDBOX_RETRY_BASE_DELAY_SECONDS = 1.0
 
-# scripts/opensandbox_mcp_bridge.py, not the packaged opensandbox-mcp CLI
-# directly: opensandbox-mcp<=0.1.1's CLI could not set ConnectionConfig(use_server_proxy=True),
-# needed for this host process to reach sandboxes on the Docker bridge
-# network. Release 1.1 added `--use-server-proxy` (and moved to mcp 2.x), so the wrapper is now redundant: it is kept
-# for this change because it is the launch path that was proven against a live server, and deleting it is a change of its own.
-# Runs under this same interpreter, so the same installed
-# opensandbox-mcp/opensandbox packages are guaranteed available.
-_BRIDGE_SCRIPT = str(Path(__file__).resolve().parent.parent.parent / "scripts" / "opensandbox_mcp_bridge.py")
+# The packaged opensandbox-mcp CLI, run under this same interpreter so the same installed opensandbox-mcp / opensandbox packages
+# are guaranteed. `--use-server-proxy` routes sandbox traffic through opensandbox-server instead of straight to a Docker-internal
+# bridge IP this host process cannot reach (opensandbox-mcp<=0.1.1 had no such flag, which is why a wrapper script existed).
+# `--transport stdio` is the CLI's default, said out loud: the bridge is a child of this process, holds the key in its environment
+# and listens on no port, so it is not a network service that holds a code-execution key (GRAPH_PATTERNS.md pattern 78).
+_BRIDGE_ARGS = ["-m", "opensandbox_mcp", "--transport", "stdio", "--protocol", "http", "--use-server-proxy"]
 
 # The variable the OpenSandbox SDK falls back to when no `--api-key` is given (opensandbox.config.ConnectionConfig).
 OPEN_SANDBOX_API_KEY_ENV = "OPEN_SANDBOX_API_KEY"
@@ -131,7 +128,7 @@ async def load_sandbox_tools() -> tuple[list[BaseTool], dict[str, str]]:
         return await arun_with_timeout(
             mcp_client.load_remote_tools,
             command=sys.executable,
-            args=[_BRIDGE_SCRIPT, "--domain", OPENSANDBOX_MCP_DOMAIN, "--protocol", "http"],
+            args=[*_BRIDGE_ARGS, "--domain", OPENSANDBOX_MCP_DOMAIN],
             # The key travels in the child's ENVIRONMENT, not its argument list: argv is readable by every user on the
             # host through the process table (`ps`), the environment of a process is not. The bridge asks for it with
             # no flag given (`ConnectionConfig.get_api_key`: the argument, else OPEN_SANDBOX_API_KEY), and the SDK adds
