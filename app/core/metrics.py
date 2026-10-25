@@ -664,6 +664,47 @@ agent_circuit_breaker_half_open_total = Counter(
     ["dependency"],
 )
 
+agent_mcp_tool_pin_failures_total = Counter(
+    "agent_mcp_tool_pin_failures_total",
+    "A remote MCP tool the caller pinned (app/mcp/client.py::load_remote_tools `pinned`: the tool's name plus a hash of its "
+    "description and input schema) was left OUT of the catalog because the server now offers something else under that name "
+    "(reason=changed) or no longer offers it (reason=missing). The hash covers exactly the text the model is shown, so a "
+    "changed one is the signature of a dependency upgrade nobody reviewed, or of a server that rewrote its own tool "
+    "descriptions after the pin was taken: the tool's description is where tool-poisoning instructions live, and the "
+    "capability tier is local so it cannot be widened from there, but what the model is TOLD can. The feature behind the tool "
+    "is unavailable until someone re-pins it on purpose.",
+    ["dependency", "reason"],
+)  # reason: changed | missing
+
+agent_tool_output_truncated_total = Counter(
+    "agent_tool_output_truncated_total",
+    "A tool's text reached the model shorter than the tool produced it, because it exceeded MCP_TOOL_OUTPUT_MAX_CHARS "
+    "(app/core/output_limits.py: head and tail kept, the middle replaced by a marker that says how much). Not an error and "
+    "not alerted: a sandbox command that prints a megabyte is exactly what the cap exists for. A sustained rate on one "
+    "dependency means the cap is too small for what that tool legitimately returns, or a tool is being asked for something "
+    "it should be paginating.",
+    ["dependency"],
+)
+
+agent_mcp_connection_events_total = Counter(
+    "agent_mcp_connection_events_total",
+    "Lifecycle of the long-lived stdio connection to a remote MCP server (app/mcp/connection.py): started (first process "
+    "spawned on this event loop), restarted (a new one after the previous was lost), lost (found dead, or recycled after "
+    "three timeouts in a row with no success between), closed (shut down on purpose). Before the connection was kept open "
+    "a process was spawned per call, so this had no meaning; now `restarted` and `lost` are the signal that a bridge keeps "
+    "dying. A call that was in flight when the server died is not replayed, so each `lost` can be one failed tool call.",
+    ["dependency", "event"],
+)  # event: started | restarted | lost | closed
+
+agent_sandbox_unavailable_total = Counter(
+    "agent_sandbox_unavailable_total",
+    "The sandbox tool catalog could not be loaded (app/domains/sandbox_tools.py::load_sandbox_tools): the feature degrades "
+    "to 'no sandbox tools' and the turn goes on, which before this counter was a log line nobody was watching (specs/009 A9). "
+    "reason=connection|timeout when the bridge started but could not be used, circuit_open when the breaker is refusing "
+    "to try, other for anything else (the bridge script missing, crashing at start, an SDK it cannot import).",
+    ["reason"],
+)  # reason: connection | timeout | circuit_open | other
+
 agent_team_channel_notify_total = Counter(
     "agent_team_channel_notify_total",
     "app/domains/notify.py::post_to_team_channel attempts by sink and outcome. "

@@ -415,7 +415,7 @@ def _thread_id_from_config(config: RunnableConfig | None) -> str:
 
 
 class RunCommandInSandboxArgs(BaseModel):
-    command: str = Field(..., description="A shell command to run, e.g. a Python one-liner or script.")
+    command: str = Field(..., max_length=sandbox_session.SANDBOX_ARG_LIMIT, description="A shell command to run, e.g. a Python one-liner or script.")
     tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("command")
@@ -487,7 +487,7 @@ async def run_command_in_sandbox(
 
 
 class RunPythonInSandboxArgs(BaseModel):
-    script: str = Field(..., description="Python source code to run, as plain text (not a shell command).")
+    script: str = Field(..., max_length=sandbox_session.SANDBOX_ARG_LIMIT, description="Python source code to run, as plain text (not a shell command).")
     tool_call_id: Annotated[str, InjectedToolCallId]
 
     @field_validator("script")
@@ -553,7 +553,7 @@ async def run_python_in_sandbox(
 
 
 class ReadSandboxFileArgs(BaseModel):
-    path: str = Field(..., description="Path of the file to read inside the sandbox.")
+    path: str = Field(..., max_length=sandbox_session.SANDBOX_ARG_LIMIT, description="Path of the file to read inside the sandbox.")
     tool_call_id: Annotated[str, InjectedToolCallId]
 
 
@@ -595,8 +595,8 @@ async def read_sandbox_file(
 
 
 class WriteSandboxFileArgs(BaseModel):
-    path: str = Field(..., description="Destination path for the file inside the sandbox.")
-    content: str = Field(..., description="The file's full text content.")
+    path: str = Field(..., max_length=sandbox_session.SANDBOX_ARG_LIMIT, description="Destination path for the file inside the sandbox.")
+    content: str = Field(..., max_length=sandbox_session.SANDBOX_ARG_LIMIT, description="The file's full text content.")
     tool_call_id: Annotated[str, InjectedToolCallId]
 
 
