@@ -94,6 +94,16 @@ class TestOneProcessServesManyCalls:
 
 
 class TestAServerThatDies:
+    async def test_the_connection_is_on_a_protocol_revision_where_the_liveness_ping_exists(self):
+        """The no-replay guard pings before a call it must not repeat. Measured on mcp 2.3.0: the SDK's `Client` settles on
+        protocol 2026-07-28, where `ping` is REMOVED and answers MCPError(-32601), so a connection opened that way would fail every
+        sandbox command at the probe. Until another probe replaces it, this connection must stay on a revision that has the ping."""
+        conn = connection_for(PARAMS, "t_ping")
+        await _pid(conn)
+        assert conn._link is not None and conn._link.session is not None
+
+        await conn._link.session.send_ping()  # raises MCPError(-32601, "Method not found") on a revision without it
+
     async def test_found_dead_between_calls_the_next_call_runs_on_a_new_process_without_the_caller_noticing(self):
         conn = connection_for(PARAMS, "t_idle_death")
         first = await _pid(conn)

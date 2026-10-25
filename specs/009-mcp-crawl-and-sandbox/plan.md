@@ -10,7 +10,7 @@
 
 Three doors out of the process, built the same way: a thin, domain-agnostic helper module; one flat, outward-declared tool per action in each product; a degrade-don't-fail posture behind a shared circuit breaker.
 
-**Sandbox.** `app/domains/sandbox_tools.py::load_sandbox_tools` spawns `scripts/opensandbox_mcp_bridge.py` — a wrapper around the OpenSandbox MCP server that forces `use_server_proxy=True` so a host process can reach sandboxes on a
+**Sandbox.** `app/domains/sandbox_tools.py::load_sandbox_tools` spawns `scripts/opensandbox_mcp_bridge.py` (since replaced by `python -m opensandbox_mcp --use-server-proxy`; see GRAPH_PATTERNS.md pattern 78) — a wrapper around the OpenSandbox MCP server that forces `use_server_proxy=True` so a host process can reach sandboxes on a
 container bridge network — through the generic MCP client, with **no capability overrides** (so every remote tool is outward), a 10 s timeout, one retry on a connection-shaped failure and a breaker (3 failures, 30 s). It degrades to
 `([], {})` rather than raising. `app/domains/sandbox_session.py` hides the ~19-tool catalogue behind four flat string-argument tools per product (`run_command_in_sandbox`, `run_python_in_sandbox`, `read_sandbox_file`,
 `write_sandbox_file`): it finds a conversation's sandbox by a metadata tag on the service (`sandbox_list` filtered by the rewritten conversation id and state `RUNNING`), else creates one (image, tag, 1,800 s lifetime), and calls
@@ -121,7 +121,7 @@ app/
     ├── client.py                  # load_remote_tools, _call_remote_tool, _wrap_remote_tool
     ├── server.py                  # query_employees over stdio
     └── ops_server.py              # fetch_metrics_summary, list_recent_incidents over stdio
-scripts/opensandbox_mcp_bridge.py  # the bridge (use_server_proxy=True) — absent from the images (B23)
+scripts/opensandbox_mcp_bridge.py  # (removed: the packaged CLI replaced it) was absent from the images (B23)
 docker/opensandbox-server.Dockerfile · docker/opensandbox-server.toml · docker/sandbox.Dockerfile
 docker-compose.yml                 # crawl4ai, opensandbox-server (sandbox profile); docker-compose.prod.yml: env only
 Makefile                           # sandbox-up, sandbox-build, test-sandbox, mcp-serve, mcp-serve-ops

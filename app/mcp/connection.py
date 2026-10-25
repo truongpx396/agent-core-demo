@@ -30,9 +30,12 @@ sent twice, so the connection has to find out another way whether a call could h
   * Three calls in a row that time out locally, with no success between, mean the server is wedged rather than slow: the
     connection is recycled, so a hung bridge costs one respawn instead of every later call waiting out its own timeout.
 
-The server on the other end may run a different MCP SDK from this process (the sandbox bridge is on mcp 1.x, see
-`app/domains/sandbox_tools.py`). `initialize()` is the handshake both understand; the SDK's `Client` class would probe with
-`server/discover` first, which a 1.x server answers with a validation error on its stderr at every connect.
+The server on the other end may run a different MCP SDK from this process, so the handshake is `initialize()` (protocol
+2025-11-25), the one every server understands, and not the SDK's `Client` class. Measured on mcp 2.3.0 against the real
+opensandbox-mcp 1.1.1 bridge and this repo's own servers: `Client` probes `server/discover` and settles on 2026-07-28 cleanly (no
+noise on the child's stderr, about 0.3 s), but that revision REMOVES `ping` (`send_ping()` answers `MCPError(-32601, Method not
+found)`), and the no-replay guard above rests on it. Adopting `Client` means choosing another liveness probe first; its
+`mode="legacy"` would only reproduce what this does today.
 
 ## Lifetime
 
