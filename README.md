@@ -464,7 +464,7 @@ Run `make eval` and `make promptfoo` after any prompt, model-alias or retrieval 
 | [Locust](https://locust.io/) | Load on the queued chat path | `make loadtest-up`, `make loadtest-queued` | Manual |
 
 - Trivy scans `requirements-lock.txt`, not `requirements.txt`: version ranges resolve to nothing a CVE database can match.
-- Strix needs `pipx install strix-agent` and a **paid cloud LLM key** (`STRIX_LLM`/`LLM_API_KEY`). The Strix and ZAP workflows are `workflow_dispatch` only: they cost money or attack their target.
+- Strix needs `pipx install strix-agent` and a **cloud LLM key** (`STRIX_LLM`/`LLM_API_KEY`, in `.env` or exported; `make` passes it just those five names and never the local LiteLLM proxy's URL). Extra flags go in `ARGS`: `make strix ARGS="--instruction '…' --max-budget 1"`. The Strix and ZAP workflows are `workflow_dispatch` only: they cost money or attack their target.
 - **Only point Strix or ZAP's active mode at a system you own or have written permission to test.**
 - Findings shift with each CVE-database update; read current ones in the Security tab or by running the target.
 
