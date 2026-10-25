@@ -444,6 +444,24 @@ groups:
             model is told to do. The test that fails on the same drift is
             tests/domains/test_sandbox_tool_pins.py.
 
+      - alert: McpGatewayCannotCheckTokens
+        expr: increase(agent_mcp_gateway_requests_total{outcome="jwks_unavailable"}[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The MCP gateway cannot confirm its authorization server's signing keys, so it refuses every caller"
+          description: >-
+            agent_mcp_gateway_requests_total{outcome="jwks_unavailable"} increased for 5m —
+            app/mcp/gateway_auth.py::JwksCache could not fetch the JWKS
+            (MCP_GATEWAY_JWKS_URL) and the keys it holds are older than
+            MCP_GATEWAY_JWKS_CACHE_SECONDS, so no token can be verified. It fails closed
+            on purpose, and to a client that looks like an expired login (401), not an
+            outage, which is why this alert exists: the metric is the only place it
+            shows. Check the authorization server (Casdoor: `docker compose logs casdoor`)
+            and the gateway's /readyz, which goes 503 on the same condition so a load
+            balancer stops sending it traffic. specs/017.
+
       - alert: WorkerUnreachable
         expr: increase(agent_worker_unreachable_total[10m]) > 0
         for: 5m

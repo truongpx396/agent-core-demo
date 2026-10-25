@@ -577,6 +577,28 @@ class Settings(BillingSettings):
     mcp_tenant: str = ""
     mcp_principal: str = ""
 
+    # The MCP gateway (app/mcp/gateway.py, specs/017): the two published servers over Streamable HTTP, for clients that are not a child
+    # process of the person using them, with the identity taken from a verified OAuth 2.1 access token on EVERY request instead of
+    # from the launcher's environment. The service is a resource server only; the tokens come from an authorization server it is
+    # pointed at (Casdoor in deploy/compose/docker-compose.yml's `gateway` profile, any OIDC provider that signs RS256 would do).
+    #
+    # The origin clients reach the gateway at, no path: each server's resource URI (the audience a token must carry) is this plus
+    # its path, e.g. https://mcp.localhost:8443/ecorp/mcp. It is also the only Host/Origin the gateway answers to (DNS-rebinding guard).
+    mcp_gateway_public_url: str = "https://mcp.localhost:8443"
+    # The authorization server's issuer EXACTLY as it appears in a token's `iss` (a public name, e.g. https://auth.localhost:8443),
+    # and where to fetch its signing keys. They are two settings because inside Docker the keys are reached by an in-network name
+    # (http://casdoor:8000/.well-known/jwks) while the issuer is the public one. Either empty means the gateway refuses to start.
+    mcp_gateway_issuer: str = ""
+    mcp_gateway_jwks_url: str = ""
+    # Which claims name the tenant and the principal. Casdoor's `owner` is the organization (the tenant) and `sub` is a stable user id.
+    mcp_gateway_tenant_claim: str = "owner"
+    mcp_gateway_principal_claim: str = "sub"
+    # Tenants (comma-separated; a Casdoor organization each) allowed on the operations server, whose metrics and incident log are the
+    # deployment's, not a tenant's: any tenant's user could otherwise read them. Empty means nobody (fail closed).
+    mcp_gateway_ops_tenants: str = ""
+    # How long the signing keys are cached. A key the authorization server rotates is picked up on the next unknown `kid` regardless.
+    mcp_gateway_jwks_cache_seconds: int = Field(default=300, ge=30)
+
     # The most text one remote MCP tool call (app/mcp/client.py) or one sandbox result (app/domains/sandbox_session.py) may hand
     # the model; the middle of anything longer is replaced by a marker that says how much (app/core/output_limits.py, specs/009
     # A3). 20,000 is the page reader's own cap (app/ingestion/web_crawler.py), so no tool returns more than a crawled page can.

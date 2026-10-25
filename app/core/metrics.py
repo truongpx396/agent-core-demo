@@ -714,6 +714,17 @@ agent_sandbox_unavailable_total = Counter(
     ["reason"],
 )  # reason: connection | timeout | circuit_open | other
 
+agent_mcp_gateway_requests_total = Counter(
+    "agent_mcp_gateway_requests_total",
+    "What the MCP gateway (app/mcp/gateway.py) decided about the bearer token of a request, per published server: ok (a valid "
+    "token for this server), invalid_token (bad signature, wrong or missing audience, expired, an algorithm outside the "
+    "allow-list, an unknown key id), jwks_unavailable (the authorization server's signing keys could not be confirmed current, "
+    "so NO token could be checked: to a client that looks like an expired login, so this label is the only place the outage "
+    "shows), forbidden_tenant (a valid token whose tenant may not use this server). A request with no token, or without the "
+    "required scope, is answered by the SDK before this code runs and is not counted here.",
+    ["server", "outcome"],
+)  # server: ecorp | ops; outcome: ok | invalid_token | jwks_unavailable | forbidden_tenant
+
 agent_team_channel_notify_total = Counter(
     "agent_team_channel_notify_total",
     "app/domains/notify.py::post_to_team_channel attempts by sink and outcome. "

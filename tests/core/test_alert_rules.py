@@ -99,6 +99,14 @@ def test_a_router_that_has_lost_its_label_signal_has_an_alert_that_is_silent_whe
     assert rules["ModelRouterLabelUnavailable"]["for"] == "15m" and rules["ModelRouterLabelUnavailable"]["labels"]["severity"] in {"warning", "critical"}
 
 
+def test_a_gateway_that_cannot_check_any_token_has_an_alert():
+    """The gateway fails closed when it cannot confirm the authorization server's signing keys, and a client sees that as an expired
+    login (401), so the counter's `jwks_unavailable` outcome is the only place the outage shows (specs/017)."""
+    (rule,) = [r for r in _rules() if r["alert"] == "McpGatewayCannotCheckTokens"]
+
+    assert "agent_mcp_gateway_requests_total" in rule["expr"] and 'outcome="jwks_unavailable"' in rule["expr"]
+
+
 def test_a_worker_pool_that_answers_nothing_has_an_alert():
     rules = {rule["alert"]: rule for rule in _rules()}
 
