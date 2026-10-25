@@ -2,17 +2,20 @@
 
 A stdio server is a separate process that nothing scrapes, so it cannot export a Prometheus metric the way the API and the
 workers do (`app/core/metrics.py`); the signal it can give is a structured log line. `configure_logging()` writes JSON to
-STDERR, which matters here: stdout is the protocol channel, and one stray line on it corrupts the session.
+STDERR, which matters here: stdout is the protocol channel, and one stray line on it corrupts the session. The gateway
+(`app/mcp/gateway.py`) writes the same line from a process that also exports metrics, so the line stays the one place a call is
+attributed to a person.
 
-What is logged is who (the launcher's tenant and principal), which tool, how it ended and how long it took. Never an argument
-or a result: a name filter or an employee row is the kind of value a log must not carry (constitution Principle VI).
+What is logged is who (the tenant and principal the call acted under, from the server's `IdentitySource`), which tool, how it
+ended and how long it took. Never an argument or a result: a name filter or an employee row is the kind of value a log must not
+carry (constitution Principle VI), and never the access token that identified the caller.
 """
 import functools
 import logging
 import time
 from collections.abc import Awaitable, Callable
 
-from app.mcp.identity import LauncherIdentityMissing, launcher_ctx
+from app.mcp.identity import IdentityMissing, IdentitySource
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +31,11 @@ def _outcome(result: object) -> str:
     return "ok"
 
 
-def audited(server: str, *, tenant: str | None = None):
+def audited(server: str, identity: IdentitySource):
     """Decorate a published tool: time it and log `mcp_tool_call` however it ends, including by raising.
 
-    `tenant` mirrors `launcher_ctx`: a server whose data is not tenant-scoped names the tenant it runs under.
+    `identity` is the same source the tool body asks, so the line names exactly who the call acted for (or `None` when it had no
+    identity to act under and was refused).
     """
 
     def decorate(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
@@ -45,9 +49,9 @@ def audited(server: str, *, tenant: str | None = None):
                 return result
             finally:
                 try:
-                    ctx = launcher_ctx(tenant=tenant)
+                    ctx = identity()
                     who = {"tenant": ctx["tenant"], "principal": ctx["principal"]}
-                except LauncherIdentityMissing:
+                except IdentityMissing:
                     who = {"tenant": None, "principal": None}
                 logger.info(
                     "mcp_tool_call",
