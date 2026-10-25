@@ -15,7 +15,7 @@ COMPOSE = Path(__file__).resolve().parents[2] / "deploy" / "compose"
 DEV, PROD = COMPOSE / "docker-compose.yml", COMPOSE / "docker-compose.prod.yml"
 # The services running an image this repo builds, per file. Production only pulls them; the dev file builds them.
 HARDENED = {
-    DEV: ["api", "agent-worker", "agent-worker-support", "agent-worker-ops", "agent-worker-sales", "ingest-worker", "ml-service"],
+    DEV: ["api", "agent-worker", "agent-worker-support", "agent-worker-ops", "agent-worker-sales", "ingest-worker", "ml-service", "mcp-gateway"],
     PROD: ["api", "agent-worker", "ingest-worker", "ml-service"],
 }
 

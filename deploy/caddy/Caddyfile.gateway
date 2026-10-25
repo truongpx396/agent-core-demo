@@ -1,0 +1,48 @@
+# TLS and routing for the MCP gateway's local stack (docker-compose.yml, profile `gateway`; specs/017). Development only: `tls internal`
+# has Caddy sign the certificates with its own local CA (`make mcp-gateway-ca` exports the root so a client can trust it), the names are
+# *.localhost (they resolve to the loopback address with no /etc/hosts entry), and one port serves both so that an issuer or a resource
+# URL written in a token matches what the client dialled. A deployment replaces the two site addresses with real names and drops
+# `tls internal`; the routing below does not change.
+{
+	# Nothing listens on 80, so there is nothing to redirect from.
+	auto_https disable_redirects
+}
+
+# The MCP servers and the metadata documents a client finds them by (RFC 9728 puts those at the host root). Nothing else of
+# mcp-gateway is routed: /healthz and /readyz are for the load balancer, inside the network.
+https://mcp.localhost:8443 {
+	tls internal
+
+	@mcp path /ecorp/mcp /ops/mcp /.well-known/oauth-protected-resource/ecorp/mcp /.well-known/oauth-protected-resource/ops/mcp
+	handle @mcp {
+		reverse_proxy {
+			# Every replica Docker's DNS returns is a live upstream, so `--scale mcp-gateway=N` load-balances with no sticky routing: the
+			# gateway is stateless (no MCP session to pin a client to), which is the point of running it that way.
+			dynamic a {
+				name mcp-gateway
+				port 8000
+				refresh 5s
+			}
+			# A replica that cannot reach the signing keys fails /readyz and stops receiving requests, rather than answering every
+			# caller with a 401.
+			# A replica that disappears between two health checks (a stopped container, a crash) is still in the upstream list for up to
+			# `refresh`: a connection that cannot be made to it is retried on another replica for a few seconds instead of reaching the
+			# caller as a 502. Only a failed CONNECT is retried by default, never a request already delivered, and both tools only read.
+			lb_try_duration 5s
+			lb_try_interval 250ms
+			health_uri /readyz
+			health_interval 10s
+			flush_interval -1
+		}
+	}
+	handle {
+		respond "not found" 404
+	}
+}
+
+# The authorization server. Its issuer is this origin (`origin` in the casdoor service), so a token's `iss` and the metadata a client
+# discovers agree.
+https://auth.localhost:8443 {
+	tls internal
+	reverse_proxy casdoor:8000
+}
