@@ -55,6 +55,7 @@ from app.agent.graph.core import (
 )
 from app.agent.graph.followups import make_suggest_followups_node
 from app.agent.graph.hitl import make_human_approval_node, route_after_approval
+from app.agent.graph.links import cannot_open_links
 from app.agent.graph.model_route import make_route_model_node
 from app.agent.graph.retrieval import make_retrieve_context_node
 from app.agent.graph.retry import (
@@ -270,6 +271,7 @@ def build_graph(
         kind=deps.meter_kind,
         citation_reminder=profile.enforce_citations,
         skill_required_tools=skill_required_tools,
+        cannot_open_links=cannot_open_links(valid_tool_names),
         system_prompt=manifest.system_prompt,
     )
     retrieve_context = make_retrieve_context_node(deps.search_docs or default_search)

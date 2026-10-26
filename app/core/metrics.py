@@ -498,6 +498,15 @@ agent_streaming_cancellation_total = Counter(
     "for a turn that wasn't paused at human_approval when the stop was requested",
 )
 
+agent_cancelled_turn_discarded_total = Counter(
+    "agent_cancelled_turn_discarded_total",
+    "What the thread got when a turn was stopped with POST /chat/cancel (app/agent/runtime/cancelled_turn.py, pattern 80): "
+    "`dropped` = the whole turn was taken out so the next one cannot act on it, `closed` = a tool had already run, so the "
+    "turn stays and ends with a line saying the person stopped it, `nothing` = no turn in the thread, `failed` = the "
+    "thread could not be tidied and still holds the stopped message",
+    ["outcome"],
+)
+
 agent_context_window_exceeded_total = Counter(
     "agent_context_window_exceeded_total",
     "Turns ended at the context_window_exceeded terminal node: the cumulative "

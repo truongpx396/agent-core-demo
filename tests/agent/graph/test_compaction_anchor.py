@@ -1,10 +1,11 @@
-"""When history compaction fires, the summary and the retrieved context still go BEFORE the question.
+"""When history compaction fires, the summary and the retrieved context still go BEFORE the question
+(in the same message since pattern 79: as text ahead of what the person wrote).
 
 `compact_history` runs just before `retrieve_context`, and everything a node returns is appended to
 `messages`, so the compaction breadcrumb lands AFTER the turn's question. `retrieve_context`
 recorded its anchor as `len(messages) - 1`, "the question is the last message", which is the
-breadcrumb in that case. The model was then sent `question, summary, context` instead of
-`summary, context, question`, and the retrieval query's "previous turn" lookup (everything before
+breadcrumb in that case. The model was then sent the question ahead of the summary and the context instead of
+behind them, and the retrieval query's "previous turn" lookup (everything before
 the anchor) included the current question. Found while verifying #169; it predates the work in
 #168-#172. (GRAPH_PATTERNS.md pattern 41.)
 """
@@ -80,8 +81,10 @@ async def test_the_model_is_sent_the_summary_and_context_before_the_question_aft
     assert compacted, "test setup: compaction never fired, so this proves nothing"
     # The agent's call: the calls before it are the compaction's own, the one after it the follow-ups'.
     call_ = next(c for c in seen if c[0].content == "You are the prompt." and any("REFUND POLICY TEXT" in str(m.content) for m in c))
-    texts = [str(m.content) for m in call_]
-    summary_at = next(i for i, t in enumerate(texts) if "SUMMARY OF EARLIER TURNS" in t)
-    context_at = next(i for i, t in enumerate(texts) if "REFUND POLICY TEXT" in t)
-    question_at = next(i for i, m in enumerate(call_) if isinstance(m, HumanMessage) and m.content == "what is the refund policy")
+    sent = next(m for m in call_ if "REFUND POLICY TEXT" in str(m.content))
+    assert isinstance(sent, HumanMessage), "the context rides on the question, not on a system message (pattern 79)"
+    text = str(sent.content)
+    summary_at = text.index("SUMMARY OF EARLIER TURNS")
+    context_at = text.index("REFUND POLICY TEXT")
+    question_at = text.index("what is the refund policy")
     assert summary_at < context_at < question_at
