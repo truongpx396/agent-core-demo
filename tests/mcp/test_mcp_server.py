@@ -1,5 +1,5 @@
 """Tests for app/mcp/server.py — the MCP-exposed counterpart to
-app/agent/tools/builtin.py's query_employees, reached over FastMCP's in-process
+app/agent/tools/builtin.py's query_employees, reached over MCPServer's in-process
 list_tools/call_tool. The same server over a real stdio subprocess is in
 tests/mcp/test_published_servers_over_stdio.py. These stay hermetic by mocking
 app.core.sql_store.query_employees, same boundary test_tools.py's
@@ -20,11 +20,10 @@ from app.mcp import server as mcp_server
 
 
 async def _call(name, arguments=None):
-    """FastMCP.call_tool returns (content_blocks, structured_result) in
-    this SDK version — verified empirically; tests only care about the
-    string result, which lives in structured_result["result"]."""
-    _, structured = await mcp_server.mcp.call_tool(name, arguments or {})
-    return structured["result"]
+    """MCPServer.call_tool returns a CallToolResult; the tools return a string, which the SDK
+    wraps as structured content {"result": <string>} (verified against mcp 2.3.0)."""
+    result = await mcp_server.mcp.call_tool(name, arguments or {})
+    return result.structured_content["result"]
 
 
 async def test_lists_query_employees_tool():
@@ -36,7 +35,7 @@ async def test_no_tool_takes_a_tenant_or_a_principal_as_an_argument():
     """Regression: these used to be arguments, so the assistant connected to the server chose which tenant's employees it
     read. Identity is bound when the server is launched; nothing the model can fill in names it."""
     for tool in await mcp_server.mcp.list_tools():
-        assert set(tool.inputSchema["properties"]) <= {"department", "name_contains"}, tool.name
+        assert set(tool.input_schema["properties"]) <= {"department", "name_contains"}, tool.name
 
 
 async def test_a_tenant_the_caller_tries_to_name_is_ignored_and_the_launchers_is_queried(launched_as, monkeypatch):
@@ -119,9 +118,9 @@ async def test_two_servers_launched_for_different_tenants_query_different_tenant
 async def test_the_tool_declares_itself_read_only_and_closed_world():
     (tool,) = [t for t in await mcp_server.mcp.list_tools() if t.name == "query_employees"]
 
-    assert tool.annotations.readOnlyHint is True
-    assert tool.annotations.destructiveHint is False
-    assert tool.annotations.openWorldHint is False
+    assert tool.annotations.read_only_hint is True
+    assert tool.annotations.destructive_hint is False
+    assert tool.annotations.open_world_hint is False
     assert tool.title
 
 

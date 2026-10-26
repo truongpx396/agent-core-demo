@@ -82,17 +82,12 @@ psycopg[binary,pool]>=3.1,<4
 # redis-py has bundled async support since 4.2.
 redis>=5.0,<9
 
-# MCP: app/mcp/server.py + ops_server.py (servers this app publishes) AND app/mcp/client.py +
-# connection.py (the client that consumes a remote server's tools). Held on the 1.x line, and the
-# reason is the sandbox bridge below, not this app: opensandbox-mcp==0.1.1 does
-# `from mcp.server.fastmcp import FastMCP`, and mcp 2.x removed that module (FastMCP became
-# `mcp.server.mcpserver.MCPServer`; the module now raises ModuleNotFoundError on import, checked
-# against the 2.3.0 wheel), so the bridge cannot start under 2.x. This app's own two servers
-# would need only that rename and its client a move from ClientSession to the new Client.
-# 1.x is in maintenance (security fixes only); 1.30.0 is its latest. Moving to 2.x waits on
-# a release of opensandbox-mcp that supports it, and tests/core/test_mcp_sdk_pin.py fails, with
-# this explanation, the moment someone bumps past it.
-mcp[cli]==1.30.0
+# MCP: app/mcp/server.py + ops_server.py (servers this app publishes, on `mcp.server.MCPServer`) AND app/mcp/client.py +
+# connection.py (the client that consumes a remote server's tools, on `ClientSession`). The 2.x line: 1.x is in maintenance
+# (security fixes only) and 2.x is where the protocol is going (the 2026-07-28 revision). It was held on 1.x while the sandbox
+# bridge below imported `mcp.server.fastmcp`, which 2.x removed; opensandbox-mcp 1.1 moved to `MCPServer` and requires
+# `mcp[cli]>=2,<3`, so nothing holds it back now. tests/core/test_mcp_sdk_pin.py fails if that stops being true.
+mcp[cli]==2.3.0
 
 # Per-tenant HTTP rate limiting (app/rate_limit.py) — Redis-backed sliding
 # window over the SAME Redis this app already depends on. Used directly
@@ -145,8 +140,10 @@ crawl4ai==0.9.3
 # OpenSandbox MCP bridge (app/domains/sandbox_tools.py, GRAPH_PATTERNS.md
 # pattern 50) — a real stdio MCP SERVER (not a library this app calls
 # directly) that app/mcp/client.py::load_remote_tools spawns as a
-# subprocess and keeps one connection to (app/mcp/connection.py). Bridges to a separately-run `opensandbox-server`
-# (see `make sandbox-serve`, README) — this pin is just the bridge CLI
-# itself; the sandbox server and the Docker daemon it drives are
-# operational prerequisites, not Python dependencies.
-opensandbox-mcp==0.1.1
+# subprocess (`python -m opensandbox_mcp`) and keeps one connection to (app/mcp/connection.py). Bridges to a separately-run
+# `opensandbox-server` (see `make sandbox-up`, README) — this pin is the bridge
+# itself and the opensandbox SDK it brings (`opensandbox>=1.1.1`); the sandbox server and the Docker daemon it
+# drives are operational prerequisites, not Python dependencies.
+# 1.1 is the first release on mcp 2.x and the first whose CLI has `--use-server-proxy`, which the
+# wrapper script this repo carried until then existed to add.
+opensandbox-mcp==1.1.1

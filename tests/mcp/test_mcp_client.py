@@ -29,7 +29,7 @@ class _FakeRemoteTool:
     def __init__(self, name, description="", input_schema=None):
         self.name = name
         self.description = description
-        self.inputSchema = input_schema or {"type": "object", "properties": {}}
+        self.input_schema = input_schema or {"type": "object", "properties": {}}
 
 
 class TestLoadRemoteTools:
@@ -149,7 +149,7 @@ class TestLoadRemoteTools:
 
 
 def _result(*blocks, structured=None, is_error=False):
-    return types.CallToolResult(content=list(blocks), structuredContent=structured, isError=is_error)
+    return types.CallToolResult(content=list(blocks), structured_content=structured, is_error=is_error)
 
 
 def _text(text):
@@ -166,7 +166,7 @@ class TestRenderResult:
         assert mcp_client.render_result(_result(_text("one"), _text("two")), _HANDLING) == "one\ntwo"
 
     def test_an_image_is_a_note_not_a_silent_gap(self):
-        image = types.ImageContent(type="image", data="AAAA", mimeType="image/png")
+        image = types.ImageContent(type="image", data="AAAA", mime_type="image/png")
 
         rendered = mcp_client.render_result(_result(_text("see chart"), image), _HANDLING)
 
@@ -248,7 +248,7 @@ class TestPinnedCatalog:
 
     @staticmethod
     def _pin(tool):
-        return mcp_client.tool_fingerprint(tool.name, tool.description, tool.inputSchema)
+        return mcp_client.tool_fingerprint(tool.name, tool.description, tool.input_schema)
 
     async def test_only_the_pinned_tools_are_wrapped_and_get_a_capability(self, monkeypatch):
         wanted, extra = self._tool("wanted"), self._tool("kill_everything")

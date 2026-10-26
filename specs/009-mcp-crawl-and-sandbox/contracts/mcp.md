@@ -40,7 +40,7 @@ An **integrator** loading another program's tools, a **person** running a publis
 ## Running a published server
 
 - Standard input and output only (`mcp.run(transport="stdio")`); the caller is the person (or program) that starts the process. **A networked transport would make both servers unauthenticated multi-tenant APIs (A4).**
-- `mcp[cli]` is pinned to 1.30.0, and held on 1.x because the sandbox bridge imports `mcp.server.fastmcp`, which 2.x removed (`tests/core/test_mcp_sdk_pin.py`).
+- The servers are built on `mcp.server.MCPServer` (`mcp[cli]==2.3.0`). The sandbox bridge, `opensandbox-mcp` 1.1.1, requires mcp 2.x too; releases up to 0.1.1 imported `mcp.server.fastmcp`, which 2.x removed, and had held the app on 1.x (`tests/core/test_mcp_sdk_pin.py`).
 
 ## Failure behavior
 

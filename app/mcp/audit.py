@@ -35,7 +35,7 @@ def audited(server: str, *, tenant: str | None = None):
     """
 
     def decorate(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
-        @functools.wraps(fn)  # keeps the signature FastMCP builds the tool's input schema from
+        @functools.wraps(fn)  # keeps the signature MCPServer builds the tool's input schema from
         async def wrapper(*args, **kwargs):
             started = time.perf_counter()
             outcome = "error"

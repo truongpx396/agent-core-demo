@@ -67,14 +67,14 @@ A standalone script (no services); the real `sandbox_session` functions against 
 
 ```bash
 docker run --rm --entrypoint python -e OPENSANDBOX_MCP_DOMAIN=opensandbox-server:8090 agent-core-demo-api:latest -c "
-import asyncio, os
+import asyncio, importlib.util
 from app.domains import sandbox_tools as st
-print('bridge script:', st._BRIDGE_SCRIPT, '| exists:', os.path.exists(st._BRIDGE_SCRIPT))
+print('bridge module installed:', importlib.util.find_spec('opensandbox_mcp') is not None)
 tools, caps = asyncio.run(st.load_sandbox_tools())
 print('tools:', len(tools), 'capabilities:', caps)"
 ```
 
-(Build with `docker build -t agent-core-demo-api:latest .` if you have none.) **Observed 2026-10-03**: `bridge script: /app/scripts/opensandbox_mcp_bridge.py | exists: False`; the child printed `python: can't open file … No such file or directory`; `opensandbox_mcp_unavailable` was logged; `tools: 0 capabilities: {}`.
+(Build with `docker build -t agent-core-demo-api:latest .` if you have none.) (The command above checks the installed `opensandbox_mcp` module: the wrapper script this scenario was written against was replaced by the packaged CLI, `python -m opensandbox_mcp --use-server-proxy`, and no longer exists.) **Observed 2026-10-03**, against the script: `bridge script: /app/scripts/opensandbox_mcp_bridge.py | exists: False`; the child printed `python: can't open file … No such file or directory`; `opensandbox_mcp_unavailable` was logged; `tools: 0 capabilities: {}`.
 **Fixed when** the script exists in the image and the loader reaches the service (against a running one it returns the catalogue).
 
 ## Scenario B25 — Reproduce: crawled text is unframed and the replay is unbounded (hermetic; expected: it reproduces)

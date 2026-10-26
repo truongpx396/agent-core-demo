@@ -1,16 +1,25 @@
 # opensandbox-server, containerized (docker-compose.yml's opt-in `sandbox`
-# profile, `make sandbox-up`, GRAPH_PATTERNS.md pattern 50) — no official
-# image exists (verified against OpenSandbox's own docs/components/server.md,
-# which documents only PyPI/`uv pip install` installation), so this is a
-# small wrapper around the same pip package `make sandbox-up`'s predecessor
-# ran via `uvx` as a bare host process.
+# profile, `make sandbox-up`, GRAPH_PATTERNS.md pattern 50) — a small wrapper
+# around the pip package, with a non-root user, a healthcheck and a data
+# directory it owns (all below). When this was written no official image
+# existed; since release 1.1 one does (`opensandbox/server:release-1.1.1`, its
+# digest in the release's signed BOM). Whether it could replace this wrapper
+# was NOT evaluated (its user, healthcheck and docker.sock handling were not
+# inspected), so the wrapper stays.
+#
+# The version is the SAME release line as the SDK and the MCP bridge in
+# requirements-lock.txt and as the execd/egress images in
+# docker/opensandbox-server.toml: the vendor supports a server and an SDK on
+# one line only ("±1 minor warns"), and tests/core/test_sandbox_release_line.py
+# fails when they drift apart. Not 1.1.0: that release's server wheel does not
+# import (the FastPath gRPC stubs were left out of it; fixed in 1.1.1).
 #
 # Needs the host Docker daemon to create sandbox containers — this image
 # gets that via a bind-mounted host /var/run/docker.sock (docker-compose.yml),
 # NOT Docker-in-Docker.
 FROM python:3.13-slim
 
-RUN pip install --no-cache-dir opensandbox-server==0.2.3
+RUN pip install --no-cache-dir opensandbox-server==1.1.1
 
 COPY docker/opensandbox-server.toml /config/sandbox.toml
 

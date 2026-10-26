@@ -1,7 +1,7 @@
 """app/mcp/connection.py against a REAL stdio server (tests/mcp/echo_server.py): one process serves many calls, and what happens
 when it dies is the behaviour measured while designing this, not assumed.
 
-The server is a few lines of FastMCP that imports nothing from the app, so each test spawns it for real in a fraction of a second.
+The server is a few lines of MCPServer that imports nothing from the app, so each test spawns it for real in a fraction of a second.
 The unit tests at the bottom replace the session with a stand-in to reach the paths a real server makes awkward to trigger.
 """
 import asyncio
@@ -11,9 +11,8 @@ import sys
 from pathlib import Path
 
 import pytest
-from mcp import types
+from mcp import MCPError, types
 from mcp.client.stdio import StdioServerParameters
-from mcp.shared.exceptions import McpError
 
 from app.core import metrics
 from app.mcp import connection as mcp_connection
@@ -95,6 +94,16 @@ class TestOneProcessServesManyCalls:
 
 
 class TestAServerThatDies:
+    async def test_the_connection_is_on_a_protocol_revision_where_the_liveness_ping_exists(self):
+        """The no-replay guard pings before a call it must not repeat. Measured on mcp 2.3.0: the SDK's `Client` settles on
+        protocol 2026-07-28, where `ping` is REMOVED and answers MCPError(-32601), so a connection opened that way would fail every
+        sandbox command at the probe. Until another probe replaces it, this connection must stay on a revision that has the ping."""
+        conn = connection_for(PARAMS, "t_ping")
+        await _pid(conn)
+        assert conn._link is not None and conn._link.session is not None
+
+        await conn._link.session.send_ping()  # raises MCPError(-32601, "Method not found") on a revision without it
+
     async def test_found_dead_between_calls_the_next_call_runs_on_a_new_process_without_the_caller_noticing(self):
         conn = connection_for(PARAMS, "t_idle_death")
         first = await _pid(conn)
@@ -117,6 +126,21 @@ class TestAServerThatDies:
 
         assert marker.read_text().splitlines() == ["ran"]  # once, not twice
         assert _events("t_in_flight")["lost"] == 1
+
+    async def test_a_side_effect_called_after_an_idle_death_runs_exactly_once_on_the_new_process(self, tmp_path):
+        """The server dies while nothing is in flight. mcp 2.x answers the next call on the dead session with the same
+        CONNECTION_CLOSED as a call lost in flight, so only the ping before the call can say it never left; without it this call
+        would either fail (never retried) or, if it were retried on that error alone, run twice."""
+        marker = tmp_path / "side-effects"
+        conn = connection_for(PARAMS, "t_idle_side_effect")
+        first = await _pid(conn)
+        os.kill(first, signal.SIGKILL)
+        assert await _gone(first)
+
+        result = await conn.call_tool("bump", {"path": str(marker)})
+
+        assert result.content[0].text == "bumped"
+        assert marker.read_text().splitlines() == ["ran"]
 
     async def test_after_losing_one_in_flight_the_next_call_reconnects_and_works(self, tmp_path):
         conn = connection_for(PARAMS, "t_recover")
@@ -194,13 +218,25 @@ class TestStartingAndStopping:
 
 
 class _Session:
-    """Stands in for a ClientSession; each call pops the next scripted outcome."""
+    """Stands in for a ClientSession; each call pops the next scripted outcome.
 
-    def __init__(self, *outcomes):
+    `alive=False` is a session whose server is gone: like the real one on mcp 2.x, it answers a ping, or anything else, with
+    CONNECTION_CLOSED before sending a thing. `sent` counts only the requests that would have reached a server."""
+
+    def __init__(self, *outcomes, alive=True):
         self.outcomes = list(outcomes)
+        self.alive = alive
         self.sent = 0
+        self.pings = 0
+
+    async def send_ping(self):
+        self.pings += 1
+        if not self.alive:
+            raise _closed()
 
     async def call_tool(self, name, arguments):
+        if not self.alive:
+            raise _closed()
         self.sent += 1
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, BaseException):
@@ -208,6 +244,8 @@ class _Session:
         return outcome
 
     async def list_tools(self):
+        if not self.alive:
+            raise _closed()
         self.sent += 1
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, BaseException):
@@ -231,56 +269,73 @@ def _scripted(monkeypatch, *sessions):
 
 
 _OK = types.CallToolResult(content=[types.TextContent(type="text", text="ok")])
-_CLOSED = McpError(types.ErrorData(code=types.CONNECTION_CLOSED, message="Connection closed"))
+
+
+def _closed() -> MCPError:
+    return MCPError(code=types.CONNECTION_CLOSED, message="Connection closed")
 
 
 class TestReplayRules:
     async def test_a_listing_is_replayed_even_when_the_connection_dropped_in_flight(self, monkeypatch):
-        dying, healthy = _Session(_CLOSED), _Session([types.Tool(name="t", inputSchema={"type": "object"})])
+        dying, healthy = _Session(_closed()), _Session([types.Tool(name="t", input_schema={"type": "object"})])
         conn = _scripted(monkeypatch, dying, healthy)
 
         tools = await conn.list_tools()
 
         assert [t.name for t in tools] == ["t"]
         assert (dying.sent, healthy.sent) == (1, 1)
+        assert (dying.pings, healthy.pings) == (0, 0)  # a read-only request needs no ping first
 
     async def test_a_tool_call_in_flight_is_never_replayed(self, monkeypatch):
-        dying, healthy = _Session(_CLOSED), _Session(_OK)
+        dying, healthy = _Session(_closed()), _Session(_OK)
         conn = _scripted(monkeypatch, dying, healthy)
 
         with pytest.raises(ConnectionError):
             await conn.call_tool("run", {})
 
-        assert healthy.sent == 0
+        assert (dying.pings, dying.sent) == (1, 1)  # it answered the ping, took the call, and then the connection went
+        assert (healthy.pings, healthy.sent) == (0, 0)
 
-    async def test_a_call_that_never_left_is_sent_again_on_a_new_connection(self, monkeypatch):
-        import anyio
-
-        gone, healthy = _Session(anyio.ClosedResourceError()), _Session(_OK)
+    async def test_a_call_that_never_left_is_sent_once_on_a_new_connection(self, monkeypatch):
+        gone, healthy = _Session(alive=False), _Session(_OK)
         conn = _scripted(monkeypatch, gone, healthy)
 
         result = await conn.call_tool("run", {})
 
         assert result is _OK
-        assert (gone.sent, healthy.sent) == (1, 1)
+        assert (gone.pings, gone.sent) == (1, 0)  # the ping found it closed; the call itself never went anywhere
+        assert (healthy.pings, healthy.sent) == (1, 1)
 
-    async def test_a_server_that_keeps_dropping_calls_gives_up_after_one_replay(self, monkeypatch):
-        import anyio
-
-        a, b = _Session(anyio.ClosedResourceError()), _Session(anyio.ClosedResourceError())
+    async def test_a_server_that_keeps_being_gone_gives_up_after_one_new_connection(self, monkeypatch):
+        a, b = _Session(alive=False), _Session(alive=False)
         conn = _scripted(monkeypatch, a, b)
 
         with pytest.raises(ConnectionError):
             await conn.call_tool("run", {})
 
+        assert (a.sent, b.sent) == (0, 0)
+
     async def test_a_protocol_error_from_a_live_server_is_not_a_lost_connection(self, monkeypatch):
-        refusal = McpError(types.ErrorData(code=types.INVALID_PARAMS, message="bad arguments"))
+        refusal = MCPError(code=types.INVALID_PARAMS, message="bad arguments")
         session = _Session(refusal)
         conn = _scripted(monkeypatch, session)
 
-        with pytest.raises(McpError):
+        with pytest.raises(MCPError):
             await conn.call_tool("run", {})
         before = _events("t_unit")["lost"]
 
         assert conn._link is not None  # still the connection in use
         assert _events("t_unit")["lost"] == before
+
+    async def test_a_protocol_error_from_the_ping_is_raised_not_swallowed_as_a_dead_connection(self, monkeypatch):
+        class _Refusing(_Session):
+            async def send_ping(self):
+                raise MCPError(code=types.INVALID_PARAMS, message="no ping here")
+
+        session = _Refusing(_OK)
+        conn = _scripted(monkeypatch, session)
+
+        with pytest.raises(MCPError):
+            await conn.call_tool("run", {})
+
+        assert session.sent == 0

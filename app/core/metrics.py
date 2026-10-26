@@ -710,7 +710,7 @@ agent_sandbox_unavailable_total = Counter(
     "The sandbox tool catalog could not be loaded (app/domains/sandbox_tools.py::load_sandbox_tools): the feature degrades "
     "to 'no sandbox tools' and the turn goes on, which before this counter was a log line nobody was watching (specs/009 A9). "
     "reason=connection|timeout when the bridge started but could not be used, circuit_open when the breaker is refusing "
-    "to try, other for anything else (the bridge script missing, crashing at start, an SDK it cannot import).",
+    "to try, other for anything else (opensandbox-mcp not installed, crashing at start, an SDK it cannot import).",
     ["reason"],
 )  # reason: connection | timeout | circuit_open | other
 

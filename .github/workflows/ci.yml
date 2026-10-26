@@ -705,7 +705,7 @@ jobs:
       - name: The image contains what the app reads at runtime
         run: |
           docker run --rm -i --entrypoint python agent-core-demo:ci - <<'PY'
-          import os
+          import asyncio
           import sys
 
           from app.agent.tools import skill_catalog as skills
@@ -717,12 +717,15 @@ jobs:
               problems.append("the skill catalog is empty (skills/ is missing from the image)")
           if not subagents.load_subagents():
               problems.append("the subagent catalog is empty (subagents/ is missing from the image)")
-          if not os.path.isfile(sandbox_tools._BRIDGE_SCRIPT):
-              problems.append(f"the sandbox MCP bridge is missing: {sandbox_tools._BRIDGE_SCRIPT}")
           try:
               import scripts.index_skills  # noqa: F401
           except ImportError as exc:
               problems.append(f"the scripts package is missing or broken: {exc}")
+          # The bridge's catalog is static, so the app's own loader can start it here, with no sandbox server, and must find exactly
+          # the five tools it pins: the whole stdio path (mcp 2.x client, opensandbox-mcp 1.1 server) in the built image.
+          tools, _ = asyncio.run(sandbox_tools.load_sandbox_tools())
+          if {t.name for t in tools} != set(sandbox_tools.PINNED_SANDBOX_TOOLS):
+              problems.append(f"the sandbox bridge did not list its pinned tools in the image (got {sorted(t.name for t in tools)})")
 
           for problem in problems:
               print(f"::error::{problem}")

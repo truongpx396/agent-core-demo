@@ -5,9 +5,9 @@ Deliberately imports nothing from the app, so it starts in a fraction of a secon
 import asyncio
 import os
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
-mcp = FastMCP("echo")
+mcp = MCPServer("echo")
 
 
 @mcp.tool()
