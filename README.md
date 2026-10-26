@@ -350,6 +350,16 @@ The call is shaped like the TypeSafe **Jev / System One** decision interface (`{
   ```
 
   A server started without them exits and says why on stderr. The tools declare themselves read-only, and each call writes one `mcp_tool_call` audit line (who, which tool, outcome, duration; never an argument) as JSON on stderr. It checks the same fail-closed policy but does not authenticate whoever starts the process; there is no networked transport (patterns 21 and 78).
+- **MCP gateway** (`make mcp-gateway-up`, specs/017): the same two servers over **Streamable HTTP behind OAuth 2.1**, for clients that are not a child process of the person using them (a remote agent, Claude Code, several replicas). The gateway (`app/mcp/gateway.py`) is a resource server only: each request carries a bearer token whose audience is that endpoint's URL (`/ecorp/mcp`, scope `ecorp:read`; `/ops/mcp`, scope `ops:read`, operator tenants only), and the tenant and principal a tool acts for are the token's `owner` and `sub` claims, never an argument and never `MCP_TENANT`. It is stateless, so `--scale mcp-gateway=N` behind Caddy load-balances. The `gateway` compose profile is a local stack: Casdoor (authorization server) on its own Postgres, the gateway, and a Caddy with local TLS on `https://mcp.localhost:8443`; it needs `make up` for the app database.
+
+  ```bash
+  make mcp-gateway-up           # Casdoor + gateway + Caddy (generates the passwords once, outside the repo)
+  make mcp-gateway-bootstrap    # organizations, applications, scopes, demo users; prints the `claude mcp add` commands
+  make mcp-gateway-ca           # export Caddy's root certificate; prints the NODE_EXTRA_CA_CERTS line
+  make mcp-gateway-smoke        # the OAuth + MCP end-to-end check as a client does it (17 checks)
+  ```
+
+  Nothing that writes is behind it: both tools are read-only, and the sandbox is deliberately not reachable this way (an outside caller does not pass through the agent's approval gate). Not connected to Claude Code itself; production DNS/TLS/identity provider, per-tenant rate limits and token revocation are not built. Contract, measurements and the full list of gaps: `specs/017-mcp-gateway/`.
 - **MCP client** (`app/mcp/client.py::load_remote_tools`): binds an external server's tools into the graph. A remote tool not named in `capability_overrides` defaults to `outward`; the remote's own annotations are never trusted. What the remote says is input: a catalog can be pinned by a hash of what the model is shown (the sandbox bridge is: 5 of its 19 tools), replies are scrubbed and cut to `MCP_TOOL_OUTPUT_MAX_CHARS` (head and tail kept), and one long-lived connection per server (`app/mcp/connection.py`) replaces a process per call. A call that may have reached the server is never sent twice (pattern 78).
 - **Web crawling**: [crawl4ai](https://github.com/unclecode/crawl4ai) renders JS-heavy pages in a headless browser (`app/ingestion/web_crawler.py`; needs the `crawl4ai` container and `CRAWL4AI_API_TOKEN`). Three `outward` tools use it: `enrich_lead_from_website` (sales), `fetch_external_reference` (support), `check_vendor_status_page` (ops).
 - **Sandbox**: [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) over MCP gives every domain isolated code execution (`make sandbox-up`, needs `OPENSANDBOX_API_KEY`). The model never sees OpenSandbox's raw ~19-tool API: `app/domains/sandbox_session.py` wraps it as four flat tools (`run_command_in_sandbox`, `run_python_in_sandbox`, `read_sandbox_file`, `write_sandbox_file`), because the raw catalog made a small model hallucinate sandbox ids (pattern 50). Sandboxes are per tenant and conversation.
@@ -516,6 +526,7 @@ measurements put acted-on AI comments at roughly 6–19%, so treat it as a promp
 | `make budget-policy ARGS="…"` | Per-tenant / per-person spend-limit overrides (a plan limit, a personal limit, a suspend with `0`, `none` to lift a cap); a worker applies it within `BUDGET_POLICY_REFRESH_SECONDS` |
 | `make credits` · `make credit-reconcile` · `make billing-migrate` | Billing: the wallet CLI · was every usage charged? · apply the package's schema ([Credit billing](#credit-billing-optional)) |
 | `make mcp-serve[-ops]` · `make mcp-inspect` | MCP servers · MCP Inspector |
+| `make mcp-gateway-up` · `-bootstrap` · `-ca` · `-smoke` · `-down` | The MCP gateway stack: Casdoor + OAuth-protected servers + Caddy (local) |
 | `make lint` · `make typecheck` · `make test` | The CI gates |
 | `make obs-up` · `make obs-down` | Observability stack |
 | `make sandbox-up` | OpenSandbox server (opt-in) |

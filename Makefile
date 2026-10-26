@@ -1,4 +1,4 @@
-.PHONY: model-eval model-eval-all model-eval-baseline model-eval-data model-eval-verify router-label labelset-calibrate test-billing-package help up up-app sandbox-up sandbox-build pull-models pull-strong-model probe-tools ingest index-skills reembed chat chat-hitl serve mcp-serve mcp-serve-ops telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker billing-usage-sweep usage-reconcile usage-reconcile-worker budget-policy litellm-key gateway-check test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
+.PHONY: model-eval model-eval-all model-eval-baseline model-eval-data model-eval-verify router-label labelset-calibrate test-billing-package help up up-app sandbox-up sandbox-build pull-models pull-strong-model probe-tools ingest index-skills reembed chat chat-hitl serve mcp-serve mcp-serve-ops mcp-gateway-secrets mcp-gateway-up mcp-gateway-bootstrap mcp-gateway-ca mcp-gateway-smoke mcp-gateway-down telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker billing-usage-sweep usage-reconcile usage-reconcile-worker budget-policy litellm-key gateway-check test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
 
 # Pinned DefectDojo release — see `defectdojo-up`'s own comment for why this
 # is a plain git clone into ~/.cache (NOT vendored into this repo, same
@@ -18,6 +18,11 @@ export PYTHONPATH := $(CURDIR)/packages/billing/src:$(CURDIR)/docker/ml-service$
 
 DEFECTDOJO_VERSION := 3.3.100
 DEFECTDOJO_DIR := $(HOME)/.cache/agent-core-demo-defectdojo
+
+# The MCP gateway stack's generated secrets (the Casdoor database and admin passwords) live OUTSIDE the repo, in a private directory, and are
+# handed to compose as a second --env-file; `.env` is passed first when it exists so every other variable keeps coming from it.
+GATEWAY_DIR     := $(HOME)/.cache/agent-core-demo-mcp-gateway
+GATEWAY_SECRETS := $(GATEWAY_DIR)/secrets.env
 
 # Every compose file lives under deploy/compose/, but they were written with
 # repo-root-relative paths (`./observability/...`, `./postgres-init`,
@@ -100,6 +105,29 @@ mcp-inspect:  ## Launch the MCP Inspector against app/mcp/server.py for interact
 
 mcp-serve-ops:  ## Start the MCP server exposing fetch_metrics_summary/list_recent_incidents (stdio transport; needs `make up`, and MCP_PRINCIPAL in .env or exported) — see app/mcp/ops_server.py
 	python -m app.mcp.ops_server
+
+# GATEWAY_COMPOSE is defined after COMPOSE (which the command line may override, as the tests of this stack do).
+GATEWAY_COMPOSE = $(COMPOSE) $(if $(wildcard .env),--env-file .env) --env-file $(GATEWAY_SECRETS) --profile gateway
+
+mcp-gateway-secrets:  # internal: create the generated passwords once (never overwritten)
+	@mkdir -p $(GATEWAY_DIR) && chmod 700 $(GATEWAY_DIR)
+	@test -f $(GATEWAY_SECRETS) || { ( umask 077; printf 'CASDOOR_DB_PASSWORD=%s\nCASDOOR_ADMIN_PASSWORD=%s\n' "$$(openssl rand -hex 16)" "$$(openssl rand -hex 16)" > $(GATEWAY_SECRETS) ) && echo "created $(GATEWAY_SECRETS) (the Casdoor admin password is in it)"; }
+
+mcp-gateway-up: mcp-gateway-secrets  ## Start the MCP gateway stack (specs/017): Casdoor + its Postgres, the OAuth-protected gateway and a Caddy with local TLS on https://mcp.localhost:8443. Needs `make up` (the app database). Then `make mcp-gateway-bootstrap`
+	$(GATEWAY_COMPOSE) up -d --build --no-deps casdoor-db casdoor mcp-gateway caddy-gateway
+
+mcp-gateway-bootstrap: mcp-gateway-secrets  ## Create (idempotently) the Casdoor organizations, applications, scopes and demo users the gateway expects, and print the `claude mcp add` commands. ARGS="--tenant acme --tenant other-co" adds tenants (default: ecorp)
+	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && $(GATEWAY_COMPOSE) exec -T -e CASDOOR_ADMIN_PASSWORD mcp-gateway python -m scripts.mcp_gateway_bootstrap $(ARGS)
+
+mcp-gateway-ca: mcp-gateway-secrets  ## Export Caddy's local root certificate so a client can trust https://*.localhost:8443 (prints the NODE_EXTRA_CA_CERTS line for Claude Code)
+	$(GATEWAY_COMPOSE) cp caddy-gateway:/data/caddy/pki/authorities/local/root.crt $(GATEWAY_DIR)/caddy-root.crt
+	@echo "export NODE_EXTRA_CA_CERTS=$(GATEWAY_DIR)/caddy-root.crt   # before starting Claude Code"
+
+mcp-gateway-smoke: mcp-gateway-secrets  ## The OAuth + MCP end-to-end check against the running gateway stack, as a client does it (throwaway users, deleted after). Run it after `make mcp-gateway-ca` and `make mcp-gateway-bootstrap`, and after any change to the Casdoor digest. A manual tier, like test-sandbox: never CI
+	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && python -m scripts.mcp_gateway_smoke --ca $(GATEWAY_DIR)/caddy-root.crt
+
+mcp-gateway-down: mcp-gateway-secrets  ## Stop and remove the gateway stack's containers (its volumes stay: the Casdoor database and Caddy's local CA)
+	$(GATEWAY_COMPOSE) rm -sf caddy-gateway mcp-gateway casdoor casdoor-db
 
 telegram:  ## Start the Telegram bot channel for the Ecorp domain (needs TELEGRAM_BOT_TOKEN in .env; see app/channels/telegram.py)
 	python -m app.channels.telegram
