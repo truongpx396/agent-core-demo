@@ -1,4 +1,4 @@
-.PHONY: model-eval model-eval-all model-eval-baseline model-eval-data model-eval-verify router-label labelset-calibrate test-billing-package help up up-app sandbox-up sandbox-build pull-models pull-strong-model probe-tools ingest index-skills reembed chat chat-hitl serve mcp-serve mcp-serve-ops mcp-gateway-secrets mcp-gateway-up mcp-gateway-bootstrap mcp-gateway-ca mcp-gateway-smoke mcp-gateway-down authlimit-test telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker billing-usage-sweep usage-reconcile usage-reconcile-worker budget-policy litellm-key gateway-check test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
+.PHONY: model-eval model-eval-all model-eval-baseline model-eval-data model-eval-verify router-label labelset-calibrate test-billing-package help up up-app sandbox-up sandbox-build pull-models pull-strong-model probe-tools ingest index-skills reembed chat chat-hitl serve mcp-serve mcp-serve-ops mcp-gateway-secrets mcp-gateway-up mcp-gateway-bootstrap mcp-gateway-ca mcp-gateway-smoke mcp-gateway-down authlimit-test authlimit-build authlimit-keys authlimit-keys-ensure telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker billing-usage-sweep usage-reconcile usage-reconcile-worker budget-policy litellm-key gateway-check test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
 
 # Pinned DefectDojo release — see `defectdojo-up`'s own comment for why this
 # is a plain git clone into ~/.cache (NOT vendored into this repo, same
@@ -23,6 +23,11 @@ DEFECTDOJO_DIR := $(HOME)/.cache/agent-core-demo-defectdojo
 # handed to compose as a second --env-file; `.env` is passed first when it exists so every other variable keeps coming from it.
 GATEWAY_DIR     := $(HOME)/.cache/agent-core-demo-mcp-gateway
 GATEWAY_SECRETS := $(GATEWAY_DIR)/secrets.env
+
+# The authlimit service's internal signing keys (specs/018) also live OUTSIDE the repo, in a private directory created with the host user's
+# ownership (so the container, which runs as that user, can read what only its owner may). Never committed, never in an image.
+AUTHLIMIT_DIR      := $(HOME)/.cache/agent-core-demo-authlimit
+AUTHLIMIT_KEYS_DIR := $(AUTHLIMIT_DIR)/keys
 
 # Every compose file lives under deploy/compose/, but they were written with
 # repo-root-relative paths (`./observability/...`, `./postgres-init`,
@@ -131,6 +136,16 @@ mcp-gateway-down: mcp-gateway-secrets  ## Stop and remove the gateway stack's co
 
 authlimit-test:  ## Go vet + the authlimit service's own tests with the race detector (specs/018; no Docker, no services; needs Go)
 	cd services/authlimit && go vet ./... && go test -race ./...
+
+authlimit-build:  ## Build the authlimit service image (distroless, non-root, no shell)
+	docker build -t authlimit:dev services/authlimit
+
+authlimit-keys: authlimit-build  ## Manage the internal signing keys outside the repo. ARGS="init" (default, once) | "rotate --overlap 10m" | "list". Runs as you, so the files are yours (mode 600) and the container, which runs as you too, can read them
+	@mkdir -p $(AUTHLIMIT_DIR) && chmod 700 $(AUTHLIMIT_DIR)
+	@docker run --rm --user "$$(id -u):$$(id -g)" -v $(AUTHLIMIT_DIR):/work authlimit:dev keys $(or $(ARGS),init) --dir /work/keys
+
+authlimit-keys-ensure:  # internal: create the first signing key if there is none (never replaces one)
+	@test -f $(AUTHLIMIT_KEYS_DIR)/keyset.json || $(MAKE) --no-print-directory authlimit-keys
 
 telegram:  ## Start the Telegram bot channel for the Ecorp domain (needs TELEGRAM_BOT_TOKEN in .env; see app/channels/telegram.py)
 	python -m app.channels.telegram
