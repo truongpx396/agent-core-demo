@@ -116,7 +116,7 @@ The UI streams chat with `fetch()` and reads the response body (the file says `E
 
 ## R17. The existing in-app limiter
 
-`app/api/rate_limit.py` keys on `X-Tenant-Id` (evadable) and counts the same requests the service now counts. **Decision (A1, FR-029):** in identity mode the tenant limiter is not installed; in header mode it behaves as today. The payment-webhook limit stays in both modes. Spec 004's FR-027, the README "Limits" line and `tests/api/test_rate_limit.py` are updated to say so.
+`app/api/rate_limit.py` keys on `X-Tenant-Id` (evadable) and counts the same requests the service now counts. **Decision (maintainer, 2026-10-27, FR-029): remove it**, in both modes; an earlier draft of this plan gated it by mode, which would have kept dead code and a second counter alive for the sake of a development path that needs no rate limit. Only the payment-webhook per-address limit stays (this service does not cover it). Spec 004's FR-027, the README "Limits" line, pattern 43, the settings entry `RATE_LIMIT_PER_MINUTE`, its alert and `tests/api/test_rate_limit.py` change with it (task T063, PR 2).
 
 ## R18. Shared token vectors
 
