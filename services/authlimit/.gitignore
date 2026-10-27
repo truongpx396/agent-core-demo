@@ -1,0 +1,12 @@
+# Build outputs and test binaries.
+/authlimit
+/echo
+*.test
+*.out
+coverage.*
+
+# Key material must never be committed (the dev keys live outside the repository: make authlimit-keys). The shared test vectors under
+# testdata/auth-vectors/ hold no private key either.
+*.pem
+*.key
+keys/
