@@ -25,7 +25,10 @@ def _rules() -> list[dict]:
 def _defined_metrics() -> set[str]:
     # The host defines most metrics; the billing core defines its own four (spec 011: it cannot import the host registry).
     source = "\n".join((REPO / name).read_text() for name in ("app/core/metrics.py", "packages/billing/src/credit_billing/metrics.py"))
-    return set(re.findall(r'^\w+ = (?:Counter|Histogram|Gauge)\(\s*"([a-z_]+)"', source, re.MULTILINE))
+    defined = set(re.findall(r'^\w+ = (?:Counter|Histogram|Gauge)\(\s*"([a-z_]+)"', source, re.MULTILINE))
+    # The authlimit service is Go and defines its metrics as string constants in one file (specs/018): the same rule, a different reader.
+    go_metrics = (REPO / "services/authlimit/internal/telemetry/metrics.go").read_text()
+    return defined | set(re.findall(r'"(agent_authlimit_[a-z_]+)"', go_metrics))
 
 
 def test_every_agent_metric_an_alert_names_is_defined_in_the_code():
@@ -180,3 +183,36 @@ def test_the_stuck_alert_fires_well_before_the_age_limit_expires_events():
     expr = next(rule["expr"] for rule in _rules() if rule["alert"] == "UsageExportStuck")
 
     assert int(expr.rsplit(">", 1)[1]) < 30 * 86400
+
+
+def test_the_authlimit_metrics_come_from_the_go_services_own_file():
+    defined = _defined_metrics()
+
+    assert {"agent_authlimit_requests_total", "agent_authlimit_ready", "agent_authlimit_keys_age_seconds"} <= defined, (
+        "the Go service's metric names must be visible to the drift check, or an alert on one of them could never be checked"
+    )
+
+
+def test_the_authlimit_degrade_paths_each_have_an_alert():
+    """Principle V: a path that leaves a person unaware must have an alert. These are the service's (spec 018, FR-031)."""
+    rules = {r["alert"]: r for r in _rules()}
+    expected = {
+        "AuthlimitCannotCheckTokens": 'reason="keys_unavailable"',   # keys unusable beyond the grace: everything refused
+        "AuthlimitKeysStale": "agent_authlimit_keys_age_seconds",   # the first failed refresh, long before the grace ends
+        "AuthlimitLimiterStoreDown": 'store="limiter"',             # the limiter failing OPEN: limits silently not enforced
+        "AuthlimitRevocationStale": "agent_authlimit_revocation_age_seconds",
+        "AuthlimitReplicasDown": "agent_authlimit_ready",
+    }
+
+    for name, needle in expected.items():
+        assert name in rules, name
+        assert needle in rules[name]["expr"], f"{name}: {rules[name]['expr']!r} does not name {needle}"
+        assert rules[name]["labels"]["severity"] in {"warning", "critical"}, "only severities the alert routing knows"
+
+
+def test_the_replica_alert_does_not_fire_forever_where_the_service_is_not_deployed():
+    """Production does not run authlimit yet. An `absent()` alone would fire there for ever; the expression only counts a vanished service
+    that was reporting half an hour ago."""
+    (rule,) = [r for r in _rules() if r["alert"] == "AuthlimitReplicasDown"]
+
+    assert "absent(agent_authlimit_ready)" in rule["expr"] and "offset 30m" in rule["expr"]
