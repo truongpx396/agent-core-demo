@@ -119,17 +119,16 @@ def test_the_gateway_waits_for_what_it_needs_and_the_proxy_waits_for_the_gateway
 
 def test_the_caddyfile_routes_only_the_mcp_paths_and_keeps_health_internal():
     caddyfile = "\n".join(line for line in CADDYFILE.read_text().splitlines() if not line.lstrip().startswith("#"))  # directives only
-    matcher = re.search(r"@mcp path (.+)", caddyfile).group(1)
+    # specs/018 split the matcher in two: the MCP routes ask the authlimit service first, the discovery documents (a client with no token
+    # yet must be able to find where to get one) do not. Together they are still exactly the four paths of spec 017.
+    mcp = re.search(r"@mcp path (.+)", caddyfile).group(1)
+    metadata = re.search(r"@mcp_metadata path (.+)", caddyfile).group(1)
 
-    assert set(matcher.split()) == {
-        "/ecorp/mcp",
-        "/ops/mcp",
-        "/.well-known/oauth-protected-resource/ecorp/mcp",
-        "/.well-known/oauth-protected-resource/ops/mcp",
-    }
-    assert "/healthz" not in matcher and "/readyz" not in matcher
+    assert set(mcp.split()) == {"/ecorp/mcp", "/ops/mcp"}
+    assert set(metadata.split()) == {"/.well-known/oauth-protected-resource/ecorp/mcp", "/.well-known/oauth-protected-resource/ops/mcp"}
+    assert "/healthz" not in mcp + metadata and "/readyz" not in mcp + metadata
     assert "dynamic a" in caddyfile and "name mcp-gateway" in caddyfile  # replicas are found by DNS, so `--scale` load-balances
-    assert caddyfile.count("tls internal") == 2  # both sites; a deployment removes these two lines and nothing else
+    assert caddyfile.count("tls internal") == 3  # the MCP, API and authorization-server sites; a deployment removes these lines and nothing else
     assert "health_uri /readyz" in caddyfile
     # Measured: stopping a replica under steady traffic failed 2 of 621 calls (the window before Caddy drops the dead upstream); with
     # connect retries on, killing one outright failed 0 of 615.

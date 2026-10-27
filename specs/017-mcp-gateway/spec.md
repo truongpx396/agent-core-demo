@@ -69,7 +69,7 @@ the identity is a verified, audience-bound token on every request, and the autho
   bearer calls), but Claude Code itself has not been connected. **HUMAN** (T020).
 - **Production wiring.** Real DNS and TLS (ACME), secret management, a production identity provider and a deployment manifest. The compose profile is for local use; the gateway needs only an
   issuer URL and a JWKS URL, and nothing in it is Casdoor-specific.
-- **Per-tenant rate limits and a quota.** A valid token can call as often as the process allows.
+- **Per-tenant rate limits and a quota.** A valid token can call as often as the process allows. *(Closed by spec 018: the MCP routes now go through the authlimit service in limit-only mode, with per-tenant and per-person buckets and revocation.)*
 - **Stale-key grace.** If the authorization server is down longer than the key TTL the gateway refuses everyone (fail closed) rather than trusting keys it cannot confirm.
 - **Token revocation.** Verification is offline: an access token is good until it expires (an hour). Casdoor offers introspection; using it would put the authorization server in the request path.
 - **The sandbox, and any write tool** (above).

@@ -27,33 +27,54 @@ The route class comes from `X-Forwarded-Method` and the path of `X-Forwarded-Uri
 | any verified class | valid token without the scope | 403 | code `forbidden`, `details.required_scope` |
 | `turn`, `upload` | a bucket empty, mode `enforce` | 429 | `Retry-After: <seconds>`; code `rate_limited`, `details.retry_after_seconds` |
 | `turn`, `upload` | a bucket empty, mode `observe` | 200 | as admitted; `would_limit` counted |
-| any verified class | keys or revocation copy unusable (policy closed) | 503 | `Retry-After: 30`; code `auth_unavailable` |
+| any verified class | keys or revocation copy unusable (policy closed), or no current signing key | 503 | `Retry-After: 30`; code `auth_unavailable` (reasons `keys_unavailable`, `revocation_unavailable`, `signing_unavailable`) |
 | `mcp` | valid token, buckets admit | 200 | no identity header |
 | `mcp` | missing or invalid token | 200 | no identity header, nothing limited (the MCP gateway answers 401 with its metadata) |
 | `mcp` | revoked | 401 | `WWW-Authenticate: Bearer error="invalid_token", resource_metadata="<template>"`; code `unauthenticated` |
 | `mcp` | bucket empty, mode `enforce` | 429 | as above |
 
+Default buckets (`routes.json`; capacity and refill per minute): a chat turn or upload, tenant 10 / 30, person 5 / 10; an MCP route, tenant 60 / 120, person 30 / 60 (an MCP tool is a cheap read and one client session makes several requests).
+
 Error body: `{"code": "...", "message": "...", "details": {...}}`, `Content-Type: application/json`. Messages never contain a token, claim or exception text. Codes are listed in `services/authlimit/errorcodes.json`.
 
 Other endpoints (not routed publicly by Caddy): `GET /healthz` (liveness, always 200 while the process runs), `GET /readyz` (200 or 503; ready means a usable signing key, usable external keys within the grace, and, under policy `closed`, a revocation copy within its ceiling), `GET /internal/jwks.json` (public internal keys, OKP/Ed25519 JWKS).
 
-Caddy's side (illustrative, final text in `Caddyfile.gateway`):
+Caddy's side, as built (the exact text, with the reasons, is `deploy/caddy/Caddyfile.gateway`; behaviour measured on Caddy 2.11.7, research R1 and R21):
 
 ```
-https://api.localhost:8443 {
-	tls internal
-	@public path / /health /health/ready /static/* /billing/webhooks/*
-	handle @public { reverse_proxy api:8000 }
+(authlimit_pool) {                        # shared by every forward_auth below
+	dynamic a { name authlimit  port 8080  refresh 5s }
+	health_uri /readyz  health_interval 10s
+	lb_try_duration 5s  lb_try_interval 250ms
+	fail_duration 20s  max_fails 1            # one failed connect skips a dead replica for 20 s ...
+	transport http { dial_timeout 1s }        # ... and a dead address costs 1 s, not the default 3 s, per request
+}
+
+https://api.localhost:8443 {              # the chat API
+	@public_path {
+		path / /health /health/ready /static/* /billing/webhooks/* /.well-known/*
+		not expression `{http.request.uri}.matches(r"%|\\|\.\.|//")`   # only PLAIN URLs are public here (R21 finding 1)
+	}
+	handle @public_path { reverse_proxy {$AUTHLIMIT_UPSTREAM} { flush_interval -1 } }
+	@preflight method OPTIONS
+	handle @preflight   { reverse_proxy {$AUTHLIMIT_UPSTREAM} { flush_interval -1 } }
+	handle {
+		forward_auth { import authlimit_pool  uri /v1/check  copy_headers X-Internal-Identity }
+		request_header -Authorization         # after the check, before the API
+		request_header -X-Tenant-Id           # the pre-018 way to name the caller never reaches the API through the door
+		request_header -X-Principal-Id
+		reverse_proxy {$AUTHLIMIT_UPSTREAM} { flush_interval -1 }      # authlimit-echo:8000 now; api:8000 in PR 2
+	}
+}
+
+https://mcp.localhost:8443 {              # the MCP routes live on the MCP host, where tokens' audience is already pinned
 	@mcp path /ecorp/mcp /ops/mcp
 	handle @mcp {
-		forward_auth { dynamic a { name authlimit  port 8080  refresh 5s }  uri /v1/check  lb_try_duration 5s  lb_try_interval 250ms }
-		reverse_proxy mcp-gateway:8000       # the Authorization header is NOT removed here
+		forward_auth { import authlimit_pool  uri /v1/check }          # limit-only: no copy_headers, Authorization is KEPT
+		reverse_proxy { import mcp_gateway_pool }
 	}
-	handle {
-		forward_auth { dynamic a { name authlimit  port 8080  refresh 5s }  uri /v1/check  copy_headers X-Internal-Identity  lb_try_duration 5s  lb_try_interval 250ms }
-		request_header -Authorization        # after the check, before the API
-		reverse_proxy api:8000 { flush_interval -1 }
-	}
+	@mcp_metadata path /.well-known/oauth-protected-resource/ecorp/mcp /.well-known/oauth-protected-resource/ops/mcp
+	handle @mcp_metadata { reverse_proxy { import mcp_gateway_pool } }   # discovery needs no token
 }
 ```
 
@@ -77,7 +98,7 @@ authlimit revoke --tenant T --sub S               # tokens issued to S before no
 authlimit revoke --list                           # current revocations
 ```
 
-Make targets (PR 1): `authlimit-test`, `authlimit-build`, `authlimit-keys`, `authlimit-up`, `authlimit-down`, `authlimit-smoke`, `authlimit-revoke TENANT= SUB=`.
+Make targets (PR 1): `authlimit-test`, `authlimit-build`, `authlimit-keys` (`ARGS=init|rotate|list`), `authlimit-up`, `authlimit-down`, `authlimit-smoke` (`ARGS=--all` adds the stages that stop things), `authlimit-revoke TENANT= SUB=`, `authlimit-latency`, `authlimit-mutants`.
 
 ## D. Redis layout (prefix `authlimit:v1:`)
 
@@ -105,6 +126,12 @@ Service (environment; invalid or missing required values stop the start):
 | `AUTHLIMIT_JWKS_CACHE_SECONDS` / `_MIN_REFRESH_SECONDS` / `_FETCH_TIMEOUT_SECONDS` | `300` / `30` / `5` | key cache |
 | `AUTHLIMIT_JWKS_STALE_GRACE_SECONDS` | `21600` | serve stale keys this long |
 | `AUTHLIMIT_KEYS_DIR` | required | internal keyset directory |
+| `AUTHLIMIT_KEYS_ALLOW_LOOSE_PERMS` | `false` | accept key files readable by group or others (a development bind mount whose ownership Docker maps); never in production |
+| `AUTHLIMIT_KEY_OVERLAP` | `10m` | used by `keys rotate` when `--overlap` is not given |
+| `AUTHLIMIT_KEY_PREFIX` | `authlimit:v1:` | prefix of every Redis key (must end in `:`) |
+| `AUTHLIMIT_LISTEN` | `:8080` | listen address (also read by `healthcheck`) |
+| `AUTHLIMIT_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `AUTHLIMIT_PRINCIPAL_CLAIM` / `AUTHLIMIT_TENANT_CLAIM` | `sub` / `owner` | (also listed above) |
 | `AUTHLIMIT_IDENTITY_TTL_SECONDS` | `30` (max 120) | internal identity lifetime |
 | `AUTHLIMIT_REDIS_URL` | required | the existing Redis |
 | `AUTHLIMIT_REDIS_TIMEOUT_MS` | `100` | ceiling on a limiter call |

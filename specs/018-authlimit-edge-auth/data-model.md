@@ -56,7 +56,7 @@ Rules: `use_from ≥ publish_at + overlap` for a new key; a replica refuses to s
 The JWKS from Casdoor: keys by `kid`, `fetched_at`, `last_refresh_attempt`. States per replica:
 
 ```
- fresh (age ≤ TTL) ──refresh fails──► stale-within-grace (age ≤ grace) ──refresh fails──► unusable (age > grace)
+ fresh (age ≤ TTL) ──refresh fails──► stale-within-grace (age ≤ TTL + grace) ──refresh fails──► unusable (age > TTL + grace)
         ▲                                   │                                                  │ not ready, refuses all
         └────────────── refresh succeeds ───┴──────────────────────────────────────────────────┘
 ```

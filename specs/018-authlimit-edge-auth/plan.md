@@ -24,7 +24,7 @@ The approach rests on measurements, not documentation: on Caddy 2.11.7 the `Auth
 
 **Project Type**: a self-contained service plus changes to the existing web service (API, static UI) and the deployment files.
 
-**Performance Goals**: median added time per authenticated request under 10 ms and 95th percentile under 50 ms on the local stack (SC-008: proposals, to be measured). Reference point: PyJWT verifies one RS256 token in about 55 µs on one core (microbenchmark, `research.md` R6).
+**Performance Goals**: median added time per authenticated request under 10 ms and 95th percentile under 50 ms on the local stack (SC-008). **Measured in PR 1: +0.36 ms median, +0.84 ms p95** (research R6). Reference point: PyJWT verifies one RS256 token in about 55 µs on one core (microbenchmark, `research.md` R6).
 
 **Constraints**: stateless apart from caches; every wait bounded (key fetch 5 s, store call 100 ms, grace, identity lifetime); no token, key or claim value in logs, labels or error bodies; the service fails closed on verification and fails open on the limiter store; two replicas by default; no Cloudflare and no per-address limits (later).
 
@@ -105,7 +105,9 @@ testdata/auth-vectors/                   # PR 1: shared vectors for Go and Pytho
 
 scripts/gen_auth_vectors.py              # PR 1: how the vectors were made (throwaway key, discarded)
 scripts/mcp_gateway_bootstrap.py         # PR 1: + API application (resource, scope, redirect URI); token default 168 h, --token-hours
-scripts/authlimit_smoke.py               # PR 1 (stub upstream), extended in PR 2 (real API)
+scripts/authlimit_smoke.py               # PR 1 (stub upstream), extended in PR 2 (real API): 11 stages, --all adds those that stop things
+scripts/authlimit_latency.py             # PR 1: what the check adds to a request (SC-008)
+scripts/authlimit_mutants.py             # PR 1: the mutation list, 26 deliberate defects, each must fail a test (SC-010)
 deploy/caddy/Caddyfile.gateway           # PR 1: + api site (forward_auth chat routes; limit-only MCP routes)
 deploy/caddy/Caddyfile                   # PR 2: production site wired for identity mode (cuttable)
 deploy/compose/docker-compose.yml        # PR 1: authlimit x2, authlimit-echo, key directory; PR 2: api behind it

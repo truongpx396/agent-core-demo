@@ -13,5 +13,5 @@
 - [ ] T020 **HUMAN** Connect the real Claude Code: `make mcp-gateway-up && make mcp-gateway-bootstrap && make mcp-gateway-ca`, `claude mcp add ...` as `contracts/gateway.md` says, `/mcp`, log in, call a tool. Record what happens (the CA variable, the fixed callback, whether it asks for a secret)
 - [ ] T021 **HUMAN** Decide the production identity provider, DNS and TLS, and where the generated secrets live; the gateway only needs `MCP_GATEWAY_ISSUER` and `MCP_GATEWAY_JWKS_URL`
 - [ ] T022 **HUMAN** Decide whether any write tool, or the sandbox, may ever be reachable by a caller outside the agent's graph (Principle II). Not built until decided
-- [ ] T023 Per-tenant rate limits and a quota on the gateway
+- [X] T023 Per-tenant rate limits and a quota on the gateway — **closed by spec 018**: the MCP routes go through the authlimit service in limit-only mode (per-tenant and per-person buckets, and revocation), `specs/018-authlimit-edge-auth/`
 - [ ] T024 Generate the Casdoor organizations and applications from a tenant list when there are more than a handful

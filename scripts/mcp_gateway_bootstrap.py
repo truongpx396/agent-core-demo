@@ -8,7 +8,13 @@ the stack works after one command and a second run changes nothing it should not
     `owner` claim is the organization, and the gateway reads the tenant from it (`MCP_GATEWAY_TENANT_CLAIM`).
   * one APPLICATION per organization and server: `mcp-<tenant>` for the Ecorp directory (scope `ecorp:read`) and `mcp-ops` for the
     operations server (scope `ops:read`). Category `Agent` / type `MCP` is what turns custom scopes on. Tokens are `JWT-Standard`
-    (17 claims, none of the user's profile; the default format carries ~85 including `lastSigninIp`), one hour long.
+    (17 claims, none of the user's profile; the default format carries ~85 including `lastSigninIp`).
+  * (specs/018) one APPLICATION per tenant for the chat API: `api-<tenant>` (scope `api:chat`), a public client whose redirect URIs are the
+    web page's root and the smoke check's callback. Its tokens are what the authlimit service verifies at the front door.
+  * every application's access token lasts SEVEN DAYS by default (`--token-hours` or the TOKEN_HOURS variable change it; spec 018 FR-022).
+    Verification is offline, so a token cannot be recalled by the authorization server: `make authlimit-revoke` is how an operator bounds
+    that, and a short access token with a refresh token is the production recommendation. (Spec 017 used one hour for the MCP applications;
+    revocation now covers the MCP routes too, so they follow the same setting.)
   * a demo USER in each organization. A password is printed ONCE, when the user is created; an existing user is left alone.
 
 It prints the `claude mcp add` command for each server: a PRE-REGISTERED client with a fixed callback port, because this Casdoor has
@@ -27,8 +33,10 @@ import httpx
 
 ADMIN_ORG = "built-in"
 ADMIN_USER = "admin"
-TOKEN_HOURS = 1
+DEFAULT_TOKEN_HOURS = 168  # seven days (spec 018, FR-022)
 REFRESH_HOURS = 168
+# The smoke check (scripts/authlimit_smoke.py) signs in as a public client with this callback; the web page signs in with its own root URL.
+API_SMOKE_CALLBACK = "http://localhost:33419/callback"
 
 
 class CasdoorError(Exception):
@@ -96,13 +104,15 @@ class Casdoor:
         )
         return password
 
-    def ensure_application(self, name: str, organization: str, scope: str, description: str, callback: str) -> str:
+    def ensure_application(
+        self, name: str, organization: str, scope: str, description: str, redirect_uris: list[str], token_hours: int, kind: str = "MCP"
+    ) -> str:
         """Create or update the application; returns its client id (kept on a re-run, so a client already registered with it still works)."""
         existing = self.read("/api/get-application", id=f"admin/{name}")
         record = {
             "owner": "admin",
             "name": name,
-            "displayName": f"MCP: {description}",
+            "displayName": f"{kind}: {description}",
             "organization": organization,
             "category": "Agent",
             "type": "MCP",
@@ -110,9 +120,9 @@ class Casdoor:
             "enablePassword": True,
             "enableSignUp": False,
             "grantTypes": ["authorization_code", "refresh_token"],
-            "redirectUris": [callback],
+            "redirectUris": redirect_uris,
             "tokenFormat": "JWT-Standard",
-            "expireInHours": TOKEN_HOURS,
+            "expireInHours": token_hours,
             "refreshExpireInHours": REFRESH_HOURS,
             "scopes": [{"name": scope, "displayName": scope, "description": description}],
         }
@@ -131,7 +141,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--tenant", action="append", default=[], help="a tenant (Casdoor organization) to create an Ecorp-directory application for; repeatable (default: ecorp)")
     parser.add_argument("--ops-org", default=os.environ.get("MCP_GATEWAY_OPS_TENANTS", "ops-team").split(",")[0].strip() or "ops-team")
     parser.add_argument("--callback-port", type=int, default=33418, help="the fixed port of the client's OAuth callback (claude mcp add --callback-port)")
+    parser.add_argument(
+        "--token-hours",
+        type=int,
+        default=int(os.environ.get("TOKEN_HOURS") or DEFAULT_TOKEN_HOURS),
+        help="how long an access token lasts, for every application this creates (default 168 = seven days; TOKEN_HOURS sets the default). "
+        "A shorter lifetime with a refresh token is the production recommendation",
+    )
     args = parser.parse_args(argv)
+    if not 1 <= args.token_hours <= 8760:
+        sys.exit("mcp-gateway-bootstrap: --token-hours must be between 1 and 8760")
     tenants = args.tenant or ["ecorp"]
 
     password = os.environ.get("CASDOOR_ADMIN_PASSWORD", "")
@@ -139,17 +158,24 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit("CASDOOR_ADMIN_PASSWORD is not set (make mcp-gateway-bootstrap passes it)")
     public = os.environ.get("MCP_GATEWAY_PUBLIC_URL", "https://mcp.localhost:8443").rstrip("/")
     callback = f"http://localhost:{args.callback_port}/callback"
+    api_public = os.environ.get("AUTHLIMIT_AUDIENCE", "https://api.localhost:8443").rstrip("/")  # the chat API's resource identifier (the token's audience)
 
     try:
         casdoor = Casdoor(os.environ.get("CASDOOR_URL", "http://casdoor:8000"), password)
         commands = []
+        api_clients = []
         for tenant in tenants:
             casdoor.ensure_organization(tenant)
-            client_id = casdoor.ensure_application(f"mcp-{tenant}", tenant, "ecorp:read", f"Ecorp directory for {tenant}", callback)
+            client_id = casdoor.ensure_application(f"mcp-{tenant}", tenant, "ecorp:read", f"Ecorp directory for {tenant}", [callback], args.token_hours)
             user_password = casdoor.ensure_user(tenant, "alice")
             commands.append(("ecorp" if tenant == "ecorp" else f"ecorp-{tenant}", tenant, "/ecorp/mcp", client_id, "alice", user_password))
+            # The chat API (specs/018): the page signs in at its own root URL; the smoke check signs in at its own callback.
+            api_client_id = casdoor.ensure_application(
+                f"api-{tenant}", tenant, "api:chat", f"chat API for {tenant}", [f"{api_public}/", API_SMOKE_CALLBACK], args.token_hours, kind="API"
+            )
+            api_clients.append((tenant, api_client_id))
         casdoor.ensure_organization(args.ops_org)
-        client_id = casdoor.ensure_application("mcp-ops", args.ops_org, "ops:read", "operations metrics and incidents", callback)
+        client_id = casdoor.ensure_application("mcp-ops", args.ops_org, "ops:read", "operations metrics and incidents", [callback], args.token_hours)
         commands.append(("ops", args.ops_org, "/ops/mcp", client_id, "oncall", casdoor.ensure_user(args.ops_org, "oncall")))
     except (CasdoorError, httpx.HTTPError) as exc:
         sys.exit(f"mcp-gateway-bootstrap: {exc}")
@@ -159,6 +185,10 @@ def main(argv: list[str] | None = None) -> None:
         print(f"  claude mcp add --transport http --callback-port {args.callback_port} --client-id {client_id} {label} {public}{path}")
         shown = user_password if user_password else "(already existed: password unchanged)"
         print(f"    log in as {organization}/{user}  password: {shown}\n")
+    print(f"The chat API (resource {api_public}, scope api:chat), one public client per tenant; sign in as <tenant>/alice:\n")
+    for tenant, api_client_id in api_clients:
+        print(f"  {tenant}: client id {api_client_id}")
+    print(f"\nAccess tokens last {args.token_hours} hours. `make authlimit-revoke TENANT=<tenant> SUB=<subject>` voids a person's tokens at once.")
     print("The browser login is https://auth.localhost:8443 (Casdoor, signed by Caddy's local CA).")
 
 

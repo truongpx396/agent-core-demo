@@ -1,4 +1,4 @@
-.PHONY: model-eval model-eval-all model-eval-baseline model-eval-data model-eval-verify router-label labelset-calibrate test-billing-package help up up-app sandbox-up sandbox-build pull-models pull-strong-model probe-tools ingest index-skills reembed chat chat-hitl serve mcp-serve mcp-serve-ops mcp-gateway-secrets mcp-gateway-up mcp-gateway-bootstrap mcp-gateway-ca mcp-gateway-smoke mcp-gateway-down authlimit-test authlimit-build authlimit-keys authlimit-keys-ensure telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker billing-usage-sweep usage-reconcile usage-reconcile-worker budget-policy litellm-key gateway-check test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
+.PHONY: model-eval model-eval-all model-eval-baseline model-eval-data model-eval-verify router-label labelset-calibrate test-billing-package help up up-app sandbox-up sandbox-build pull-models pull-strong-model probe-tools ingest index-skills reembed chat chat-hitl serve mcp-serve mcp-serve-ops mcp-gateway-secrets mcp-gateway-up mcp-gateway-bootstrap mcp-gateway-ca mcp-gateway-smoke mcp-gateway-down authlimit-test authlimit-build authlimit-keys authlimit-keys-ensure authlimit-up authlimit-down authlimit-smoke authlimit-latency authlimit-mutants authlimit-revoke telegram telegram-support telegram-sales agent-worker agent-worker-support agent-worker-ops agent-worker-sales restart-all fake-llm ingest-worker ops-digest followup-sweep tool-call-dedup-sweep usage-events-sweep usage-events-carry-over billing-migrate billing-migrate-status billing-inbox-sweep billing-export-worker billing-usage-sweep usage-reconcile usage-reconcile-worker budget-policy litellm-key gateway-check test test-integration test-live test-sandbox lint typecheck eval promptfoo promptfoo-redteam deepeval garak garak-full trivy trivy-image semgrep checkov sonar-up sonar-down sonar-scan zap-baseline zap-api-scan zap-view defectdojo-up defectdojo-down defectdojo-import loadtest-queued loadtest-queued-headless strix strix-app strix-view logs down clean clear-cache clear-streams clear-checkpoints clear-langfuse clear-litellm clear-all obs-up obs-down obs-logs obs-clean
 
 # Pinned DefectDojo release — see `defectdojo-up`'s own comment for why this
 # is a plain git clone into ~/.cache (NOT vendored into this repo, same
@@ -112,14 +112,17 @@ mcp-serve-ops:  ## Start the MCP server exposing fetch_metrics_summary/list_rece
 	python -m app.mcp.ops_server
 
 # GATEWAY_COMPOSE is defined after COMPOSE (which the command line may override, as the tests of this stack do).
-GATEWAY_COMPOSE = $(COMPOSE) $(if $(wildcard .env),--env-file .env) --env-file $(GATEWAY_SECRETS) --profile gateway
+# AUTHLIMIT_UID/GID run the authlimit containers as the host user (see the service in docker-compose.yml); AUTHLIMIT_KEYS_DIR is the key directory.
+GATEWAY_ENV = AUTHLIMIT_UID=$$(id -u) AUTHLIMIT_GID=$$(id -g) AUTHLIMIT_KEYS_DIR=$(AUTHLIMIT_KEYS_DIR)
+GATEWAY_COMPOSE_CMD = $(COMPOSE) $(if $(wildcard .env),--env-file .env) --env-file $(GATEWAY_SECRETS) --profile gateway
+GATEWAY_COMPOSE = $(GATEWAY_ENV) $(GATEWAY_COMPOSE_CMD)
 
 mcp-gateway-secrets:  # internal: create the generated passwords once (never overwritten)
 	@mkdir -p $(GATEWAY_DIR) && chmod 700 $(GATEWAY_DIR)
 	@test -f $(GATEWAY_SECRETS) || { ( umask 077; printf 'CASDOOR_DB_PASSWORD=%s\nCASDOOR_ADMIN_PASSWORD=%s\n' "$$(openssl rand -hex 16)" "$$(openssl rand -hex 16)" > $(GATEWAY_SECRETS) ) && echo "created $(GATEWAY_SECRETS) (the Casdoor admin password is in it)"; }
 
-mcp-gateway-up: mcp-gateway-secrets  ## Start the MCP gateway stack (specs/017): Casdoor + its Postgres, the OAuth-protected gateway and a Caddy with local TLS on https://mcp.localhost:8443. Needs `make up` (the app database). Then `make mcp-gateway-bootstrap`
-	$(GATEWAY_COMPOSE) up -d --build --no-deps casdoor-db casdoor mcp-gateway caddy-gateway
+mcp-gateway-up: mcp-gateway-secrets authlimit-keys-ensure  ## Start the MCP gateway stack (specs/017): Casdoor + its Postgres, the OAuth-protected gateway and a Caddy with local TLS on https://mcp.localhost:8443. Needs `make up` (the app database). Then `make mcp-gateway-bootstrap`
+	$(GATEWAY_COMPOSE) up -d --build --no-deps casdoor-db casdoor mcp-gateway authlimit authlimit-echo caddy-gateway
 
 mcp-gateway-bootstrap: mcp-gateway-secrets  ## Create (idempotently) the Casdoor organizations, applications, scopes and demo users the gateway expects, and print the `claude mcp add` commands. ARGS="--tenant acme --tenant other-co" adds tenants (default: ecorp)
 	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && $(GATEWAY_COMPOSE) exec -T -e CASDOOR_ADMIN_PASSWORD mcp-gateway python -m scripts.mcp_gateway_bootstrap $(ARGS)
@@ -132,7 +135,7 @@ mcp-gateway-smoke: mcp-gateway-secrets  ## The OAuth + MCP end-to-end check agai
 	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && python -m scripts.mcp_gateway_smoke --ca $(GATEWAY_DIR)/caddy-root.crt
 
 mcp-gateway-down: mcp-gateway-secrets  ## Stop and remove the gateway stack's containers (its volumes stay: the Casdoor database and Caddy's local CA)
-	$(GATEWAY_COMPOSE) rm -sf caddy-gateway mcp-gateway casdoor casdoor-db
+	$(GATEWAY_COMPOSE) rm -sf caddy-gateway authlimit authlimit-echo mcp-gateway casdoor casdoor-db
 
 authlimit-test:  ## Go vet + the authlimit service's own tests with the race detector (specs/018; no Docker, no services; needs Go)
 	cd services/authlimit && go vet ./... && go test -race ./...
@@ -146,6 +149,23 @@ authlimit-keys: authlimit-build  ## Manage the internal signing keys outside the
 
 authlimit-keys-ensure:  # internal: create the first signing key if there is none (never replaces one)
 	@test -f $(AUTHLIMIT_KEYS_DIR)/keyset.json || $(MAKE) --no-print-directory authlimit-keys
+
+authlimit-up: mcp-gateway-up  ## The authlimit stack: same as mcp-gateway-up (the MCP routes always go through authlimit) - Casdoor, authlimit x2, the MCP gateway, a stub upstream and Caddy on https://{api,mcp,auth}.localhost:8443. Needs `make up` (Redis, Postgres); then `make mcp-gateway-bootstrap`
+
+authlimit-down: mcp-gateway-down  ## Stop the authlimit stack's containers (same as mcp-gateway-down)
+
+authlimit-smoke: mcp-gateway-secrets  ## The end-to-end check of the front door as a client sees it: sign-in, refusal, rate limit, revocation, replica kill, Casdoor outage, key rotation (throwaway users, deleted after). Run after `make authlimit-up`, `make mcp-gateway-ca` and `make mcp-gateway-bootstrap`. A manual tier like mcp-gateway-smoke: never CI
+	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && $(GATEWAY_ENV) python -m scripts.authlimit_smoke --ca $(GATEWAY_DIR)/caddy-root.crt --keys-dir $(AUTHLIMIT_KEYS_DIR) --compose '$(GATEWAY_COMPOSE_CMD)' $(ARGS)
+
+authlimit-latency:  ## How much time the front door's check adds to a request: a checked route against a public one, same connection, alternating (specs/018 SC-008). Run after `make authlimit-up` and `make mcp-gateway-bootstrap`. ARGS="-n 1000 --path /chat/sessions"
+	@. $(GATEWAY_SECRETS) && export CASDOOR_ADMIN_PASSWORD && python -m scripts.authlimit_latency --ca $(GATEWAY_DIR)/caddy-root.crt $(ARGS)
+
+authlimit-mutants:  ## Apply each deliberate defect of the authlimit service's mutation list and require a test to fail (specs/018 SC-010). Edits the source in place and restores it; run on a clean tree. Needs Go
+	python scripts/authlimit_mutants.py
+
+authlimit-revoke:  ## Void every token issued to a person, on every authlimit replica within seconds: make authlimit-revoke TENANT=ecorp SUB=<the person's id>   (`authlimit revoke --list` shows them)
+	@test -n "$(TENANT)" -a -n "$(SUB)" || { echo "usage: make authlimit-revoke TENANT=<tenant> SUB=<subject>"; exit 2; }
+	$(GATEWAY_COMPOSE) exec -T --index 1 authlimit /authlimit revoke --tenant "$(TENANT)" --sub "$(SUB)"
 
 telegram:  ## Start the Telegram bot channel for the Ecorp domain (needs TELEGRAM_BOT_TOKEN in .env; see app/channels/telegram.py)
 	python -m app.channels.telegram
