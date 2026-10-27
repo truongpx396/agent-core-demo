@@ -159,6 +159,23 @@ jobs:
       - run: pytest -q
         working-directory: packages/billing
 
+  # The authlimit service (specs/018) is a separate Go program with its own module: it cannot be tested by the Python jobs, and they cannot be
+  # broken by it. Hermetic like `test`: a fake authorization server, no Docker services. The image build and its checks arrive with the binary.
+  authlimit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: services/authlimit/go.mod
+          cache-dependency-path: services/authlimit/go.sum
+      - name: go vet
+        run: go vet ./...
+        working-directory: services/authlimit
+      - name: go test -race (reads the shared vectors in testdata/auth-vectors)
+        run: go test -race -count=1 ./...
+        working-directory: services/authlimit
+
   test-integration:
     # Real Postgres/Redis/Qdrant via testcontainers (tests/containers.py) —
     # no LLM, so this stays cheap; GH-hosted ubuntu-latest runners already

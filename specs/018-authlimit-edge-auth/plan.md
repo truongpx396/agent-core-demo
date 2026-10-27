@@ -118,7 +118,7 @@ Makefile                                 # PR 1: authlimit-test/-build/-keys/-up
 
 app/core/internal_identity.py            # PR 2: verifier + public-key cache (imports nothing from agent/domains/api)
 app/api/deps.py                          # PR 2: get_ctx by mode
-app/api/rate_limit.py / main.py          # PR 2: tenant limiter only in header mode; webhook limit unchanged
+app/api/rate_limit.py / main.py          # PR 2: per-tenant limiter removed; the webhook per-address limit stays
 app/api/static/                          # PR 2: sign-in (authorization code + PKCE) replaces the tenant selector in identity mode
 app/core/config.py / .env.example        # PR 2: AUTH_MODE and the key location
 app/core/errors.py                       # PR 2: new ErrorCode values, checked against errorcodes.json

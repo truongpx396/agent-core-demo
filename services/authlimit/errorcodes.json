@@ -1,0 +1,24 @@
+{
+  "codes": {
+    "unauthenticated": {
+      "status": 401,
+      "message": "Authentication is required: send a valid access token."
+    },
+    "forbidden": {
+      "status": 403,
+      "message": "The access token does not allow this request."
+    },
+    "rate_limited": {
+      "status": 429,
+      "message": "Too many requests. Wait and try again."
+    },
+    "auth_unavailable": {
+      "status": 503,
+      "message": "Authentication is temporarily unavailable. Try again shortly."
+    },
+    "internal": {
+      "status": 500,
+      "message": "Something went wrong on our side while handling this request. Please try again; if it keeps happening, contact support."
+    }
+  }
+}
