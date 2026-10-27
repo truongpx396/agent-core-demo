@@ -66,6 +66,13 @@ x-app-build: &app-build
   context: .
   target: runtime
 
+# The authlimit service image (specs/018): a self-contained Go module with its own Dockerfile and build context, not the root Dockerfile.
+# Two services (the service and its smoke-check stand-in upstream) use it, so the build is described once.
+x-authlimit-image: &authlimit-image
+  image: authlimit:dev
+  build:
+    context: ./services/authlimit
+
 # Runtime hardening for the images this repo builds (api, the workers, ml-service). Nothing here changes what the app does; each line
 # removes something the process never needed:
 #   init                    a real PID 1: reaps the sandbox bridge's child processes and forwards SIGTERM, so `stop_grace_period` is honoured
@@ -598,6 +605,10 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    environment:
+      # What sits behind the chat-API site's check (deploy/caddy/Caddyfile.gateway): the stub that echoes what it received, or `api:8000`.
+      # Resolved by compose's `:-`, not Caddy's own default, which only fires on a completely UNSET variable and not on a set-but-empty one.
+      AUTHLIMIT_UPSTREAM: ${AUTHLIMIT_UPSTREAM:-authlimit-echo:8000}
     ports:
       # Loopback only: this is a development stack with Casdoor's admin UI behind it.
       - "127.0.0.1:8443:8443"
@@ -610,6 +621,90 @@ services:
         condition: service_healthy
       casdoor:
         condition: service_healthy
+      authlimit:
+        condition: service_healthy
+      authlimit-echo:
+        condition: service_healthy
+
+  # --- authlimit: the edge authentication and rate-limit service (profile `gateway`; specs/018) ---
+  # Caddy asks it about every request (`forward_auth`, deploy/caddy/Caddyfile.gateway). It verifies the Casdoor access token offline,
+  # charges the tenant's and the person's token buckets in Redis, refuses revoked people, and answers with a short-lived signed identity
+  # that Caddy copies onto the request. It is stateless apart from caches: two replicas by default, any number works behind Caddy's
+  # `dynamic a`. Needs `make up` (Redis) and `make authlimit-keys` (the signing key) first.
+  authlimit:
+    <<: *authlimit-image
+    profiles: ["gateway"]
+    restart: unless-stopped
+    init: true
+    deploy:
+      replicas: 2
+    # The host user, so the key directory (created by `make authlimit-keys` with mode 700, owned by them) is readable. The image's own
+    # user (65532) cannot read a directory only its owner may enter. `AUTHLIMIT_UID`/`GID` are set by the Makefile; without them the
+    # default stays valid so no other compose command is affected, and the service fails at start with a clear message about the keys.
+    user: "${AUTHLIMIT_UID:-65532}:${AUTHLIMIT_GID:-65532}"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    environment:
+      AUTHLIMIT_ISSUER: ${AUTHLIMIT_ISSUER:-https://auth.localhost:8443}
+      # In-network name and plain http: the keys are fetched by this process, not shown to a client, so only the ISSUER has to be public.
+      AUTHLIMIT_JWKS_URL: http://casdoor:8000/.well-known/jwks
+      AUTHLIMIT_AUDIENCE: ${AUTHLIMIT_AUDIENCE:-https://api.localhost:8443}
+      AUTHLIMIT_REDIS_URL: redis://redis:6379
+      AUTHLIMIT_KEYS_DIR: /keys
+      AUTHLIMIT_KEYS_ALLOW_LOOSE_PERMS: ${AUTHLIMIT_KEYS_ALLOW_LOOSE_PERMS:-false}
+      AUTHLIMIT_LIMIT_MODE: ${AUTHLIMIT_LIMIT_MODE:-enforce}
+      # The key cache's timings, here so `make authlimit-smoke` can shorten them to watch a Casdoor outage in seconds, not hours.
+      AUTHLIMIT_JWKS_CACHE_SECONDS: ${AUTHLIMIT_JWKS_CACHE_SECONDS:-300}
+      AUTHLIMIT_JWKS_MIN_REFRESH_SECONDS: ${AUTHLIMIT_JWKS_MIN_REFRESH_SECONDS:-30}
+      AUTHLIMIT_JWKS_STALE_GRACE_SECONDS: ${AUTHLIMIT_JWKS_STALE_GRACE_SECONDS:-21600}
+      AUTHLIMIT_REVOCATION_POLL_MS: ${AUTHLIMIT_REVOCATION_POLL_MS:-1000}
+      AUTHLIMIT_MCP_METADATA_URL_TEMPLATE: ${MCP_GATEWAY_PUBLIC_URL:-https://mcp.localhost:8443}/.well-known/oauth-protected-resource{path}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${AUTHLIMIT_OTLP_ENDPOINT-http://host.docker.internal:4318}
+    volumes:
+      # The signing keys, read-only. Outside the repository (the convention of `make mcp-gateway-secrets`): see `make authlimit-keys`.
+      - ${AUTHLIMIT_KEYS_DIR:-${HOME:-/tmp}/.cache/agent-core-demo-authlimit/keys}:/keys:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # so OTEL_EXPORTER_OTLP_ENDPOINT resolves on native Linux Docker too
+    # Ready means "can decide a request": a signing key, usable Casdoor keys, a trustworthy revocation list. A replica that cannot is
+    # taken out of rotation by Caddy's health check (`health_uri /readyz`), and shows unhealthy here.
+    healthcheck:
+      test: ["CMD", "/authlimit", "healthcheck", "--ready"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    depends_on:
+      redis:
+        condition: service_healthy
+      casdoor:
+        condition: service_healthy
+
+  # The stand-in upstream for the smoke check (`make authlimit-smoke`): it answers every request with the headers it received, which is how
+  # the check proves what a real API would have been given. A test fixture; the same image as authlimit, a different binary.
+  authlimit-echo:
+    <<: *authlimit-image
+    profiles: ["gateway"]
+    restart: unless-stopped
+    init: true
+    entrypoint: ["/echo"]
+    user: "65532:65532"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    environment:
+      AUTHLIMIT_LISTEN: ":8000"   # read only by the healthcheck below
+    healthcheck:
+      test: ["CMD", "/authlimit", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # --- Self-hosted SonarQube Community Edition (`make sonar-up` / `docker
   # compose --profile quality up -d`) — a PERSISTENT server, unlike

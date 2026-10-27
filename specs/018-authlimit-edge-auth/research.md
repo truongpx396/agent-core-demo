@@ -1,6 +1,6 @@
 # Research: authlimit (spec 018)
 
-Decisions, what was measured and what was not. Written 2026-10-27. Anything marked **unverified** is a task to settle, not a fact.
+Decisions, what was measured and what was not. Written 2026-10-27; updated after PR 1 was built (R21 has the measured results of the real-stack run). Anything still marked **unverified** is a task to settle, not a fact.
 
 ## R1. How Caddy's `forward_auth` really behaves (measured)
 
@@ -22,13 +22,19 @@ Decisions, what was measured and what was not. Written 2026-10-27. Anything mark
 
 **Not measured:** streaming behaviour of an answer that starts after the check (the check is a separate subrequest, so none is expected), TLS between Caddy and the service (plain http inside the compose network), and behaviour under load.
 
-## R2. What Casdoor puts in a token (partly unverified)
+## R2. What Casdoor puts in a token (measured)
 
 Known from spec 017 (`research.md` M2): format `JWT-Standard` (17 claims, 16 in the live token); `owner` is the organization (the tenant), `sub` a stable user id; `aud` follows the `resource` parameter; Casdoor does **not** validate the `resource`; public client with PKCE works; discovery and an introspection endpoint exist; the issuer follows the Host header unless `origin` is set.
 
-**Unverified: whether a `JWT-Standard` token has `iat`** (the claim count is known, the list was not recorded; the repository's own test fixture sets `iat`, which proves nothing about Casdoor). FR-002 and revocation both need an issue time. Task T-IAT captures a real token from the running stack and writes its claim list here. If `iat` is absent: first try a Casdoor token format that includes it (`JWT-Custom` lets the application choose fields; measure); only if that fails, estimate it as `exp − configured lifetime`, which is wrong if the lifetime was changed after issue and would be recorded as a known gap.
+**Measured (T006, 2026-10-27, Casdoor 4.24.0 behind Caddy, an `api-ecorp` application made by the bootstrap, a throwaway user, public client with PKCE, `resource=https://api.localhost:8443`, `scope=api:chat`):**
 
-**Unverified: the application type for the API.** Spec 017 found that category `Agent` / type `MCP` turns on custom `resource:action` scopes and that `openid` is an invalid scope there. The API needs a custom scope (`api:chat`) and a public client with a browser redirect; T-APP creates the application as the same kind and checks the web flow works with it.
+- Header: `{"alg": "RS256", "kid": "cert-built-in", "typ": "JWT"}`.
+- Claims of a `JWT-Standard` access token: `aud` (a list), `auth_time`, `azp`, `email`, `exp`, **`iat`**, `id`, `iss`, **`jti`**, `name`, `nbf`, `owner`, `preferred_username`, `scope` (the string `api:chat`), `sub`, `tokenType` (`access-token`). So **`iat` is present** (FR-002 and revocation can rely on it) and so is `jti` (revocation by token id remains possible later; the per-person cut-off needs neither).
+- `exp - iat` = **604800 s, exactly 168 h**, equal to the default cap, which is why the cap compares with `>` (a token at the cap is valid) and why the vectors include "exactly the lifetime cap". `expires_in` in the token response agrees; a refresh token is issued.
+- `iss` is `https://auth.localhost:8443` (the `origin` setting is pinned in the compose file).
+- `aud` follows `resource`: with `resource` it is `["https://api.localhost:8443"]`; **without it, `["<client id>"]`** (spec 017's finding, reproduced: the "client id as audience" vector is a real case).
+- `scope=openid` is refused at login ("Invalid scope") on the `Agent`/`MCP` application type, as spec 017 found; `scope=api:chat` works. **The application type needed for a custom scope also works for a browser public client with a redirect to the page's root URL and to the smoke check's callback**, so the API application is the same kind as the MCP ones (the answer to the second open question above).
+- The claims the verifier reads are the ones it expects: `owner` (the organization: the tenant) and `sub`.
 
 ## R3. Token lifetimes
 
@@ -40,13 +46,13 @@ Known from spec 017 (`research.md` M2): format `JWT-Standard` (17 claims, 16 in 
 - **JWT**: `github.com/golang-jwt/jwt/v5` v5.3.1, with an explicit `WithValidMethods`, `WithAudience`, `WithIssuer`, `WithLeeway` and `WithExpirationRequired`. Chosen over `lestrrat-go/jwx` (a larger surface with its own JWKS cache whose stale-key behaviour would have to be bent to the grace rule) and `MicahParks/keyfunc` (same). The external token allow-list is **RS256 only** (what Casdoor signs with); adding ES256 later is one entry.
 - **JWKS**: a small purpose-built cache (fetch with a 5 s timeout, parse RSA keys with `crypto/rsa`, TTL, refresh on an unknown `kid` at most once per 30 s, stale grace). It mirrors spec 017's `JwksCache` rules; the shared vectors keep the two honest.
 - **Redis**: `go-redis/v9`. **Metrics**: OpenTelemetry Go SDK, OTLP/HTTP to `host.docker.internal:4318`, the endpoint `mcp-gateway` uses. **Logs**: `log/slog` JSON. **HTTP**: `net/http` with the Go 1.22 pattern mux.
-- **Tests**: `miniredis/v2` for the limiter. **Unverified:** that it runs the bucket script (it embeds a Lua interpreter, but `TIME` and some `redis.call` forms may differ); fallback is passing `now` in from Go (clock skew between replicas is then bounded by NTP, which is acceptable for one host) and running the script against the real Redis in the smoke.
+- **Tests**: `miniredis/v2` for the limiter. **Measured:** it runs the bucket script including `redis.call('TIME')` (a test sets its clock with `SetTime`), so the script reads Redis's own clock in production and the hermetic tests need no override; the override argument stays for tests that want a hand-moved clock. Versions resolved: `golang-jwt/jwt/v5` 5.3.1, `go-redis/v9` 9.23.0, OpenTelemetry Go 1.47.0, `miniredis/v2` 2.40.0, built with `golang:1.26`.
 
 ## R5. The internal identity is a short-lived EdDSA JWT
 
 **Decision.** A JWT signed with Ed25519 (`alg: EdDSA`), header `kid` and `typ: authlimit-identity+jwt`, claims `iss: urn:agent-core:authlimit`, `aud: agent-core-api`, `sub` (principal), `tenant`, `scope`, `jti`, `iat`, `nbf`, `exp` (30 s default, 120 s maximum). The API verifies it with the public key only.
 
-**Checked here (PyJWT 2.14, `cryptography`):** a token signed with Ed25519 verifies with the public key; a wrong audience (`InvalidAudienceError`), wrong issuer (`InvalidIssuerError`), a wrong allowed-algorithm list (`InvalidAlgorithmError`) and a different Ed25519 key (`InvalidSignatureError`) are all refused. **Unverified:** `golang-jwt` signing with `ed25519.PrivateKey` and the Go-signed/Python-verified round trip: the first PR 1 test.
+**Checked here (PyJWT 2.14, `cryptography`):** a token signed with Ed25519 verifies with the public key; a wrong audience (`InvalidAudienceError`), wrong issuer (`InvalidIssuerError`), a wrong allowed-algorithm list (`InvalidAlgorithmError`) and a different Ed25519 key (`InvalidSignatureError`) are all refused. **Measured (interop):** an identity minted by the Go service (`golang-jwt`, `ed25519.PrivateKey`) verifies in PyJWT 2.14 from the OKP JWK the service serves (`jwt.PyJWK(jwk).key`), and wrong audience, wrong issuer, a wrong algorithm list and a foreign key are each refused. A golden file (`testdata/auth-vectors/identity.json`: a Go-minted token and the public key set, no private key) lets PR 2's Python verifier keep checking it. One harness note: PyJWT reads the clock with `datetime.now`, not `time.time`, so a test that fixes the clock must pass options or patch that, not `time.time`.
 
 **Alternatives.** HMAC with a shared secret: rejected, any consumer could then mint identities. PASETO: no library already in either stack. An opaque token plus an introspection call: a network call per request. Passing plain headers (`X-Tenant-Id`) from the gateway: relies on the network path and on header stripping, and the constitution makes tenant isolation non-negotiable. mTLS between Caddy and the service: named, not built.
 
@@ -54,7 +60,14 @@ Known from spec 017 (`research.md` M2): format `JWT-Standard` (17 claims, 16 in 
 
 ## R6. Latency
 
-PyJWT verifies one 17-claim RS256 token in **55 µs** on one core (5,000 iterations of `jwt.decode` with PyJWT 2.14, single thread, no I/O, a throwaway script that is not committed). Go is expected to be at least as fast and was not measured. The added time per request will be dominated by the extra internal hop and one Redis round trip; SC-008 is measured in the smoke on the local stack and the result is written here.
+PyJWT verifies one 17-claim RS256 token in **55 µs** on one core (5,000 iterations of `jwt.decode`, single thread, no I/O, a throwaway script that is not committed), so verification was never the concern. **Measured on the real stack (`make authlimit-latency`, 500 alternating pairs after a 50-pair warm-up, one TLS connection, Caddy and the stub upstream in Docker on a laptop):**
+
+| Route | Checked route | Public route (no check) | Added by the check |
+|---|---|---|---|
+| `GET /chat/sessions` (verify, revocation lookup, mint) | median 1.12 ms, p95 2.14 ms | median 0.77 ms, p95 1.30 ms | **+0.36 ms median, +0.84 ms p95** |
+| `POST /chat/stream/queued` in observe mode (adds the Redis bucket call) | median 1.49 ms, p95 2.62 ms | median 1.02 ms, p95 2.06 ms | **+0.46 ms median, +0.57 ms p95** |
+
+Against the proposed targets (median under 10 ms, p95 under 50 ms) both are met by more than an order of magnitude. This is a development stack on one machine, through Docker Desktop's network: a floor for the cost of the design, not a production figure, and it says nothing about behaviour under load (not measured).
 
 ## R7. The token bucket
 
@@ -76,7 +89,7 @@ Revocation applies to the MCP routes too (the service runs on them in limit-only
 
 ## R9. Stale-key grace
 
-Keys are cached for 300 s (`AUTHLIMIT_JWKS_CACHE_SECONDS`), refreshed in the background and on an unknown `kid` at most once per 30 s. If a refresh fails, the cached keys keep being used for up to **6 hours** (`AUTHLIMIT_JWKS_STALE_GRACE_SECONDS`); the first failure moves `key_refresh_total{result="error"}` and, after 5 minutes, raises `AuthlimitKeysStale`. Beyond the grace the replica reports not ready and refuses everything with a counted reason. Why six hours: long enough to ride out an outage and its repair on one host, short enough that a key the authorization server has withdrawn for compromise is not trusted for days. Casdoor's own key rotation is picked up by the unknown-`kid` refresh, so the grace does not delay it unless Casdoor is unreachable.
+Keys are cached for 300 s (`AUTHLIMIT_JWKS_CACHE_SECONDS`), refreshed in the background and on an unknown `kid` at most once per 30 s. If a refresh fails, the cached keys keep being used for up to **6 hours past the TTL** (`AUTHLIMIT_JWKS_STALE_GRACE_SECONDS`: a key set is usable while its age is at most the TTL plus the grace; fresh up to the TTL, stale after it); the first failure moves `key_refresh_total{result="error"}` and, after 5 minutes, raises `AuthlimitKeysStale`. Beyond the grace the replica reports not ready and refuses everything with a counted reason. Why six hours: long enough to ride out an outage and its repair on one host, short enough that a key the authorization server has withdrawn for compromise is not trusted for days. Casdoor's own key rotation is picked up by the unknown-`kid` refresh, so the grace does not delay it unless Casdoor is unreachable.
 
 ## R10. Internal key custody and rotation
 
@@ -90,7 +103,7 @@ The API fetches `/internal/jwks.json` from the service over the compose network 
 
 ## R12. MCP limit-only mode
 
-On `mcp` routes the service parses the bearer token, verifies signature, issuer and expiry only (not audience or scope, which `mcp-gateway` decides per endpoint), and takes tenant and person from it. Valid and not revoked: it applies the buckets and answers 200 without an identity header. Missing or invalid token: it answers **200 and does not limit**, so the MCP gateway produces the canonical 401 with its discovery metadata (an MCP client depends on that exact answer). Revoked: it answers 401 with `WWW-Authenticate: Bearer error="invalid_token", resource_metadata="<url>"`, the URL built from `AUTHLIMIT_MCP_METADATA_URL_TEMPLATE`. The `/.well-known/oauth-protected-resource/*` paths are public. Consequence, disclosed: until the Cloudflare step, an unauthenticated flood on the MCP routes reaches `mcp-gateway`.
+On `mcp` routes the service parses the bearer token, verifies signature, issuer and expiry only (not audience or scope, which `mcp-gateway` decides per endpoint), and takes tenant and person from it. Valid and not revoked: it applies the buckets and answers 200 without an identity header. Missing or invalid token: it answers **200 and does not limit**, so the MCP gateway produces the canonical 401 with its discovery metadata (an MCP client depends on that exact answer). Revoked: it answers 401 with `WWW-Authenticate: Bearer error="invalid_token", resource_metadata="<url>"`, the URL built from `AUTHLIMIT_MCP_METADATA_URL_TEMPLATE`. The `/.well-known/oauth-protected-resource/*` paths are public. Consequence, disclosed: until the Cloudflare step, an unauthenticated flood on the MCP routes reaches `mcp-gateway`. The MCP buckets are larger than the chat turns' (tenant 60 tokens refilling 120 a minute, person 30 and 60) because an MCP tool is a cheap read and one client session makes several requests (the 017 smoke needs them); the chat turn's 30 a minute per tenant is sized for an LLM call.
 
 ## R13. Error envelope
 
@@ -100,15 +113,15 @@ The service answers refusals as `{"code": …, "message": …, "details": {…}}
 
 Metrics (OTLP counters, histograms and gauges, names as they appear in `alerts.yml`):
 
-- `agent_authlimit_requests_total{route_class, outcome, reason}`: outcome `allowed`, `refused`, `limited`, `would_limit`; reason one of `missing_token`, `malformed`, `bad_signature`, `bad_issuer`, `bad_audience`, `expired`, `no_issue_time`, `lifetime_too_long`, `bad_scope`, `revoked`, `keys_unavailable`, `revocation_unavailable`, `unlisted_route`.
+- `agent_authlimit_requests_total{route_class, outcome, reason}`: outcome `allowed`, `passthrough`, `refused`, `limited`, `would_limit`; reason one of `missing_token`, `malformed`, `bad_algorithm`, `bad_signature`, `bad_issuer`, `bad_audience`, `expired`, `not_yet_valid`, `no_issue_time`, `lifetime_too_long`, `bad_claims`, `bad_scope`, `revoked`, `keys_unavailable`, `revocation_unavailable`, `signing_unavailable`, `unlisted_route` (`internal/reason`; the same words are log fields and test expectations).
 - `agent_authlimit_request_duration_seconds` (histogram, explicit buckets), `agent_authlimit_key_refresh_total{result}`, `agent_authlimit_keys_age_seconds`, `agent_authlimit_revocation_age_seconds`, `agent_authlimit_store_errors_total{store}`, `agent_authlimit_ready` (gauge, 1/0, one series per replica), `agent_authlimit_signing_key_age_seconds`.
 - Labels never carry a tenant, principal or token.
 
-Alerts: `AuthlimitCannotCheckTokens`, `AuthlimitKeysStale`, `AuthlimitLimiterStoreDown`, `AuthlimitRevocationStale`, `AuthlimitReplicasDown`, `AuthlimitLimiterObserveOnly` (info: still in observation mode after a day), and, in PR 2, `ApiHeaderAuthMode`. `tests/core/test_alert_rules.py` today only knows metrics defined in Python; it is extended to read the Go service's names from a single source file, so a typo in an alert fails the build.
+Alerts as built: `AuthlimitCannotCheckTokens`, `AuthlimitKeysStale`, `AuthlimitLimiterStoreDown`, `AuthlimitRevocationStale`, `AuthlimitReplicasDown` (PR 1), and `ApiHeaderAuthMode` (PR 2). All five were checked with `promtool check rules`. `AuthlimitReplicasDown` fires on fewer than two ready replicas, or on a service that vanished after reporting 30 minutes ago; it deliberately does not fire on `absent()` alone, which would fire for ever where the service is not deployed (production does not run it yet). `tests/core/test_alert_rules.py` reads the Go metric names from `internal/telemetry/metrics.go`.
 
 ## R15. Deployment
 
-`docker-compose.yml`, profile `gateway`: `authlimit` with `deploy.replicas: 2` (checked: `docker compose up --dry-run` creates two containers from `deploy.replicas` on Compose 5.1.3), hardened like `mcp-gateway` (read-only root filesystem, `cap_drop: ALL`, `no-new-privileges`, non-root), a `healthcheck` that runs `authlimit healthcheck` (the image has no shell or curl), `depends_on` Redis and Casdoor healthy, the key directory mounted read-only, and `authlimit-echo` (the stub upstream, PR 1). `Caddyfile.gateway` gains an `api` site on the same port and local CA. The image: build stage by digest, `gcr.io/distroless/static` non-root as the runtime (its digest is read and pinned when the Dockerfile is written). CI: an `authlimit` job (go vet, `go test -race`, image build) next to `billing-package`; the existing trivy and checkov jobs see the new files.
+`docker-compose.yml`, profile `gateway`: `authlimit` with `deploy.replicas: 2` (checked: `up --dry-run` created two containers, and the real stack ran both healthy on Compose 5.1.3), hardened like `mcp-gateway` (read-only root filesystem, `cap_drop: ALL`, `no-new-privileges`, non-root), a `healthcheck` that runs `authlimit healthcheck` (the image has no shell or curl), `depends_on` Redis and Casdoor healthy, the key directory mounted read-only, and `authlimit-echo` (the stub upstream, PR 1). `Caddyfile.gateway` gains an `api` site on the same port and local CA. The image: build stage by digest, `gcr.io/distroless/static` non-root as the runtime (its digest is read and pinned when the Dockerfile is written). CI: an `authlimit` job (go vet, `go test -race`, image build) next to `billing-package`; the existing trivy and checkov jobs see the new files.
 
 ## R16. Web UI sign-in (PR 2)
 
@@ -120,7 +133,7 @@ The UI streams chat with `fetch()` and reads the response body (the file says `E
 
 ## R18. Shared token vectors
 
-A Python script signs a set of tokens once with a throwaway RSA key, keeps only the public key as `jwks.json` and the tokens with their expected outcomes in `vectors.json` (the clock is part of each vector, so no vector expires), and discards the private key. No private key is ever committed, which also keeps the secret scanner quiet about key material. **Unverified:** whether Trivy's secret rules flag the JWT strings; T-VEC runs the scan on the directory and adds a narrow allow rule with a reason if so. The set covers at least: valid; expired; not yet valid; missing `exp`, `sub`, `iat`; wrong issuer; wrong audience; client id as audience; `alg: none`; HS256 signed with the public key; unknown `kid`; signature from a foreign key; lifetime over the cap; missing scope; tenant or principal not text; an internal identity presented as an external token and the reverse.
+A Python script signs a set of tokens once with a throwaway RSA key, keeps only the public key as `jwks.json` and the tokens with their expected outcomes in `vectors.json` (the clock is part of each vector, so no vector expires), and discards the private key. No private key is ever committed, which also keeps the secret scanner quiet about key material. **Measured (T012, trivy 0.74.0, secret scanner on `testdata/auth-vectors/` only):** Trivy's `jwt-token` rule flags the vector tokens at **MEDIUM**. The CI `trivy` hard gate fails on CRITICAL only and its report step lists HIGH and CRITICAL, and `make trivy` is HIGH,CRITICAL, so nothing reports them and no allow rule was added (one would mean a custom secret config wired into CI and the Makefile for a finding no gate sees). If a gate's severity is ever lowered to MEDIUM, this directory is the first thing it will flag; the fix then is an allow rule scoped to this path, with this paragraph as its reason. The set covers at least: valid; expired; not yet valid; missing `exp`, `sub`, `iat`; wrong issuer; wrong audience; client id as audience; `alg: none`; HS256 signed with the public key; unknown `kid`; signature from a foreign key; lifetime over the cap; missing scope; tenant or principal not text; an internal identity presented as an external token and the reverse.
 
 ## R19. Alternatives considered for the whole design
 
@@ -133,6 +146,64 @@ A Python script signs a set of tokens once with a throwaway RSA key, keeps only 
 | `oauth2-proxy` | Validates bearer JWTs and audience but has no documented way to map the `owner` claim to a header and has no rate limiting. |
 | Cloudflare for per-tenant limits | Per-tenant keys need the Enterprise plan; it is the later per-address layer. |
 
-## R20. Open items this plan carries into tasks
+## R20. Open items this plan carried into tasks: status after PR 1
 
-`iat` in Casdoor tokens (R2); the API application type (R2); `miniredis` and the bucket script (R4); Go-signed, Python-verified EdDSA (R5); Trivy and the vectors (R18); the measured added latency (R6); that two replicas come up healthy under `docker compose up` with the hardening settings (R15).
+| Item | Result |
+|---|---|
+| `iat` in Casdoor tokens | **Present** (R2), and `jti` |
+| The API application type | **Works** with a browser public client and the custom scope (R2) |
+| `miniredis` and the bucket script | **Runs**, including Redis `TIME` (R4) |
+| Go-signed, Python-verified EdDSA | **Verified** (R5), with a golden file for PR 2 |
+| Trivy and the vectors | MEDIUM only, no gate reports it (R18) |
+| The added latency | **+0.4 ms median, +0.8 ms p95** (R6) |
+| Two replicas healthy under `docker compose up` with the hardening settings | **Yes**, with the host user override for the key mount (R21) |
+
+## R21. What the real-stack run found and measured (PR 1)
+
+Run on an isolated Compose project (its own volumes, no host ports for Redis and Postgres, so the maintainer's own stack was not touched): Casdoor 4.24.0 on Postgres, Caddy 2.11.7 with its local CA, two authlimit replicas, the stub upstream, the MCP gateway, the repo's Postgres. `make authlimit-smoke ARGS=--all`: **86 checks across 11 stages, all passing in one clean run** after the fixes below (an earlier consolidated run had one failure, a smoke-isolation fault in the check itself: see finding 5).
+
+**Found by running it (each fixed and pinned by a test; GRAPH_PATTERNS 84, ENGINEERING_PATTERNS 86):**
+
+1. **A path Caddy called public bypassed the check.** `/static/a%5c..%5cchat/resume` matched `/static/*` and reached the upstream with no token, because a request Caddy declares public never reaches authlimit and so authlimit's stricter reading of the path could not catch it. Caddy now treats only plain URLs (no `%`, backslash, `..`, `//`) as public.
+2. **A dead replica cost the dial timeout.** The first replica-kill run: 133 requests in 14 s (target rate ~280) and one 502 from a request that spent its whole 5 s retry window on the dead address. With `fail_duration 20s`, `max_fails 1` and `dial_timeout 1s`: **0 failures in 222 and 245 requests** (two runs), longest wait 1.4 s then 0.2 s; the full run later: 0 failures, 1.3 s.
+3. **The door now also removes a client's own `X-Tenant-Id` and `X-Principal-Id`**, so an API later flipped to header mode behind it still cannot be told who to act as.
+4. **The mutation run found a test gap** (a forged `X-Forwarded-Uri` arriving first): 22 of 26 caught on the first run, 3 did not compile (the edit), 1 survived; after the new test **26 of 26**.
+5. **A smoke-isolation fault:** the tenant bucket outlives a run, so a run started within 20 s of another found it half empty. The stage waits for the refill.
+
+**Measured (full run):**
+
+| Property | Result | Target |
+|---|---|---|
+| Valid token to identity | the identity verifies against the key on disk, names the token's tenant and person, lives 30 s, header carries `kid` and `typ`; the upstream saw no `Authorization` | FR-006 to FR-008, FR-037 |
+| Forged headers (eight at once, duplicated, lower-case, forged `X-Forwarded-*`) and eight path tricks | none changed the identity or reached the upstream unauthenticated | SC-002 |
+| Person bucket (5) / tenant bucket (10) / colleague / other tenant / cancel and read while limited | exactly as designed; a refused request did not charge the tenant; `Retry-After` honoured | SC-003 |
+| MCP | no or bad token reached the MCP gateway's own 401 with its metadata; a valid token passed; a burst of 80 gave 29 served, 51 limited, with the envelope | FR-026 |
+| Revocation | first refusal at 0.3-0.5 s, every replica by 2.6-3.2 s; also on `/ecorp/mcp` with the discovery URL; a new sign-in works | SC-007 (5 s) |
+| Replica killed under traffic | 0 failed requests, worst stall 1.3 s | SC-004 |
+| Observe mode | 10 turns past a bucket of 5 all served, would-be refusals logged | SC-003 |
+| Internal key rotation under traffic (`--overlap 20s`) | 452-455 requests, 0 failed; the new key signed from about 19.5 s | SC-005 |
+| Casdoor down (5 s cache, 15 s grace) | inside the grace the existing token worked; a new sign-in failed; beyond it requests were refused with `auth_unavailable` and a `Retry-After`; service resumed 3 s after Casdoor returned | SC-006 |
+| Logs | none of the 16 tokens the run obtained, and no key material, in any service's log; authlimit logged no errors | SC-009 |
+| Added latency | +0.36 ms median (read), +0.46 ms (limited, with Redis) | SC-008 |
+
+**Mutation list (`make authlimit-mutants`), 26 of 26 caught.** Each defect is one textual edit of the real source; the tests that failed are shown by the script. The list: no audience check; no issuer check; the algorithm not pinned before the key is used; no lifetime cap; a missing issue time accepted on the chat API; no scope check; a huge clock leeway allowed; an internal identity that may live a day; limit-only mode refusing a token the MCP gateway accepts; an identity minted for 24 hours; a private key readable by others accepted; keys that never go stale; key refresh not rate-limited; a refused person still charging the tenant's bucket; a dot segment not refused; an encoded slash not refused; a stale revocation copy trusted for ever; a token issued in the revocation second working; error details not allow-listed; revocation checked after the limiter; the limiter keyed on an unverified header; the limiter failing closed; read and cancel limited too; a duplicated `X-Forwarded-Uri` trusted; MCP limit-only mode refusing an invalid token itself; an unusable key set answering 401 about the token instead of 503.
+
+**Still unmeasured:** behaviour under load (the latency numbers are one connection, sequential), the web UI sign-in and the API consuming the identity (PR 2), a production identity provider, anything across hosts.
+
+**Size (task T053).** Hand-written lines changed (added plus deleted; `go.sum` and the three generated vector files, about 850 lines, are excluded). The plan estimated 1,500 to 2,000 for all of Part A; the first, single pull request came to about 9,250. At the maintainer's request it was split into three stacked pull requests by layer. **All three are still over the repository's ~1,000 ceiling**, and each description says so in its first paragraph.
+
+| Area | 1a verify and mint | 1b limit, revoke, serve | 1c stack and proof |
+|---|---|---|---|
+| Go code, image, registries | 1,947 | 1,486 | 0 |
+| Go tests | 1,607 | 1,815 | 0 |
+| Python scripts | 196 | 0 | 910 |
+| Python tests | 81 | 93 | 472 |
+| Deploy, CI, alerts, Makefile | 22 | 113 | 277 |
+| Docs and specs | 136 | 44 | 326 |
+| **Total** | **3,989** | **3,551** | **1,985** |
+
+(The columns add to a few lines more than the whole, about 9,500, because `tasks.md` changes in more than one of them.)
+
+**Why they are not smaller.** The code and its tests are almost the whole size, and half of that is tests, on purpose: this is the one component whose failure is a security failure, the constitution makes a hermetic test suite a principle, and the shared vectors, the clock-driven key tests and the table-driven refusal cases are long because each row is a case. The cuts are at package boundaries because that is the only place a pull request still compiles and passes its own tests alone; cutting inside a package would ship a half package, or code no test reaches yet.
+
+**Where the next cut would go, if a reviewer wants smaller pieces.** 1a: the verifier and the key cache (`internal/extjwt`, about 1,200 lines with tests) against the identity keys, configuration and logging. 1b: the limiter and revocation against the HTTP server and the binary. 1c: the wiring (compose, Caddy, the Casdoor applications) against the three scripts (smoke, latency, mutation list; 864 lines). The stack tests of 1c and the smoke are the proof of the wiring, so the scripts are the last thing to split off.

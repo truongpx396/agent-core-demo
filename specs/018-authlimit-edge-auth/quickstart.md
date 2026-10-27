@@ -44,6 +44,10 @@ Expected: `docker compose ps` shows two `authlimit` containers healthy; `https:/
 | Q10 | Call `/ecorp/mcp` with a valid token until limited; call it with no token | 429 after the limit; no token → the MCP gateway's own 401 with its metadata |
 | Q11 | Search all service logs for the access token, the refresh token, the private key | no match |
 
+The smoke check's stages: `identity` (Q1), `refusals` (Q2), `spoofing` (Q3), `limits` (Q4), `mcp` (Q10), `revoke` (Q9), `logs` (Q11); with `ARGS=--all` also `observe` (Q5), `replica` (Q6), `rotate` (Q8), `outage` (Q7). Run one with `make authlimit-smoke ARGS="--stages revoke"`. The destructive ones restart authlimit (and for `outage` stop Casdoor) and put everything back.
+
+Measured on a development stack (research R21): all of the above pass; the check adds about half a millisecond; revocation reaches every replica in about 3 s; a killed replica fails no request.
+
 ## 4. The API behind the front door (PR 2)
 
 ```bash
