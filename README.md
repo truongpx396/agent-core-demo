@@ -232,12 +232,17 @@ export of each model call, their reconciliation, and operator CLIs. It imports n
 | `GET /usage` | The caller's tenant cost, `budgets` (every spend limit that applies, with spent, remaining and `resets_at`) and `credits` (the wallet, or `null` when credits are off or the tenant has none) |
 | `POST /ingest/upload` · `GET /ingest/stream/{job_id}` | Upload PDF/DOCX/text to the ingest worker · follow its progress |
 
-Interactive docs at `/docs`. Every request needs `X-Tenant-Id` and `X-Principal-Id` (422 without them),
-stamped into a `SecurityCtx` that scopes everything the request can see or touch. `X-Domain` is
-optional (default `ecorp`; an unknown value is a 422) and routes the turn to that domain's worker pool.
-**These headers are a trusted seam for a gateway to fill in, not authentication.**
+Interactive docs at `/docs`. Who is calling is stamped into a `SecurityCtx` that scopes everything the request can see or touch, and
+`AUTH_MODE` decides where it comes from. In **`identity`** (the default) the API trusts only the signed `X-Internal-Identity` that the
+authlimit front door ("Front door: authlimit" under "MCP, crawling and the sandbox" below) adds to a request it has verified, checks it against the front door's published keys
+(`AUTHLIMIT_KEYS_URL`, required: the API does not start without it), and **ignores** `X-Tenant-Id` / `X-Principal-Id`; a request with no valid
+identity is a 401, and a 503 when the keys cannot be confirmed. In **`headers`** mode (what `.env.example` selects, for running the API alone on
+your machine and for the tests) every request needs `X-Tenant-Id` and `X-Principal-Id` (422 without them) and they are trusted as sent: **never
+use it where a stranger can reach the API**; it is announced at startup, in the gauge `agent_api_auth_mode` and by the alert `ApiHeaderAuthMode`.
+`X-Domain` is optional (default `ecorp`; an unknown value is a 422) and routes the turn to that domain's worker pool.
 
 ```bash
+# header mode (AUTH_MODE=headers, the .env.example default):
 curl -s -N -X POST http://localhost:8000/chat/stream/queued \
   -H "Content-Type: application/json" \
   -H "X-Tenant-Id: ecorp" -H "X-Principal-Id: demo-user" \
@@ -360,7 +365,7 @@ The call is shaped like the TypeSafe **Jev / System One** decision interface (`{
   ```
 
   Nothing that writes is behind it: both tools are read-only, and the sandbox is deliberately not reachable this way (an outside caller does not pass through the agent's approval gate). Not connected to Claude Code itself; production DNS/TLS and an identity provider are not built. Per-tenant rate limits and token revocation now come from the **authlimit** service in front of it (next bullet). Contract, measurements and the full list of gaps: `specs/017-mcp-gateway/`.
-- **Front door: authlimit** (`services/authlimit/`, specs/018): a small Go service that Caddy asks about every request (`forward_auth`) before it reaches the chat API or the MCP routes. It verifies the Casdoor access token **offline** (signature against cached keys, algorithm from an allow-list, issuer, audience, expiry, scope, a lifetime cap), charges a **token bucket per tenant and per person** in Redis, refuses **revoked** people, and answers with a **30-second Ed25519-signed identity** that Caddy copies onto the request after removing the caller's `Authorization` header. Two replicas by default behind Caddy; state is only Redis, so any number works. On the MCP routes it runs **limit-only**: the MCP gateway still verifies the token itself (the MCP specification requires it), so a request with no or a bad token is passed through and answered by the gateway's own 401. Fails **closed** where it is a security check (no usable keys, an untrustworthy revocation list: 503) and **open** where it is a protection (the limiter's store down: served, counted, alerted). This is PR 1 of two: **the Python API does not use the identity yet** (PR 2), so the chat-API site fronts a stub that echoes what it received.
+- **Front door: authlimit** (`services/authlimit/`, specs/018): a small Go service that Caddy asks about every request (`forward_auth`) before it reaches the chat API or the MCP routes. It verifies the Casdoor access token **offline** (signature against cached keys, algorithm from an allow-list, issuer, audience, expiry, scope, a lifetime cap), charges a **token bucket per tenant and per person** in Redis, refuses **revoked** people, and answers with a **30-second Ed25519-signed identity** that Caddy copies onto the request after removing the caller's `Authorization` header. Two replicas by default behind Caddy; state is only Redis, so any number works. On the MCP routes it runs **limit-only**: the MCP gateway still verifies the token itself (the MCP specification requires it), so a request with no or a bad token is passed through and answered by the gateway's own 401. Fails **closed** where it is a security check (no usable keys, an untrustworthy revocation list: 503) and **open** where it is a protection (the limiter's store down: served, counted, alerted). The Python API verifies that identity (`AUTH_MODE=identity`, `app/core/internal_identity.py`; see "HTTP API" above); until the local chat-API site is repointed at the API (a later part of spec 018's PR 2) it still fronts a stub that echoes what it received.
 
   ```bash
   make authlimit-test           # go vet + the service's own tests with the race detector (needs Go; no Docker)
@@ -558,7 +563,7 @@ The compose files live in `deploy/compose/` but resolve their paths and `.env` f
 ```
 app/
   agent/       the agent: graph/ (LangGraph), runtime/ (turns, streaming, sessions), tools/ (built-ins, catalogs, run_subagent), cost/ (usage meter, spend caps), manifest.py
-  api/         FastAPI app (main.py mounts routers/: chat, ingest, usage, system), deps.py (identity headers), schemas, health, the webhook rate limit, built-in web UI (static/index.html)
+  api/         FastAPI app (main.py mounts routers/: chat, ingest, usage, system), deps.py (who is calling, by `AUTH_MODE`), identity.py (the verifier and the 401/503 answer), schemas, health, the webhook rate limit, built-in web UI (static/index.html)
   channels/    CLI (chat.py) and Telegram gateway
   core/        what every package uses: config, security (SecurityCtx/Policy), metrics, errors, scrubbing, SQL pool, LLM gateway contract, tool timeout and idempotency
   domains/     support/, ops/, sales/ (store + tools + domain each), registry, shared sandbox tools
@@ -588,7 +593,7 @@ promptfoo/ garak/ loadtest/   prompt checks (with the repo's only package.json a
 **Not built** (reasoning for each is in [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md#extending-further)):
 
 - **Crash-restart and autoscaling for workers.** Workers shut down gracefully and compose can `--scale` them, but nothing restarts a crashed one or scales on queue depth.
-- **Real authentication.** The identity headers are a seam, not authentication.
+- **Real authentication in the shipped production proxy.** The API verifies a signed identity (`AUTH_MODE=identity`) and the front door that issues it exists and runs in the local stack; the production Caddyfile and compose are not wired to it yet, so a production deployment still has no authentication in front of the API.
 - **Per-action authorization within a tenant.** Every principal in a tenant has the same write capability.
 - **Several domains in one process.** Each domain runs as its own process; only the API routes per request.
 - **A vision model that also does tool calling.** Small local vision models do one or the other; the `vision` alias is a slot, not a verified default. Moderation screens text only, and only the HTTP API accepts images.

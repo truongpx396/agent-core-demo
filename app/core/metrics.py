@@ -744,6 +744,15 @@ agent_api_identity_key_refresh_total = Counter(
     ["result"],
 )  # result: ok | error
 
+agent_api_auth_mode = Gauge(
+    "agent_api_auth_mode",
+    "Which way the API learns who is calling (AUTH_MODE, specs/018): 1 for the mode in force and 0 for the other, one series each. `identity` "
+    "trusts only the signed identity the front door adds; `headers` trusts X-Tenant-Id and X-Principal-Id as any client sends them and must "
+    "never face the internet: alert ApiHeaderAuthMode. The API re-sets it every minute (the collector forgets a series 5 minutes after its "
+    "last update, so a value set once at startup would vanish).",
+    labelnames=["mode"],
+)  # mode: identity | headers
+
 agent_team_channel_notify_total = Counter(
     "agent_team_channel_notify_total",
     "app/domains/notify.py::post_to_team_channel attempts by sink and outcome. "
