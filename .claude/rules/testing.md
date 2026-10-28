@@ -14,7 +14,7 @@ Constitution Principle VII applies. The default suite must stay hermetic and fas
   marked tier by default; an explicit `-m` on the command line overrides it (it does not AND).
 - `tests/conftest.py` has these autouse guards: `mock_search_docs`, `mock_semantic_cache`,
   `mock_ml_moderation`, `mock_appdata_postgres`, `no_real_tracing`, `fixed_embedding_identity`, `no_real_qdrant`,
-  `mock_classification` (the model router's /v1/decide call), and `header_auth_mode` (the API's default is identity mode; the hermetic suite says header mode once, and a test of identity mode asks for `identity_mode`). A test's result must not depend on which
+  `mock_classification` (the model router's /v1/decide call), and `header_auth_mode` (the API's default is identity mode; the hermetic suite says header mode once, and a test of identity mode asks for `identity_mode`; it patches the pytest process only, so a fixture that starts the API as a SUBPROCESS puts `AUTH_MODE=headers` in the child's own environment, which `tests/core/test_api_launches_name_the_auth_mode.py` enforces). A test's result must not depend on which
   containers happen to be running. If you add a live-service call on the turn path, add an
   autouse mock for it there. Inject a specific fake with `GraphDeps(search_docs=fake)` or the
   node-level `make_*_node(fake)` factories — that bypasses the default mock.

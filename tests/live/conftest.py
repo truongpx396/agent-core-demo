@@ -205,6 +205,10 @@ def _build_app_env(
         # guaranteed-to-fail noise (and a little real overhead) for as
         # long as this session-scoped fixture stays alive.
         "OTEL_EXPORTER_OTLP_ENDPOINT": "",
+        # The API's default is identity mode (AUTH_MODE, app/api/deps.py): it trusts only a signed identity from the front door, and its lifespan
+        # refuses to start without AUTHLIMIT_KEYS_URL. This fixture talks to the API directly, with X-Tenant-Id / X-Principal-Id, and has no front
+        # door, so it says header mode out loud. Without this line the subprocess exits with code 3 before it is ready (CI, #208).
+        "AUTH_MODE": "headers",
     }
     if embed_model:
         env["EMBED_MODEL"] = embed_model
