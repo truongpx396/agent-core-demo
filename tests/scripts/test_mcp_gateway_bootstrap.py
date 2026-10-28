@@ -30,11 +30,14 @@ class FakeCasdoor:
         self.users.append((organization, name))
         return "generated-password"
 
-    def ensure_application(self, name, organization, scope, description, redirect_uris, token_hours, kind="MCP") -> str:
+    def ensure_application(self, name, organization, scope, description, redirect_uris, token_hours, kind="MCP", client_id=None) -> str:
         self.applications.append(
-            {"name": name, "organization": organization, "scope": scope, "redirect_uris": redirect_uris, "token_hours": token_hours, "kind": kind}
+            {
+                "name": name, "organization": organization, "scope": scope, "redirect_uris": redirect_uris, "token_hours": token_hours,
+                "kind": kind, "client_id": client_id,
+            }
         )
-        return f"client-{name}"
+        return client_id or f"client-{name}"
 
 
 @pytest.fixture
@@ -91,6 +94,16 @@ def test_the_chat_api_gets_one_public_client_per_tenant_with_its_own_scope(casdo
     assert apps["api-other-co"]["organization"] == "other-co", "the application belongs to the tenant's organization: that is what puts `owner` in the token"
 
 
+def test_the_chat_apis_clients_have_the_id_the_web_page_looks_for_and_the_mcp_ones_keep_a_generated_one(casdoor):
+    from app.api.web_auth import CLIENT_ID_PREFIX
+
+    apps = by_name(casdoor(["--tenant", "ecorp", "--tenant", "other-co"]))
+
+    for tenant in ("ecorp", "other-co"):
+        assert apps[f"api-{tenant}"]["client_id"] == f"{CLIENT_ID_PREFIX}{tenant}", "the page builds this id from what the person types"
+    assert apps["mcp-ecorp"]["client_id"] is None and apps["mcp-ops"]["client_id"] is None, "a pre-registered MCP client keeps its generated id"
+
+
 def test_the_operators_organization_gets_no_chat_api_application(casdoor):
     # The operations team uses the MCP operations server only; a chat client for them would be an unrequested way in.
     assert not [a for a in casdoor().applications if a["organization"] == "ops-team" and a["name"].startswith("api-")]
@@ -116,7 +129,8 @@ def test_the_output_names_each_clients_id_and_the_lifetime(casdoor, capsys):
     casdoor(["--token-hours", "12"])
 
     out = capsys.readouterr().out
-    assert "client-api-ecorp" in out
+    assert "ecorp: client id api-ecorp" in out, "the chat API's client id is the one the web page builds from the organization"
+    assert "client-mcp-ecorp" in out, "an MCP client still prints its generated id"
     assert "Access tokens last 12 hours" in out
     assert "make authlimit-revoke" in out
 
@@ -178,3 +192,14 @@ def test_a_rerun_keeps_the_client_id_and_the_secret_and_applies_the_new_lifetime
     assert client_id == "kept-id", "a client already registered with the id must keep working"
     assert body["clientId"] == "kept-id" and body["clientSecret"] == "kept-secret"
     assert body["expireInHours"] == 168, "changing the setting and re-running updates the lifetime"
+
+
+def test_a_named_client_id_is_used_on_creation_and_replaces_the_kept_one_on_a_rerun():
+    created = RecordingCasdoor()
+    assert created.ensure_application("api-ecorp", "ecorp", "api:chat", "chat API", ["https://api.localhost:8443/"], 168, kind="API", client_id="api-ecorp") == "api-ecorp"
+    assert created.writes[0][1]["clientId"] == "api-ecorp"
+
+    existing = {"clientId": "old-random-id", "clientSecret": "kept-secret", "expireInHours": 1, "name": "api-ecorp", "owner": "admin"}
+    rerun = RecordingCasdoor(existing)
+    assert rerun.ensure_application("api-ecorp", "ecorp", "api:chat", "chat API", ["https://api.localhost:8443/"], 168, kind="API", client_id="api-ecorp") == "api-ecorp"
+    assert rerun.writes[0][1]["clientId"] == "api-ecorp" and rerun.writes[0][1]["clientSecret"] == "kept-secret", "the id changes, the secret does not"

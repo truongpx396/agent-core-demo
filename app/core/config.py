@@ -554,6 +554,12 @@ class Settings(BillingSettings):
     # failed refresh is an outage). The cost of waiting is that a key withdrawn for compromise stays trusted for this long; the benefit is that
     # one dead authlimit replica behind a round-robin name does not turn every request into a 503. Past it the API refuses (503), never guesses.
     authlimit_keys_stale_grace_seconds: int = Field(default=600, ge=0, le=3600)
+    # The built-in web page's sign-in (app/api/static/auth.js; identity mode only): where the authorization server is (the `iss` a token carries),
+    # the audience the page asks the token for (RFC 8707 `resource`; the front door refuses a token for any other), and the scope. They must be
+    # what the front door was started with (AUTHLIMIT_ISSUER, AUTHLIMIT_AUDIENCE, AUTHLIMIT_REQUIRED_SCOPE); the defaults are the local stack's.
+    web_auth_issuer: str = "https://auth.localhost:8443"
+    web_auth_audience: str = "https://api.localhost:8443"
+    web_auth_scope: str = "api:chat"
 
     # POST /ingest/upload's per-file cap, enforced before any MinIO write —
     # an unbounded upload is a memory/storage exhaustion vector.

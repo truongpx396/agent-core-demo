@@ -795,6 +795,9 @@ services:
       # in-network name (no dependency on it: the API starts first and answers 503 until the keys can be fetched, instead of not starting).
       AUTH_MODE: ${AUTH_MODE:-headers}
       AUTHLIMIT_KEYS_URL: ${AUTHLIMIT_KEYS_URL:-http://authlimit:8080/internal/jwks.json}
+      # What the built-in page signs in against: the SAME names and defaults the authlimit service reads, so one override changes both.
+      WEB_AUTH_ISSUER: ${AUTHLIMIT_ISSUER:-https://auth.localhost:8443}
+      WEB_AUTH_AUDIENCE: ${AUTHLIMIT_AUDIENCE:-https://api.localhost:8443}
     extra_hosts:
       - "host.docker.internal:host-gateway"   # so OTEL_EXPORTER_OTLP_ENDPOINT resolves on native Linux Docker too
     depends_on:
