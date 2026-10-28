@@ -111,15 +111,21 @@ provably safe, and if so, exactly HOW to re-run it:
   results stream and archived to a dead-letter stream
   (`queue.py::dead_letter_stream_key`) for inspection/manual replay.
 
-`astream_events_turn_unattended` (auto-declines any pause) stays available
-for a genuinely fire-and-forget caller; nothing in this codebase routes
-through this queue today.
+Who publishes: the HTTP API (`POST /chat/stream/queued`, `/chat/resume`,
+`/chat/cancel`), the CLI (`app/channels/chat.py`) and the Telegram channel
+(`app/channels/telegram.py`) — the last two through `app/job_queue/producer.py`.
+No front door runs the graph in its own process. A `"turn"` carries
+`payload["unattended"]` when its caller has nobody to show an approval to (the
+Telegram channel): `_process_turn` then drives `astream_events_turn_unattended`
+(auto-declines any pause, never approves) instead of `astream_events_turn`, and
+`_process_turn_continue` does the same with its unattended counterpart, so the
+flag holds through a reclaim.
 
 Run with: `python -m app.job_queue.agent_worker` (Makefile's `agent-worker`
 target, or `agent-worker-support`/`-ops`/`-sales`). Needs `make up`'s
-Redis; not started by `make up`/`make serve` — an opt-in path alongside the
-direct in-process `POST /chat/stream` (producer half:
-`POST /chat/stream/queued`).
+Redis; not started by `make up`/`make serve`. Every chat front door needs
+one running for its domain — `make chat` and `make telegram` included — or
+its turn gets the "is an agent-worker running for this domain?" error.
 """
 import asyncio
 import json
@@ -136,8 +142,10 @@ from app.agent.graph.messages import is_retry_artifact, is_user_message
 from app.agent.runtime.core import close_checkpointer_pool, init_graph_async
 from app.agent.runtime.stream import (
     astream_events_continue_turn,
+    astream_events_continue_turn_unattended,
     astream_events_resume,
     astream_events_turn,
+    astream_events_turn_unattended,
     cancel_run,
 )
 from app.core import metrics, sql_store
@@ -228,19 +236,28 @@ async def _process_turn(client, request_id: str, payload: dict, release_lock) ->
     async def cancel_check() -> bool:
         return await is_cancelled(client, thread_id)
 
-    await _publish_events(
-        client,
-        request_id,
-        astream_events_turn(
+    if payload.get("unattended"):
+        # A caller with nobody to show an approval to (the Telegram channel): a pause is
+        # declined here, so the channel only ever sees a finished turn and the conversation is
+        # never left paused (constitution Principle II). No `cancel_check`: no HTTP caller can
+        # name an unattended thread, so there is no /chat/cancel to poll for.
+        events = astream_events_turn_unattended(
+            payload["text"],
+            thread_id,
+            payload["ctx"],
+            require_approval=payload.get("require_approval", False),
+            images=payload.get("images") or None,
+        )
+    else:
+        events = astream_events_turn(
             payload["text"],
             thread_id,
             payload["ctx"],
             require_approval=payload.get("require_approval", False),
             images=payload.get("images") or None,
             cancel_check=cancel_check,
-        ),
-        release_lock,
-    )
+        )
+    await _publish_events(client, request_id, events, release_lock)
 
 
 async def _process_turn_continue(client, request_id: str, payload: dict, release_lock) -> None:
@@ -259,12 +276,14 @@ async def _process_turn_continue(client, request_id: str, payload: dict, release
     async def cancel_check() -> bool:
         return await is_cancelled(client, thread_id)
 
-    await _publish_events(
-        client,
-        request_id,
-        astream_events_continue_turn(thread_id, payload["ctx"], cancel_check=cancel_check),
-        release_lock,
-    )
+    if payload.get("unattended"):
+        # The retry of an unattended turn is unattended too: `republish_job` keeps the flag,
+        # and a continuation that reached an approval gate would otherwise end the job at an
+        # `approval_required` its channel cannot answer.
+        events = astream_events_continue_turn_unattended(thread_id, payload["ctx"])
+    else:
+        events = astream_events_continue_turn(thread_id, payload["ctx"], cancel_check=cancel_check)
+    await _publish_events(client, request_id, events, release_lock)
 
 
 async def _process_resume(client, request_id: str, payload: dict, release_lock) -> None:

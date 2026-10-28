@@ -90,6 +90,7 @@ async def test_a_turn_request_round_trips_from_producer_through_a_real_consumer_
             "ctx": TEST_CTX,
             "require_approval": False,
             "images": [],
+            "unattended": False,
         }
         await client.xack(queue.requests_stream_key(), queue.CONSUMER_GROUP, entry_id)
 
