@@ -2,7 +2,7 @@
 
 The model behind the gateway's `chat` alias is chosen by what it can do with THIS app's tools, and the setting that
 decides it is easy to get wrong without noticing. Langfuse trace `1e46b2c8` (2026-10-21): with `qwen2.5:3b` at
-`repeat_penalty: 1.3`, 11 of 22 prompts below came back from Ollama as a reply with output tokens, no text and no tool
+`repeat_penalty: 1.3`, 11 of the 22 prompts it then held came back from Ollama as a reply with output tokens, no text and no tool
 call (the model wrote `{"name": "remember", "arguments": {"content: "..."}}`, a missing quote, and Ollama's parser
 discards a call it cannot read without a word). Nothing in the graph can tell that from an empty reply. This script can.
 
@@ -12,9 +12,11 @@ the options the chosen alias sets in `deploy/litellm/litellm-config.yaml` (`num_
 Temperature 0 makes one run per prompt the whole distribution. Each reply is put in one class:
 
     ok                     the right tool with arguments that satisfy its schema (or, for a no-tool prompt, plain text)
+                           (and, where a prompt names them, the arguments the QUESTION asks for: a call can satisfy the schema and still
+                           be the wrong one, e.g. a job title typed into a name filter)
     DROPPED                output tokens but no text and no tool call: the case above
     prose_instead_of_call  text where a call was needed (the garbled-JSON-as-text form included)
-    wrong_tool / bad_args / unneeded_call / empty
+    wrong_tool / bad_args (a schema violation, or the wrong values for the question) / unneeded_call / empty
 
     python -m scripts.toolcall_probe                          # the `chat` alias exactly as configured
     python -m scripts.toolcall_probe --alias chat-strong
@@ -84,6 +86,10 @@ def looped(done_reason: str | None, text: str) -> bool:
 class Probe:
     text: str
     expected: str | None  # the tool a good reply calls, or None when no tool is needed
+    # The values a good call carries, for the keys that matter (others are not compared): a string case-insensitively, None for "not
+    # narrowed" (null or left out). A call can satisfy the schema and still answer a different question: CI's qwen2.5:3b typed the job title
+    # "Support Lead" into `name_contains`, a valid call that matched nobody, and the aggregate count of OK replies never showed it.
+    args: dict | None = None
 
 
 PROBES: tuple[Probe, ...] = (
@@ -106,6 +112,10 @@ PROBES: tuple[Probe, ...] = (
     Probe("who works in engineering?", "query_employees"),
     Probe("list the people in the Sales department", "query_employees"),
     Probe("is there anyone named Maria?", "query_employees"),
+    # A ROLE is not a name: the right call narrows by department and leaves the name alone (the live gate went red on this, 2026-10-24).
+    Probe("who is the Support Lead?", "query_employees", {"department": "Support", "name_contains": None}),
+    Probe("who is the Engineering Manager?", "query_employees", {"department": "Engineering", "name_contains": None}),
+    Probe("is there anyone named Dana at Ecorp?", "query_employees", {"name_contains": "Dana"}),
     Probe("hi", None),
     Probe("thanks!", None),
     Probe("what is the capital of France?", None),
@@ -148,6 +158,21 @@ def valid_args(schema: dict, args: object) -> bool:
     return True
 
 
+def args_match(expected: dict, args: object) -> bool:
+    """Are these the arguments the question asks for? Only the keys the probe names are compared: a string case-insensitively, None
+    meaning "not narrowed" (null, an empty string, or left out)."""
+    if not isinstance(args, dict):
+        return False
+    for key, want in expected.items():
+        got = args.get(key)
+        if want is None:
+            if got not in (None, ""):
+                return False
+        elif str(got).strip().lower() != str(want).lower():
+            return False
+    return True
+
+
 def classify(probe: Probe, message: dict, eval_count: int, schemas: dict[str, dict]) -> str:
     """The class of one reply, from Ollama's `message` and `eval_count` (output tokens generated)."""
     calls = message.get("tool_calls") or []
@@ -158,7 +183,9 @@ def classify(probe: Probe, message: dict, eval_count: int, schemas: dict[str, di
             return UNNEEDED
         if name != probe.expected:
             return WRONG_TOOL
-        return OK if valid_args(schemas.get(name, {}), args) else BAD_ARGS
+        if not valid_args(schemas.get(name, {}), args):
+            return BAD_ARGS
+        return OK if probe.args is None or args_match(probe.args, args) else BAD_ARGS
     if not text:
         return DROPPED if eval_count > 0 else EMPTY
     return OK if probe.expected is None else PROSE

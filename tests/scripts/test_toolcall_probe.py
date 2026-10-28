@@ -66,7 +66,48 @@ class TestClassify:
         assert tp.classify(REMEMBER, text, 8, SCHEMAS) == tp.PROSE
 
 
+class TestTheArgumentsAreTheOnesTheQuestionAsksFor:
+    """A call can satisfy the schema and still answer a different question. The live gate went red on 2026-10-24 because qwen2.5:3b
+    answered "Who is Ecorp's Support Lead?" with `{"name_contains": "Support Lead", "department": null}`: valid, matches nobody, and
+    counted as an OK reply, so the probe's pass rate (13 to 14 of 19 in #194) never showed it."""
+
+    ROLE = tp.Probe("who is the Support Lead?", "query_employees", {"department": "Support", "name_contains": None})
+
+    def test_a_job_title_typed_into_the_name_filter_is_bad_args_though_the_schema_accepts_it(self):
+        wrong = _call("query_employees", {"department": None, "name_contains": "Support Lead"})
+
+        assert tp.valid_args(SCHEMAS["query_employees"], wrong["tool_calls"][0]["function"]["arguments"]), "premise: the schema accepts it"
+        assert tp.classify(self.ROLE, wrong, 28, SCHEMAS) == tp.BAD_ARGS
+
+    def test_the_department_with_no_name_filter_is_ok_in_any_case_and_with_the_nullable_key_left_out(self):
+        assert tp.classify(self.ROLE, _call("query_employees", {"department": "Support", "name_contains": None}), 27, SCHEMAS) == tp.OK
+        assert tp.classify(self.ROLE, _call("query_employees", {"department": "Support"}), 21, SCHEMAS) == tp.OK
+        assert tp.classify(self.ROLE, _call("query_employees", {"department": "Support", "name_contains": ""}), 27, SCHEMAS) == tp.OK
+
+    def test_a_name_filter_where_none_was_wanted_and_the_wrong_department_are_both_bad_args(self):
+        assert tp.classify(self.ROLE, _call("query_employees", {"department": "Support", "name_contains": "Lead"}), 28, SCHEMAS) == tp.BAD_ARGS
+        assert tp.classify(self.ROLE, _call("query_employees", {"department": "Sales", "name_contains": None}), 27, SCHEMAS) == tp.BAD_ARGS
+
+    def test_only_the_keys_a_probe_names_are_compared_and_a_string_case_insensitively(self):
+        named = tp.Probe("is there anyone named Dana at Ecorp?", "query_employees", {"name_contains": "Dana"})
+
+        assert tp.classify(named, _call("query_employees", {"department": "Support", "name_contains": "dana"}), 25, SCHEMAS) == tp.OK
+        assert tp.classify(named, _call("query_employees", {"department": None, "name_contains": "Maria"}), 25, SCHEMAS) == tp.BAD_ARGS
+
+    def test_a_probe_with_no_expected_arguments_is_judged_on_the_schema_alone_as_before(self):
+        assert tp.classify(tp.Probe("who works in engineering?", "query_employees"), _call("query_employees", {"department": "Sales"}), 21, SCHEMAS) == tp.OK
+
+
 class TestTheProbeSet:
+    def test_it_asks_a_role_question_and_expects_a_department_with_no_name_filter(self):
+        """The question the live gate got wrong. Deleting it would put the blind spot back."""
+        roles = [p for p in tp.PROBES if p.expected == "query_employees" and p.args and p.args.get("department") and "name_contains" in p.args]
+
+        assert roles and all(p.args["name_contains"] is None for p in roles)
+
+    def test_it_asks_a_name_question_and_expects_that_name(self):
+        assert any(p.args and p.args.get("name_contains") for p in tp.PROBES)
+
     def test_every_tool_it_expects_is_one_the_app_really_sends(self):
         """A renamed or removed tool must fail here, not turn a prompt into a permanent miss."""
         expected = {p.expected for p in tp.PROBES if p.expected}
@@ -112,6 +153,7 @@ def _ok_reply(probe: tp.Probe) -> dict:
         spec = schema["properties"][key]
         nullable = any(branch.get("type") == "null" for branch in spec.get("anyOf", []))
         args[key] = None if nullable else (spec.get("enum") or ["x"])[0]
+    args.update(probe.args or {})  # the values the question asks for, where the probe names them
     return {"message": _call(probe.expected, args), "eval_count": 20}
 
 
