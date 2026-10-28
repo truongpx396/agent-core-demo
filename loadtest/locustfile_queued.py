@@ -56,9 +56,10 @@ against the actual source before being ruled out, not assumed:
     either (its own docstring: a trusted operational caller, never the
     graph) — genuinely unreachable from outside the process.
   - agent_unattended_pause_total: only astream_events_turn_unattended
-    increments it, and its one caller in the whole app is
-    app/channels/telegram.py — the HTTP API's queued path always runs the
-    interactive astream_events_turn instead, by design.
+    increments it, and the worker runs that only for a job published with
+    `unattended=True` — which only app/channels/telegram.py does. The HTTP
+    API's queued path always publishes an attended job, which the worker runs
+    through the interactive astream_events_turn instead, by design.
   - agent_tool_errors_total: fake_llm_server.py's calculator simulator only
     ever emits a clean "{a}{op}{b}" expression, and the REAL calculator
     tool (app/agent/tools/builtin.py::_calculator_impl) catches every exception

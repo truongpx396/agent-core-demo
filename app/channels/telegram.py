@@ -1,9 +1,13 @@
 """Telegram bot channel (pattern 42) — a fourth interface alongside the CLI,
 the HTTP API, and the built-in web UI. Long-polls Telegram's `getUpdates`
-(no public webhook needed) and drives the same
-`runtime/stream.py::astream_events_turn_unattended()` every queued worker
-turn runs through — just a new front door onto it, collecting streamed
-events into one final reply since Telegram has no token-streaming UX.
+(no public webhook needed) and publishes each message as an UNATTENDED turn onto the
+domain's requests stream (`app/job_queue/producer.py`, pattern 43), where an
+`agent_worker.py` runs it through `runtime/stream.py::astream_events_turn_unattended()` —
+just a new front door onto the queue every HTTP turn already uses. This process collects
+the events the worker publishes back into one final reply, since Telegram has no
+token-streaming UX. It never runs the graph itself, so it holds no checkpointer pool and
+needs `make up`'s Redis and a worker for its domain (`make agent-worker`, or
+`agent-worker-support`/`-sales`).
 
 Requires `TELEGRAM_BOT_TOKEN` (create via @BotFather) — refuses to start
 rather than silently no-op when unset, same fail-closed discipline as
@@ -12,27 +16,24 @@ reaches the public internet, unlike the rest of the fully-local stack.
 
 ## A generalized gateway, not an Ecorp-only one
 
-`AGENT_DOMAIN` (default `"ecorp"`) picks which domain this process's shared
-graph singleton boots against — `AGENT_DOMAIN=support python -m
-app.channels.telegram` runs the support copilot, `AGENT_DOMAIN=sales` the
-sales concierge, unmodified. Each domain is still its own OS process (own
-bot token) — this is "which domain a process boots as," not the
-"several domains from one process" registry the Roadmap still lists as
-unbuilt (see app/agent/runtime/core.py::init_graph_async).
+`AGENT_DOMAIN` (default `"ecorp"`) picks which domain's worker pool this process's
+messages go to — `AGENT_DOMAIN=support python -m app.channels.telegram` runs the
+support copilot, `AGENT_DOMAIN=sales` the sales concierge, unmodified. Each domain is
+still its own OS process (own bot token) — this is "which domain a process serves," not
+the "several domains from one process" registry the Roadmap still lists as unbuilt.
 
 A WhatsApp gateway for the same domains would reuse
-`handle_message`/`astream_events_turn_unattended()` unchanged — only the
+`handle_message`/`stream_turn()` unchanged — only the
 transport differs (WhatsApp is webhook-based, not long-poll). Not built
 here: no WhatsApp Business credentials to verify it against.
 
-HITL: this channel has no interactive approve/reject UX —
-`astream_events_turn_unattended()` auto-declines a mandatory-capability-gate
-pause for callers with no human on the other end (repeatedly, up to
-`UNATTENDED_MAX_DECLINE_ROUNDS`, then cancels the run), so a mutating request
-never becomes a silent write and never leaves the conversation paused. The
-user always gets a visible reply: the model's own answer, an explicit "needs a
-person's approval" message, or — if a turn somehow produced no text at all —
-`_NO_REPLY_FALLBACK`. (`_send_message` sends NOTHING for an empty string, so
+HITL: this channel has no interactive approve/reject UX — the job is published with
+`unattended=True`, so the worker's `astream_events_turn_unattended()` auto-declines a
+mandatory-capability-gate pause (repeatedly, up to `UNATTENDED_MAX_DECLINE_ROUNDS`, then
+cancels the run), so a mutating request never becomes a silent write and never leaves the
+conversation paused. The user always gets a visible reply: the model's own answer, an
+explicit "needs a person's approval" message, or — if a turn somehow produced no text at
+all — `_NO_REPLY_FALLBACK`. (`_send_message` sends NOTHING for an empty string, so
 without that last guard an empty turn read as the bot ignoring the user.)
 
 Run with: `python -m app.channels.telegram` (Makefile's `telegram`/
@@ -47,15 +48,14 @@ from contextlib import aclosing
 import httpx
 import redis.asyncio as redis
 
-from app.agent.runtime.core import close_checkpointer_pool, init_graph_async
 from app.agent.runtime.sessions import TELEGRAM_THREAD_PREFIX
-from app.agent.runtime.stream import astream_events_turn_unattended
-from app.core import sql_store
+from app.core import metrics
 from app.core.config import AGENT_DOMAIN, DEFAULT_TENANT, TELEGRAM_BOT_TOKEN
 from app.core.logging_config import configure_logging
 from app.core.security import SecurityCtx
 from app.core.telemetry import configure_telemetry
 from app.domains.registry import resolve_domain
+from app.job_queue.producer import cancel_turn, stream_turn
 from app.job_queue.queue import get_client as get_redis_client
 
 logger = logging.getLogger(__name__)
@@ -140,15 +140,33 @@ async def _send_message(client: httpx.AsyncClient, chat_id: int, text: str) -> N
             )
 
 
-async def _run_turn(text: str, thread_id: str, ctx: SecurityCtx) -> tuple[str, list[dict]]:
-    """Drive astream_events_turn_unattended to completion and collect the one
-    final reply + citations this channel sends — built locally since this
-    channel needs one full reply per message, not the raw event stream."""
+def _dedup_key(update_id: int) -> str:
+    """What makes two deliveries of one Telegram update "the same submission".
+
+    The domain is part of it because the thread id is not: two bots (two domains, two
+    processes) talking to one person share `telegram:<chat id>`, and each bot numbers its
+    updates on its own, so an update id alone could collide across them and hand one bot the
+    other's reply."""
+    return f"telegram:{AGENT_DOMAIN}:update:{update_id}"
+
+
+async def _run_turn(
+    text: str, thread_id: str, ctx: SecurityCtx, *, dedup_key: str | None = None
+) -> tuple[str, list[dict]]:
+    """Publish the message as an unattended turn, wait for the worker's events, and collect the
+    one final reply + citations this channel sends — built locally since this channel needs
+    one full reply per message, not the raw event stream.
+
+    `dedup_key` is what keeps a redelivered update from becoming a second turn (see
+    `producer.stream_turn`): the turn outlives this process now, so replaying the message after
+    a crash would run it again rather than retry something that died with the channel."""
     parts: list[str] = []
     citations: list[dict] = []
     # `aclosing`: the `error` branch returns before the stream is exhausted, and a bare
     # `async for` leaves it to the event loop's finalizer to close what that return abandoned.
-    async with aclosing(astream_events_turn_unattended(text, thread_id, ctx)) as events:
+    async with aclosing(
+        stream_turn(text, thread_id, ctx, domain=AGENT_DOMAIN, unattended=True, dedup_key=dedup_key)
+    ) as events:
         async for event in events:
             kind = event["type"]
             if kind == "token":
@@ -157,12 +175,36 @@ async def _run_turn(text: str, thread_id: str, ctx: SecurityCtx) -> tuple[str, l
                 citations = event["items"]
             elif kind == "error":
                 return event["content"], []
+            elif kind == "approval_required":
+                return await _decline_pause(thread_id, ctx, event), []
     return "".join(parts), citations
 
 
-async def handle_message(client: httpx.AsyncClient, message: dict) -> None:
+async def _decline_pause(thread_id: str, ctx: SecurityCtx, event: dict) -> str:
+    """A job published as unattended should never end at a pause: the worker declines it. One
+    that does was run by a worker that predates the flag (a rolling deploy that upgraded this
+    channel first), which ran it as an ordinary turn. Nothing ran — the gate held — but the
+    conversation is left paused, and an unattended channel can never resolve a pause, so every
+    later message would be refused (pattern 8). So the channel cancels it itself rather than
+    depend on the worker's version, and says what the worker's own ceiling message says."""
+    names = ", ".join(sorted({tc.get("name", "?") for tc in event.get("tool_calls", [])})) or "an action"
+    metrics.agent_unattended_job_paused_total.inc()
+    logger.warning("telegram_unattended_job_paused", extra={"thread_id": thread_id, "tools": names})
+    try:
+        await cancel_turn(thread_id, ctx, domain=AGENT_DOMAIN)
+    except Exception as exc:  # noqa: BLE001 - the person still gets the reply below; a cancel that did not land leaves the pause, which the operator sees in this warning
+        logger.warning("telegram_pause_cancel_failed", extra={"error_class": type(exc).__name__})
+    return f"That needs a person's approval ({names}), which this channel can't provide — so it wasn't done."
+
+
+async def handle_message(
+    client: httpx.AsyncClient, message: dict, update_id: int | None = None
+) -> None:
     """Process one Telegram `message` update end to end: resolve thread/ctx,
     run the turn, and reply.
+
+    `update_id` (the update this message arrived in) makes the turn idempotent across a
+    redelivery; without it every call is a new turn.
 
     Non-text messages (photos, stickers, voice, ...) are silently skipped —
     out of scope for this channel.
@@ -183,7 +225,12 @@ async def handle_message(client: httpx.AsyncClient, message: dict) -> None:
     except Exception:  # noqa: BLE001, S110 - a typing indicator is cosmetic, never worth failing over
         pass
 
-    reply_text, citations = await _run_turn(text, thread_id, ctx)
+    reply_text, citations = await _run_turn(
+        text,
+        thread_id,
+        ctx,
+        dedup_key=None if update_id is None else _dedup_key(update_id),
+    )
     if not reply_text.strip():
         reply_text = _NO_REPLY_FALLBACK
     await _send_message(client, chat_id, _format_reply(reply_text, citations))
@@ -200,21 +247,29 @@ async def run() -> None:
     still means that one message gets redelivered and re-handled on
     restart (a duplicate reply) — accepted as the right tradeoff over the
     alternative (persist BEFORE handling), which would silently drop a
-    user's message forever if the crash happened while handling it.
-    Sequential is a deliberate demo-scope choice; a real deployment fanning
-    out to many concurrent chats would want a worker pool.
+    user's message forever if the crash happened while handling it. The
+    redelivered message is not a second TURN, though: `handle_message` keys the
+    submission by update id (`producer.stream_turn`'s `dedup_key`), so within
+    `RESULTS_STREAM_TTL_SECONDS` it reads the first attempt's results instead of
+    publishing again — still possibly a second copy of the reply, never a
+    second model call or a second question in the thread.
+
+    Sequential is a deliberate demo-scope choice, and a real limit now that
+    the turns themselves run on a worker pool: the pool can run many chats at
+    once, but this loop waits for one reply before it starts the next, so one
+    slow turn delays every other chat served by this process. Fanning out
+    would need per-chat ordering and an offset that only advances past a
+    contiguous run of finished updates; not built.
     """
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError(
             "TELEGRAM_BOT_TOKEN is not set — see app/channels/telegram.py's module docstring"
         )
 
-    manifest, domain = resolve_domain(AGENT_DOMAIN)
+    # Fails loud on a typo'd AGENT_DOMAIN, before a stream no worker pool reads is ever
+    # published to. The graph itself is built by the worker, not here.
+    manifest, _ = resolve_domain(AGENT_DOMAIN)
     logger.info("telegram_channel_domain", extra={"domain": manifest.name})
-    # Opens the durable checkpointer on THIS loop, against whichever domain
-    # AGENT_DOMAIN resolved to — it must be bound to the same loop driving
-    # it (see app/agent/runtime/core.py).
-    await init_graph_async(manifest=manifest, domain=domain)
     redis_client = get_redis_client()
     offset = await _load_offset(redis_client, AGENT_DOMAIN)
 
@@ -245,18 +300,13 @@ async def run() -> None:
             for update in updates:
                 message = update.get("message")
                 if message:
-                    await handle_message(client, message)
+                    await handle_message(client, message, update_id=update["update_id"])
                 offset = update["update_id"] + 1
                 await _save_offset(redis_client, AGENT_DOMAIN, offset)
 
+    # Nothing else to close: this process never touched the checkpointer or
+    # core/sql_store.py's pool, since the graph runs in the worker.
     logger.info("telegram_channel_stopping")
-    # Same reasoning as app/api/main.py's lifespan shutdown: handle_message
-    # runs the full graph, which may have opened core/sql_store.py's pool.
-    # No-op if this process never touched it.
-    await sql_store.close_pool()
-    # Same reasoning for the checkpointer's pool — init_graph_async() above
-    # always opens it, so this is never a no-op here.
-    await close_checkpointer_pool()
 
 
 if __name__ == "__main__":

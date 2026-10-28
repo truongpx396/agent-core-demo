@@ -1,8 +1,10 @@
-"""Shared agent runtime used by BOTH the CLI and the FastAPI service.
+"""Shared agent runtime, run by `app/job_queue/agent_worker.py` and nothing else that serves chat.
 
 Centralises the compiled graph (singleton), per-thread system-prompt seeding,
-and Langfuse callbacks, so memory and tracing behave identically regardless
-of front-end (CLI, FastAPI, `app/job_queue/agent_worker.py`, `app/channels/telegram.py`).
+and Langfuse callbacks, so memory and tracing behave identically whichever front
+door a turn came in through: the FastAPI service, the CLI (`app/channels/chat.py`)
+and the Telegram channel (`app/channels/telegram.py`) all publish their turns to the
+queue (`app/job_queue/producer.py`) and a worker runs them here.
 
 ## Durable checkpointing (init_graph_async)
 
@@ -248,7 +250,7 @@ async def init_graph_async(manifest: "AgentManifest | None" = None, domain: "Dom
     (`DEFAULT_DOMAIN`, "ecorp", resolved through `app/domains/registry.py` like
     any other), so existing callers are unaffected. This is what lets a new
     process boot the same durable-checkpointer machinery against a
-    different domain — see app/channels/telegram.py, which resolves
+    different domain — see app/job_queue/agent_worker.py, which resolves
     AGENT_DOMAIN via app/domains/registry.py before priming the singleton.
     Each process still serves exactly one domain for its lifetime.
     """

@@ -85,10 +85,10 @@ reembed:  ## Rebuild a vector collection under the CURRENT embedding identity, t
 	@test -n "$(COLLECTION_NAME)" || { echo "usage: make reembed COLLECTION_NAME=<docs|skills collection> [ARGS=--dry-run]"; exit 2; }
 	python -m scripts.reembed $(COLLECTION_NAME) $(ARGS)
 
-chat:  ## Start the interactive LangGraph agent CLI (astream_events v2, shows tool calls)
+chat:  ## Start the interactive agent CLI (shows tool calls). Each turn goes through the queue, so it needs `make up` and a worker for its domain (`make agent-worker`); AGENT_DOMAIN=support|ops|sales picks another pool
 	python -m app.channels.chat
 
-chat-hitl:  ## Interactive CLI with human-in-the-loop tool approval
+chat-hitl:  ## Interactive CLI with human-in-the-loop tool approval (the answer is a resume job on the queue; same worker requirement as `make chat`)
 	python -m app.channels.chat --hitl
 
 serve:  ## Start the FastAPI service (http://localhost:8000/docs)
@@ -176,16 +176,16 @@ authlimit-revoke:  ## Void every token issued to a person, on every authlimit re
 	@test -n "$(TENANT)" -a -n "$(SUB)" || { echo "usage: make authlimit-revoke TENANT=<tenant> SUB=<subject>"; exit 2; }
 	$(GATEWAY_COMPOSE) exec -T --index 1 authlimit /authlimit revoke --tenant "$(TENANT)" --sub "$(SUB)"
 
-telegram:  ## Start the Telegram bot channel for the Ecorp domain (needs TELEGRAM_BOT_TOKEN in .env; see app/channels/telegram.py)
+telegram:  ## Start the Telegram bot channel for the Ecorp domain (needs TELEGRAM_BOT_TOKEN in .env, and `make agent-worker` running: messages go through the queue as unattended turns; see app/channels/telegram.py)
 	python -m app.channels.telegram
 
-telegram-support:  ## Start the Telegram channel as the Tier-1 support copilot (see app/domains/support/)
+telegram-support:  ## Start the Telegram channel as the Tier-1 support copilot (see app/domains/support/); needs `make agent-worker-support` running
 	AGENT_DOMAIN=support python -m app.channels.telegram
 
-telegram-sales:  ## Start the Telegram channel as the sales/CRM concierge (see app/domains/sales/)
+telegram-sales:  ## Start the Telegram channel as the sales/CRM concierge (see app/domains/sales/); needs `make agent-worker-sales` running
 	AGENT_DOMAIN=sales python -m app.channels.telegram
 
-agent-worker:  ## Start a Redis Streams agent worker for the Ecorp domain (run several for independent scaling; see POST /chat/stream/queued)
+agent-worker:  ## Start a Redis Streams agent worker for the Ecorp domain (run several for independent scaling). Every chat front door publishes to it: POST /chat/stream/queued, `make chat` and `make telegram`
 	python -m app.job_queue.agent_worker
 
 agent-worker-support:  ## Start an agent worker pool for the Tier-1 support domain (see app/domains/support/); the web UI's X-Domain: support turns route here
