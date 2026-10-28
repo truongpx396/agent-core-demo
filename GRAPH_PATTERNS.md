@@ -647,7 +647,7 @@ A nested `run_subagent` run (46) is `build_graph` with `SUBAGENT_PROFILE`: the s
 
 Two kinds of duplicate: a **replay** sees the same `tool_call_id` twice; a **re-ask** arrives under a new
 `tool_call_id`, which nothing keyed on the id can recognize. The layering is summarized in the
-[README](README.md#safety-model); each row here is a defect found and closed.
+[README](README.md#-safety-model); each row here is a defect found and closed.
 
 | Gap | Fix |
 |---|---|
