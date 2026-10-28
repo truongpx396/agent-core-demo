@@ -124,12 +124,13 @@ flowchart TB
         ObjectStore --> IngestQueue[("Redis: ingest queue")]
         IngestQueue --> IngestWorker["ingest-worker pool"]
     end
+    Caddy -- signed identity --> UploadEP
     IngestWorker --> Qdrant
     IngestWorker -. OTLP push .-> OtelCollector
 ```
 
 The front door (`services/authlimit/`, see "Front door: authlimit" below) is what turns a Casdoor login into the
-signed identity the API trusts. The design is the same in production, but the prod Caddyfile and compose are not wired to it yet
+signed identity the API trusts, for the chat routes and the upload request alike (the ingest worker sits behind the queue, not the door). The design is the same in production, but the prod Caddyfile and compose are not wired to it yet
 ([Deploying](#deploying-to-production)); with `make serve` (`AUTH_MODE=headers`) the web UI calls the API directly instead.
 The OTLP edge stands for every process that pushes metrics: the API and each worker replica
 (GRAPH_PATTERNS.md pattern 43). The node-by-node flow, including the refusal and dead-end exits (`reject_*`, `context_window_exceeded`, `retry_exhausted`), is in
@@ -294,7 +295,7 @@ Use `X-Tenant-Id: ecorp` to see what `make ingest` seeded; another tenant sees n
 - **Memory:** reuse a `thread_id` to continue a conversation; Langfuse groups traces by it.
 - **Ownership:** a `thread_id` belongs to whoever sends on it first (tenant + principal + domain). Send, resume or cancel from anyone else gets the same 404 an unknown id gets. Switching identity needs a new `thread_id`; `telegram:<chat id>` ids are reserved for the Telegram channel. The check lives at the API; the worker doesn't repeat it (pattern 17).
 - **Resubmits:** an identical `(thread_id, message, images)` within `CHAT_SUBMIT_DEDUP_TTL_SECONDS` (10) streams the first attempt's turn instead of starting a second.
-- **Limits:** the API does not limit turns itself: per-tenant and per-person limits are the front door's (`services/authlimit`, see "Front door: authlimit" below), as a token bucket. **The production Caddyfile does not route through it yet** (spec 018, the wiring is a later step), so until it does a production deployment has no limit on turns. The API keeps one limit of its own, per source address, on the payment webhook (`BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE`); CORS via `CORS_ALLOWED_ORIGINS`.
+- **Limits:** the API does not limit turns or uploads itself: per-tenant and per-person limits are the front door's (`services/authlimit`, see "Front door: authlimit" below), as a token bucket, on `POST /chat/stream/queued`, `/chat/resume` and `/ingest/upload` (the defaults in `services/authlimit/routes.json`: 30 a minute per tenant, 10 per person; the other routes are verified but not limited). **The production Caddyfile does not route through it yet** (spec 018, the wiring is a later step), so until it does a production deployment has no limit on turns or uploads. The API keeps one limit of its own, per source address, on the payment webhook (`BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE`); CORS via `CORS_ALLOWED_ORIGINS`.
 - **Metrics** are pushed over OTLP, not served: the API has no `/metrics` route.
 
 ### Web UI
