@@ -631,8 +631,8 @@ A nested `run_subagent` run (46) is `build_graph` with `SUBAGENT_PROFILE`: the s
 `write_semantic_cache`, `suggest_followups`, `compact_history` and `context_window_exceeded`, so
 `validate_input` goes straight to `moderate_input` and a passing `check_output` ends the run.
 
-**19 nodes:** `validate_input`, `reject_input`, `reject_context`, `moderate_input`, `reject_moderation`,
-`check_semantic_cache`, `compact_history`, `context_window_exceeded`, `retrieve_context`, `agent`, `tools`,
+**20 nodes:** `validate_input`, `reject_input`, `reject_context`, `moderate_input`, `reject_moderation`,
+`check_semantic_cache`, `compact_history`, `context_window_exceeded`, `route_model`, `retrieve_context`, `agent`, `tools`,
 `human_approval`, `tool_batch_guard`, `check_output`,
 `retry_output`, `retry_exhausted`, `no_answer`, `suggest_followups`, `write_semantic_cache`.
 
