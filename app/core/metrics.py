@@ -725,6 +725,24 @@ agent_mcp_gateway_requests_total = Counter(
     ["server", "outcome"],
 )  # server: ecorp | ops; outcome: ok | invalid_token | jwks_unavailable | forbidden_tenant
 
+agent_api_identity_total = Counter(
+    "agent_api_identity_total",
+    "What the API decided about the internal identity of a request in identity mode (app/core/internal_identity.py, specs/018): ok, or "
+    "the reason it was refused. missing (no identity header: the front door was bypassed or is not in front of this API), malformed, "
+    "algorithm, type (the wrong `typ`), unknown_kid, signature, expired, not_yet_valid, issuer, audience, claims (no tenant or no "
+    "subject), unexpected (the verifier itself failed, refused all the same), and keys_unavailable (the front door's public keys could "
+    "not be confirmed current, so NO identity could be checked: the request is answered 503, not 401, and this label is the only place "
+    "the outage shows). Never a token and never a claim.",
+    ["outcome"],
+)  # outcome: ok | missing | malformed | algorithm | type | unknown_kid | signature | expired | not_yet_valid | issuer | audience | claims | unexpected | keys_unavailable
+
+agent_api_identity_key_refresh_total = Counter(
+    "agent_api_identity_key_refresh_total",
+    "Fetches of the front door's public signing keys (AUTHLIMIT_KEYS_URL) by the API: ok, or error (unreachable, a bad status, a body that "
+    "is not a key set, or a key set with no usable key). An error keeps the last keys in use for AUTHLIMIT_KEYS_STALE_GRACE_SECONDS.",
+    ["result"],
+)  # result: ok | error
+
 agent_team_channel_notify_total = Counter(
     "agent_team_channel_notify_total",
     "app/domains/notify.py::post_to_team_channel attempts by sink and outcome. "

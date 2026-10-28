@@ -59,6 +59,7 @@ The approach rests on measurements, not documentation: on Caddy 2.11.7 the `Auth
 | Redis, revocation list | sync fails | enforce last copy up to 30 s, then refuse (configurable) | `agent_authlimit_revocation_age_seconds`, `agent_authlimit_store_errors_total{store="revocation"}` | `AuthlimitRevocationStale` |
 | Signing key | missing or unreadable | do not start; not ready | `agent_authlimit_ready` | `AuthlimitReplicasDown` |
 | A replica | stops | Caddy retries another replica on a failed connect | `agent_authlimit_ready` (one series per replica) | `AuthlimitReplicasDown` (fewer than 2 ready for 5 min) |
+| Internal public keys, in the API | cannot refresh | keep the last keys for `AUTHLIMIT_KEYS_STALE_GRACE_SECONDS` (600 s), then refuse every request with 503 `auth_unavailable` (fail closed) | `agent_api_identity_key_refresh_total{result="error"}`, `agent_api_identity_total{outcome="keys_unavailable"}` | `ApiIdentityKeysRefreshFailing`, `ApiCannotCheckIdentity` (PR 2, with the alert below) |
 | API in header mode | left on | serve, loudly | `agent_api_auth_mode{mode="headers"}` | `ApiHeaderAuthMode` (PR 2) |
 
 ## Project Structure

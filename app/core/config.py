@@ -545,6 +545,24 @@ class Settings(BillingSettings):
     # A real multi-origin deployment narrows this (see deploy/env/prod.env.example).
     cors_allowed_origins: str = "*"
 
+    # How the API learns WHO is calling (app/api/deps.py::get_ctx; specs/018). In `identity` mode (the default) it trusts one thing: the
+    # short-lived signed identity the front door (the authlimit service) puts on a request it has verified, checked against the front
+    # door's published public keys (app/core/internal_identity.py). The client's own X-Tenant-Id / X-Principal-Id are ignored. In `headers`
+    # mode it trusts those two headers as it always did: for the hermetic tests and for running the API directly with no front door, and
+    # NEVER for a deployment a stranger can reach (a client can send any header value). It is announced loudly: a startup warning, the gauge
+    # `agent_api_auth_mode` and the alert `ApiHeaderAuthMode`. Chosen explicitly, never inferred: an unset variable is `identity`.
+    auth_mode: Literal["identity", "headers"] = "identity"
+    # Where the front door publishes the public half of its signing keys (`/internal/jwks.json` on the authlimit service). Required in
+    # `identity` mode: the API refuses to START without it (app/core/internal_identity.py::check_settings), not on the first request.
+    authlimit_keys_url: str = ""
+    # How long a fetched key set is trusted before the next fetch. A key that was rotated in is picked up on the next unknown `kid` regardless
+    # (at most one fetch every ten seconds, so a caller cannot turn made-up key ids into load on the front door).
+    authlimit_keys_cache_seconds: int = Field(default=60, ge=10, le=3600)
+    # How much longer the last key set keeps being trusted when the front door cannot be reached to refresh it. Zero means not at all (every
+    # failed refresh is an outage). The cost of waiting is that a key withdrawn for compromise stays trusted for this long; the benefit is that
+    # one dead authlimit replica behind a round-robin name does not turn every request into a 503. Past it the API refuses (503), never guesses.
+    authlimit_keys_stale_grace_seconds: int = Field(default=600, ge=0, le=3600)
+
     # POST /ingest/upload's per-file cap, enforced before any MinIO write —
     # an unbounded upload is a memory/storage exhaustion vector.
     max_upload_size_mb: int = 25
