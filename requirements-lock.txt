@@ -31,7 +31,7 @@ argon2-cffi-bindings==26.1.0
 attrs==26.1.0
 backoff==2.2.1
 beautifulsoup4==4.15.0
-brotli==1.2.0
+brotli==1.2.1
 certifi==2026.10.19
 cffi==2.1.1
 chardet==7.6.0
@@ -47,7 +47,7 @@ Deprecated==1.3.1
 distro==1.9.0
 fake-useragent==2.2.0
 fastapi==0.141.1
-fastembed==0.8.0
+fastembed==0.9.1
 fastuuid==0.14.0
 filelock==3.32.5
 flatbuffers==25.12.19
@@ -118,7 +118,7 @@ orjson==3.12.0
 ormsgpack==1.12.2
 packaging==24.2
 patchright==1.62.3
-pillow==12.3.0
+pillow==13.0.0
 playwright==1.62.0
 playwright-stealth==2.0.3
 pluggy==1.6.0
