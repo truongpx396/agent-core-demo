@@ -395,14 +395,6 @@ class Settings(BillingSettings):
     # sink nobody's on-call actually depends on.
     slack_webhook_url: str = ""
 
-    # API-layer protection (app/api/main.py) — one client/tenant must not
-    # flood the shared Redis Streams queue or starve other tenants. Per-tenant
-    # (X-Tenant-Id), backed by the same Redis, not in-process memory (which
-    # would stop working once more than one `uvicorn` process runs, pattern
-    # 43). Fails OPEN if Redis is unreachable, same posture as
-    # semantic_cache.py/moderation.py.
-    rate_limit_per_minute: int = 30
-
     # How long POST /chat/stream/queued's own submission-dedup window stays
     # open (app/job_queue/queue.py::claim_or_get_existing_submission) — an
     # identical (thread_id, text, images) resubmission within this window
@@ -734,7 +726,6 @@ MINIO_ACCESS_KEY = settings.minio_access_key
 MINIO_SECRET_KEY = settings.minio_secret_key
 MINIO_BUCKET = settings.minio_bucket
 MINIO_SECURE = settings.minio_secure
-RATE_LIMIT_PER_MINUTE = settings.rate_limit_per_minute
 CHAT_SUBMIT_DEDUP_TTL_SECONDS = settings.chat_submit_dedup_ttl_seconds
 CHAT_FIRST_RESPONSE_DEADLINE_SECONDS = settings.chat_first_response_deadline_seconds
 INGEST_FIRST_RESPONSE_DEADLINE_SECONDS = settings.ingest_first_response_deadline_seconds

@@ -484,34 +484,6 @@ class CheckpointErrorUser(HttpUser):
         )
 
 
-class RateLimitUser(HttpUser):
-    """ONE tenant id shared by every instance of this class (a class
-    attribute, not set per-user in on_start) — TenantRateLimitMiddleware
-    (app/api/rate_limit.py) keys strictly on X-Tenant-Id at
-    RATE_LIMIT_PER_MINUTE=30/tenant, so concurrent Locust users all
-    reusing the same id is what actually collides on one bucket; separate
-    random tenants per user (every other class here) would never trip it
-    regardless of total load, by design — that isolation is the whole
-    point of the limiter."""
-
-    weight = 1
-    wait_time = between(0.1, 0.3)
-
-    SHARED_TENANT_ID = "loadtest-rate-limit-shared-tenant"
-
-    def on_start(self) -> None:
-        self.principal_id = f"user-{uuid.uuid4().hex[:8]}"
-
-    @task
-    def rapid_fire(self) -> None:
-        self.client.post(
-            "/chat/stream/queued",
-            json={"message": "what is 2 + 2?", "thread_id": str(uuid.uuid4()), "images": []},
-            headers={"X-Tenant-Id": self.SHARED_TENANT_ID, "X-Principal-Id": self.principal_id},
-            name="/chat/stream/queued [rate_limit_probe]",
-        )
-
-
 class IngestionUser(HttpUser):
     """POST /ingest/upload only — needs `make ingest-worker` running (also
     pointed at the fake LLM's OPENAI_API_BASE, same as serve/agent-worker)

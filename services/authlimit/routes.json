@@ -24,6 +24,10 @@
     { "method": "GET", "pattern": "/chat/sessions/{thread_id}/pending_approval", "class": "read" },
     { "method": "GET", "pattern": "/usage", "class": "read" },
     { "method": "GET", "pattern": "/ingest/stream/{job_id}", "class": "read" },
+    { "method": "GET", "pattern": "/openapi.json", "class": "read" },
+    { "method": "GET", "pattern": "/docs", "class": "read" },
+    { "method": "GET", "pattern": "/docs/oauth2-redirect", "class": "read" },
+    { "method": "GET", "pattern": "/redoc", "class": "read" },
 
     { "method": "*", "pattern": "/ecorp/mcp", "class": "mcp" },
     { "method": "*", "pattern": "/ops/mcp", "class": "mcp" }

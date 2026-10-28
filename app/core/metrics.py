@@ -517,7 +517,8 @@ agent_context_window_exceeded_total = Counter(
 
 agent_rate_limit_exceeded_total = Counter(
     "agent_rate_limit_exceeded_total",
-    "HTTP requests rejected by app/api/main.py's per-tenant rate limiter (RATE_LIMIT_PER_MINUTE)",
+    "Payment-webhook requests rejected by app/api/rate_limit.py's per-source-address limit (BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE). "
+    "The per-tenant limiter that also counted here was removed in spec 018: turn limits are enforced at the front door, the authlimit service",
 )
 
 agent_budget_exceeded_total = Counter(

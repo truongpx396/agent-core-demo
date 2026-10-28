@@ -355,14 +355,18 @@ groups:
             (agent_moderation_total) — could be a real attack or an
             overly strict moderation rule.
 
-      - alert: RateLimitRejectionSpike
+      - alert: WebhookRateLimitRejectionSpike
         expr: sum(rate(agent_rate_limit_exceeded_total[5m])) > 1
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Sustained per-tenant rate-limit rejections"
-          description: "agent_rate_limit_exceeded_total has been climbing over 1/sec for 5m."
+          summary: "Sustained payment-webhook rate-limit rejections"
+          description: >-
+            The webhook route's per-source-address limit (app/api/rate_limit.py) has been rejecting over 1 request/sec
+            for 5m (agent_rate_limit_exceeded_total): a provider redelivering a backlog faster than the ceiling, or a
+            stranger flooding forged requests. The signature check still stands either way. Turn limits are the front
+            door's (agent_authlimit_requests_total{outcome="limited"}), not this counter.
 
       - alert: RetrievalDegraded
         expr: sum(rate(agent_retrieval_degraded_total[15m])) > 0
