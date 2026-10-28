@@ -38,7 +38,7 @@ FROM python:3.13-slim@sha256:57b29a7c050c4e679e4bea572e14b3965cf4b5839de2da49d55
 # is pinned the same way. 0.12.24 rather than the newest because the 0.13 line was days old when this was written (Dependabot's
 # cooldown now applies that rule to its own bumps). It is copied into the builder stage only. As its own named stage so that
 # Dependabot, which reads `FROM` lines, can see and bump it.
-FROM ghcr.io/astral-sh/uv:0.12.24@sha256:3af4716e991d6956a41e573eab705d0ee08500cd829ed30293eb8472f372c65a AS uv
+FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
 
 # ---- builder: dependencies only, never shipped ------------------------------------------------------------------------------
 FROM base AS builder
