@@ -27,7 +27,7 @@ changing model provider is a LiteLLM config change, not a code change.
 - **Interfaces** — CLI, HTTP API, web UI and Telegram, all publishing to one queue that one worker pool runs through one streaming core.
 - **Operable** — queue workers that scale independently of the API, real dependency health checks, per-tenant and per-person rate limits at the front door and cost caps, Terraform + automated deploys.
 
-Pattern-by-pattern design notes, each with the bug that motivated it: [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md).
+Pattern-by-pattern design notes, each with the bug that motivated it: [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md). Also: [COST_GOVERNANCE.md](COST_GOVERNANCE.md) (spend meter and caps), [ENGINEERING_PATTERNS.md](ENGINEERING_PATTERNS.md) (repository lessons), [WORKER_CONCURRENCY.md](WORKER_CONCURRENCY.md) (worker sizing), [`specs/`](specs/) (Spec Kit specs 001–018) and the [constitution](.specify/memory/constitution.md) (the non-negotiable rules).
 
 ## Architecture
 
@@ -45,11 +45,26 @@ flowchart TB
         ExtMCP["External MCP client"]
     end
 
-    subgraph api_sg["FastAPI service"]
-        Queued["POST /chat/stream/queued<br/>/resume, /cancel"]
+    subgraph door_sg["Front door — local stack today, not yet in the prod Caddyfile (spec 018)"]
+        Caddy["Caddy<br/>TLS, forward_auth"]
+        Authlimit["authlimit (Go, x2)<br/>verify token offline, rate limit,<br/>revocation, sign a 30 s identity"]
+        Casdoor["Casdoor<br/>OAuth 2.1 authorization server"]
+        LimitState[("Redis: limit buckets,<br/>revocation list")]
     end
 
-    WebUI --> Queued
+    subgraph api_sg["FastAPI service"]
+        Queued["POST /chat/stream/queued<br/>/resume, /cancel<br/>(trusts only the signed identity)"]
+    end
+
+    WebUI --> Caddy
+    ExtMCP -. MCP over HTTPS .-> Caddy
+    WebUI -. sign in .-> Casdoor
+    ExtMCP -. get a token .-> Casdoor
+    Caddy -- asks about every request --> Authlimit
+    Authlimit -. signing keys .-> Casdoor
+    Authlimit --> LimitState
+    Caddy -- signed identity --> Queued
+    Caddy -- bearer token --> MCPGateway["MCP gateway<br/>(app/mcp/gateway.py)"]
     CLI --> TurnQueue
     Telegram --> TurnQueue
     ExtMCP -. MCP stdio .-> MCPServer["app/mcp/server.py"]
@@ -79,6 +94,7 @@ flowchart TB
     AgentNode -- final answer --> Output
 
     MCPServer --> SQL["app/core/sql_store.py"]
+    MCPGateway --> SQL
     ToolsNode --> SQL
     SQL --> Postgres[("Postgres: appdata")]
     Retrieve --> Qdrant[("Qdrant<br/>hybrid search")]
@@ -99,6 +115,8 @@ flowchart TB
     IngestWorker -. OTLP push .-> OtelCollector
 ```
 
+The front door (`services/authlimit/`, see "Front door: authlimit" below) is what turns a Casdoor login into the
+signed identity the API trusts; with `make serve` (`AUTH_MODE=headers`) the web UI calls the API directly instead.
 The OTLP edge stands for every process that pushes metrics: the API and each worker replica
 (GRAPH_PATTERNS.md pattern 43). The node-by-node flow, including budget exits and the retry loop, is in
 [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md#graph-flow).
@@ -128,7 +146,7 @@ support/ops/sales pools are defined only under the dev compose `app` profile.
 Prerequisites: Docker + Compose, Python 3.13 (what the `Dockerfile` and CI run), and
 [Ollama](https://ollama.com) running **natively** on the host (`ollama serve`). Docker Desktop on Mac
 cannot pass Metal through to a container, so LiteLLM reaches Ollama at `host.docker.internal:11434`.
-The Ollama models are ~2 GB, pulled once. `ml-service` downloads its own small ONNX models on first
+Go is needed only for the front door's own tests (`make authlimit-test`). The Ollama models are ~2 GB, pulled once. `ml-service` downloads its own small ONNX models on first
 start, and the BM25 sparse model downloads on first use.
 
 ```bash
@@ -191,9 +209,10 @@ the private network. Creating or destroying droplets is always a human-run `terr
 
 Full runbook, scaling, backups, rollback and teardown: **[infra/README.md](infra/README.md)**.
 
-Three things that bite on a first deploy:
+Four things that bite on a first deploy:
 
-- **The shipped Caddy proxy does not authenticate.** It forwards `X-Tenant-Id`/`X-Principal-Id` as sent, so put an authenticating gateway in front that sets both and discards client copies ([Known gaps](#roadmap-and-known-gaps)).
+- **Production authentication is not wired.** `deploy/env/prod.env.example` sets `AUTH_MODE=identity` (the API accepts only the signed identity the authlimit front door adds), but the prod compose and Caddyfile do not include that service, so requests get a 401 or 503 until it is wired (spec 018). `AUTH_MODE=headers` trusts `X-Tenant-Id`/`X-Principal-Id` as sent: use it only behind a gateway of your own that sets both and discards client copies ([Known gaps](#roadmap-and-known-gaps)).
+- **The images are built in stages with uv and ship no installer;** the prod `api`, worker and `ml-service` containers run read-only with all capabilities dropped, so a change that writes to the image filesystem at runtime fails ([ENGINEERING_PATTERNS.md](ENGINEERING_PATTERNS.md) pattern 76).
 - **SQL migrations are not applied to an existing volume.** `postgres-init/*.sql` runs only on a fresh Postgres volume, and the deploy only syncs the files ([Example domains](#example-domains)).
 - **Upgrading from a release whose spend caps read `usage_ledger`:** apply `postgres-init/19`, run `make usage-events-carry-over` (`ARGS=--dry-run` first), deploy, then run it once more. Skipping the first makes every cap read fail open; skipping the second makes a monthly cap forget the month so far ([runbook](infra/README.md#upgrading-carry-the-ledgers-history-into-the-usage-events)).
 
@@ -209,9 +228,10 @@ LITELLM_MASTER_KEY=… LITELLM_APP_KEY=… make litellm-key ARGS=info           
 ```
 
 - **Size it above the app's own limits**, so it fires only when they have failed. It covers chat **and** embeddings (one key): when it is spent, retrieval degrades along with answers.
-- **Every call is attributed** to a hashed tenant id (LiteLLM's `end_user`) and a `tenant:<name>` tag, so a runaway bill can be traced; `make litellm-key ARGS="end-user --tenant acme"` maps a name to its id.
+- **Every call is attributed** to the person, readably: LiteLLM's `end_user` is `tenant:<tenant>/user:<principal>`, plus a `tenant:<name>` tag, so a runaway bill can be traced and its Customer Usage view filtered by person. `make gateway-check` proves, against the pinned image, that none of it reaches the model backend.
+- **A default cap per person:** `make litellm-key ARGS="person-budget set --max-budget 20"` (`info` reads it back). It fails open until the budget exists.
 - **A stop is reported, not buried:** `budget_exceeded` becomes `provider_budget_exceeded`, counts `agent_gateway_budget_exceeded_total` and pages `GatewayBudgetExceeded`. It is never retried.
-- **Gap:** LiteLLM can also cap an end user (a tenant) at the gateway; that is not built. Verified against a real LiteLLM (`main-stable`) rather than mocked, with the surprises in [COST_GOVERNANCE.md](COST_GOVERNANCE.md) (pattern 26).
+- **Gap:** there is no tenant-wide cap at the gateway (a tenant with many people can spend many times the per-person one), and embeddings carry no end user. Verified against a real LiteLLM rather than mocked, with the surprises in [COST_GOVERNANCE.md](COST_GOVERNANCE.md) (patterns 26 and 74).
 
 ### Credit billing (optional)
 
@@ -314,6 +334,8 @@ The gateway serves three chat tiers, each an alias (the app names aliases, never
 
 **Every local alias states a price** in `model_info` (about the order of magnitude hosted providers charge for open-weights models of that size: $0.10 / $0.20 per million input / output tokens for the 7B, $0.20 / $0.40 for the 14B). They are shadow prices, not a bill: without one LiteLLM reports a local model as unpriced or as a flat $0, and no gateway budget can ever trip on a $0 model. Change them to your amortised hardware cost if you like, but keep them above 0 ([pattern 74](COST_GOVERNANCE.md)).
 
+**Strict tool schemas** (`TOOL_CALLS_STRICT`, **off**) send the tools as OpenAI strict-mode schemas. Leave it off on Ollama, which ignores it and where the smallest model calls tools measurably worse with it; turn it on only for a provider that enforces strict calling, and run `make probe-tools` before and after (GRAPH_PATTERNS.md pattern 74).
+
 ### Routing a turn to a medium or strong model
 Optional and **off by default** (`ROUTER_MODE=off`): nothing is asked of any classifier and every call is exactly what it was. When on, a graph node `route_model` ([pattern 68](GRAPH_PATTERNS.md)) chooses a tier per turn from two signals: a few **rules** over the message (long, contains code, asks several things, uses reasoning words) and a **label** from the ML service (`POST /v1/decide`, a `choice` question named `route-topics`: which kind of work the message asks for, from the reviewed set `docker/ml-service/labelsets/route-topics.json`). Each signal names the lowest tier it will accept; the turn goes to `min(ROUTER_MAX_TIER, max(rules, label))`, lowered to a tier that is configured and priced, and is answered by that tier's alias (`chat`, `chat-medium`, `chat-strong`) and priced and recorded as it. A label that cannot be had leaves the rules to decide; every other failure runs the turn on `chat` as before. The router can only choose the model: approval, tenant scoping and idempotency are unchanged under every tier.
 
@@ -368,7 +390,7 @@ The call is shaped like the TypeSafe **Jev / System One** decision interface (`{
   ```
 
   Nothing that writes is behind it: both tools are read-only, and the sandbox is deliberately not reachable this way (an outside caller does not pass through the agent's approval gate). Not connected to Claude Code itself; production DNS/TLS and an identity provider are not built. Per-tenant rate limits and token revocation now come from the **authlimit** service in front of it (next bullet). Contract, measurements and the full list of gaps: `specs/017-mcp-gateway/`.
-- **Front door: authlimit** (`services/authlimit/`, specs/018): a small Go service that Caddy asks about every request (`forward_auth`) before it reaches the chat API or the MCP routes. It verifies the Casdoor access token **offline** (signature against cached keys, algorithm from an allow-list, issuer, audience, expiry, scope, a lifetime cap), charges a **token bucket per tenant and per person** in Redis, refuses **revoked** people, and answers with a **30-second Ed25519-signed identity** that Caddy copies onto the request after removing the caller's `Authorization` header. Two replicas by default behind Caddy; state is only Redis, so any number works. On the MCP routes it runs **limit-only**: the MCP gateway still verifies the token itself (the MCP specification requires it), so a request with no or a bad token is passed through and answered by the gateway's own 401. Fails **closed** where it is a security check (no usable keys, an untrustworthy revocation list: 503) and **open** where it is a protection (the limiter's store down: served, counted, alerted). The Python API verifies that identity (`AUTH_MODE=identity`, `app/core/internal_identity.py`; see "HTTP API" above); until the local chat-API site is repointed at the API (a later part of spec 018's PR 2) it still fronts a stub that echoes what it received.
+- **Front door: authlimit** (`services/authlimit/`, specs/018): a small Go service that Caddy asks about every request (`forward_auth`) before it reaches the chat API or the MCP routes. It verifies the Casdoor access token **offline** (signature against cached keys, algorithm from an allow-list, issuer, audience, expiry, scope, a lifetime cap), charges a **token bucket per tenant and per person** in Redis, refuses **revoked** people, and answers with a **30-second Ed25519-signed identity** that Caddy copies onto the request after removing the caller's `Authorization` header. Two replicas by default behind Caddy; state is only Redis, so any number works. On the MCP routes it runs **limit-only**: the MCP gateway still verifies the token itself (the MCP specification requires it), so a request with no or a bad token is passed through and answered by the gateway's own 401. Fails **closed** where it is a security check (no usable keys, an untrustworthy revocation list: 503) and **open** where it is a protection (the limiter's store down: served, counted, alerted). The Python API verifies that identity (`AUTH_MODE=identity`, `app/core/internal_identity.py`; see "HTTP API" above); `make authlimit-up` fronts a stub that echoes what it received; `make authlimit-up-app` puts the real API behind it.
 
   ```bash
   make authlimit-test           # go vet + the service's own tests with the race detector (needs Go; no Docker)
@@ -483,12 +505,15 @@ Prod runs the same stack on its own droplet ([infra/README.md](infra/README.md))
 | Integration | `make test-integration` | Docker (testcontainers; **not** `make up`) | gate | Real Postgres, Redis, Qdrant, ml-service, crawl4ai |
 | Live | `make test-live` | Docker + a small real Ollama model | gate, except advisory tests | Full app + worker stack and a Playwright browser run |
 | Tool-call probe | `make probe-tools` | native Ollama | ~2 min | The chat model emits tool calls the app can use (none silently dropped) and does not loop |
+| Front door | `make authlimit-test` | Go | own job | The authlimit service's tests with the race detector |
+| Billing package | `make test-billing-package` | nothing | own job | The package alone, with the app off the path |
 | Prompt checks | `make promptfoo` | Ollama | fast subset | Domain prompts still refuse to fabricate refunds, changes or sent messages |
+| Model swap | `make model-eval KIND=… CANDIDATE=…` | the model or service | manual | A candidate embedding, reranker, screening or routing model against the recorded baseline; read the report's `controls` first ([evals/README.md](evals/README.md)). `make model-eval-verify` needs nothing |
 | Quality | `make deepeval` | Docker, `GOOGLE_API_KEY`, `GROQ_API_KEY` | non-blocking job | Faithfulness, relevancy, multi-turn consistency, tool trajectory |
 | Release gate | `make eval` | `make up`, `pull-models`, `ingest` | manual | Golden set, 5 repetitions per case, grounded-claims threshold |
 | Red team | `make promptfoo-redteam`, `make garak` | Ollama; red team also `GOOGLE_API_KEY` | manual | Adversarial prompts; raw-model jailbreak resistance |
 
-`make test-sandbox` (a real `opensandbox-mcp` round trip) and `make test-provider-sandbox` (a payment provider's real sandbox; Polar rate-limits it, so never loop it; see the billing [README](packages/billing/README.md#tests)) are also manual.
+`make test-sandbox` (a real `opensandbox-mcp` round trip) and `make test-provider-sandbox` (a payment provider's real sandbox; Polar rate-limits it, so never loop it; see the billing [README](packages/billing/README.md#tests)) are also manual, as are `make authlimit-smoke` and `make authlimit-web-check` (the front door against a real stack, and in a real browser).
 Run `make eval` and `make promptfoo` after any prompt, model-alias or retrieval change, and `make probe-tools` after any change to a chat alias's model or `repeat_penalty` (the chat model is chosen by what it does with this app's tool calls: `GRAPH_PATTERNS.md` pattern 73).
 
 - **Advisory live tests.** Two browser tests need the 3B model to chain several tool calls (a skill, a subagent). They are marked `advisory` and run in their own non-blocking CI step, so a model that stops halfway shows in that step's log instead of failing the job. A failed browser test prints the page transcript (pattern 48).
@@ -509,6 +534,7 @@ Run `make eval` and `make promptfoo` after any prompt, model-alias or retrieval 
 | [Locust](https://locust.io/) | Load on the queued chat path | `make loadtest-up`, `make loadtest-queued` | Manual |
 
 - Trivy scans `requirements-lock.txt`, not `requirements.txt`: version ranges resolve to nothing a CVE database can match.
+- Every GitHub Action is pinned to a commit SHA; Dependabot bumps them and the Docker base images. `.github/CODEOWNERS` names the maintainer for the constitution-sensitive paths.
 - Strix needs `pipx install strix-agent` and a **cloud LLM key** (`STRIX_LLM`/`LLM_API_KEY`, in `.env` or exported; `make` passes it just those five names and never the local LiteLLM proxy's URL). Extra flags go in `ARGS`: `make strix ARGS="--instruction '…' --max-budget 1"`. The Strix and ZAP workflows are `workflow_dispatch` only: they cost money or attack their target.
 - **Only point Strix or ZAP's active mode at a system you own or have written permission to test.**
 - Findings shift with each CVE-database update; read current ones in the Security tab or by running the target.
@@ -554,6 +580,8 @@ measurements put acted-on AI comments at roughly 6–19%, so treat it as a promp
 | `make mcp-serve[-ops]` · `make mcp-inspect` | MCP servers · MCP Inspector |
 | `make mcp-gateway-up` · `-bootstrap` · `-ca` · `-smoke` · `-down` | The MCP gateway stack: Casdoor + OAuth-protected servers + Caddy (local) |
 | `make authlimit-test` · `-up` · `-keys` · `-smoke` · `-revoke` · `-latency` · `-mutants` | The authlimit front door (see the MCP gateway section above): its tests · the stack · signing keys · the end-to-end check · revoke a person · added latency · mutation list |
+| `make probe-tools` · `make gateway-check` · `make web-search-check` | Does the chat model emit usable tool calls · does the pinned gateway keep identities from the model backend · does the Serper key work (spends one credit) |
+| `make model-eval` · `make labelset-calibrate` · `make router-label` | Judge a model swap against its baseline · choose a label set's cutoff · score the router's outcomes ([evals/README.md](evals/README.md)) |
 | `make lint` · `make typecheck` · `make test` | The CI gates |
 | `make obs-up` · `make obs-down` | Observability stack |
 | `make sandbox-up` | OpenSandbox server (opt-in) |
@@ -571,14 +599,18 @@ The compose files live in `deploy/compose/` but resolve their paths and `.env` f
 app/
   agent/       the agent: graph/ (LangGraph), runtime/ (turns, streaming, sessions), tools/ (built-ins, catalogs, run_subagent), cost/ (usage meter, spend caps), manifest.py
   api/         FastAPI app (main.py mounts routers/: chat, ingest, usage, system), deps.py (who is calling, by `AUTH_MODE`), identity.py (the verifier and the 401/503 answer), schemas, health, the webhook rate limit, built-in web UI (static/index.html)
+  billing_integration/  the app's one seam to the billing package (port.py)
   channels/    CLI (chat.py) and Telegram gateway: front doors that publish their turns to the queue and never run the graph
   core/        what every package uses: config, security (SecurityCtx/Policy), metrics, errors, scrubbing, SQL pool, LLM gateway contract, tool timeout and idempotency
   domains/     support/, ops/, sales/ (store + tools + domain each), registry, shared sandbox tools
   ingestion/   chunking, ingestor, crawler, object store, ingest worker
   job_queue/   Redis Streams queue, agent worker, reclaim, producer (what the CLI and Telegram publish through)
-  mcp/         server, ops_server, client
+  mcp/         server, ops_server (stdio), gateway (Streamable HTTP + OAuth 2.1), client
   retrieval/   embeddings, Qdrant store, semantic cache, memory deletion
 scripts/       seed, eval, cron jobs, ops_investigate, defectdojo import; ai_review/ is the PR-review tool (a package)
+services/authlimit/       the edge authentication and rate-limit service: the only Go in the repo (own tests, Dockerfile, CI job)
+evals/ scripts/model_eval/   the model-evaluation harness and its frozen datasets, candidates and baselines
+specs/ .specify/          Spec Kit specs 001–018 and the constitution
 skills/ subagents/        the agent's own catalogs
 docker/ Dockerfile        ml-service, OpenSandbox, sandbox image; the app image (stays at the root: it is the build context)
 deploy/compose/           docker-compose*.yml — dev, prod, observability (dev and prod), load test
