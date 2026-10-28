@@ -1,0 +1,35 @@
+{
+  "fallback": "turn",
+  "limits": {
+    "turn": { "tenant": { "capacity": 10, "per_minute": 30 }, "person": { "capacity": 5, "per_minute": 10 } },
+    "upload": { "tenant": { "capacity": 10, "per_minute": 30 }, "person": { "capacity": 5, "per_minute": 10 } },
+    "mcp": { "tenant": { "capacity": 60, "per_minute": 120 }, "person": { "capacity": 30, "per_minute": 60 } }
+  },
+  "routes": [
+    { "method": "OPTIONS", "pattern": "/*", "class": "public" },
+    { "method": "GET", "pattern": "/", "class": "public" },
+    { "method": "GET", "pattern": "/health", "class": "public" },
+    { "method": "GET", "pattern": "/health/ready", "class": "public" },
+    { "method": "*", "pattern": "/static/*", "class": "public" },
+    { "method": "*", "pattern": "/.well-known/*", "class": "public" },
+    { "method": "*", "pattern": "/billing/webhooks/*", "class": "public" },
+
+    { "method": "POST", "pattern": "/chat/stream/queued", "class": "turn" },
+    { "method": "POST", "pattern": "/chat/resume", "class": "turn" },
+    { "method": "POST", "pattern": "/ingest/upload", "class": "upload" },
+
+    { "method": "POST", "pattern": "/chat/cancel", "class": "cancel" },
+    { "method": "GET", "pattern": "/chat/sessions", "class": "read" },
+    { "method": "GET", "pattern": "/chat/sessions/{thread_id}/messages", "class": "read" },
+    { "method": "GET", "pattern": "/chat/sessions/{thread_id}/pending_approval", "class": "read" },
+    { "method": "GET", "pattern": "/usage", "class": "read" },
+    { "method": "GET", "pattern": "/ingest/stream/{job_id}", "class": "read" },
+    { "method": "GET", "pattern": "/openapi.json", "class": "read" },
+    { "method": "GET", "pattern": "/docs", "class": "read" },
+    { "method": "GET", "pattern": "/docs/oauth2-redirect", "class": "read" },
+    { "method": "GET", "pattern": "/redoc", "class": "read" },
+
+    { "method": "*", "pattern": "/ecorp/mcp", "class": "mcp" },
+    { "method": "*", "pattern": "/ops/mcp", "class": "mcp" }
+  ]
+}

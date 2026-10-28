@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <title>agent-core-demo</title>
+<!-- Sign-in (specs/018). The server replaces the placeholder below with the mode it runs in (app/api/web_auth.py); /static/auth.js reads it. In
+     header mode (the API run alone) it does nothing and this page is exactly what it always was. No third-party script. -->
+<meta name="agent-auth" content="__AGENT_AUTH__">
+<script src="/static/auth.js"></script>
 <style>
   /* ---- Design tokens ---------------------------------------------------
      Light palette lives on bare :root; a system-dark override applies
@@ -160,6 +164,21 @@
   .identity-field select:focus {
     outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
   }
+  /* Sign-in box (identity mode only; hidden until /static/auth.js shows it). */
+  #authBox { display: flex; flex-direction: row; align-items: center; gap: .4rem; flex-shrink: 1; min-width: 0; }
+  #authBox[hidden] { display: none; }
+  #authBox input {
+    font: inherit; font-size: .8rem; padding: .38rem .55rem; width: 7rem;
+    border-radius: var(--radius-sm); border: 1px solid var(--border);
+    background: var(--bg-elevated); color: var(--text);
+  }
+  #authBox button {
+    font: inherit; font-size: .8rem; padding: .38rem .7rem; border-radius: var(--radius-sm);
+    border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text); cursor: pointer;
+  }
+  #authBox button:hover { border-color: var(--border-strong); }
+  #authWho { font-size: .8rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #authNote { font-size: .72rem; color: var(--text-muted); }
   #themeToggle {
     width: 2.1rem; height: 2.1rem; flex-shrink: 0; padding: 0; font-size: 1.05rem;
     border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-secondary);
@@ -417,6 +436,15 @@
     <label for="principal">Principal</label>
     <select id="principal" title="Your principal id (X-Principal-Id) — scopes which sessions/memories are yours within the tenant above."></select>
   </div>
+  <!-- Identity mode only (shown by /static/auth.js): who is signed in, or where to sign in. The Tenant and Principal pickers above are hidden then:
+       who the caller is comes from the access token, never from a field on this page. -->
+  <div id="authBox" hidden>
+    <span id="authWho" hidden></span>
+    <input id="authOrg" type="text" placeholder="organization" aria-label="Organization" autocomplete="organization" spellcheck="false">
+    <button type="button" id="authSignIn">Sign in</button>
+    <button type="button" id="authSignOut" hidden>Sign out</button>
+    <span id="authNote" role="status"></span>
+  </div>
   <button type="button" id="themeToggle" title="Toggle light/dark theme" aria-label="Toggle light/dark theme">🌙</button>
 </header>
 <details id="uploadPanel">
@@ -576,7 +604,9 @@ const uploadStatusEl = document.getElementById("uploadStatus");
 let attachedImageDataUri = null;
 
 function headers() {
-  return {
+  // /static/auth.js: in identity mode it drops the two pickers' values and adds `Authorization: Bearer <token>`; in header mode it returns
+  // the headers as they are.
+  return window.agentAuth.decorate({
     "Content-Type": "application/json",
     // Both trusted-header values are now caller-editable fields (the
     // sidebar's Tenant/Principal inputs) rather than one hardcoded
@@ -593,7 +623,7 @@ function headers() {
     // read this (app/api/deps.py's get_domain) — every other endpoint
     // this page calls just ignores the extra header.
     "X-Domain": domainSelect.value,
-  };
+  });
 }
 
 // Same identity headers, minus Content-Type — POST /ingest/upload is
@@ -1840,7 +1870,9 @@ function renderSuggestedQuestions() {
 
 renderDomainInfo();
 renderSuggestedQuestions();
-loadSessions();
+// After /static/auth.js has finished a sign-in that this load is the return from (it resolves at once otherwise), so the first request carries
+// the token it just got.
+window.agentAuth.ready.then(loadSessions);
 
 // Two independent mechanisms, matching POST /chat/cancel's own design
 // (app/api.py) — which one actually does something depends on whether

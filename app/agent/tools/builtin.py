@@ -58,6 +58,7 @@ from app.core.config import (
 )
 from app.core.security import DEFAULT_POLICY, SecurityCtx, valid_ctx
 from app.core.tool_runtime import NO_CTX_REFUSAL, arun_with_timeout, ctx_or_refuse
+from app.core.tool_schema import ToolArgs
 from app.retrieval import qdrant_store
 
 logger = logging.getLogger(__name__)
@@ -105,18 +106,18 @@ class Topic(str, Enum):
     company = "company"
 
 
-class SearchDocsArgs(BaseModel):
+class SearchDocsArgs(ToolArgs):
     query: str = Field(..., description="Natural-language search query.")
+    # Required but nullable, never optional (ToolArgs says why, and why a call that leaves one out still runs).
     topic: Topic | None = Field(
-        default=None,
-        description="Optional filter. Must be one of: langgraph, qdrant, company. "
-        "Omit it to search across all topics.",
+        ...,
+        description="Filter: one of langgraph, qdrant, company. Pass null to search across all topics.",
     )
     doc_ids: list[str] | None = Field(
-        default=None,
-        description="Optional: scope the search to these specific document ids only "
+        ...,
+        description="Scope the search to these specific document ids only "
         "(e.g. ones the caller already knows about/is cleared to read). Narrows the "
-        "search — never a way to reach documents outside the caller's tenant.",
+        "search — never a way to reach documents outside the caller's tenant. Pass null for no scoping.",
     )
 
 

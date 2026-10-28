@@ -2,9 +2,8 @@
 (GRAPH_PATTERNS.md pattern 50) — the fake-free counterpart to
 tests/domains/test_sandbox_tools.py, which (correctly, for a fast/hermetic
 suite) mocks `app.mcp.client.load_remote_tools` entirely. What that can't
-catch — `scripts/opensandbox_mcp_bridge.py` (the wrapper this module
-spawns instead of the packaged `opensandbox-mcp` binary directly, see that
-script's own docstring) actually spawning, actually listing its real tool
+catch — the packaged `opensandbox-mcp` CLI (`python -m opensandbox_mcp
+--use-server-proxy`, what this module spawns) actually spawning, actually listing its real tool
 catalog over stdio, through the ALSO-real
 `app/mcp/client.py::load_remote_tools` (pattern 28) underneath it — needs
 `opensandbox_mcp` actually installed, hence `@pytest.mark.sandbox`
@@ -35,9 +34,8 @@ pytestmark = pytest.mark.sandbox
 
 @pytest.fixture(autouse=True)
 def _require_opensandbox_mcp():
-    # scripts/opensandbox_mcp_bridge.py imports `opensandbox_mcp` as a
-    # LIBRARY (not the CLI binary) — checking importability, not PATH,
-    # matches what this app's own code actually depends on now.
+    # The launch is `python -m opensandbox_mcp` under this interpreter — checking importability,
+    # not PATH, matches what this app's own code actually depends on.
     if importlib.util.find_spec("opensandbox_mcp") is None:
         pytest.skip("opensandbox_mcp not installed — `pip install opensandbox-mcp` (already in requirements.txt)")
 

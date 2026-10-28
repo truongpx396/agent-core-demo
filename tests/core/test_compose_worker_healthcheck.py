@@ -50,6 +50,7 @@ def test_the_workers_are_found_in_both_files_or_this_test_proves_nothing():
         "agent-worker-sales",
         "agent-worker-support",
         "ingest-worker",
+        "mcp-gateway",  # not a worker: it binds :8000, but with its own command it too must not inherit the API's probe (it sets /readyz)
     ]
     assert found["docker-compose.prod.yml"] == ["agent-worker", "ingest-worker"]
 

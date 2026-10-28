@@ -3,38 +3,10 @@
 # either, so a local scan shows everything.
 #
 # Every entry needs a `statement` (why it is safe to carry) and an `expired_at` (when it comes back and fails
-# the gate again). tests/core/test_trivy_ignore.py fails for an entry with neither, for a premise that has
-# stopped being true, and for an entry the lock no longer needs.
+# the gate again). tests/core/test_trivy_ignore.py fails for an entry with neither.
 #
-# Pillow 12.3.0, three CRITICALs published 2026-10-19/20, all fixed ONLY in 13.0.0. Why it is not upgraded: fastembed
-# (every release through 0.9.0, the latest, checked 2026-10-22) declares `pillow<13.0` on Python 3.13, so pillow 13
-# and fastembed cannot be installed together without overriding a declared constraint on a package the app uses for
-# sparse retrieval. When fastembed allows 13: bump the pin in requirements-lock.txt and delete these entries.
-#
-# What the app does with the two packages that pull Pillow in: fastembed only for SparseTextEmbedding (text), crawl4ai
-# only for its Docker client (the crawler itself runs in the crawl4ai container). Nothing in app/ or scripts/ imports
-# PIL (tests/core/test_trivy_ignore.py re-checks that on every run).
-vulnerabilities:
-  # GHSA-8g5g-8vmr-9782: heap overflow in ImagingJpegDecode, reached by JpegImageFile.draft() (which
-  # Image.thumbnail() calls) on a lossless (SOF3) JPEG.
-  - id: CVE-2026-112403
-    statement: >-
-      Not reachable: it needs Image.thumbnail() or JpegImageFile.draft() on an untrusted JPEG, and no code in
-      app/, scripts/, fastembed or crawl4ai calls either (grep, 2026-10-22).
-    expired_at: 2026-12-01
-
-  # GHSA-332p-7hrc-92wf: heap overflow in _tiffWriteProc when SAVING compressed TIFF to a target without a
-  # usable fileno() (a BytesIO). Decoding is not affected.
-  - id: CVE-2026-112393
-    statement: >-
-      Not reachable: it needs Image.save() of a compressed TIFF. app/ and scripts/ never call save(), fastembed has
-      no save() and no TIFF handling, and crawl4ai's in-process crawler saves only JPEG and PNG (grep, 2026-10-22).
-    expired_at: 2026-12-01
-
-  # GHSA-w889-685w-c8fh: argument injection into Ghostscript through the filename of an EPS input.
-  - id: CVE-2026-112900
-    statement: >-
-      Not reachable: Pillow's EPS path runs the `gs` binary, and the image has none (python:3.13-slim plus
-      libgomp1, see the Dockerfile; tests/core/test_trivy_ignore.py fails if ghostscript is ever installed).
-      Nothing in app/ or scripts/ opens EPS files either.
-    expired_at: 2026-12-01
+# No exception is carried today. The list held three Pillow 12.3.0 findings (CVE-2026-112403, -112393, -112900) from
+# 2026-10-22 until 2026-10-28: Pillow fixed them only in 13.0.0 and fastembed declared `pillow<13` in every release
+# up to 0.9.0. fastembed 0.9.1 (2026-10-24) widened the cap to `<14`, the lock moved to Pillow 13.0.0, and the entries
+# were deleted, as their own guard test said to do (ENGINEERING_PATTERNS.md pattern 72).
+vulnerabilities: []

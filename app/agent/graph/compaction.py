@@ -30,6 +30,7 @@ from app.agent.graph.messages import (
     is_user_message,
 )
 from app.agent.graph.state import HISTORY_TOKEN_CEILING, HISTORY_TOKEN_FLOOR, State
+from app.agent.graph.utils import without_tools
 from app.core import gateway, metrics
 from app.core.config import CHAT_MODEL
 
@@ -162,7 +163,10 @@ def make_compact_history_node(
     tests can trigger the hysteresis behavior with small budgets.
     `model_alias` is the LiteLLM alias `llm` is bound to, used only to price and record its
     calls, the same meaning it has for `make_agent_node`.
+
+    Sends no tool schemas (`utils.without_tools`): a transcript in, a summary out.
     """
+    llm = without_tools(llm)
 
     async def compact_history(state: State, config: RunnableConfig | None = None) -> dict:
         """Whatever `_messages_to_trim` would discard gets folded into the

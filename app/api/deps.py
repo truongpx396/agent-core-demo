@@ -1,33 +1,62 @@
 """Request dependencies shared by every router: who is calling (`get_ctx`) and
 which domain they mean (`get_domain`).
 
-## Identity: trusted headers, NOT authentication (app/core/security.py)
+## Identity: two modes, chosen by `AUTH_MODE` (specs/018)
 
-`get_ctx` reads `X-Tenant-Id`/`X-Principal-Id` and stamps a `SecurityCtx`.
-This is the seam a real auth middleware plugs into, not authentication
-itself — nothing verifies a password/JWT/session, and nothing stops a
-client sending any header value. That's fine only because production sits
-behind a gateway that authenticates the caller and sets these headers
-itself, stripping client-supplied copies first (like `X-Forwarded-*`).
-What this app owes is the correct shape at the boundary: required headers,
-fail closed (422) if absent, never a client-settable body field, never a
-default identity — so real auth later is a gateway config change, not a
-rewrite here.
+`get_ctx` stamps a `SecurityCtx` (app/core/security.py) from one of two sources, and which one is a setting, never an inference.
+
+**`identity` (the default).** The front door (the authlimit service, in front of this API) verifies a person's access token and adds a
+short-lived signed identity to the request it forwards, in `X-Internal-Identity`. This mode verifies that (app/core/internal_identity.py)
+and builds the ctx from its `tenant` and `sub` and from nothing else. `X-Tenant-Id` and `X-Principal-Id` are IGNORED, so a client that sends
+them gets nothing for it, and a request with no valid identity is refused: a 401, or a 503 when the keys that would check it cannot be
+confirmed current (app/api/identity.py). There is no default tenant and no fallback to the headers.
+
+**`headers`.** The two headers are trusted as sent: `X-Tenant-Id` and `X-Principal-Id`, required, a missing one a 422 before the handler runs.
+That is only safe where nothing a stranger controls can reach this API: the hermetic tests, and running the API alone on a developer's own
+machine. It is announced loudly (a startup warning, the gauge `agent_api_auth_mode`, the alert `ApiHeaderAuthMode`) because the mistake it
+invites is a deployment that forgot to leave it. What this app owes in either mode is the right shape at the boundary: never a client-settable
+body field, never a default identity, never a ctx the caller wrote.
+
+`valid_ctx` (app/core/security.py) is still what every consumer fails closed on: an identity mode ctx is always valid by construction (the
+verifier refuses an empty tenant or subject); a header mode ctx may carry an empty string, and the consumers refuse that.
 """
-from fastapi import Header, HTTPException
+from typing import Annotated
 
+from fastapi import Header, HTTPException
+from fastapi.exceptions import RequestValidationError
+
+from app.api import identity
+from app.core.config import settings
+from app.core.internal_identity import Identity
 from app.core.security import SecurityCtx
 from app.domains.registry import DOMAINS
 
 
+def _missing_header(name: str) -> dict:
+    """The entry FastAPI itself reports for a required header that was not sent (so header mode's 422 is unchanged by being optional here)."""
+    return {"type": "missing", "loc": ("header", name), "msg": "Field required", "input": None}
+
+
 async def get_ctx(
-    x_tenant_id: str = Header(..., description="Trusted-layer tenant id."),
-    x_principal_id: str = Header(..., description="Trusted-layer principal id."),
+    x_tenant_id: Annotated[str | None, Header(description="Header mode only: the tenant, as sent. Ignored in identity mode.")] = None,
+    x_principal_id: Annotated[str | None, Header(description="Header mode only: the principal, as sent. Ignored in identity mode.")] = None,
+    x_internal_identity: Annotated[
+        str | None, Header(description="Identity mode only: the front door's signed identity. Never send it yourself; the front door overwrites it.")
+    ] = None,
 ) -> SecurityCtx:
-    """Required headers, so a request missing either never reaches an
-    endpoint (FastAPI returns 422 before the handler runs) — fail-closed
-    lives in the *shape* of the dependency, not a runtime check here."""
-    return {"tenant": x_tenant_id, "principal": x_principal_id, "claims": {}}
+    """The caller, by the mode in force. The mode is read per request, so a test (or nothing else) can change it."""
+    if settings.auth_mode == "headers":
+        # Required in this mode, and FastAPI cannot know that when the other mode does not need them, so the check it would have made is made here
+        # and reported in its own words: a request missing either never reaches an endpoint, naming exactly the headers it lacked.
+        absent = [name for name, value in (("x-tenant-id", x_tenant_id), ("x-principal-id", x_principal_id)) if value is None]
+        if absent:
+            raise RequestValidationError([_missing_header(name) for name in absent])
+        return {"tenant": x_tenant_id or "", "principal": x_principal_id or "", "claims": {}}
+
+    verdict = await identity.verifier().verify(x_internal_identity)
+    if isinstance(verdict, Identity):
+        return {"tenant": verdict.tenant, "principal": verdict.principal, "claims": {}}
+    raise identity.refusal_for(verdict)
 
 
 async def get_domain(

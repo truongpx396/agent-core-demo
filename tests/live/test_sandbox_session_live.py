@@ -20,9 +20,9 @@ UNREACHABLE from the host on Docker Desktop for Mac, not merely slow.
 Confirmed directly: a raw `Sandbox.create()` call hung 44+ seconds with
 `use_server_proxy=False` against that unreachable address, then completed
 in under 1.2s with `use_server_proxy=True`. Fixed via
-`scripts/opensandbox_mcp_bridge.py` (see its own docstring for the full
-finding) — `app/domains/sandbox_tools.py` now spawns that wrapper instead
-of the packaged `opensandbox-mcp` binary directly. With the real bug
+`--use-server-proxy` (release 1.1 of the packaged CLI; until then a wrapper
+script forced it) — `app/domains/sandbox_tools.py` now launches
+`python -m opensandbox_mcp ... --use-server-proxy`. With the real bug
 fixed, this test's whole suite (both tests) now completes in ~5s
 end-to-end, reliably — hard-asserting success is the correct bar again,
 not a flakiness risk.
@@ -38,9 +38,8 @@ pytestmark = pytest.mark.sandbox
 
 @pytest.fixture(autouse=True)
 def _require_opensandbox_mcp():
-    # scripts/opensandbox_mcp_bridge.py imports `opensandbox_mcp` as a
-    # LIBRARY (not the CLI binary) — checking importability, not PATH,
-    # matches what this app's own code actually depends on now.
+    # The launch is `python -m opensandbox_mcp` under this interpreter — checking importability,
+    # not PATH, matches what this app's own code actually depends on.
     if importlib.util.find_spec("opensandbox_mcp") is None:
         pytest.skip("opensandbox_mcp not installed — `pip install opensandbox-mcp` (already in requirements.txt)")
 

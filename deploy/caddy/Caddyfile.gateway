@@ -1,0 +1,159 @@
+# TLS and routing for the gateway stack (docker-compose.yml, profile `gateway`; specs/017 and specs/018). Development only: `tls internal`
+# has Caddy sign the certificates with its own local CA (`make mcp-gateway-ca` exports the root so a client can trust it), the names are
+# *.localhost (they resolve to the loopback address with no /etc/hosts entry), and one port serves all three so that an issuer or a resource
+# URL written in a token matches what the client dialled. A deployment replaces the three site addresses with real names and drops
+# `tls internal`; the routing below does not change.
+{
+	# Nothing listens on 80, so there is nothing to redirect from.
+	auto_https disable_redirects
+}
+
+# How Caddy reaches the authlimit service (specs/018). Measured on this Caddy version (specs/018 research R1): the caller's Authorization
+# header reaches the service; a client-sent copy of the identity header never survives `copy_headers` (it deletes before it sets); a 401,
+# 429 or 503 from the service reaches the client with its headers and the upstream is not called; an unreachable service gives a 502 and
+# the upstream is not called (fail closed); `lb_try_duration` and `dynamic a` work inside `forward_auth`.
+(authlimit_pool) {
+	# Every replica Docker's DNS returns is a live upstream, so `deploy.replicas` / `--scale authlimit=N` load-balances with no sticky
+	# routing: the service is stateless apart from caches.
+	dynamic a {
+		name authlimit
+		port 8080
+		refresh 5s
+	}
+	# A replica that cannot decide (no signing key, no usable Casdoor keys, an untrustworthy revocation list) fails /readyz and stops
+	# receiving requests.
+	health_uri /readyz
+	health_interval 10s
+	# A replica that disappears between two health checks is still in the upstream list for up to `refresh`: a failed CONNECT is retried
+	# on another replica for a few seconds instead of reaching the caller as a 502 (measured: 20 of 20 requests with one dead replica,
+	# 7 to 9 of 20 without). Only a failed connect is retried, never a request already delivered, and the check is a bodiless GET.
+	lb_try_duration 5s
+	lb_try_interval 250ms
+	# A dead replica's address answers nothing (no refusal), so a connect to it waits for the dial timeout. Without these two lines every
+	# request that picked it paid that wait until the next health check (found by the smoke check: 133 requests in 14 s instead of ~280,
+	# and one 502 from a request that spent its whole retry window on the dead address). One failed connect marks the replica skipped for
+	# 20 s, and the dial timeout is short because the service is on the same network and answers in milliseconds.
+	fail_duration 20s
+	max_fails 1
+	transport http {
+		dial_timeout 1s
+	}
+}
+
+# The MCP gateway's replicas (the same shape as above).
+(mcp_gateway_pool) {
+	# Every replica Docker's DNS returns is a live upstream, so `--scale mcp-gateway=N` load-balances with no sticky routing: the
+	# gateway is stateless (no MCP session to pin a client to), which is the point of running it that way.
+	dynamic a {
+		name mcp-gateway
+		port 8000
+		refresh 5s
+	}
+	# A replica that cannot reach the signing keys fails /readyz and stops receiving requests, rather than answering every
+	# caller with a 401.
+	# A replica that disappears between two health checks (a stopped container, a crash) is still in the upstream list for up to
+	# `refresh`: a connection that cannot be made to it is retried on another replica for a few seconds instead of reaching the
+	# caller as a 502. Only a failed CONNECT is retried by default, never a request already delivered, and both tools only read.
+	lb_try_duration 5s
+	lb_try_interval 250ms
+	health_uri /readyz
+	health_interval 10s
+	flush_interval -1
+}
+
+# The MCP servers and the metadata documents a client finds them by (RFC 9728 puts those at the host root). Nothing else of
+# mcp-gateway is routed: /healthz and /readyz are for the load balancer, inside the network.
+https://mcp.localhost:8443 {
+	tls internal
+
+	# The MCP routes ask authlimit first, in LIMIT-ONLY mode: it identifies the caller from the token to charge the tenant's and the
+	# person's buckets and to honour revocation, but it never decides authentication here. The MCP gateway verifies the token itself (the
+	# MCP authorization specification requires the server to), so a request with no token, or a bad one, is passed straight through and
+	# the gateway answers it with its own 401 and discovery metadata, which an MCP client depends on. Authorization is NOT removed: the
+	# gateway needs it. There is no `copy_headers`: no identity is minted for this route.
+	@mcp path /ecorp/mcp /ops/mcp
+	handle @mcp {
+		forward_auth {
+			import authlimit_pool
+			uri /v1/check
+		}
+		reverse_proxy {
+			import mcp_gateway_pool
+		}
+	}
+
+	# The discovery documents are public: nothing to check, nothing to limit.
+	@mcp_metadata path /.well-known/oauth-protected-resource/ecorp/mcp /.well-known/oauth-protected-resource/ops/mcp
+	handle @mcp_metadata {
+		reverse_proxy {
+			import mcp_gateway_pool
+		}
+	}
+
+	handle {
+		respond "not found" 404
+	}
+}
+
+# The chat API (specs/018). Every route that is not public asks authlimit first; its answer decides:
+#
+#   2xx   the request goes on to the API with `X-Internal-Identity` set by authlimit (and only by authlimit: `copy_headers` deletes any
+#         client-sent copy first), and with the caller's Authorization header REMOVED, so the API never holds, and can never log, the
+#         external token;
+#   else  authlimit's own answer (401, 403, 429, 503) goes straight back to the client and the API is never called.
+#
+# {$AUTHLIMIT_UPSTREAM} is the service behind the check: the stub that echoes what it received (`authlimit-echo:8000`, the default, which
+# is how `make authlimit-smoke` sees exactly what a real API would have been given) or the API itself (`api:8000`, which is what
+# `make authlimit-up-app` sets, with the API in identity mode so it trusts only the identity this door adds).
+https://api.localhost:8443 {
+	tls internal
+
+	# Not checked: the page and its assets, health, the payment webhook (it authenticates by its signature), the discovery documents.
+	#
+	# Only PLAIN URLs are public here. A request Caddy declares public goes straight to the upstream and authlimit never sees it, so
+	# authlimit's stricter reading of the path cannot rescue a request this matcher lets through: found by the smoke check, where
+	# `/static/a%5c..%5cchat/resume` matched `/static/*` and reached the upstream with no token. A public route never legitimately
+	# contains a percent escape, a backslash, a dot segment or a double slash, so any URL that does is NOT public: it falls through to
+	# the checked handler below, where authlimit classifies it (an unclean path is always verified) and refuses it without a token.
+	@public_path {
+		path / /health /health/ready /static/* /billing/webhooks/* /.well-known/*
+		not expression `{http.request.uri}.matches(r"%|\\|\.\.|//")`
+	}
+	handle @public_path {
+		reverse_proxy {$AUTHLIMIT_UPSTREAM:authlimit-echo:8000} {
+			flush_interval -1
+		}
+	}
+	# A CORS preflight carries no credentials by design, so it cannot be authenticated; the API's CORS middleware answers it.
+	@preflight method OPTIONS
+	handle @preflight {
+		reverse_proxy {$AUTHLIMIT_UPSTREAM:authlimit-echo:8000} {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		forward_auth {
+			import authlimit_pool
+			uri /v1/check
+			copy_headers X-Internal-Identity
+		}
+		# After the check, before the API: the API trusts the identity header and has no use for the external token.
+		request_header -Authorization
+		# The pre-018 way to name the caller. The API ignores these in identity mode, but removing them here means an API flipped to
+		# header mode behind this door still cannot be told who to act as by whoever is on the other end of the connection.
+		request_header -X-Tenant-Id
+		request_header -X-Principal-Id
+		# SSE (a streamed chat turn) must not be buffered or chunk-coalesced.
+		reverse_proxy {$AUTHLIMIT_UPSTREAM:authlimit-echo:8000} {
+			flush_interval -1
+		}
+	}
+}
+
+# The authorization server. Its issuer is this origin (`origin` in the casdoor service), so a token's `iss` and the metadata a client
+# discovers agree.
+https://auth.localhost:8443 {
+	tls internal
+	reverse_proxy casdoor:8000
+}

@@ -47,9 +47,10 @@
 		# SSE (POST /chat/stream/queued) needs the proxy to not buffer/
 		# chunk-coalesce the response — Caddy streams by default, but
 		# flush_interval -1 makes that explicit rather than relying on
-		# the default heuristic. (X-Forwarded-For for
-		# app/api/rate_limit.py's per-tenant limiter needs no directive
-		# here — Caddy's reverse_proxy sets it automatically.)
+		# the default heuristic. (The payment webhook's per-address limit,
+		# app/api/rate_limit.py, keys on the connecting address, which
+		# behind this proxy is the proxy's own; per-tenant and per-person
+		# turn limits are the front door's, services/authlimit.)
 		flush_interval -1
 	}
 

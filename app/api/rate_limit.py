@@ -1,19 +1,16 @@
-"""Per-tenant HTTP rate limiting for app/api/routers/chat.py's turn-creating endpoints —
-a single client (or one compromised tenant) must not flood the shared
-Redis Streams queue (app/job_queue/queue.py) or starve other tenants' turns.
+"""Per-source-address rate limiting for the payment-provider webhook route, the one limit the API still enforces itself.
 
-A plain Starlette middleware over the `limits` library directly (the same
-library slowapi wraps), NOT slowapi's `@limiter.limit(...)` decorator —
-that requires every decorated endpoint to accept a `request: Request`
-param just for the decorator, and this app's tests call handlers directly
-as plain functions (tests/api/test_api.py). A middleware sees the raw
-request without touching any endpoint signature.
+This module used to hold a second limiter, a moving window per TENANT on the turn-creating endpoints (`RATE_LIMIT_PER_MINUTE`, 30). That one is gone
+(spec 018): the limit on how fast a tenant or a person may start turns is enforced at the front door by the authlimit service, before a request reaches
+this process, from a tenant and a person it has just verified, as a token bucket (a burst, then a steady rate) in a Redis it shares with no one's
+queue. Keeping the old one would have been a second policy point: two numbers to tune, the stricter silently winning, and a counter keyed on the
+`X-Tenant-Id` HEADER, which in identity mode is not an input the API trusts at all. Nothing here limits turns any more, and a test says so.
 
-Redis-backed (`limits.storage.RedisStorage`), not in-process memory — a
-per-process counter would stop meaning anything once more than one
-`uvicorn` process is running (pattern 43). Fails OPEN if Redis is
-unreachable, same degrade-don't-crash posture as semantic_cache.py/
-app/core/moderation.py.
+What stays has a reason the front door cannot cover. The webhook has no tenant and no token (the caller is a payment provider, authenticated by its
+signature), and Caddy lets that route through un-checked, so a stranger's flood of forged requests is bounded here, per source address, before the
+app computes a MAC for each. It is a plain Starlette middleware over the `limits` library (the one slowapi wraps), not slowapi's decorator, which
+would make every route take a `request` parameter just for the decorator; Redis-backed, so a second `uvicorn` process shares the count (pattern 43);
+and it fails OPEN if Redis is unreachable, the same degrade-don't-crash posture as semantic_cache.py and app/core/moderation.py.
 """
 import logging
 
@@ -23,24 +20,12 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from app.core import metrics
-from app.core.config import (
-    BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE,
-    RATE_LIMIT_PER_MINUTE,
-    REDIS_URL,
-)
+from app.core.config import BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE, REDIS_URL
 
 logger = logging.getLogger(__name__)
 
-# Only endpoints that trigger real LLM/tool work or a heavy parse/embed job —
-# never health/metrics/session reads, or POST /chat/cancel (stopping a
-# runaway turn must never itself be throttled).
-RATE_LIMITED_PATHS = frozenset(
-    {"/chat/stream/queued", "/chat/resume", "/ingest/upload"}
-)
-
 _storage = storage.storage_from_string(REDIS_URL)
 _strategy = strategies.MovingWindowRateLimiter(_storage)
-_limit = RateLimitItemPerMinute(RATE_LIMIT_PER_MINUTE)
 
 # The payment-provider webhook has no tenant (the caller is a provider, not a person), so it is limited per SOURCE
 # ADDRESS, with its own generous ceiling: a provider redelivering a backlog must not be throttled into a longer
@@ -50,29 +35,16 @@ WEBHOOK_PATH_PREFIX = "/billing/webhooks/"
 _webhook_limit = RateLimitItemPerMinute(BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE)
 
 
-def _tenant_key(request: Request) -> str:
-    """Keyed by TENANT (X-Tenant-Id), not IP — a shared proxy/NAT can put many
-    legitimate tenants behind one IP, and tenant is this app's isolation axis
-    (app/core/security.py). Falls back to client address if the header is
-    missing; that request gets 422'd by get_ctx anyway, this just avoids
-    crashing the limiter first."""
-    tenant = request.headers.get("x-tenant-id")
-    if tenant:
-        return tenant
-    return request.client.host if request.client else "unknown"
-
-
-class TenantRateLimitMiddleware(BaseHTTPMiddleware):
+class WebhookRateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
-        is_webhook = request.url.path.startswith(WEBHOOK_PATH_PREFIX)
-        if request.url.path not in RATE_LIMITED_PATHS and not is_webhook:
+        if not request.url.path.startswith(WEBHOOK_PATH_PREFIX):
             return await call_next(request)
 
         # A tenant header on the webhook route is the sender's own claim: never a reason to key on it.
-        key = f"billing-webhook:{request.client.host if request.client else 'unknown'}" if is_webhook else _tenant_key(request)
+        key = f"billing-webhook:{request.client.host if request.client else 'unknown'}"
         try:
-            allowed = _strategy.hit(_webhook_limit if is_webhook else _limit, key)
-        except Exception as exc:  # noqa: BLE001 - Redis down must not block the core turn, see module docstring
+            allowed = _strategy.hit(_webhook_limit, key)
+        except Exception as exc:  # noqa: BLE001 - Redis down must not block a payment webhook, see module docstring
             logger.warning(
                 "rate_limit_check_failed", extra={"error_class": type(exc).__name__}
             )
@@ -80,10 +52,5 @@ class TenantRateLimitMiddleware(BaseHTTPMiddleware):
 
         if not allowed:
             metrics.agent_rate_limit_exceeded_total.inc()
-            if is_webhook:
-                return JSONResponse({"detail": "Too Many Requests"}, status_code=429)
-            return JSONResponse(
-                {"detail": f"Rate limit exceeded: {RATE_LIMIT_PER_MINUTE} requests per minute per tenant"},
-                status_code=429,
-            )
+            return JSONResponse({"detail": "Too Many Requests"}, status_code=429)
         return await call_next(request)

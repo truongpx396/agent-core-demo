@@ -31,7 +31,7 @@ argon2-cffi-bindings==26.1.0
 attrs==26.1.0
 backoff==2.2.1
 beautifulsoup4==4.15.0
-brotli==1.2.0
+brotli==1.2.1
 certifi==2026.10.19
 cffi==2.1.1
 chardet==7.6.0
@@ -47,7 +47,7 @@ Deprecated==1.3.1
 distro==1.9.0
 fake-useragent==2.2.0
 fastapi==0.141.1
-fastembed==0.8.0
+fastembed==0.9.1
 fastuuid==0.14.0
 filelock==3.32.5
 flatbuffers==25.12.19
@@ -95,7 +95,8 @@ loguru==0.7.3
 lxml==6.1.3
 markdown-it-py==4.2.0
 MarkupSafe==3.0.3
-mcp==1.29.0
+mcp==2.3.0
+mcp-types==2.3.0
 mdurl==0.1.2
 minio==7.2.20
 mmh3==5.3.0
@@ -105,8 +106,8 @@ nltk==3.10.3
 numpy==2.5.3
 onnxruntime==1.29.0
 openai==2.54.0
-opensandbox==0.1.16
-opensandbox-mcp==0.1.1
+opensandbox==1.1.1
+opensandbox-mcp==1.1.1
 opentelemetry-api==1.44.0
 opentelemetry-exporter-otlp-proto-common==1.44.0
 opentelemetry-exporter-otlp-proto-http==1.44.0
@@ -117,7 +118,7 @@ orjson==3.12.0
 ormsgpack==1.12.2
 packaging==24.2
 patchright==1.62.3
-pillow==12.3.0
+pillow==13.0.0
 playwright==1.62.0
 playwright-stealth==2.0.3
 pluggy==1.6.0

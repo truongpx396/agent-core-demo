@@ -172,10 +172,21 @@ def test_a_read_only_tool_call_returns_real_data(page: Page, real_stack: str):
     (postgres-init/02-appdata.sql's seeded `employees` table), not just
     arithmetic the model could plausibly fake. Read-only (TOOL_CAPABILITIES),
     so no approval pause — needs no `real_stack_with_retrieval`, unlike the
-    tests below."""
+    tests below.
+
+    The question is asked BY NAME on purpose. It used to be "Who is Ecorp's Support Lead?", which needs the
+    model to turn a job title into `department=Support`; qwen2.5:3b does not do that reliably, and the gate
+    went red on it from 2026-10-24 (the call it made was `name_contains="Support Lead"`, which matches nobody).
+    Measured on 2026-10-28 against the Ollama this fixture pulls: of nine phrasings of a role question the 3B
+    got none right, seven of them dropped as malformed tool-call JSON; of eight variants of the name question
+    below it got all eight right, and its answer after the tool's real output named the person in all eight.
+    That is a limit of the 3B, not of the tool: qwen2.5:7b, the chat model, got seven of nine role questions
+    right. Whether a model can map a title to a department is not what this test is for. "Dana Whitfield" is
+    still proof of the round trip: the surname exists only in the database row (the question gives the first
+    name alone)."""
     page.goto(real_stack)
 
-    _send(page, "Who is Ecorp's Support Lead? Use the query_employees tool.")
+    _send(page, "Is there anyone named Dana at Ecorp? Use the query_employees tool.")
 
     answer = _answer_of_the_finished_turn(page)
     expect(answer).to_contain_text("Dana Whitfield", timeout=SETTLE_MS)

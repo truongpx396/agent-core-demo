@@ -1,9 +1,9 @@
 """The container image must contain every file the app reads at runtime.
 
 The Dockerfile used to `COPY app/` and nothing else. Skills (`skills/*/SKILL.md`),
-subagents (`subagents/*/AGENT.md`) and the sandbox bridge
-(`scripts/opensandbox_mcp_bridge.py`) all live OUTSIDE `app/`, and every one of
-them degrades quietly when missing: `load_skills()` / `load_subagents()` return
+subagents (`subagents/*/AGENT.md`) and the `scripts/` package all live OUTSIDE `app/`, and each
+degrades quietly when missing (so did the sandbox bridge, until it became a packaged
+module): `load_skills()` / `load_subagents()` return
 `{}` when the directory is absent, and `load_sandbox_tools()` returns no tools
 when the bridge process can't start. So the API and worker containers booted
 healthy and simply had no skills, no delegation and no sandbox — measured
@@ -23,7 +23,6 @@ from pathlib import Path
 import pytest
 
 from app.core.config import Settings
-from app.domains import sandbox_tools
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -48,7 +47,6 @@ def _runtime_files() -> dict[str, str]:
     return {
         "the skill catalog": f"{skills_dir}/onboarding-brief/SKILL.md",
         "the subagent catalog": f"{subagents_dir}/researcher/AGENT.md",
-        "the sandbox MCP bridge": str(Path(sandbox_tools._BRIDGE_SCRIPT).relative_to(REPO)),
         "the scripts package (index_skills, seed, cron jobs)": "scripts/__init__.py",
     }
 

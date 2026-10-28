@@ -25,7 +25,10 @@ def _rules() -> list[dict]:
 def _defined_metrics() -> set[str]:
     # The host defines most metrics; the billing core defines its own four (spec 011: it cannot import the host registry).
     source = "\n".join((REPO / name).read_text() for name in ("app/core/metrics.py", "packages/billing/src/credit_billing/metrics.py"))
-    return set(re.findall(r'^\w+ = (?:Counter|Histogram|Gauge)\(\s*"([a-z_]+)"', source, re.MULTILINE))
+    defined = set(re.findall(r'^\w+ = (?:Counter|Histogram|Gauge)\(\s*"([a-z_]+)"', source, re.MULTILINE))
+    # The authlimit service is Go and defines its metrics as string constants in one file (specs/018): the same rule, a different reader.
+    go_metrics = (REPO / "services/authlimit/internal/telemetry/metrics.go").read_text()
+    return defined | set(re.findall(r'"(agent_authlimit_[a-z_]+)"', go_metrics))
 
 
 def test_every_agent_metric_an_alert_names_is_defined_in_the_code():
@@ -97,6 +100,37 @@ def test_a_router_that_has_lost_its_label_signal_has_an_alert_that_is_silent_whe
     assert "label_none|label_timeout|label_error|label_unknown" in expr and 'outcome!="disabled"' in expr
     assert expr.endswith('and sum(rate(agent_model_route_total{outcome!="disabled"}[15m])) > 0')
     assert rules["ModelRouterLabelUnavailable"]["for"] == "15m" and rules["ModelRouterLabelUnavailable"]["labels"]["severity"] in {"warning", "critical"}
+
+
+def test_a_gateway_that_cannot_check_any_token_has_an_alert():
+    """The gateway fails closed when it cannot confirm the authorization server's signing keys, and a client sees that as an expired
+    login (401), so the counter's `jwks_unavailable` outcome is the only place the outage shows (specs/017)."""
+    (rule,) = [r for r in _rules() if r["alert"] == "McpGatewayCannotCheckTokens"]
+
+    assert "agent_mcp_gateway_requests_total" in rule["expr"] and 'outcome="jwks_unavailable"' in rule["expr"]
+
+
+def test_an_api_left_in_header_mode_has_an_alert_that_says_never_on_the_internet():
+    """Header mode trusts headers any client can set. It is announced at startup, but a warning in a log is read once; the gauge keeps saying it
+    (specs/018) and this rule is what makes someone read it."""
+    (rule,) = [r for r in _rules() if r["alert"] == "ApiHeaderAuthMode"]
+
+    assert rule["expr"] == 'agent_api_auth_mode{mode="headers"} == 1'
+    assert rule["for"] == "10m" and rule["labels"]["severity"] == "warning"
+    assert "internet" in rule["annotations"]["description"] and "AUTH_MODE=identity" in rule["annotations"]["description"]
+
+
+def test_an_api_that_cannot_check_any_identity_has_an_alert_and_so_has_the_failure_before_it():
+    """The API fails closed when the front door's keys cannot be confirmed current, answering 503. That is invisible to the people it hurts as
+    anything but 'the app is down', so the counter's `keys_unavailable` outcome is the only place the outage shows; and the refresh errors
+    that precede it are the early warning, since the grace is what keeps one dead replica from being an outage."""
+    rules = {r["alert"]: r for r in _rules()}
+
+    assert 'agent_api_identity_total{outcome="keys_unavailable"}' in rules["ApiCannotCheckIdentity"]["expr"]
+    assert rules["ApiCannotCheckIdentity"]["labels"]["severity"] == "critical"
+    refresh = rules["ApiIdentityKeysRefreshFailing"]["expr"]
+    assert 'result="error"' in refresh and 'result="ok"' in refresh, "errors with NO success: one failed fetch among good ones is not a page"
+    assert " unless " in refresh, "an absent `ok` series (never fetched) must still fire: `and ... == 0` would be an empty result there"
 
 
 def test_a_worker_pool_that_answers_nothing_has_an_alert():
@@ -172,3 +206,36 @@ def test_the_stuck_alert_fires_well_before_the_age_limit_expires_events():
     expr = next(rule["expr"] for rule in _rules() if rule["alert"] == "UsageExportStuck")
 
     assert int(expr.rsplit(">", 1)[1]) < 30 * 86400
+
+
+def test_the_authlimit_metrics_come_from_the_go_services_own_file():
+    defined = _defined_metrics()
+
+    assert {"agent_authlimit_requests_total", "agent_authlimit_ready", "agent_authlimit_keys_age_seconds"} <= defined, (
+        "the Go service's metric names must be visible to the drift check, or an alert on one of them could never be checked"
+    )
+
+
+def test_the_authlimit_degrade_paths_each_have_an_alert():
+    """Principle V: a path that leaves a person unaware must have an alert. These are the service's (spec 018, FR-031)."""
+    rules = {r["alert"]: r for r in _rules()}
+    expected = {
+        "AuthlimitCannotCheckTokens": 'reason="keys_unavailable"',   # keys unusable beyond the grace: everything refused
+        "AuthlimitKeysStale": "agent_authlimit_keys_age_seconds",   # the first failed refresh, long before the grace ends
+        "AuthlimitLimiterStoreDown": 'store="limiter"',             # the limiter failing OPEN: limits silently not enforced
+        "AuthlimitRevocationStale": "agent_authlimit_revocation_age_seconds",
+        "AuthlimitReplicasDown": "agent_authlimit_ready",
+    }
+
+    for name, needle in expected.items():
+        assert name in rules, name
+        assert needle in rules[name]["expr"], f"{name}: {rules[name]['expr']!r} does not name {needle}"
+        assert rules[name]["labels"]["severity"] in {"warning", "critical"}, "only severities the alert routing knows"
+
+
+def test_the_replica_alert_does_not_fire_forever_where_the_service_is_not_deployed():
+    """Production does not run authlimit yet. An `absent()` alone would fire there for ever; the expression only counts a vanished service
+    that was reporting half an hour ago."""
+    (rule,) = [r for r in _rules() if r["alert"] == "AuthlimitReplicasDown"]
+
+    assert "absent(agent_authlimit_ready)" in rule["expr"] and "offset 30m" in rule["expr"]

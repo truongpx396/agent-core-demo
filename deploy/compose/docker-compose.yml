@@ -66,6 +66,13 @@ x-app-build: &app-build
   context: .
   target: runtime
 
+# The authlimit service image (specs/018): a self-contained Go module with its own Dockerfile and build context, not the root Dockerfile.
+# Two services (the service and its smoke-check stand-in upstream) use it, so the build is described once.
+x-authlimit-image: &authlimit-image
+  image: authlimit:dev
+  build:
+    context: ./services/authlimit
+
 # Runtime hardening for the images this repo builds (api, the workers, ml-service). Nothing here changes what the app does; each line
 # removes something the process never needed:
 #   init                    a real PID 1: reaps the sandbox bridge's child processes and forwards SIGTERM, so `stop_grace_period` is honoured
@@ -502,6 +509,203 @@ services:
       # releases refuse to start in non-interactive mode without one.
       OPENSANDBOX_SERVER_API_KEY: ${OPENSANDBOX_API_KEY}
 
+  # --- The MCP gateway (opt-in `gateway` profile; `make mcp-gateway-up`; specs/017) ---
+  # The published MCP servers (app/mcp/server.py, ops_server.py) over Streamable HTTP behind OAuth 2.1, for clients that are not a child
+  # process of the person using them: caddy-gateway terminates TLS, mcp-gateway is the resource server, casdoor is the authorization
+  # server that issues the tokens. Local development only: the names are *.localhost, the certificates come from Caddy's own CA and the
+  # one published port is bound to loopback. A deployment would put real names, ACME and its own identity provider in their place
+  # (the gateway only needs an issuer URL and a JWKS URL; nothing in it is Casdoor-specific).
+  #
+  # Casdoor ships a new release almost every day, so it is pinned by digest (the tag stays for the reader); to move it, take the new tag's
+  # digest from Docker Hub, run `make mcp-gateway-up`, then `make mcp-gateway-bootstrap`, and read the token it mints
+  # (specs/017-mcp-gateway/research.md lists the claims and behaviours this repo depends on: `aud` from the `resource` parameter, the
+  # JWT-Standard claim set, S256 PKCE, dynamic registration off).
+  #
+  # Its own Postgres, not this stack's shared `postgres` service: Casdoor owns and migrates its schema on an upgrade, the same
+  # reasoning as sonarqube-db below.
+  # The two passwords come from `make mcp-gateway-up` (a second --env-file, outside the repo). They default to EMPTY here, not to
+  # `${VAR:?message}`: compose interpolates the WHOLE file on every command, profile or not, so a required variable would make
+  # `make up` itself fail for everyone who never starts this stack. Empty is safe: Postgres refuses to initialise without a
+  # superuser password and Casdoor reports that the admin password is not set, so a bare `docker compose --profile gateway up`
+  # fails at start instead of running with a blank secret.
+  casdoor-db:
+    image: postgres:16-alpine@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36
+    profiles: ["gateway"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: casdoor
+      POSTGRES_PASSWORD: ${CASDOOR_DB_PASSWORD:-}
+      POSTGRES_DB: casdoor
+    volumes:
+      - casdoor-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U casdoor -d casdoor"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  casdoor:
+    image: casbin/casdoor:v4.24.0@sha256:b7a2005518396a1d800ad77a695a4edb0c73eb1123070c35b5624440d5fdc550
+    profiles: ["gateway"]
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      driverName: postgres
+      dataSourceName: user=casdoor password=${CASDOOR_DB_PASSWORD:-} host=casdoor-db port=5432 sslmode=disable dbname=casdoor
+      dbName: casdoor
+      runmode: prod
+      # Every URL Casdoor generates (the issuer in a token's `iss`, the discovery document) is derived from this, not from the Host
+      # header of the request (measured: with it unset the issuer followed whatever Host a caller sent). It must equal MCP_GATEWAY_ISSUER.
+      origin: ${MCP_GATEWAY_ISSUER:-https://auth.localhost:8443}
+      # This version has no default admin password ("set initAdminPassword before the first start"); `make mcp-gateway-up` generates one.
+      initAdminPassword: ${CASDOOR_ADMIN_PASSWORD:-}
+    depends_on:
+      casdoor-db:
+        condition: service_healthy
+    # No `ports`: reached through caddy-gateway (the browser login) and, inside the network, by mcp-gateway (the signing keys).
+
+  mcp-gateway:
+    <<: *hardened
+    build: *app-build
+    profiles: ["gateway"]
+    restart: unless-stopped
+    command: ["python", "-m", "app.mcp.gateway", "--host", "0.0.0.0", "--port", "8000"]
+    # Only what the two published tools read: the app database and Prometheus, plus the gateway's own settings. Not the LLM keys, not
+    # Redis, not the sandbox key: this process is reachable by anyone holding a token and holds nothing it does not use.
+    environment:
+      APPDATA_DATABASE_URL: postgresql://langfuse:langfuse@postgres:5432/appdata
+      PROMETHEUS_URL: ${MCP_GATEWAY_PROMETHEUS_URL:-http://host.docker.internal:9090}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${MCP_GATEWAY_OTLP_ENDPOINT-http://host.docker.internal:4318}
+      MCP_GATEWAY_PUBLIC_URL: ${MCP_GATEWAY_PUBLIC_URL:-https://mcp.localhost:8443}
+      MCP_GATEWAY_ISSUER: ${MCP_GATEWAY_ISSUER:-https://auth.localhost:8443}
+      # In-network name and plain http: the keys are fetched by this process, not shown to a client, so only the ISSUER has to be public.
+      MCP_GATEWAY_JWKS_URL: http://casdoor:8000/.well-known/jwks
+      MCP_GATEWAY_OPS_TENANTS: ${MCP_GATEWAY_OPS_TENANTS:-ops-team}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Ready means "can check a token": a replica that cannot reach the signing keys is taken out of rotation instead of answering 401.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      casdoor:
+        condition: service_healthy
+    # Stateless, so any number of replicas behind caddy-gateway's `dynamic a` (deploy/caddy/Caddyfile.gateway):
+    #   docker compose --profile gateway up -d --scale mcp-gateway=3 --no-recreate
+
+  caddy-gateway:
+    image: caddy:2.11.7@sha256:504a44d7d74bd2bc28a66afc4774912fc21223ca8a67734af1c54ab2f999b489
+    profiles: ["gateway"]
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # What sits behind the chat-API site's check (deploy/caddy/Caddyfile.gateway): the stub that echoes what it received, or `api:8000`.
+      # Resolved by compose's `:-`, not Caddy's own default, which only fires on a completely UNSET variable and not on a set-but-empty one.
+      AUTHLIMIT_UPSTREAM: ${AUTHLIMIT_UPSTREAM:-authlimit-echo:8000}
+    ports:
+      # Loopback only: this is a development stack with Casdoor's admin UI behind it.
+      - "127.0.0.1:8443:8443"
+    volumes:
+      - ./deploy/caddy/Caddyfile.gateway:/etc/caddy/Caddyfile:ro
+      - caddy-gateway-data:/data    # the local CA (and its root certificate: `make mcp-gateway-ca`) lives here
+      - caddy-gateway-config:/config
+    depends_on:
+      mcp-gateway:
+        condition: service_healthy
+      casdoor:
+        condition: service_healthy
+      authlimit:
+        condition: service_healthy
+      authlimit-echo:
+        condition: service_healthy
+
+  # --- authlimit: the edge authentication and rate-limit service (profile `gateway`; specs/018) ---
+  # Caddy asks it about every request (`forward_auth`, deploy/caddy/Caddyfile.gateway). It verifies the Casdoor access token offline,
+  # charges the tenant's and the person's token buckets in Redis, refuses revoked people, and answers with a short-lived signed identity
+  # that Caddy copies onto the request. It is stateless apart from caches: two replicas by default, any number works behind Caddy's
+  # `dynamic a`. Needs `make up` (Redis) and `make authlimit-keys` (the signing key) first.
+  authlimit:
+    <<: *authlimit-image
+    profiles: ["gateway"]
+    restart: unless-stopped
+    init: true
+    deploy:
+      replicas: 2
+    # The host user, so the key directory (created by `make authlimit-keys` with mode 700, owned by them) is readable. The image's own
+    # user (65532) cannot read a directory only its owner may enter. `AUTHLIMIT_UID`/`GID` are set by the Makefile; without them the
+    # default stays valid so no other compose command is affected, and the service fails at start with a clear message about the keys.
+    user: "${AUTHLIMIT_UID:-65532}:${AUTHLIMIT_GID:-65532}"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    environment:
+      AUTHLIMIT_ISSUER: ${AUTHLIMIT_ISSUER:-https://auth.localhost:8443}
+      # In-network name and plain http: the keys are fetched by this process, not shown to a client, so only the ISSUER has to be public.
+      AUTHLIMIT_JWKS_URL: http://casdoor:8000/.well-known/jwks
+      AUTHLIMIT_AUDIENCE: ${AUTHLIMIT_AUDIENCE:-https://api.localhost:8443}
+      AUTHLIMIT_REDIS_URL: redis://redis:6379
+      AUTHLIMIT_KEYS_DIR: /keys
+      AUTHLIMIT_KEYS_ALLOW_LOOSE_PERMS: ${AUTHLIMIT_KEYS_ALLOW_LOOSE_PERMS:-false}
+      AUTHLIMIT_LIMIT_MODE: ${AUTHLIMIT_LIMIT_MODE:-enforce}
+      # The key cache's timings, here so `make authlimit-smoke` can shorten them to watch a Casdoor outage in seconds, not hours.
+      AUTHLIMIT_JWKS_CACHE_SECONDS: ${AUTHLIMIT_JWKS_CACHE_SECONDS:-300}
+      AUTHLIMIT_JWKS_MIN_REFRESH_SECONDS: ${AUTHLIMIT_JWKS_MIN_REFRESH_SECONDS:-30}
+      AUTHLIMIT_JWKS_STALE_GRACE_SECONDS: ${AUTHLIMIT_JWKS_STALE_GRACE_SECONDS:-21600}
+      AUTHLIMIT_REVOCATION_POLL_MS: ${AUTHLIMIT_REVOCATION_POLL_MS:-1000}
+      AUTHLIMIT_MCP_METADATA_URL_TEMPLATE: ${MCP_GATEWAY_PUBLIC_URL:-https://mcp.localhost:8443}/.well-known/oauth-protected-resource{path}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${AUTHLIMIT_OTLP_ENDPOINT-http://host.docker.internal:4318}
+    volumes:
+      # The signing keys, read-only. Outside the repository (the convention of `make mcp-gateway-secrets`): see `make authlimit-keys`.
+      - ${AUTHLIMIT_KEYS_DIR:-${HOME:-/tmp}/.cache/agent-core-demo-authlimit/keys}:/keys:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # so OTEL_EXPORTER_OTLP_ENDPOINT resolves on native Linux Docker too
+    # Ready means "can decide a request": a signing key, usable Casdoor keys, a trustworthy revocation list. A replica that cannot is
+    # taken out of rotation by Caddy's health check (`health_uri /readyz`), and shows unhealthy here.
+    healthcheck:
+      test: ["CMD", "/authlimit", "healthcheck", "--ready"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    depends_on:
+      redis:
+        condition: service_healthy
+      casdoor:
+        condition: service_healthy
+
+  # The stand-in upstream for the smoke check (`make authlimit-smoke`): it answers every request with the headers it received, which is how
+  # the check proves what a real API would have been given. A test fixture; the same image as authlimit, a different binary.
+  authlimit-echo:
+    <<: *authlimit-image
+    profiles: ["gateway"]
+    restart: unless-stopped
+    init: true
+    entrypoint: ["/echo"]
+    user: "65532:65532"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    environment:
+      AUTHLIMIT_LISTEN: ":8000"   # read only by the healthcheck below
+    healthcheck:
+      test: ["CMD", "/authlimit", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # --- Self-hosted SonarQube Community Edition (`make sonar-up` / `docker
   # compose --profile quality up -d`) — a PERSISTENT server, unlike
   # .github/workflows/ci.yml's own ephemeral per-run `sonarqube` job (see
@@ -582,7 +786,18 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
-    environment: *app-env
+    environment:
+      <<: *app-env
+      # Who is calling (spec 018). Header mode by default HERE because this role is published straight on :8000 with nothing in front of it
+      # (`--profile app` alone): it trusts X-Tenant-Id / X-Principal-Id as sent, loudly (a startup warning, agent_api_auth_mode). `make
+      # authlimit-up-app` sets AUTH_MODE=identity and points Caddy at this service, after which only the signed identity the front door adds
+      # is trusted and a request that skips Caddy and comes straight to :8000 is a 401. The keys address is the authlimit service by its
+      # in-network name (no dependency on it: the API starts first and answers 503 until the keys can be fetched, instead of not starting).
+      AUTH_MODE: ${AUTH_MODE:-headers}
+      AUTHLIMIT_KEYS_URL: ${AUTHLIMIT_KEYS_URL:-http://authlimit:8080/internal/jwks.json}
+      # What the built-in page signs in against: the SAME names and defaults the authlimit service reads, so one override changes both.
+      WEB_AUTH_ISSUER: ${AUTHLIMIT_ISSUER:-https://auth.localhost:8443}
+      WEB_AUTH_AUDIENCE: ${AUTHLIMIT_AUDIENCE:-https://api.localhost:8443}
     extra_hosts:
       - "host.docker.internal:host-gateway"   # so OTEL_EXPORTER_OTLP_ENDPOINT resolves on native Linux Docker too
     depends_on:
@@ -705,3 +920,6 @@ volumes:
   sonarqube-data:
   sonarqube-extensions:
   sonarqube-logs:
+  casdoor-db-data:
+  caddy-gateway-data:
+  caddy-gateway-config:

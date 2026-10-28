@@ -15,8 +15,15 @@ COMPOSE = Path(__file__).resolve().parents[2] / "deploy" / "compose"
 DEV, PROD = COMPOSE / "docker-compose.yml", COMPOSE / "docker-compose.prod.yml"
 # The services running an image this repo builds, per file. Production only pulls them; the dev file builds them.
 HARDENED = {
-    DEV: ["api", "agent-worker", "agent-worker-support", "agent-worker-ops", "agent-worker-sales", "ingest-worker", "ml-service"],
+    DEV: ["api", "agent-worker", "agent-worker-support", "agent-worker-ops", "agent-worker-sales", "ingest-worker", "ml-service", "mcp-gateway"],
     PROD: ["api", "agent-worker", "ingest-worker", "ml-service"],
+}
+# Hardened on purpose but not an app-user Python image: the Go edge service (specs/018, services/authlimit) and its smoke-check stand-in
+# upstream ship a static binary on a distroless non-root base with no shell, so they have no $HOME for a tmpfs to cover and a different set
+# of write paths. They get their own check below instead of the Python roles' (which would demand /home/appuser).
+GO_HARDENED = {
+    DEV: ["authlimit", "authlimit-echo"],
+    PROD: [],
 }
 
 
@@ -40,8 +47,24 @@ def test_the_flags_do_not_spread_to_services_nobody_has_checked_the_write_paths_
     piece of work. The anchor is merged service by service, never applied to all."""
     for path, names in HARDENED.items():
         for name, service in _services(path).items():
-            if name not in names:
+            if name not in names and name not in GO_HARDENED[path]:
                 assert not service.get("read_only") and not service.get("cap_drop"), f"{path.name} {name} was hardened without being listed here"
+
+
+def test_the_go_edge_service_and_its_stand_in_keep_their_hardening():
+    """They are listed apart from the Python roles (no $HOME, a distroless image), so nothing else would notice one losing a flag. Each runs
+    as a numeric non-root user, which a distroless image needs spelled out, and writes nothing to its root filesystem."""
+    for path, names in GO_HARDENED.items():
+        services = _services(path)
+        for name in names:
+            service = services[name]
+            assert service.get("init") is True, f"{path.name} {name}: init"
+            assert service.get("security_opt") == ["no-new-privileges:true"], f"{path.name} {name}: no-new-privileges"
+            assert service.get("cap_drop") == ["ALL"], f"{path.name} {name}: cap_drop"
+            assert service.get("read_only") is True, f"{path.name} {name}: read_only"
+            uid = str(service.get("user", "")).split(":")[0]
+            assert uid.isdigit() or uid.startswith("${"), f"{path.name} {name}: user must be numeric (or the AUTHLIMIT_UID default), got {uid!r}"
+            assert uid != "0", f"{path.name} {name}: not root"
 
 
 def test_what_the_app_writes_at_runtime_goes_to_size_capped_ram_not_to_the_image():

@@ -334,7 +334,9 @@ running?" error within the deadline rather than hanging; confirm readiness repor
   entries — A3.)*
 - **FR-027**: The turn-creating endpoints MUST be rate-limited per tenant over a moving window, the limiter MUST
   fail open if its store is down, and cancel, health and read endpoints MUST never be limited. (Detail:
-  feature 001's `chat-turn-http.md`.)
+  feature 001's `chat-turn-http.md`.) *(Superseded by spec 018, FR-029: the API no longer limits turns itself. The same rules now
+  hold at the front door, `services/authlimit`, as a token bucket per tenant and per person: turn-creating routes limited, cancel,
+  health and reads never, the limiter failing open. The API keeps only the payment webhook's per-source-address limit.)*
 - **FR-028**: The HTTP service MUST expose liveness and readiness; each worker and channel process SHOULD expose
   a health signal of its own. *(None exists, and the inherited image probe cannot pass for them — A4.)*
 

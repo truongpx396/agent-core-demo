@@ -498,6 +498,15 @@ agent_streaming_cancellation_total = Counter(
     "for a turn that wasn't paused at human_approval when the stop was requested",
 )
 
+agent_cancelled_turn_discarded_total = Counter(
+    "agent_cancelled_turn_discarded_total",
+    "What the thread got when a turn was stopped with POST /chat/cancel (app/agent/runtime/cancelled_turn.py, pattern 80): "
+    "`dropped` = the whole turn was taken out so the next one cannot act on it, `closed` = a tool had already run, so the "
+    "turn stays and ends with a line saying the person stopped it, `nothing` = no turn in the thread, `failed` = the "
+    "thread could not be tidied and still holds the stopped message",
+    ["outcome"],
+)
+
 agent_context_window_exceeded_total = Counter(
     "agent_context_window_exceeded_total",
     "Turns ended at the context_window_exceeded terminal node: the cumulative "
@@ -508,7 +517,8 @@ agent_context_window_exceeded_total = Counter(
 
 agent_rate_limit_exceeded_total = Counter(
     "agent_rate_limit_exceeded_total",
-    "HTTP requests rejected by app/api/main.py's per-tenant rate limiter (RATE_LIMIT_PER_MINUTE)",
+    "Payment-webhook requests rejected by app/api/rate_limit.py's per-source-address limit (BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE). "
+    "The per-tenant limiter that also counted here was removed in spec 018: turn limits are enforced at the front door, the authlimit service",
 )
 
 agent_budget_exceeded_total = Counter(
@@ -663,6 +673,85 @@ agent_circuit_breaker_half_open_total = Counter(
     "never gets hit with a burst the instant its cooldown expires.",
     ["dependency"],
 )
+
+agent_mcp_tool_pin_failures_total = Counter(
+    "agent_mcp_tool_pin_failures_total",
+    "A remote MCP tool the caller pinned (app/mcp/client.py::load_remote_tools `pinned`: the tool's name plus a hash of its "
+    "description and input schema) was left OUT of the catalog because the server now offers something else under that name "
+    "(reason=changed) or no longer offers it (reason=missing). The hash covers exactly the text the model is shown, so a "
+    "changed one is the signature of a dependency upgrade nobody reviewed, or of a server that rewrote its own tool "
+    "descriptions after the pin was taken: the tool's description is where tool-poisoning instructions live, and the "
+    "capability tier is local so it cannot be widened from there, but what the model is TOLD can. The feature behind the tool "
+    "is unavailable until someone re-pins it on purpose.",
+    ["dependency", "reason"],
+)  # reason: changed | missing
+
+agent_tool_output_truncated_total = Counter(
+    "agent_tool_output_truncated_total",
+    "A tool's text reached the model shorter than the tool produced it, because it exceeded MCP_TOOL_OUTPUT_MAX_CHARS "
+    "(app/core/output_limits.py: head and tail kept, the middle replaced by a marker that says how much). Not an error and "
+    "not alerted: a sandbox command that prints a megabyte is exactly what the cap exists for. A sustained rate on one "
+    "dependency means the cap is too small for what that tool legitimately returns, or a tool is being asked for something "
+    "it should be paginating.",
+    ["dependency"],
+)
+
+agent_mcp_connection_events_total = Counter(
+    "agent_mcp_connection_events_total",
+    "Lifecycle of the long-lived stdio connection to a remote MCP server (app/mcp/connection.py): started (first process "
+    "spawned on this event loop), restarted (a new one after the previous was lost), lost (found dead, or recycled after "
+    "three timeouts in a row with no success between), closed (shut down on purpose). Before the connection was kept open "
+    "a process was spawned per call, so this had no meaning; now `restarted` and `lost` are the signal that a bridge keeps "
+    "dying. A call that was in flight when the server died is not replayed, so each `lost` can be one failed tool call.",
+    ["dependency", "event"],
+)  # event: started | restarted | lost | closed
+
+agent_sandbox_unavailable_total = Counter(
+    "agent_sandbox_unavailable_total",
+    "The sandbox tool catalog could not be loaded (app/domains/sandbox_tools.py::load_sandbox_tools): the feature degrades "
+    "to 'no sandbox tools' and the turn goes on, which before this counter was a log line nobody was watching (specs/009 A9). "
+    "reason=connection|timeout when the bridge started but could not be used, circuit_open when the breaker is refusing "
+    "to try, other for anything else (opensandbox-mcp not installed, crashing at start, an SDK it cannot import).",
+    ["reason"],
+)  # reason: connection | timeout | circuit_open | other
+
+agent_mcp_gateway_requests_total = Counter(
+    "agent_mcp_gateway_requests_total",
+    "What the MCP gateway (app/mcp/gateway.py) decided about the bearer token of a request, per published server: ok (a valid "
+    "token for this server), invalid_token (bad signature, wrong or missing audience, expired, an algorithm outside the "
+    "allow-list, an unknown key id), jwks_unavailable (the authorization server's signing keys could not be confirmed current, "
+    "so NO token could be checked: to a client that looks like an expired login, so this label is the only place the outage "
+    "shows), forbidden_tenant (a valid token whose tenant may not use this server). A request with no token, or without the "
+    "required scope, is answered by the SDK before this code runs and is not counted here.",
+    ["server", "outcome"],
+)  # server: ecorp | ops; outcome: ok | invalid_token | jwks_unavailable | forbidden_tenant
+
+agent_api_identity_total = Counter(
+    "agent_api_identity_total",
+    "What the API decided about the internal identity of a request in identity mode (app/core/internal_identity.py, specs/018): ok, or "
+    "the reason it was refused. missing (no identity header: the front door was bypassed or is not in front of this API), malformed, "
+    "algorithm, type (the wrong `typ`), unknown_kid, signature, expired, not_yet_valid, issuer, audience, claims (no tenant or no "
+    "subject), unexpected (the verifier itself failed, refused all the same), and keys_unavailable (the front door's public keys could "
+    "not be confirmed current, so NO identity could be checked: the request is answered 503, not 401, and this label is the only place "
+    "the outage shows). Never a token and never a claim.",
+    ["outcome"],
+)  # outcome: ok | missing | malformed | algorithm | type | unknown_kid | signature | expired | not_yet_valid | issuer | audience | claims | unexpected | keys_unavailable
+
+agent_api_identity_key_refresh_total = Counter(
+    "agent_api_identity_key_refresh_total",
+    "Fetches of the front door's public signing keys (AUTHLIMIT_KEYS_URL) by the API: ok, or error (unreachable, a bad status, a body that "
+    "is not a key set, or a key set with no usable key). An error keeps the last keys in use for AUTHLIMIT_KEYS_STALE_GRACE_SECONDS.",
+    ["result"],
+)  # result: ok | error
+
+agent_api_auth_mode = Gauge(
+    "agent_api_auth_mode",
+    "Which way the API learns who is calling (AUTH_MODE, specs/018): 1 for the mode in force and 0 for the other, one series each. `identity` "
+    "trusts only the signed identity the front door adds; `headers` trusts X-Tenant-Id and X-Principal-Id as any client sends them and must "
+    "never face the internet: alert ApiHeaderAuthMode. The API re-sets it every minute (the collector forgets a series 5 minutes after its "
+    "last update, so a value set once at startup would vanish).",
+    labelnames=["mode"],
+)  # mode: identity | headers
 
 agent_team_channel_notify_total = Counter(
     "agent_team_channel_notify_total",

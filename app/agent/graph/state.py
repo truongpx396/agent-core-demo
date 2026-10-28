@@ -192,18 +192,17 @@ class State(TypedDict):
     history_summary: str  # Set by compact_history — cumulative summary of
     # what _messages_to_trim has discarded, across the WHOLE thread's
     # lifetime. NOT reset per-turn (unlike citations/followups) — it
-    # accumulates like the checkpointed message list itself. Injected by
-    # agent() as an early SystemMessage (pattern 41).
+    # accumulates like the checkpointed message list itself. agent() sends it as
+    # text ahead of the turn's question (patterns 41 and 79).
     context_anchor_index: int | None  # Set by retrieve_context, alongside
     # `context` — the index, in THAT MOMENT's state["messages"], of the
     # human message that opened this turn. Only appends happen after this
     # point for the rest of the turn, so the index stays valid throughout
-    # the agent<->tools/check_output<->retry_output loop. agent() re-locates
-    # this fixed position on every call to splice history_summary/context
-    # right before the turn's question, rather than at the current tail —
-    # see agent()'s own docstring for why a SHIFTING position broke
-    # prefix-cache reuse. `None` = unset: validate_input resets it (and
-    # `context`) every turn, so a turn that never reaches retrieve_context —
-    # a semantic-cache hit that then fails check_output — can't splice the
-    # PREVIOUS turn's context at the previous turn's index. agent() appends
-    # at the tail when it is missing.
+    # the agent<->tools/check_output<->retry_output loop. agent() finds the
+    # question here on every call and puts history_summary/context on it
+    # (`messages.with_turn_notes`, pattern 79), rather than on whatever is
+    # last now. `None` = unset: validate_input resets it (and `context`)
+    # every turn, so a turn that never reaches retrieve_context — a
+    # semantic-cache hit that then fails check_output — can't put the
+    # PREVIOUS turn's context on the previous turn's question. agent() falls
+    # back to the last message the person sent when it is missing.

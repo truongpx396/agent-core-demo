@@ -86,16 +86,30 @@ def _same(example_value: str, default) -> bool:
     return example_value == str(default)
 
 
+# Entries that DELIBERATELY say something other than the default, each with the value they must say and why. Anything not listed here must equal
+# the real default; a value listed here must be exactly what is written, so this is a pin and not an escape hatch.
+DELIBERATELY_NOT_THE_DEFAULT = {
+    # The default is `identity` (the API trusts only the front door's signed identity). A developer who copies this file and runs `make serve` has
+    # no front door in front of the API, so the copy must work as it is: header mode, chosen explicitly (specs/018, assumption A9). The production
+    # example says `identity` (tests/core/test_config_auth_mode.py pins that).
+    "AUTH_MODE": "headers",
+}
+
+
 def test_a_listed_default_is_the_settings_real_default():
     """A commented line documents the value used when it stays commented, so it
     must be the real one; a drifted default is worse than none. Active entries
     that deliberately differ from the default (keys an operator must fill in) are
-    left empty here and so compare equal."""
+    left empty here and so compare equal; the ones that differ on purpose and
+    carry a value are named in DELIBERATELY_NOT_THE_DEFAULT."""
     # `get_default` also resolves a `default_factory` (BILLING_WEBHOOK_SECRETS: an empty dict), which `.default` does not.
     defaults = {name.upper(): field.get_default(call_default_factory=True) for name, field in Settings.model_fields.items()}
     mismatched = []
     for name, value in _VALUE.findall((REPO / ".env.example").read_text()):
-        if name in defaults and not _same(value, defaults[name]):
+        if name in DELIBERATELY_NOT_THE_DEFAULT:
+            if value != DELIBERATELY_NOT_THE_DEFAULT[name]:
+                mismatched.append(f"{name}: .env.example says {value!r}, it must say {DELIBERATELY_NOT_THE_DEFAULT[name]!r} (see the table above)")
+        elif name in defaults and not _same(value, defaults[name]):
             mismatched.append(f"{name}: .env.example says {value!r}, Settings default is {defaults[name]!r}")
 
     assert not mismatched, "\n".join(mismatched)

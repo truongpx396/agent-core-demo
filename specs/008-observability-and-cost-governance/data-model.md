@@ -53,7 +53,7 @@ Two Postgres tables, one metric catalog, two log shapes, a trace, and the config
 | `agent_cancellation_total` | Counter | — | — | yes |
 | `agent_streaming_cancellation_total` | Counter | — | — | yes |
 | `agent_context_window_exceeded_total` | Counter | — | — | yes |
-| `agent_rate_limit_exceeded_total` | Counter | — | RateLimitRejectionSpike | yes |
+| `agent_rate_limit_exceeded_total` | Counter | — | WebhookRateLimitRejectionSpike (was RateLimitRejectionSpike; counts payment-webhook rejections only since spec 018) | yes |
 | `agent_budget_exceeded_total` | Counter | `scope`, `window` | TenantBudgetExceeded (scope=tenant) | yes |
 | `agent_budget_threshold_total` | Counter | `scope`, `window`, `threshold` (70/85/95) | TenantBudgetNearLimit (scope=tenant, 95) | yes |
 | `agent_gateway_budget_exceeded_total` | Counter | — | GatewayBudgetExceeded | yes |

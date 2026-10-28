@@ -43,9 +43,9 @@ The **assistant** (these four tools are its whole sandbox interface) and an **op
 
 ## Deployment requirements
 
-- The sandbox service (`opensandbox-server`, own `sandbox` compose profile) must be reachable at `OPENSANDBOX_MCP_DOMAIN` with `OPENSANDBOX_API_KEY`; the host needs `opensandbox-mcp` and the bridge script; the sandbox image must exist (`make sandbox-build`).
+- The sandbox service (`opensandbox-server`, own `sandbox` compose profile) must be reachable at `OPENSANDBOX_MCP_DOMAIN` with `OPENSANDBOX_API_KEY`; the host needs `opensandbox-mcp` (launched as `python -m opensandbox_mcp --use-server-proxy`); the sandbox image must exist (`make sandbox-build`).
 - The control-plane container holds the host's container-runtime socket **read-write** (disclosed; opt-in profile).
-- **Not in any image**: `scripts/opensandbox_mcp_bridge.py` (B23).
+- **In every image**: `opensandbox-mcp` is an installed package. The wrapper script that B23 found missing from the images no longer exists, and CI's `docker-build` job runs the real loader in the built image.
 
 ## Invariants a change must preserve
 

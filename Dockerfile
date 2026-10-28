@@ -127,12 +127,12 @@ COPY app/ ./app/
 #   skills/, subagents/ — the catalogs `load_skills()` / `load_subagents()` scan
 #       (`SKILLS_DIR` / `SUBAGENTS_DIR`, relative to WORKDIR); an absent
 #       directory is `{}`, not an error.
-#   scripts/ — `opensandbox_mcp_bridge.py`, which `load_sandbox_tools()` spawns
-#       with this interpreter (no bridge: zero sandbox tools, with only a
-#       logged warning), plus `python -m scripts.index_skills` / `seed` and the
+#   scripts/ — `python -m scripts.index_skills` / `seed` and the
 #       cron jobs (`ops_digest`, `followup_sweep`, `tool_call_dedup_sweep`) that
 #       an operator runs inside the container. The whole package ships rather
 #       than a hand-picked list that would drift the next time one is added.
+#       (`load_sandbox_tools()` needs no file from here any more: it runs the
+#       installed `opensandbox_mcp` package, `python -m opensandbox_mcp`.)
 # tests/test_dockerfile_runtime_files.py fails if one of these stops being copied
 # (or is dropped by .dockerignore); CI's `docker-build` job runs the built image
 # to prove they actually landed.

@@ -42,6 +42,12 @@ class ErrorCode(str, Enum):
     THREAD_BUSY = "thread_busy"
     NO_PROGRESS = "no_progress"
     WORKER_LOST = "worker_lost"
+    # The four the front door (the authlimit service, specs/018) answers with, in the same envelope; the API itself emits the first and
+    # the last (a request that reaches it with no valid identity, or while it cannot check one). See AUTH_ERRORS.
+    UNAUTHENTICATED = "unauthenticated"
+    FORBIDDEN = "forbidden"
+    RATE_LIMITED = "rate_limited"
+    AUTH_UNAVAILABLE = "auth_unavailable"
     INTERNAL = "internal"
 
 
@@ -58,6 +64,18 @@ INTERNAL_ERROR_MESSAGE = (
     "Something went wrong on our side while handling this request. "
     "Please try again; if it keeps happening, contact support."
 )
+
+
+# What the front door says for each of its codes: the HTTP status and the message, word for word. the Go service keeps its own copy
+# of this table in a JSON file and the two are held equal by tests/core/test_error_codes_authlimit.py, so a person sees the same words
+# whichever layer refused them. (The messages are written for the caller: none carries a token, a claim, or an exception's text.)
+AUTH_ERRORS: dict[ErrorCode, tuple[int, str]] = {
+    ErrorCode.UNAUTHENTICATED: (401, "Authentication is required: send a valid access token."),
+    ErrorCode.FORBIDDEN: (403, "The access token does not allow this request."),
+    ErrorCode.RATE_LIMITED: (429, "Too many requests. Wait and try again."),
+    ErrorCode.AUTH_UNAVAILABLE: (503, "Authentication is temporarily unavailable. Try again shortly."),
+    ErrorCode.INTERNAL: (500, INTERNAL_ERROR_MESSAGE),
+}
 
 
 def error_origin(exc: BaseException) -> str:

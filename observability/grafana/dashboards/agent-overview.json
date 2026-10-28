@@ -1325,8 +1325,8 @@
     },
     {
       "type": "timeseries",
-      "title": "HTTP rate-limit rejections",
-      "description": "Per-tenant RATE_LIMIT_PER_MINUTE (app/api/rate_limit.py).",
+      "title": "Payment-webhook rate-limit rejections",
+      "description": "Per-source-address limit on /billing/webhooks (app/api/rate_limit.py). Turn limits are the front door's, services/authlimit.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
