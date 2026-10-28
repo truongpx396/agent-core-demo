@@ -144,7 +144,7 @@ Defaults read from `app/core/config.py` (`Settings`). **Example env** says wheth
 | `redis_max_connections` | 300 | pooled Redis connections per process | **no** |
 | `redis_url` | `redis://localhost:6379` | where the queue lives | **no** |
 | `checkpointer_pool_max_size` | 10 | checkpointer pool and its semaphore | **no** |
-| `rate_limit_per_minute` | 30 | per-tenant turn-creating requests | production file only |
+| ~~`rate_limit_per_minute`~~ | ~~30~~ | per-tenant turn-creating requests; **removed, spec 018** (the front door limits turns now) | ~~production file only~~ |
 | `chat_submit_dedup_ttl_seconds` | 10 | identical-resubmission window | **no** |
 | `chat_first_response_deadline_seconds` | 30 | wait for a job's first event | **no** |
 | `request_timeout_seconds` | 60 | one turn's wall clock | **no** |

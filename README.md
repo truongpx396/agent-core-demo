@@ -25,7 +25,7 @@ changing model provider is a LiteLLM config change, not a code change.
 - **Skills and subagents** — a searchable `SKILL.md` catalog loaded on demand, and isolated read-only subagent runs.
 - **Guardrails** — input moderation (patterns + an ML classifier), secret scrubbing on tool output, nine independent safety budgets, a golden-set eval gate.
 - **Interfaces** — CLI, HTTP API, web UI and Telegram, all on one streaming core.
-- **Operable** — queue workers that scale independently of the API, real dependency health checks, per-tenant rate limits and cost caps, Terraform + automated deploys.
+- **Operable** — queue workers that scale independently of the API, real dependency health checks, per-tenant and per-person rate limits at the front door and cost caps, Terraform + automated deploys.
 
 Pattern-by-pattern design notes, each with the bug that motivated it: [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md).
 
@@ -252,7 +252,7 @@ Use `X-Tenant-Id: ecorp` to see what `make ingest` seeded; another tenant sees n
 - **Memory:** reuse a `thread_id` to continue a conversation; Langfuse groups traces by it.
 - **Ownership:** a `thread_id` belongs to whoever sends on it first (tenant + principal + domain). Send, resume or cancel from anyone else gets the same 404 an unknown id gets. Switching identity needs a new `thread_id`; `telegram:<chat id>` ids are reserved for the Telegram channel. The check lives at the API; the worker doesn't repeat it (pattern 17).
 - **Resubmits:** an identical `(thread_id, message, images)` within `CHAT_SUBMIT_DEDUP_TTL_SECONDS` (10) streams the first attempt's turn instead of starting a second.
-- **Limits:** `RATE_LIMIT_PER_MINUTE` per tenant (30, Redis-backed) on turn-creating endpoints; CORS via `CORS_ALLOWED_ORIGINS`.
+- **Limits:** the API does not limit turns itself: per-tenant and per-person limits are the front door's (`services/authlimit`, see "Front door: authlimit" below), as a token bucket. **The production Caddyfile does not route through it yet** (spec 018, the wiring is a later step), so until it does a production deployment has no limit on turns. The API keeps one limit of its own, per source address, on the payment webhook (`BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE`); CORS via `CORS_ALLOWED_ORIGINS`.
 - **Metrics** are pushed over OTLP, not served: the API has no `/metrics` route.
 
 ### Web UI
@@ -456,7 +456,7 @@ that nothing in the app depends on:
 |---|---|
 | otel-collector | Receives every process's OTLP push; one Prometheus scrape target (`:8889`) |
 | Prometheus | Scrapes the collector, Qdrant, LiteLLM, and the Postgres/Redis exporters |
-| Alertmanager | Routes [`alerts.yml`](observability/prometheus/alerts.yml): error rate, p95 latency, tool errors, tenant budget, moderation and rate-limit spikes, degradation, checkpoint issues, unreachable workers. Locally **no notification channel is wired** (alerts show in the UI only). Production mounts `alertmanager.prod.yml` (Slack, severity-routed) and **refuses to start** without `ALERTMANAGER_SLACK_WEBHOOK_URL`, so a deployment can't be quietly alert-deaf; add a receiver there to page someone |
+| Alertmanager | Routes [`alerts.yml`](observability/prometheus/alerts.yml): error rate, p95 latency, tool errors, tenant budget, moderation and webhook rate-limit spikes, degradation, checkpoint issues, unreachable workers. Locally **no notification channel is wired** (alerts show in the UI only). Production mounts `alertmanager.prod.yml` (Slack, severity-routed) and **refuses to start** without `ALERTMANAGER_SLACK_WEBHOOK_URL`, so a deployment can't be quietly alert-deaf; add a receiver there to page someone |
 | Loki + Promtail | Ship the app containers' JSON logs |
 | Grafana | Two provisioned dashboards, **Agent Core Overview** and **Agent Core Infra & Logs** |
 
@@ -558,7 +558,7 @@ The compose files live in `deploy/compose/` but resolve their paths and `.env` f
 ```
 app/
   agent/       the agent: graph/ (LangGraph), runtime/ (turns, streaming, sessions), tools/ (built-ins, catalogs, run_subagent), cost/ (usage meter, spend caps), manifest.py
-  api/         FastAPI app (main.py mounts routers/: chat, ingest, usage, system), deps.py (identity headers), schemas, health, rate limiting, built-in web UI (static/index.html)
+  api/         FastAPI app (main.py mounts routers/: chat, ingest, usage, system), deps.py (identity headers), schemas, health, the webhook rate limit, built-in web UI (static/index.html)
   channels/    CLI (chat.py) and Telegram gateway
   core/        what every package uses: config, security (SecurityCtx/Policy), metrics, errors, scrubbing, SQL pool, LLM gateway contract, tool timeout and idempotency
   domains/     support/, ops/, sales/ (store + tools + domain each), registry, shared sandbox tools

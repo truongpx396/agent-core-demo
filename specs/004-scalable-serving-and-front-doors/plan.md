@@ -122,7 +122,7 @@ specs/004-scalable-serving-and-front-doors/
 app/
 ├── api/
 │   ├── main.py                    # lifespan, get_ctx/get_domain, queued SSE relay, chat endpoints
-│   ├── rate_limit.py              # TenantRateLimitMiddleware (moving window, fails open)
+│   ├── rate_limit.py              # was TenantRateLimitMiddleware (moving window, fails open); now WebhookRateLimitMiddleware only, spec 018
 │   ├── health.py                  # liveness + readiness probes
 │   ├── schemas.py
 │   └── static/index.html          # the built-in page — speaks only the published stream
