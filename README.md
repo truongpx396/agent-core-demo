@@ -49,7 +49,7 @@ flowchart TB
         Caddy["Caddy<br/>TLS, forward_auth"]
         Authlimit["authlimit (Go, x2)<br/>verify token offline, rate limit,<br/>revocation, sign a 30 s identity"]
         Casdoor["Casdoor<br/>OAuth 2.1 authorization server"]
-        LimitState[("Redis: limit buckets,<br/>revocation list")]
+        LimitState[("Redis: token buckets,<br/>revocation list")]
     end
 
     subgraph api_sg["FastAPI service"]
@@ -69,9 +69,13 @@ flowchart TB
     Telegram --> TurnQueue
     ExtMCP -. MCP stdio .-> MCPServer["app/mcp/server.py"]
 
-    Queued --> TurnQueue[("Redis: turn queue")]
+    Queued --> TurnQueue[("Redis Stream: turn requests<br/>one per domain, consumer group,<br/>crash reclaim + dead-letter")]
     TurnQueue --> AgentWorker["agent-worker pool"]
     AgentWorker --> Runtime["Shared runtime<br/>(app/agent/runtime/core.py)"]
+    Runtime -- stream events --> Results[("Redis Stream: results<br/>one per request, 5 min TTL")]
+    Results -- answer + citations as SSE --> Queued
+    Results -- read back --> CLI
+    Results -- read back --> Telegram
 
     Runtime --> Validate
 
@@ -95,6 +99,7 @@ flowchart TB
     Validate --> Moderate --> CacheCheck
     CacheCheck -- miss --> Compact --> Route --> Retrieve --> AgentNode
     CacheCheck -- hit --> Output
+    CacheCheck -. look up .-> SemCache[("Redis Stack: semantic cache<br/>vector KNN, per tenant + principal")]
     AgentNode -- invalid tool batch --> BatchGuard --> AgentNode
     AgentNode -- mutating or outward tool --> HITL
     HITL -- approved --> ToolsNode
@@ -104,6 +109,7 @@ flowchart TB
     AgentNode -- final answer --> Output
     Output -- answer rejected --> Retry --> AgentNode
     Output -- answer stands --> Finish
+    Finish -. write back .-> SemCache
 
     MCPServer --> SQL["app/core/sql_store.py"]
     MCPGateway --> SQL
@@ -117,20 +123,22 @@ flowchart TB
     Runtime --> Checkpointer[("Postgres: checkpoints")]
     Runtime --> Langfuse["Langfuse tracing"]
     Runtime -. OTLP push .-> OtelCollector["otel-collector"]
-    Output --> ClientResponse["Answer + citations<br/>(SSE stream)"]
 
     subgraph ingest_sg["Upload pipeline"]
         UploadEP["POST /ingest/upload"] --> ObjectStore[("MinIO / Spaces")]
-        ObjectStore --> IngestQueue[("Redis: ingest queue")]
+        ObjectStore --> IngestQueue[("Redis Stream: ingest jobs<br/>consumer group")]
         IngestQueue --> IngestWorker["ingest-worker pool"]
+        IngestWorker -. progress .-> IngestResults[("Redis Stream: job progress<br/>GET /ingest/stream/{job_id}")]
     end
+    Caddy -- signed identity --> UploadEP
     IngestWorker --> Qdrant
     IngestWorker -. OTLP push .-> OtelCollector
 ```
 
 The front door (`services/authlimit/`, see "Front door: authlimit" below) is what turns a Casdoor login into the
-signed identity the API trusts. The design is the same in production, but the prod Caddyfile and compose are not wired to it yet
+signed identity the API trusts, for the chat routes and the upload request alike (the ingest worker sits behind the queue, not the door). The design is the same in production, but the prod Caddyfile and compose are not wired to it yet
 ([Deploying](#deploying-to-production)); with `make serve` (`AUTH_MODE=headers`) the web UI calls the API directly instead.
+The Redis boxes are one Redis Stack used three ways: **Streams** (turn requests, one results stream per request that carries the answer back, dead letters, ingest jobs and their progress), a **RediSearch vector index** (the semantic cache, pattern 22) and **plain keys** (the per-thread lock, cancel flags, submit-dedup claims, Telegram's poll offset, the front door's token buckets).
 The OTLP edge stands for every process that pushes metrics: the API and each worker replica
 (GRAPH_PATTERNS.md pattern 43). The node-by-node flow, including the refusal and dead-end exits (`reject_*`, `context_window_exceeded`, `retry_exhausted`), is in
 [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md#graph-flow).
@@ -294,7 +302,7 @@ Use `X-Tenant-Id: ecorp` to see what `make ingest` seeded; another tenant sees n
 - **Memory:** reuse a `thread_id` to continue a conversation; Langfuse groups traces by it.
 - **Ownership:** a `thread_id` belongs to whoever sends on it first (tenant + principal + domain). Send, resume or cancel from anyone else gets the same 404 an unknown id gets. Switching identity needs a new `thread_id`; `telegram:<chat id>` ids are reserved for the Telegram channel. The check lives at the API; the worker doesn't repeat it (pattern 17).
 - **Resubmits:** an identical `(thread_id, message, images)` within `CHAT_SUBMIT_DEDUP_TTL_SECONDS` (10) streams the first attempt's turn instead of starting a second.
-- **Limits:** the API does not limit turns itself: per-tenant and per-person limits are the front door's (`services/authlimit`, see "Front door: authlimit" below), as a token bucket. **The production Caddyfile does not route through it yet** (spec 018, the wiring is a later step), so until it does a production deployment has no limit on turns. The API keeps one limit of its own, per source address, on the payment webhook (`BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE`); CORS via `CORS_ALLOWED_ORIGINS`.
+- **Limits:** the API does not limit turns or uploads itself: per-tenant and per-person limits are the front door's (`services/authlimit`, see "Front door: authlimit" below), as a token bucket, on `POST /chat/stream/queued`, `/chat/resume` and `/ingest/upload` (the defaults in `services/authlimit/routes.json`: 30 a minute per tenant, 10 per person; the other routes are verified but not limited). **The production Caddyfile does not route through it yet** (spec 018, the wiring is a later step), so until it does a production deployment has no limit on turns or uploads. The API keeps one limit of its own, per source address, on the payment webhook (`BILLING_WEBHOOK_RATE_LIMIT_PER_MINUTE`); CORS via `CORS_ALLOWED_ORIGINS`.
 - **Metrics** are pushed over OTLP, not served: the API has no `/metrics` route.
 
 ### Web UI
