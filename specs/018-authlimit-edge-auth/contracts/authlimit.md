@@ -90,7 +90,8 @@ https://mcp.localhost:8443 {              # the MCP routes live on the MCP host,
 Header `X-Internal-Identity: <compact JWS>`. Format and validation rules: [data-model.md](../data-model.md#internal-identity-output-short-lived). The API:
 
 - in identity mode requires it on every non-public route and builds `SecurityCtx` from `tenant` and `sub` only; a missing or invalid one is `401` with the envelope code `unauthenticated`; every other identity header is ignored;
-- fetches public keys from `AUTHLIMIT_KEYS_URL` (`/internal/jwks.json` on the service), caches them for 60 s, refreshes on an unknown `kid` at most once per 10 s, and refuses to start without the URL;
+- fetches public keys from `AUTHLIMIT_KEYS_URL` (`/internal/jwks.json` on the service), caches them for `AUTHLIMIT_KEYS_CACHE_SECONDS` (60 s), refreshes on an unknown `kid` at most once per 10 s, and refuses to start without the URL (the message names the variable, never its value);
+- if a refresh fails keeps trusting the last keys for `AUTHLIMIT_KEYS_STALE_GRACE_SECONDS` more (600 s; counted in `agent_api_identity_key_refresh_total{result="error"}`), then **fails closed**: every request is answered `503` with code `auth_unavailable` and `Retry-After: 30`, not `401`, because the caller did nothing wrong (`agent_api_identity_total{outcome="keys_unavailable"}`). The grace exists so one dead `authlimit` replica behind a round-robin name does not turn one failed fetch into an outage; its cost is that a key withdrawn for compromise stays trusted that long when the service cannot be reached;
 - in header mode (explicit opt-in) reads `X-Tenant-Id` and `X-Principal-Id` as today and announces it (log line at start, gauge `agent_api_auth_mode`).
 
 ## C. Operator commands
@@ -140,6 +141,15 @@ Service (environment; invalid or missing required values stop the start):
 | `AUTHLIMIT_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `AUTHLIMIT_PRINCIPAL_CLAIM` / `AUTHLIMIT_TENANT_CLAIM` | `sub` / `owner` | (also listed above) |
 | `AUTHLIMIT_IDENTITY_TTL_SECONDS` | `30` (max 120) | internal identity lifetime |
+
+The API's side of the same seam (settings of the Python app, `app/core/config.py`; not read by the service):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AUTH_MODE` | `identity` | `identity` trusts only the signed internal identity; `headers` trusts `X-Tenant-Id` and `X-Principal-Id` (tests, and the API run alone). Anything else is refused at import |
+| `AUTHLIMIT_KEYS_URL` | none | where the API fetches the service's public keys; required in identity mode (the API does not start without it); `https`, or `http` for loopback or an in-network name without a dot |
+| `AUTHLIMIT_KEYS_CACHE_SECONDS` | `60` (10 to 3600) | how long a fetched key set is trusted |
+| `AUTHLIMIT_KEYS_STALE_GRACE_SECONDS` | `600` (0 to 3600) | how much longer the last key set is trusted when a refresh fails; `0` means not at all |
 | `AUTHLIMIT_REDIS_URL` | required | the existing Redis |
 | `AUTHLIMIT_REDIS_TIMEOUT_MS` | `100` | ceiling on a limiter call |
 | `AUTHLIMIT_LIMIT_MODE` | `enforce` | `enforce` or `observe` |
