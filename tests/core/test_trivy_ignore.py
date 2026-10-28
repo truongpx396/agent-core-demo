@@ -1,27 +1,26 @@
-"""The Trivy gate, the dependency it is about, and the one exception we carry.
+"""The Trivy gate, the dependencies it is about, and the exception list, which is empty today.
 
 On 2026-10-21/22 CI's `trivy` job went red on every PR without any of them touching a dependency: its
-vulnerability database learned about four CRITICAL findings in packages the lock already pinned.
+vulnerability database learned about CRITICAL findings in packages the lock already pinned.
 
   * certifi 2026.7.22 (GHSA-6q48-6c7w-9gw2): the bundle trusts emSign intermediates whose keys are compromised.
     Fixed by pinning 2026.10.19, and by keeping pip out of the shipped image: its vendored copy
     (pip/_vendor/certifi) is what Trivy's image scan read as a second certifi that the lock cannot reach. (The image
     first upgraded pip for a fresh copy; the two-stage build removes it, ENGINEERING_PATTERNS.md pattern 76.)
-  * pillow 12.3.0 (CVE-2026-112403, -112393, -112900): fixed only in 13.0.0, and fastembed, which the app uses
-    for sparse retrieval, declares `pillow<13.0` in every release through 0.9.0. They cannot be installed
-    together, so `.trivyignore.yaml` carries a dated, reasoned exception instead of a lock that pip would reject.
+  * pillow 12.3.0 (five CVEs, fixed only in 13.0.0) and brotli 1.2.0 (GHSA-9v8h-qqgm-4m35, fixed in 1.2.1). Pillow was
+    held back by fastembed, which declared `pillow<13` until 0.9.1 (2026-10-24), so for a week `.trivyignore.yaml` carried
+    a dated exception for three of the five. fastembed 0.9.1 allows `pillow<14`; the lock moved and the exception went
+    (ENGINEERING_PATTERNS.md pattern 72). The gate was then red on `main` for five days (16 runs) before that was done.
 
-A security exception is only honest while its reasons hold. These tests are those reasons, written down so a
-change that breaks one fails here and not in a quiet drift: no first-party code touches Pillow, the image has no
-Ghostscript, the lock still pins what the exception is about, every entry expires, and only the hard gates read it.
-A TEXT test: no Docker and no Trivy needed (the exception was verified with the real scanner when it was written).
+A security gate is only honest while the fixes stay in place and any exception stays reasoned. These tests are those
+conditions, written down so a change that breaks one fails here and not in a quiet drift: the lock keeps the fixed
+versions, requirements.txt keeps the floor that allows them, every exception entry (there are none now) has a reason
+and an expiry, and only the hard gates read the file. A TEXT test: no Docker and no Trivy needed.
 """
-import ast
 import re
 from datetime import date
 from pathlib import Path
 
-import pytest
 import yaml
 from packaging.version import Version
 
@@ -60,49 +59,37 @@ def test_the_shipped_image_has_no_pip():
 
 
 class TestEveryExceptionIsDatedAndReasoned:
-    def test_the_file_has_entries_or_this_proves_nothing(self):
-        assert {e["id"] for e in _entries()} == {"CVE-2026-112403", "CVE-2026-112393", "CVE-2026-112900"}
+    """There are no entries today, so these hold for the next one: an exception with no reason or no date is how a
+    temporary decision becomes permanent."""
 
-    @pytest.mark.parametrize("entry", _entries(), ids=lambda e: e["id"])
-    def test_an_entry_says_why_and_until_when(self, entry):
-        assert re.fullmatch(r"(CVE-\d{4}-\d+|GHSA(-[a-z0-9]{4}){3})", entry["id"])
-        assert len(str(entry.get("statement", "")).strip()) >= 80, f"{entry['id']}: say why it is safe to carry"
-        assert isinstance(entry.get("expired_at"), date), f"{entry['id']}: an exception with no expiry is permanent"
-        assert "paths" not in entry, "the image scan reports Python packages under the target 'Python': a path would never match"
+    def test_the_file_is_a_list_trivy_can_read(self):
+        assert isinstance(yaml.safe_load(IGNORE.read_text())["vulnerabilities"], list)
+
+    def test_an_entry_says_why_and_until_when(self):
+        for entry in _entries():
+            assert re.fullmatch(r"(CVE-\d{4}-\d+|GHSA(-[a-z0-9]{4}){3})", entry["id"]), entry
+            assert len(str(entry.get("statement", "")).strip()) >= 80, f"{entry['id']}: say why it is safe to carry"
+            assert isinstance(entry.get("expired_at"), date), f"{entry['id']}: an exception with no expiry is permanent"
+            assert "paths" not in entry, "the image scan reports Python packages under the target 'Python': a path would never match"
 
 
-class TestTheReasonsTheExceptionRestsOn:
-    def test_the_lock_still_pins_a_pillow_the_exception_is_about(self):
-        """12.3.0 is affected, 13.0.0 is the fix. Once the lock moves to 13, the entries are dead weight and
-        would hide the next Pillow finding that has the same ids: remove them."""
-        assert Version(_lock()["pillow"]) < Version("13.0.0"), "pillow is on 13+ now: delete the entries in .trivyignore.yaml"
+class TestTheFixesStayFixed:
+    """The gate was red on main for five days on versions the lock could have moved off from the day fastembed allowed it.
+    These keep the fix from drifting back: a loosened requirement, a re-generated lock from an old resolver cache."""
 
-    def test_no_first_party_code_touches_pillow(self):
-        """All three findings need the app (or a package it calls) to decode, thumbnail, save or open an image with
-        Pillow. None of app/ or scripts/ imports it or calls the two methods the JPEG finding needs."""
-        offenders = []
-        for root in ("app", "scripts"):
-            for path in sorted((REPO / root).rglob("*.py")):
-                tree = ast.parse(path.read_text(), filename=str(path))
-                for node in ast.walk(tree):
-                    imported = []
-                    if isinstance(node, ast.Import):
-                        imported = [alias.name for alias in node.names]
-                    elif isinstance(node, ast.ImportFrom):
-                        imported = [node.module or ""]
-                    if any(name == "PIL" or name.startswith("PIL.") for name in imported):
-                        offenders.append(f"{path.relative_to(REPO)}:{node.lineno} imports PIL")
-                    if isinstance(node, ast.Attribute) and node.attr in {"thumbnail", "draft"}:
-                        offenders.append(f"{path.relative_to(REPO)}:{node.lineno} uses .{node.attr}")
-        assert not offenders, (
-            "first-party code now reaches Pillow, so CVE-2026-112403/-112393/-112900 are no longer 'not reachable' "
-            f"and .trivyignore.yaml's statements are false: {offenders}"
-        )
+    def test_the_lock_pins_pillow_13_or_later(self):
+        assert Version(_lock()["pillow"]) >= Version("13.0.0"), "CVE-2026-112403, -112393, -112900, -112398 and -96639 are fixed in 13.0.0"
 
-    def test_the_image_has_no_ghostscript(self):
-        """CVE-2026-112900 runs Pillow's EPS path, which shells out to `gs`."""
-        dockerfile = (REPO / "Dockerfile").read_text().lower()
-        assert "ghostscript" not in dockerfile and "libgs" not in dockerfile
+    def test_the_lock_pins_the_fixed_brotli(self):
+        assert Version(_lock()["brotli"]) >= Version("1.2.1"), "GHSA-9v8h-qqgm-4m35 is fixed in 1.2.1"
+
+    def test_fastembed_is_a_release_that_allows_pillow_13(self):
+        """0.8.x and 0.9.0 declare `pillow<13`; 0.9.1 is the first with `<14`. The floor in requirements.txt is what stops
+        a resolver (or a person loosening a range) from picking an older one and, with it, an older Pillow."""
+        floor = re.search(r"^fastembed>=([0-9.]+)", (REPO / "requirements.txt").read_text(), re.MULTILINE)
+
+        assert floor and Version(floor.group(1)) >= Version("0.9.1"), "requirements.txt must keep fastembed>=0.9.1"
+        assert Version(_lock()["fastembed"]) >= Version("0.9.1")
 
 
 class TestOnlyTheHardGatesReadTheExceptions:
