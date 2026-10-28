@@ -45,7 +45,7 @@ flowchart TB
         ExtMCP["External MCP client"]
     end
 
-    subgraph door_sg["Front door — local stack today, not yet in the prod Caddyfile (spec 018)"]
+    subgraph door_sg["Front door (spec 018)"]
         Caddy["Caddy<br/>TLS, forward_auth"]
         Authlimit["authlimit (Go, x2)<br/>verify token offline, rate limit,<br/>revocation, sign a 30 s identity"]
         Casdoor["Casdoor<br/>OAuth 2.1 authorization server"]
@@ -116,7 +116,8 @@ flowchart TB
 ```
 
 The front door (`services/authlimit/`, see "Front door: authlimit" below) is what turns a Casdoor login into the
-signed identity the API trusts; with `make serve` (`AUTH_MODE=headers`) the web UI calls the API directly instead.
+signed identity the API trusts. The design is the same in production, but the prod Caddyfile and compose are not wired to it yet
+([Deploying](#deploying-to-production)); with `make serve` (`AUTH_MODE=headers`) the web UI calls the API directly instead.
 The OTLP edge stands for every process that pushes metrics: the API and each worker replica
 (GRAPH_PATTERNS.md pattern 43). The node-by-node flow, including budget exits and the retry loop, is in
 [GRAPH_PATTERNS.md](GRAPH_PATTERNS.md#graph-flow).
