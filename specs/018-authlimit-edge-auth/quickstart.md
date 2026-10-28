@@ -51,15 +51,19 @@ Measured on a development stack (research R21): all of the above pass; the check
 ## 4. The API behind the front door (PR 2)
 
 ```bash
-AUTH_MODE=identity make authlimit-up-app   # the real api behind the same Caddy site
-make authlimit-smoke                       # Q1-Q11 again against the real API, plus: two tenants see only their own rows
+make authlimit-up-app                                       # the real API (identity mode) and a worker behind the same Caddy site, instead of the echo stub
+make mcp-gateway-bootstrap ARGS="--tenant ecorp --tenant other-co"
+make mcp-gateway-ca
+make fake-llm                                               # a model double that can call query_employees; point the worker's OPENAI_API_BASE at it
+make authlimit-smoke ARGS="--upstream api"                  # Q2, Q4, Q9-Q11 against the real API, plus the `api` stage: two tenants see only their own rows
+make authlimit-web-check                                    # the web page in a real browser: sign in, chat, sign out, for both tenants
 ```
 
-Expected: the smoke passes; in the web UI at `https://api.localhost:8443/` the tenant selector is gone, a sign-in redirect happens, and a chat turn runs as the signed-in person.
+Expected: both pass. In the page at `https://api.localhost:8443/` the Tenant and Principal pickers are gone, a sign-in box takes an organization and redirects to Casdoor's own login form, and a chat turn runs as the signed-in person. `ARGS="--upstream api --all"` adds the observe, replica-kill and Casdoor-outage stages (the key-rotation stage reads the stub's report and is left out).
 
 ## 5. Header mode still works for direct runs
 
 ```bash
-AUTH_MODE=headers make serve               # the pre-existing way to run the API alone
-make test                                  # fixtures select header mode; suite unchanged
+make serve                                 # `.env.example` sets AUTH_MODE=headers, the pre-existing way to run the API alone; it warns at startup
+make test                                  # an autouse fixture selects header mode; the 121 pre-existing API tests pass unchanged
 ```

@@ -289,6 +289,16 @@ def test_the_compose_api_reaches_the_doors_published_keys_by_the_services_in_net
     check_settings(SimpleNamespace(auth_mode="identity", authlimit_keys_url=url))  # the startup check accepts it: plain http to a dotless name
 
 
+def test_the_api_key_timings_are_passed_through_with_the_defaults_the_settings_have():
+    """Passed through so the smoke can shorten them; and a default written twice must be the same twice."""
+    from app.core.config import Settings
+
+    env = _services()["api"]["environment"]
+
+    assert env["AUTHLIMIT_KEYS_CACHE_SECONDS"] == f"${{AUTHLIMIT_KEYS_CACHE_SECONDS:-{Settings.model_fields['authlimit_keys_cache_seconds'].default}}}"
+    assert env["AUTHLIMIT_KEYS_STALE_GRACE_SECONDS"] == f"${{AUTHLIMIT_KEYS_STALE_GRACE_SECONDS:-{Settings.model_fields['authlimit_keys_stale_grace_seconds'].default}}}"
+
+
 def test_the_api_does_not_depend_on_the_door_so_the_app_profile_alone_still_starts():
     """A dependency on a service in the `gateway` profile would make `--profile app` fail to start without it."""
     assert "authlimit" not in _services()["api"]["depends_on"]

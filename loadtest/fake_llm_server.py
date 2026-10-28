@@ -198,6 +198,17 @@ def _run_subagent(last_user_text: str, requested_tool_names: set[str]) -> ToolCa
     )
 
 
+@tool_simulator
+def _query_employees(last_user_text: str, requested_tool_names: set[str]) -> ToolCall | None:
+    """Matches a "list the employees"-shaped message (scripts/authlimit_smoke.py's real-API stage) —
+    app/domains/ecorp/tools.py's real `query_employees` then runs under the CALLER's tenant (the ctx the API built from the verified
+    identity), and `_final_answer_text` below puts its result in the answer. That is the point of this simulator: an end-to-end check
+    that two tenants asking the same question through the same door see only their own rows, with no real model in the way."""
+    if "query_employees" not in requested_tool_names or "employees" not in last_user_text.lower():
+        return None
+    return ToolCall(name="query_employees", arguments={})
+
+
 # add more @tool_simulator functions here to simulate more tools
 
 

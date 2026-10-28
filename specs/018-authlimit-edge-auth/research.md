@@ -188,7 +188,7 @@ Run on an isolated Compose project (its own volumes, no host ports for Redis and
 
 **Mutation list (`make authlimit-mutants`), 26 of 26 caught.** Each defect is one textual edit of the real source; the tests that failed are shown by the script. The list: no audience check; no issuer check; the algorithm not pinned before the key is used; no lifetime cap; a missing issue time accepted on the chat API; no scope check; a huge clock leeway allowed; an internal identity that may live a day; limit-only mode refusing a token the MCP gateway accepts; an identity minted for 24 hours; a private key readable by others accepted; keys that never go stale; key refresh not rate-limited; a refused person still charging the tenant's bucket; a dot segment not refused; an encoded slash not refused; a stale revocation copy trusted for ever; a token issued in the revocation second working; error details not allow-listed; revocation checked after the limiter; the limiter keyed on an unverified header; the limiter failing closed; read and cancel limited too; a duplicated `X-Forwarded-Uri` trusted; MCP limit-only mode refusing an invalid token itself; an unusable key set answering 401 about the token instead of 503.
 
-**Still unmeasured:** behaviour under load (the latency numbers are one connection, sequential), the web UI sign-in and the API consuming the identity (PR 2), a production identity provider, anything across hosts.
+**Still unmeasured:** behaviour under load (the latency numbers are one connection, sequential), a production identity provider, anything across hosts. (The web UI sign-in and the API consuming the identity were unmeasured here and are measured in R22.)
 
 **Size (task T053).** Hand-written lines changed (added plus deleted; `go.sum` and the three generated vector files, about 850 lines, are excluded). The plan estimated 1,500 to 2,000 for all of Part A; the first, single pull request came to about 9,250. At the maintainer's request it was split into three stacked pull requests by layer. **All three are still over the repository's ~1,000 ceiling**, and each description says so in its first paragraph.
 
@@ -207,3 +207,36 @@ Run on an isolated Compose project (its own volumes, no host ports for Redis and
 **Why they are not smaller.** The code and its tests are almost the whole size, and half of that is tests, on purpose: this is the one component whose failure is a security failure, the constitution makes a hermetic test suite a principle, and the shared vectors, the clock-driven key tests and the table-driven refusal cases are long because each row is a case. The cuts are at package boundaries because that is the only place a pull request still compiles and passes its own tests alone; cutting inside a package would ship a half package, or code no test reaches yet.
 
 **Where the next cut would go, if a reviewer wants smaller pieces.** 1a: the verifier and the key cache (`internal/extjwt`, about 1,200 lines with tests) against the identity keys, configuration and logging. 1b: the limiter and revocation against the HTTP server and the binary. 1c: the wiring (compose, Caddy, the Casdoor applications) against the three scripts (smoke, latency, mutation list; 864 lines). The stack tests of 1c and the smoke are the proof of the wiring, so the scripts are the last thing to split off.
+
+
+## R22. What the real API behind the door found and measured (PR 2)
+
+Run the same way as R21 (an isolated Compose project, the maintainer's own stack untouched), with the real API in identity mode and a worker added: `make authlimit-up-app`, two tenants bootstrapped (`ecorp`, `other-co`), the worker's model pointed at `loadtest/fake_llm_server.py`, which gained a `query_employees` simulator so that a REAL tool runs under the caller's tenant with no model in the way. Casdoor 4.24.0, Caddy 2.11.7, Chromium via Playwright.
+
+**Found by running it (each fixed and pinned):**
+
+1. **The token exchange needs `resource` too.** The page sent `resource` (RFC 8707) on the authorize request and not on the code exchange, and Casdoor answered the exchange with a 400. The smoke's Python client had always sent it in both, and the DOM-stub tests could not know. With it the exchange returns a token for the API's audience. The comment in `auth.js` says so, and the stub test pins the field.
+2. **CORS is not a problem.** The page on `api.localhost` calls the token endpoint on `auth.localhost`: Casdoor answers the preflight and the request with `access-control-allow-origin` for the page's origin (measured with curl, then by the browser doing it).
+3. **A tenant's client id could not be known to the page.** Casdoor generated random ids, printed by the bootstrap after the API had started. The API applications now have the id `api-<tenant>` (the bootstrap names it on creation and on a re-run; MCP clients keep their generated ids), and the page builds the id from the organization the person types. One rule in two places (`app/api/web_auth.py::CLIENT_ID_PREFIX`, the bootstrap), held together by a test.
+4. **The running container serves the image's copy of the page's files.** An edit to `auth.js` did nothing until the API was rebuilt: the first run of the exchange fix looked like it had not worked. `make authlimit-up-app` builds, so it is not a trap there; it was one for me.
+5. **A smoke that selects lines from a log can select none.** The first run's "the API and the worker logged something" check failed with 0 lines, because compose prefixes a line `api-1  |`, not with the container name; the JWT-in-logs check beside it had passed on an empty set. The check that the set is not empty is what showed it (ENGINEERING_PATTERNS 88).
+6. **A real API does not answer like the stub.** Cancelling a thread nobody started is a 404, not a 200; the "never limited" check now asserts what it means (the door did not answer 429).
+7. **A negative run**: the same `api` stage against the API restarted in header mode behind the door fails 10 checks (rows, forged headers, the direct request, the conversation, usage), and the API's startup log carries the warning that names the consequence.
+
+**Measured:**
+
+| Property | Result | Spec |
+|---|---|---|
+| Full smoke `--upstream api --all` (refusals, api, limits, mcp, revoke, logs, observe, replica, outage) | 66 of 66 | SC-002 to SC-009 |
+| Two tenants asking "list the employees" through the same door | each gets its own rows from the real tool and none of the other's | SC-002 |
+| Forged `X-Tenant-Id` / `X-Principal-Id`; a VALIDLY SIGNED internal identity for the other tenant (the smoke holds the key); the same identity with no token | the turn runs as the token's tenant; 401 at the door for the last | FR-040, SC-002 |
+| A request that skips the door and reaches the API directly (old headers; an identity the door did not sign) | 401 | FR-010, FR-028 |
+| Another tenant asking for a conversation by id | 404 | SC-002 |
+| Replica killed under traffic (real API behind it) | 0 of 214 failed, worst gap 1.3 s | SC-004 |
+| Revocation | first refusal 0.8 s, every replica 2.9 s | SC-007 |
+| Casdoor down, inside and beyond the grace | existing token served, a new sign-in fails, then refused with `auth_unavailable`; resumed 3.0 s after Casdoor returned | SC-006 |
+| The API's own key copy (cache 10 s, grace 15 s, the door stopped) | served inside the cache and inside the grace; `503 auth_unavailable` beyond it; `401` for a request with no identity; recovered by itself after the door returned | FR-011, plan failure table |
+| Logs of the API and the worker | no external token and no JWT-shaped string; none of the 28 tokens of the run in any service's log | SC-009 |
+| The web page in Chromium, two tenants, `make authlimit-web-check` | 28 of 28: signed-out box, hidden pickers, Casdoor's own form, no code or token in the address bar or history, token in `sessionStorage` only, a chat turn answered with the signed-in tenant's rows only, the request carrying a Bearer and neither identity header, reload keeps the login, sign-out clears the conversation, a refused token returns to the sign-in box saying so | FR-030 |
+
+**Still unmeasured:** Casdoor's behaviour for a user who belongs to two organizations (the page asks for one); a refresh token in the page (not built: a 7-day access token and sign-in again); the page under a Content-Security-Policy (none is set); production Caddy and compose wiring (T069, not part of this run); behaviour under load.

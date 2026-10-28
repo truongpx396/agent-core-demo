@@ -194,7 +194,7 @@ Start from `main` after PR 1 merges (or stack on PR 1's branch and restack after
 
 ## Phase 16: End-to-end smoke with the real API (all stories)
 
-- [ ] T068 Extend `scripts/authlimit_smoke.py` for the real API (`--upstream api`): Q1 to Q11 against the real `api`, plus a two-tenant isolation check (an `ecorp` and an `other-co` user each ask for stored rows through the real tools and see only their own: the live equivalent of spec 017's check) and a check that a request carrying a forged `X-Tenant-Id` runs as the token's tenant. Run it on the real stack with `AUTH_MODE=identity`; record results in research.md. Run the web UI sign-in once by hand (or with the repo's Playwright setup if it fits without strain) and record what happened.
+- [X] T068 Extend `scripts/authlimit_smoke.py` for the real API (`--upstream api`): Q1 to Q11 against the real `api`, plus a two-tenant isolation check (an `ecorp` and an `other-co` user each ask for stored rows through the real tools and see only their own: the live equivalent of spec 017's check) and a check that a request carrying a forged `X-Tenant-Id` runs as the token's tenant. Run it on the real stack with `AUTH_MODE=identity`; record results in research.md. Run the web UI sign-in once by hand (or with the repo's Playwright setup if it fits without strain) and record what happened.
 
 ## Phase 17: Production wiring (cuttable first, per the spec's Delivery section)
 
@@ -202,8 +202,8 @@ Start from `main` after PR 1 merges (or stack on PR 1's branch and restack after
 
 ## Phase 18: PR 2 polish and shipping
 
-- [ ] T070 [P] Update docs: `README.md` (architecture, make targets, the sign-in and header-mode notes), `CLAUDE.md` (where things live: `services/authlimit/`, `app/core/internal_identity.py`), the numbered patterns for the API-side lessons (take next free numbers), `specs/018-.../research.md` "Results" with the measured numbers, and every "Extending Further" / Roadmap entry the change closes or opens (the in-flight turn cap).
-- [ ] T071 Run the targeted Python checks and fix findings: `pytest tests/core/test_config_auth_mode.py tests/core/test_error_codes_authlimit.py tests/core/test_internal_identity.py tests/api tests/mcp/test_gateway_vectors.py tests/core/test_alert_rules.py tests/core/test_compose_gateway.py -q`; `ruff check .` on touched files; `mypy` on the touched modules if it runs quickly, else leave to CI and say so. Do not run the full suite locally.
+- [X] T070 [P] Update docs: `README.md` (architecture, make targets, the sign-in and header-mode notes), `CLAUDE.md` (where things live: `services/authlimit/`, `app/core/internal_identity.py`), the numbered patterns for the API-side lessons (take next free numbers), `specs/018-.../research.md` "Results" with the measured numbers, and every "Extending Further" / Roadmap entry the change closes or opens (the in-flight turn cap).
+- [X] T071 Run the targeted Python checks and fix findings: `pytest tests/core/test_config_auth_mode.py tests/core/test_error_codes_authlimit.py tests/core/test_internal_identity.py tests/api tests/mcp/test_gateway_vectors.py tests/core/test_alert_rules.py tests/core/test_compose_gateway.py -q`; `ruff check .` on touched files; `mypy` on the touched modules if it runs quickly, else leave to CI and say so. Do not run the full suite locally.
 - [ ] T072 Count PR 2's hand-written lines as in T053 and record them; name the pieces split off first (production wiring T069, then refresh handling in the UI).
 - [ ] T073 Commit PR 2 (`feat:` subject; body states failure mode, root cause, what is left undone, and the `.env` note from spec A9; attribution line), push, open the PR against `main` (or against PR 1's branch if stacked, and say so), report CI with `gh pr checks`, and do not call it done while checks are pending or red.
 

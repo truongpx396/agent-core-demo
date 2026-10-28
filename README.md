@@ -370,8 +370,11 @@ The call is shaped like the TypeSafe **Jev / System One** decision interface (`{
   ```bash
   make authlimit-test           # go vet + the service's own tests with the race detector (needs Go; no Docker)
   make authlimit-up             # = mcp-gateway-up: Casdoor, authlimit x2, the MCP gateway, a stub upstream, Caddy on https://{api,mcp,auth}.localhost:8443
-  make mcp-gateway-bootstrap    # now also an API application per tenant; access tokens last 7 days (--token-hours)
+  make authlimit-up-app         # the same, with the REAL API behind the door (AUTH_MODE=identity) and a worker, instead of the stub; the page is https://api.localhost:8443/
+  make mcp-gateway-bootstrap    # now also an API application per tenant (client id api-<tenant>); access tokens last 7 days (--token-hours)
   make authlimit-smoke          # the end-to-end check as a client sees it; ARGS=--all adds replica kill, observe mode, key rotation, Casdoor outage
+  make authlimit-smoke ARGS="--upstream api"   # the same door against the real API: two tenants see only their own rows, forged headers and even a validly signed forged identity change nothing
+  make authlimit-web-check      # the web page in a real browser (Playwright): sign in through Casdoor's form, chat, sign out, two tenants
   make authlimit-revoke TENANT=ecorp SUB=<subject>   # void a person's tokens on every replica within seconds
   make authlimit-keys ARGS=rotate                    # rotate the signing key (keys live outside the repo)
   make authlimit-latency        # what the check adds to a request (about half a millisecond on a development stack)

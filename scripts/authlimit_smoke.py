@@ -24,6 +24,19 @@ Stages (default: the ones that change nothing; `--all` adds the ones that stop t
 It needs the stack up and bootstrapped (`make authlimit-up`, `make mcp-gateway-bootstrap`, `make mcp-gateway-ca`). It creates throwaway users and
 deletes them however the run ends. A manual tier, like `make mcp-gateway-smoke`: it needs Docker services and is not part of CI. Exit status 0
 only if every check passed.
+
+`--upstream api` runs the same door against the REAL API instead of the stub (`make authlimit-up-app`, the API in identity mode; the worker's model
+must be able to call `query_employees`: loadtest/fake_llm_server.py does, and `make fake-llm` runs it). The stages that read what the stub reports
+(identity, spoofing, rotate) have nothing to read there and are left out; the rest run as they are, except that a chat turn carries a real body,
+and one more stage joins them:
+
+  api         the real API acts for the person the token names and for no one a header names: the page and its script are public; two tenants
+              asking the same question through the same door each get only their own rows from the real tool; a forged X-Tenant-Id, and even a
+              VALIDLY SIGNED internal identity for another tenant, change nothing; a request that skips the door and reaches the API directly is
+              refused; one tenant cannot read another's conversation
+  apikeys     (with --all; needs --compose) the API's own copy of the door's public keys: with the door stopped, identities are still accepted
+              inside the key cache and the grace and are refused with 503 auth_unavailable (not 401) beyond them, and the API recovers by itself
+              when the door returns
 """
 import argparse
 import asyncio
@@ -52,7 +65,14 @@ IDENTITY_ISSUER = "urn:agent-core:authlimit"
 IDENTITY_AUDIENCE = "agent-core-api"
 SAFE = ["identity", "refusals", "spoofing", "limits", "mcp", "revoke", "logs"]
 DESTRUCTIVE = ["observe", "replica", "rotate", "outage"]
-NEEDS_COMPOSE = {"revoke", "logs", "observe", "replica", "outage"}  # rotate runs the image directly
+ECHO_ONLY = {"identity", "spoofing", "rotate"}  # they read what the STUB reports, so there is nothing for them to read behind the real API
+API_ONLY = ["api", "apikeys"]  # they test the API itself, so they have no meaning behind the stub
+API_SAFE = ["refusals", "api", "limits", "mcp", "revoke", "logs"]
+API_DESTRUCTIVE = [stage for stage in DESTRUCTIVE if stage not in ECHO_ONLY] + ["apikeys"]
+# What the seeded `query_employees` rows say, per tenant: a name that must be in that tenant's answer and in no other's.
+TENANT_ROWS = {"ecorp": "Priya Nair", "other-co": "Zed Zephyr"}
+ASK = "list the employees"
+NEEDS_COMPOSE = {"revoke", "logs", "observe", "replica", "outage", "apikeys"}  # rotate runs the image directly
 FAILED: list[str] = []
 SECRETS_SEEN: list[str] = []  # every token and refresh token this run obtained: the log scan looks for them
 
@@ -78,6 +98,7 @@ class Door:
 
     def __init__(self, args: argparse.Namespace, tls: ssl.SSLContext, admin_password: str) -> None:
         self.args, self.tls, self.admin_password = args, tls, admin_password
+        self.upstream = getattr(args, "upstream", "echo")
         self.api, self.mcp, self.auth = args.api.rstrip("/"), args.mcp.rstrip("/"), args.auth.rstrip("/")
         self.http = httpx.AsyncClient(verify=tls, timeout=20.0)
         self.admin = httpx.AsyncClient(base_url=self.auth, verify=tls, timeout=20.0)
@@ -171,6 +192,44 @@ class Door:
         headers += extra or []
         return await self.http.request(method, (base or self.api) + path, headers=headers, content=content)
 
+    async def turn(self, token: str, *, message: str = "hello", thread: str | None = None, extra: list[tuple[str, str]] | None = None) -> httpx.Response:
+        """Start a chat turn and return as soon as its status is known. The stub answers at once whatever it is sent. The real API wants a body
+        and streams the turn (a worker, a model), which a rate-limit check has no reason to wait for: that response is closed after its status."""
+        if self.upstream == "echo":
+            return await self.call("POST", "/chat/stream/queued", token, extra=extra)
+        headers = [("Accept", "text/event-stream"), ("Content-Type", "application/json"), ("Authorization", f"Bearer {token}")] + (extra or [])
+        body = json.dumps({"message": message, "thread_id": thread or f"smoke-{secrets.token_hex(4)}"}).encode()
+        async with self.http.stream("POST", self.api + "/chat/stream/queued", headers=headers, content=body) as response:
+            if response.status_code != 200:
+                await response.aread()
+        return response
+
+    async def ask(self, token: str | None, message: str, *, thread: str | None = None, extra: list[tuple[str, str]] | None = None) -> tuple[int, str]:
+        """Run a whole chat turn through the door and return (status, the answer's text, or the error the stream ended in)."""
+        headers = [("Accept", "text/event-stream"), ("Content-Type", "application/json")] + ([("Authorization", f"Bearer {token}")] if token else []) + (extra or [])
+        body = json.dumps({"message": message, "thread_id": thread or f"smoke-{secrets.token_hex(4)}"}).encode()
+        text: list[str] = []
+        async with self.http.stream("POST", self.api + "/chat/stream/queued", headers=headers, content=body) as response:
+            if response.status_code != 200:
+                return response.status_code, (await response.aread()).decode(errors="replace")
+            async for line in response.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                event = json.loads(line[6:])
+                if event.get("type") == "token":
+                    text.append(event.get("content", ""))
+                elif event.get("type") == "error":
+                    return 200, "ERROR " + json.dumps(event)[:200]
+                elif event.get("type") == "done":
+                    break
+        return 200, "".join(text)
+
+    async def cancel(self, token: str) -> httpx.Response:
+        """POST /chat/cancel: the stub takes anything; the real API needs the thread it is asked to stop (a thread nobody started is a no-op)."""
+        if self.upstream == "echo":
+            return await self.call("POST", "/chat/cancel", token)
+        return await self.call("POST", "/chat/cancel", token, extra=[("Content-Type", "application/json")], content=json.dumps({"thread_id": "smoke-none"}).encode())
+
     async def raw(self, target: str, headers: list[tuple[str, str]] | None = None, method: str = "GET") -> tuple[int, dict[str, str], bytes]:
         """One HTTP/1.1 request with the request target sent EXACTLY as given. A client library normalises `..` and `//` before sending, which
         would hide the thing under test."""
@@ -246,6 +305,21 @@ def verify_identity(identity: str, keys: dict[str, Any]) -> dict | None:
         return jwt.decode(identity, keys[kid], algorithms=["EdDSA"], audience=IDENTITY_AUDIENCE, issuer=IDENTITY_ISSUER)
     except (jwt.PyJWTError, KeyError):
         return None
+
+
+def mint_identity(keys_dir: Path, tenant: str, sub: str) -> str | None:
+    """A VALIDLY SIGNED internal identity for `tenant`, made with the service's own current private key (this process runs as the user who owns the
+    key directory). It is the strongest forgery there is: a header the API would accept if it ever reached it. The door must still replace it."""
+    keyset = json.loads((keys_dir / "keyset.json").read_text())
+    now = int(time.time())
+    usable = [k for k in keyset["keys"] if k["use_from"] <= now and (k["retire_at"] == 0 or k["retire_at"] > now)]
+    if not usable:
+        return None
+    current = max(usable, key=lambda k: k["use_from"])
+    key = serialization.load_pem_private_key((keys_dir / f"{current['kid']}.pem").read_bytes(), None)
+    claims = {"iss": IDENTITY_ISSUER, "aud": IDENTITY_AUDIENCE, "sub": sub, "tenant": tenant, "scope": "api:chat", "jti": secrets.token_hex(8),
+              "iat": now, "nbf": now, "exp": now + 30}
+    return jwt.encode(claims, key, algorithm="EdDSA", headers={"kid": current["kid"], "typ": "authlimit-identity+jwt"})  # type: ignore[arg-type]  # the key is Ed25519
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------
@@ -372,7 +446,7 @@ async def stage_limits(d: Door) -> None:
         return
 
     async def turn(token: str) -> httpx.Response:
-        return await d.call("POST", "/chat/stream/queued", token)
+        return await d.turn(token)
 
     first = [await turn(t1) for _ in range(6)]  # the person bucket holds 5
     codes = [r.status_code for r in first]
@@ -381,8 +455,9 @@ async def stage_limits(d: Door) -> None:
     body = limited.json() if limited.status_code == 429 else {}
     check("the 429 is the envelope with a Retry-After and no upstream data",
           body.get("code") == "rate_limited" and int(limited.headers.get("retry-after", "0")) >= 1 and "headers" not in body, f"{limited.headers.get('retry-after')} {limited.text[:120]}")
+    cancelled = await d.cancel(t1)  # the stub says 200; the real API says 404 for a thread nobody started. What matters: the door did not limit it
     check("a limited person can still cancel a run and read (never limited)",
-          (await d.call("POST", "/chat/cancel", t1)).status_code == 200 and (await d.call("GET", "/chat/sessions", t1)).status_code == 200)
+          cancelled.status_code in (200, 404) and (await d.call("GET", "/chat/sessions", t1)).status_code == 200, f"cancel answered {cancelled.status_code}")
     second = [(await turn(t2)).status_code for _ in range(5)]
     check("a colleague has their own bucket (the refused 6th request did not charge the tenant)", second == [200] * 5, str(second))
     third = await turn(t3)
@@ -469,7 +544,8 @@ async def stage_revoke(d: Door) -> None:
 
 async def stage_logs(d: Door, keys_dir: Path) -> None:
     print("\n== logs: no token and no key in any service's log")
-    result = d.compose("logs --no-color authlimit authlimit-echo caddy-gateway casdoor mcp-gateway")
+    services = "authlimit authlimit-echo caddy-gateway casdoor mcp-gateway" + (" api agent-worker" if d.upstream == "api" else "")
+    result = d.compose(f"logs --no-color {services}")
     text = result.stdout + result.stderr
     check("the logs were collected", len(text) > 200, f"{len(text)} bytes")
     leaked = [t[:12] + "…" for t in set(SECRETS_SEEN) if t and t in text]
@@ -481,6 +557,139 @@ async def stage_logs(d: Door, keys_dir: Path) -> None:
     check("no JWT-shaped string is logged by authlimit", not re.search(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.", "\n".join(l for l in text.splitlines() if "authlimit-" in l and "casdoor" not in l)))
     errors = [l for l in text.splitlines() if "authlimit-" in l and '"level":"ERROR"' in l]
     check("authlimit logged no errors", not errors, "\n".join(errors[:3]))
+    if d.upstream == "api":
+        app_lines = [l for l in text.splitlines() if l.startswith(("api-", "agent-worker-"))]  # compose prefixes a line with the service and replica
+        check("the API and the worker logged something to look through", len(app_lines) > 5, f"{len(app_lines)} lines")
+        jwt_shaped = re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.")
+        check("no JWT-shaped string (the internal identity or the external token) is logged by the API or the worker", not any(jwt_shaped.search(l) for l in app_lines))
+
+
+def seed_second_tenant(d: Door) -> bool:
+    """The second tenant's employees, so two tenants asking the same question can be told apart. Idempotent. Without --compose it trusts that the
+    operator seeded them."""
+    if not d.args.compose:
+        return True
+    sql = (
+        "INSERT INTO employees (tenant, name, department, title, hired_on) "
+        f"SELECT 'other-co', '{TENANT_ROWS['other-co']}', 'Engineering', 'CTO', '2020-01-01' "
+        f"WHERE NOT EXISTS (SELECT 1 FROM employees WHERE tenant = 'other-co' AND name = '{TENANT_ROWS['other-co']}')"
+    )
+    return d.compose("exec -T postgres psql -U langfuse -d appdata -v ON_ERROR_STOP=1 -c " + shlex.quote(sql)).returncode == 0
+
+
+DIRECT_REQUEST = (
+    "import sys, urllib.request, urllib.error\n"
+    "headers = {'X-Tenant-Id': 'ecorp', 'X-Principal-Id': 'someone'}\n"
+    "if len(sys.argv) > 1:\n"
+    "    headers['X-Internal-Identity'] = sys.argv[1]\n"
+    "try:\n"
+    "    print(urllib.request.urlopen(urllib.request.Request('http://localhost:8000/usage', headers=headers), timeout=5).status)\n"
+    "except urllib.error.HTTPError as e:\n"
+    "    print(e.code, e.read().decode()[:200].replace(chr(10), ' '))\n"
+)
+
+
+async def stage_api(d: Door, keys_dir: Path) -> None:
+    print("\n== api: the real API acts for the person the token names, and for no one a header names")
+    if d.upstream != "api":
+        print("      SKIPPED (needs --upstream api: the stub behind the door is not an API)")
+        return
+    page = await d.call("GET", "/", None)
+    check("the page is public and tells the browser the API is in identity mode",
+          page.status_code == 200 and 'name="agent-auth"' in page.text and "&quot;mode&quot;:&quot;identity&quot;" in page.text, f"{page.status_code} {page.text[:100]}")
+    script = await d.call("GET", "/static/auth.js", None)
+    check("its sign-in script is public too (it must load before anyone can sign in)", script.status_code == 200 and "code_challenge_method" in script.text, str(script.status_code))
+    check("the second tenant has employees of its own to be told apart by", seed_second_tenant(d))
+
+    a, b = await d.user("ecorp"), await d.user("other-co")
+    ta, tb = await d.token(a), await d.token(b)
+    if ta is None or tb is None:
+        check("sign-in of one user in each of two tenants", False)
+        return
+    ecorp_row, other_row = TENANT_ROWS["ecorp"], TENANT_ROWS["other-co"]
+
+    status, answer = await d.ask(ta, ASK)
+    check("one tenant's person asking for the employees gets their own tenant's rows from the real tool and none of the other's",
+          status == 200 and ecorp_row in answer and other_row not in answer, f"{status} {answer[:200]}")
+    status, answer = await d.ask(tb, ASK)
+    check("and the other tenant's person asking the same question gets theirs", status == 200 and other_row in answer and ecorp_row not in answer, f"{status} {answer[:200]}")
+
+    status, answer = await d.ask(ta, ASK, extra=[("X-Tenant-Id", "other-co"), ("X-Principal-Id", "the-boss")])
+    check("a forged X-Tenant-Id and X-Principal-Id change nothing: the turn runs as the token's tenant", status == 200 and ecorp_row in answer and other_row not in answer, f"{status} {answer[:200]}")
+
+    identity = mint_identity(keys_dir, "other-co", "someone-else")
+    if check("a validly signed internal identity for the other tenant could be minted (this process holds the key)", identity is not None) and identity:
+        status, answer = await d.ask(ta, ASK, extra=[("X-Internal-Identity", identity)])
+        check("even that is replaced by the door's own: the turn still runs as the token's tenant", status == 200 and ecorp_row in answer and other_row not in answer, f"{status} {answer[:200]}")
+        status, body = await d.ask(None, ASK, extra=[("X-Internal-Identity", identity)])
+        check("and with no token at all it is a 401 at the door: a header is not a login", status == 401 and "unauthenticated" in body, f"{status} {body[:120]}")
+
+    if d.args.compose:
+        direct = d.compose("exec -T api python -c " + shlex.quote(DIRECT_REQUEST))
+        check("a request that skips the door and reaches the API directly, with the old identity headers, is refused", direct.stdout.strip().startswith("401"), f"{direct.stdout.strip()!r} {direct.stderr[-200:]}")
+        direct = d.compose("exec -T api python -c " + shlex.quote(DIRECT_REQUEST) + " not.a.token")
+        check("and so is one carrying an identity that was not signed by the door", direct.stdout.strip().startswith("401"), f"{direct.stdout.strip()!r}")
+    else:
+        print("      (the two direct-to-the-API checks need --compose and were skipped)")
+
+    thread = f"smoke-{secrets.token_hex(4)}"
+    await d.ask(ta, "hello", thread=thread)
+    mine, theirs = await d.call("GET", f"/chat/sessions/{thread}/messages", ta), await d.call("GET", f"/chat/sessions/{thread}/messages", tb)
+    check("a conversation can be read by the person who had it", mine.status_code == 200, f"{mine.status_code} {mine.text[:100]}")
+    check("and another tenant asking for it by id is told it does not exist", theirs.status_code == 404, f"{theirs.status_code} {theirs.text[:100]}")
+    usage = await d.call("GET", "/usage", ta)
+    check("the usage endpoint answers for the token's tenant", usage.status_code == 200 and "total_tokens" in usage.json(), f"{usage.status_code} {usage.text[:100]}")
+
+
+async def stage_apikeys(d: Door, keys_dir: Path) -> None:
+    print("\n== apikeys: the API's own copy of the door's public keys, with the door stopped")
+    if d.upstream != "api":
+        print("      SKIPPED (needs --upstream api)")
+        return
+    cache, grace = 10, 15
+    shortened = {"AUTH_MODE": "identity", "AUTHLIMIT_KEYS_CACHE_SECONDS": str(cache), "AUTHLIMIT_KEYS_STALE_GRACE_SECONDS": str(grace)}
+
+    def direct(with_identity: bool) -> tuple[str, str]:
+        """A request straight to the API (skipping the door) with a freshly minted identity, which this process can make because it holds the key."""
+        identity = mint_identity(keys_dir, "ecorp", "smoke-direct") if with_identity else None
+        tail = "exec -T api python -c " + shlex.quote(DIRECT_REQUEST) + (f" {shlex.quote(identity)}" if identity else "")
+        status, _, body = d.compose(tail).stdout.strip().partition(" ")
+        return status, body
+
+    async def until(status: str, seconds: int) -> bool:
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if direct(True)[0] == status:
+                return True
+            await asyncio.sleep(2)
+        return False
+
+    result = d.compose("up -d --no-deps api", env=shortened)
+    if not check(f"the API restarted with a {cache} s key cache and a {grace} s grace", result.returncode == 0, result.stderr[-300:]):
+        return
+    if not check("and accepts an identity the door's key signed (its keys fetched from the door)", await until("200", 60)):
+        return
+    stopped = d.compose("stop authlimit")
+    if not check("the door (both authlimit replicas) was stopped", stopped.returncode == 0, stopped.stderr[-200:]):
+        return
+    try:
+        check("inside the key cache the API still accepts an identity", direct(True)[0] == "200")
+        await asyncio.sleep(cache + 3)
+        status, body = direct(True)
+        check("past the cache but inside the grace it still accepts one, from the last keys it fetched", status == "200", f"{status} {body}")
+        await asyncio.sleep(grace + 2)
+        status, body = direct(True)
+        check("beyond the grace it refuses with 503 and the auth_unavailable envelope, not 401: the caller did nothing wrong",
+              status == "503" and "auth_unavailable" in body, f"{status} {body}")
+        status, body = direct(False)
+        check("while a request with no identity at all is still a 401 (that is the caller's fault whatever the keys)", status == "401", f"{status} {body}")
+    finally:
+        d.compose("up -d --no-deps authlimit")
+    check("the door came back", await d.wait_ready())
+    await asyncio.sleep(11)  # the API tries again at most every 10 seconds
+    check("the API recovered by itself: an identity is accepted again", await until("200", 40))
+    d.compose("up -d --no-deps api", env={"AUTH_MODE": "identity"})
+    check("defaults restored", await until("200", 60))
 
 
 async def stage_observe(d: Door) -> None:
@@ -492,7 +701,10 @@ async def stage_observe(d: Door) -> None:
         return
     user = await d.user("ecorp")
     token = await d.token(user)
-    codes = [(await d.call("POST", "/chat/stream/queued", token)).status_code for _ in range(10)]
+    if token is None:
+        check("sign-in", False)
+        return
+    codes = [(await d.turn(token)).status_code for _ in range(10)]
     check("10 turns from one person, past the bucket of 5: all served", codes == [200] * 10, str(codes))
     logs = d.compose("logs --no-color authlimit").stdout
     check("and the would-be refusals were logged", logs.count('"msg":"would_limit"') >= 4, f"{logs.count(chr(34) + 'would_limit' + chr(34))} lines")
@@ -622,14 +834,30 @@ async def stage_outage(d: Door) -> None:
 # ---------------------------------------------------------------------------------------------------------------------------------
 
 
+def select_stages(upstream: str, *, all_stages: bool, chosen: str = "") -> list[str]:
+    """The stages to run. Behind the stub: the safe ones (and the destructive ones with `--all`). Behind the real API: the ones that do not read what
+    the stub reports, plus `api`. A choice that makes no sense for the upstream is an error, not a stage that quietly checks nothing."""
+    api_mode = upstream == "api"
+    default = (API_SAFE + (API_DESTRUCTIVE if all_stages else [])) if api_mode else (SAFE + (DESTRUCTIVE if all_stages else []))
+    stages = [name for name in chosen.split(",") if name] if chosen else default
+    unknown = [name for name in stages if name not in SAFE + DESTRUCTIVE + API_ONLY]
+    if unknown:
+        raise ValueError(f"unknown stage(s) {unknown}; choose from {SAFE + DESTRUCTIVE + API_ONLY}")
+    if api_mode and (read_stub := [name for name in stages if name in ECHO_ONLY]):
+        raise ValueError(f"stage(s) {read_stub} read what the stub upstream reports and have nothing to read behind the real API; leave them out with --upstream api")
+    if not api_mode and (api_only := [name for name in stages if name in API_ONLY]):
+        raise ValueError(f"stage(s) {api_only} need --upstream api (and `make authlimit-up-app`)")
+    return stages
+
+
 async def run(args: argparse.Namespace) -> None:
     password = os.environ.get("CASDOOR_ADMIN_PASSWORD", "")
     if not password:
         sys.exit("CASDOOR_ADMIN_PASSWORD is not set (make authlimit-smoke passes it)")
-    stages = SAFE + (DESTRUCTIVE if args.all else []) if not args.stages else args.stages.split(",")
-    unknown = [s for s in stages if s not in SAFE + DESTRUCTIVE]
-    if unknown:
-        sys.exit(f"unknown stage(s) {unknown}; choose from {SAFE + DESTRUCTIVE}")
+    try:
+        stages = select_stages(args.upstream, all_stages=args.all, chosen=args.stages)
+    except ValueError as exc:
+        sys.exit(str(exc))
     keys_dir = Path(args.keys_dir).expanduser()
     if not any(keys_dir.glob("*.pem")):
         sys.exit(f"no signing keys in {keys_dir} (make authlimit-keys); the smoke verifies identities against them")
@@ -646,6 +874,8 @@ async def run(args: argparse.Namespace) -> None:
             "mcp": lambda: stage_mcp(door),
             "revoke": lambda: stage_revoke(door),
             "logs": lambda: stage_logs(door, keys_dir),
+            "api": lambda: stage_api(door, keys_dir),
+            "apikeys": lambda: stage_apikeys(door, keys_dir),
             "observe": lambda: stage_observe(door),
             "replica": lambda: stage_replica(door),
             "rotate": lambda: stage_rotate(door, keys, keys_dir),
@@ -668,6 +898,8 @@ def main() -> None:
     parser.add_argument("--auth", default="https://auth.localhost:8443")
     parser.add_argument("--keys-dir", default=os.environ.get("AUTHLIMIT_KEYS_DIR") or "~/.cache/agent-core-demo-authlimit/keys")
     parser.add_argument("--compose", default="", help="the compose command of the running stack, as one string split like a shell would (make authlimit-smoke passes it); needed by revoke, logs and the destructive stages")
+    parser.add_argument("--upstream", choices=["echo", "api"], default="echo",
+                        help="what stands behind the door: the stub that reports what it received (make authlimit-up, the default) or the real API (make authlimit-up-app)")
     parser.add_argument("--image", default="authlimit:dev")
     parser.add_argument("--all", action="store_true", help="also run the stages that stop or restart things")
     parser.add_argument("--stages", default="", help="a comma-separated list of stages instead of the default")
