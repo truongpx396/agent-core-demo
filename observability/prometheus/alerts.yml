@@ -430,6 +430,26 @@ groups:
             import). The turn does not fail, which is why this is an alert and not an
             error rate. specs/009 A9.
 
+      - alert: WebSearchProviderRefusing
+        expr: increase(agent_web_search_total{outcome=~"auth_failed|rejected"}[30m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "serper.dev is refusing web searches; the agents work without them"
+          description: >-
+            agent_web_search_total{outcome="auth_failed"|"rejected"} increased — the
+            provider answered 401/403 (the key is wrong or revoked; a wrong key is a
+            measured 403) or another 4xx (an account out of credits is expected to
+            look like this, but that was not verified: there is no safe way to
+            exhaust one), so every web_search
+            call in the support, ops and sales domains fails until someone fixes it.
+            The turn does not fail and the model just says search is unavailable, which
+            is why this is an alert and not an error rate. Check SERPER_API_KEY and the
+            account's credit balance at serper.dev; `make web-search-check` spends one
+            credit to confirm the fix. Searches are human-approved and rare, so the
+            window is 30m rather than a rate.
+
       - alert: McpToolCatalogChanged
         expr: increase(agent_mcp_tool_pin_failures_total[1h]) > 0
         for: 5m

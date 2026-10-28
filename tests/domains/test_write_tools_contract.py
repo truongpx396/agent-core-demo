@@ -39,6 +39,7 @@ SAMPLE_ARGS: dict[str, dict] = {
     "resolve_incident": {"incident_id": 1, "resolution": "restarted the worker"},
     "post_to_team_channel": {"channel": "ops-alerts", "message": "Queue is backing up"},
     "check_vendor_status_page": {"url": "https://status.example.com"},
+    "web_search": {"query": "Stripe API status page"},
     "log_lead_interaction": {"name": "Ada", "contact": "ada@example.com", "notes": "asked for pricing"},
     "schedule_followup": {"contact": "ada@example.com", "due_in_days": 3, "note": "send the quote"},
     "handoff_to_human": {"contact": "ada@example.com", "brief_summary": "wants a demo", "reason": "pricing"},

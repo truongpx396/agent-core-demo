@@ -45,6 +45,7 @@ def _bound_secret_values() -> list[str]:
         config.OPENAI_API_KEY,
         config.LANGFUSE_SECRET_KEY,
         config.LANGFUSE_PUBLIC_KEY,
+        config.SERPER_API_KEY,
     ]
     for url in (config.APPDATA_DATABASE_URL, config.REDIS_URL):
         # Password only — the host/db name is harmless and useful in a trace.

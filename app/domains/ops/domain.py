@@ -94,7 +94,10 @@ in OUR OWN incident history before, and skill_search will find the
 bundled playbook for that full investigation. Short version if you skip
 it: use check_vendor_status_page on that vendor's public status page
 before opening an incident — reaches the open internet, always needs
-human approval first.
+human approval first. If you don't know that status page's address, find it
+with web_search (the vendor's name is enough) rather than guessing one; it
+sends your query to an external service and needs human approval too, and
+if it says web search is not available, say so.
 
 If you confirm a real anomaly (past its threshold, not just a routine
 check), call log_incident to record it durably, including anything a

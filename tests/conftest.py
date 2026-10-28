@@ -183,6 +183,18 @@ def no_real_tracing(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_real_web_search(monkeypatch):
+    """`web_search` (app/core/serper.py) is a billed call to a third party, and a developer's `.env` can hold a real `SERPER_API_KEY`
+    (it is meant to). Without this, a test that happened to reach the tool would spend a credit and depend on the network, and a
+    suite that is green on a laptop with a key and on CI without one is two different suites. So every hermetic test sees an empty
+    key: the client answers "not set up" and makes no request. A test of the client or the tool sets its own key and hands the client
+    an `httpx.MockTransport` (tests/core/test_serper.py); the one real call is `make web-search-check`, by hand."""
+    from app.core import serper
+
+    monkeypatch.setattr(serper, "SERPER_API_KEY", "")
+
+
+@pytest.fixture(autouse=True)
 def fixed_embedding_identity(monkeypatch):
     """The embedding identity is read on every Qdrant read and write (app/retrieval/qdrant_store.py::check_identity), and computing the
     real one asks LiteLLM which model the `embed` alias resolves to and probes the embedding model for its dimension: two live-service

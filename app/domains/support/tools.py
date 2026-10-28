@@ -26,6 +26,7 @@ from app.core.untrusted import frame_untrusted
 from app.domains import notify, sandbox_session
 from app.domains.policy import ActionAllowlistPolicy
 from app.domains.support import store
+from app.domains.web_search import make_web_search_tool
 from app.ingestion.web_crawler import CRAWL_TOOL_TIMEOUT_SECONDS, render_url_to_markdown
 
 NO_CTX_REFUSAL = (
@@ -43,6 +44,7 @@ SUPPORT_POLICY = ActionAllowlistPolicy(
             "list_my_tickets",
             "add_ticket_comment",
             "fetch_external_reference",
+            "web_search",
             "run_command_in_sandbox",
             "run_python_in_sandbox",
             "read_sandbox_file",
@@ -305,6 +307,10 @@ async def fetch_external_reference(
     )
 
 
+# The discovery half of fetch_external_reference: finds the page it then reads (app/domains/web_search.py says why this domain has it).
+web_search = make_web_search_tool(SUPPORT_POLICY, then_read_with="fetch_external_reference")
+
+
 def _thread_id_from_config(config: RunnableConfig | None) -> str:
     return (config or {}).get("configurable", {}).get("thread_id", "unknown")
 
@@ -552,6 +558,7 @@ TOOLS = [
     add_ticket_comment,
     fetch_external_reference,
     *_SANDBOX_TOOLS,
+    web_search,  # last, so no existing tool changes position in the bound list (pattern 50)
 ]
 
 TOOL_CAPABILITIES = {
@@ -561,5 +568,6 @@ TOOL_CAPABILITIES = {
     "list_my_tickets": "read_only",
     "add_ticket_comment": "mutating",
     "fetch_external_reference": "outward",
+    "web_search": "outward",
     **{t.name: "outward" for t in _SANDBOX_TOOLS},
 }
