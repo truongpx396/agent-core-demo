@@ -34,7 +34,7 @@ Pattern-by-pattern design notes, each with the bug that motivated it: [GRAPH_PAT
 Every turn goes through a Redis Streams queue, whichever front door it came in through: the API serves
 SSE, the CLI and the Telegram channel publish and read back, and `agent-worker` processes run the graph, so
 each tier scales on its own. No front door runs the graph in its own process, which is why the per-thread
-lock, crash reclaim and the dead-letter archive cover all of them (pattern 87).
+lock, crash reclaim and the dead-letter archive cover all of them (pattern 89).
 
 ```mermaid
 flowchart TB

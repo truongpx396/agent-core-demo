@@ -376,7 +376,7 @@ agent_unattended_job_paused_total = Counter(
     "(app/channels/telegram.py::_decline_pause). The worker declines a pause for such a job "
     "(agent_unattended_pause_total counts those), so this should stay at zero: a count means a worker "
     "that predates the `unattended` flag ran the job, which is a rolling deploy that upgraded the "
-    "channel before its workers (GRAPH_PATTERNS.md 87). Nothing ran and nothing is left paused, which "
+    "channel before its workers (GRAPH_PATTERNS.md 89). Nothing ran and nothing is left paused, which "
     "is why it is a counter and not an alert",
 )
 
